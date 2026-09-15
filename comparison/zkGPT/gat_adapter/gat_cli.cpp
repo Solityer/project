@@ -661,8 +661,8 @@ int main(int argc, char **argv) {
                     "refusing to overwrite an existing model registration or com_W prover secret");
             }
             const auto registration_begin = Clock::now();
-            const Graph graph = load_graph(cache_dir);
-            const Tensor2D features = load_features(cache_dir, config, graph);
+            const Graph graph = load_graph(cache_dir, config);
+            const Tensor2D features = load_features(cache_dir, config, quant, graph);
             const Model model = Model::load(bundle_dir);
             model.validate_identity(config);
             const ForwardResult forward = run_forward(graph, features, model, quant);
@@ -689,8 +689,8 @@ int main(int argc, char **argv) {
             return 0;
         }
 
-        const Graph graph = load_graph(cache_dir);
-        const Tensor2D features = load_features(cache_dir, config, graph);
+        const Graph graph = load_graph(cache_dir, config);
+        const Tensor2D features = load_features(cache_dir, config, quant, graph);
         (void)load_labels(cache_dir, graph);
         const Model model = Model::load(bundle_dir);
         model.validate_identity(config);

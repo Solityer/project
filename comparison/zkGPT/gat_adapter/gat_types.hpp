@@ -161,9 +161,9 @@ struct Model {
 };
 
 Tensor2D load_features(const std::string &cache_dir, const CanonicalConfig &config,
-                       const Graph &graph);
+                       const QuantConfig &quant, const Graph &graph);
 std::vector<Int> load_labels(const std::string &cache_dir, const Graph &graph);
-Graph load_graph(const std::string &cache_dir);
+Graph load_graph(const std::string &cache_dir, const CanonicalConfig &config);
 
 enum class RoundingMode { TOWARD_ZERO, NEAREST_TIES_AWAY };
 

@@ -161,6 +161,13 @@ std::map<std::string, std::string> read_key_values(const std::string &path) {
     return out;
 }
 
+bool config_bool(const CanonicalConfig &config, const std::string &key, bool fallback) {
+    const std::string value = config.get(key, fallback ? "true" : "false");
+    if (value == "true" || value == "1" || value == "yes") return true;
+    if (value == "false" || value == "0" || value == "no") return false;
+    throw std::runtime_error("invalid boolean for " + key + ": " + value);
+}
+
 Int parse_int(const std::string &s, const std::string &what) {
     try {
         std::size_t used = 0;
@@ -574,16 +581,26 @@ void Graph::validate() const {
     }
 }
 
-Graph load_graph(const std::string &cache_dir) {
+Graph load_graph(const std::string &cache_dir, const CanonicalConfig &config) {
     verify_cache_auth(cache_dir);
     CanonicalConfig meta;
     meta.source_path = cache_dir + "/meta.cfg";
     meta.values = read_key_values(meta.source_path);
+    if (config.get("self_loop_rule") != "per_node") {
+        throw std::runtime_error("canonical graph requires self_loop_rule=per_node");
+    }
+    if (config.get("edge_sort_rule") != "edge_gid_then_dst_stable") {
+        throw std::runtime_error("canonical graph requires edge_sort_rule=edge_gid_then_dst_stable");
+    }
+    const bool deduplicate_edges = config_bool(config, "deduplicate_edges", true);
+    const bool symmetrize_edges = config_bool(config, "symmetrize_edges", false);
     Graph graph;
     graph.num_nodes = static_cast<std::size_t>(meta.get_int("num_nodes"));
     graph.num_features = static_cast<std::size_t>(meta.get_int("num_features"));
     graph.num_classes = static_cast<std::size_t>(meta.get_int("num_classes"));
-    graph.graph_count = static_cast<std::size_t>(std::max<Int>(1, meta.get_int("graph_count", 1)));
+    const Int declared_graph_count = meta.get_int("graph_count", 1);
+    if (declared_graph_count <= 0) throw std::runtime_error("canonical graph_count must be positive");
+    graph.graph_count = static_cast<std::size_t>(declared_graph_count);
     const std::string node_ptr_path = cache_dir + "/node_ptr.txt";
     std::ifstream np(node_ptr_path.c_str());
     if (np) {
@@ -593,7 +610,7 @@ Graph load_graph(const std::string &cache_dir) {
             if (node_line.empty()) continue;
             const std::vector<Int> values = parse_integer_line(node_line);
             for (Int value : values) {
-                if (value < 0) throw std::runtime_error("negative node_ptr");
+                if (value < 0 || static_cast<std::size_t>(value) > graph.num_nodes) throw std::runtime_error("invalid node_ptr");
                 graph.node_ptr.push_back(static_cast<std::size_t>(value));
             }
         }
@@ -602,8 +619,19 @@ Graph load_graph(const std::string &cache_dir) {
         if (graph.graph_count != 1) throw std::runtime_error("multi-graph cache is missing node_ptr.txt");
         graph.node_ptr = {0, graph.num_nodes};
     }
+    if (graph.node_ptr.empty() || graph.node_ptr.front() != 0 || graph.node_ptr.back() != graph.num_nodes) {
+        throw std::runtime_error("canonical graph node_ptr does not cover the graph");
+    }
+    for (std::size_t g = 0; g < graph.graph_count; ++g) {
+        if (graph.node_ptr[g] >= graph.node_ptr[g + 1]) throw std::runtime_error("canonical graph node_ptr must be strictly increasing");
+    }
+    if (config.get("dataset") == "ppi") {
+        if (graph.graph_count != 295 || config.get_int("batch_graphs", 0) != 295) {
+            throw std::runtime_error("PPI canonical graph must contain exactly 295 graph batches");
+        }
+    }
     struct Edge { Int gid, src, dst; std::size_t order; };
-    std::vector<Edge> edges;
+    std::vector<Edge> raw_edges;
     std::ifstream ein(require_file(cache_dir + "/edges.txt"));
     std::string line;
     std::size_t order = 0;
@@ -612,28 +640,67 @@ Graph load_graph(const std::string &cache_dir) {
         if (line.empty()) continue;
         const std::vector<Int> values = parse_integer_line(line);
         if (values.size() != 2 && values.size() != 3) throw std::runtime_error("edge line must contain two or three integers");
-        edges.push_back(values.size() == 2 ? Edge{0, values[0], values[1], order++} : Edge{values[0], values[1], values[2], order++});
+        if (values.size() == 2 && graph.graph_count != 1) {
+            throw std::runtime_error("multi-graph cache edge rows must contain graph_id,src,dst");
+        }
+        const Edge edge = values.size() == 2
+            ? Edge{0, values[0], values[1], order++}
+            : Edge{values[0], values[1], values[2], order++};
+        if (edge.gid < 0 || static_cast<std::size_t>(edge.gid) >= graph.graph_count) {
+            throw std::runtime_error("edge graph id out of range");
+        }
+        const std::size_t gid = static_cast<std::size_t>(edge.gid);
+        if (edge.src < static_cast<Int>(graph.node_ptr[gid]) ||
+            edge.src >= static_cast<Int>(graph.node_ptr[gid + 1]) ||
+            edge.dst < static_cast<Int>(graph.node_ptr[gid]) ||
+            edge.dst >= static_cast<Int>(graph.node_ptr[gid + 1])) {
+            throw std::runtime_error("edge endpoint crosses graph boundary");
+        }
+        raw_edges.push_back(edge);
     }
-    std::stable_sort(edges.begin(), edges.end(), [](const Edge &a, const Edge &b) {
-        if (a.gid != b.gid) return a.gid < b.gid;
-        return a.dst < b.dst;
-    });
-    graph.src.reserve(edges.size()); graph.dst.reserve(edges.size()); graph.edge_gid.reserve(edges.size());
+    graph.src.reserve(raw_edges.size() + graph.num_nodes);
+    graph.dst.reserve(raw_edges.size() + graph.num_nodes);
+    graph.edge_gid.reserve(raw_edges.size() + graph.num_nodes);
     graph.edge_ptr.assign(graph.graph_count + 1, 0);
-    for (const Edge &edge : edges) {
-        if (edge.gid < 0 || static_cast<std::size_t>(edge.gid) >= graph.graph_count) throw std::runtime_error("edge graph id out of range");
-        graph.src.push_back(edge.src); graph.dst.push_back(edge.dst); graph.edge_gid.push_back(edge.gid);
-        ++graph.edge_ptr[static_cast<std::size_t>(edge.gid) + 1];
+    for (std::size_t gid = 0; gid < graph.graph_count; ++gid) {
+        std::vector<Edge> graph_edges;
+        std::set<std::pair<Int, Int>> seen;
+        std::size_t stable_index = 0;
+        const auto append_edge = [&](Int src, Int dst) {
+            const bool first = seen.emplace(src, dst).second;
+            if (deduplicate_edges && !first) return;
+            graph_edges.push_back(Edge{static_cast<Int>(gid), src, dst, stable_index++});
+        };
+        for (const Edge &edge : raw_edges) {
+            if (static_cast<std::size_t>(edge.gid) != gid) continue;
+            append_edge(edge.src, edge.dst);
+            if (symmetrize_edges && edge.src != edge.dst) append_edge(edge.dst, edge.src);
+        }
+        for (std::size_t node = graph.node_ptr[gid]; node < graph.node_ptr[gid + 1]; ++node) {
+            const auto key = std::make_pair(static_cast<Int>(node), static_cast<Int>(node));
+            if (seen.find(key) == seen.end()) append_edge(key.first, key.second);
+        }
+        std::stable_sort(graph_edges.begin(), graph_edges.end(), [](const Edge &a, const Edge &b) {
+            if (a.gid != b.gid) return a.gid < b.gid;
+            if (a.dst != b.dst) return a.dst < b.dst;
+            return a.order < b.order;
+        });
+        for (const Edge &edge : graph_edges) {
+            graph.src.push_back(edge.src);
+            graph.dst.push_back(edge.dst);
+            graph.edge_gid.push_back(edge.gid);
+        }
+        graph.edge_ptr[gid + 1] = graph.src.size();
     }
-    for (std::size_t g = 1; g < graph.edge_ptr.size(); ++g) graph.edge_ptr[g] += graph.edge_ptr[g - 1];
     graph.validate();
     return graph;
 }
 
-Tensor2D load_features(const std::string &cache_dir, const CanonicalConfig &config, const Graph &graph) {
+Tensor2D load_features(const std::string &cache_dir, const CanonicalConfig &config,
+                       const QuantConfig &quant, const Graph &graph) {
     verify_cache_auth(cache_dir);
     const bool normalize = config.get("input_preprocess_id") == "row_normalize";
-    const Int input_scale = config.get_int("s_input");
+    const Int input_scale = quant.s_input;
     if (input_scale <= 0) throw std::runtime_error("canonical config must provide positive s_input");
     const std::string text_path = cache_dir + "/features.txt";
     std::ifstream text(text_path.c_str());
@@ -685,7 +752,9 @@ std::vector<Int> load_labels(const std::string &cache_dir, const Graph &graph) {
     const std::string txt = cache_dir + "/labels.txt";
     std::ifstream in(txt.c_str());
     const std::string meta_path = cache_dir + "/meta.cfg";
-    const CanonicalConfig meta = CanonicalConfig::load(meta_path);
+    CanonicalConfig meta;
+    meta.source_path = meta_path;
+    meta.values = read_key_values(meta.source_path);
     const bool multi_label = meta.get("label_format") == "multi_hot" ||
                              meta.get("task_type") == "inductive_multi_graph_node_classification";
     if (multi_label && in) {

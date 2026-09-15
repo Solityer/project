@@ -1,0 +1,75 @@
+============================================================
+zkGPT CPU formal run
+start_time=2026-09-15T12:02:20+08:00
+root=/home/pzh/project/comparison/zkGPT
+pid=3017948
+log=/home/pzh/project/comparison/zkGPT/logs/zkgpt_cpu_formal_20260915_120220.log
+============================================================
+
+===== archive existing CPU runs =====
+archive: /home/pzh/project/comparison/zkGPT/baseline-local/runs/cora_secure/cpu
+      -> /home/pzh/project/comparison/zkGPT/baseline-local/runs/cora_secure/cpu_previous_20260915_120220
+
+===== formal execution =====
+
+============================================================
+START: prepare_resources
+time=2026-09-15T12:02:20+08:00
+============================================================
+AUTHENTICATED baseline-local resources for cora,citeseer,pubmed,ppi,ogbn_arxiv
+
+============================================================
+OK: prepare_resources
+time=2026-09-15T12:02:20+08:00
+============================================================
+
+============================================================
+START: build_cpu
+time=2026-09-15T12:02:20+08:00
+============================================================
+bint_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/bint64.o
+base_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/base64.o
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/pzh/project/comparison/zkGPT/build/cpu
+[  3%] Built target gen_bint.o
+[  6%] Built target gen_base.o
+[ 13%] Built target mcl
+[ 73%] Built target gpt_lib
+[ 93%] Built target gat_adapter
+[100%] Built target zkgpt_gat_prover
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 66%] Built target gpt_lib
+[ 73%] Built target mcl
+[ 93%] Built target gat_adapter
+[100%] Built target zkgpt_gat_verifier
+built zkgpt_gat_prover and zkgpt_gat_verifier (cpu) at /home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/
+
+============================================================
+OK: build_cpu
+time=2026-09-15T12:02:21+08:00
+============================================================
+
+============================================================
+START: formal_preflight_cpu
+time=2026-09-15T12:02:21+08:00
+============================================================
+FORMAL_PREFLIGHT_READY
+
+============================================================
+OK: formal_preflight_cpu
+time=2026-09-15T12:02:21+08:00
+============================================================
+
+============================================================
+START: five_datasets_cpu
+time=2026-09-15T12:02:21+08:00
+============================================================
+CELL_FAILED: cora/cpu: automatic model registration failed (2); see baseline-local/runs/cora_secure/cpu/runner-registration.stderr.log
+
+============================================================
+FAILED: five_datasets_cpu
+exit_code=2
+time=2026-09-15T12:02:21+08:00
+============================================================
