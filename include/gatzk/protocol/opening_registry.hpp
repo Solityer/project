@@ -79,6 +79,13 @@ namespace gatzk::protocol
             const std::vector<crypto::Commitment>
                 &commitments);
 
+        void add_domain_bundle(
+            const std::string &domain,
+            const DomainOpeningBundle &bundle,
+            const std::vector<
+                crypto::Commitment>
+                &commitments);
+
         void finalize();
 
         const std::vector<StandardPointGroup> &groups() const;
@@ -98,7 +105,14 @@ namespace gatzk::protocol
         void refresh_claim_execution_keys(
             StandardOpeningClaim *claim);
 
-    private:
+        std::size_t ensure_group(
+            const std::string &requested_owner,
+            const algebra::FieldElement &point);
+
+        void insert_prepared_claim(
+            std::size_t group_index,
+            StandardOpeningClaim claim);
+
         void add_claim(
             const std::string &requested_owner,
             const algebra::FieldElement &point,

@@ -1284,6 +1284,16 @@ namespace gatzk::algebra
                     coefficient =
                         coefficients[coefficient_base +
                                      index];
+
+                    if (index <
+                        descriptor.blinder_count)
+                    {
+                        coefficient =
+                            algebra::gpu::fr_sub(
+                                coefficient,
+                                packed_blinders[descriptor.blinder_offset +
+                                                index]);
+                    }
                 }
                 else
                 {
@@ -1295,8 +1305,10 @@ namespace gatzk::algebra
                         descriptor.blinder_count)
                     {
                         coefficient =
-                            packed_blinders[descriptor.blinder_offset +
-                                            blinder_index];
+                            algebra::gpu::fr_add(
+                                coefficient,
+                                packed_blinders[descriptor.blinder_offset +
+                                                blinder_index]);
                     }
                 }
 
@@ -3396,12 +3408,6 @@ namespace gatzk::algebra
                     dense_domain_elements =
                         batch_size *
                         domain_size;
-
-                const auto
-                    dense_domain_bytes =
-                        checked_ntt_bytes(
-                            domain_size,
-                            batch_size);
 
                 const auto
                     batch_workspace_bytes =

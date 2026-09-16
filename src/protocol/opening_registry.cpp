@@ -662,7 +662,10 @@ namespace gatzk::protocol
                 continue;
             }
 
-            if (!(existing->second.point ==
+            if (!(existing
+                      ->second
+                      .commitment
+                      .point ==
                   commitment.point))
             {
                 throw std::runtime_error(
@@ -794,7 +797,10 @@ namespace gatzk::protocol
                 commitment_execution_identity_by_reference_
                     .end())
             {
-                if (!(existing->second.point ==
+                if (!(existing
+                          ->second
+                          .commitment
+                          .point ==
                       commitment.point))
                 {
                     throw std::runtime_error(
@@ -1253,13 +1259,22 @@ namespace gatzk::protocol
                     group.claims.end(),
                     [](const StandardOpeningClaim &claim)
                     {
-                        return claim
-                                       .execution_commitment_identity ==
+                        return claim.execution_commitment ==
+                                   nullptr ||
+                               claim.execution_commitment_identity ==
                                    std::numeric_limits<
                                        std::size_t>::max() ||
-                               claim
-                                   .canonical_claim_id_length_prefix
-                                   .empty();
+                               std::any_of(
+                                   claim
+                                       .canonical_text_length_prefixes
+                                       .begin(),
+                                   claim
+                                       .canonical_text_length_prefixes
+                                       .end(),
+                                   [](const std::string &prefix)
+                                   {
+                                       return prefix.empty();
+                                   });
                     }))
             {
                 throw std::runtime_error(
@@ -1331,13 +1346,22 @@ namespace gatzk::protocol
                 group.claims.end(),
                 [](const StandardOpeningClaim &claim)
                 {
-                    return claim
-                                   .execution_commitment_identity ==
+                    return claim.execution_commitment ==
+                               nullptr ||
+                           claim.execution_commitment_identity ==
                                std::numeric_limits<
                                    std::size_t>::max() ||
-                           claim
-                               .canonical_claim_id_length_prefix
-                               .empty();
+                           std::any_of(
+                               claim
+                                   .canonical_text_length_prefixes
+                                   .begin(),
+                               claim
+                                   .canonical_text_length_prefixes
+                                   .end(),
+                               [](const std::string &prefix)
+                               {
+                                   return prefix.empty();
+                               });
                 }))
         {
             throw std::runtime_error(
