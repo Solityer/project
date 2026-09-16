@@ -125,11 +125,6 @@ namespace gatzk::crypto
         std::string name;
         G1Point point;
         std::shared_ptr<const algebra::Polynomial> opening_polynomial;
-
-        // Execution-only cache populated by the strict proof parser after the
-        // wire encoding has passed deserialize -> serialize -> byte equality.
-        // It is never serialized into a proof or absorbed into the transcript.
-        std::string execution_canonical_point_key;
     };
 
     using OpeningPolynomialResolver = std::function<

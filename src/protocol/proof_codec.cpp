@@ -8,7 +8,6 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 #include <thread>
 #include <tuple>
 #include <unordered_map>
@@ -288,70 +287,10 @@ namespace gatzk::protocol
                 return points;
             }
 
-            // Canonical wire bytes uniquely identify a canonical G1 encoding.
-            // Equal byte strings therefore need one deserialize/canonicality check
-            // only.  Distinct encodings are still validated independently, so an
-            // alternative/non-canonical encoding of the same mathematical point
-            // cannot bypass the canonical-wire check.
-            std::vector<EncodedG1View>
-                unique_encodings;
-
-            unique_encodings.reserve(
-                encodings.size());
-
-            std::vector<std::size_t>
-                unique_index_by_input(
-                    encodings.size());
-
-            std::unordered_map<
-                std::string_view,
-                std::size_t>
-                unique_index_by_encoding;
-
-            unique_index_by_encoding.reserve(
-                encodings.size());
-
-            for (std::size_t index = 0;
-                 index < encodings.size();
-                 ++index)
-            {
-                const auto encoded =
-                    encodings[index];
-
-                if (encoded.data == nullptr ||
-                    encoded.size == 0 ||
-                    encoded.size > 256)
-                {
-                    throw std::runtime_error(
-                        "proof parser invalid G1 length");
-                }
-
-                const std::string_view
-                    key(
-                        reinterpret_cast<const char *>(
-                            encoded.data),
-                        encoded.size);
-
-                const auto [it, inserted] =
-                    unique_index_by_encoding
-                        .try_emplace(
-                            key,
-                            unique_encodings.size());
-
-                if (inserted)
-                {
-                    unique_encodings.push_back(
-                        encoded);
-                }
-
-                unique_index_by_input[index] =
-                    it->second;
-            }
-
-            std::vector<crypto::G1Point>
-                unique_points(
-                    unique_encodings.size());
-
+            // G1 wire decoding is CPU work and must not create a CUDA MSM
+            // coordination window.  Use coarse bounded ranges so small proof
+            // groups stay serial while large commitment blocks amortize
+            // worker creation.
             constexpr std::size_t
                 kMinimumPointsPerWorker = 16;
 
@@ -367,7 +306,7 @@ namespace gatzk::protocol
             const auto size_workers =
                 std::max<std::size_t>(
                     1,
-                    (unique_encodings.size() +
+                    (encodings.size() +
                      kMinimumPointsPerWorker -
                      1) /
                         kMinimumPointsPerWorker);
@@ -388,9 +327,9 @@ namespace gatzk::protocol
                      index < end;
                      ++index)
                 {
-                    unique_points[index] =
+                    points[index] =
                         decode_canonical_g1(
-                            unique_encodings[index]);
+                            encodings[index]);
                 }
             };
 
@@ -398,66 +337,59 @@ namespace gatzk::protocol
             {
                 decode_range(
                     0,
-                    unique_encodings.size());
-            }
-            else
-            {
-                const auto chunk_size =
-                    (unique_encodings.size() +
-                     worker_count - 1) /
-                    worker_count;
+                    encodings.size());
 
-                std::vector<
-                    std::future<void>>
-                    futures;
-
-                futures.reserve(
-                    worker_count);
-
-                for (std::size_t worker = 0;
-                     worker < worker_count;
-                     ++worker)
-                {
-                    const auto begin =
-                        worker *
-                        chunk_size;
-
-                    const auto end =
-                        std::min(
-                            unique_encodings.size(),
-                            begin +
-                                chunk_size);
-
-                    if (begin >= end)
-                    {
-                        break;
-                    }
-
-                    futures.push_back(
-                        std::async(
-                            std::launch::async,
-                            decode_range,
-                            begin,
-                            end));
-                }
-
-                for (auto &future :
-                     futures)
-                {
-                    future.get();
-                }
+                return points;
             }
 
-            for (std::size_t index = 0;
-                 index < encodings.size();
-                 ++index)
+            const auto chunk_size =
+                (encodings.size() +
+                 worker_count - 1) /
+                worker_count;
+
+            std::vector<
+                std::future<void>>
+                futures;
+
+            futures.reserve(
+                worker_count);
+
+            for (std::size_t worker = 0;
+                 worker < worker_count;
+                 ++worker)
             {
-                points[index] =
-                    unique_points[unique_index_by_input[index]];
+                const auto begin =
+                    worker *
+                    chunk_size;
+
+                const auto end =
+                    std::min(
+                        encodings.size(),
+                        begin +
+                            chunk_size);
+
+                if (begin >= end)
+                {
+                    break;
+                }
+
+                futures.push_back(
+                    std::async(
+                        std::launch::async,
+                        decode_range,
+                        begin,
+                        end));
+            }
+
+            for (auto &future :
+                 futures)
+            {
+                future.get();
             }
 
             return points;
         }
+
         template <typename Fn>
         void metadata_fields(PublicMetadata &metadata, Fn &&fn)
         {
@@ -663,13 +595,6 @@ namespace gatzk::protocol
                 commitment.point =
                     std::move(
                         points[i]);
-
-                commitment
-                    .execution_canonical_point_key =
-                    std::string(
-                        reinterpret_cast<const char *>(
-                            encoded.encodings[i].data),
-                        encoded.encodings[i].size);
 
                 out.push_back(
                     {
@@ -2364,45 +2289,19 @@ namespace gatzk::protocol
                         "proof parser Pi_bind deferred G1 decode underflow");
                 }
 
-                const auto &proof_local_encoding =
-                    encoded
-                        .model_reblind_encodings[model * 2];
-
-                const auto &blinder_encoding =
-                    encoded
-                        .model_reblind_encodings[model * 2 + 1];
-
-                auto &proof_local_commitment =
-                    subproof
-                        .model_reblinds[model]
-                        .proof_local_commitment;
-
-                proof_local_commitment.point =
+                subproof
+                    .model_reblinds[model]
+                    .proof_local_commitment
+                    .point =
                     std::move(
                         decoded_binding_points[decoded_position++]);
 
-                proof_local_commitment
-                    .execution_canonical_point_key =
-                    std::string(
-                        reinterpret_cast<const char *>(
-                            proof_local_encoding.data),
-                        proof_local_encoding.size);
-
-                auto &blinder_commitment =
-                    subproof
-                        .model_reblinds[model]
-                        .blinder_commitment;
-
-                blinder_commitment.point =
+                subproof
+                    .model_reblinds[model]
+                    .blinder_commitment
+                    .point =
                     std::move(
                         decoded_binding_points[decoded_position++]);
-
-                blinder_commitment
-                    .execution_canonical_point_key =
-                    std::string(
-                        reinterpret_cast<const char *>(
-                            blinder_encoding.data),
-                        blinder_encoding.size);
             }
 
             const auto decode_group =
@@ -2446,17 +2345,6 @@ namespace gatzk::protocol
                     commitment.point =
                         std::move(
                             decoded_binding_points[decoded_position++]);
-
-                    commitment
-                        .execution_canonical_point_key =
-                        std::string(
-                            reinterpret_cast<const char *>(
-                                encoded_group
-                                    .encodings[i]
-                                    .data),
-                            encoded_group
-                                .encodings[i]
-                                .size);
 
                     group.push_back(
                         {
