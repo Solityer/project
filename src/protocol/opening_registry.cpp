@@ -21,16 +21,28 @@ namespace gatzk::protocol
     namespace
     {
         std::string commitment_point_key(
-            const crypto::G1Point &point)
+            const crypto::Commitment &commitment)
         {
-            std::array<std::uint8_t, 256> encoded{};
-            const auto written = crypto::serialize(
-                point,
-                encoded.data(),
-                encoded.size());
+            if (!commitment
+                     .execution_canonical_point_key
+                     .empty())
+            {
+                return commitment
+                    .execution_canonical_point_key;
+            }
+
+            std::array<std::uint8_t, 256>
+                encoded{};
+
+            const auto written =
+                crypto::serialize(
+                    commitment.point,
+                    encoded.data(),
+                    encoded.size());
 
             return std::string(
-                reinterpret_cast<const char *>(encoded.data()),
+                reinterpret_cast<const char *>(
+                    encoded.data()),
                 written);
         }
 
@@ -722,8 +734,7 @@ namespace gatzk::protocol
             {
                 serialized_keys[local] =
                     commitment_point_key(
-                        commitments[missing_indices[local]]
-                            .point);
+                        commitments[missing_indices[local]]);
             }
         };
 
@@ -892,8 +903,7 @@ namespace gatzk::protocol
         {
             auto serialized_key =
                 commitment_point_key(
-                    source_commitment
-                        ->point);
+                    *source_commitment);
 
             auto point_identity =
                 commitment_execution_identity_by_point_
