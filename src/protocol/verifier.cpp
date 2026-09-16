@@ -1460,8 +1460,13 @@ namespace gatzk::protocol
         FieldElement external_value(const Proof &proof, const std::string &label)
         {
             const auto it =
-                proof.external_evaluations.find(
-                    label);
+                std::find_if(
+                    proof.external_evaluations.begin(),
+                    proof.external_evaluations.end(),
+                    [&](const auto &entry)
+                    {
+                        return entry.first == label;
+                    });
 
             if (it !=
                 proof.external_evaluations.end())
