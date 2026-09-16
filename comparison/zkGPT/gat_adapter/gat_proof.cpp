@@ -55,8 +55,9 @@ const std::size_t kMaxExplicitGateEntries = 1ULL << 25;
 const std::size_t kMaxMaterializedVectorEntries = 1ULL << 27;
 const std::uint64_t kContextMaxShapeProfile = 128;
 const std::uint64_t kContextMaxShapeDimensions = 16;
-const char kNativeArtifactDomain[] = "zkgpt-native-gat-fs-v1";
-const char kVerifierContextMagic[] = "ZKGPTVC3";
+const char kNativeArtifactDomain[] = "zkgpt-native-gat-fs-v4";
+const char kVerifierContextMagic[] = "ZKGPTVC4";
+const char kProofArtifactMagic[] = "ZKGPTGAT4";
 
 // Defined with the transcript bridge below; the production prover uses the
 // same lossless section projection after all protocol scopes have completed.
@@ -1473,6 +1474,7 @@ void finish_relation_layer(GatCircuitPlan &plan,
 std::string plan_encoding(const GatCircuitPlan &plan) {
     std::string encoded;
     append_string(encoded, plan.recipe_schema);
+    append_string(encoded, plan.relation_schema);
     append_string(encoded, plan.model_arch_id);
     append_string(encoded, plan.model_shape.model_arch_id);
     append_u64(encoded, plan.model_shape.tensor_count);
@@ -1537,6 +1539,30 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
         append_string(encoded, descriptor.coordinate_rule);
         append_string(encoded, descriptor.scale_rule);
         append_string(encoded, descriptor.native_path);
+        append_string(encoded, descriptor.relation_schema);
+        append_string(encoded, descriptor.lhs_segment);
+        append_string(encoded, descriptor.rhs_segment);
+        append_string(encoded, descriptor.output_segment);
+        append_string(encoded, descriptor.lhs_coordinate_rule);
+        append_string(encoded, descriptor.rhs_coordinate_rule);
+        append_string(encoded, descriptor.output_coordinate_rule);
+        append_string(encoded, descriptor.terminal_claim_rule);
+    }
+    append_u64(encoded, static_cast<std::uint64_t>(plan.fconn_claim_links.size()));
+    for (const FconnClaimLink &link : plan.fconn_claim_links) {
+        append_u64(encoded, link.descriptor_index);
+        append_string(encoded, link.relation_id);
+        append_string(encoded, link.family_id);
+        append_string(encoded, link.lhs_segment);
+        append_string(encoded, link.rhs_segment);
+        append_string(encoded, link.output_segment);
+        append_u64(encoded, link.lhs_offset);
+        append_u64(encoded, link.rhs_offset);
+        append_u64(encoded, link.output_offset);
+        append_string(encoded, link.lhs_point_rule);
+        append_string(encoded, link.rhs_point_rule);
+        append_string(encoded, link.output_point_rule);
+        append_string(encoded, link.source_rule);
     }
     append_u64(encoded, static_cast<std::uint64_t>(plan.sparse_gkr.size()));
     for (const SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
@@ -1552,6 +1578,26 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
         append_string(encoded, descriptor.group_rule);
         append_u64(encoded, static_cast<std::uint64_t>(descriptor.constraints.size()));
         for (const std::string &constraint : descriptor.constraints) append_string(encoded, constraint);
+    }
+    append_u64(encoded, static_cast<std::uint64_t>(plan.native_relations.size()));
+    for (const NativeRelationDescriptor &descriptor : plan.native_relations) {
+        append_string(encoded, descriptor.relation_id);
+        append_string(encoded, descriptor.family_id);
+        append_string(encoded, descriptor.relation_schema);
+        append_string(encoded, descriptor.primitive);
+        append_string(encoded, descriptor.domain_rule);
+        append_string(encoded, descriptor.selector_rule);
+        append_string(encoded, descriptor.coordinate_rule);
+        append_string(encoded, descriptor.arithmetic_rule);
+        append_string(encoded, descriptor.terminal_rule);
+        append_u64(encoded, descriptor.edge_count);
+        append_u64(encoded, descriptor.value_width);
+        append_u64(encoded, descriptor.chunk_size);
+        append_u64(encoded, descriptor.input_offset);
+        append_u64(encoded, descriptor.output_offset);
+        append_u64(encoded, static_cast<std::uint64_t>(descriptor.equations.size()));
+        for (const std::string &equation : descriptor.equations)
+            append_string(encoded, equation);
     }
     append_u64(encoded, static_cast<std::uint64_t>(plan.lasso.size()));
     for (const LassoFamilyDescriptor &descriptor : plan.lasso) {
@@ -1612,7 +1658,8 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     }
 
     GatCircuitPlan plan;
-    plan.recipe_schema = "canonical_plan_recipe_v1";
+    plan.recipe_schema = "canonical_plan_recipe_v2";
+    plan.relation_schema = "zkgpt-gat-relation-v1";
     plan.model_arch_id = model.manifest.model_arch_id;
     plan.model_shape = canonical_model_shape(model);
     plan.graph_num_nodes = graph.num_nodes;
@@ -1687,6 +1734,17 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
             descriptor.coordinate_rule = "row_major_exact[row,term,col]";
             descriptor.scale_rule = scale_rule;
             plan.matmuls.push_back(descriptor);
+            FconnClaimLink link;
+            link.descriptor_index = plan.matmuls.size() - 1;
+            link.relation_id = descriptor.relation_id;
+            link.family_id = descriptor.family_id;
+            link.lhs_segment = descriptor.lhs_segment;
+            link.rhs_segment = descriptor.rhs_segment;
+            link.output_segment = descriptor.output_segment;
+            link.lhs_offset = descriptor.lhs_offset;
+            link.rhs_offset = descriptor.rhs_offset;
+            link.output_offset = descriptor.output_offset;
+            plan.fconn_claim_links.push_back(std::move(link));
             append_projection_layer(plan, descriptor);
         };
         add_matmul(family + "/projection", family + ".input", family + ".seq/kernel", family + ".H_prime",
@@ -2238,6 +2296,62 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     // Every gate uses a canonical input-layer coordinate, so the official
     // subset preparation is safe and produces the real layered metadata.
     plan.circuit.initSubset();
+    // v4 keeps the native relation registry explicit in the compact recipe.
+    // The materialised gate arrays remain derived; these descriptors carry
+    // the relation domain/chunk/terminal binding consumed by the native
+    // transcript and by the independent context validator.
+    plan.native_relations.clear();
+    plan.native_relations.reserve(plan.matmuls.size() + plan.sparse_gkr.size() + 1);
+    for (const MatMulDescriptor &matmul : plan.matmuls) {
+        NativeRelationDescriptor native;
+        native.relation_id = matmul.relation_id;
+        native.family_id = matmul.family_id;
+        native.primitive = "masked_fconn_sumcheck";
+        native.domain_rule = "rows*inner*cols product relation over canonical MLE points";
+        native.selector_rule = "descriptor_index_ordered";
+        native.coordinate_rule = matmul.output_coordinate_rule;
+        native.arithmetic_rule = "C[row,col]=sum_term A[row,term]*B[term,col]";
+        native.terminal_rule = matmul.terminal_claim_rule;
+        native.value_width = matmul.output_coordinates;
+        native.chunk_size = 1ULL << 12;
+        native.input_offset = matmul.lhs_offset;
+        native.output_offset = matmul.output_offset;
+        native.equations = {"lhs_offset/rhs_offset/output_offset bound to descriptor", "FCONN transition order bound to plan.matmuls"};
+        plan.native_relations.push_back(std::move(native));
+    }
+    for (const SparseGkrDescriptor &sparse : plan.sparse_gkr) {
+        NativeRelationDescriptor native;
+        native.relation_id = sparse.relation_id;
+        native.family_id = sparse.family_id;
+        native.primitive = sparse.relation_id.find("softmax") != std::string::npos
+                               ? "masked_sparse_attention_sumcheck"
+                               : "masked_sparse_aggregation_sumcheck";
+        native.domain_rule = "edge_gid_then_dst_stable_stream";
+        native.selector_rule = sparse.group_rule;
+        native.coordinate_rule = sparse.coordinate_rule;
+        native.arithmetic_rule = "descriptor equations are evaluated over streamed edge chunks";
+        native.terminal_rule = "Aux/output canonical coordinate binding";
+        native.edge_count = sparse.edge_count;
+        native.value_width = sparse.value_width;
+        native.chunk_size = 1ULL << 12;
+        native.input_offset = sparse.input_offset;
+        native.output_offset = sparse.output_offset;
+        native.equations = sparse.constraints;
+        plan.native_relations.push_back(std::move(native));
+    }
+    NativeRelationDescriptor rounding_relation;
+    rounding_relation.relation_id = "rounding/signed_round_div";
+    rounding_relation.family_id = "rounding";
+    rounding_relation.primitive = "masked_signed_round_div_sumcheck";
+    rounding_relation.domain_rule = "canonical checkpoint coordinates";
+    rounding_relation.selector_rule = "rounding_recipe_v1";
+    rounding_relation.coordinate_rule = "Aux[row_major_exact[node,class,witness_component]]";
+    rounding_relation.arithmetic_rule = "signed dividend/denominator, boolean, reciprocal, quotient and remainder equations";
+    rounding_relation.terminal_rule = "rounding checkpoints bind to Aux and output coordinates";
+    rounding_relation.value_width = plan.residual_coordinates;
+    rounding_relation.chunk_size = 1ULL << 12;
+    rounding_relation.equations = {"sigma,z boolean", "zero-product and inverse", "toward-zero or nearest-ties-away equation", "nonnegative range limbs"};
+    plan.native_relations.push_back(std::move(rounding_relation));
     plan.plan_digest = canonical_digest64(plan_encoding(plan));
     // The circuit identifier is derived from the exact same compact recipe;
     // no alternate gate-array encoding is permitted at this boundary.
@@ -2257,7 +2371,7 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *rea
     };
     try {
         if (!plan.official_layered || plan.has_placeholder) return fail("plan is not an official layered circuit");
-        if (plan.recipe_schema != "canonical_plan_recipe_v1" ||
+        if (plan.recipe_schema != "canonical_plan_recipe_v2" ||
             plan.model_arch_id.empty() || plan.model_arch_id != plan.model_shape.model_arch_id ||
             !canonical_model_shape_valid(plan.model_shape, reason) ||
             plan.graph_num_nodes == 0 || plan.graph_num_features == 0 ||
@@ -3203,7 +3317,7 @@ bool evaluate_layered_values(const GatCircuitPlan &plan,
 
 std::string context_encoding(const VerifierContext &context) {
     std::string encoded;
-    append_string(encoded, "zkgpt-gat-verifier-context-v3");
+    append_string(encoded, "zkgpt-gat-verifier-context-v4");
     append_string(encoded, context.relation_id);
     append_string(encoded, context.backend);
     append_string(encoded, context.model_arch_id);
@@ -4238,7 +4352,9 @@ void append_context_plan(std::string &out, const GatCircuitPlan &plan) {
 
 bool read_compact_plan_recipe(ContextReader &reader, GatCircuitPlan &plan) {
     if (!reader.read_string(plan.recipe_schema, "plan recipe schema") ||
-        plan.recipe_schema != "canonical_plan_recipe_v1" ||
+        plan.recipe_schema != "canonical_plan_recipe_v2" ||
+        !reader.read_string(plan.relation_schema, "plan relation schema") ||
+        plan.relation_schema != "zkgpt-gat-relation-v1" ||
         !reader.read_string(plan.model_arch_id, "plan model architecture") ||
         !reader.read_string(plan.model_shape.model_arch_id, "model shape architecture") ||
         !reader.read_size(plan.model_shape.tensor_count, "model shape tensor count") ||
@@ -4309,7 +4425,32 @@ bool read_compact_plan_recipe(ContextReader &reader, GatCircuitPlan &plan) {
             !reader.read_size(descriptor.output_offset, "MatMul output offset") ||
             !reader.read_string(descriptor.coordinate_rule, "MatMul coordinate rule") ||
             !reader.read_string(descriptor.scale_rule, "MatMul scale rule") ||
-            !reader.read_string(descriptor.native_path, "MatMul native path")) return false;
+            !reader.read_string(descriptor.native_path, "MatMul native path") ||
+            !reader.read_string(descriptor.relation_schema, "MatMul relation schema") ||
+            !reader.read_string(descriptor.lhs_segment, "MatMul lhs segment") ||
+            !reader.read_string(descriptor.rhs_segment, "MatMul rhs segment") ||
+            !reader.read_string(descriptor.output_segment, "MatMul output segment") ||
+            !reader.read_string(descriptor.lhs_coordinate_rule, "MatMul lhs coordinate rule") ||
+            !reader.read_string(descriptor.rhs_coordinate_rule, "MatMul rhs coordinate rule") ||
+            !reader.read_string(descriptor.output_coordinate_rule, "MatMul output coordinate rule") ||
+            !reader.read_string(descriptor.terminal_claim_rule, "MatMul terminal claim rule")) return false;
+    }
+    if (!reader.read_count(count, "FCONN claim links", kContextMaxDescriptors)) return false;
+    plan.fconn_claim_links.resize(count);
+    for (FconnClaimLink &link : plan.fconn_claim_links) {
+        if (!reader.read_size(link.descriptor_index, "FCONN descriptor index") ||
+            !reader.read_string(link.relation_id, "FCONN link relation") ||
+            !reader.read_string(link.family_id, "FCONN link family") ||
+            !reader.read_string(link.lhs_segment, "FCONN lhs segment") ||
+            !reader.read_string(link.rhs_segment, "FCONN rhs segment") ||
+            !reader.read_string(link.output_segment, "FCONN output segment") ||
+            !reader.read_size(link.lhs_offset, "FCONN lhs offset") ||
+            !reader.read_size(link.rhs_offset, "FCONN rhs offset") ||
+            !reader.read_size(link.output_offset, "FCONN output offset") ||
+            !reader.read_string(link.lhs_point_rule, "FCONN lhs point rule") ||
+            !reader.read_string(link.rhs_point_rule, "FCONN rhs point rule") ||
+            !reader.read_string(link.output_point_rule, "FCONN output point rule") ||
+            !reader.read_string(link.source_rule, "FCONN source rule")) return false;
     }
     if (!reader.read_count(count, "sparse GKR descriptors", kContextMaxDescriptors)) return false;
     plan.sparse_gkr.resize(count);
@@ -4328,6 +4469,28 @@ bool read_compact_plan_recipe(ContextReader &reader, GatCircuitPlan &plan) {
         descriptor.constraints.resize(count);
         for (std::string &constraint : descriptor.constraints)
             if (!reader.read_string(constraint, "sparse constraint")) return false;
+    }
+    if (!reader.read_count(count, "native relation descriptors", kContextMaxDescriptors)) return false;
+    plan.native_relations.resize(count);
+    for (NativeRelationDescriptor &descriptor : plan.native_relations) {
+        if (!reader.read_string(descriptor.relation_id, "native relation id") ||
+            !reader.read_string(descriptor.family_id, "native relation family") ||
+            !reader.read_string(descriptor.relation_schema, "native relation schema") ||
+            !reader.read_string(descriptor.primitive, "native relation primitive") ||
+            !reader.read_string(descriptor.domain_rule, "native relation domain rule") ||
+            !reader.read_string(descriptor.selector_rule, "native relation selector rule") ||
+            !reader.read_string(descriptor.coordinate_rule, "native relation coordinate rule") ||
+            !reader.read_string(descriptor.arithmetic_rule, "native relation arithmetic rule") ||
+            !reader.read_string(descriptor.terminal_rule, "native relation terminal rule") ||
+            !reader.read_size(descriptor.edge_count, "native relation edge count") ||
+            !reader.read_size(descriptor.value_width, "native relation value width") ||
+            !reader.read_size(descriptor.chunk_size, "native relation chunk size") ||
+            !reader.read_size(descriptor.input_offset, "native relation input offset") ||
+            !reader.read_size(descriptor.output_offset, "native relation output offset") ||
+            !reader.read_count(count, "native relation equations", kContextMaxDescriptors)) return false;
+        descriptor.equations.resize(count);
+        for (std::string &equation : descriptor.equations)
+            if (!reader.read_string(equation, "native relation equation")) return false;
     }
     if (!reader.read_count(count, "Lasso descriptors", kContextMaxDescriptors)) return false;
     plan.lasso.resize(count);
@@ -5250,7 +5413,7 @@ bool GatProofArtifact::native_session(NativeProofSession &out,
 
 bool GatProofArtifact::valid_wire(std::string *reason) const {
     try {
-        if (version != 2 || schema != "zkgpt-gat-proof-v2") {
+        if (version != 4 || schema != "zkgpt-gat-proof-v4") {
             set_reason(reason, "unsupported proof wire version");
             return false;
         }
@@ -5378,8 +5541,7 @@ bool GatProofArtifact::write(const std::string &path, std::string *reason) const
     if (!valid_wire(reason)) return false;
     std::ofstream out(path.c_str(), std::ios::binary | std::ios::trunc);
     if (!out) { set_reason(reason, "cannot open proof artifact for writing"); return false; }
-    const char magic[] = "ZKGPTGAT";
-    out.write(magic, sizeof(magic) - 1);
+    out.write(kProofArtifactMagic, sizeof(kProofArtifactMagic) - 1);
     write_u32(out, version);
     write_string(out, schema);
     write_string(out, relation_id);
@@ -5415,8 +5577,8 @@ bool GatProofArtifact::read(const std::string &path, GatProofArtifact &out,
         return false;
     }
     in.seekg(0, std::ios::beg);
-    char magic[8];
-    if (!read_exact(in, magic, sizeof(magic)) || std::memcmp(magic, "ZKGPTGAT", sizeof(magic)) != 0) { set_reason(reason, "invalid proof artifact magic"); return false; }
+    char magic[sizeof(kProofArtifactMagic) - 1];
+    if (!read_exact(in, magic, sizeof(magic)) || std::memcmp(magic, kProofArtifactMagic, sizeof(magic)) != 0) { set_reason(reason, "invalid proof artifact magic"); return false; }
     GatProofArtifact parsed;
     std::uint32_t version = 0;
     if (!read_u32(in, version) || !read_string(in, parsed.schema) ||
@@ -5568,7 +5730,7 @@ namespace {
 
 std::string serialize_verifier_context_payload(const VerifierContext &context) {
     std::string payload;
-    append_string(payload, "zkgpt-gat-verifier-context-v3");
+    append_string(payload, "zkgpt-gat-verifier-context-v4");
     append_string(payload, context.relation_id);
     append_string(payload, context.backend);
     append_string(payload, context.model_arch_id);
@@ -5786,7 +5948,7 @@ bool read_verifier_context(const std::string &path,
             std::string compact_reason;
             if (!canonical_model_shape_valid(parsed.plan.model_shape,
                                              &compact_reason) ||
-                parsed.plan.recipe_schema != "canonical_plan_recipe_v1" ||
+                parsed.plan.recipe_schema != "canonical_plan_recipe_v2" ||
                 parsed.plan.model_arch_id != parsed.registration.model_arch_id ||
                 parsed.plan.graph_num_nodes != parsed.graph.num_nodes ||
                 parsed.plan.graph_num_features != parsed.graph.num_features ||

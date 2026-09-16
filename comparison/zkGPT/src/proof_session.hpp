@@ -29,6 +29,14 @@ struct NativeProofStatement {
     // transcript-local label for the authenticated context identity.
     std::string statement_root_digest;
 
+    // v4 typed relation boundary.  These fields are intentionally appended
+    // so existing source-level aggregate construction remains valid; v4
+    // readers nevertheless require the canonical relation schema and order
+    // when they consume a serialized statement.
+    std::string relation_schema = "zkgpt-gat-relation-v1";
+    std::string relation_digest = std::string(64, '0');
+    std::vector<std::string> relation_order;
+
     std::string root() const;
     std::string structured_root() const;
     static std::string basis_digest_for(const G1 &G,
@@ -62,7 +70,7 @@ struct NativeProofMessage {
 
 class NativeProofSession {
 public:
-    static const std::uint32_t kVersion = 2;
+    static const std::uint32_t kVersion = 4;
 
     NativeProofSession() = default;
     NativeProofSession(const std::string &domain,

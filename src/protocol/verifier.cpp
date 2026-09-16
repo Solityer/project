@@ -3498,8 +3498,17 @@ namespace gatzk::protocol
                                     for (const auto &claim :
                                          group.claims)
                                     {
+                                        if (claim
+                                                .execution_commitment ==
+                                            nullptr)
+                                        {
+                                            throw std::runtime_error(
+                                                "verifier point-group claim has no interned commitment");
+                                        }
+
                                         commitments.push_back(
-                                            claim.commitment);
+                                            *claim
+                                                 .execution_commitment);
 
                                         values.push_back(
                                             claim.value);

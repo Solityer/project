@@ -1137,13 +1137,65 @@ namespace gatzk::algebra
             }
         }
 
+        struct CudaCosetBatchDescriptor
+        {
+            std::size_t value_offset = 0;
+            std::size_t value_count = 0;
+
+            std::size_t blinder_offset = 0;
+            std::size_t blinder_count = 0;
+
+            GpuFr *target = nullptr;
+        };
+
+        __global__ void
+        scatter_packed_coset_values_kernel(
+            const GpuFr *packed_values,
+            const CudaCosetBatchDescriptor *descriptors,
+            std::size_t domain_size,
+            std::size_t batch_count,
+            GpuFr *dense_values)
+        {
+            const auto flat_index =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            const auto total =
+                batch_count *
+                domain_size;
+
+            if (flat_index >= total)
+            {
+                return;
+            }
+
+            const auto vector_index =
+                flat_index /
+                domain_size;
+
+            const auto local_index =
+                flat_index %
+                domain_size;
+
+            const auto descriptor =
+                descriptors[vector_index];
+
+            dense_values[flat_index] =
+                local_index <
+                        descriptor.value_count
+                    ? packed_values[descriptor.value_offset +
+                                    local_index]
+                    : algebra::gpu::fr_zero();
+        }
+
         __global__ void
         prepare_coset_lanes_batch_kernel(
             const GpuFr *coefficients,
             std::size_t source_domain_size,
-            const GpuFr *blinders,
-            std::size_t blinder_stride,
-            const std::size_t *blinder_counts,
+            const GpuFr *packed_blinders,
+            const CudaCosetBatchDescriptor *descriptors,
             std::size_t batch_count,
             std::size_t chunks_per_vector,
             GpuFr shift,
@@ -1151,41 +1203,40 @@ namespace gatzk::algebra
             GpuFr *output,
             std::size_t target_size)
         {
-            const auto flat_chunk =
+            const auto chunk_index =
                 static_cast<std::size_t>(
                     blockIdx.x) *
                     blockDim.x +
                 threadIdx.x;
 
-            if (chunks_per_vector == 0)
+            const auto total_chunks =
+                batch_count *
+                chunks_per_vector;
+
+            if (chunk_index >=
+                total_chunks)
             {
                 return;
             }
 
             const auto vector_index =
-                flat_chunk /
+                chunk_index /
                 chunks_per_vector;
 
-            if (vector_index >=
-                batch_count)
-            {
-                return;
-            }
-
             const auto local_chunk =
-                flat_chunk %
+                chunk_index %
                 chunks_per_vector;
 
             const auto begin =
                 local_chunk *
                 kCosetPowerChunkElements;
 
-            const auto blinder_count =
-                blinder_counts[vector_index];
+            const auto descriptor =
+                descriptors[vector_index];
 
             const auto active_count =
                 source_domain_size +
-                blinder_count;
+                descriptor.blinder_count;
 
             if (begin >= active_count)
             {
@@ -1198,20 +1249,17 @@ namespace gatzk::algebra
                     begin +
                         kCosetPowerChunkElements);
 
+            const auto half_size =
+                target_size /
+                2;
+
             const auto coefficient_base =
                 vector_index *
                 source_domain_size;
 
-            const auto blinder_base =
-                vector_index *
-                blinder_stride;
-
             const auto output_base =
                 vector_index *
                 target_size;
-
-            const auto half_size =
-                target_size / 2;
 
             auto even_power =
                 fr_pow_u64(
@@ -1227,40 +1275,28 @@ namespace gatzk::algebra
                  index < end;
                  ++index)
             {
-                auto coefficient =
-                    index <
-                            source_domain_size
-                        ? coefficients[coefficient_base +
-                                       index]
-                        : algebra::gpu::
-                              fr_zero();
+                GpuFr coefficient =
+                    algebra::gpu::fr_zero();
 
                 if (index <
-                    blinder_count)
-                {
-                    coefficient =
-                        algebra::gpu::fr_sub(
-                            coefficient,
-                            blinders[blinder_base +
-                                     index]);
-                }
-
-                if (index >=
                     source_domain_size)
                 {
-                    const auto
-                        blinder_index =
-                            index -
-                            source_domain_size;
+                    coefficient =
+                        coefficients[coefficient_base +
+                                     index];
+                }
+                else
+                {
+                    const auto blinder_index =
+                        index -
+                        source_domain_size;
 
                     if (blinder_index <
-                        blinder_count)
+                        descriptor.blinder_count)
                     {
                         coefficient =
-                            algebra::gpu::fr_add(
-                                coefficient,
-                                blinders[blinder_base +
-                                         blinder_index]);
+                            packed_blinders[descriptor.blinder_offset +
+                                            blinder_index];
                     }
                 }
 
@@ -1292,7 +1328,7 @@ namespace gatzk::algebra
         __global__ void
         scatter_coset_batch_kernel(
             const GpuFr *input,
-            GpuFr *const *outputs,
+            const CudaCosetBatchDescriptor *descriptors,
             std::size_t target_size,
             std::size_t batch_count)
         {
@@ -1302,12 +1338,11 @@ namespace gatzk::algebra
                     blockDim.x +
                 threadIdx.x;
 
-            const auto total_count =
-                target_size *
-                batch_count;
+            const auto total =
+                batch_count *
+                target_size;
 
-            if (flat_index >=
-                total_count)
+            if (flat_index >= total)
             {
                 return;
             }
@@ -1320,11 +1355,10 @@ namespace gatzk::algebra
                 flat_index %
                 target_size;
 
-            outputs[vector_index]
-                   [local_index] =
-                       input[flat_index];
+            descriptors[vector_index]
+                .target[local_index] =
+                input[flat_index];
         }
-
         __global__ void
         split_even_odd_kernel(
             const GpuFr *input,
@@ -2781,12 +2815,14 @@ namespace gatzk::algebra
         std::size_t domain_size,
         const FieldElement &shift,
         std::size_t target_size,
-        bool make_default_stream_wait)
+        bool make_default_stream_wait,
+        std::size_t maximum_batch_size)
     {
         if (requests == nullptr ||
             request_count < 2 ||
             domain_size == 0 ||
             target_size < 2 ||
+            maximum_batch_size < 2 ||
             (domain_size &
              (domain_size - 1U)) != 0U ||
             (target_size &
@@ -2919,6 +2955,7 @@ namespace gatzk::algebra
             std::min<std::size_t>(
                 {
                     request_count,
+                    maximum_batch_size,
                     kMaximumDirectCosetBatchSize,
                     std::max<std::size_t>(
                         1,
@@ -2965,28 +3002,22 @@ namespace gatzk::algebra
             if (batch_size >
                 std::numeric_limits<
                     std::size_t>::max() /
-                    sizeof(std::size_t))
+                    sizeof(
+                        CudaCosetBatchDescriptor))
             {
                 throw std::overflow_error(
-                    "CUDA batched coset count staging overflow");
+                    "CUDA batched coset descriptor staging overflow");
             }
 
-            add(
+            const auto descriptor_bytes =
                 batch_size *
-                sizeof(std::size_t));
+                sizeof(
+                    CudaCosetBatchDescriptor);
 
-            if (batch_size >
-                std::numeric_limits<
-                    std::size_t>::max() /
-                    sizeof(GpuFr *))
-            {
-                throw std::overflow_error(
-                    "CUDA batched coset target staging overflow");
-            }
-
-            add(
-                batch_size *
-                sizeof(GpuFr *));
+            // One pinned host descriptor array and one device descriptor
+            // array are both execution working sets.
+            add(descriptor_bytes);
+            add(descriptor_bytes);
 
             return total;
         };
@@ -3039,6 +3070,9 @@ namespace gatzk::algebra
         const auto stream =
             workspace.stream;
 
+        // These are only upper bounds for the pinned staging allocations.
+        // Actual H2D transfers below use the sum of each request's logical
+        // value_count/blinder_count rather than these dense bounds.
         const auto maximum_values_bytes =
             checked_ntt_bytes(
                 domain_size,
@@ -3051,13 +3085,10 @@ namespace gatzk::algebra
                       maximum_blinder_count,
                       batch_limit);
 
-        const auto count_bytes =
+        const auto descriptor_bytes =
             batch_limit *
-            sizeof(std::size_t);
-
-        const auto target_pointer_bytes =
-            batch_limit *
-            sizeof(GpuFr *);
+            sizeof(
+                CudaCosetBatchDescriptor);
 
         mcl::Fr *host_values =
             nullptr;
@@ -3065,17 +3096,13 @@ namespace gatzk::algebra
         mcl::Fr *host_blinders =
             nullptr;
 
-        std::size_t *host_blinder_counts =
-            nullptr;
+        CudaCosetBatchDescriptor
+            *host_descriptors =
+                nullptr;
 
-        GpuFr **host_targets =
-            nullptr;
-
-        std::size_t *device_blinder_counts =
-            nullptr;
-
-        GpuFr **device_targets =
-            nullptr;
+        CudaCosetBatchDescriptor
+            *device_descriptors =
+                nullptr;
 
         cudaEvent_t staging_event =
             nullptr;
@@ -3102,22 +3129,14 @@ namespace gatzk::algebra
                 host_blinders = nullptr;
             }
 
-            if (host_blinder_counts !=
+            if (host_descriptors !=
                 nullptr)
             {
                 (void)cudaFreeHost(
-                    host_blinder_counts);
+                    host_descriptors);
 
-                host_blinder_counts =
+                host_descriptors =
                     nullptr;
-            }
-
-            if (host_targets != nullptr)
-            {
-                (void)cudaFreeHost(
-                    host_targets);
-
-                host_targets = nullptr;
             }
         };
 
@@ -3171,14 +3190,9 @@ namespace gatzk::algebra
                     "batched coset blinder staging allocation") ||
                 !allocate_pinned(
                     reinterpret_cast<void **>(
-                        &host_blinder_counts),
-                    count_bytes,
-                    "batched coset count staging allocation") ||
-                !allocate_pinned(
-                    reinterpret_cast<void **>(
-                        &host_targets),
-                    target_pointer_bytes,
-                    "batched coset target staging allocation"))
+                        &host_descriptors),
+                    descriptor_bytes,
+                    "batched coset descriptor staging allocation"))
             {
                 release_host_staging();
 
@@ -3188,8 +3202,8 @@ namespace gatzk::algebra
             status =
                 cudaMallocAsync(
                     reinterpret_cast<void **>(
-                        &device_blinder_counts),
-                    count_bytes,
+                        &device_descriptors),
+                    descriptor_bytes,
                     stream);
 
             if (status ==
@@ -3197,40 +3211,9 @@ namespace gatzk::algebra
             {
                 (void)cudaGetLastError();
 
-                release_host_staging();
-
-                return false;
-            }
-
-            if (status != cudaSuccess)
-            {
-                throw_cuda_ntt_error(
-                    "batched coset count allocation",
-                    status);
-            }
-
-            status =
-                cudaMallocAsync(
-                    reinterpret_cast<void **>(
-                        &device_targets),
-                    target_pointer_bytes,
-                    stream);
-
-            if (status ==
-                cudaErrorMemoryAllocation)
-            {
-                (void)cudaGetLastError();
-
-                (void)cudaFreeAsync(
-                    device_blinder_counts,
-                    stream);
-
-                device_blinder_counts =
+                device_descriptors =
                     nullptr;
 
-                (void)cudaStreamSynchronize(
-                    stream);
-
                 release_host_staging();
 
                 return false;
@@ -3239,7 +3222,7 @@ namespace gatzk::algebra
             if (status != cudaSuccess)
             {
                 throw_cuda_ntt_error(
-                    "batched coset target allocation",
+                    "batched coset descriptor allocation",
                     status);
             }
 
@@ -3306,47 +3289,11 @@ namespace gatzk::algebra
                         request_count -
                             offset);
 
-                const auto values_bytes =
-                    checked_ntt_bytes(
-                        domain_size,
-                        batch_size);
+                std::size_t packed_value_count =
+                    0;
 
-                const auto blinder_bytes =
-                    maximum_blinder_count ==
-                            0
-                        ? std::size_t{0}
-                        : checked_ntt_bytes(
-                              maximum_blinder_count,
-                              batch_size);
-
-                const auto
-                    batch_count_bytes =
-                        batch_size *
-                        sizeof(std::size_t);
-
-                const auto
-                    batch_target_bytes =
-                        batch_size *
-                        sizeof(GpuFr *);
-
-                const auto
-                    batch_workspace_bytes =
-                        checked_ntt_bytes(
-                            target_size,
-                            batch_size);
-
-                std::memset(
-                    host_values,
-                    0,
-                    values_bytes);
-
-                if (blinder_bytes != 0)
-                {
-                    std::memset(
-                        host_blinders,
-                        0,
-                        blinder_bytes);
-                }
+                std::size_t packed_blinder_count =
+                    0;
 
                 for (std::size_t batch = 0;
                      batch < batch_size;
@@ -3356,12 +3303,17 @@ namespace gatzk::algebra
                         requests[offset +
                                  batch];
 
+                    const auto value_offset =
+                        packed_value_count;
+
+                    const auto blinder_offset =
+                        packed_blinder_count;
+
                     if (request.value_count != 0)
                     {
                         std::memcpy(
                             host_values +
-                                batch *
-                                    domain_size,
+                                value_offset,
                             request.values,
                             checked_ntt_bytes(
                                 request.value_count,
@@ -3373,8 +3325,7 @@ namespace gatzk::algebra
                     {
                         std::memcpy(
                             host_blinders +
-                                batch *
-                                    maximum_blinder_count,
+                                blinder_offset,
                             request
                                 .zero_domain_blinder,
                             checked_ntt_bytes(
@@ -3383,43 +3334,109 @@ namespace gatzk::algebra
                                 1));
                     }
 
-                    host_blinder_counts[batch] =
-                        request
-                            .blinder_count;
+                    if (request.value_count >
+                        std::numeric_limits<
+                            std::size_t>::max() -
+                            packed_value_count)
+                    {
+                        throw std::runtime_error(
+                            "CUDA batched coset packed value count overflow");
+                    }
 
-                    host_targets[batch] =
-                        reinterpret_cast<
-                            GpuFr *>(
-                            request
-                                .device_output);
+                    packed_value_count +=
+                        request.value_count;
+
+                    if (request.blinder_count >
+                        std::numeric_limits<
+                            std::size_t>::max() -
+                            packed_blinder_count)
+                    {
+                        throw std::runtime_error(
+                            "CUDA batched coset packed blinder count overflow");
+                    }
+
+                    packed_blinder_count +=
+                        request.blinder_count;
+
+                    host_descriptors[batch] =
+                        CudaCosetBatchDescriptor{
+                            .value_offset =
+                                value_offset,
+                            .value_count =
+                                request.value_count,
+                            .blinder_offset =
+                                blinder_offset,
+                            .blinder_count =
+                                request.blinder_count,
+                            .target =
+                                reinterpret_cast<
+                                    GpuFr *>(
+                                    request
+                                        .device_output),
+                    };
                 }
 
-                status =
-                    cudaMemcpyAsync(
-                        workspace.input,
-                        host_values,
-                        values_bytes,
-                        cudaMemcpyHostToDevice,
-                        stream);
+                const auto values_bytes =
+                    checked_ntt_bytes(
+                        packed_value_count,
+                        1);
 
-                if (status !=
-                    cudaSuccess)
+                const auto blinder_bytes =
+                    checked_ntt_bytes(
+                        packed_blinder_count,
+                        1);
+
+                const auto
+                    batch_descriptor_bytes =
+                        batch_size *
+                        sizeof(
+                            CudaCosetBatchDescriptor);
+
+                const auto
+                    dense_domain_elements =
+                        batch_size *
+                        domain_size;
+
+                const auto
+                    dense_domain_bytes =
+                        checked_ntt_bytes(
+                            domain_size,
+                            batch_size);
+
+                const auto
+                    batch_workspace_bytes =
+                        checked_ntt_bytes(
+                            target_size,
+                            batch_size);
+
+                if (values_bytes != 0)
                 {
-                    throw_cuda_ntt_error(
-                        "batched coset value upload",
-                        status);
-                }
+                    status =
+                        cudaMemcpyAsync(
+                            workspace.input,
+                            host_values,
+                            values_bytes,
+                            cudaMemcpyHostToDevice,
+                            stream);
 
-                record_cuda_h2d(
-                    values_bytes);
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_ntt_error(
+                            "batched coset packed value upload",
+                            status);
+                    }
+
+                    record_cuda_h2d(
+                        values_bytes);
+                }
 
                 if (blinder_bytes != 0)
                 {
                     status =
                         cudaMemcpyAsync(
-                            workspace.output +
-                                batch_size *
-                                    domain_size,
+                            workspace.input +
+                                dense_domain_elements,
                             host_blinders,
                             blinder_bytes,
                             cudaMemcpyHostToDevice,
@@ -3429,7 +3446,7 @@ namespace gatzk::algebra
                         cudaSuccess)
                     {
                         throw_cuda_ntt_error(
-                            "batched coset blinder upload",
+                            "batched coset packed blinder upload",
                             status);
                     }
 
@@ -3439,9 +3456,9 @@ namespace gatzk::algebra
 
                 status =
                     cudaMemcpyAsync(
-                        device_blinder_counts,
-                        host_blinder_counts,
-                        batch_count_bytes,
+                        device_descriptors,
+                        host_descriptors,
+                        batch_descriptor_bytes,
                         cudaMemcpyHostToDevice,
                         stream);
 
@@ -3449,31 +3466,12 @@ namespace gatzk::algebra
                     cudaSuccess)
                 {
                     throw_cuda_ntt_error(
-                        "batched coset count upload",
+                        "batched coset descriptor upload",
                         status);
                 }
 
                 record_cuda_h2d(
-                    batch_count_bytes);
-
-                status =
-                    cudaMemcpyAsync(
-                        device_targets,
-                        host_targets,
-                        batch_target_bytes,
-                        cudaMemcpyHostToDevice,
-                        stream);
-
-                if (status !=
-                    cudaSuccess)
-                {
-                    throw_cuda_ntt_error(
-                        "batched coset target upload",
-                        status);
-                }
-
-                record_cuda_h2d(
-                    batch_target_bytes);
+                    batch_descriptor_bytes);
 
                 status =
                     cudaEventRecord(
@@ -3491,13 +3489,65 @@ namespace gatzk::algebra
                 staging_event_pending =
                     true;
 
+                constexpr unsigned
+                    kPackedBlockSize =
+                        256;
+
+                const auto
+                    packed_scatter_blocks_size =
+                        (dense_domain_elements +
+                         kPackedBlockSize - 1) /
+                        kPackedBlockSize;
+
+                if (packed_scatter_blocks_size >
+                    std::numeric_limits<
+                        unsigned>::max())
+                {
+                    throw std::runtime_error(
+                        "CUDA batched coset packed scatter grid exceeds CUDA range");
+                }
+
+                if (packed_scatter_blocks_size !=
+                    0)
+                {
+                    scatter_packed_coset_values_kernel<<<
+                        static_cast<unsigned>(
+                            packed_scatter_blocks_size),
+                        kPackedBlockSize,
+                        0,
+                        stream>>>(
+                        reinterpret_cast<
+                            const GpuFr *>(
+                            workspace.input),
+                        device_descriptors,
+                        domain_size,
+                        batch_size,
+                        reinterpret_cast<
+                            GpuFr *>(
+                            workspace.output));
+
+                    status =
+                        cudaGetLastError();
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_ntt_error(
+                            "batched coset packed value scatter",
+                            status);
+                    }
+
+                    record_cuda_kernel_invocations(
+                        1);
+                }
+
                 if (!run_bounded_ntt_device(
                         reinterpret_cast<
                             const mcl::Fr *>(
-                            workspace.input),
+                            workspace.output),
                         reinterpret_cast<
                             mcl::Fr *>(
-                            workspace.output),
+                            workspace.input),
                         domain_size,
                         batch_size,
                         ntt::NTTDir::kInverse,
@@ -3516,7 +3566,7 @@ namespace gatzk::algebra
 
                 status =
                     cudaMemsetAsync(
-                        workspace.input,
+                        workspace.output,
                         0,
                         batch_workspace_bytes,
                         stream);
@@ -3570,15 +3620,14 @@ namespace gatzk::algebra
                         stream>>>(
                         reinterpret_cast<
                             const GpuFr *>(
-                            workspace.output),
+                            workspace.input),
                         domain_size,
                         reinterpret_cast<
                             const GpuFr *>(
-                            workspace.output +
+                            workspace.input +
                             batch_size *
                                 domain_size),
-                        maximum_blinder_count,
-                        device_blinder_counts,
+                        device_descriptors,
                         batch_size,
                         chunks_per_vector,
                         gpu_field(
@@ -3587,7 +3636,7 @@ namespace gatzk::algebra
                             odd_shift),
                         reinterpret_cast<
                             GpuFr *>(
-                            workspace.input),
+                            workspace.output),
                         target_size);
 
                     status =
@@ -3617,10 +3666,10 @@ namespace gatzk::algebra
                 if (!run_bounded_ntt_device(
                         reinterpret_cast<
                             const mcl::Fr *>(
-                            workspace.input),
+                            workspace.output),
                         reinterpret_cast<
                             mcl::Fr *>(
-                            workspace.output),
+                            workspace.input),
                         half_size,
                         batch_size * 2,
                         ntt::NTTDir::kForward,
@@ -3678,8 +3727,8 @@ namespace gatzk::algebra
                         stream>>>(
                         reinterpret_cast<
                             const GpuFr *>(
-                            workspace.output),
-                        device_targets,
+                            workspace.input),
+                        device_descriptors,
                         target_size,
                         batch_size);
 
@@ -3742,34 +3791,18 @@ namespace gatzk::algebra
 
             status =
                 cudaFreeAsync(
-                    device_blinder_counts,
+                    device_descriptors,
                     stream);
 
             if (status !=
                 cudaSuccess)
             {
                 throw_cuda_ntt_error(
-                    "batched coset count release",
+                    "batched coset descriptor release",
                     status);
             }
 
-            device_blinder_counts =
-                nullptr;
-
-            status =
-                cudaFreeAsync(
-                    device_targets,
-                    stream);
-
-            if (status !=
-                cudaSuccess)
-            {
-                throw_cuda_ntt_error(
-                    "batched coset target release",
-                    status);
-            }
-
-            device_targets =
+            device_descriptors =
                 nullptr;
 
             if (make_default_stream_wait)
@@ -3805,22 +3838,13 @@ namespace gatzk::algebra
                     stream);
             }
 
-            if (device_blinder_counts !=
+            if (device_descriptors !=
                 nullptr)
             {
                 (void)cudaFree(
-                    device_blinder_counts);
+                    device_descriptors);
 
-                device_blinder_counts =
-                    nullptr;
-            }
-
-            if (device_targets != nullptr)
-            {
-                (void)cudaFree(
-                    device_targets);
-
-                device_targets =
+                device_descriptors =
                     nullptr;
             }
 

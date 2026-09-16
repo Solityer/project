@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -22,19 +23,26 @@ namespace gatzk::protocol
         std::string visibility_tag;
         std::string value_type;
         std::string value_reference_id;
-        crypto::Commitment commitment;
-        algebra::FieldElement value = algebra::FieldElement::zero();
 
-        // Execution-only precomputed first canonical text-length component.
-        // It avoids rebuilding the decimal length prefix inside every sort
-        // comparison and is never absorbed into the transcript.
-        std::string canonical_claim_id_length_prefix;
+        // Execution-only non-owning reference into the registry's interned
+        // commitment table.  It never enters proof or transcript bytes.
+        const crypto::Commitment
+            *execution_commitment =
+                nullptr;
 
-        // Registry-local interned identity of the canonical commitment point.
-        // It replaces per-claim copies of serialized G1 bytes while retaining
-        // exact cross-reference point deduplication semantics.
-        std::size_t execution_commitment_identity =
-            std::numeric_limits<std::size_t>::max();
+        algebra::FieldElement value =
+            algebra::FieldElement::zero();
+
+        // Canonical tuple ordering compares decimal length prefixes before
+        // every corresponding text component.  Precompute all eight prefixes
+        // once instead of running to_chars repeatedly inside std::sort.
+        std::array<std::string, 8>
+            canonical_text_length_prefixes;
+
+        std::size_t
+            execution_commitment_identity =
+                std::numeric_limits<
+                    std::size_t>::max();
     };
 
     struct StandardPointGroup
@@ -80,7 +88,7 @@ namespace gatzk::protocol
     private:
         struct CommitmentExecutionIdentity
         {
-            crypto::G1Point point;
+            crypto::Commitment commitment;
 
             std::size_t identity =
                 std::numeric_limits<
@@ -137,7 +145,7 @@ namespace gatzk::protocol
         std::string claim_role,
         PayloadValueKind visibility,
         std::string value_reference_id,
-        crypto::Commitment commitment,
+        const crypto::Commitment &commitment,
         const algebra::FieldElement &value);
 
     void add_domain_bundle_claims(

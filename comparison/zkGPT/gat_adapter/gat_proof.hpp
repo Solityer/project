@@ -14,6 +14,9 @@
 #include "native_lasso.hpp"
 
 #include <cstdint>
+#include <array>
+#include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,6 +43,66 @@ struct InputLayout {
     std::string selector = "00:X_pub,01:W,10:Aux,11:L_qry";
 };
 
+// A bounded, canonical view of the four input-layer segments.  The native
+// zkGPT input layer is logically X||W||Aux||L, but materialising four padded
+// copies is both unnecessary and, for the large graph instances, unsafe.
+// This oracle owns only logical segment values; coordinates beyond a segment
+// logical length are the canonical implicit-zero padding.  All callers use
+// the same low-bit-first MLE convention as the native GKR implementation.
+class SegmentedInputOracle {
+public:
+    using ChunkCallback = std::function<void(std::size_t, const Fr &)>;
+
+    SegmentedInputOracle() = default;
+
+    SegmentedInputOracle(const InputLayout &layout,
+                         std::array<std::vector<Fr>, 4> segments);
+
+    static SegmentedInputOracle from_int_segments(
+        const InputLayout &layout,
+        const std::array<std::vector<Int>, 4> &segments);
+
+    bool valid(std::string *reason = nullptr) const;
+    const InputLayout &layout() const { return layout_; }
+
+    // Global coordinates use the canonical X/W/Aux/L offsets.  This method
+    // never allocates and returns zero for implicit padding.
+    Fr value_at(std::size_t global_coordinate) const;
+    Fr segment_value(std::size_t segment, std::size_t local_coordinate) const;
+
+    // Stream a bounded range of one segment.  The callback receives logical
+    // local coordinates; implicit padding is included as zero only when the
+    // requested range reaches padded_length.
+    void stream(std::size_t segment, std::size_t begin,
+                std::size_t count, const ChunkCallback &callback) const;
+    std::vector<Fr> chunk(std::size_t segment, std::size_t begin,
+                          std::size_t count) const;
+
+    // Evaluate one segment MLE without constructing a padded vector.  The
+    // point uses the native low-bit-first variable order.
+    Fr evaluate_mle(std::size_t segment,
+                    const std::vector<Fr> &point) const;
+    Fr evaluate_full_mle(const std::vector<Fr> &point) const;
+    Fr mle_eval(std::size_t segment, const std::vector<Fr> &point) const {
+        return evaluate_mle(segment, point);
+    }
+
+    // Fold a segment by a prefix of MLE challenges.  The returned vector is
+    // bounded by the remaining domain and is intended for native Sumcheck
+    // chunks, not for rebuilding the full four-segment input layer.
+    std::vector<Fr> fold(std::size_t segment,
+                         const std::vector<Fr> &prefix) const;
+
+    // Weighted sum over one segment.  The weight callback is evaluated only
+    // for logical coordinates, while padded coordinates contribute zero.
+    Fr weighted_sum(std::size_t segment,
+                    const std::function<Fr(std::size_t)> &weight) const;
+
+private:
+    InputLayout layout_;
+    std::array<std::vector<Fr>, 4> segments_;
+};
+
 // Shared metadata-only sizing boundary.  Registration, the prover and the
 // compact-context verifier all derive this exact four-segment layout here;
 // the helper never evaluates the model or allocates a witness.
@@ -62,6 +125,57 @@ struct MatMulDescriptor {
     std::string coordinate_rule = "row_major_exact";
     std::string scale_rule = "canonical_quant_scale_chain";
     std::string native_path = "prover::FCONN / dedicated matrix Sumcheck";
+    // v4 relation binding.  These fields are public recipe metadata; the
+    // actual operands remain in the committed input segments.
+    std::string relation_schema = "zkgpt-gat-relation-v1";
+    std::string lhs_segment = "X_pub";
+    std::string rhs_segment = "W";
+    std::string output_segment = "Aux";
+    std::string lhs_coordinate_rule = "segment_offset+row*inner+term";
+    std::string rhs_coordinate_rule = "segment_offset+term*cols+col";
+    std::string output_coordinate_rule = "segment_offset+row*cols+col";
+    std::string terminal_claim_rule = "descriptor_index_ordered_mle_points_v1";
+};
+
+// The FCONN transition is a relation between two descriptor-specific input
+// MLE claims and one output MLE claim.  It is kept separately from the
+// materialised layeredCircuit so both producer and verifier can authenticate
+// the exact handoff without serialising gate arrays.
+struct FconnClaimLink {
+    std::size_t descriptor_index = 0;
+    std::string relation_id;
+    std::string family_id;
+    std::string lhs_segment;
+    std::string rhs_segment;
+    std::string output_segment;
+    std::size_t lhs_offset = 0;
+    std::size_t rhs_offset = 0;
+    std::size_t output_offset = 0;
+    std::string lhs_point_rule = "fconn/lhs/row-major-mle-v1";
+    std::string rhs_point_rule = "fconn/rhs/column-major-padded-mle-v1";
+    std::string output_point_rule = "fconn/output/row-major-mle-v1";
+    std::string source_rule = "canonical_input_oracle";
+};
+
+// Native relation metadata for sparse attention/aggregation and exact
+// SignedRoundDiv.  A descriptor is not a hash-only promise: its fields are
+// part of the canonical recipe and are consumed by the v4 relation walker.
+struct NativeRelationDescriptor {
+    std::string relation_id;
+    std::string family_id;
+    std::string relation_schema = "zkgpt-gat-relation-v1";
+    std::string primitive;
+    std::string domain_rule;
+    std::string selector_rule;
+    std::string coordinate_rule;
+    std::string arithmetic_rule;
+    std::string terminal_rule;
+    std::size_t edge_count = 0;
+    std::size_t value_width = 0;
+    std::size_t chunk_size = 1ULL << 12;
+    std::size_t input_offset = 0;
+    std::size_t output_offset = 0;
+    std::vector<std::string> equations;
 };
 
 // The canonical GAT/model input keeps matrix weights in row-major order
@@ -147,6 +261,15 @@ struct GatCapacityReport {
     std::size_t division_relation_count = 0;
     std::size_t context_recipe_bytes_bound = 0;
     std::size_t context_payload_bytes_bound = 0;
+    std::size_t virtual_input_domain = 0;
+    std::size_t materialized_fr = 0;
+    std::size_t materialized_g1 = 0;
+    std::size_t explicit_gate_count = 0;
+    std::uint64_t estimated_peak_host_memory_bytes = 0;
+    std::size_t native_sparse_relation_count = 0;
+    std::size_t scratch_chunk_entries = 0;
+    std::size_t max_materialized_gate_bytes = 0;
+    std::size_t max_materialized_vector_bytes = 0;
     bool ppi_node_ptr_boundary = false;
     bool ppi_edge_ptr_boundary = false;
     bool ready = false;
@@ -164,7 +287,8 @@ struct GatCircuitPlan {
     // canonical_plan_recipe_v1 is the sole public recipe representation.  A
     // materialized layeredCircuit is derived from it and is never serialized
     // in a verifier context.
-    std::string recipe_schema = "canonical_plan_recipe_v1";
+    std::string recipe_schema = "canonical_plan_recipe_v2";
+    std::string relation_schema = "zkgpt-gat-relation-v1";
     std::string model_arch_id;
     CanonicalModelShape model_shape;
     std::size_t graph_num_nodes = 0;
@@ -180,7 +304,9 @@ struct GatCircuitPlan {
     RelationRegistry registry;
     InputLayout input_layout;
     std::vector<MatMulDescriptor> matmuls;
+    std::vector<FconnClaimLink> fconn_claim_links;
     std::vector<SparseGkrDescriptor> sparse_gkr;
+    std::vector<NativeRelationDescriptor> native_relations;
     std::vector<LassoFamilyDescriptor> lasso;
     std::vector<CheckpointDescriptor> checkpoints;
     std::vector<std::string> native_api;
@@ -225,6 +351,10 @@ struct GatCircuitWitness {
     std::vector<std::vector<Fr>> values;
     std::vector<Fr> public_output;
     std::vector<Fr> residuals;
+    // Logical segments used by v4 relation code.  Existing dense fields are
+    // retained for bounded legacy callers; production scalable callers use
+    // this oracle and do not construct a 4*n_in vector.
+    std::shared_ptr<SegmentedInputOracle> input_oracle;
     bool relation_ok = false;
 };
 
@@ -363,8 +493,8 @@ struct ProofSection {
 // or opening randomness is present: those belong to the public context or to
 // the prover and are never serialized.
 struct GatProofArtifact {
-    std::uint32_t version = 2;
-    std::string schema = "zkgpt-gat-proof-v2";
+    std::uint32_t version = 4;
+    std::string schema = "zkgpt-gat-proof-v4";
     std::string relation_id = "R_GAT-zkGPT";
     std::string privacy_profile;
     std::string statement_digest;
@@ -379,7 +509,7 @@ struct GatProofArtifact {
     // but are not the proof boundary.  A production artifact carries the
     // complete typed native transcript and statement so an independent
     // verifier can replay Fiat--Shamir and consume every native proof object.
-    std::string native_domain = "zkgpt-native-gat-fs-v1";
+    std::string native_domain = "zkgpt-native-gat-fs-v4";
     NativeProofStatement native_statement;
     std::vector<NativeProofMessage> native_messages;
     std::string transcript_digest;

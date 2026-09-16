@@ -10,7 +10,7 @@
 
 namespace {
 
-const char kMagic[] = "ZKGPTNS1";
+const char kMagic[] = "ZKGPTNS4";
 const std::size_t kMaxString = 1ULL << 26;
 const std::size_t kMaxMessages = 1ULL << 20;
 const std::uint64_t kMaxWireBytes = 1ULL << 30;
@@ -84,7 +84,7 @@ bool wire_size_within_limit(std::ifstream &in) {
 
 void append_statement_encoding(std::string &out,
                                const NativeProofStatement &statement) {
-    append_string(out, "zkgpt-native-statement-v1");
+    append_string(out, "zkgpt-native-statement-v4");
     append_string(out, statement.verifier_context_digest);
     append_string(out, statement.field_id);
     append_string(out, statement.plan_digest);
@@ -96,11 +96,16 @@ void append_statement_encoding(std::string &out,
     append_string(out, statement.basis_digest);
     append_u64(out, statement.l_dimension);
     append_string(out, statement.statement_root_digest);
+    append_string(out, statement.relation_schema);
+    append_string(out, statement.relation_digest);
+    append_u64(out, static_cast<std::uint64_t>(statement.relation_order.size()));
+    for (const std::string &relation : statement.relation_order)
+        append_string(out, relation);
 }
 
 void append_statement_fields(std::string &out,
                              const NativeProofStatement &statement) {
-    append_string(out, "zkgpt-native-statement-fields-v1");
+    append_string(out, "zkgpt-native-statement-fields-v4");
     append_string(out, statement.verifier_context_digest);
     append_string(out, statement.field_id);
     append_string(out, statement.plan_digest);
@@ -111,13 +116,18 @@ void append_statement_fields(std::string &out,
     append_string(out, statement.l_digest);
     append_string(out, statement.basis_digest);
     append_u64(out, statement.l_dimension);
+    append_string(out, statement.relation_schema);
+    append_string(out, statement.relation_digest);
+    append_u64(out, static_cast<std::uint64_t>(statement.relation_order.size()));
+    for (const std::string &relation : statement.relation_order)
+        append_string(out, relation);
 }
 
 void append_transcript_encoding(std::string &out,
                                 const std::string &domain,
                                 const NativeProofStatement &statement,
                                 const std::vector<NativeProofMessage> &messages) {
-    append_string(out, "zkgpt-native-fs-v1");
+    append_string(out, "zkgpt-native-fs-v4");
     append_string(out, domain);
     append_statement_encoding(out, statement);
     append_u64(out, static_cast<std::uint64_t>(messages.size()));
@@ -215,6 +225,16 @@ bool NativeProofStatement::valid(std::string *reason) const {
     if (!is_field_id(field_id)) return fail("native proof statement field id is invalid");
     if (l_dimension == 0 || l_dimension > (1ULL << 30))
         return fail("native proof statement L dimension is invalid");
+    if (relation_schema != "zkgpt-gat-relation-v1")
+        return fail("native proof statement relation schema is unsupported");
+    if (!is_lower_hex_digest(relation_digest))
+        return fail("native proof statement relation digest is not canonical");
+    std::set<std::string> relation_ids;
+    for (const std::string &relation : relation_order) {
+        if (relation.empty() || relation.size() > kMaxString ||
+            !relation_ids.insert(relation).second)
+            return fail("native proof statement relation order is not canonical");
+    }
     return true;
 }
 
@@ -488,6 +508,11 @@ bool NativeProofSession::write(const std::string &path, std::string *reason) con
     append_string(encoded, statement_.basis_digest);
     append_u64(encoded, statement_.l_dimension);
     append_string(encoded, statement_.root());
+    append_string(encoded, statement_.relation_schema);
+    append_string(encoded, statement_.relation_digest);
+    append_u64(encoded, static_cast<std::uint64_t>(statement_.relation_order.size()));
+    for (const std::string &relation : statement_.relation_order)
+        append_string(encoded, relation);
     append_u64(encoded, static_cast<std::uint64_t>(messages_.size()));
     for (const NativeProofMessage &message : messages_) {
         append_u8(encoded, static_cast<std::uint8_t>(message.kind));
@@ -537,8 +562,8 @@ bool NativeProofSession::read(const std::string &path, NativeProofSession &out,
         !read_string(in, parsed.statement_.com_w_digest) ||
         !read_string(in, parsed.statement_.aux_digest) ||
         !read_string(in, parsed.statement_.l_digest) ||
-        !read_string(in, parsed.statement_.basis_digest) ||
-        !read_u64(in, parsed.statement_.l_dimension)) {
+           !read_string(in, parsed.statement_.basis_digest) ||
+           !read_u64(in, parsed.statement_.l_dimension)) {
         set_reason(reason, "truncated native proof session identity");
         return false;
     }
@@ -548,6 +573,22 @@ bool NativeProofSession::read(const std::string &path, NativeProofSession &out,
         return false;
     }
     parsed.statement_.statement_root_digest = statement_root;
+    std::uint64_t relation_count = 0;
+    if (!read_string(in, parsed.statement_.relation_schema) ||
+        !read_string(in, parsed.statement_.relation_digest) ||
+        !read_u64(in, relation_count) || relation_count > kMaxMessages) {
+        set_reason(reason, "truncated native proof relation identity");
+        return false;
+    }
+    parsed.statement_.relation_order.reserve(static_cast<std::size_t>(relation_count));
+    for (std::uint64_t index = 0; index < relation_count; ++index) {
+        std::string relation;
+        if (!read_string(in, relation)) {
+            set_reason(reason, "truncated native proof relation order");
+            return false;
+        }
+        parsed.statement_.relation_order.push_back(std::move(relation));
+    }
     if (!parsed.statement_.valid(reason) ||
         statement_root != parsed.statement_.root()) {
         set_reason(reason, "native proof statement root mismatch");

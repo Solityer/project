@@ -53,7 +53,8 @@ namespace gatzk::algebra
         std::size_t domain_size,
         const FieldElement &shift,
         std::size_t target_size,
-        bool make_default_stream_wait = false);
+        bool make_default_stream_wait = false,
+        std::size_t maximum_batch_size = 32);
 
     bool cuda_coset_coefficients_to_device_exact(
         const mcl::Fr *coefficients,
