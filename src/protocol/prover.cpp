@@ -16106,6 +16106,21 @@ namespace gatzk::protocol
             double elapsed_ms = 0.0;
         };
         const auto &point_groups = opening_registry.groups();
+
+        const auto resolved_claim_commitment =
+            [](const StandardOpeningClaim &claim)
+            -> const Commitment &
+        {
+            if (claim.execution_commitment ==
+                nullptr)
+            {
+                throw std::runtime_error(
+                    "prover point-group claim has no interned commitment");
+            }
+
+            return *claim.execution_commitment;
+        };
+
         std::vector<PointGroupOpeningResult> opening_results(
             point_groups.size());
 
@@ -16335,37 +16350,55 @@ namespace gatzk::protocol
 
             for (const auto &claim : point_groups[index].claims)
             {
-                if (claim.commitment.opening_polynomial != nullptr)
+                const auto &commitment =
+                    resolved_claim_commitment(
+                        claim);
+
+                if (commitment.opening_polynomial != nullptr)
                 {
                     const auto &polynomial =
-                        *claim.commitment.opening_polynomial;
+                        *commitment.opening_polynomial;
+
                     if (polynomial.basis ==
                         algebra::PolynomialBasis::Evaluation)
                     {
-                        add_evaluation_group(polynomial.domain);
+                        add_evaluation_group(
+                            polynomial.domain);
                     }
+
                     add_opening_element_bytes(
                         polynomial.size(),
                         &workset.source_bytes,
                         &overflow);
+
                     continue;
                 }
 
                 const auto spilled_it =
                     trace.spilled_polynomials.find(
-                        claim.commitment.name);
-                if (spilled_it == trace.spilled_polynomials.end())
+                        commitment.name);
+
+                if (spilled_it ==
+                    trace.spilled_polynomials.end())
                 {
                     continue;
                 }
-                const auto &spilled = spilled_it->second;
-                const auto domain = context_domain_by_name(
-                    context,
-                    spilled.domain_name);
-                add_evaluation_group(domain);
+
+                const auto &spilled =
+                    spilled_it->second;
+
+                const auto domain =
+                    context_domain_by_name(
+                        context,
+                        spilled.domain_name);
+
+                add_evaluation_group(
+                    domain);
+
                 add_opening_element_bytes(
                     std::min(
-                        spilled_file_value_count(spilled),
+                        spilled_file_value_count(
+                            spilled),
                         kOpeningStreamChunkValues),
                     &workset.source_bytes,
                     &overflow);
@@ -16391,12 +16424,15 @@ namespace gatzk::protocol
             for (const auto &claim :
                  point_groups[index].claims)
             {
-                if (claim.commitment
-                        .opening_polynomial !=
+                const auto &commitment =
+                    resolved_claim_commitment(
+                        claim);
+
+                if (commitment.opening_polynomial !=
                     nullptr)
                 {
                     total +=
-                        claim.commitment
+                        commitment
                             .opening_polynomial
                             ->size();
                 }
@@ -16404,7 +16440,7 @@ namespace gatzk::protocol
                     const auto spilled_it =
                         trace.spilled_polynomials
                             .find(
-                                claim.commitment.name);
+                                commitment.name);
                     spilled_it !=
                     trace.spilled_polynomials
                         .end())
@@ -16437,8 +16473,11 @@ namespace gatzk::protocol
             for (const auto &claim :
                  point_groups[first_index].claims)
             {
-                if (claim.commitment
-                        .opening_polynomial !=
+                const auto &commitment =
+                    resolved_claim_commitment(
+                        claim);
+
+                if (commitment.opening_polynomial !=
                     nullptr)
                 {
                     continue;
@@ -16446,7 +16485,7 @@ namespace gatzk::protocol
 
                 const auto spilled_it =
                     trace.spilled_polynomials.find(
-                        claim.commitment.name);
+                        commitment.name);
 
                 if (spilled_it ==
                     trace.spilled_polynomials.end())
@@ -16474,7 +16513,7 @@ namespace gatzk::protocol
 
                 first_sources.try_emplace(
                     key,
-                    claim.commitment.name);
+                    commitment.name);
             }
 
             std::size_t shared = 0;
@@ -16487,8 +16526,11 @@ namespace gatzk::protocol
             for (const auto &claim :
                  point_groups[second_index].claims)
             {
-                if (claim.commitment
-                        .opening_polynomial !=
+                const auto &commitment =
+                    resolved_claim_commitment(
+                        claim);
+
+                if (commitment.opening_polynomial !=
                     nullptr)
                 {
                     continue;
@@ -16496,7 +16538,7 @@ namespace gatzk::protocol
 
                 const auto spilled_it =
                     trace.spilled_polynomials.find(
-                        claim.commitment.name);
+                        commitment.name);
 
                 if (spilled_it ==
                     trace.spilled_polynomials.end())
@@ -16523,9 +16565,11 @@ namespace gatzk::protocol
                     std::to_string(spilled.semantic_source_id);
 
                 const auto first =
-                    first_sources.find(key);
+                    first_sources.find(
+                        key);
 
-                if (first == first_sources.end())
+                if (first ==
+                    first_sources.end())
                 {
                     continue;
                 }
@@ -16548,24 +16592,38 @@ namespace gatzk::protocol
                 return 0.0;
             const auto phase_start = Clock::now();
             auto work_order = indices;
-            const auto estimated_work = [&](std::size_t index)
+            const auto estimated_work =
+                [&](std::size_t index)
             {
                 std::size_t total = 0;
-                for (const auto &claim : point_groups[index].claims)
+
+                for (const auto &claim :
+                     point_groups[index].claims)
                 {
-                    if (claim.commitment.opening_polynomial != nullptr)
+                    const auto &commitment =
+                        resolved_claim_commitment(
+                            claim);
+
+                    if (commitment.opening_polynomial !=
+                        nullptr)
                     {
-                        total += claim.commitment
-                                     .opening_polynomial->size();
+                        total +=
+                            commitment
+                                .opening_polynomial
+                                ->size();
                     }
-                    else if (const auto spilled_it =
-                                 trace.spilled_polynomials.find(
-                                     claim.commitment.name);
-                             spilled_it != trace.spilled_polynomials.end())
+                    else if (
+                        const auto spilled_it =
+                            trace.spilled_polynomials.find(
+                                commitment.name);
+                        spilled_it !=
+                        trace.spilled_polynomials.end())
                     {
-                        total += spilled_it->second.size;
+                        total +=
+                            spilled_it->second.size;
                     }
                 }
+
                 return total;
             };
             std::stable_sort(
@@ -16603,12 +16661,16 @@ namespace gatzk::protocol
                             point_groups[index].claims.end(),
                             [&](const auto &claim)
                             {
-                                return claim.commitment
+                                const auto &commitment =
+                                    resolved_claim_commitment(
+                                        claim);
+
+                                return commitment
                                                .opening_polynomial ==
                                            nullptr &&
                                        trace.spilled_polynomials
                                            .contains(
-                                               claim.commitment.name);
+                                               commitment.name);
                             });
                     });
 
@@ -16701,13 +16763,24 @@ namespace gatzk::protocol
                         const auto &group = point_groups[group_index];
                         std::vector<Commitment> commitments;
                         std::vector<FieldElement> values;
-                        commitments.reserve(group.claims.size());
-                        values.reserve(group.claims.size());
-                        for (const auto &claim : group.claims)
+
+                        commitments.reserve(
+                            group.claims.size());
+
+                        values.reserve(
+                            group.claims.size());
+
+                        for (const auto &claim :
+                             group.claims)
                         {
-                            commitments.push_back(claim.commitment);
-                            values.push_back(claim.value);
+                            commitments.push_back(
+                                resolved_claim_commitment(
+                                    claim));
+
+                            values.push_back(
+                                claim.value);
                         }
+
                         // The outer scheduler already parallelizes independent
                         // groups.  Never let one group reacquire the whole
                         // machine merely because its work estimate is large.
@@ -17035,7 +17108,8 @@ namespace gatzk::protocol
                 {
                     pair_commitments[slot]
                         .push_back(
-                            claim.commitment);
+                            resolved_claim_commitment(
+                                claim));
 
                     pair_values[slot]
                         .push_back(
