@@ -2918,6 +2918,10 @@ namespace gatzk::protocol
                 build_t_edge_evaluation_plan(context, challenges);
             const auto point_group_registry_start = Clock::now();
 
+            const auto opening_label_registry =
+                build_domain_opening_label_registry(
+                    context);
+
             std::unordered_map<
                 std::string_view,
                 const BindingSubproof *>
@@ -3008,10 +3012,30 @@ namespace gatzk::protocol
                 const auto &spec = bundle_specs[spec_index];
                 const auto &indexed_bundle = bundle_by_name(indexed_bundles, spec.bundle_name);
                 const auto &bundle = *indexed_bundle.bundle;
-                auto labels = domain_opening_labels(context, spec.trace_domain_name);
-                labels.push_back(spec.quotient_name);
-                const auto quotient_mask_name = quotient_mask_label(spec.quotient_name);
-                labels.push_back(quotient_mask_name);
+
+                const auto registered_labels =
+                    opening_label_registry.find(
+                        spec.trace_domain_name);
+
+                if (registered_labels ==
+                    opening_label_registry.end())
+                {
+                    return false;
+                }
+
+                auto labels =
+                    registered_labels->second;
+
+                labels.push_back(
+                    spec.quotient_name);
+
+                const auto quotient_mask_name =
+                    quotient_mask_label(
+                        spec.quotient_name);
+
+                labels.push_back(
+                    quotient_mask_name);
+
                 if (bundle.values.size() != labels.size())
                 {
                     return false;

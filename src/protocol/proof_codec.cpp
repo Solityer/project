@@ -2503,6 +2503,10 @@ namespace gatzk::protocol
         // the canonical global point-group order after merging both blocks;
         // appending Eval_bind values would place them after t_D/R_t_D and make
         // the parser disagree with the shared prover/verifier schema.
+        const auto opening_label_registry =
+            build_domain_opening_label_registry(
+                context);
+
         for (auto &[bundle_name, bundle] : proof.domain_openings)
         {
             std::string trace_domain;
@@ -2548,9 +2552,28 @@ namespace gatzk::protocol
                     "proof parser encountered unknown domain bundle: " + bundle_name);
             }
 
-            auto expected_labels = domain_opening_labels(context, trace_domain);
-            expected_labels.push_back(quotient_name);
-            expected_labels.push_back(quotient_mask_label(quotient_name));
+            const auto registered_labels =
+                opening_label_registry.find(
+                    trace_domain);
+
+            if (registered_labels ==
+                opening_label_registry.end())
+            {
+                throw std::runtime_error(
+                    "proof parser has no opening-label registry for domain: " +
+                    trace_domain);
+            }
+
+            auto expected_labels =
+                registered_labels->second;
+
+            expected_labels.push_back(
+                quotient_name);
+
+            expected_labels.push_back(
+                quotient_mask_label(
+                    quotient_name));
+
             if (bundle.values.size() != expected_labels.size() || bundle.value_kinds.size() != bundle.values.size())
                 throw std::runtime_error(
                     "proof parser reconstructed domain bundle shape mismatch: " + bundle_name);

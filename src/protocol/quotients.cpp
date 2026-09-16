@@ -278,60 +278,92 @@ namespace gatzk::protocol
             return false;
         }
 
-        std::optional<std::string> dynamic_label_domain_name(const ProtocolContext &context, const std::string &label)
+        std::unordered_map<std::string, std::string>
+        planned_dynamic_label_domains(
+            const ProtocolContext &context)
         {
+            std::unordered_map<
+                std::string,
+                std::string>
+                domains;
+
+            const auto add_domain =
+                [&](const std::string &label,
+                    const std::string &domain)
+            {
+                domains.try_emplace(
+                    label,
+                    domain);
+            };
+
             for (const auto &spec :
                  matrix_fold_binding_specs(context))
             {
-                if (label == spec.source_fold_object ||
-                    label ==
-                        spec.source_accumulator_object ||
-                    label ==
-                        spec.source_accumulator_object +
-                            "_Weight")
-                {
-                    return std::string("N");
-                }
+                add_domain(
+                    spec.source_fold_object,
+                    "N");
 
-                if (label ==
-                    spec.fold_accumulator_object)
-                {
-                    return spec.fold_domain;
-                }
+                add_domain(
+                    spec.source_accumulator_object,
+                    "N");
+
+                add_domain(
+                    spec.source_accumulator_object +
+                        "_Weight",
+                    "N");
+
+                add_domain(
+                    spec.fold_accumulator_object,
+                    spec.fold_domain);
             }
 
             for (const auto &spec :
                  flat_matrix_binding_specs(context))
             {
-                if (label == spec.row_fold_object ||
-                    label ==
-                        spec.row_accumulator_object)
-                {
-                    return std::string("N");
-                }
+                add_domain(
+                    spec.row_fold_object,
+                    "N");
 
-                if (label ==
-                    spec.flat_accumulator_object)
-                {
-                    return std::string("edge");
-                }
+                add_domain(
+                    spec.row_accumulator_object,
+                    "N");
+
+                add_domain(
+                    spec.flat_accumulator_object,
+                    "edge");
             }
 
             for (const auto &spec :
                  broadcast_flat_binding_specs(context))
             {
-                if (label ==
-                    spec.node_accumulator_object)
-                {
-                    return std::string("N");
-                }
+                add_domain(
+                    spec.node_accumulator_object,
+                    "N");
 
-                if (label ==
-                    spec.flat_accumulator_object)
-                {
-                    return std::string("edge");
-                }
+                add_domain(
+                    spec.flat_accumulator_object,
+                    "edge");
             }
+
+            return domains;
+        }
+
+        std::optional<std::string>
+        dynamic_label_domain_name_with_plan_index(
+            const ProtocolContext &context,
+            const std::string &label,
+            const std::unordered_map<
+                std::string,
+                std::string> &planned_domains)
+        {
+            if (const auto planned =
+                    planned_domains.find(label);
+                planned !=
+                planned_domains.end())
+            {
+                return planned->second;
+            }
+
             if (label == "P_H" || label == "P_Table_feat" || label == "P_Query_feat" || label == "P_m_feat" || label == "P_J_tbl_feat" || label == "P_J_qry_feat" || label == "P_R_feat")
             {
                 return std::string("FH");
@@ -439,6 +471,21 @@ namespace gatzk::protocol
                 return std::string("edge");
             }
             return std::nullopt;
+        }
+
+        std::optional<std::string>
+        dynamic_label_domain_name(
+            const ProtocolContext &context,
+            const std::string &label)
+        {
+            const auto planned_domains =
+                planned_dynamic_label_domains(
+                    context);
+
+            return dynamic_label_domain_name_with_plan_index(
+                context,
+                label,
+                planned_domains);
         }
 
         template <bool UsePrecomputedAlphaPowers>
@@ -1800,105 +1847,261 @@ namespace gatzk::protocol
         return value;
     }
 
-    std::vector<std::string> domain_opening_labels(const ProtocolContext &context, const std::string &domain_name)
+    DomainOpeningLabelRegistry
+    build_domain_opening_label_registry(
+        const ProtocolContext &context)
     {
-        // opening bundle 的列集合由标签到工作域的映射唯一决定。
-        // 这既约束 prover / verifier 的 bundle 形状，也直接影响 proof_size_bytes。
-        std::vector<std::string> labels;
-        for (const auto &label : dynamic_commitment_labels(context))
+        DomainOpeningLabelRegistry
+            labels_by_domain;
+
+        for (const auto *domain : {
+                 "FH",
+                 "edge",
+                 "in",
+                 "d",
+                 "cat",
+                 "C",
+                 "N",
+                 "coef"})
         {
-            if (label.find("_ScoreMask_") != std::string::npos || label.ends_with("_ExternalMask"))
-                continue;
-            if (const auto mapped = dynamic_label_domain_name(context, label); mapped.has_value() && *mapped == domain_name)
-            {
-                labels.push_back(label);
-            }
+            labels_by_domain.try_emplace(
+                domain);
         }
+
+        const auto planned_domains =
+            planned_dynamic_label_domains(
+                context);
+
+        auto dynamic_labels =
+            dynamic_commitment_labels(
+                context);
+
+        for (auto &label :
+             dynamic_labels)
+        {
+            if (label.find(
+                    "_ScoreMask_") !=
+                    std::string::npos ||
+                label.ends_with(
+                    "_ExternalMask"))
+            {
+                continue;
+            }
+
+            const auto mapped =
+                dynamic_label_domain_name_with_plan_index(
+                    context,
+                    label,
+                    planned_domains);
+
+            if (!mapped.has_value())
+            {
+                continue;
+            }
+
+            labels_by_domain[*mapped]
+                .push_back(
+                    std::move(label));
+        }
+
+        const auto binding_metadata =
+            build_binding_relation_metadata(
+                context);
+
+        auto &c_labels =
+            labels_by_domain["C"];
+
+        auto &edge_labels =
+            labels_by_domain["edge"];
+
         // Pi_bind-owned indexed-view claims share the same domain point groups
         // and witnesses as ordinary trace claims, but their values are encoded
         // by Eval_bind rather than duplicated in Eval_dom.
-        for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
+        for (std::size_t head = 0;
+             head <
+             context.model.output_layer.heads
+                 .size();
+             ++head)
         {
-            if (domain_name == "C")
-                labels.push_back(model_proof_local_label(
-                    output_bias_label(head)));
-            const auto suffixes = domain_name == "C"
-                                      ? std::vector<std::string>{"Table_can", "m_can", "J_can", "R_can"}
-                                      : (domain_name == "edge"
-                                             ? std::vector<std::string>{"Query", "J_qry", "R_qry"}
-                                             : std::vector<std::string>{});
-            for (const auto &suffix : suffixes)
-                labels.push_back(output_bias_view_label(head, suffix));
-            if (domain_name == "edge")
+            c_labels.push_back(
+                model_proof_local_label(
+                    output_bias_label(
+                        head)));
+
+            for (const auto *suffix : {
+                     "Table_can",
+                     "m_can",
+                     "J_can",
+                     "R_can"})
             {
-                const auto metadata = build_binding_relation_metadata(context);
-                const auto relation_id =
-                    "bind:output:" + std::to_string(head);
-                const auto relation = std::find_if(
-                    metadata.begin(), metadata.end(),
-                    [&](const BindingRelationMeta &candidate)
-                    { return candidate.relation_id == relation_id; });
-                if (relation == metadata.end() || relation->coefficient_basis_relations.size() != 1)
+                c_labels.push_back(
+                    output_bias_view_label(
+                        head,
+                        suffix));
+            }
+
+            for (const auto *suffix : {
+                     "Query",
+                     "J_qry",
+                     "R_qry"})
+            {
+                edge_labels.push_back(
+                    output_bias_view_label(
+                        head,
+                        suffix));
+            }
+
+            const auto relation_id =
+                "bind:output:" +
+                std::to_string(
+                    head);
+
+            const auto relation =
+                std::find_if(
+                    binding_metadata.begin(),
+                    binding_metadata.end(),
+                    [&](const BindingRelationMeta
+                            &candidate)
+                    {
+                        return candidate
+                                   .relation_id ==
+                               relation_id;
+                    });
+
+            if (relation ==
+                    binding_metadata.end() ||
+                relation
+                        ->coefficient_basis_relations
+                        .size() != 1)
+            {
+                throw std::runtime_error(
+                    "domain opening registry is missing coefficient basis metadata");
+            }
+
+            const auto &basis =
+                relation
+                    ->coefficient_basis_relations
+                    .front();
+
+            for (const auto &chunk :
+                 basis.chunks)
+            {
+                edge_labels.push_back(
+                    chunk.object_id);
+
+                edge_labels.push_back(
+                    chunk.accumulator_object);
+            }
+        }
+
+        auto &n_labels =
+            labels_by_domain[context.domains.n->name];
+
+        for (const auto &binding :
+             binding_metadata)
+        {
+            for (const auto &matrix :
+                 binding.canonical_matrices)
+            {
+                if (matrix.canonical_domain !=
+                    context.domains.n->name)
+                {
                     throw std::runtime_error(
-                        "domain opening registry is missing coefficient basis metadata");
-                const auto &basis =
-                    relation->coefficient_basis_relations.front();
-                for (const auto &chunk : basis.chunks)
-                {
-                    labels.push_back(chunk.object_id);
-                    labels.push_back(chunk.accumulator_object);
+                        "canonical matrix registered on unsupported domain: " +
+                        matrix.relation_id);
                 }
+
+                n_labels.insert(
+                    n_labels.end(),
+                    matrix.column_objects.begin(),
+                    matrix.column_objects.end());
+
+                n_labels.push_back(
+                    matrix.compressed_object);
             }
         }
-        if (domain_name == context.domains.n->name)
+
+        for (const auto &binding :
+             binding_metadata)
         {
-            for (const auto &binding : build_binding_relation_metadata(context))
-                for (const auto &matrix : binding.canonical_matrices)
-                {
-                    if (matrix.canonical_domain != domain_name)
-                        throw std::runtime_error(
-                            "canonical matrix registered on unsupported domain: " + matrix.relation_id);
-                    labels.insert(
-                        labels.end(), matrix.column_objects.begin(),
-                        matrix.column_objects.end());
-                    labels.push_back(matrix.compressed_object);
-                }
-        }
-        for (const auto &binding : build_binding_relation_metadata(context))
-        {
-            for (const auto &relation : binding.aggregation_relations)
+            for (const auto &relation :
+                 binding.aggregation_relations)
             {
-                if (domain_name == relation.node_domain)
+                auto &node_labels =
+                    labels_by_domain[relation.node_domain];
+
+                node_labels.push_back(
+                    relation.source_node_object);
+
+                node_labels.push_back(
+                    relation.target_node_object);
+
+                for (const auto *route : {
+                         &relation.source_route,
+                         &relation.target_route})
                 {
-                    labels.push_back(relation.source_node_object);
-                    labels.push_back(relation.target_node_object);
-                    for (const auto *route : {
-                             &relation.source_route, &relation.target_route})
-                    {
-                        labels.push_back(route->table_object);
-                        labels.push_back(route->node_inverse_object);
-                        labels.push_back(route->node_accumulator_object);
-                    }
+                    node_labels.push_back(
+                        route->table_object);
+
+                    node_labels.push_back(
+                        route->node_inverse_object);
+
+                    node_labels.push_back(
+                        route->node_accumulator_object);
                 }
-                if (domain_name == relation.edge_domain)
+
+                auto &relation_edge_labels =
+                    labels_by_domain[relation.edge_domain];
+
+                for (const auto *object : {
+                         &relation.source_edge_object,
+                         &relation.target_edge_object,
+                         &relation.product_object,
+                         &relation.psq_object})
                 {
-                    for (const auto *object : {
-                             &relation.source_edge_object,
-                             &relation.target_edge_object,
-                             &relation.product_object,
-                             &relation.psq_object})
-                        labels.push_back(*object);
-                    for (const auto *route : {
-                             &relation.source_route, &relation.target_route})
-                    {
-                        labels.push_back(route->query_object);
-                        labels.push_back(route->edge_inverse_object);
-                        labels.push_back(route->edge_accumulator_object);
-                    }
+                    relation_edge_labels.push_back(
+                        *object);
+                }
+
+                for (const auto *route : {
+                         &relation.source_route,
+                         &relation.target_route})
+                {
+                    relation_edge_labels.push_back(
+                        route->query_object);
+
+                    relation_edge_labels.push_back(
+                        route->edge_inverse_object);
+
+                    relation_edge_labels.push_back(
+                        route->edge_accumulator_object);
                 }
             }
         }
-        return labels;
+
+        return labels_by_domain;
+    }
+
+    std::vector<std::string>
+    domain_opening_labels(
+        const ProtocolContext &context,
+        const std::string &domain_name)
+    {
+        auto registry =
+            build_domain_opening_label_registry(
+                context);
+
+        const auto labels =
+            registry.find(
+                domain_name);
+
+        if (labels ==
+            registry.end())
+        {
+            return {};
+        }
+
+        return labels->second;
     }
 
     namespace

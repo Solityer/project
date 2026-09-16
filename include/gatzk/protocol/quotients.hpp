@@ -111,9 +111,18 @@ namespace gatzk::protocol
         const ProtocolContext &context,
         const std::map<std::string, algebra::FieldElement> &challenges);
 
+    using DomainOpeningLabelRegistry =
+        std::map<std::string, std::vector<std::string>>;
+
+    DomainOpeningLabelRegistry build_domain_opening_label_registry(
+        const ProtocolContext &context);
+
     // 返回某个工作域 opening bundle 中必须出现的标签顺序。
-    // 该顺序会同时影响 prover 组包、verifier 取值和 proof_size_bytes 统计。
-    std::vector<std::string> domain_opening_labels(const ProtocolContext &context, const std::string &domain_name);
+    // 该顺序会同时影响 prover / verifier 的 bundle 形状，也直接影响 proof_size_bytes。
+    std::vector<std::string> domain_opening_labels(
+        const ProtocolContext &context,
+        const std::string &domain_name);
+
     std::optional<std::string> dynamic_commitment_domain_name(
         const ProtocolContext &context,
         const std::string &label);
