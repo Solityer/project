@@ -926,13 +926,17 @@ namespace gatzk::protocol
                     PayloadValueKind>>
                     expected_aggregation_domain_evaluations;
                 std::vector<std::string> expected_aggregation_openings;
+                std::unordered_set<std::string>
+                    expected_aggregation_opening_ids;
                 const auto append_aggregation_opening = [&](std::string value)
                 {
-                    if (std::find(
-                            expected_aggregation_openings.begin(),
-                            expected_aggregation_openings.end(), value) == expected_aggregation_openings.end())
+                    if (expected_aggregation_opening_ids
+                            .insert(value)
+                            .second)
+                    {
                         expected_aggregation_openings.push_back(
                             std::move(value));
+                    }
                 };
                 for (const auto &route : meta.route_terminal_relations)
                 {
@@ -2415,28 +2419,84 @@ namespace gatzk::protocol
         // Reconstruct the in-memory global point groups after all physical
         // blocks have been parsed.  Eval_bind owns these values on the wire;
         // Open_dom owns their single folded witness.
+        std::unordered_map<std::string, std::size_t>
+            domain_opening_index;
+
+        domain_opening_index.reserve(
+            proof.domain_openings.size());
+
+        std::vector<std::unordered_set<std::string>>
+            domain_opening_value_ids(
+                proof.domain_openings.size());
+
+        for (std::size_t bundle_index = 0;
+             bundle_index < proof.domain_openings.size();
+             ++bundle_index)
+        {
+            const auto &[bundle_name, bundle] =
+                proof.domain_openings[bundle_index];
+
+            domain_opening_index.try_emplace(
+                bundle_name,
+                bundle_index);
+
+            auto &value_ids =
+                domain_opening_value_ids[bundle_index];
+
+            value_ids.reserve(
+                bundle.values.size());
+
+            for (const auto &[name, values] :
+                 bundle.values)
+            {
+                (void)values;
+
+                value_ids.insert(
+                    name);
+            }
+        }
+
         for (const auto &subproof : proof.pi_bind.subproofs)
         {
             for (const auto &evaluation : subproof.evaluations)
             {
                 if (evaluation.domain == "relation")
                     continue;
-                const auto bundle_it = std::find_if(
-                    proof.domain_openings.begin(), proof.domain_openings.end(),
-                    [&](const auto &entry)
-                    { return entry.first == evaluation.domain; });
-                if (bundle_it == proof.domain_openings.end())
+
+                const auto bundle_position =
+                    domain_opening_index.find(
+                        evaluation.domain);
+
+                if (bundle_position ==
+                    domain_opening_index.end())
+                {
                     throw std::runtime_error(
                         "proof parser Pi_bind evaluation references unknown domain");
-                if (std::any_of(
-                        bundle_it->second.values.begin(), bundle_it->second.values.end(),
-                        [&](const auto &entry)
-                        { return entry.first == evaluation.object_id; }))
+                }
+
+                const auto bundle_index =
+                    bundle_position->second;
+
+                auto &bundle =
+                    proof.domain_openings[bundle_index]
+                        .second;
+
+                auto &value_ids =
+                    domain_opening_value_ids[bundle_index];
+
+                if (!value_ids.insert(
+                                  evaluation.object_id)
+                         .second)
+                {
                     throw std::runtime_error(
                         "proof parser duplicate Eval_dom/Eval_bind claim owner");
-                bundle_it->second.values.push_back(
+                }
+
+                bundle.values.push_back(
                     {evaluation.object_id, evaluation.values});
-                bundle_it->second.value_kinds.push_back(evaluation.kind);
+
+                bundle.value_kinds.push_back(
+                    evaluation.kind);
             }
         }
         // Eval_dom omits values whose unique wire owner is Eval_bind.  Restore
@@ -2523,6 +2583,14 @@ namespace gatzk::protocol
 
         std::unordered_map<std::string, crypto::Commitment> dynamic;
         std::unordered_map<std::string, crypto::Commitment> quotient;
+
+        dynamic.reserve(
+            proof.dynamic_commitments.size() +
+            total_binding_g1);
+
+        quotient.reserve(
+            proof.quotient_commitments.size());
+
         for (const auto &[name, commitment] : proof.dynamic_commitments)
             dynamic.emplace(name, commitment);
         for (const auto &subproof : proof.pi_bind.subproofs)

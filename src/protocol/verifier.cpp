@@ -1459,13 +1459,16 @@ namespace gatzk::protocol
 
         FieldElement external_value(const Proof &proof, const std::string &label)
         {
-            for (const auto &[name, value] : proof.external_evaluations)
+            const auto it =
+                proof.external_evaluations.find(
+                    label);
+
+            if (it !=
+                proof.external_evaluations.end())
             {
-                if (name == label)
-                {
-                    return value;
-                }
+                return it->second;
             }
+
             throw std::runtime_error("missing external evaluation: " + label);
         }
 
@@ -2909,6 +2912,90 @@ namespace gatzk::protocol
             const auto edge_evaluation_plan =
                 build_t_edge_evaluation_plan(context, challenges);
             const auto point_group_registry_start = Clock::now();
+
+            std::unordered_map<
+                std::string_view,
+                const BindingSubproof *>
+                binding_subproof_by_relation;
+
+            binding_subproof_by_relation.reserve(
+                proof.pi_bind.subproofs.size());
+
+            std::unordered_map<
+                const BindingSubproof *,
+                std::unordered_map<
+                    std::string_view,
+                    const BindingEvaluation *>>
+                binding_evaluations_by_subproof;
+
+            binding_evaluations_by_subproof.reserve(
+                proof.pi_bind.subproofs.size());
+
+            for (const auto &subproof :
+                 proof.pi_bind.subproofs)
+            {
+                binding_subproof_by_relation.try_emplace(
+                    std::string_view(
+                        subproof.relation_meta.relation_id),
+                    &subproof);
+
+                auto &evaluation_index =
+                    binding_evaluations_by_subproof[&subproof];
+
+                evaluation_index.reserve(
+                    subproof.evaluations.size());
+
+                for (const auto &evaluation :
+                     subproof.evaluations)
+                {
+                    evaluation_index.try_emplace(
+                        std::string_view(
+                            evaluation.object_id),
+                        &evaluation);
+                }
+            }
+
+            const auto find_binding_subproof =
+                [&](const std::string &relation_id)
+                -> const BindingSubproof *
+            {
+                const auto it =
+                    binding_subproof_by_relation.find(
+                        std::string_view(
+                            relation_id));
+
+                return it !=
+                               binding_subproof_by_relation.end()
+                           ? it->second
+                           : nullptr;
+            };
+
+            const auto find_binding_evaluation =
+                [&](const BindingSubproof &subproof,
+                    const std::string &object_id)
+                -> const BindingEvaluation *
+            {
+                const auto subproof_it =
+                    binding_evaluations_by_subproof.find(
+                        &subproof);
+
+                if (subproof_it ==
+                    binding_evaluations_by_subproof.end())
+                {
+                    return nullptr;
+                }
+
+                const auto evaluation_it =
+                    subproof_it->second.find(
+                        std::string_view(
+                            object_id));
+
+                return evaluation_it !=
+                               subproof_it->second.end()
+                           ? evaluation_it->second
+                           : nullptr;
+            };
+
             StandardPointGroupRegistry opening_registry;
             for (std::size_t spec_index = 0;
                  spec_index < bundle_specs.size(); ++spec_index)
@@ -3066,12 +3153,11 @@ namespace gatzk::protocol
                         return false;
                     const auto evaluation_id =
                         relation.shifted_accumulator_object + ":u_rel";
-                    const auto evaluation = std::find_if(
-                        subproof.evaluations.begin(),
-                        subproof.evaluations.end(),
-                        [&](const BindingEvaluation &candidate)
-                        { return candidate.object_id == evaluation_id; });
-                    if (evaluation == subproof.evaluations.end() || evaluation->domain != "relation" || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
+                    const auto *evaluation =
+                        find_binding_evaluation(
+                            subproof,
+                            evaluation_id);
+                    if (evaluation == nullptr || evaluation->domain != "relation" || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
                         return false;
                     const auto y_rel = challenges.at(
                         relation.challenge_label);
@@ -3115,12 +3201,11 @@ namespace gatzk::protocol
                             return false;
                         const auto evaluation_id =
                             route->shifted_accumulator_object + ":u_rel";
-                        const auto evaluation = std::find_if(
-                            subproof.evaluations.begin(),
-                            subproof.evaluations.end(),
-                            [&](const BindingEvaluation &candidate)
-                            { return candidate.object_id == evaluation_id; });
-                        if (evaluation == subproof.evaluations.end() || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
+                        const auto *evaluation =
+                            find_binding_evaluation(
+                                subproof,
+                                evaluation_id);
+                        if (evaluation == nullptr || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
                             return false;
                         const auto y_rel = challenges.at(
                             route->terminal_challenge_label);
@@ -3156,11 +3241,10 @@ namespace gatzk::protocol
             {
                 const auto relation_id =
                     "bind:output:" + std::to_string(head_index);
-                const auto subproof_it = std::find_if(
-                    proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
-                    [&](const BindingSubproof &subproof)
-                    { return subproof.relation_meta.relation_id == relation_id; });
-                if (subproof_it == proof.pi_bind.subproofs.end())
+                const auto *subproof_it =
+                    find_binding_subproof(
+                        relation_id);
+                if (subproof_it == nullptr)
                     return false;
                 const auto *relation_ptr = find_unique_shift_relation_by_kind(
                     subproof_it->relation_meta, "output-bias-terminal");
@@ -3198,13 +3282,12 @@ namespace gatzk::protocol
                     const auto public_m_id = output_bias_view_label(
                                                  head_index, "m_can") +
                                              ":public_bind";
-                    const auto public_m_it = std::find_if(
-                        subproof_it->evaluations.begin(),
-                        subproof_it->evaluations.end(),
-                        [&](const BindingEvaluation &evaluation)
-                        { return evaluation.object_id == public_m_id; });
+                    const auto *public_m_it =
+                        find_binding_evaluation(
+                            *subproof_it,
+                            public_m_id);
                     const auto y_public = challenges.at(relation.challenge_label);
-                    if (public_m_it == subproof_it->evaluations.end() || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue || public_m_it->values.front() != eval_memo.eval_named(output_bias_view_label(head_index, "m_can"), y_public))
+                    if (public_m_it == nullptr || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue || public_m_it->values.front() != eval_memo.eval_named(output_bias_view_label(head_index, "m_can"), y_public))
                         return false;
                     external_commitments.push_back({dynamic_commitments.at(output_bias_view_label(
                                                         head_index, "m_can")),
@@ -3215,11 +3298,11 @@ namespace gatzk::protocol
                 const auto shifted_label =
                     output_bias_view_label(head_index, "R_shifted");
                 const auto u_id = shifted_label + ":u_rel";
-                const auto u_it = std::find_if(
-                    subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
-                    [&](const BindingEvaluation &evaluation)
-                    { return evaluation.object_id == u_id; });
-                if (u_it == subproof_it->evaluations.end() || u_it->domain != "relation" || u_it->values.size() != 1 || u_it->kind != PayloadValueKind::MaskedPrivateValue || !dynamic_commitments.contains(shifted_label))
+                const auto *u_it =
+                    find_binding_evaluation(
+                        *subproof_it,
+                        u_id);
+                if (u_it == nullptr || u_it->domain != "relation" || u_it->values.size() != 1 || u_it->kind != PayloadValueKind::MaskedPrivateValue || !dynamic_commitments.contains(shifted_label))
                     return false;
                 const bool canonical_is_first =
                     relation.source_domains.at(0) == context.domains.c->name;
@@ -3264,16 +3347,15 @@ namespace gatzk::protocol
                 external_commitments.push_back(
                     {relation_commitment, FieldElement::zero()});
                 external_points.push_back(relation.canonical_points.at(0));
-
                 const auto public_m_id =
                     output_bias_view_label(head_index, "m_can") + ":public_bind";
-                const auto public_m_it = std::find_if(
-                    subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
-                    [&](const BindingEvaluation &evaluation)
-                    { return evaluation.object_id == public_m_id; });
+                const auto *public_m_it =
+                    find_binding_evaluation(
+                        *subproof_it,
+                        public_m_id);
                 const auto public_poly_it = context.public_commitments.find(
                     "P_BiasMultiplicity_C");
-                if (public_m_it == subproof_it->evaluations.end() || public_m_it->domain != "relation" || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue || public_poly_it == context.public_commitments.end() || public_m_it->values.front() != eval_memo.eval_named("P_BiasMultiplicity_C", y_rel))
+                if (public_m_it == nullptr || public_m_it->domain != "relation" || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue || public_poly_it == context.public_commitments.end() || public_m_it->values.front() != eval_memo.eval_named("P_BiasMultiplicity_C", y_rel))
                     return false;
                 external_commitments.push_back({dynamic_commitments.at(
                                                     output_bias_view_label(head_index, "m_can")),
@@ -3286,13 +3368,11 @@ namespace gatzk::protocol
             {
                 const auto relation_id =
                     "bind:output:" + std::to_string(head_index);
-                const auto subproof_it = std::find_if(
-                    proof.pi_bind.subproofs.begin(),
-                    proof.pi_bind.subproofs.end(),
-                    [&](const BindingSubproof &subproof)
-                    { return subproof.relation_meta.relation_id == relation_id; });
-                if (subproof_it == proof.pi_bind.subproofs.end() || subproof_it->relation_meta
-                                                                            .coefficient_basis_relations.size() != 1)
+                const auto *subproof_it =
+                    find_binding_subproof(
+                        relation_id);
+                if (subproof_it == nullptr || subproof_it->relation_meta
+                                                      .coefficient_basis_relations.size() != 1)
                     return false;
                 const auto &basis = subproof_it->relation_meta
                                         .coefficient_basis_relations.front();
@@ -3308,12 +3388,11 @@ namespace gatzk::protocol
                 for (const auto &chunk : basis.chunks)
                 {
                     const auto u_id = chunk.shifted_accumulator_object + ":u_rel";
-                    const auto u_it = std::find_if(
-                        subproof_it->evaluations.begin(),
-                        subproof_it->evaluations.end(),
-                        [&](const BindingEvaluation &evaluation)
-                        { return evaluation.object_id == u_id; });
-                    if (u_it == subproof_it->evaluations.end() || u_it->domain != "relation" || u_it->values.size() != 1 || u_it->kind != PayloadValueKind::MaskedPrivateValue || !dynamic_commitments.contains(chunk.accumulator_object) || !dynamic_commitments.contains(chunk.shifted_accumulator_object))
+                    const auto *u_it =
+                        find_binding_evaluation(
+                            *subproof_it,
+                            u_id);
+                    if (u_it == nullptr || u_it->domain != "relation" || u_it->values.size() != 1 || u_it->kind != PayloadValueKind::MaskedPrivateValue || !dynamic_commitments.contains(chunk.accumulator_object) || !dynamic_commitments.contains(chunk.shifted_accumulator_object))
                         return false;
                     const auto scale = gamma.pow(chunk.offset);
                     relation_point = crypto::g1_add(

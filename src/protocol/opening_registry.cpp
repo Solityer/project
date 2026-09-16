@@ -220,11 +220,19 @@ namespace gatzk::protocol
             }
         }
 
-        bool canonical_group_less(
-            const StandardPointGroup &lhs,
-            const StandardPointGroup &rhs)
+        std::string point_group_id_from_text(
+            const std::string &owner_block,
+            const std::string &point_text)
         {
-            return lhs.point.to_string() < rhs.point.to_string();
+            if (owner_block == "W_ext")
+            {
+                return "W_ext:" + point_text;
+            }
+            if (owner_block.rfind("Open_dom:", 0) != 0)
+            {
+                throw std::runtime_error("invalid standard point-group owner: " + owner_block);
+            }
+            return owner_block + ":" + point_text;
         }
     }
 
@@ -232,15 +240,9 @@ namespace gatzk::protocol
         const std::string &owner_block,
         const algebra::FieldElement &point)
     {
-        if (owner_block == "W_ext")
-        {
-            return "W_ext:" + point.to_string();
-        }
-        if (owner_block.rfind("Open_dom:", 0) != 0)
-        {
-            throw std::runtime_error("invalid standard point-group owner: " + owner_block);
-        }
-        return owner_block + ":" + point.to_string();
+        return point_group_id_from_text(
+            owner_block,
+            point.to_string());
     }
 
     StandardOpeningClaim make_standard_opening_claim(
@@ -386,14 +388,8 @@ namespace gatzk::protocol
                         commitment.name);
 
             if (prepared ==
-                    commitment_execution_identity_by_reference_
-                        .end() ||
-                !(
-                    prepared
-                        ->second
-                        .commitment
-                        .point ==
-                    commitment.point))
+                commitment_execution_identity_by_reference_
+                    .end())
             {
                 throw std::runtime_error(
                     "standard opening prepared commitment identity mismatch");
@@ -526,6 +522,22 @@ namespace gatzk::protocol
             throw std::runtime_error(
                 "invalid external claims for standard point-group registry");
         }
+
+        std::vector<crypto::Commitment>
+            commitments_to_prepare;
+
+        commitments_to_prepare.reserve(
+            commitments_and_values.size());
+
+        for (const auto &entry :
+             commitments_and_values)
+        {
+            commitments_to_prepare.push_back(
+                entry.first);
+        }
+
+        registry.prepare_commitment_execution_identities(
+            commitments_to_prepare);
 
         std::unordered_map<
             std::string,
@@ -677,6 +689,18 @@ namespace gatzk::protocol
         {
             return;
         }
+
+        commitment_execution_identity_by_reference_
+            .reserve(
+                commitment_execution_identity_by_reference_
+                    .size() +
+                missing_indices.size());
+
+        commitment_execution_identity_by_point_
+            .reserve(
+                commitment_execution_identity_by_point_
+                    .size() +
+                missing_indices.size());
 
         std::vector<std::string>
             serialized_keys(
@@ -1248,8 +1272,21 @@ namespace gatzk::protocol
         {
             throw std::runtime_error("standard point-group registry is empty");
         }
-        for (auto &group : groups_)
+
+        std::vector<
+            std::pair<std::string, std::size_t>>
+            canonical_group_order;
+
+        canonical_group_order.reserve(
+            groups_.size());
+
+        for (std::size_t group_index = 0;
+             group_index < groups_.size();
+             ++group_index)
         {
+            auto &group =
+                groups_[group_index];
+
             if (group.claims.empty())
             {
                 throw std::runtime_error("standard point group has no claims");
@@ -1280,16 +1317,64 @@ namespace gatzk::protocol
                 throw std::runtime_error(
                     "standard opening claim is missing execution cache");
             }
-            std::sort(
-                group.claims.begin(),
-                group.claims.end(),
-                canonical_claim_less);
-            group.group_id = point_group_id(group.owner_block, group.point);
+
+            if (!std::is_sorted(
+                    group.claims.begin(),
+                    group.claims.end(),
+                    canonical_claim_less))
+            {
+                std::sort(
+                    group.claims.begin(),
+                    group.claims.end(),
+                    canonical_claim_less);
+            }
+
+            auto point_text =
+                group.point.to_string();
+
+            group.group_id =
+                point_group_id_from_text(
+                    group.owner_block,
+                    point_text);
+
+            canonical_group_order.push_back(
+                {
+                    std::move(
+                        point_text),
+                    group_index,
+                });
         }
+
         std::sort(
-            groups_.begin(),
-            groups_.end(),
-            canonical_group_less);
+            canonical_group_order.begin(),
+            canonical_group_order.end(),
+            [](const auto &lhs,
+               const auto &rhs)
+            {
+                return lhs.first <
+                       rhs.first;
+            });
+
+        std::vector<StandardPointGroup>
+            canonical_groups;
+
+        canonical_groups.reserve(
+            groups_.size());
+
+        for (const auto &[point_text,
+                          group_index] :
+             canonical_group_order)
+        {
+            (void)point_text;
+
+            canonical_groups.push_back(
+                std::move(
+                    groups_[group_index]));
+        }
+
+        groups_ =
+            std::move(
+                canonical_groups);
 
         group_index_by_point_.clear();
 
