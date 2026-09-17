@@ -6,7 +6,6 @@ import argparse
 import pathlib
 from typing import Dict, Iterable, Tuple
 
-import torch
 
 from checkpoint_bundle import (
     load_checkpoint_manifest,
@@ -85,6 +84,8 @@ def check_source_checkpoint(
     arch_id: str,
     model_param_id: str,
 ) -> None:
+    import torch
+
     source = torch.load(str(checkpoint), map_location="cpu", weights_only=False)
     require(isinstance(source, dict), "source checkpoint must be an object")
     bundle = source["bundle"] if "bundle" in source else None
