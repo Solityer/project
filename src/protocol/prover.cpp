@@ -6822,28 +6822,20 @@ namespace gatzk::protocol
                     std::size_t packed_blinder_count = 0;
                     for (const auto &source : flattened.sources)
                     {
-                        const auto *blinder =
-                            registered_blinder_data_for_label(source.label);
-                        const auto blinder_count =
-                            blinder == nullptr ? std::size_t{0} : blinder->size();
+                        const auto *blinder = registered_blinder_data_for_label(source.label);
+                        const auto blinder_count = blinder == nullptr ? std::size_t{0} : blinder->size();
 
                         shape.max_linear_single_source_blinder_count =
-                            std::max(shape.max_linear_single_source_blinder_count,
-                                     blinder_count);
+                            std::max(shape.max_linear_single_source_blinder_count, blinder_count);
 
-                        if (!add_checked(
-                                packed_blinder_count,
-                                blinder_count,
-                                &packed_blinder_count))
+                        if (!add_checked(packed_blinder_count, blinder_count, &packed_blinder_count))
                         {
-                            throw std::runtime_error(
-                                "CUDA t_edge admission blinder shape overflow");
+                            throw std::runtime_error("CUDA t_edge admission blinder shape overflow");
                         }
                     }
 
                     shape.max_linear_source_blinder_count =
-                        std::max(shape.max_linear_source_blinder_count,
-                                 packed_blinder_count);
+                        std::max(shape.max_linear_source_blinder_count, packed_blinder_count);
                     shape.max_linear_target_blinder_count =
                         std::max(
                             shape.max_linear_target_blinder_count,
@@ -6852,848 +6844,891 @@ namespace gatzk::protocol
                                 .size());
                 }
 
-                if (target_size_ >
-                        std::numeric_limits<std::size_t>::max() /
-                            sizeof(FieldElement) ||
-                    program.accesses.size() >
-                        std::numeric_limits<std::size_t>::max() /
-                            sizeof(std::uint32_t))
+                if (target_size_ > std::numeric_limits<std::size_t>::max() / sizeof(FieldElement) ||
+                    program.accesses.size() > std::numeric_limits<std::size_t>::max() / sizeof(std::uint32_t))
                 {
-                    throw std::runtime_error(
-                        "CUDA t_edge admission host shape overflow");
+                    throw std::runtime_error("CUDA t_edge admission host shape overflow");
                 }
 
-                const auto output_bytes =
-                    target_size_ * sizeof(FieldElement);
-                const auto access_slot_bytes =
-                    program.accesses.size() * sizeof(std::uint32_t);
+                const auto output_bytes = target_size_ * sizeof(FieldElement);
+                const auto access_slot_bytes = program.accesses.size() * sizeof(std::uint32_t);
 
-                if (!add_checked(
-                        output_bytes,
-                        access_slot_bytes,
-                        &shape.caller_host_bytes))
+                if (!add_checked(output_bytes, access_slot_bytes, &shape.caller_host_bytes))
                 {
-                    throw std::runtime_error(
-                        "CUDA t_edge admission caller shape overflow");
+                    throw std::runtime_error("CUDA t_edge admission caller shape overflow");
                 }
 
                 return shape;
             }
 
-            if (!cuda_t_edge_executor_can_admit(
-                    target_size_,
-                    cache_bounds.minimum,
-                    leaf_exact_ntt_supported,
-                    admission_shape))
+            bool should_use_cuda_t_edge_engine()
             {
-                progress_note(
-                    "prove:quotient:t_edge:"
-                    "cuda_executor:admission_rejected:"
-                    "target_size=" +
-                    std::to_string(target_size_) +
-                    ":minimum_slots=" +
-                    std::to_string(cache_bounds.minimum));
+                cuda_t_edge_selected_cache_slots_ = 0;
 
-                throw std::runtime_error(
-                    "CUDA t_edge route was requested but minimum GPU execution plan was not admitted: target_size=" +
-                    std::to_string(target_size_) +
-                    " minimum_slots=" +
-                    std::to_string(cache_bounds.minimum));
-            }
-            {
-                throw std::runtime_error(
-                    "CUDA t_edge route "
-                    "is missing evaluation plan");
-            }
+                if (label_ != "t_edge" || !util::route2_options().cuda_field_hotspots)
+                {
+                    return false;
+                }
 
-            const bool leaf_exact_ntt_supported =
-                cuda_t_edge_leaf_exact_ntt_supported(
-                    target_size_);
+                if (!algebra::cuda_field_hotspots_available() || !cuda_t_edge_executor_available())
+                {
+                    throw std::runtime_error("CUDA t_edge route was requested but the CUDA executor is unavailable");
+                }
 
-            if (!leaf_exact_ntt_supported)
-            {
-                return false;
-            }
+                if (edge_evaluation_plan_ ==
+                    nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge route "
+                        "is missing evaluation plan");
+                }
 
-            const auto program =
-                build_t_edge_bound_program(
-                    context_,
-                    challenges_,
-                    trace_
-                        .external_evaluations,
-                    *edge_evaluation_plan_);
+                const bool leaf_exact_ntt_supported = cuda_t_edge_leaf_exact_ntt_supported(target_size_);
 
-            const auto cache_bounds =
-                cuda_t_edge_leaf_cache_bounds(
-                    program);
+                if (!leaf_exact_ntt_supported)
+                {
+                    throw std::runtime_error("CUDA t_edge route was requested but exact GPU leaf NTT is unsupported: target_size=" +
+                                             std::to_string(target_size_));
+                }
 
-            const auto admission_shape =
-                cuda_t_edge_executor_admission_shape(
-                    program);
+                const auto program =
+                    build_t_edge_bound_program(
+                        context_,
+                        challenges_,
+                        trace_
+                            .external_evaluations,
+                        *edge_evaluation_plan_);
 
-            // Preserve the previous route-selection semantics:
-            // if the old correctness minimum cannot be admitted,
-            // do not force the CUDA resident route.
-            if (!cuda_t_edge_executor_can_admit(
-                    target_size_,
-                    cache_bounds.minimum,
-                    leaf_exact_ntt_supported,
-                    admission_shape))
-            {
-                progress_note(
-                    "prove:quotient:t_edge:"
-                    "cuda_executor:admission_rejected:"
-                    "target_size=" +
-                    std::to_string(
-                        target_size_) +
-                    ":minimum_slots=" +
-                    std::to_string(
-                        cache_bounds.minimum));
+                const auto cache_bounds =
+                    cuda_t_edge_leaf_cache_bounds(
+                        program);
 
-                return false;
-            }
+                const auto admission_shape =
+                    cuda_t_edge_executor_admission_shape(
+                        program);
 
-            // Bound the adaptive resident leaf cache separately from the
-            // executor's global admission budget. The global admission
-            // gate protects correctness and OOM safety, while this bound
-            // prevents the leaf cache itself from consuming most of the
-            // available UMA/host memory.
-            std::size_t cache_slot_upper =
-                cache_bounds.desired;
-
-            const auto memory =
-                util::cached_effective_memory_snapshot();
-
-            if (memory.effective_available_known &&
-                target_size_ != 0 &&
-                target_size_ <=
-                    std::numeric_limits<std::size_t>::max() /
-                        sizeof(mcl::Fr))
-            {
-                const auto bytes_per_slot =
-                    target_size_ *
-                    sizeof(mcl::Fr);
-
-                constexpr std::size_t
-                    kMaximumAdaptiveLeafCacheBytes =
-                        std::size_t{32} << 30;
-
-                const auto adaptive_cache_budget =
-                    std::min(
-                        kMaximumAdaptiveLeafCacheBytes,
-                        memory.effective_available_bytes / 4);
-
-                const auto budget_slot_count =
-                    bytes_per_slot == 0
-                        ? cache_bounds.minimum
-                        : adaptive_cache_budget /
-                              bytes_per_slot;
-
-                cache_slot_upper =
-                    std::max(
-                        cache_bounds.minimum,
-                        std::min(
-                            cache_bounds.desired,
-                            budget_slot_count));
-            }
-
-            // Admission cost is monotonic in cache_slot_count:
-            // all slot-dependent executor allocations are linear in the
-            // slot count. Search only within the execution-cache budget;
-            // the existing admission gate remains authoritative.
-            std::size_t low =
-                cache_bounds.minimum;
-
-            std::size_t high =
-                cache_slot_upper;
-
-            while (low < high)
-            {
-                const auto middle =
-                    low +
-                    (high - low + 1) /
-                        2;
-
-                if (cuda_t_edge_executor_can_admit(
+                if (!cuda_t_edge_executor_can_admit(
                         target_size_,
-                        middle,
+                        cache_bounds.minimum,
                         leaf_exact_ntt_supported,
                         admission_shape))
                 {
-                    low = middle;
+                    progress_note("prove:quotient:t_edge:cuda_executor:admission_rejected:target_size=" +
+                                  std::to_string(target_size_) +
+                                  ":minimum_slots=" +
+                                  std::to_string(cache_bounds.minimum));
+
+                    throw std::runtime_error("CUDA t_edge route was requested but minimum GPU execution plan was not admitted: target_size=" +
+                                             std::to_string(target_size_) +
+                                             " minimum_slots=" +
+                                             std::to_string(cache_bounds.minimum));
                 }
-                else
+
+                // Bound the adaptive resident leaf cache separately from the
+                // executor's global admission budget. The global admission
+                // gate protects correctness and OOM safety, while this bound
+                // prevents the leaf cache itself from consuming most of the
+                // available UMA/host memory.
+                std::size_t cache_slot_upper =
+                    cache_bounds.desired;
+
+                const auto memory =
+                    util::cached_effective_memory_snapshot();
+
+                if (memory.effective_available_known &&
+                    target_size_ != 0 &&
+                    target_size_ <=
+                        std::numeric_limits<std::size_t>::max() /
+                            sizeof(mcl::Fr))
                 {
-                    high = middle - 1;
+                    const auto bytes_per_slot =
+                        target_size_ *
+                        sizeof(mcl::Fr);
+
+                    constexpr std::size_t
+                        kMaximumAdaptiveLeafCacheBytes =
+                            std::size_t{32} << 30;
+
+                    const auto adaptive_cache_budget =
+                        std::min(
+                            kMaximumAdaptiveLeafCacheBytes,
+                            memory.effective_available_bytes / 4);
+
+                    const auto budget_slot_count =
+                        bytes_per_slot == 0
+                            ? cache_bounds.minimum
+                            : adaptive_cache_budget /
+                                  bytes_per_slot;
+
+                    cache_slot_upper =
+                        std::max(
+                            cache_bounds.minimum,
+                            std::min(
+                                cache_bounds.desired,
+                                budget_slot_count));
                 }
-            }
 
-            cuda_t_edge_selected_cache_slots_ =
-                low;
+                // Admission cost is monotonic in cache_slot_count:
+                // all slot-dependent executor allocations are linear in the
+                // slot count. Search only within the execution-cache budget;
+                // the existing admission gate remains authoritative.
+                std::size_t low =
+                    cache_bounds.minimum;
 
-            progress_note(
-                "prove:quotient:t_edge:"
-                "cuda_leaf_cache:"
-                "minimum_slots=" +
-                std::to_string(
-                    cache_bounds.minimum) +
-                ":desired_slots=" +
-                std::to_string(
-                    cache_bounds.desired) +
-                ":budget_cap_slots=" +
-                std::to_string(
-                    cache_slot_upper) +
-                ":selected_slots=" +
-                std::to_string(
-                    cuda_t_edge_selected_cache_slots_) +
-                ":full_resident=" +
-                std::to_string(
-                    cuda_t_edge_selected_cache_slots_ ==
-                            cache_bounds.desired
-                        ? 1
-                        : 0));
-            return true;
-        }
+                std::size_t high =
+                    cache_slot_upper;
 
-        void
-        reset_cuda_t_edge_transient_leaf_state()
-        {
-            fast_coset_lookup_.clear();
-            edge_access_sequence_.clear();
-
-            {
-                std::lock_guard<std::mutex>
-                    lock(
-                        coset_cache_mutex_);
-
-                coset_cache_.clear();
-            }
-
-            semantic_coset_groups_.clear();
-
-            semantic_coset_group_by_label_
-                .clear();
-
-            in_memory_coset_bytes_.store(
-                0,
-                std::memory_order_relaxed);
-        }
-
-        std::vector<FieldElement>
-        materialize_cuda_t_edge_coefficients()
-        {
-            if (edge_evaluation_plan_ ==
-                nullptr)
-            {
-                throw std::runtime_error(
-                    "CUDA t_edge route "
-                    "is missing evaluation "
-                    "plan");
-            }
-
-            auto program =
-                build_t_edge_bound_program(
-                    context_,
-                    challenges_,
-                    trace_
-                        .external_evaluations,
-                    *edge_evaluation_plan_);
-
-            const auto leaf_cache_slots =
-                cuda_t_edge_selected_cache_slots_;
-
-            if (leaf_cache_slots == 0)
-            {
-                throw std::runtime_error(
-                    "CUDA t_edge route is missing "
-                    "its admitted leaf-cache capacity");
-            }
-
-            const bool leaf_exact_ntt_supported =
-                cuda_t_edge_leaf_exact_ntt_supported(
-                    target_size_);
-
-            auto executor =
-                create_cuda_t_edge_executor(
-                    domain_->size,
-                    target_size_,
-                    shift_,
-                    domain_->omega,
-                    leaf_cache_slots);
-
-            if (executor == nullptr)
-            {
-                throw std::runtime_error(
-                    "CUDA t_edge route "
-                    "was selected but "
-                    "executor is unavailable");
-            }
-
-            executor->prepare_program(
-                program);
-
-            const bool strict_cuda_leaf_route = true;
-
-            // CUDA t_edge materializes registered derived
-            // linear views directly instead of going through
-            // the CPU coset-prewarm path.  Those views must
-            // use the same zero-domain blinder correction
-            // geometry as the canonical materializer.
-            seed_lazy_blinder_geometry();
-
-            const auto cuda_stats_before =
-                algebra::cuda_execution_stats_snapshot();
-            const auto cuda_kernels_before =
-                algebra::cuda_kernel_invocation_count();
-
-            const auto invalid_slot =
-                std::numeric_limits<
-                    std::uint32_t>::max();
-
-            std::vector<std::uint32_t>
-                access_slots(
-                    program.accesses.size(),
-                    invalid_slot);
-
-            std::vector<std::string>
-                slot_labels(
-                    executor->cache_slot_count());
-
-            std::vector<
-                std::vector<std::string>>
-                term_labels(
-                    program.terms.size());
-
-            std::unordered_map<
-                std::string,
-                std::size_t>
-                remaining_uses;
-
-            std::unordered_map<
-                std::string,
-                std::vector<std::size_t>>
-                leaf_use_terms;
-
-            std::unordered_map<
-                std::string,
-                std::size_t>
-                leaf_use_cursors;
-
-            for (std::size_t term_index = 0;
-                 term_index <
-                 program.terms.size();
-                 ++term_index)
-            {
-                auto &labels =
-                    term_labels[term_index];
-
-                for (const auto access_index :
-                     program
-                         .terms[term_index]
-                         .required_accesses)
+                while (low < high)
                 {
-                    if (access_index >=
-                        program.accesses
-                            .size())
+                    const auto middle =
+                        low +
+                        (high - low + 1) /
+                            2;
+
+                    if (cuda_t_edge_executor_can_admit(
+                            target_size_,
+                            middle,
+                            leaf_exact_ntt_supported,
+                            admission_shape))
+                    {
+                        low = middle;
+                    }
+                    else
+                    {
+                        high = middle - 1;
+                    }
+                }
+
+                cuda_t_edge_selected_cache_slots_ =
+                    low;
+
+                progress_note(
+                    "prove:quotient:t_edge:"
+                    "cuda_leaf_cache:"
+                    "minimum_slots=" +
+                    std::to_string(
+                        cache_bounds.minimum) +
+                    ":desired_slots=" +
+                    std::to_string(
+                        cache_bounds.desired) +
+                    ":budget_cap_slots=" +
+                    std::to_string(
+                        cache_slot_upper) +
+                    ":selected_slots=" +
+                    std::to_string(
+                        cuda_t_edge_selected_cache_slots_) +
+                    ":full_resident=" +
+                    std::to_string(
+                        cuda_t_edge_selected_cache_slots_ ==
+                                cache_bounds.desired
+                            ? 1
+                            : 0));
+                return true;
+            }
+
+            void reset_cuda_t_edge_transient_leaf_state()
+            {
+                fast_coset_lookup_.clear();
+                edge_access_sequence_.clear();
+
+                {
+                    std::lock_guard<std::mutex>
+                        lock(
+                            coset_cache_mutex_);
+
+                    coset_cache_.clear();
+                }
+
+                semantic_coset_groups_.clear();
+
+                semantic_coset_group_by_label_
+                    .clear();
+
+                in_memory_coset_bytes_.store(
+                    0,
+                    std::memory_order_relaxed);
+            }
+
+            std::vector<FieldElement>
+            materialize_cuda_t_edge_coefficients()
+            {
+                if (edge_evaluation_plan_ ==
+                    nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge route "
+                        "is missing evaluation "
+                        "plan");
+                }
+
+                auto program =
+                    build_t_edge_bound_program(
+                        context_,
+                        challenges_,
+                        trace_
+                            .external_evaluations,
+                        *edge_evaluation_plan_);
+
+                const auto leaf_cache_slots =
+                    cuda_t_edge_selected_cache_slots_;
+
+                if (leaf_cache_slots == 0)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge route is missing "
+                        "its admitted leaf-cache capacity");
+                }
+
+                const bool leaf_exact_ntt_supported =
+                    cuda_t_edge_leaf_exact_ntt_supported(
+                        target_size_);
+
+                auto executor =
+                    create_cuda_t_edge_executor(
+                        domain_->size,
+                        target_size_,
+                        shift_,
+                        domain_->omega,
+                        leaf_cache_slots);
+
+                if (executor == nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_edge route "
+                        "was selected but "
+                        "executor is unavailable");
+                }
+
+                executor->prepare_program(
+                    program);
+
+                const bool strict_cuda_leaf_route = true;
+
+                // CUDA t_edge materializes registered derived
+                // linear views directly instead of going through
+                // the CPU coset-prewarm path.  Those views must
+                // use the same zero-domain blinder correction
+                // geometry as the canonical materializer.
+                seed_lazy_blinder_geometry();
+
+                const auto cuda_stats_before =
+                    algebra::cuda_execution_stats_snapshot();
+                const auto cuda_kernels_before =
+                    algebra::cuda_kernel_invocation_count();
+
+                const auto invalid_slot =
+                    std::numeric_limits<
+                        std::uint32_t>::max();
+
+                std::vector<std::uint32_t>
+                    access_slots(
+                        program.accesses.size(),
+                        invalid_slot);
+
+                std::vector<std::string>
+                    slot_labels(
+                        executor->cache_slot_count());
+
+                std::vector<
+                    std::vector<std::string>>
+                    term_labels(
+                        program.terms.size());
+
+                std::unordered_map<
+                    std::string,
+                    std::size_t>
+                    remaining_uses;
+
+                std::unordered_map<
+                    std::string,
+                    std::vector<std::size_t>>
+                    leaf_use_terms;
+
+                std::unordered_map<
+                    std::string,
+                    std::size_t>
+                    leaf_use_cursors;
+
+                for (std::size_t term_index = 0;
+                     term_index <
+                     program.terms.size();
+                     ++term_index)
+                {
+                    auto &labels =
+                        term_labels[term_index];
+
+                    for (const auto access_index :
+                         program
+                             .terms[term_index]
+                             .required_accesses)
+                    {
+                        if (access_index >=
+                            program.accesses
+                                .size())
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge "
+                                "program access "
+                                "index overflow");
+                        }
+
+                        const auto &label =
+                            program
+                                .accesses[access_index]
+                                .label;
+
+                        if (std::find(
+                                labels.begin(),
+                                labels.end(),
+                                label) ==
+                            labels.end())
+                        {
+                            labels.push_back(
+                                label);
+
+                            ++remaining_uses[label];
+
+                            leaf_use_terms[label]
+                                .push_back(
+                                    term_index);
+                        }
+                    }
+
+                    if (labels.size() >
+                        executor->cache_slot_count())
                     {
                         throw std::runtime_error(
-                            "CUDA t_edge "
-                            "program access "
-                            "index overflow");
+                            "CUDA t_edge term "
+                            "requires more leaf "
+                            "slots than cache "
+                            "capacity");
                     }
+                }
 
-                    const auto &label =
-                        program
-                            .accesses[access_index]
-                            .label;
+                std::unordered_map<
+                    std::string,
+                    std::vector<std::size_t>>
+                    access_indices_by_label;
 
-                    if (std::find(
-                            labels.begin(),
-                            labels.end(),
-                            label) ==
-                        labels.end())
-                    {
-                        labels.push_back(
+                access_indices_by_label.reserve(
+                    program.accesses.size());
+
+                for (std::size_t access = 0;
+                     access <
+                     program.accesses.size();
+                     ++access)
+                {
+                    access_indices_by_label[program.accesses[access]
+                                                .label]
+                        .push_back(
+                            access);
+                }
+
+                std::unordered_map<
+                    std::string,
+                    std::size_t>
+                    resident_slot_by_label;
+
+                resident_slot_by_label.reserve(
+                    executor->cache_slot_count());
+
+                const std::array<FieldElement, 1> boundary_evaluation{FieldElement::one()};
+
+                const auto clear_label_mapping =
+                    [&](const std::string &label)
+                {
+                    resident_slot_by_label.erase(
+                        label);
+
+                    const auto it =
+                        access_indices_by_label.find(
                             label);
 
-                        ++remaining_uses[label];
-
-                        leaf_use_terms[label]
-                            .push_back(
-                                term_index);
+                    if (it ==
+                        access_indices_by_label.end())
+                    {
+                        return;
                     }
-                }
 
-                if (labels.size() >
-                    executor->cache_slot_count())
-                {
-                    throw std::runtime_error(
-                        "CUDA t_edge term "
-                        "requires more leaf "
-                        "slots than cache "
-                        "capacity");
-                }
-            }
+                    for (const auto access :
+                         it->second)
+                    {
+                        access_slots[access] =
+                            invalid_slot;
+                    }
+                };
 
-            std::unordered_map<
-                std::string,
-                std::vector<std::size_t>>
-                access_indices_by_label;
-
-            access_indices_by_label.reserve(
-                program.accesses.size());
-
-            for (std::size_t access = 0;
-                 access <
-                 program.accesses.size();
-                 ++access)
-            {
-                access_indices_by_label[program.accesses[access]
-                                            .label]
-                    .push_back(
-                        access);
-            }
-
-            std::unordered_map<
-                std::string,
-                std::size_t>
-                resident_slot_by_label;
-
-            resident_slot_by_label.reserve(
-                executor->cache_slot_count());
-
-            const std::array<FieldElement, 1> boundary_evaluation{FieldElement::one()};
-
-            const auto clear_label_mapping =
-                [&](const std::string &label)
-            {
-                resident_slot_by_label.erase(
-                    label);
-
-                const auto it =
-                    access_indices_by_label.find(
-                        label);
-
-                if (it ==
-                    access_indices_by_label.end())
-                {
-                    return;
-                }
-
-                for (const auto access :
-                     it->second)
-                {
-                    access_slots[access] =
-                        invalid_slot;
-                }
-            };
-
-            const auto bind_label_mapping =
-                [&](const std::string &label,
-                    std::size_t slot)
-            {
-                if (slot >=
-                    slot_labels.size())
-                {
-                    throw std::runtime_error(
-                        "CUDA t_edge label binding slot overflow");
-                }
-
-                resident_slot_by_label
-                    .insert_or_assign(
-                        label,
-                        slot);
-
-                const auto it =
-                    access_indices_by_label.find(
-                        label);
-
-                if (it ==
-                    access_indices_by_label.end())
-                {
-                    return;
-                }
-
-                for (const auto access :
-                     it->second)
-                {
-                    access_slots[access] =
-                        static_cast<
-                            std::uint32_t>(
-                            slot);
-                }
-            };
-
-            const auto
-                try_materialize_direct_gpu_leaf =
+                const auto bind_label_mapping =
                     [&](const std::string &label,
                         std::size_t slot)
-                -> bool
-            {
-                if (const auto *polynomial =
-                        lookup_polynomial(
-                            label);
-                    polynomial != nullptr)
                 {
-                    if (polynomial->basis ==
+                    if (slot >=
+                        slot_labels.size())
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge label binding slot overflow");
+                    }
+
+                    resident_slot_by_label
+                        .insert_or_assign(
+                            label,
+                            slot);
+
+                    const auto it =
+                        access_indices_by_label.find(
+                            label);
+
+                    if (it ==
+                        access_indices_by_label.end())
+                    {
+                        return;
+                    }
+
+                    for (const auto access :
+                         it->second)
+                    {
+                        access_slots[access] =
+                            static_cast<
+                                std::uint32_t>(
+                                slot);
+                    }
+                };
+
+                const auto
+                    try_materialize_direct_gpu_leaf =
+                        [&](const std::string &label,
+                            std::size_t slot)
+                    -> bool
+                {
+                    if (const auto *polynomial =
+                            lookup_polynomial(
+                                label);
+                        polynomial != nullptr)
+                    {
+                        if (polynomial->basis ==
+                                algebra::
+                                    PolynomialBasis::
+                                        Evaluation &&
+                            polynomial->domain !=
+                                nullptr &&
+                            polynomial->domain->size ==
+                                domain_->size &&
+                            polynomial->domain->omega ==
+                                domain_->omega)
+                        {
+                            const auto &values =
+                                polynomial->values();
+
+                            const auto *blinder =
+                                polynomial
+                                        ->zero_domain_blinder
+                                        .empty()
+                                    ? nullptr
+                                    : FieldElement::
+                                          native_array_data(
+                                              polynomial
+                                                  ->zero_domain_blinder
+                                                  .data());
+
+                            return executor->materialize_evaluation_leaf(
+                                slot,
+                                FieldElement::
+                                    native_array_data(
+                                        values.data()),
+                                values.size(),
+                                blinder,
+                                polynomial
+                                    ->zero_domain_blinder
+                                    .size());
+                        }
+
+                        if (polynomial->basis ==
                             algebra::
                                 PolynomialBasis::
-                                    Evaluation &&
-                        polynomial->domain !=
-                            nullptr &&
-                        polynomial->domain->size ==
-                            domain_->size &&
-                        polynomial->domain->omega ==
-                            domain_->omega)
+                                    Coefficient)
+                        {
+                            const auto &coefficients =
+                                polynomial->values();
+
+                            return executor->materialize_coefficient_leaf(
+                                slot,
+                                FieldElement::
+                                    native_array_data(
+                                        coefficients.data()),
+                                coefficients.size());
+                        }
+                    }
+
+                    const auto spilled_it =
+                        trace_.spilled_polynomials
+                            .find(label);
+
+                    if (spilled_it !=
+                            trace_
+                                .spilled_polynomials
+                                .end() &&
+                        spilled_it->second
+                                .domain_name ==
+                            domain_->name)
                     {
-                        const auto &values =
-                            polynomial->values();
+                        auto source_values =
+                            load_spilled_values(
+                                spilled_it->second);
 
                         const auto *blinder =
-                            polynomial
-                                    ->zero_domain_blinder
+                            spilled_it->second
+                                    .zero_domain_blinder
                                     .empty()
                                 ? nullptr
                                 : FieldElement::
                                       native_array_data(
-                                          polynomial
-                                              ->zero_domain_blinder
+                                          spilled_it
+                                              ->second
+                                              .zero_domain_blinder
                                               .data());
 
                         return executor->materialize_evaluation_leaf(
                             slot,
                             FieldElement::
                                 native_array_data(
-                                    values.data()),
-                            values.size(),
+                                    source_values
+                                        .data()),
+                            source_values.size(),
                             blinder,
-                            polynomial
-                                ->zero_domain_blinder
+                            spilled_it->second
+                                .zero_domain_blinder
                                 .size());
                     }
 
-                    if (polynomial->basis ==
-                        algebra::
-                            PolynomialBasis::
-                                Coefficient)
-                    {
-                        const auto &coefficients =
-                            polynomial->values();
-
-                        return executor->materialize_coefficient_leaf(
-                            slot,
-                            FieldElement::
-                                native_array_data(
-                                    coefficients.data()),
-                            coefficients.size());
-                    }
-                }
-
-                const auto spilled_it =
-                    trace_.spilled_polynomials
-                        .find(label);
-
-                if (spilled_it !=
-                        trace_
-                            .spilled_polynomials
-                            .end() &&
-                    spilled_it->second
-                            .domain_name ==
-                        domain_->name)
-                {
-                    auto source_values =
-                        load_spilled_values(
-                            spilled_it->second);
-
-                    const auto *blinder =
-                        spilled_it->second
-                                .zero_domain_blinder
-                                .empty()
-                            ? nullptr
-                            : FieldElement::
-                                  native_array_data(
-                                      spilled_it
-                                          ->second
-                                          .zero_domain_blinder
-                                          .data());
-
-                    return executor->materialize_evaluation_leaf(
-                        slot,
-                        FieldElement::
-                            native_array_data(
-                                source_values
-                                    .data()),
-                        source_values.size(),
-                        blinder,
-                        spilled_it->second
-                            .zero_domain_blinder
-                            .size());
-                }
-
-                return false;
-            };
-
-            struct CudaTEdgeLinearTelemetry
-            {
-                std::size_t descriptor_requests = 0;
-                std::size_t descriptor_eligible = 0;
-                std::size_t linear_hits = 0;
-                std::size_t fallback_capacity = 0;
-                std::size_t fallback_unsupported = 0;
-                std::size_t fallback_api_declined = 0;
-                std::size_t host_derived_fallback = 0;
-                std::size_t direct_api_declined = 0;
-                std::size_t host_leaf_fallback = 0;
-                std::size_t host_leaf_materialization_required = 0;
-                std::size_t flattened_source_count = 0;
-
-                std::size_t full_resident_static_map = 0;
-                std::size_t static_resident_labels = 0;
-                std::size_t direct_eval_batch_calls = 0;
-                std::size_t direct_eval_batch_leaves = 0;
-            } linear_telemetry;
-
-            if (!leaf_exact_ntt_supported)
-            {
-                progress_note(
-                    "prove:quotient:t_edge:cuda_linear:"
-                    "leaf_exact_ntt_supported=0:"
-                    "host_leaf_materialization_required=1");
-            }
-
-            const auto linear_direct_shape_is_supported =
-                [&](const std::string &label)
-            {
-                if (const auto *polynomial =
-                        lookup_polynomial(label);
-                    polynomial != nullptr)
-                {
-                    if (polynomial->basis ==
-                        algebra::PolynomialBasis::Evaluation)
-                    {
-                        return polynomial->domain != nullptr &&
-                               polynomial->domain->size == domain_->size &&
-                               polynomial->domain->omega == domain_->omega &&
-                               polynomial->values().size() <= domain_->size;
-                    }
-                    if (polynomial->basis ==
-                        algebra::PolynomialBasis::Coefficient)
-                    {
-                        const auto maximum_coefficient_count =
-                            target_size_ >= 2
-                                ? target_size_ / 2
-                                : std::size_t{0};
-                        return polynomial->values().size() <=
-                               maximum_coefficient_count;
-                    }
                     return false;
-                }
-                const auto spilled_it =
-                    trace_.spilled_polynomials.find(label);
-                return spilled_it !=
-                           trace_.spilled_polynomials.end() &&
-                       spilled_it->second.domain_name ==
-                           domain_->name &&
-                       spilled_it->second.size == domain_->size;
-            };
+                };
 
-            const auto try_materialize_derived_linear_gpu_leaf =
-                [&](const std::string &target_label,
-                    std::size_t target_slot,
-                    const std::vector<std::string> &required)
-                -> bool
-            {
-                const auto descriptor =
-                    t_edge_derived_linear_descriptor(
-                        target_label);
-                if (!descriptor.has_value())
+                struct CudaTEdgeLinearTelemetry
                 {
-                    return false;
-                }
-                ++linear_telemetry.descriptor_requests;
+                    std::size_t descriptor_requests = 0;
+                    std::size_t descriptor_eligible = 0;
+                    std::size_t linear_hits = 0;
+                    std::size_t fallback_capacity = 0;
+                    std::size_t fallback_unsupported = 0;
+                    std::size_t fallback_api_declined = 0;
+                    std::size_t host_derived_fallback = 0;
+                    std::size_t direct_api_declined = 0;
+                    std::size_t host_leaf_fallback = 0;
+                    std::size_t host_leaf_materialization_required = 0;
+                    std::size_t flattened_source_count = 0;
+
+                    std::size_t full_resident_static_map = 0;
+                    std::size_t static_resident_labels = 0;
+                    std::size_t direct_eval_batch_calls = 0;
+                    std::size_t direct_eval_batch_leaves = 0;
+                } linear_telemetry;
 
                 if (!leaf_exact_ntt_supported)
                 {
-                    ++linear_telemetry
-                          .host_leaf_materialization_required;
-                    return false;
+                    progress_note(
+                        "prove:quotient:t_edge:cuda_linear:"
+                        "leaf_exact_ntt_supported=0:"
+                        "host_leaf_materialization_required=1");
                 }
 
-                const auto flattened =
-                    flatten_t_edge_descriptor_sources(
-                        *descriptor);
-                if (flattened.status !=
-                        TEdgeDerivedLinearFlattenStatus::Success ||
-                    flattened.sources.empty())
-                {
-                    ++linear_telemetry.fallback_unsupported;
-                    return false;
-                }
-                linear_telemetry.flattened_source_count +=
-                    flattened.sources.size();
-
-                if (target_slot >= slot_labels.size() ||
-                    !slot_labels[target_slot].empty())
-                {
-                    ++linear_telemetry.fallback_capacity;
-                    return false;
-                }
-
-                const auto is_required =
+                const auto linear_direct_shape_is_supported =
                     [&](const std::string &label)
                 {
-                    return std::find(
-                               required.begin(),
-                               required.end(),
-                               label) != required.end();
-                };
-
-                std::unordered_map<
-                    std::string,
-                    std::size_t>
-                    source_slots_by_label;
-                source_slots_by_label.reserve(
-                    flattened.sources.size());
-                std::vector<std::pair<
-                    std::string,
-                    std::size_t>>
-                    missing_sources;
-                std::unordered_set<std::size_t> reserved_slots;
-                reserved_slots.insert(target_slot);
-                for (const auto &source : flattened.sources)
-                {
-                    const auto resident = resident_slot_by_label.find(source.label);
-                    if (resident == resident_slot_by_label.end())
-                        continue;
-                    const auto slot = resident->second;
-                    if (slot >= slot_labels.size() || slot == target_slot || slot_labels[slot] != source.label)
-                        throw std::runtime_error("CUDA t_edge has an invalid resident source binding: " + source.label);
-                    reserved_slots.insert(slot);
-                }
-
-                for (const auto &source : flattened.sources)
-                {
-                    std::size_t source_slot =
-                        slot_labels.size();
-
-                    const auto resident_it =
-                        resident_slot_by_label.find(
-                            source.label);
-
-                    if (resident_it !=
-                        resident_slot_by_label.end())
+                    if (const auto *polynomial =
+                            lookup_polynomial(label);
+                        polynomial != nullptr)
                     {
-                        source_slot =
-                            resident_it->second;
-                    }
-
-                    if (source_slot <
-                        slot_labels.size())
-                    {
-                        source_slots_by_label.emplace(
-                            source.label,
-                            source_slot);
-                        continue;
-                    }
-
-                    std::size_t selected_slot =
-                        slot_labels.size();
-                    std::size_t selected_next_use = 0;
-                    for (std::size_t slot = 0;
-                         slot < slot_labels.size();
-                         ++slot)
-                    {
-                        if (slot == target_slot ||
-                            reserved_slots.contains(slot))
+                        if (polynomial->basis ==
+                            algebra::PolynomialBasis::Evaluation)
                         {
-                            continue;
+                            return polynomial->domain != nullptr &&
+                                   polynomial->domain->size == domain_->size &&
+                                   polynomial->domain->omega == domain_->omega &&
+                                   polynomial->values().size() <= domain_->size;
                         }
-                        const auto &candidate =
-                            slot_labels[slot];
-                        if (!candidate.empty() &&
-                            is_required(candidate))
+                        if (polynomial->basis ==
+                            algebra::PolynomialBasis::Coefficient)
                         {
-                            continue;
+                            const auto maximum_coefficient_count =
+                                target_size_ >= 2
+                                    ? target_size_ / 2
+                                    : std::size_t{0};
+                            return polynomial->values().size() <=
+                                   maximum_coefficient_count;
                         }
-                        if (candidate.empty())
-                        {
-                            selected_slot = slot;
-                            break;
-                        }
-                        std::size_t candidate_next_use =
-                            std::numeric_limits<std::size_t>::max();
-                        const auto use_it =
-                            leaf_use_terms.find(candidate);
-                        if (use_it != leaf_use_terms.end())
-                        {
-                            const auto cursor_it =
-                                leaf_use_cursors.find(candidate);
-                            const auto cursor =
-                                cursor_it == leaf_use_cursors.end()
-                                    ? std::size_t{0}
-                                    : cursor_it->second;
-                            if (cursor < use_it->second.size())
-                            {
-                                candidate_next_use =
-                                    use_it->second[cursor];
-                            }
-                        }
-                        if (selected_slot == slot_labels.size() ||
-                            candidate_next_use > selected_next_use)
-                        {
-                            selected_slot = slot;
-                            selected_next_use =
-                                candidate_next_use;
-                        }
-                    }
-                    if (selected_slot == slot_labels.size())
-                    {
-                        ++linear_telemetry.fallback_capacity;
                         return false;
                     }
-                    reserved_slots.insert(selected_slot);
-                    missing_sources.push_back({source.label,
-                                               selected_slot});
-                    source_slots_by_label.emplace(
-                        source.label,
-                        selected_slot);
-                }
+                    const auto spilled_it =
+                        trace_.spilled_polynomials.find(label);
+                    return spilled_it !=
+                               trace_.spilled_polynomials.end() &&
+                           spilled_it->second.domain_name ==
+                               domain_->name &&
+                           spilled_it->second.size == domain_->size;
+                };
 
-                for (const auto &source : flattened.sources)
+                const auto try_materialize_derived_linear_gpu_leaf =
+                    [&](const std::string &target_label,
+                        std::size_t target_slot,
+                        const std::vector<std::string> &required)
+                    -> bool
                 {
-                    if (!linear_direct_shape_is_supported(
-                            source.label))
+                    const auto descriptor =
+                        t_edge_derived_linear_descriptor(
+                            target_label);
+                    if (!descriptor.has_value())
+                    {
+                        return false;
+                    }
+                    ++linear_telemetry.descriptor_requests;
+
+                    if (!leaf_exact_ntt_supported)
+                    {
+                        ++linear_telemetry
+                              .host_leaf_materialization_required;
+                        return false;
+                    }
+
+                    const auto flattened =
+                        flatten_t_edge_descriptor_sources(
+                            *descriptor);
+                    if (flattened.status !=
+                            TEdgeDerivedLinearFlattenStatus::Success ||
+                        flattened.sources.empty())
                     {
                         ++linear_telemetry.fallback_unsupported;
                         return false;
                     }
-                }
-                ++linear_telemetry.descriptor_eligible;
+                    linear_telemetry.flattened_source_count +=
+                        flattened.sources.size();
 
-                std::vector<std::size_t> newly_loaded_slots;
-                newly_loaded_slots.reserve(
-                    missing_sources.size());
-                for (const auto &[source_label, source_slot] :
-                     missing_sources)
-                {
-                    if (!slot_labels[source_slot].empty())
+                    if (target_slot >= slot_labels.size() ||
+                        !slot_labels[target_slot].empty())
                     {
-                        clear_label_mapping(
-                            slot_labels[source_slot]);
-
-                        executor->release_leaf(
-                            source_slot);
-
-                        slot_labels[source_slot]
-                            .clear();
+                        ++linear_telemetry.fallback_capacity;
+                        return false;
                     }
 
-                    if (!try_materialize_direct_gpu_leaf(
-                            source_label,
-                            source_slot))
+                    const auto is_required =
+                        [&](const std::string &label)
                     {
-                        for (const auto loaded_slot :
-                             newly_loaded_slots)
+                        return std::find(
+                                   required.begin(),
+                                   required.end(),
+                                   label) != required.end();
+                    };
+
+                    std::unordered_map<
+                        std::string,
+                        std::size_t>
+                        source_slots_by_label;
+                    source_slots_by_label.reserve(
+                        flattened.sources.size());
+                    std::vector<std::pair<
+                        std::string,
+                        std::size_t>>
+                        missing_sources;
+                    std::unordered_set<std::size_t> reserved_slots;
+                    reserved_slots.insert(target_slot);
+                    for (const auto &source : flattened.sources)
+                    {
+                        const auto resident = resident_slot_by_label.find(source.label);
+                        if (resident == resident_slot_by_label.end())
+                            continue;
+                        const auto slot = resident->second;
+                        if (slot >= slot_labels.size() || slot == target_slot || slot_labels[slot] != source.label)
+                            throw std::runtime_error("CUDA t_edge has an invalid resident source binding: " + source.label);
+                        reserved_slots.insert(slot);
+                    }
+
+                    for (const auto &source : flattened.sources)
+                    {
+                        std::size_t source_slot =
+                            slot_labels.size();
+
+                        const auto resident_it =
+                            resident_slot_by_label.find(
+                                source.label);
+
+                        if (resident_it !=
+                            resident_slot_by_label.end())
+                        {
+                            source_slot =
+                                resident_it->second;
+                        }
+
+                        if (source_slot <
+                            slot_labels.size())
+                        {
+                            source_slots_by_label.emplace(
+                                source.label,
+                                source_slot);
+                            continue;
+                        }
+
+                        std::size_t selected_slot =
+                            slot_labels.size();
+                        std::size_t selected_next_use = 0;
+                        for (std::size_t slot = 0;
+                             slot < slot_labels.size();
+                             ++slot)
+                        {
+                            if (slot == target_slot ||
+                                reserved_slots.contains(slot))
+                            {
+                                continue;
+                            }
+                            const auto &candidate =
+                                slot_labels[slot];
+                            if (!candidate.empty() &&
+                                is_required(candidate))
+                            {
+                                continue;
+                            }
+                            if (candidate.empty())
+                            {
+                                selected_slot = slot;
+                                break;
+                            }
+                            std::size_t candidate_next_use =
+                                std::numeric_limits<std::size_t>::max();
+                            const auto use_it =
+                                leaf_use_terms.find(candidate);
+                            if (use_it != leaf_use_terms.end())
+                            {
+                                const auto cursor_it =
+                                    leaf_use_cursors.find(candidate);
+                                const auto cursor =
+                                    cursor_it == leaf_use_cursors.end()
+                                        ? std::size_t{0}
+                                        : cursor_it->second;
+                                if (cursor < use_it->second.size())
+                                {
+                                    candidate_next_use =
+                                        use_it->second[cursor];
+                                }
+                            }
+                            if (selected_slot == slot_labels.size() ||
+                                candidate_next_use > selected_next_use)
+                            {
+                                selected_slot = slot;
+                                selected_next_use =
+                                    candidate_next_use;
+                            }
+                        }
+                        if (selected_slot == slot_labels.size())
+                        {
+                            ++linear_telemetry.fallback_capacity;
+                            return false;
+                        }
+                        reserved_slots.insert(selected_slot);
+                        missing_sources.push_back({source.label,
+                                                   selected_slot});
+                        source_slots_by_label.emplace(
+                            source.label,
+                            selected_slot);
+                    }
+
+                    for (const auto &source : flattened.sources)
+                    {
+                        if (!linear_direct_shape_is_supported(
+                                source.label))
+                        {
+                            ++linear_telemetry.fallback_unsupported;
+                            return false;
+                        }
+                    }
+                    ++linear_telemetry.descriptor_eligible;
+
+                    std::vector<std::size_t> newly_loaded_slots;
+                    newly_loaded_slots.reserve(
+                        missing_sources.size());
+                    for (const auto &[source_label, source_slot] :
+                         missing_sources)
+                    {
+                        if (!slot_labels[source_slot].empty())
+                        {
+                            clear_label_mapping(
+                                slot_labels[source_slot]);
+
+                            executor->release_leaf(
+                                source_slot);
+
+                            slot_labels[source_slot]
+                                .clear();
+                        }
+
+                        if (!try_materialize_direct_gpu_leaf(
+                                source_label,
+                                source_slot))
+                        {
+                            for (const auto loaded_slot :
+                                 newly_loaded_slots)
+                            {
+                                clear_label_mapping(
+                                    slot_labels[loaded_slot]);
+                                executor->release_leaf(loaded_slot);
+                                slot_labels[loaded_slot].clear();
+                            }
+                            ++linear_telemetry.fallback_api_declined;
+                            return false;
+                        }
+                        slot_labels[source_slot] = source_label;
+                        bind_label_mapping(
+                            source_label,
+                            source_slot);
+                        newly_loaded_slots.push_back(source_slot);
+                    }
+
+                    std::vector<CudaTEdgeLinearSource> cuda_sources;
+                    cuda_sources.reserve(flattened.sources.size());
+                    for (const auto &source : flattened.sources)
+                    {
+                        const auto source_slot_it =
+                            source_slots_by_label.find(
+                                source.label);
+                        if (source_slot_it ==
+                            source_slots_by_label.end())
+                        {
+                            throw std::runtime_error(
+                                "CUDA t_edge linear source slot binding is missing: " +
+                                source.label);
+                        }
+                        const auto *blinder =
+                            registered_blinder_data_for_label(
+                                source.label);
+                        cuda_sources.push_back(
+                            CudaTEdgeLinearSource{
+                                .slot = static_cast<
+                                    std::uint32_t>(
+                                    source_slot_it->second),
+                                .scale = source.scale,
+                                .zero_domain_blinder =
+                                    blinder != nullptr &&
+                                            !blinder->empty()
+                                        ? FieldElement::native_array_data(
+                                              blinder->data())
+                                        : nullptr,
+                                .blinder_count =
+                                    blinder == nullptr
+                                        ? 0
+                                        : blinder->size(),
+                            });
+                    }
+
+                    const auto *target_blinder =
+                        descriptor->target_zero_domain_blinder.empty()
+                            ? nullptr
+                            : FieldElement::native_array_data(
+                                  descriptor->target_zero_domain_blinder.data());
+                    if (!executor->materialize_linear_leaf(
+                            target_slot,
+                            cuda_sources,
+                            target_blinder,
+                            descriptor->target_zero_domain_blinder.size(),
+                            CudaTEdgeLeafLayout::Split))
+                    {
+                        for (const auto loaded_slot : newly_loaded_slots)
                         {
                             clear_label_mapping(
                                 slot_labels[loaded_slot]);
@@ -7703,510 +7738,505 @@ namespace gatzk::protocol
                         ++linear_telemetry.fallback_api_declined;
                         return false;
                     }
-                    slot_labels[source_slot] = source_label;
-                    bind_label_mapping(
-                        source_label,
-                        source_slot);
-                    newly_loaded_slots.push_back(source_slot);
-                }
 
-                std::vector<CudaTEdgeLinearSource> cuda_sources;
-                cuda_sources.reserve(flattened.sources.size());
-                for (const auto &source : flattened.sources)
-                {
-                    const auto source_slot_it =
-                        source_slots_by_label.find(
-                            source.label);
-                    if (source_slot_it ==
-                        source_slots_by_label.end())
-                    {
-                        throw std::runtime_error(
-                            "CUDA t_edge linear source slot binding is missing: " +
-                            source.label);
-                    }
-                    const auto *blinder =
-                        registered_blinder_data_for_label(
-                            source.label);
-                    cuda_sources.push_back(
-                        CudaTEdgeLinearSource{
-                            .slot = static_cast<
-                                std::uint32_t>(
-                                source_slot_it->second),
-                            .scale = source.scale,
-                            .zero_domain_blinder =
-                                blinder != nullptr &&
-                                        !blinder->empty()
-                                    ? FieldElement::native_array_data(
-                                          blinder->data())
-                                    : nullptr,
-                            .blinder_count =
-                                blinder == nullptr
-                                    ? 0
-                                    : blinder->size(),
-                        });
-                }
-
-                const auto *target_blinder =
-                    descriptor->target_zero_domain_blinder.empty()
-                        ? nullptr
-                        : FieldElement::native_array_data(
-                              descriptor->target_zero_domain_blinder.data());
-                if (!executor->materialize_linear_leaf(
-                        target_slot,
-                        cuda_sources,
-                        target_blinder,
-                        descriptor->target_zero_domain_blinder.size(),
-                        CudaTEdgeLeafLayout::Split))
-                {
+                    ++linear_telemetry.linear_hits;
                     for (const auto loaded_slot : newly_loaded_slots)
                     {
-                        clear_label_mapping(
-                            slot_labels[loaded_slot]);
-                        executor->release_leaf(loaded_slot);
-                        slot_labels[loaded_slot].clear();
+                        const auto &loaded_label =
+                            slot_labels[loaded_slot];
+                        if (!is_required(loaded_label))
+                        {
+                            clear_label_mapping(loaded_label);
+                            executor->release_leaf(loaded_slot);
+                            slot_labels[loaded_slot].clear();
+                        }
                     }
-                    ++linear_telemetry.fallback_api_declined;
-                    return false;
-                }
-
-                ++linear_telemetry.linear_hits;
-                for (const auto loaded_slot : newly_loaded_slots)
+                    return true;
+                };
+                const auto materialize_label = [&](const std::string &label, std::size_t slot,
+                                                   const std::vector<std::string> &required)
                 {
-                    const auto &loaded_label =
-                        slot_labels[loaded_slot];
-                    if (!is_required(loaded_label))
+                    if (label == "__t_edge_boundary_l0")
                     {
-                        clear_label_mapping(loaded_label);
-                        executor->release_leaf(loaded_slot);
-                        slot_labels[loaded_slot].clear();
-                    }
-                }
-                return true;
-            };
-            const auto materialize_label = [&](const std::string &label, std::size_t slot,
-                                               const std::vector<std::string> &required)
-            {
-                if (label == "__t_edge_boundary_l0")
-                {
-                    if (!executor->materialize_evaluation_leaf(slot,
-                                                               FieldElement::native_array_data(boundary_evaluation.data()), 1, nullptr, 0))
-                        throw std::runtime_error("CUDA t_edge boundary leaf was not admitted");
-                    reset_cuda_t_edge_transient_leaf_state();
-                    return;
-                }
-                // Preserve the canonical cache -> derived -> direct /
-                // spill resolver order.  A descriptor target must first
-                // attempt resident-linear materialization; every decline
-                // (capacity, unsupported source, or API) falls directly
-                // through to the host derived coset view.  In particular,
-                // do not let a colliding direct target bypass its derived
-                // resolver here.
-                const auto descriptor =
-                    t_edge_derived_linear_descriptor(label);
-                if (label != "__t_edge_boundary_l0" &&
-                    descriptor.has_value())
-                {
-                    if (try_materialize_derived_linear_gpu_leaf(
-                            label,
-                            slot,
-                            required))
-                    {
+                        if (!executor->materialize_evaluation_leaf(slot,
+                                                                   FieldElement::native_array_data(boundary_evaluation.data()), 1, nullptr, 0))
+                            throw std::runtime_error("CUDA t_edge boundary leaf was not admitted");
                         reset_cuda_t_edge_transient_leaf_state();
                         return;
                     }
-                    if (strict_cuda_leaf_route)
+                    // Preserve the canonical cache -> derived -> direct /
+                    // spill resolver order.  A descriptor target must first
+                    // attempt resident-linear materialization; every decline
+                    // (capacity, unsupported source, or API) falls directly
+                    // through to the host derived coset view.  In particular,
+                    // do not let a colliding direct target bypass its derived
+                    // resolver here.
+                    const auto descriptor =
+                        t_edge_derived_linear_descriptor(label);
+                    if (label != "__t_edge_boundary_l0" &&
+                        descriptor.has_value())
                     {
-                        throw std::runtime_error(
-                            "CUDA t_edge strict leaf route was selected but "
-                            "linear leaf execution failed: label=" +
-                            label +
-                            " capacity_declines=" + std::to_string(linear_telemetry.fallback_capacity) +
-                            " unsupported_declines=" + std::to_string(linear_telemetry.fallback_unsupported) +
-                            " api_declines=" + std::to_string(linear_telemetry.fallback_api_declined) +
-                            " target_size=" + std::to_string(target_size_) +
-                            " domain=" +
-                            (domain_ == nullptr
-                                 ? std::string("unknown")
-                                 : domain_->name) +
-                            " route=cuda_t_edge_linear");
-                    }
-                    ++linear_telemetry.host_derived_fallback;
-                }
-                else if (label != "__t_edge_boundary_l0")
-                {
-                    const bool direct_source_exists =
-                        lookup_polynomial(label) != nullptr ||
-                        trace_.spilled_polynomials.contains(label);
-                    if (leaf_exact_ntt_supported &&
-                        try_materialize_direct_gpu_leaf(
-                            label,
-                            slot))
-                    {
-                        reset_cuda_t_edge_transient_leaf_state();
-                        return;
-                    }
-                    if (leaf_exact_ntt_supported &&
-                        direct_source_exists)
-                    {
+                        if (try_materialize_derived_linear_gpu_leaf(
+                                label,
+                                slot,
+                                required))
+                        {
+                            reset_cuda_t_edge_transient_leaf_state();
+                            return;
+                        }
                         if (strict_cuda_leaf_route)
                         {
                             throw std::runtime_error(
                                 "CUDA t_edge strict leaf route was selected but "
-                                "direct leaf execution failed: label=" +
+                                "linear leaf execution failed: label=" +
                                 label +
+                                " capacity_declines=" + std::to_string(linear_telemetry.fallback_capacity) +
+                                " unsupported_declines=" + std::to_string(linear_telemetry.fallback_unsupported) +
+                                " api_declines=" + std::to_string(linear_telemetry.fallback_api_declined) +
                                 " target_size=" + std::to_string(target_size_) +
                                 " domain=" +
                                 (domain_ == nullptr
                                      ? std::string("unknown")
                                      : domain_->name) +
-                                " route=cuda_t_edge_direct_leaf");
+                                " route=cuda_t_edge_linear");
                         }
-                        ++linear_telemetry.direct_api_declined;
+                        ++linear_telemetry.host_derived_fallback;
+                    }
+                    else if (label != "__t_edge_boundary_l0")
+                    {
+                        const bool direct_source_exists =
+                            lookup_polynomial(label) != nullptr ||
+                            trace_.spilled_polynomials.contains(label);
+                        if (leaf_exact_ntt_supported &&
+                            try_materialize_direct_gpu_leaf(
+                                label,
+                                slot))
+                        {
+                            reset_cuda_t_edge_transient_leaf_state();
+                            return;
+                        }
+                        if (leaf_exact_ntt_supported &&
+                            direct_source_exists)
+                        {
+                            if (strict_cuda_leaf_route)
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge strict leaf route was selected but "
+                                    "direct leaf execution failed: label=" +
+                                    label +
+                                    " target_size=" + std::to_string(target_size_) +
+                                    " domain=" +
+                                    (domain_ == nullptr
+                                         ? std::string("unknown")
+                                         : domain_->name) +
+                                    " route=cuda_t_edge_direct_leaf");
+                            }
+                            ++linear_telemetry.direct_api_declined;
+                        }
+                        else if (!leaf_exact_ntt_supported)
+                        {
+                            ++linear_telemetry
+                                  .host_leaf_materialization_required;
+                        }
+                        ++linear_telemetry.host_leaf_fallback;
                     }
                     else if (!leaf_exact_ntt_supported)
                     {
                         ++linear_telemetry
                               .host_leaf_materialization_required;
                     }
-                    ++linear_telemetry.host_leaf_fallback;
-                }
-                else if (!leaf_exact_ntt_supported)
-                {
-                    ++linear_telemetry
-                          .host_leaf_materialization_required;
-                }
 
-                throw std::runtime_error(
-                    "CUDA t_edge leaf has no admitted GPU execution path: label=" + label +
-                    " target_size=" + std::to_string(target_size_) +
-                    " cache_slots=" + std::to_string(executor->cache_slot_count()) +
-                    " capacity_declines=" + std::to_string(linear_telemetry.fallback_capacity) +
-                    " unsupported_declines=" + std::to_string(linear_telemetry.fallback_unsupported) +
-                    " api_declines=" + std::to_string(linear_telemetry.fallback_api_declined));
-            };
-
-            cuda_t_edge_transient_leaf_mode_ =
-                true;
-
-            try
-            {
-                constexpr std::size_t
-                    kMaximumTermsPerBatch = 32;
-
-                std::size_t term_batch_count = 0;
-                std::size_t batched_term_count = 0;
-                std::size_t maximum_terms_in_batch = 0;
-
-                const auto register_bucket =
-                    [](std::size_t depth)
-                {
-                    if (depth <= 4)
-                    {
-                        return std::size_t{4};
-                    }
-
-                    if (depth <= 8)
-                    {
-                        return std::size_t{8};
-                    }
-
-                    if (depth <= 16)
-                    {
-                        return std::size_t{16};
-                    }
-
-                    if (depth <= 32)
-                    {
-                        return std::size_t{32};
-                    }
-
-                    return static_cast<std::size_t>(
-                        kMaximumProgramStackDepth);
+                    throw std::runtime_error(
+                        "CUDA t_edge leaf has no admitted GPU execution path: label=" + label +
+                        " target_size=" + std::to_string(target_size_) +
+                        " cache_slots=" + std::to_string(executor->cache_slot_count()) +
+                        " capacity_declines=" + std::to_string(linear_telemetry.fallback_capacity) +
+                        " unsupported_declines=" + std::to_string(linear_telemetry.fallback_unsupported) +
+                        " api_declines=" + std::to_string(linear_telemetry.fallback_api_declined));
                 };
 
-                const auto append_required_closure =
-                    [&](const std::string &label,
-                        std::vector<std::string>
-                            *ordered,
-                        std::unordered_set<
-                            std::string> *seen)
+                cuda_t_edge_transient_leaf_mode_ =
+                    true;
+
+                try
                 {
-                    if (ordered == nullptr ||
-                        seen == nullptr)
+                    constexpr std::size_t
+                        kMaximumTermsPerBatch = 32;
+
+                    std::size_t term_batch_count = 0;
+                    std::size_t batched_term_count = 0;
+                    std::size_t maximum_terms_in_batch = 0;
+
+                    const auto register_bucket =
+                        [](std::size_t depth)
                     {
-                        throw std::runtime_error(
-                            "CUDA t_edge batch dependency collector received null storage");
-                    }
-
-                    if (seen->insert(label).second)
-                    {
-                        ordered->push_back(label);
-                    }
-
-                    const auto descriptor =
-                        t_edge_derived_linear_descriptor(
-                            label);
-
-                    if (!descriptor.has_value())
-                    {
-                        return;
-                    }
-
-                    const auto flattened =
-                        flatten_t_edge_descriptor_sources(
-                            *descriptor);
-
-                    const auto *sources =
-                        &descriptor->sources;
-
-                    if (flattened.status ==
-                        TEdgeDerivedLinearFlattenStatus::
-                            Success)
-                    {
-                        sources =
-                            &flattened.sources;
-                    }
-
-                    for (const auto &source :
-                         *sources)
-                    {
-                        if (source.scale.is_zero())
+                        if (depth <= 4)
                         {
-                            continue;
+                            return std::size_t{4};
                         }
 
-                        if (seen->insert(
-                                    source.label)
-                                .second)
+                        if (depth <= 8)
                         {
-                            ordered->push_back(
-                                source.label);
+                            return std::size_t{8};
                         }
-                    }
-                };
 
-                // When the complete dependency closure fits in the
-                // admitted cache, bind every logical leaf to one immutable
-                // slot before any term kernel executes. This is purely an
-                // execution schedule: labels, polynomials, blinders and
-                // term order are unchanged.
-                std::vector<std::string>
-                    full_resident_labels;
+                        if (depth <= 16)
+                        {
+                            return std::size_t{16};
+                        }
 
-                std::unordered_set<std::string>
-                    full_resident_seen;
+                        if (depth <= 32)
+                        {
+                            return std::size_t{32};
+                        }
 
-                full_resident_labels.reserve(
-                    executor->cache_slot_count());
+                        return static_cast<std::size_t>(
+                            kMaximumProgramStackDepth);
+                    };
 
-                full_resident_seen.reserve(
-                    executor->cache_slot_count());
-
-                for (const auto &labels :
-                     term_labels)
-                {
-                    for (const auto &label :
-                         labels)
+                    const auto append_required_closure =
+                        [&](const std::string &label,
+                            std::vector<std::string>
+                                *ordered,
+                            std::unordered_set<
+                                std::string> *seen)
                     {
-                        append_required_closure(
-                            label,
-                            &full_resident_labels,
-                            &full_resident_seen);
-                    }
-                }
-
-                const bool
-                    use_full_resident_static_map =
-                        !full_resident_labels.empty() &&
-                        full_resident_labels.size() <=
-                            executor->cache_slot_count();
-
-                if (use_full_resident_static_map)
-                {
-                    linear_telemetry
-                        .full_resident_static_map = 1;
-
-                    linear_telemetry
-                        .static_resident_labels =
-                        full_resident_labels.size();
-
-                    std::unordered_map<
-                        std::string,
-                        std::size_t>
-                        static_slot_by_label;
-
-                    static_slot_by_label.reserve(
-                        full_resident_labels.size());
-
-                    for (std::size_t slot = 0;
-                         slot <
-                         full_resident_labels.size();
-                         ++slot)
-                    {
-                        const auto [_, inserted] =
-                            static_slot_by_label.emplace(
-                                full_resident_labels[slot],
-                                slot);
-
-                        if (!inserted)
+                        if (ordered == nullptr ||
+                            seen == nullptr)
                         {
                             throw std::runtime_error(
-                                "CUDA t_edge full-resident plan contains a duplicate label");
+                                "CUDA t_edge batch dependency collector received null storage");
                         }
-                    }
 
-                    // Fill the complete immutable access map immediately.
-                    // Program accesses which are not referenced by any
-                    // term may remain invalid; no kernel can read them.
-                    for (std::size_t access = 0;
-                         access <
-                         program.accesses.size();
-                         ++access)
-                    {
-                        const auto found =
-                            static_slot_by_label.find(
-                                program.accesses[access]
-                                    .label);
-
-                        if (found !=
-                            static_slot_by_label.end())
+                        if (seen->insert(label).second)
                         {
-                            access_slots[access] =
-                                static_cast<
-                                    std::uint32_t>(
-                                    found->second);
-                        }
-                    }
-
-                    std::vector<
-                        CudaTEdgeEvaluationLeafRequest>
-                        evaluation_requests;
-
-                    std::vector<
-                        std::pair<
-                            std::string,
-                            std::size_t>>
-                        evaluation_bindings;
-
-                    evaluation_requests.reserve(
-                        full_resident_labels.size());
-
-                    evaluation_bindings.reserve(
-                        full_resident_labels.size());
-
-                    // Collect every independent registered evaluation leaf
-                    // first. Their backing vectors and blinders live in
-                    // TraceArtifacts / ProtocolContext for the complete
-                    // materializer lifetime, so request pointers remain
-                    // valid while the bounded worker team executes.
-                    for (const auto &label :
-                         full_resident_labels)
-                    {
-                        if (label ==
-                            "__t_edge_boundary_l0")
-                        {
-                            continue;
+                            ordered->push_back(label);
                         }
 
-                        if (t_edge_derived_linear_descriptor(
-                                label)
-                                .has_value())
-                        {
-                            continue;
-                        }
-
-                        const auto *polynomial =
-                            lookup_polynomial(
+                        const auto descriptor =
+                            t_edge_derived_linear_descriptor(
                                 label);
 
-                        if (polynomial == nullptr ||
-                            polynomial->basis !=
-                                algebra::
-                                    PolynomialBasis::
-                                        Evaluation ||
-                            polynomial->domain ==
-                                nullptr ||
-                            polynomial->domain->size !=
-                                domain_->size ||
-                            polynomial->domain->omega !=
-                                domain_->omega)
+                        if (!descriptor.has_value())
                         {
-                            continue;
+                            return;
                         }
 
-                        const auto slot_it =
-                            static_slot_by_label.find(
-                                label);
+                        const auto flattened =
+                            flatten_t_edge_descriptor_sources(
+                                *descriptor);
 
-                        if (slot_it ==
-                            static_slot_by_label.end())
+                        const auto *sources =
+                            &descriptor->sources;
+
+                        if (flattened.status ==
+                            TEdgeDerivedLinearFlattenStatus::
+                                Success)
                         {
-                            throw std::runtime_error(
-                                "CUDA t_edge static evaluation leaf lacks a slot");
+                            sources =
+                                &flattened.sources;
                         }
 
-                        const auto &values =
-                            polynomial->values();
-
-                        const auto &blinder =
-                            polynomial
-                                ->zero_domain_blinder;
-
-                        evaluation_requests.push_back(
-                            CudaTEdgeEvaluationLeafRequest{
-                                .slot =
-                                    slot_it->second,
-                                .values =
-                                    values.empty()
-                                        ? nullptr
-                                        : FieldElement::
-                                              native_array_data(
-                                                  values.data()),
-                                .value_count =
-                                    values.size(),
-                                .zero_domain_blinder =
-                                    blinder.empty()
-                                        ? nullptr
-                                        : FieldElement::
-                                              native_array_data(
-                                                  blinder.data()),
-                                .blinder_count =
-                                    blinder.size(),
-                            });
-
-                        evaluation_bindings.push_back(
+                        for (const auto &source :
+                             *sources)
+                        {
+                            if (source.scale.is_zero())
                             {
+                                continue;
+                            }
+
+                            if (seen->insert(
+                                        source.label)
+                                    .second)
+                            {
+                                ordered->push_back(
+                                    source.label);
+                            }
+                        }
+                    };
+
+                    // When the complete dependency closure fits in the
+                    // admitted cache, bind every logical leaf to one immutable
+                    // slot before any term kernel executes. This is purely an
+                    // execution schedule: labels, polynomials, blinders and
+                    // term order are unchanged.
+                    std::vector<std::string>
+                        full_resident_labels;
+
+                    std::unordered_set<std::string>
+                        full_resident_seen;
+
+                    full_resident_labels.reserve(
+                        executor->cache_slot_count());
+
+                    full_resident_seen.reserve(
+                        executor->cache_slot_count());
+
+                    for (const auto &labels :
+                         term_labels)
+                    {
+                        for (const auto &label :
+                             labels)
+                        {
+                            append_required_closure(
                                 label,
-                                slot_it->second,
-                            });
+                                &full_resident_labels,
+                                &full_resident_seen);
+                        }
                     }
 
-                    if (!evaluation_requests.empty())
-                    {
-                        if (!executor->materialize_evaluation_leaf_batch(
-                                evaluation_requests))
-                        {
-                            throw std::runtime_error(
-                                "CUDA t_edge full-resident evaluation leaf batch was not admitted");
-                        }
+                    const bool
+                        use_full_resident_static_map =
+                            !full_resident_labels.empty() &&
+                            full_resident_labels.size() <=
+                                executor->cache_slot_count();
 
-                        ++linear_telemetry
-                              .direct_eval_batch_calls;
+                    if (use_full_resident_static_map)
+                    {
+                        linear_telemetry
+                            .full_resident_static_map = 1;
 
                         linear_telemetry
-                            .direct_eval_batch_leaves +=
-                            evaluation_requests
-                                .size();
+                            .static_resident_labels =
+                            full_resident_labels.size();
 
-                        for (const auto &[label, slot] :
-                             evaluation_bindings)
+                        std::unordered_map<
+                            std::string,
+                            std::size_t>
+                            static_slot_by_label;
+
+                        static_slot_by_label.reserve(
+                            full_resident_labels.size());
+
+                        for (std::size_t slot = 0;
+                             slot <
+                             full_resident_labels.size();
+                             ++slot)
                         {
+                            const auto [_, inserted] =
+                                static_slot_by_label.emplace(
+                                    full_resident_labels[slot],
+                                    slot);
+
+                            if (!inserted)
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge full-resident plan contains a duplicate label");
+                            }
+                        }
+
+                        // Fill the complete immutable access map immediately.
+                        // Program accesses which are not referenced by any
+                        // term may remain invalid; no kernel can read them.
+                        for (std::size_t access = 0;
+                             access <
+                             program.accesses.size();
+                             ++access)
+                        {
+                            const auto found =
+                                static_slot_by_label.find(
+                                    program.accesses[access]
+                                        .label);
+
+                            if (found !=
+                                static_slot_by_label.end())
+                            {
+                                access_slots[access] =
+                                    static_cast<
+                                        std::uint32_t>(
+                                        found->second);
+                            }
+                        }
+
+                        std::vector<
+                            CudaTEdgeEvaluationLeafRequest>
+                            evaluation_requests;
+
+                        std::vector<
+                            std::pair<
+                                std::string,
+                                std::size_t>>
+                            evaluation_bindings;
+
+                        evaluation_requests.reserve(
+                            full_resident_labels.size());
+
+                        evaluation_bindings.reserve(
+                            full_resident_labels.size());
+
+                        // Collect every independent registered evaluation leaf
+                        // first. Their backing vectors and blinders live in
+                        // TraceArtifacts / ProtocolContext for the complete
+                        // materializer lifetime, so request pointers remain
+                        // valid while the bounded worker team executes.
+                        for (const auto &label :
+                             full_resident_labels)
+                        {
+                            if (label ==
+                                "__t_edge_boundary_l0")
+                            {
+                                continue;
+                            }
+
+                            if (t_edge_derived_linear_descriptor(
+                                    label)
+                                    .has_value())
+                            {
+                                continue;
+                            }
+
+                            const auto *polynomial =
+                                lookup_polynomial(
+                                    label);
+
+                            if (polynomial == nullptr ||
+                                polynomial->basis !=
+                                    algebra::
+                                        PolynomialBasis::
+                                            Evaluation ||
+                                polynomial->domain ==
+                                    nullptr ||
+                                polynomial->domain->size !=
+                                    domain_->size ||
+                                polynomial->domain->omega !=
+                                    domain_->omega)
+                            {
+                                continue;
+                            }
+
+                            const auto slot_it =
+                                static_slot_by_label.find(
+                                    label);
+
+                            if (slot_it ==
+                                static_slot_by_label.end())
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge static evaluation leaf lacks a slot");
+                            }
+
+                            const auto &values =
+                                polynomial->values();
+
+                            const auto &blinder =
+                                polynomial
+                                    ->zero_domain_blinder;
+
+                            evaluation_requests.push_back(
+                                CudaTEdgeEvaluationLeafRequest{
+                                    .slot =
+                                        slot_it->second,
+                                    .values =
+                                        values.empty()
+                                            ? nullptr
+                                            : FieldElement::
+                                                  native_array_data(
+                                                      values.data()),
+                                    .value_count =
+                                        values.size(),
+                                    .zero_domain_blinder =
+                                        blinder.empty()
+                                            ? nullptr
+                                            : FieldElement::
+                                                  native_array_data(
+                                                      blinder.data()),
+                                    .blinder_count =
+                                        blinder.size(),
+                                });
+
+                            evaluation_bindings.push_back(
+                                {
+                                    label,
+                                    slot_it->second,
+                                });
+                        }
+
+                        if (!evaluation_requests.empty())
+                        {
+                            if (!executor->materialize_evaluation_leaf_batch(
+                                    evaluation_requests))
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge full-resident evaluation leaf batch was not admitted");
+                            }
+
+                            ++linear_telemetry
+                                  .direct_eval_batch_calls;
+
+                            linear_telemetry
+                                .direct_eval_batch_leaves +=
+                                evaluation_requests
+                                    .size();
+
+                            for (const auto &[label, slot] :
+                                 evaluation_bindings)
+                            {
+                                if (!slot_labels[slot]
+                                         .empty())
+                                {
+                                    throw std::runtime_error(
+                                        "CUDA t_edge static evaluation slot was unexpectedly occupied");
+                                }
+
+                                slot_labels[slot] =
+                                    label;
+
+                                bind_label_mapping(
+                                    label,
+                                    slot);
+                            }
+                        }
+
+                        // Resolve everything not covered by the direct
+                        // evaluation batch exactly once. This includes:
+                        //   * coefficient leaves
+                        //   * spilled evaluation leaves
+                        //   * resident-linear derived leaves
+                        //   * formally unsupported derived leaves using the
+                        //     existing canonical host fallback
+                        //   * the boundary polynomial
+                        //
+                        // Materialize independent leaves before their derived consumers.
+                        auto pending_labels = full_resident_labels;
+                        std::stable_partition(pending_labels.begin(), pending_labels.end(),
+                                              [&](const std::string &label)
+                                              {
+                                                  return label == "__t_edge_boundary_l0" ||
+                                                         !t_edge_derived_linear_descriptor(label).has_value();
+                                              });
+                        for (const auto &label : pending_labels)
+                        {
+                            if (resident_slot_by_label
+                                    .contains(label))
+                            {
+                                continue;
+                            }
+
+                            const auto slot_it =
+                                static_slot_by_label.find(
+                                    label);
+
+                            if (slot_it ==
+                                static_slot_by_label.end())
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge static leaf lacks a slot");
+                            }
+
+                            const auto slot =
+                                slot_it->second;
+
                             if (!slot_labels[slot]
                                      .empty())
                             {
                                 throw std::runtime_error(
-                                    "CUDA t_edge static evaluation slot was unexpectedly occupied");
+                                    "CUDA t_edge static leaf slot collision");
                             }
+
+                            materialize_label(
+                                label,
+                                slot,
+                                full_resident_labels);
 
                             slot_labels[slot] =
                                 label;
@@ -8215,4822 +8245,4762 @@ namespace gatzk::protocol
                                 label,
                                 slot);
                         }
-                    }
 
-                    // Resolve everything not covered by the direct
-                    // evaluation batch exactly once. This includes:
-                    //   * coefficient leaves
-                    //   * spilled evaluation leaves
-                    //   * resident-linear derived leaves
-                    //   * formally unsupported derived leaves using the
-                    //     existing canonical host fallback
-                    //   * the boundary polynomial
-                    //
-                    // Materialize independent leaves before their derived consumers.
-                    auto pending_labels = full_resident_labels;
-                    std::stable_partition(pending_labels.begin(), pending_labels.end(),
-                                          [&](const std::string &label)
-                                          {
-                                              return label == "__t_edge_boundary_l0" ||
-                                                     !t_edge_derived_linear_descriptor(label).has_value();
-                                          });
-                    for (const auto &label : pending_labels)
-                    {
-                        if (resident_slot_by_label
-                                .contains(label))
-                        {
-                            continue;
-                        }
-
-                        const auto slot_it =
-                            static_slot_by_label.find(
-                                label);
-
-                        if (slot_it ==
-                            static_slot_by_label.end())
+                        if (resident_slot_by_label.size() <
+                            full_resident_labels.size())
                         {
                             throw std::runtime_error(
-                                "CUDA t_edge static leaf lacks a slot");
+                                "CUDA t_edge full-resident materialization left an unbound dependency");
                         }
 
-                        const auto slot =
-                            slot_it->second;
-
-                        if (!slot_labels[slot]
-                                 .empty())
-                        {
-                            throw std::runtime_error(
-                                "CUDA t_edge static leaf slot collision");
-                        }
-
-                        materialize_label(
-                            label,
-                            slot,
-                            full_resident_labels);
-
-                        slot_labels[slot] =
-                            label;
-
-                        bind_label_mapping(
-                            label,
-                            slot);
+                        progress_note(
+                            "prove:quotient:t_edge:"
+                            "cuda_static_resident:"
+                            "labels=" +
+                            std::to_string(
+                                full_resident_labels
+                                    .size()) +
+                            ":direct_eval_batch_leaves=" +
+                            std::to_string(
+                                linear_telemetry
+                                    .direct_eval_batch_leaves));
                     }
 
-                    if (resident_slot_by_label.size() <
-                        full_resident_labels.size())
+                    for (std::size_t term_index = 0;
+                         term_index <
+                         program.terms.size();)
                     {
-                        throw std::runtime_error(
-                            "CUDA t_edge full-resident materialization left an unbound dependency");
-                    }
+                        const auto batch_bucket =
+                            register_bucket(
+                                program.terms[term_index]
+                                    .maximum_stack_depth);
 
-                    progress_note(
-                        "prove:quotient:t_edge:"
-                        "cuda_static_resident:"
-                        "labels=" +
-                        std::to_string(
-                            full_resident_labels
-                                .size()) +
-                        ":direct_eval_batch_leaves=" +
-                        std::to_string(
-                            linear_telemetry
-                                .direct_eval_batch_leaves));
-                }
-
-                for (std::size_t term_index = 0;
-                     term_index <
-                     program.terms.size();)
-                {
-                    const auto batch_bucket =
-                        register_bucket(
-                            program.terms[term_index]
-                                .maximum_stack_depth);
-
-                    std::vector<std::string>
-                        batch_required;
-
-                    std::unordered_set<
-                        std::string>
-                        batch_required_set;
-
-                    std::size_t batch_end =
-                        term_index;
-
-                    while (batch_end <
-                               program.terms.size() &&
-                           batch_end -
-                                   term_index <
-                               kMaximumTermsPerBatch &&
-                           register_bucket(
-                               program.terms[batch_end]
-                                   .maximum_stack_depth) ==
-                               batch_bucket)
-                    {
                         std::vector<std::string>
-                            candidate_required;
+                            batch_required;
 
                         std::unordered_set<
                             std::string>
-                            candidate_seen;
+                            batch_required_set;
 
-                        for (const auto &label :
-                             term_labels[batch_end])
+                        std::size_t batch_end =
+                            term_index;
+
+                        while (batch_end <
+                                   program.terms.size() &&
+                               batch_end -
+                                       term_index <
+                                   kMaximumTermsPerBatch &&
+                               register_bucket(
+                                   program.terms[batch_end]
+                                       .maximum_stack_depth) ==
+                                   batch_bucket)
                         {
-                            append_required_closure(
-                                label,
-                                &candidate_required,
-                                &candidate_seen);
-                        }
+                            std::vector<std::string>
+                                candidate_required;
 
-                        std::size_t
-                            additional_labels = 0;
+                            std::unordered_set<
+                                std::string>
+                                candidate_seen;
 
-                        for (const auto &label :
-                             candidate_required)
-                        {
-                            if (!batch_required_set
-                                     .contains(
-                                         label))
+                            for (const auto &label :
+                                 term_labels[batch_end])
                             {
-                                ++additional_labels;
+                                append_required_closure(
+                                    label,
+                                    &candidate_required,
+                                    &candidate_seen);
                             }
-                        }
 
-                        if (batch_required_set
-                                    .size() +
-                                additional_labels >
-                            executor
-                                ->cache_slot_count())
-                        {
-                            break;
-                        }
+                            std::size_t
+                                additional_labels = 0;
 
-                        for (const auto &label :
-                             candidate_required)
-                        {
+                            for (const auto &label :
+                                 candidate_required)
+                            {
+                                if (!batch_required_set
+                                         .contains(
+                                             label))
+                                {
+                                    ++additional_labels;
+                                }
+                            }
+
                             if (batch_required_set
-                                    .insert(label)
-                                    .second)
+                                        .size() +
+                                    additional_labels >
+                                executor
+                                    ->cache_slot_count())
                             {
-                                batch_required
-                                    .push_back(
-                                        label);
-                            }
-                        }
-
-                        ++batch_end;
-                    }
-
-                    if (batch_end ==
-                        term_index)
-                    {
-                        throw std::runtime_error(
-                            "CUDA t_edge failed to construct a non-empty term batch");
-                    }
-
-                    for (const auto &label :
-                         batch_required)
-                    {
-                        const auto existing =
-                            resident_slot_by_label
-                                .find(label);
-
-                        if (existing !=
-                            resident_slot_by_label
-                                .end())
-                        {
-                            bind_label_mapping(
-                                label,
-                                existing->second);
-
-                            continue;
-                        }
-
-                        std::size_t selected_slot =
-                            slot_labels.size();
-
-                        for (std::size_t slot = 0;
-                             slot <
-                             slot_labels.size();
-                             ++slot)
-                        {
-                            if (slot_labels[slot]
-                                    .empty())
-                            {
-                                selected_slot =
-                                    slot;
                                 break;
                             }
+
+                            for (const auto &label :
+                                 candidate_required)
+                            {
+                                if (batch_required_set
+                                        .insert(label)
+                                        .second)
+                                {
+                                    batch_required
+                                        .push_back(
+                                            label);
+                                }
+                            }
+
+                            ++batch_end;
                         }
 
-                        if (selected_slot ==
-                            slot_labels.size())
+                        if (batch_end ==
+                            term_index)
                         {
-                            std::size_t
-                                selected_next_use = 0;
+                            throw std::runtime_error(
+                                "CUDA t_edge failed to construct a non-empty term batch");
+                        }
+
+                        for (const auto &label :
+                             batch_required)
+                        {
+                            const auto existing =
+                                resident_slot_by_label
+                                    .find(label);
+
+                            if (existing !=
+                                resident_slot_by_label
+                                    .end())
+                            {
+                                bind_label_mapping(
+                                    label,
+                                    existing->second);
+
+                                continue;
+                            }
+
+                            std::size_t selected_slot =
+                                slot_labels.size();
 
                             for (std::size_t slot = 0;
                                  slot <
                                  slot_labels.size();
                                  ++slot)
                             {
-                                const auto &candidate =
-                                    slot_labels[slot];
-
-                                if (batch_required_set
-                                        .contains(
-                                            candidate))
-                                {
-                                    continue;
-                                }
-
-                                std::size_t
-                                    candidate_next_use =
-                                        std::numeric_limits<
-                                            std::size_t>::
-                                            max();
-
-                                const auto use_it =
-                                    leaf_use_terms.find(
-                                        candidate);
-
-                                if (use_it !=
-                                    leaf_use_terms.end())
-                                {
-                                    const auto cursor_it =
-                                        leaf_use_cursors.find(
-                                            candidate);
-
-                                    const auto cursor =
-                                        cursor_it ==
-                                                leaf_use_cursors.end()
-                                            ? std::size_t{0}
-                                            : cursor_it
-                                                  ->second;
-
-                                    if (cursor <
-                                        use_it->second
-                                            .size())
-                                    {
-                                        candidate_next_use =
-                                            use_it
-                                                ->second[cursor];
-                                    }
-                                }
-
-                                if (selected_slot ==
-                                        slot_labels.size() ||
-                                    candidate_next_use >
-                                        selected_next_use)
+                                if (slot_labels[slot]
+                                        .empty())
                                 {
                                     selected_slot =
                                         slot;
-
-                                    selected_next_use =
-                                        candidate_next_use;
+                                    break;
                                 }
                             }
-                        }
 
-                        if (selected_slot ==
-                            slot_labels.size())
-                        {
-                            throw std::runtime_error(
-                                "CUDA t_edge batch leaf cache cannot evict a slot");
-                        }
+                            if (selected_slot ==
+                                slot_labels.size())
+                            {
+                                std::size_t
+                                    selected_next_use = 0;
 
-                        if (!slot_labels[selected_slot]
-                                 .empty())
-                        {
-                            clear_label_mapping(
-                                slot_labels[selected_slot]);
+                                for (std::size_t slot = 0;
+                                     slot <
+                                     slot_labels.size();
+                                     ++slot)
+                                {
+                                    const auto &candidate =
+                                        slot_labels[slot];
 
-                            executor->release_leaf(
+                                    if (batch_required_set
+                                            .contains(
+                                                candidate))
+                                    {
+                                        continue;
+                                    }
+
+                                    std::size_t
+                                        candidate_next_use =
+                                            std::numeric_limits<
+                                                std::size_t>::
+                                                max();
+
+                                    const auto use_it =
+                                        leaf_use_terms.find(
+                                            candidate);
+
+                                    if (use_it !=
+                                        leaf_use_terms.end())
+                                    {
+                                        const auto cursor_it =
+                                            leaf_use_cursors.find(
+                                                candidate);
+
+                                        const auto cursor =
+                                            cursor_it ==
+                                                    leaf_use_cursors.end()
+                                                ? std::size_t{0}
+                                                : cursor_it
+                                                      ->second;
+
+                                        if (cursor <
+                                            use_it->second
+                                                .size())
+                                        {
+                                            candidate_next_use =
+                                                use_it
+                                                    ->second[cursor];
+                                        }
+                                    }
+
+                                    if (selected_slot ==
+                                            slot_labels.size() ||
+                                        candidate_next_use >
+                                            selected_next_use)
+                                    {
+                                        selected_slot =
+                                            slot;
+
+                                        selected_next_use =
+                                            candidate_next_use;
+                                    }
+                                }
+                            }
+
+                            if (selected_slot ==
+                                slot_labels.size())
+                            {
+                                throw std::runtime_error(
+                                    "CUDA t_edge batch leaf cache cannot evict a slot");
+                            }
+
+                            if (!slot_labels[selected_slot]
+                                     .empty())
+                            {
+                                clear_label_mapping(
+                                    slot_labels[selected_slot]);
+
+                                executor->release_leaf(
+                                    selected_slot);
+
+                                slot_labels[selected_slot]
+                                    .clear();
+                            }
+
+                            materialize_label(
+                                label,
+                                selected_slot,
+                                batch_required);
+
+                            slot_labels[selected_slot] =
+                                label;
+
+                            bind_label_mapping(
+                                label,
                                 selected_slot);
-
-                            slot_labels[selected_slot]
-                                .clear();
                         }
 
-                        materialize_label(
-                            label,
-                            selected_slot,
-                            batch_required);
+                        executor->accumulate_term_range(
+                            term_index,
+                            batch_end,
+                            access_slots);
 
-                        slot_labels[selected_slot] =
-                            label;
+                        ++term_batch_count;
 
-                        bind_label_mapping(
-                            label,
-                            selected_slot);
-                    }
+                        const auto current_batch_size =
+                            batch_end -
+                            term_index;
 
-                    executor->accumulate_term_range(
-                        term_index,
-                        batch_end,
-                        access_slots);
+                        batched_term_count +=
+                            current_batch_size;
 
-                    ++term_batch_count;
+                        maximum_terms_in_batch =
+                            std::max(
+                                maximum_terms_in_batch,
+                                current_batch_size);
 
-                    const auto current_batch_size =
-                        batch_end -
-                        term_index;
-
-                    batched_term_count +=
-                        current_batch_size;
-
-                    maximum_terms_in_batch =
-                        std::max(
-                            maximum_terms_in_batch,
-                            current_batch_size);
-
-                    for (std::size_t executed_term =
-                             term_index;
-                         executed_term <
-                         batch_end;
-                         ++executed_term)
-                    {
-                        for (const auto &label :
-                             term_labels[executed_term])
+                        for (std::size_t executed_term =
+                                 term_index;
+                             executed_term <
+                             batch_end;
+                             ++executed_term)
                         {
-                            auto found =
-                                remaining_uses.find(
-                                    label);
-
-                            if (found !=
-                                    remaining_uses.end() &&
-                                found->second != 0)
+                            for (const auto &label :
+                                 term_labels[executed_term])
                             {
-                                --found->second;
-                            }
+                                auto found =
+                                    remaining_uses.find(
+                                        label);
 
-                            const auto use_it =
-                                leaf_use_terms.find(
-                                    label);
+                                if (found !=
+                                        remaining_uses.end() &&
+                                    found->second != 0)
+                                {
+                                    --found->second;
+                                }
 
-                            if (use_it ==
-                                leaf_use_terms.end())
-                            {
-                                throw std::runtime_error(
-                                    "CUDA t_edge leaf use schedule is missing a required label");
-                            }
+                                const auto use_it =
+                                    leaf_use_terms.find(
+                                        label);
 
-                            auto &cursor =
-                                leaf_use_cursors[label];
-
-                            if (cursor >=
-                                    use_it->second
-                                        .size() ||
-                                use_it->second[cursor] !=
-                                    executed_term)
-                            {
-                                throw std::runtime_error(
-                                    "CUDA t_edge leaf use schedule is out of sync");
-                            }
-
-                            ++cursor;
-                        }
-                    }
-
-                    term_index =
-                        batch_end;
-                }
-
-                std::vector<FieldElement>
-                    output(
-                        target_size_,
-                        FieldElement::zero());
-
-                cuda_t_edge_resident_coefficients_ =
-                    executor->finalize_coefficients(
-                        output.data(),
-                        output.size());
-
-                const auto cuda_stats_after =
-                    algebra::cuda_execution_stats_snapshot();
-                const auto cuda_kernels_after =
-                    algebra::cuda_kernel_invocation_count();
-                const auto delta =
-                    [](std::uint64_t after,
-                       std::uint64_t before)
-                {
-                    return after >= before
-                               ? after - before
-                               : 0;
-                };
-                progress_note(
-                    "prove:quotient:t_edge:cuda_linear:descriptor_requests=" +
-                    std::to_string(
-                        linear_telemetry.descriptor_requests) +
-                    ":eligible=" +
-                    std::to_string(
-                        linear_telemetry.descriptor_eligible) +
-                    ":linear_hits=" +
-                    std::to_string(
-                        linear_telemetry.linear_hits) +
-                    ":fallback_capacity=" +
-                    std::to_string(
-                        linear_telemetry.fallback_capacity) +
-                    ":fallback_unsupported=" +
-                    std::to_string(
-                        linear_telemetry.fallback_unsupported) +
-                    ":fallback_api_declined=" +
-                    std::to_string(
-                        linear_telemetry.fallback_api_declined) +
-                    ":host_derived_fallback=" +
-                    std::to_string(
-                        linear_telemetry.host_derived_fallback) +
-                    ":direct_api_declined=" +
-                    std::to_string(
-                        linear_telemetry.direct_api_declined) +
-                    ":host_leaf_fallback=" +
-                    std::to_string(
-                        linear_telemetry.host_leaf_fallback) +
-                    ":host_leaf_materialization_required=" +
-                    std::to_string(
-                        linear_telemetry.host_leaf_materialization_required) +
-                    ":leaf_exact_ntt_supported=" +
-                    std::to_string(
-                        leaf_exact_ntt_supported ? 1 : 0) +
-                    ":flattened_source_count=" +
-                    std::to_string(
-                        linear_telemetry.flattened_source_count) +
-                    ":full_resident_static_map=" +
-                    std::to_string(
-                        linear_telemetry.full_resident_static_map) +
-                    ":static_resident_labels=" +
-                    std::to_string(
-                        linear_telemetry.static_resident_labels) +
-                    ":direct_eval_batch_calls=" +
-                    std::to_string(
-                        linear_telemetry.direct_eval_batch_calls) +
-                    ":direct_eval_batch_leaves=" +
-                    std::to_string(
-                        linear_telemetry.direct_eval_batch_leaves) +
-                    ":term_batches=" +
-                    std::to_string(
-                        term_batch_count) +
-                    ":batched_terms=" +
-                    std::to_string(
-                        batched_term_count) +
-                    ":max_terms_per_batch=" +
-                    std::to_string(
-                        maximum_terms_in_batch) +
-                    ":kernel_invocations=" +
-                    std::to_string(
-                        delta(
-                            cuda_kernels_after,
-                            cuda_kernels_before)) +
-                    ":stream_syncs=" +
-                    std::to_string(
-                        delta(
-                            cuda_stats_after
-                                .stream_synchronizations,
-                            cuda_stats_before
-                                .stream_synchronizations)) +
-                    ":h2d_bytes=" +
-                    std::to_string(
-                        delta(
-                            cuda_stats_after.h2d_bytes,
-                            cuda_stats_before.h2d_bytes)) +
-                    ":h2d_ops=" +
-                    std::to_string(
-                        delta(
-                            cuda_stats_after.h2d_operations,
-                            cuda_stats_before.h2d_operations)));
-
-                cuda_t_edge_transient_leaf_mode_ =
-                    false;
-
-                reset_cuda_t_edge_transient_leaf_state();
-                return output;
-            }
-            catch (...)
-            {
-                cuda_t_edge_transient_leaf_mode_ =
-                    false;
-
-                reset_cuda_t_edge_transient_leaf_state();
-
-                throw;
-            }
-        }
-
-        algebra::Polynomial materialize(const crypto::KZGKeyPair &key)
-        {
-            if (target_size_ > key.pk.degree_bound + 1)
-            {
-                throw std::runtime_error(
-                    "SRS degree bound is too small for quotient polynomial " + label_ + ": need coefficients=" + std::to_string(target_size_) + " but degree_bound+1=" + std::to_string(key.pk.degree_bound + 1));
-            }
-            const auto root =
-                FieldElement::root_of_unity(
-                    target_size_);
-
-            const auto t_n_evaluation_plan =
-                label_ == "t_N"
-                    ? build_t_n_evaluation_plan(
-                          context_,
-                          challenges_)
-                    : std::shared_ptr<
-                          const TNEvaluationPlan>{};
-
-            std::unordered_map<
-                std::string,
-                QuotientCosetValuesPtr>
-                t_n_public_source_expected_cosets;
-
-            const TNPublicSourceFoldEvalFn
-                t_n_public_source_fold_eval =
-                    [&](const std::string &source_fold_object,
-                        std::size_t index)
-                -> FieldElement
-            {
-                const auto it =
-                    t_n_public_source_expected_cosets.find(
-                        source_fold_object);
-
-                if (it ==
-                        t_n_public_source_expected_cosets.end() ||
-                    it->second == nullptr)
-                {
-                    throw std::runtime_error(
-                        "t_N public-source expected coset is missing: " +
-                        source_fold_object);
-                }
-
-                if (index >=
-                    it->second->size())
-                {
-                    throw std::runtime_error(
-                        "t_N public-source expected coset index is out of range: " +
-                        source_fold_object);
-                }
-
-                return (*it->second)[index];
-            };
-
-            const auto prepare_t_n_public_source_expected_cosets =
-                [&]()
-            {
-                if (label_ != "t_N")
-                {
-                    return;
-                }
-
-                if (!t_n_public_source_expected_cosets.empty())
-                {
-                    return;
-                }
-
-                if (domain_ == nullptr ||
-                    context_.domains.n == nullptr ||
-                    domain_->name !=
-                        context_.domains.n->name ||
-                    domain_->size !=
-                        context_.domains.n->size)
-                {
-                    throw std::runtime_error(
-                        "t_N public-source precompute has an invalid N domain");
-                }
-
-                const auto specs =
-                    matrix_fold_binding_specs(
-                        context_);
-
-                std::size_t public_source_count =
-                    0;
-
-                for (const auto &spec :
-                     specs)
-                {
-                    if (spec.public_source)
-                    {
-                        ++public_source_count;
-                    }
-                }
-
-                t_n_public_source_expected_cosets.reserve(
-                    public_source_count);
-
-                progress_note(
-                    "prove:quotient:t_N:"
-                    "public_source_fold:precompute:start:"
-                    "count=" +
-                    std::to_string(
-                        public_source_count));
-
-                for (const auto &spec :
-                     specs)
-                {
-                    if (!spec.public_source)
-                    {
-                        continue;
-                    }
-
-                    if (spec.source_rows >
-                        context_.local.features.size())
-                    {
-                        throw std::runtime_error(
-                            "t_N public-source fold row count exceeds public feature rows: " +
-                            spec.source_fold_object);
-                    }
-
-                    if (spec.source_rows >
-                        domain_->size)
-                    {
-                        throw std::runtime_error(
-                            "t_N public-source fold exceeds N domain: " +
-                            spec.source_fold_object);
-                    }
-
-                    const auto lambda =
-                        challenges_.at(
-                            spec.lambda_challenge);
-
-                    std::vector<FieldElement>
-                        expected_evaluations(
-                            domain_->size,
-                            FieldElement::zero());
-
-                    parallel_for_chunks_static(
-                        spec.source_rows,
-                        std::size_t{64},
-                        0,
-                        [&](std::size_t begin,
-                            std::size_t end)
-                        {
-                            for (std::size_t row = begin;
-                                 row < end;
-                                 ++row)
-                            {
-                                const auto &feature_row =
-                                    context_.local.features[row];
-
-                                if (spec.width >
-                                    feature_row.size())
+                                if (use_it ==
+                                    leaf_use_terms.end())
                                 {
                                     throw std::runtime_error(
-                                        "t_N public-source fold width exceeds public feature width: " +
-                                        spec.source_fold_object);
+                                        "CUDA t_edge leaf use schedule is missing a required label");
                                 }
 
-                                auto row_fold =
-                                    FieldElement::zero();
+                                auto &cursor =
+                                    leaf_use_cursors[label];
 
-                                for (std::size_t column = 0;
-                                     column <
-                                     spec.width;
-                                     ++column)
+                                if (cursor >=
+                                        use_it->second
+                                            .size() ||
+                                    use_it->second[cursor] !=
+                                        executed_term)
                                 {
-                                    row_fold =
-                                        row_fold *
-                                            lambda +
-                                        feature_row[column];
+                                    throw std::runtime_error(
+                                        "CUDA t_edge leaf use schedule is out of sync");
                                 }
 
-                                expected_evaluations[row] =
-                                    row_fold;
+                                ++cursor;
                             }
-                        });
-
-                    const auto synthetic_label =
-                        std::string(
-                            "__tN_public_source_expected:") +
-                        spec.source_fold_object;
-
-                    auto expected_polynomial =
-                        algebra::Polynomial::
-                            from_evaluations(
-                                synthetic_label,
-                                std::move(
-                                    expected_evaluations),
-                                domain_);
-
-                    auto expected_coset =
-                        materialize_polynomial_coset(
-                            expected_polynomial,
-                            synthetic_label);
-
-                    if (expected_coset == nullptr ||
-                        expected_coset->size() !=
-                            target_size_)
-                    {
-                        throw std::runtime_error(
-                            "t_N public-source expected coset has the wrong size: " +
-                            spec.source_fold_object);
-                    }
-
-                    const auto [_, inserted] =
-                        t_n_public_source_expected_cosets
-                            .emplace(
-                                spec.source_fold_object,
-                                std::move(
-                                    expected_coset));
-
-                    if (!inserted)
-                    {
-                        throw std::runtime_error(
-                            "duplicate t_N public-source fold object: " +
-                            spec.source_fold_object);
-                    }
-                }
-
-                progress_note(
-                    "prove:quotient:t_N:"
-                    "public_source_fold:precompute:done:"
-                    "count=" +
-                    std::to_string(
-                        t_n_public_source_expected_cosets
-                            .size()));
-            };
-
-            auto evaluate_at_index = [&](
-                                         std::size_t i,
-                                         const FieldElement &z,
-                                         const QuotientBoundaryValues *boundary_values = nullptr)
-            {
-                const auto omega_z = z * domain_->omega;
-                const auto rotated_index = (i + rotation_step_) & (target_size_ - 1U);
-                std::size_t edge_access_cursor = 0;
-                const auto eval = [&](const std::string &name, const FieldElement &point) -> FieldElement
-                {
-                    if (label_ == "t_edge")
-                    {
-                        if (record_edge_access_sequence_)
-                        {
-                            const auto rotated = point == omega_z;
-                            if (!rotated && point != z)
-                            {
-                                throw std::runtime_error(
-                                    "t_edge quotient access-plan received "
-                                    "an unsupported evaluation point for " +
-                                    name);
-                            }
-                            const auto access_index =
-                                rotated ? rotated_index : i;
-                            const auto *direct_values =
-                                bind_t_edge_fast_coset(name);
-                            edge_access_sequence_.push_back(
-                                TEdgeCosetAccess{
-                                    .name = name,
-                                    .values = direct_values,
-                                    .rotated = rotated,
-                                });
-                            return (*direct_values)[access_index];
                         }
-                        if (!edge_access_sequence_.empty())
-                        {
-                            if (edge_access_cursor >= edge_access_sequence_.size())
-                            {
-                                throw std::runtime_error(
-                                    "t_edge quotient access-plan overflow");
-                            }
-                            const auto &access =
-                                edge_access_sequence_[edge_access_cursor++];
-                            const auto access_index =
-                                access.rotated ? rotated_index : i;
-                            if (access.values == nullptr || access.values->size() != target_size_)
-                            {
-                                throw std::runtime_error(
-                                    "t_edge quotient access-plan contains an invalid bound dependency: " + access.name);
-                            }
-                            return (*access.values)[access_index];
-                        }
+
+                        term_index =
+                            batch_end;
                     }
-                    if (point == z)
+
+                    std::vector<FieldElement>
+                        output(
+                            target_size_,
+                            FieldElement::zero());
+
+                    cuda_t_edge_resident_coefficients_ =
+                        executor->finalize_coefficients(
+                            output.data(),
+                            output.size());
+
+                    const auto cuda_stats_after =
+                        algebra::cuda_execution_stats_snapshot();
+                    const auto cuda_kernels_after =
+                        algebra::cuda_kernel_invocation_count();
+                    const auto delta =
+                        [](std::uint64_t after,
+                           std::uint64_t before)
                     {
-                        return coset_value_at(name, i);
-                    }
-                    if (point == omega_z)
-                    {
-                        return coset_value_at(name, rotated_index);
-                    }
-                    throw std::runtime_error("quotient materializer received unsupported evaluation point for " + name);
-                };
+                        return after >= before
+                                   ? after - before
+                                   : 0;
+                    };
+                    progress_note(
+                        "prove:quotient:t_edge:cuda_linear:descriptor_requests=" +
+                        std::to_string(
+                            linear_telemetry.descriptor_requests) +
+                        ":eligible=" +
+                        std::to_string(
+                            linear_telemetry.descriptor_eligible) +
+                        ":linear_hits=" +
+                        std::to_string(
+                            linear_telemetry.linear_hits) +
+                        ":fallback_capacity=" +
+                        std::to_string(
+                            linear_telemetry.fallback_capacity) +
+                        ":fallback_unsupported=" +
+                        std::to_string(
+                            linear_telemetry.fallback_unsupported) +
+                        ":fallback_api_declined=" +
+                        std::to_string(
+                            linear_telemetry.fallback_api_declined) +
+                        ":host_derived_fallback=" +
+                        std::to_string(
+                            linear_telemetry.host_derived_fallback) +
+                        ":direct_api_declined=" +
+                        std::to_string(
+                            linear_telemetry.direct_api_declined) +
+                        ":host_leaf_fallback=" +
+                        std::to_string(
+                            linear_telemetry.host_leaf_fallback) +
+                        ":host_leaf_materialization_required=" +
+                        std::to_string(
+                            linear_telemetry.host_leaf_materialization_required) +
+                        ":leaf_exact_ntt_supported=" +
+                        std::to_string(
+                            leaf_exact_ntt_supported ? 1 : 0) +
+                        ":flattened_source_count=" +
+                        std::to_string(
+                            linear_telemetry.flattened_source_count) +
+                        ":full_resident_static_map=" +
+                        std::to_string(
+                            linear_telemetry.full_resident_static_map) +
+                        ":static_resident_labels=" +
+                        std::to_string(
+                            linear_telemetry.static_resident_labels) +
+                        ":direct_eval_batch_calls=" +
+                        std::to_string(
+                            linear_telemetry.direct_eval_batch_calls) +
+                        ":direct_eval_batch_leaves=" +
+                        std::to_string(
+                            linear_telemetry.direct_eval_batch_leaves) +
+                        ":term_batches=" +
+                        std::to_string(
+                            term_batch_count) +
+                        ":batched_terms=" +
+                        std::to_string(
+                            batched_term_count) +
+                        ":max_terms_per_batch=" +
+                        std::to_string(
+                            maximum_terms_in_batch) +
+                        ":kernel_invocations=" +
+                        std::to_string(
+                            delta(
+                                cuda_kernels_after,
+                                cuda_kernels_before)) +
+                        ":stream_syncs=" +
+                        std::to_string(
+                            delta(
+                                cuda_stats_after
+                                    .stream_synchronizations,
+                                cuda_stats_before
+                                    .stream_synchronizations)) +
+                        ":h2d_bytes=" +
+                        std::to_string(
+                            delta(
+                                cuda_stats_after.h2d_bytes,
+                                cuda_stats_before.h2d_bytes)) +
+                        ":h2d_ops=" +
+                        std::to_string(
+                            delta(
+                                cuda_stats_after.h2d_operations,
+                                cuda_stats_before.h2d_operations)));
 
-                if (label_ == "t_FH")
-                {
-                    if (fh_coset_slots_.ready())
-                    {
-                        const auto boundary = boundary_values != nullptr
-                                                  ? *boundary_values
-                                                  : fh_boundary_values(z);
-                        const FHQuotientValues values{
-                            .q_table =
-                                (*fh_coset_slots_.q_table)[i],
-                            .q_query =
-                                (*fh_coset_slots_.q_query)[i],
-                            .table = (*fh_coset_slots_.table)[i],
-                            .query = (*fh_coset_slots_.query)[i],
-                            .multiplicity =
-                                (*fh_coset_slots_.multiplicity)[i],
-                            .j_table =
-                                (*fh_coset_slots_.j_table)[i],
-                            .j_query =
-                                (*fh_coset_slots_.j_query)[i],
-                            .accumulator =
-                                (*fh_coset_slots_.accumulator)[i],
-                            .accumulator_next =
-                                (*fh_coset_slots_.accumulator)[rotated_index],
-                        };
-                        std::optional<FHFeatureEncodingValues>
-                            feature_encoding_values;
-                        if (!fh_feature_encoding_terms_are_identically_zero_)
-                        {
-                            feature_encoding_values.emplace(
-                                FHFeatureEncodingValues{
-                                    .table_row =
-                                        (*fh_coset_slots_.table_row)[i],
-                                    .table_column =
-                                        (*fh_coset_slots_.table_column)[i],
-                                    .table_feature =
-                                        (*fh_coset_slots_.table_feature)[i],
-                                    .query_row =
-                                        (*fh_coset_slots_.query_row)[i],
-                                    .query_column =
-                                        (*fh_coset_slots_.query_column)[i],
-                                    .query_feature =
-                                        (*fh_coset_slots_.query_feature)[i],
-                                });
-                        }
-                        return evaluate_t_fh_from_values(
-                            *fh_parameters_,
-                            values,
-                            boundary,
-                            feature_encoding_values.has_value()
-                                ? &*feature_encoding_values
-                                : nullptr);
-                    }
-                    return evaluate_t_fh(
-                        context_,
-                        challenges_,
-                        eval,
-                        z,
-                        nullptr,
-                        boundary_values,
-                        full_graph_feature_identity_enabled(context_));
-                }
-                else if (label_ == "t_edge")
-                {
-                    const auto value = evaluate_t_edge(
-                        context_,
-                        challenges_,
-                        trace_.external_evaluations,
-                        eval,
-                        z,
-                        false,
-                        nullptr,
-                        nullptr,
-                        quotient_alpha_powers_.empty()
-                            ? nullptr
-                            : &quotient_alpha_powers_,
-                        edge_evaluation_plan_.get(),
-                        boundary_values);
-                    if (!record_edge_access_sequence_ && !edge_access_sequence_.empty() && edge_access_cursor != edge_access_sequence_.size())
-                    {
-                        throw std::runtime_error(
-                            "t_edge quotient access-plan underflow");
-                    }
-                    return value;
-                }
-                else if (label_ == "t_N")
-                {
-                    if (t_n_evaluation_plan == nullptr)
-                    {
-                        throw std::runtime_error(
-                            "t_N quotient materialization is missing its evaluation plan");
-                    }
+                    cuda_t_edge_transient_leaf_mode_ =
+                        false;
 
-                    return evaluate_t_n(
-                        context_,
-                        challenges_,
-                        eval,
-                        z,
-                        t_n_evaluation_plan.get(),
-                        boundary_values,
-                        &t_n_public_source_fold_eval,
-                        i);
-                }
-                else if (label_ == "t_in")
-                {
-                    return evaluate_t_in(context_, challenges_, trace_.external_evaluations, eval, z);
-                }
-                else if (label_ == "t_d" || label_ == "t_d_h")
-                {
-                    return evaluate_t_d(context_, challenges_, trace_.external_evaluations, eval, z);
-                }
-                else if (label_ == "t_cat")
-                {
-                    return evaluate_t_cat(context_, challenges_, trace_.external_evaluations, eval, z);
-                }
-                else if (label_ == "t_C")
-                {
-                    return evaluate_t_c(context_, challenges_, trace_.external_evaluations, eval, z);
-                }
-                else
-                {
-                    throw std::runtime_error("unknown quotient label: " + label_);
-                }
-            };
-
-            const bool cuda_t_edge_route =
-                should_use_cuda_t_edge_engine();
-
-            std::vector<FieldElement>
-                quotient_values;
-
-            std::vector<FieldElement>
-                cuda_t_edge_coefficients;
-
-            if (cuda_t_edge_route)
-            {
-                progress_note(
-                    "prove:quotient:t_edge:"
-                    "cuda_device_resident:start");
-
-                cuda_t_edge_coefficients =
-                    materialize_cuda_t_edge_coefficients();
-
-                progress_note(
-                    "prove:quotient:t_edge:"
-                    "cuda_device_resident:done");
-            }
-            else
-            {
-                quotient_values.assign(
-                    target_size_,
-                    FieldElement::zero());
-            }
-            // Warm the dependency cache before parallel point evaluation; after this the worker
-            // threads only read the cached coset vectors.
-            if (label_ == "t_edge" &&
-                !cuda_t_edge_route)
-            {
-                const auto prewarm_start = Clock::now();
-                const auto dependency_labels = quotient_dependency_labels(context_, label_);
-                std::vector<std::string> prewarm_labels;
-                prewarm_labels.reserve(dependency_labels.size());
-                for (const auto &dependency_label : dependency_labels)
-                {
-                    if (append_t_edge_materializer_dependency(&prewarm_labels, dependency_label))
-                    {
-                        continue;
-                    }
-                    prewarm_labels.push_back(dependency_label);
-                }
-                progress_note("prove:quotient:t_edge:coset_prewarm:start");
-                prewarm_coset_values(prewarm_labels);
-                // Bind the evaluator's original dependency names after
-                // their source columns are warm.  Derived edge names
-                // resolve here to the same lazy, blinder-corrected coset
-                // views used by the generic resolver, so the point loop
-                // can follow direct pointers instead of reparsing
-                // layer/head suffixes and challenge names at every point.
-                seed_fast_coset_lookup(dependency_labels);
-                require_t_edge_fast_coset_lookup(dependency_labels);
-                edge_access_sequence_.clear();
-                edge_access_plan_late_bind_count_ = 0;
-                record_edge_access_sequence_ = true;
-                try
-                {
-                    (void)evaluate_at_index(0, shift_);
+                    reset_cuda_t_edge_transient_leaf_state();
+                    return output;
                 }
                 catch (...)
                 {
-                    record_edge_access_sequence_ = false;
-                    edge_access_sequence_.clear();
+                    cuda_t_edge_transient_leaf_mode_ =
+                        false;
+
+                    reset_cuda_t_edge_transient_leaf_state();
+
                     throw;
                 }
-                record_edge_access_sequence_ = false;
-                if (edge_access_sequence_.empty())
+            }
+
+            algebra::Polynomial materialize(const crypto::KZGKeyPair &key)
+            {
+                if (target_size_ > key.pk.degree_bound + 1)
                 {
                     throw std::runtime_error(
-                        "t_edge quotient access-plan is empty");
+                        "SRS degree bound is too small for quotient polynomial " + label_ + ": need coefficients=" + std::to_string(target_size_) + " but degree_bound+1=" + std::to_string(key.pk.degree_bound + 1));
                 }
-                const auto null_access_count = static_cast<std::size_t>(
-                    std::count_if(
-                        edge_access_sequence_.begin(),
-                        edge_access_sequence_.end(),
-                        [](const TEdgeCosetAccess &access)
-                        { return access.values == nullptr; }));
-                if (null_access_count != 0)
+                const auto root =
+                    FieldElement::root_of_unity(
+                        target_size_);
+
+                const auto t_n_evaluation_plan =
+                    label_ == "t_N"
+                        ? build_t_n_evaluation_plan(
+                              context_,
+                              challenges_)
+                        : std::shared_ptr<
+                              const TNEvaluationPlan>{};
+
+                std::unordered_map<
+                    std::string,
+                    QuotientCosetValuesPtr>
+                    t_n_public_source_expected_cosets;
+
+                const TNPublicSourceFoldEvalFn
+                    t_n_public_source_fold_eval =
+                        [&](const std::string &source_fold_object,
+                            std::size_t index)
+                    -> FieldElement
                 {
-                    throw std::runtime_error(
-                        "t_edge quotient access-plan retained null derived fallbacks: " + std::to_string(null_access_count));
-                }
-                progress_note(
-                    "prove:quotient:t_edge:access_plan:entries=" + std::to_string(edge_access_sequence_.size()) + ":bound=" + std::to_string(edge_access_sequence_.size()) + ":late_bound=" + std::to_string(edge_access_plan_late_bind_count_) + ":null_derived_fallback=0");
-                progress_note(
-                    "prove:quotient:t_edge:coset_prewarm:done:ms=" + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
-                // The generic evaluator is the protocol source of truth. A
-                // hand-unrolled route must reproduce evaluate_t_edge exactly
-                // before it can enter the formal path; otherwise its
-                // commitment polynomial could disagree with verifier claims.
-            }
-            else if (label_ == "t_FH")
-            {
-                // The point evaluator runs up to 32 workers.  Letting those
-                // workers discover a cold FH dependency independently causes
-                // a cache-miss stampede: every worker can start the same
-                // full-domain NTT before the first result reaches
-                // coset_cache_.  Materialize the small canonical dependency
-                // registry in order first.  Individual NTTs retain their
-                // internal parallelism, while the evaluation workers become
-                // read-only cache consumers.
-                const auto prewarm_start = Clock::now();
-                const auto dependency_labels =
-                    quotient_materialization_dependency_labels(
-                        context_, label_);
-                progress_note("prove:quotient:t_FH:coset_prewarm:start");
-                for (const auto &dependency_label : dependency_labels)
-                {
-                    (void)coset_values_ptr(dependency_label);
-                }
-                seed_fast_coset_lookup(dependency_labels);
-                bind_fh_coset_slots();
-                progress_note(
-                    "prove:quotient:t_FH:coset_prewarm:done:ms=" + std::to_string(
-                                                                       elapsed_ms(prewarm_start, Clock::now())));
-            }
-            else if (label_ != "t_edge")
-            {
-                // Small-domain quotient evaluators repeatedly request the
-                // same named coset vectors.  Resolve every authenticated
-                // dependency once before the point loop so evaluation is
-                // a read-only pointer lookup instead of millions of
-                // mutex-protected string-map probes.
-                const auto prewarm_start = Clock::now();
-                const auto dependency_labels =
-                    quotient_dependency_labels(context_, label_);
-                if (label_ == "t_N")
-                {
-                    progress_note(
-                        "prove:quotient:t_N:coset_prewarm:start");
-                }
-                for (const auto &dependency_label : dependency_labels)
-                {
-                    (void)coset_values_ptr(dependency_label);
-                }
+                    const auto it =
+                        t_n_public_source_expected_cosets.find(
+                            source_fold_object);
 
-                seed_fast_coset_lookup(
-                    dependency_labels);
-
-                if (label_ == "t_N")
-                {
-                    prepare_t_n_public_source_expected_cosets();
-
-                    progress_note(
-                        "prove:quotient:t_N:coset_prewarm:done:ms=" +
-                        std::to_string(
-                            elapsed_ms(
-                                prewarm_start,
-                                Clock::now())));
-                }
-            }
-            if (label_ == "t_edge" &&
-                !cuda_t_edge_route)
-            {
-                progress_note(
-                    "prove:quotient:t_edge:"
-                    "evaluate:start");
-            }
-            else if (label_ == "t_FH")
-            {
-                progress_note("prove:quotient:t_FH:evaluate:start");
-            }
-            else if (label_ == "t_N")
-            {
-                progress_note("prove:quotient:t_N:evaluate:start");
-            }
-            const auto point_evaluation_start =
-                Clock::now();
-
-            if (!cuda_t_edge_route)
-            {
-                std::vector<FieldElement>
-                    quotient_zero_inverses;
-
-                const auto boundary_one =
-                    FieldElement::one();
-
-                const auto boundary_last_point =
-                    domain_->point_at(domain_->size - 1);
-
-                const auto boundary_zero_step =
-                    root.pow(domain_->size);
-
-                const auto boundary_shifted_zero =
-                    shift_.pow(domain_->size);
-
-                if (label_ == "t_edge" ||
-                    label_ == "t_FH" ||
-                    label_ == "t_N")
-                {
-                    if (target_size_ % domain_->size != 0)
+                    if (it ==
+                            t_n_public_source_expected_cosets.end() ||
+                        it->second == nullptr)
                     {
                         throw std::runtime_error(
-                            "quotient coset size is not a domain multiple: " + label_);
+                            "t_N public-source expected coset is missing: " +
+                            source_fold_object);
                     }
 
-                    const auto zero_cycle_size =
-                        target_size_ / domain_->size;
-
-                    quotient_zero_inverses.reserve(
-                        zero_cycle_size);
-
-                    auto zero_power =
-                        boundary_shifted_zero;
-
-                    for (std::size_t residue = 0;
-                         residue < zero_cycle_size;
-                         ++residue)
+                    if (index >=
+                        it->second->size())
                     {
-                        quotient_zero_inverses.push_back(
-                            (zero_power - boundary_one).inv());
-
-                        zero_power *= boundary_zero_step;
+                        throw std::runtime_error(
+                            "t_N public-source expected coset index is out of range: " +
+                            source_fold_object);
                     }
-                }
 
-                constexpr std::size_t kInverseBlockSize = 8192;
+                    return (*it->second)[index];
+                };
 
-                const auto evaluate_range =
-                    [&](std::size_t begin,
-                        std::size_t end,
-                        std::vector<mcl::Fr> *denominator_products)
+                const auto prepare_t_n_public_source_expected_cosets =
+                    [&]()
                 {
-                    if (begin >= end)
+                    if (label_ != "t_N")
                     {
                         return;
                     }
 
-                    auto z =
-                        shift_ * root.pow(
-                                     static_cast<std::uint64_t>(
-                                         begin));
+                    if (!t_n_public_source_expected_cosets.empty())
+                    {
+                        return;
+                    }
+
+                    if (domain_ == nullptr ||
+                        context_.domains.n == nullptr ||
+                        domain_->name !=
+                            context_.domains.n->name ||
+                        domain_->size !=
+                            context_.domains.n->size)
+                    {
+                        throw std::runtime_error(
+                            "t_N public-source precompute has an invalid N domain");
+                    }
+
+                    const auto specs =
+                        matrix_fold_binding_specs(
+                            context_);
+
+                    std::size_t public_source_count =
+                        0;
+
+                    for (const auto &spec :
+                         specs)
+                    {
+                        if (spec.public_source)
+                        {
+                            ++public_source_count;
+                        }
+                    }
+
+                    t_n_public_source_expected_cosets.reserve(
+                        public_source_count);
+
+                    progress_note(
+                        "prove:quotient:t_N:"
+                        "public_source_fold:precompute:start:"
+                        "count=" +
+                        std::to_string(
+                            public_source_count));
+
+                    for (const auto &spec :
+                         specs)
+                    {
+                        if (!spec.public_source)
+                        {
+                            continue;
+                        }
+
+                        if (spec.source_rows >
+                            context_.local.features.size())
+                        {
+                            throw std::runtime_error(
+                                "t_N public-source fold row count exceeds public feature rows: " +
+                                spec.source_fold_object);
+                        }
+
+                        if (spec.source_rows >
+                            domain_->size)
+                        {
+                            throw std::runtime_error(
+                                "t_N public-source fold exceeds N domain: " +
+                                spec.source_fold_object);
+                        }
+
+                        const auto lambda =
+                            challenges_.at(
+                                spec.lambda_challenge);
+
+                        std::vector<FieldElement>
+                            expected_evaluations(
+                                domain_->size,
+                                FieldElement::zero());
+
+                        parallel_for_chunks_static(
+                            spec.source_rows,
+                            std::size_t{64},
+                            0,
+                            [&](std::size_t begin,
+                                std::size_t end)
+                            {
+                                for (std::size_t row = begin;
+                                     row < end;
+                                     ++row)
+                                {
+                                    const auto &feature_row =
+                                        context_.local.features[row];
+
+                                    if (spec.width >
+                                        feature_row.size())
+                                    {
+                                        throw std::runtime_error(
+                                            "t_N public-source fold width exceeds public feature width: " +
+                                            spec.source_fold_object);
+                                    }
+
+                                    auto row_fold =
+                                        FieldElement::zero();
+
+                                    for (std::size_t column = 0;
+                                         column <
+                                         spec.width;
+                                         ++column)
+                                    {
+                                        row_fold =
+                                            row_fold *
+                                                lambda +
+                                            feature_row[column];
+                                    }
+
+                                    expected_evaluations[row] =
+                                        row_fold;
+                                }
+                            });
+
+                        const auto synthetic_label =
+                            std::string(
+                                "__tN_public_source_expected:") +
+                            spec.source_fold_object;
+
+                        auto expected_polynomial =
+                            algebra::Polynomial::
+                                from_evaluations(
+                                    synthetic_label,
+                                    std::move(
+                                        expected_evaluations),
+                                    domain_);
+
+                        auto expected_coset =
+                            materialize_polynomial_coset(
+                                expected_polynomial,
+                                synthetic_label);
+
+                        if (expected_coset == nullptr ||
+                            expected_coset->size() !=
+                                target_size_)
+                        {
+                            throw std::runtime_error(
+                                "t_N public-source expected coset has the wrong size: " +
+                                spec.source_fold_object);
+                        }
+
+                        const auto [_, inserted] =
+                            t_n_public_source_expected_cosets
+                                .emplace(
+                                    spec.source_fold_object,
+                                    std::move(
+                                        expected_coset));
+
+                        if (!inserted)
+                        {
+                            throw std::runtime_error(
+                                "duplicate t_N public-source fold object: " +
+                                spec.source_fold_object);
+                        }
+                    }
+
+                    progress_note(
+                        "prove:quotient:t_N:"
+                        "public_source_fold:precompute:done:"
+                        "count=" +
+                        std::to_string(
+                            t_n_public_source_expected_cosets
+                                .size()));
+                };
+
+                auto evaluate_at_index = [&](
+                                             std::size_t i,
+                                             const FieldElement &z,
+                                             const QuotientBoundaryValues *boundary_values = nullptr)
+                {
+                    const auto omega_z = z * domain_->omega;
+                    const auto rotated_index = (i + rotation_step_) & (target_size_ - 1U);
+                    std::size_t edge_access_cursor = 0;
+                    const auto eval = [&](const std::string &name, const FieldElement &point) -> FieldElement
+                    {
+                        if (label_ == "t_edge")
+                        {
+                            if (record_edge_access_sequence_)
+                            {
+                                const auto rotated = point == omega_z;
+                                if (!rotated && point != z)
+                                {
+                                    throw std::runtime_error(
+                                        "t_edge quotient access-plan received "
+                                        "an unsupported evaluation point for " +
+                                        name);
+                                }
+                                const auto access_index =
+                                    rotated ? rotated_index : i;
+                                const auto *direct_values =
+                                    bind_t_edge_fast_coset(name);
+                                edge_access_sequence_.push_back(
+                                    TEdgeCosetAccess{
+                                        .name = name,
+                                        .values = direct_values,
+                                        .rotated = rotated,
+                                    });
+                                return (*direct_values)[access_index];
+                            }
+                            if (!edge_access_sequence_.empty())
+                            {
+                                if (edge_access_cursor >= edge_access_sequence_.size())
+                                {
+                                    throw std::runtime_error(
+                                        "t_edge quotient access-plan overflow");
+                                }
+                                const auto &access =
+                                    edge_access_sequence_[edge_access_cursor++];
+                                const auto access_index =
+                                    access.rotated ? rotated_index : i;
+                                if (access.values == nullptr || access.values->size() != target_size_)
+                                {
+                                    throw std::runtime_error(
+                                        "t_edge quotient access-plan contains an invalid bound dependency: " + access.name);
+                                }
+                                return (*access.values)[access_index];
+                            }
+                        }
+                        if (point == z)
+                        {
+                            return coset_value_at(name, i);
+                        }
+                        if (point == omega_z)
+                        {
+                            return coset_value_at(name, rotated_index);
+                        }
+                        throw std::runtime_error("quotient materializer received unsupported evaluation point for " + name);
+                    };
+
+                    if (label_ == "t_FH")
+                    {
+                        if (fh_coset_slots_.ready())
+                        {
+                            const auto boundary = boundary_values != nullptr
+                                                      ? *boundary_values
+                                                      : fh_boundary_values(z);
+                            const FHQuotientValues values{
+                                .q_table =
+                                    (*fh_coset_slots_.q_table)[i],
+                                .q_query =
+                                    (*fh_coset_slots_.q_query)[i],
+                                .table = (*fh_coset_slots_.table)[i],
+                                .query = (*fh_coset_slots_.query)[i],
+                                .multiplicity =
+                                    (*fh_coset_slots_.multiplicity)[i],
+                                .j_table =
+                                    (*fh_coset_slots_.j_table)[i],
+                                .j_query =
+                                    (*fh_coset_slots_.j_query)[i],
+                                .accumulator =
+                                    (*fh_coset_slots_.accumulator)[i],
+                                .accumulator_next =
+                                    (*fh_coset_slots_.accumulator)[rotated_index],
+                            };
+                            std::optional<FHFeatureEncodingValues>
+                                feature_encoding_values;
+                            if (!fh_feature_encoding_terms_are_identically_zero_)
+                            {
+                                feature_encoding_values.emplace(
+                                    FHFeatureEncodingValues{
+                                        .table_row =
+                                            (*fh_coset_slots_.table_row)[i],
+                                        .table_column =
+                                            (*fh_coset_slots_.table_column)[i],
+                                        .table_feature =
+                                            (*fh_coset_slots_.table_feature)[i],
+                                        .query_row =
+                                            (*fh_coset_slots_.query_row)[i],
+                                        .query_column =
+                                            (*fh_coset_slots_.query_column)[i],
+                                        .query_feature =
+                                            (*fh_coset_slots_.query_feature)[i],
+                                    });
+                            }
+                            return evaluate_t_fh_from_values(
+                                *fh_parameters_,
+                                values,
+                                boundary,
+                                feature_encoding_values.has_value()
+                                    ? &*feature_encoding_values
+                                    : nullptr);
+                        }
+                        return evaluate_t_fh(
+                            context_,
+                            challenges_,
+                            eval,
+                            z,
+                            nullptr,
+                            boundary_values,
+                            full_graph_feature_identity_enabled(context_));
+                    }
+                    else if (label_ == "t_edge")
+                    {
+                        const auto value = evaluate_t_edge(
+                            context_,
+                            challenges_,
+                            trace_.external_evaluations,
+                            eval,
+                            z,
+                            false,
+                            nullptr,
+                            nullptr,
+                            quotient_alpha_powers_.empty()
+                                ? nullptr
+                                : &quotient_alpha_powers_,
+                            edge_evaluation_plan_.get(),
+                            boundary_values);
+                        if (!record_edge_access_sequence_ && !edge_access_sequence_.empty() && edge_access_cursor != edge_access_sequence_.size())
+                        {
+                            throw std::runtime_error(
+                                "t_edge quotient access-plan underflow");
+                        }
+                        return value;
+                    }
+                    else if (label_ == "t_N")
+                    {
+                        if (t_n_evaluation_plan == nullptr)
+                        {
+                            throw std::runtime_error(
+                                "t_N quotient materialization is missing its evaluation plan");
+                        }
+
+                        return evaluate_t_n(
+                            context_,
+                            challenges_,
+                            eval,
+                            z,
+                            t_n_evaluation_plan.get(),
+                            boundary_values,
+                            &t_n_public_source_fold_eval,
+                            i);
+                    }
+                    else if (label_ == "t_in")
+                    {
+                        return evaluate_t_in(context_, challenges_, trace_.external_evaluations, eval, z);
+                    }
+                    else if (label_ == "t_d" || label_ == "t_d_h")
+                    {
+                        return evaluate_t_d(context_, challenges_, trace_.external_evaluations, eval, z);
+                    }
+                    else if (label_ == "t_cat")
+                    {
+                        return evaluate_t_cat(context_, challenges_, trace_.external_evaluations, eval, z);
+                    }
+                    else if (label_ == "t_C")
+                    {
+                        return evaluate_t_c(context_, challenges_, trace_.external_evaluations, eval, z);
+                    }
+                    else
+                    {
+                        throw std::runtime_error("unknown quotient label: " + label_);
+                    }
+                };
+
+                const bool cuda_t_edge_route =
+                    should_use_cuda_t_edge_engine();
+
+                std::vector<FieldElement>
+                    quotient_values;
+
+                std::vector<FieldElement>
+                    cuda_t_edge_coefficients;
+
+                if (cuda_t_edge_route)
+                {
+                    progress_note(
+                        "prove:quotient:t_edge:"
+                        "cuda_device_resident:start");
+
+                    cuda_t_edge_coefficients =
+                        materialize_cuda_t_edge_coefficients();
+
+                    progress_note(
+                        "prove:quotient:t_edge:"
+                        "cuda_device_resident:done");
+                }
+                else
+                {
+                    quotient_values.assign(
+                        target_size_,
+                        FieldElement::zero());
+                }
+                // Warm the dependency cache before parallel point evaluation; after this the worker
+                // threads only read the cached coset vectors.
+                if (label_ == "t_edge" &&
+                    !cuda_t_edge_route)
+                {
+                    const auto prewarm_start = Clock::now();
+                    const auto dependency_labels = quotient_dependency_labels(context_, label_);
+                    std::vector<std::string> prewarm_labels;
+                    prewarm_labels.reserve(dependency_labels.size());
+                    for (const auto &dependency_label : dependency_labels)
+                    {
+                        if (append_t_edge_materializer_dependency(&prewarm_labels, dependency_label))
+                        {
+                            continue;
+                        }
+                        prewarm_labels.push_back(dependency_label);
+                    }
+                    progress_note("prove:quotient:t_edge:coset_prewarm:start");
+                    prewarm_coset_values(prewarm_labels);
+                    // Bind the evaluator's original dependency names after
+                    // their source columns are warm.  Derived edge names
+                    // resolve here to the same lazy, blinder-corrected coset
+                    // views used by the generic resolver, so the point loop
+                    // can follow direct pointers instead of reparsing
+                    // layer/head suffixes and challenge names at every point.
+                    seed_fast_coset_lookup(dependency_labels);
+                    require_t_edge_fast_coset_lookup(dependency_labels);
+                    edge_access_sequence_.clear();
+                    edge_access_plan_late_bind_count_ = 0;
+                    record_edge_access_sequence_ = true;
+                    try
+                    {
+                        (void)evaluate_at_index(0, shift_);
+                    }
+                    catch (...)
+                    {
+                        record_edge_access_sequence_ = false;
+                        edge_access_sequence_.clear();
+                        throw;
+                    }
+                    record_edge_access_sequence_ = false;
+                    if (edge_access_sequence_.empty())
+                    {
+                        throw std::runtime_error(
+                            "t_edge quotient access-plan is empty");
+                    }
+                    const auto null_access_count = static_cast<std::size_t>(
+                        std::count_if(
+                            edge_access_sequence_.begin(),
+                            edge_access_sequence_.end(),
+                            [](const TEdgeCosetAccess &access)
+                            { return access.values == nullptr; }));
+                    if (null_access_count != 0)
+                    {
+                        throw std::runtime_error(
+                            "t_edge quotient access-plan retained null derived fallbacks: " + std::to_string(null_access_count));
+                    }
+                    progress_note(
+                        "prove:quotient:t_edge:access_plan:entries=" + std::to_string(edge_access_sequence_.size()) + ":bound=" + std::to_string(edge_access_sequence_.size()) + ":late_bound=" + std::to_string(edge_access_plan_late_bind_count_) + ":null_derived_fallback=0");
+                    progress_note(
+                        "prove:quotient:t_edge:coset_prewarm:done:ms=" + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
+                    // The generic evaluator is the protocol source of truth. A
+                    // hand-unrolled route must reproduce evaluate_t_edge exactly
+                    // before it can enter the formal path; otherwise its
+                    // commitment polynomial could disagree with verifier claims.
+                }
+                else if (label_ == "t_FH")
+                {
+                    // The point evaluator runs up to 32 workers.  Letting those
+                    // workers discover a cold FH dependency independently causes
+                    // a cache-miss stampede: every worker can start the same
+                    // full-domain NTT before the first result reaches
+                    // coset_cache_.  Materialize the small canonical dependency
+                    // registry in order first.  Individual NTTs retain their
+                    // internal parallelism, while the evaluation workers become
+                    // read-only cache consumers.
+                    const auto prewarm_start = Clock::now();
+                    const auto dependency_labels =
+                        quotient_materialization_dependency_labels(
+                            context_, label_);
+                    progress_note("prove:quotient:t_FH:coset_prewarm:start");
+                    for (const auto &dependency_label : dependency_labels)
+                    {
+                        (void)coset_values_ptr(dependency_label);
+                    }
+                    seed_fast_coset_lookup(dependency_labels);
+                    bind_fh_coset_slots();
+                    progress_note(
+                        "prove:quotient:t_FH:coset_prewarm:done:ms=" + std::to_string(
+                                                                           elapsed_ms(prewarm_start, Clock::now())));
+                }
+                else if (label_ != "t_edge")
+                {
+                    // Small-domain quotient evaluators repeatedly request the
+                    // same named coset vectors.  Resolve every authenticated
+                    // dependency once before the point loop so evaluation is
+                    // a read-only pointer lookup instead of millions of
+                    // mutex-protected string-map probes.
+                    const auto prewarm_start = Clock::now();
+                    const auto dependency_labels =
+                        quotient_dependency_labels(context_, label_);
+                    if (label_ == "t_N")
+                    {
+                        progress_note(
+                            "prove:quotient:t_N:coset_prewarm:start");
+                    }
+                    for (const auto &dependency_label : dependency_labels)
+                    {
+                        (void)coset_values_ptr(dependency_label);
+                    }
+
+                    seed_fast_coset_lookup(
+                        dependency_labels);
+
+                    if (label_ == "t_N")
+                    {
+                        prepare_t_n_public_source_expected_cosets();
+
+                        progress_note(
+                            "prove:quotient:t_N:coset_prewarm:done:ms=" +
+                            std::to_string(
+                                elapsed_ms(
+                                    prewarm_start,
+                                    Clock::now())));
+                    }
+                }
+                if (label_ == "t_edge" &&
+                    !cuda_t_edge_route)
+                {
+                    progress_note(
+                        "prove:quotient:t_edge:"
+                        "evaluate:start");
+                }
+                else if (label_ == "t_FH")
+                {
+                    progress_note("prove:quotient:t_FH:evaluate:start");
+                }
+                else if (label_ == "t_N")
+                {
+                    progress_note("prove:quotient:t_N:evaluate:start");
+                }
+                const auto point_evaluation_start =
+                    Clock::now();
+
+                if (!cuda_t_edge_route)
+                {
+                    std::vector<FieldElement>
+                        quotient_zero_inverses;
+
+                    const auto boundary_one =
+                        FieldElement::one();
+
+                    const auto boundary_last_point =
+                        domain_->point_at(domain_->size - 1);
+
+                    const auto boundary_zero_step =
+                        root.pow(domain_->size);
+
+                    const auto boundary_shifted_zero =
+                        shift_.pow(domain_->size);
 
                     if (label_ == "t_edge" ||
                         label_ == "t_FH" ||
                         label_ == "t_N")
                     {
-                        if (denominator_products == nullptr)
+                        if (target_size_ % domain_->size != 0)
                         {
                             throw std::runtime_error(
-                                "quotient evaluation is missing inverse scratch");
+                                "quotient coset size is not a domain multiple: " + label_);
                         }
+
+                        const auto zero_cycle_size =
+                            target_size_ / domain_->size;
+
+                        quotient_zero_inverses.reserve(
+                            zero_cycle_size);
 
                         auto zero_power =
-                            boundary_shifted_zero * boundary_zero_step.pow(
-                                                        static_cast<std::uint64_t>(
-                                                            begin));
+                            boundary_shifted_zero;
 
-                        for (std::size_t block_begin = begin;
-                             block_begin < end;
-                             block_begin += kInverseBlockSize)
+                        for (std::size_t residue = 0;
+                             residue < zero_cycle_size;
+                             ++residue)
                         {
-                            const auto block_end =
-                                std::min(
-                                    end,
-                                    block_begin + kInverseBlockSize);
+                            quotient_zero_inverses.push_back(
+                                (zero_power - boundary_one).inv());
 
-                            denominator_products->resize(
-                                block_end - block_begin);
+                            zero_power *= boundary_zero_step;
+                        }
+                    }
 
-                            auto denominator_z = z;
+                    constexpr std::size_t kInverseBlockSize = 8192;
 
-                            for (std::size_t i = block_begin;
-                                 i < block_end;
-                                 ++i)
-                            {
-                                mcl::Fr first_denominator;
-                                mcl::Fr last_denominator;
-
-                                mcl::Fr::sub(
-                                    first_denominator,
-                                    denominator_z.native(),
-                                    boundary_one.native());
-
-                                mcl::Fr::sub(
-                                    last_denominator,
-                                    denominator_z.native(),
-                                    boundary_last_point.native());
-
-                                mcl::Fr::mul(
-                                    (*denominator_products)[i - block_begin],
-                                    first_denominator,
-                                    last_denominator);
-
-                                denominator_z *= root;
-                            }
-
-                            batch_invert_native_in_place(
-                                denominator_products);
-
-                            for (std::size_t i = block_begin;
-                                 i < block_end;
-                                 ++i)
-                            {
-                                const auto first_denominator =
-                                    z - boundary_one;
-
-                                const auto last_denominator =
-                                    z - boundary_last_point;
-
-                                const auto inverse_product =
-                                    FieldElement::from_native(
-                                        (*denominator_products)[i - block_begin]);
-
-                                const auto zero =
-                                    zero_power - boundary_one;
-
-                                const auto zero_scaled =
-                                    zero * domain_->inv_size;
-
-                                const QuotientBoundaryValues boundary{
-                                    .first =
-                                        zero_scaled * last_denominator * inverse_product,
-
-                                    .last =
-                                        zero_scaled * boundary_last_point * first_denominator * inverse_product,
-
-                                    .zero = zero,
-
-                                    .zero_inverse =
-                                        quotient_zero_inverses[i % quotient_zero_inverses
-                                                                       .size()],
-                                };
-
-                                quotient_values[i] =
-                                    evaluate_at_index(
-                                        i,
-                                        z,
-                                        &boundary);
-
-                                z *= root;
-                                zero_power *=
-                                    boundary_zero_step;
-                            }
+                    const auto evaluate_range =
+                        [&](std::size_t begin,
+                            std::size_t end,
+                            std::vector<mcl::Fr> *denominator_products)
+                    {
+                        if (begin >= end)
+                        {
+                            return;
                         }
 
-                        return;
-                    }
+                        auto z =
+                            shift_ * root.pow(
+                                         static_cast<std::uint64_t>(
+                                             begin));
 
-                    for (std::size_t i = begin;
-                         i < end;
-                         ++i)
-                    {
-                        quotient_values[i] =
-                            evaluate_at_index(i, z);
-
-                        z *= root;
-                    }
-                };
-
-                const auto cpu_count =
-                    std::max<std::size_t>(
-                        1,
-                        std::thread::hardware_concurrency());
-
-                const bool run_parallel =
-                    cpu_count > 1 && target_size_ >= 4096;
-
-                if (run_parallel)
-                {
-                    const bool bounded_file_backed_evaluation =
-                        file_backed_coset_count_.load(
-                            std::memory_order_relaxed) != 0;
-
-                    const auto evaluation_block_size =
-                        bounded_file_backed_evaluation
-                            ? std::size_t{1} << 15
-                            : target_size_;
-
-                    if (use_file_backed_coset_storage())
-                    {
-                        progress_note(
-                            "prove:quotient:" + label_ + ":coset_storage:tiered" + ":memory_bytes=" + std::to_string(in_memory_coset_bytes_.load(std::memory_order_relaxed)) + ":memory_budget=" + std::to_string(in_memory_coset_budget_bytes_) + ":host_total_at_start=" + std::to_string(coset_host_total_bytes_) + ":host_available_at_start=" + std::to_string(coset_host_available_at_start_bytes_) + ":host_reserve=" + std::to_string(coset_host_reserve_bytes_) + ":files=" + std::to_string(file_backed_coset_count_.load(std::memory_order_relaxed)) + ":bytes=" + std::to_string(file_backed_coset_bytes_.load(std::memory_order_relaxed)) + ":lazy_blinder_views=" + std::to_string(lazy_blinder_coset_count_.load(std::memory_order_relaxed)) + ":lazy_blinder_bytes_avoided=" + std::to_string(lazy_blinder_coset_bytes_avoided_.load(std::memory_order_relaxed)) + ":split_lane_cosets=" +
-                            std::to_string(
-                                split_lane_coset_count_.load(
-                                    std::memory_order_relaxed)) +
-                            ":split_lane_temp_bytes_avoided=" +
-                            std::to_string(
-                                split_lane_temporary_bytes_avoided_.load(
-                                    std::memory_order_relaxed)) +
-                            ":split_lane_interleave_bytes_avoided=" +
-                            std::to_string(
-                                split_lane_interleave_bytes_avoided_.load(
-                                    std::memory_order_relaxed)) +
-                            ":evaluation_block=" + std::to_string(evaluation_block_size));
-                    }
-
-                    const auto min_points_per_task =
-                        bounded_file_backed_evaluation
-                            ? (label_ == "t_edge"
-                                   ? std::size_t{1024}
-                                   : std::size_t{2048})
-                            : (label_ == "t_edge"
-                                   ? std::size_t{1024}
-                               : label_ == "t_N"
-                                   ? std::size_t{512}
-                                   : std::size_t{32768});
-
-                    if (bounded_file_backed_evaluation)
-                    {
-                        const auto persistent_worker_count =
-                            std::min<std::size_t>(
-                                std::min<std::size_t>(
-                                    cpu_count,
-                                    32),
-                                std::max<std::size_t>(
-                                    1,
-                                    evaluation_block_size / min_points_per_task));
-
-                        const auto evaluation_block_count =
-                            (target_size_ + evaluation_block_size - 1) / evaluation_block_size;
-
-                        const auto discard_set =
-                            file_backed_coset_discard_set();
-
-                        // file_backed_coset_count_ is a cumulative execution counter.
-                        // A file-backed value may have been created and released before
-                        // this live cache snapshot.  An empty discard set is therefore
-                        // valid and simply means that there are no currently reachable
-                        // file-backed pages to discard.
-                        progress_note(
-                            "prove:quotient:" + label_ + ":evaluation_scheduler" + ":mode=persistent_block_team" + ":workers=" + std::to_string(persistent_worker_count) + ":blocks=" + std::to_string(evaluation_block_count) + ":discard_views=" + std::to_string(discard_set.size()));
-
-                        std::barrier<> block_barrier(
-                            static_cast<std::ptrdiff_t>(
-                                persistent_worker_count));
-
-                        std::atomic<int> start_state{0};
-                        std::atomic<bool> worker_failed{false};
-
-                        std::mutex worker_error_mutex;
-                        std::exception_ptr worker_error;
-
-                        std::vector<std::thread> workers;
-                        workers.reserve(
-                            persistent_worker_count);
-
-                        try
+                        if (label_ == "t_edge" ||
+                            label_ == "t_FH" ||
+                            label_ == "t_N")
                         {
-                            for (std::size_t worker = 0;
-                                 worker < persistent_worker_count;
-                                 ++worker)
+                            if (denominator_products == nullptr)
                             {
-                                workers.emplace_back(
-                                    [&, worker]()
-                                    {
-                                        while (start_state.load(
-                                                   std::memory_order_acquire) == 0)
-                                        {
-                                            std::this_thread::yield();
-                                        }
-
-                                        if (start_state.load(
-                                                std::memory_order_acquire) < 0)
-                                        {
-                                            return;
-                                        }
-
-                                        std::vector<mcl::Fr>
-                                            denominator_products;
-
-                                        for (std::size_t evaluation_begin = 0;
-                                             evaluation_begin < target_size_;
-                                             evaluation_begin +=
-                                             evaluation_block_size)
-                                        {
-                                            const auto evaluation_end =
-                                                std::min(
-                                                    target_size_,
-                                                    evaluation_begin + evaluation_block_size);
-
-                                            const auto evaluation_count =
-                                                evaluation_end - evaluation_begin;
-
-                                            const auto chunk_size =
-                                                (evaluation_count + persistent_worker_count - 1) / persistent_worker_count;
-
-                                            const auto begin =
-                                                evaluation_begin + worker * chunk_size;
-
-                                            const auto end =
-                                                std::min(
-                                                    evaluation_end,
-                                                    begin + chunk_size);
-
-                                            if (!worker_failed.load(
-                                                    std::memory_order_acquire) &&
-                                                begin < end)
-                                            {
-                                                try
-                                                {
-                                                    evaluate_range(
-                                                        begin,
-                                                        end,
-                                                        &denominator_products);
-                                                }
-                                                catch (...)
-                                                {
-                                                    {
-                                                        std::lock_guard<std::mutex>
-                                                            lock(
-                                                                worker_error_mutex);
-
-                                                        if (worker_error == nullptr)
-                                                        {
-                                                            worker_error =
-                                                                std::current_exception();
-                                                        }
-                                                    }
-
-                                                    worker_failed.store(
-                                                        true,
-                                                        std::memory_order_release);
-                                                }
-                                            }
-
-                                            block_barrier.arrive_and_wait();
-
-                                            if (worker == 0 && !worker_failed.load(
-                                                                   std::memory_order_acquire))
-                                            {
-                                                discard_consumed_coset_pages(
-                                                    discard_set,
-                                                    evaluation_end);
-                                            }
-
-                                            block_barrier.arrive_and_wait();
-
-                                            if (worker_failed.load(
-                                                    std::memory_order_acquire))
-                                            {
-                                                break;
-                                            }
-                                        }
-                                    });
+                                throw std::runtime_error(
+                                    "quotient evaluation is missing inverse scratch");
                             }
-                        }
-                        catch (...)
-                        {
-                            start_state.store(
-                                -1,
-                                std::memory_order_release);
 
-                            for (auto &worker : workers)
+                            auto zero_power =
+                                boundary_shifted_zero * boundary_zero_step.pow(
+                                                            static_cast<std::uint64_t>(
+                                                                begin));
+
+                            for (std::size_t block_begin = begin;
+                                 block_begin < end;
+                                 block_begin += kInverseBlockSize)
                             {
-                                if (worker.joinable())
+                                const auto block_end =
+                                    std::min(
+                                        end,
+                                        block_begin + kInverseBlockSize);
+
+                                denominator_products->resize(
+                                    block_end - block_begin);
+
+                                auto denominator_z = z;
+
+                                for (std::size_t i = block_begin;
+                                     i < block_end;
+                                     ++i)
                                 {
-                                    worker.join();
+                                    mcl::Fr first_denominator;
+                                    mcl::Fr last_denominator;
+
+                                    mcl::Fr::sub(
+                                        first_denominator,
+                                        denominator_z.native(),
+                                        boundary_one.native());
+
+                                    mcl::Fr::sub(
+                                        last_denominator,
+                                        denominator_z.native(),
+                                        boundary_last_point.native());
+
+                                    mcl::Fr::mul(
+                                        (*denominator_products)[i - block_begin],
+                                        first_denominator,
+                                        last_denominator);
+
+                                    denominator_z *= root;
+                                }
+
+                                batch_invert_native_in_place(
+                                    denominator_products);
+
+                                for (std::size_t i = block_begin;
+                                     i < block_end;
+                                     ++i)
+                                {
+                                    const auto first_denominator =
+                                        z - boundary_one;
+
+                                    const auto last_denominator =
+                                        z - boundary_last_point;
+
+                                    const auto inverse_product =
+                                        FieldElement::from_native(
+                                            (*denominator_products)[i - block_begin]);
+
+                                    const auto zero =
+                                        zero_power - boundary_one;
+
+                                    const auto zero_scaled =
+                                        zero * domain_->inv_size;
+
+                                    const QuotientBoundaryValues boundary{
+                                        .first =
+                                            zero_scaled * last_denominator * inverse_product,
+
+                                        .last =
+                                            zero_scaled * boundary_last_point * first_denominator * inverse_product,
+
+                                        .zero = zero,
+
+                                        .zero_inverse =
+                                            quotient_zero_inverses[i % quotient_zero_inverses
+                                                                           .size()],
+                                    };
+
+                                    quotient_values[i] =
+                                        evaluate_at_index(
+                                            i,
+                                            z,
+                                            &boundary);
+
+                                    z *= root;
+                                    zero_power *=
+                                        boundary_zero_step;
                                 }
                             }
 
-                            throw;
+                            return;
                         }
 
-                        start_state.store(
+                        for (std::size_t i = begin;
+                             i < end;
+                             ++i)
+                        {
+                            quotient_values[i] =
+                                evaluate_at_index(i, z);
+
+                            z *= root;
+                        }
+                    };
+
+                    const auto cpu_count =
+                        std::max<std::size_t>(
                             1,
-                            std::memory_order_release);
+                            std::thread::hardware_concurrency());
 
-                        for (auto &worker : workers)
-                        {
-                            worker.join();
-                        }
+                    const bool run_parallel =
+                        cpu_count > 1 && target_size_ >= 4096;
 
-                        if (worker_error != nullptr)
-                        {
-                            std::rethrow_exception(
-                                worker_error);
-                        }
-                    }
-                    else
+                    if (run_parallel)
                     {
-                        for (std::size_t evaluation_begin = 0;
-                             evaluation_begin < target_size_;
-                             evaluation_begin +=
-                             evaluation_block_size)
+                        const bool bounded_file_backed_evaluation =
+                            file_backed_coset_count_.load(
+                                std::memory_order_relaxed) != 0;
+
+                        const auto evaluation_block_size =
+                            bounded_file_backed_evaluation
+                                ? std::size_t{1} << 15
+                                : target_size_;
+
+                        if (use_file_backed_coset_storage())
                         {
-                            const auto evaluation_end =
-                                std::min(
-                                    target_size_,
-                                    evaluation_begin + evaluation_block_size);
+                            progress_note(
+                                "prove:quotient:" + label_ + ":coset_storage:tiered" + ":memory_bytes=" + std::to_string(in_memory_coset_bytes_.load(std::memory_order_relaxed)) + ":memory_budget=" + std::to_string(in_memory_coset_budget_bytes_) + ":host_total_at_start=" + std::to_string(coset_host_total_bytes_) + ":host_available_at_start=" + std::to_string(coset_host_available_at_start_bytes_) + ":host_reserve=" + std::to_string(coset_host_reserve_bytes_) + ":files=" + std::to_string(file_backed_coset_count_.load(std::memory_order_relaxed)) + ":bytes=" + std::to_string(file_backed_coset_bytes_.load(std::memory_order_relaxed)) + ":lazy_blinder_views=" + std::to_string(lazy_blinder_coset_count_.load(std::memory_order_relaxed)) + ":lazy_blinder_bytes_avoided=" + std::to_string(lazy_blinder_coset_bytes_avoided_.load(std::memory_order_relaxed)) + ":split_lane_cosets=" +
+                                std::to_string(
+                                    split_lane_coset_count_.load(
+                                        std::memory_order_relaxed)) +
+                                ":split_lane_temp_bytes_avoided=" +
+                                std::to_string(
+                                    split_lane_temporary_bytes_avoided_.load(
+                                        std::memory_order_relaxed)) +
+                                ":split_lane_interleave_bytes_avoided=" +
+                                std::to_string(
+                                    split_lane_interleave_bytes_avoided_.load(
+                                        std::memory_order_relaxed)) +
+                                ":evaluation_block=" + std::to_string(evaluation_block_size));
+                        }
 
-                            const auto evaluation_count =
-                                evaluation_end - evaluation_begin;
+                        const auto min_points_per_task =
+                            bounded_file_backed_evaluation
+                                ? (label_ == "t_edge"
+                                       ? std::size_t{1024}
+                                       : std::size_t{2048})
+                                : (label_ == "t_edge"
+                                       ? std::size_t{1024}
+                                   : label_ == "t_N"
+                                       ? std::size_t{512}
+                                       : std::size_t{32768});
 
-                            const auto requested_task_count =
-                                evaluation_count == 0
-                                    ? std::size_t{1}
-                                    : std::size_t{1} +
-                                          (evaluation_count - 1) /
-                                              min_points_per_task;
-
-                            const auto task_count =
+                        if (bounded_file_backed_evaluation)
+                        {
+                            const auto persistent_worker_count =
                                 std::min<std::size_t>(
                                     std::min<std::size_t>(
                                         cpu_count,
                                         32),
                                     std::max<std::size_t>(
                                         1,
-                                        requested_task_count));
+                                        evaluation_block_size / min_points_per_task));
 
-                            if (label_ == "t_N")
+                            const auto evaluation_block_count =
+                                (target_size_ + evaluation_block_size - 1) / evaluation_block_size;
+
+                            const auto discard_set =
+                                file_backed_coset_discard_set();
+
+                            // file_backed_coset_count_ is a cumulative execution counter.
+                            // A file-backed value may have been created and released before
+                            // this live cache snapshot.  An empty discard set is therefore
+                            // valid and simply means that there are no currently reachable
+                            // file-backed pages to discard.
+                            progress_note(
+                                "prove:quotient:" + label_ + ":evaluation_scheduler" + ":mode=persistent_block_team" + ":workers=" + std::to_string(persistent_worker_count) + ":blocks=" + std::to_string(evaluation_block_count) + ":discard_views=" + std::to_string(discard_set.size()));
+
+                            std::barrier<> block_barrier(
+                                static_cast<std::ptrdiff_t>(
+                                    persistent_worker_count));
+
+                            std::atomic<int> start_state{0};
+                            std::atomic<bool> worker_failed{false};
+
+                            std::mutex worker_error_mutex;
+                            std::exception_ptr worker_error;
+
+                            std::vector<std::thread> workers;
+                            workers.reserve(
+                                persistent_worker_count);
+
+                            try
                             {
-                                progress_note(
-                                    "prove:quotient:t_N:"
-                                    "evaluation_scheduler:"
-                                    "workers=" +
-                                    std::to_string(
-                                        task_count) +
-                                    ":points=" +
-                                    std::to_string(
-                                        evaluation_count) +
-                                    ":min_points_per_task=" +
-                                    std::to_string(
-                                        min_points_per_task));
-                            }
-
-                            const auto chunk_size =
-                                (evaluation_count + task_count - 1) / task_count;
-
-                            std::vector<std::future<void>> futures;
-                            futures.reserve(task_count);
-
-                            for (std::size_t task = 0;
-                                 task < task_count;
-                                 ++task)
-                            {
-                                const auto begin =
-                                    evaluation_begin + task * chunk_size;
-
-                                const auto end =
-                                    std::min(
-                                        evaluation_end,
-                                        begin + chunk_size);
-
-                                if (begin >= end)
+                                for (std::size_t worker = 0;
+                                     worker < persistent_worker_count;
+                                     ++worker)
                                 {
-                                    break;
-                                }
-
-                                futures.push_back(
-                                    std::async(
-                                        std::launch::async,
-                                        [&, begin, end]()
+                                    workers.emplace_back(
+                                        [&, worker]()
                                         {
+                                            while (start_state.load(
+                                                       std::memory_order_acquire) == 0)
+                                            {
+                                                std::this_thread::yield();
+                                            }
+
+                                            if (start_state.load(
+                                                    std::memory_order_acquire) < 0)
+                                            {
+                                                return;
+                                            }
+
                                             std::vector<mcl::Fr>
                                                 denominator_products;
 
-                                            evaluate_range(
-                                                begin,
-                                                end,
-                                                &denominator_products);
-                                        }));
+                                            for (std::size_t evaluation_begin = 0;
+                                                 evaluation_begin < target_size_;
+                                                 evaluation_begin +=
+                                                 evaluation_block_size)
+                                            {
+                                                const auto evaluation_end =
+                                                    std::min(
+                                                        target_size_,
+                                                        evaluation_begin + evaluation_block_size);
+
+                                                const auto evaluation_count =
+                                                    evaluation_end - evaluation_begin;
+
+                                                const auto chunk_size =
+                                                    (evaluation_count + persistent_worker_count - 1) / persistent_worker_count;
+
+                                                const auto begin =
+                                                    evaluation_begin + worker * chunk_size;
+
+                                                const auto end =
+                                                    std::min(
+                                                        evaluation_end,
+                                                        begin + chunk_size);
+
+                                                if (!worker_failed.load(
+                                                        std::memory_order_acquire) &&
+                                                    begin < end)
+                                                {
+                                                    try
+                                                    {
+                                                        evaluate_range(
+                                                            begin,
+                                                            end,
+                                                            &denominator_products);
+                                                    }
+                                                    catch (...)
+                                                    {
+                                                        {
+                                                            std::lock_guard<std::mutex>
+                                                                lock(
+                                                                    worker_error_mutex);
+
+                                                            if (worker_error == nullptr)
+                                                            {
+                                                                worker_error =
+                                                                    std::current_exception();
+                                                            }
+                                                        }
+
+                                                        worker_failed.store(
+                                                            true,
+                                                            std::memory_order_release);
+                                                    }
+                                                }
+
+                                                block_barrier.arrive_and_wait();
+
+                                                if (worker == 0 && !worker_failed.load(
+                                                                       std::memory_order_acquire))
+                                                {
+                                                    discard_consumed_coset_pages(
+                                                        discard_set,
+                                                        evaluation_end);
+                                                }
+
+                                                block_barrier.arrive_and_wait();
+
+                                                if (worker_failed.load(
+                                                        std::memory_order_acquire))
+                                                {
+                                                    break;
+                                                }
+                                            }
+                                        });
+                                }
                             }
-
-                            for (auto &future : futures)
+                            catch (...)
                             {
-                                future.get();
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    auto z = shift_;
-
-                    for (std::size_t i = 0;
-                         i < target_size_;
-                         ++i)
-                    {
-                        quotient_values[i] =
-                            evaluate_at_index(i, z);
-
-                        z *= root;
-                    }
-                }
-            }
-
-            if (label_ == "t_edge")
-            {
-                if (!cuda_t_edge_route)
-                {
-                    progress_note(
-                        "prove:quotient:t_edge:"
-                        "evaluate:done:ms=" +
-                        std::to_string(
-                            elapsed_ms(
-                                point_evaluation_start,
-                                Clock::now())));
-                }
-
-                progress_note(
-                    "prove:quotient:t_edge:"
-                    "coefficients:start");
-            }
-            else if (label_ == "t_FH")
-            {
-                progress_note(
-                    "prove:quotient:t_FH:evaluate:done:ms=" + std::to_string(elapsed_ms(
-                                                                  point_evaluation_start, Clock::now())));
-                progress_note(
-                    "prove:quotient:t_FH:coefficients:start");
-            }
-            else if (label_ == "t_N")
-            {
-                progress_note(
-                    "prove:quotient:t_N:evaluate:done:ms=" + std::to_string(elapsed_ms(
-                                                                 point_evaluation_start, Clock::now())));
-                progress_note("prove:quotient:t_N:coefficients:start");
-            }
-
-            const auto coefficient_start =
-                Clock::now();
-
-            std::vector<FieldElement>
-                coefficients;
-
-            std::shared_ptr<
-                const algebra::
-                    CudaResidentCoefficientBuffer>
-                cuda_generic_resident_coefficients;
-
-            if (cuda_t_edge_route)
-            {
-                coefficients =
-                    std::move(
-                        cuda_t_edge_coefficients);
-
-                algebra::
-                    record_cuda_quotient_call();
-
-                algebra::
-                    record_cuda_t_edge_call();
-            }
-            else if (
-                target_size_ >= 2 &&
-                algebra::
-                    should_use_cuda_coset_transform(
-                        target_size_))
-            {
-                coefficients.assign(
-                    target_size_,
-                    FieldElement::zero());
-
-                constexpr std::size_t
-                    kResidentCoefficientThreshold =
-                        std::size_t{1} << 18;
-
-                const bool
-                    keep_coefficients_resident =
-                        target_size_ >=
-                        kResidentCoefficientThreshold;
-
-                const bool cuda_materialized =
-                    keep_coefficients_resident
-                        ? algebra::
-                              cuda_coset_host_to_resident_coefficients_exact(
-                                  FieldElement::
-                                      native_array_data(
-                                          quotient_values.data()),
-                                  target_size_,
-                                  shift_,
-                                  FieldElement::
-                                      mutable_native_array_data(
-                                          coefficients.data()),
-                                  &cuda_generic_resident_coefficients)
-                        : algebra::
-                              cuda_coset_host_to_coefficients_exact(
-                                  FieldElement::
-                                      native_array_data(
-                                          quotient_values.data()),
-                                  target_size_,
-                                  shift_,
-                                  FieldElement::
-                                      mutable_native_array_data(
-                                          coefficients.data()));
-
-                if (cuda_materialized)
-                {
-                    algebra::
-                        record_cuda_quotient_call();
-
-                    quotient_values.clear();
-                    quotient_values.shrink_to_fit();
-                }
-                else
-                {
-                    throw std::runtime_error(
-                        "selected CUDA coset-to-coefficient execution was not admitted: target_size=" +
-                        std::to_string(target_size_) + " domain=" +
-                        (domain_ == nullptr ? std::string("unknown") : domain_->name));
-                }
-            }
-            else
-            {
-                coefficients =
-                    coefficients_from_coset_evaluations_in_place(
-                        std::move(
-                            quotient_values),
-                        shift_);
-            }
-            if (label_ == "t_edge")
-            {
-                progress_note(
-                    "prove:quotient:t_edge:coefficients:done:ms=" + std::to_string(elapsed_ms(
-                                                                        coefficient_start, Clock::now())));
-            }
-            else if (label_ == "t_FH")
-            {
-                progress_note(
-                    "prove:quotient:t_FH:coefficients:done:ms=" + std::to_string(elapsed_ms(
-                                                                      coefficient_start, Clock::now())));
-            }
-            else if (label_ == "t_N")
-            {
-                progress_note(
-                    "prove:quotient:t_N:coefficients:done:ms=" + std::to_string(elapsed_ms(
-                                                                     coefficient_start, Clock::now())));
-            }
-            if (coefficients.size() >
-                key.pk.degree_bound + 1)
-            {
-                throw std::runtime_error(
-                    "materialized quotient exceeds SRS degree bound: " +
-                    label_);
-            }
-
-            auto polynomial =
-                algebra::Polynomial::
-                    from_coefficients(
-                        label_,
-                        std::move(
-                            coefficients));
-
-            if (label_ == "t_edge" &&
-                cuda_t_edge_resident_coefficients_ !=
-                    nullptr)
-            {
-                const auto &resident =
-                    *cuda_t_edge_resident_coefficients_;
-
-                if (resident.device_montgomery_limbs ==
-                        nullptr ||
-                    resident.device < 0 ||
-                    resident.logical_count == 0 ||
-                    resident.logical_count >
-                        polynomial.size() ||
-                    resident.logical_count >
-                        resident.capacity ||
-                    resident.nonzero_count >
-                        resident.logical_count)
-                {
-                    throw std::runtime_error(
-                        "CUDA t_edge resident coefficient metadata is invalid");
-                }
-
-                polynomial
-                    .cuda_resident_coefficients =
-                    std::move(
-                        cuda_t_edge_resident_coefficients_);
-            }
-            else if (
-                cuda_generic_resident_coefficients !=
-                nullptr)
-            {
-                const auto &resident =
-                    *cuda_generic_resident_coefficients;
-
-                if (resident.device_montgomery_limbs ==
-                        nullptr ||
-                    resident.device < 0 ||
-                    resident.logical_count == 0 ||
-                    resident.logical_count >
-                        polynomial.size() ||
-                    resident.logical_count >
-                        resident.capacity ||
-                    resident.nonzero_count >
-                        resident.logical_count)
-                {
-                    throw std::runtime_error(
-                        "CUDA generic quotient resident coefficient metadata is invalid: " +
-                        label_);
-                }
-
-                polynomial
-                    .cuda_resident_coefficients =
-                    std::move(
-                        cuda_generic_resident_coefficients);
-            }
-
-            return polynomial;
-        }
-
-    private:
-        struct FHQuotientCosetSlots
-        {
-            const QuotientCosetValues *q_table = nullptr;
-            const QuotientCosetValues *q_query = nullptr;
-            const QuotientCosetValues *table = nullptr;
-            const QuotientCosetValues *query = nullptr;
-            const QuotientCosetValues *multiplicity = nullptr;
-            const QuotientCosetValues *j_table = nullptr;
-            const QuotientCosetValues *j_query = nullptr;
-            const QuotientCosetValues *accumulator = nullptr;
-            const QuotientCosetValues *table_row = nullptr;
-            const QuotientCosetValues *table_column = nullptr;
-            const QuotientCosetValues *table_feature = nullptr;
-            const QuotientCosetValues *query_row = nullptr;
-            const QuotientCosetValues *query_column = nullptr;
-            const QuotientCosetValues *query_feature = nullptr;
-
-            bool ready() const
-            {
-                return q_table != nullptr && q_query != nullptr && table != nullptr && query != nullptr && multiplicity != nullptr && j_table != nullptr && j_query != nullptr && accumulator != nullptr;
-            }
-        };
-
-        struct TEdgeCosetAccess
-        {
-            std::string name;
-            const QuotientCosetValues *values = nullptr;
-            bool rotated = false;
-        };
-
-        bool use_file_backed_coset_storage() const
-        {
-            return (label_ == "t_edge" || label_ == "t_FH") && target_size_ >= (1ULL << 17);
-        }
-
-        std::size_t coset_byte_count(
-            std::size_t element_count,
-            const std::string &label) const
-        {
-            return util::checked_spill_bytes(
-                element_count,
-                sizeof(FieldElement),
-                label);
-        }
-
-        bool try_reserve_in_memory_coset_bytes(
-            std::size_t byte_count)
-        {
-            if (byte_count > in_memory_coset_budget_bytes_)
-            {
-                return false;
-            }
-
-            auto retained_bytes =
-                in_memory_coset_bytes_.load(
-                    std::memory_order_relaxed);
-
-            while (true)
-            {
-                if (retained_bytes > in_memory_coset_budget_bytes_ || byte_count > in_memory_coset_budget_bytes_ - retained_bytes)
-                {
-                    return false;
-                }
-
-                if (in_memory_coset_bytes_
-                        .compare_exchange_weak(
-                            retained_bytes,
-                            retained_bytes + byte_count,
-                            std::memory_order_relaxed))
-                {
-                    return true;
-                }
-            }
-        }
-
-        bool new_coset_is_file_backed(
-            std::size_t byte_count)
-        {
-            if (cuda_t_edge_transient_leaf_mode_)
-            {
-                return false;
-            }
-
-            if (!use_file_backed_coset_storage())
-            {
-                return false;
-            }
-
-            return !try_reserve_in_memory_coset_bytes(
-                byte_count);
-        }
-
-        void record_file_backed_coset(
-            std::size_t byte_count)
-        {
-            file_backed_coset_count_.fetch_add(
-                1,
-                std::memory_order_relaxed);
-
-            file_backed_coset_bytes_.fetch_add(
-                byte_count,
-                std::memory_order_relaxed);
-        }
-        QuotientCosetValuesPtr retain_coset_values(
-            std::vector<FieldElement> values,
-            const std::string &label)
-        {
-            const auto byte_count =
-                coset_byte_count(
-                    values.size(),
-                    label);
-
-            const bool file_backed =
-                new_coset_is_file_backed(
-                    byte_count);
-
-            auto retained =
-                std::make_shared<
-                    const QuotientCosetValues>(
-                    std::move(values),
-                    file_backed
-                        ? spill_arena_
-                        : nullptr,
-                    label);
-
-            if (file_backed)
-            {
-                record_file_backed_coset(
-                    byte_count);
-            }
-
-            return retained;
-        }
-
-        template <typename FillFn>
-        QuotientCosetValuesPtr
-        materialize_coset_values(
-            std::size_t element_count,
-            const std::string &label,
-            FillFn &&fill,
-            bool even_odd_split_layout = false)
-        {
-            const auto byte_count =
-                coset_byte_count(
-                    element_count,
-                    label);
-
-            const bool file_backed =
-                new_coset_is_file_backed(
-                    byte_count);
-
-            auto retained =
-                std::make_shared<QuotientCosetValues>(
-                    element_count,
-                    file_backed
-                        ? spill_arena_
-                        : nullptr,
-                    label,
-                    even_odd_split_layout);
-
-            fill(retained->mutable_data());
-            retained->publish(label);
-
-            if (file_backed)
-            {
-                record_file_backed_coset(
-                    byte_count);
-            }
-
-            return retained;
-        }
-        bool can_preserve_split_lane_output(
-            const algebra::Polynomial &polynomial) const
-        {
-            // t_edge already has its dedicated device-resident fused
-            // executor.  Enable physical split-lane storage only for the
-            // genuinely large FH family where the generic host/tiered
-            // transform otherwise allocates two full half-size
-            // temporaries and then interleaves them into another full
-            // output vector.
-            if (label_ != "t_FH" ||
-                target_size_ <
-                    (std::size_t{1} << 26) ||
-                target_size_ < 2)
-            {
-                return false;
-            }
-
-            const auto half_size =
-                target_size_ / 2;
-
-            if (polynomial.basis ==
-                algebra::
-                    PolynomialBasis::
-                        Coefficient)
-            {
-                return polynomial.size() <=
-                       half_size;
-            }
-
-            if (polynomial.domain == nullptr)
-            {
-                return false;
-            }
-
-            const auto domain_size =
-                polynomial.domain->size;
-
-            if (domain_size >
-                half_size)
-            {
-                return false;
-            }
-
-            if (polynomial.zero_domain_blinder.size() >
-                half_size - domain_size)
-            {
-                return false;
-            }
-
-            return true;
-        }
-        QuotientCosetValuesPtr
-        materialize_polynomial_coset(
-            const algebra::Polynomial &polynomial,
-            const std::string &label)
-        {
-            const bool preserve_split_lane =
-                can_preserve_split_lane_output(
-                    polynomial);
-
-            auto retained =
-                materialize_coset_values(
-                    target_size_,
-                    label,
-                    [&](FieldElement *output)
-                    {
-                        bool cuda_materialized =
-                            false;
-                        bool cuda_route_attempted =
-                            false;
-
-                        if (util::route2_options()
-                                .cuda_field_hotspots &&
-                            target_size_ >= 2 &&
-                            algebra::
-                                should_use_cuda_coset_transform(
-                                    target_size_))
-                        {
-                            auto *native_output =
-                                FieldElement::
-                                    mutable_native_array_data(
-                                        output);
-
-                            if (polynomial.basis ==
-                                    algebra::
-                                        PolynomialBasis::
-                                            Evaluation &&
-                                polynomial.domain != nullptr &&
-                                polynomial.domain->size >= 2 &&
-                                polynomial.domain->size <= target_size_ / 2 &&
-                                polynomial.zero_domain_blinder.size() <= target_size_ / 2 - polynomial.domain->size)
-                            {
-                                const auto &values =
-                                    polynomial.values();
-
-                                const auto &blinder =
-                                    polynomial
-                                        .zero_domain_blinder;
-
-                                cuda_route_attempted = true;
-                                cuda_materialized =
-                                    algebra::
-                                        cuda_coset_evaluations_to_host_exact(
-                                            FieldElement::
-                                                native_array_data(
-                                                    values.data()),
-                                            values.size(),
-                                            polynomial
-                                                .domain
-                                                ->size,
-                                            blinder.empty()
-                                                ? nullptr
-                                                : FieldElement::
-                                                      native_array_data(
-                                                          blinder.data()),
-                                            blinder.size(),
-                                            shift_,
-                                            native_output,
-                                            target_size_,
-                                            preserve_split_lane);
-                            }
-                            else if (
-                                polynomial.basis ==
-                                algebra::
-                                    PolynomialBasis::
-                                        Coefficient)
-                            {
-                                const auto &coefficients =
-                                    polynomial.values();
-
-                                cuda_route_attempted = true;
-                                cuda_materialized =
-                                    algebra::
-                                        cuda_coset_coefficients_to_host_exact(
-                                            coefficients.empty()
-                                                ? nullptr
-                                                : FieldElement::
-                                                      native_array_data(
-                                                          coefficients.data()),
-                                            coefficients.size(),
-                                            shift_,
-                                            native_output,
-                                            target_size_,
-                                            preserve_split_lane);
-                            }
-                        }
-
-                        if (!cuda_materialized)
-                        {
-                            if (cuda_route_attempted)
-                            {
-                                throw std::runtime_error(
-                                    "CUDA quotient coset route was selected but "
-                                    "materialization was not admitted: target_size=" +
-                                    std::to_string(target_size_) +
-                                    " domain=" +
-                                    (domain_ == nullptr
-                                         ? std::string("unknown")
-                                         : domain_->name) +
-                                    " route=cuda_coset_to_host");
-                            }
-                            coset_evaluate_polynomial_into(
-                                polynomial,
-                                target_size_,
-                                shift_,
-                                label,
-                                &shift_powers(),
-                                output,
-                                preserve_split_lane);
-                        }
-                    },
-                    preserve_split_lane);
-
-            if (preserve_split_lane)
-            {
-                const auto byte_count =
-                    coset_byte_count(
-                        target_size_,
-                        label);
-
-                split_lane_coset_count_.fetch_add(
-                    1,
-                    std::memory_order_relaxed);
-
-                split_lane_temporary_bytes_avoided_.fetch_add(
-                    byte_count,
-                    std::memory_order_relaxed);
-
-                split_lane_interleave_bytes_avoided_.fetch_add(
-                    byte_count,
-                    std::memory_order_relaxed);
-            }
-
-            return retained;
-        }
-        QuotientCosetValuesPtr
-        materialize_coefficient_coset(
-            const std::vector<mcl::Fr>
-                &coefficients,
-            const std::string &label)
-        {
-            return materialize_coset_values(
-                target_size_,
-                label,
-                [&](FieldElement *output)
-                {
-                    if (algebra::should_use_cuda_coset_transform(target_size_) &&
-                        coefficients.size() <= target_size_ / 2)
-                    {
-                        if (!algebra::cuda_coset_coefficients_to_host_exact(
-                                coefficients.empty() ? nullptr : coefficients.data(), coefficients.size(), shift_,
-                                FieldElement::mutable_native_array_data(output), target_size_, false))
-                            throw std::runtime_error("CUDA coefficient coset was not admitted: " + label);
-                        return;
-                    }
-                    coset_evaluate_coefficients_into(coefficients.data(), coefficients.size(), target_size_,
-                                                     shift_, label, &shift_powers(), output);
-                });
-        }
-
-        QuotientCosetValuesPtr retain_blinded_coset_view(
-            QuotientCosetValuesPtr semantic_values,
-            const std::vector<FieldElement> &zero_domain_blinder)
-        {
-            auto retained =
-                std::make_shared<const QuotientCosetValues>(
-                    std::move(semantic_values),
-                    zero_domain_blinder,
-                    semantic_coset_points_,
-                    semantic_coset_zero_cycle_);
-            lazy_blinder_coset_count_.fetch_add(
-                1, std::memory_order_relaxed);
-            lazy_blinder_coset_bytes_avoided_.fetch_add(
-                target_size_ * sizeof(FieldElement),
-                std::memory_order_relaxed);
-            return retained;
-        }
-
-        QuotientCosetValuesPtr retain_blinded_coset_view(
-            QuotientCosetValuesPtr semantic_values,
-            const algebra::Polynomial &polynomial)
-        {
-            return retain_blinded_coset_view(
-                std::move(semantic_values),
-                polynomial.zero_domain_blinder);
-        }
-
-        std::vector<QuotientCosetValuesPtr>
-        file_backed_coset_discard_set()
-        {
-            std::unordered_map<
-                const QuotientCosetValues *,
-                QuotientCosetValuesPtr>
-                unique;
-
-            {
-                std::lock_guard<std::mutex> lock(
-                    coset_cache_mutex_);
-
-                unique.reserve(coset_cache_.size());
-
-                for (const auto &[_, values] :
-                     coset_cache_)
-                {
-                    if (values != nullptr && values->file_backed())
-                    {
-                        unique.emplace(
-                            values.get(),
-                            values);
-                    }
-                }
-            }
-
-            std::vector<QuotientCosetValuesPtr> out;
-            out.reserve(unique.size());
-
-            for (const auto &[_, values] : unique)
-            {
-                out.push_back(values);
-            }
-
-            return out;
-        }
-
-        void discard_consumed_coset_pages(
-            const std::vector<
-                QuotientCosetValuesPtr> &discard_set,
-            std::size_t end_index) const
-        {
-            for (const auto &values : discard_set)
-            {
-                if (values != nullptr)
-                {
-                    values->discard_prefix(end_index);
-                }
-            }
-        }
-
-        template <class Fn>
-        void parallel_for_chunks(
-            std::size_t count,
-            std::size_t min_parallel_count,
-            std::size_t max_worker_count,
-            Fn &&fn) const
-        {
-            const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-            const auto available_workers =
-                max_worker_count == 0 ? cpu_count : std::min<std::size_t>(cpu_count, max_worker_count);
-            if (count < min_parallel_count || available_workers <= 1)
-            {
-                fn(0, count);
-                return;
-            }
-            const auto task_count = std::min<std::size_t>(
-                available_workers,
-                std::max<std::size_t>(2, count / min_parallel_count));
-            const auto chunk_size = (count + task_count - 1) / task_count;
-            std::vector<std::future<void>> futures;
-            futures.reserve(task_count);
-            for (std::size_t task = 0; task < task_count; ++task)
-            {
-                const auto begin = task * chunk_size;
-                const auto end = std::min(count, begin + chunk_size);
-                if (begin >= end)
-                {
-                    break;
-                }
-                futures.push_back(std::async(std::launch::async, [&, begin, end]()
-                                             { fn(begin, end); }));
-            }
-            for (auto &future : futures)
-            {
-                future.get();
-            }
-        }
-
-        const QuotientCosetValues &coset_values(const std::string &requested_name)
-        {
-            return *coset_values_ptr(requested_name);
-        }
-
-        void seed_fast_coset_lookup(const std::vector<std::string> &labels)
-        {
-            fast_coset_lookup_.clear();
-            fast_coset_lookup_.reserve(labels.size() * 2);
-            for (const auto &label : labels)
-            {
-                if (fast_coset_lookup_.find(label) != fast_coset_lookup_.end())
-                {
-                    continue;
-                }
-                const auto values = coset_values_ptr(label);
-                fast_coset_lookup_.emplace(label, values.get());
-            }
-        }
-
-        void require_t_edge_fast_coset_lookup(
-            const std::vector<std::string> &labels) const
-        {
-            if (label_ != "t_edge")
-            {
-                throw std::runtime_error(
-                    "t_edge fast lookup validation requested for " + label_);
-            }
-            std::size_t derived_count = 0;
-            for (const auto &name : labels)
-            {
-                const auto it = fast_coset_lookup_.find(name);
-                if (it == fast_coset_lookup_.end() || it->second == nullptr || it->second->size() != target_size_)
-                {
-                    throw std::runtime_error(
-                        "t_edge quotient fast lookup failed to bind dependency: " + name);
-                }
-                if (is_edge_derived_coset_request(name))
-                {
-                    ++derived_count;
-                }
-            }
-            progress_note(
-                "prove:quotient:t_edge:fast_lookup:dependencies=" + std::to_string(labels.size()) + ":derived_views=" + std::to_string(derived_count) + ":missing_or_null=0");
-        }
-
-        const QuotientCosetValues *bind_t_edge_fast_coset(
-            const std::string &name)
-        {
-            if (label_ != "t_edge")
-            {
-                throw std::runtime_error(
-                    "t_edge fast lookup binding requested for " + label_);
-            }
-            auto it = fast_coset_lookup_.find(name);
-            if (it == fast_coset_lookup_.end())
-            {
-                // The dependency registry is intentionally a prewarm
-                // hint, not an alternate protocol equation.  Bind any
-                // evaluator-discovered name once through the generic
-                // resolver while recording the access plan.  The formal
-                // point loop below remains a pointer-only replay path.
-                const auto values = coset_values_ptr(name);
-                it = fast_coset_lookup_.emplace(name, values.get()).first;
-                ++edge_access_plan_late_bind_count_;
-            }
-            if (it->second == nullptr || it->second->size() != target_size_)
-            {
-                throw std::runtime_error(
-                    "t_edge quotient access-plan dependency is not bound to a full coset view: " + name);
-            }
-            return it->second;
-        }
-
-        void bind_fh_coset_slots()
-        {
-            if (label_ != "t_FH")
-            {
-                throw std::runtime_error(
-                    "FH coset slots requested for non-FH quotient");
-            }
-            const auto bind = [&](const char *name)
-                -> const QuotientCosetValues *
-            {
-                const auto it = fast_coset_lookup_.find(name);
-                if (it == fast_coset_lookup_.end() || it->second == nullptr || it->second->size() != target_size_)
-                {
-                    throw std::runtime_error(
-                        "FH fixed coset slot is missing or has the wrong size: " + std::string(name));
-                }
-                return it->second;
-            };
-            fh_coset_slots_.q_table = bind("P_Q_tbl_feat");
-            fh_coset_slots_.q_query = bind("P_Q_qry_feat");
-            fh_coset_slots_.table = bind("P_Table_feat");
-            fh_coset_slots_.query = bind("P_Query_feat");
-            fh_coset_slots_.multiplicity = bind("P_m_feat");
-            fh_coset_slots_.j_table = bind("P_J_tbl_feat");
-            fh_coset_slots_.j_query = bind("P_J_qry_feat");
-            fh_coset_slots_.accumulator = bind("P_R_feat");
-            if (!fh_feature_encoding_terms_are_identically_zero_)
-            {
-                fh_coset_slots_.table_row = bind("P_Row_feat_tbl");
-                fh_coset_slots_.table_column = bind("P_Col_feat_tbl");
-                fh_coset_slots_.table_feature = bind("P_T_H");
-                fh_coset_slots_.query_row = bind("P_I_feat_qry");
-                fh_coset_slots_.query_column = bind("P_Col_feat_qry");
-                fh_coset_slots_.query_feature = bind("P_H");
-            }
-            if (!fh_coset_slots_.ready())
-            {
-                throw std::runtime_error(
-                    "FH fixed coset slots were not fully initialized");
-            }
-        }
-
-        QuotientBoundaryValues fh_boundary_values(
-            const FieldElement &z) const
-        {
-            const auto one = FieldElement::one();
-            const auto last_point =
-                domain_->point_at(domain_->size - 1);
-            const auto zero = domain_->zero_polynomial_eval(z);
-            if (zero.is_zero())
-            {
-                return QuotientBoundaryValues{
-                    .first = z == one
-                                 ? one
-                                 : FieldElement::zero(),
-                    .last = z == last_point
-                                ? one
-                                : FieldElement::zero(),
-                    .zero = zero,
-                    .zero_inverse = std::nullopt,
-                };
-            }
-            const auto first_denominator = z - one;
-            const auto last_denominator = z - last_point;
-            const auto denominator_product_inverse =
-                (first_denominator * last_denominator).inv();
-            const auto zero_scaled = zero * domain_->inv_size;
-            return QuotientBoundaryValues{
-                .first = zero_scaled * last_denominator * denominator_product_inverse,
-                .last = zero_scaled * last_point * first_denominator * denominator_product_inverse,
-                .zero = zero,
-                .zero_inverse = std::nullopt,
-            };
-        }
-
-        const QuotientCosetValues &fast_coset_values(const std::string &requested_name)
-        {
-            if (!fast_coset_lookup_.empty())
-            {
-                if (const auto it = fast_coset_lookup_.find(requested_name); it != fast_coset_lookup_.end())
-                {
-                    return *it->second;
-                }
-            }
-            return coset_values(requested_name);
-        }
-
-        bool is_direct_t_edge_coset_request(const std::string &name) const
-        {
-            if (label_ != "t_edge")
-            {
-                return false;
-            }
-            for (std::size_t layer_index = 0;
-                 layer_index < context_.model.hidden_layers.size();
-                 ++layer_index)
-                for (std::size_t local_head_index = 0;
-                     local_head_index < context_.model.hidden_layers[layer_index].heads.size();
-                     ++local_head_index)
-                {
-                    const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                    if (name.rfind(prefix, 0) == 0)
-                    {
-                        const auto suffix = std::string_view(name).substr(prefix.size());
-                        return suffix == "w_psq" || suffix == "T_psq_edge";
-                    }
-                }
-            for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
-            {
-                const auto prefix = output_head_prefix(head_index) + "_";
-                if (name.rfind(prefix, 0) == 0)
-                {
-                    const auto suffix = std::string_view(name).substr(prefix.size());
-                    return suffix == "w";
-                }
-            }
-            return false;
-        }
-
-        FieldElement coset_value_at(const std::string &requested_name, std::size_t index)
-        {
-            if (label_ == "t_edge")
-            {
-                if (const auto it = fast_coset_lookup_.find(requested_name);
-                    it != fast_coset_lookup_.end())
-                {
-                    return (*it->second)[index];
-                }
-                if (const auto derived = t_edge_derived_value_at(requested_name, index); derived.has_value())
-                {
-                    return *derived;
-                }
-            }
-            return fast_coset_values(requested_name)[index];
-        }
-
-        std::vector<FieldElement> quotient_alpha_powers_;
-
-        struct SemanticCosetGroup
-        {
-            const algebra::Polynomial *owner = nullptr;
-            const TraceArtifacts::SpilledEvaluationPolynomial *
-                spilled_owner = nullptr;
-            std::string owner_label;
-            std::vector<std::string> labels;
-            std::mutex mutex;
-            QuotientCosetValuesPtr base_values;
-            std::size_t remaining = 0;
-        };
-
-        std::uint64_t semantic_values_hash(
-            const std::vector<FieldElement> &values) const
-        {
-            std::uint64_t hash = 1469598103934665603ULL;
-            for (const auto &value : values)
-            {
-                const auto *units = value.native().getUnit();
-                for (std::size_t unit = 0;
-                     unit < mcl::Fr::getUnitSize(); ++unit)
-                {
-                    hash ^= static_cast<std::uint64_t>(units[unit]);
-                    hash *= 1099511628211ULL;
-                }
-            }
-            hash ^= values.size();
-            hash *= 1099511628211ULL;
-            return hash;
-        }
-
-        void seed_semantic_coset_groups(
-            const std::vector<std::string> &wave)
-        {
-            semantic_coset_group_by_label_.clear();
-            semantic_coset_groups_.clear();
-            std::unordered_map<
-                std::uint64_t,
-                std::vector<std::shared_ptr<SemanticCosetGroup>>>
-                groups_by_hash;
-            std::unordered_map<
-                std::string,
-                std::shared_ptr<SemanticCosetGroup>>
-                spilled_groups_by_source;
-            std::size_t semantic_objects = 0;
-            for (const auto &item_label : wave)
-            {
-                const auto *polynomial = lookup_polynomial(item_label);
-                if (polynomial != nullptr && polynomial->basis == algebra::PolynomialBasis::Evaluation && polynomial->domain.get() == domain_.get())
-                {
-                    ++semantic_objects;
-                    const auto &values = polynomial->values();
-                    auto &candidates = groups_by_hash[semantic_values_hash(values)];
-                    auto group = std::find_if(
-                        candidates.begin(),
-                        candidates.end(),
-                        [&](const auto &candidate)
-                        {
-                            return candidate->owner->values() == values;
-                        });
-                    if (group == candidates.end())
-                    {
-                        auto created =
-                            std::make_shared<SemanticCosetGroup>();
-                        created->owner = polynomial;
-                        created->owner_label = item_label;
-                        created->labels.push_back(item_label);
-                        candidates.push_back(created);
-                    }
-                    else
-                    {
-                        (*group)->labels.push_back(item_label);
-                    }
-                    continue;
-                }
-
-                const auto spilled_it =
-                    trace_.spilled_polynomials.find(item_label);
-                if (spilled_it == trace_.spilled_polynomials.end() || spilled_it->second.semantic_source_id == 0 || spilled_it->second.domain_name != domain_->name)
-                {
-                    continue;
-                }
-                if (spilled_it->second.size > domain_->size)
-                {
-                    throw std::runtime_error(
-                        "spilled semantic coset source exceeds domain: " + item_label);
-                }
-                if (spilled_it->second.size == 0)
-                {
-                    continue;
-                }
-                ++semantic_objects;
-                const auto source_key =
-                    spilled_it->second.domain_name + ":" +
-                    std::to_string(spilled_it->second.size) + ":" +
-                    std::to_string(spilled_file_value_count(spilled_it->second)) + ":" +
-                    (spilled_it->second.zero_tail_compacted ? "compact:" : "full:") +
-                    spilled_it->second.path + ":" +
-                    std::to_string(spilled_it->second.semantic_source_id);
-                const auto [group_it, inserted] =
-                    spilled_groups_by_source.emplace(
-                        source_key, nullptr);
-                if (inserted)
-                {
-                    auto created =
-                        std::make_shared<SemanticCosetGroup>();
-                    created->spilled_owner = &spilled_it->second;
-                    created->owner_label = item_label;
-                    created->labels.push_back(item_label);
-                    group_it->second = std::move(created);
-                }
-                else
-                {
-                    group_it->second->labels.push_back(item_label);
-                }
-            }
-
-            std::size_t semantic_unique = 0;
-            const auto register_group = [&](const auto &group)
-            {
-                if (group->labels.size() <= 1)
-                {
-                    return;
-                }
-                group->remaining = group->labels.size();
-                semantic_coset_groups_.push_back(group);
-                for (const auto &item_label : group->labels)
-                {
-                    semantic_coset_group_by_label_.emplace(
-                        item_label, group);
-                }
-            };
-            for (auto &[_, candidates] : groups_by_hash)
-            {
-                semantic_unique += candidates.size();
-                for (auto &group : candidates)
-                {
-                    register_group(group);
-                }
-            }
-            semantic_unique += spilled_groups_by_source.size();
-            for (auto &[_, group] : spilled_groups_by_source)
-            {
-                register_group(group);
-            }
-
-            if (!semantic_coset_groups_.empty())
-            {
-                seed_lazy_blinder_geometry();
-            }
-
-            if (progress_enabled())
-            {
-                progress_note(
-                    "prove:quotient:" + label_ + ":coset_prewarm:semantic_objects=" + std::to_string(semantic_objects) + ":semantic_unique=" + std::to_string(semantic_unique) + ":semantic_duplicates=" + std::to_string(semantic_objects - semantic_unique) + ":semantic_reuse_groups=" + std::to_string(semantic_coset_groups_.size()));
-            }
-        }
-
-        void seed_lazy_blinder_geometry()
-        {
-            if (semantic_coset_points_ != nullptr)
-            {
-                return;
-            }
-            auto points =
-                std::make_shared<std::vector<FieldElement>>(
-                    target_size_, FieldElement::zero());
-            semantic_coset_zero_cycle_.resize(
-                rotation_step_, FieldElement::zero());
-            const auto root = FieldElement::root_of_unity(target_size_);
-            const auto zero_step = root.pow(domain_->size);
-            auto point = shift_;
-            auto zero_power = shift_.pow(domain_->size);
-            const auto one = FieldElement::one();
-            for (std::size_t index = 0; index < target_size_; ++index)
-            {
-                (*points)[index] = point;
-                point *= root;
-            }
-            for (std::size_t index = 0;
-                 index < rotation_step_; ++index)
-            {
-                semantic_coset_zero_cycle_[index] =
-                    zero_power - one;
-                zero_power *= zero_step;
-            }
-            semantic_coset_points_ = std::move(points);
-        }
-
-        QuotientCosetValuesPtr
-        reused_semantic_coset_group_values(
-            const std::string &requested_name,
-            const std::vector<FieldElement> &zero_domain_blinder)
-        {
-            const auto group_it = semantic_coset_group_by_label_.find(
-                requested_name);
-            if (group_it == semantic_coset_group_by_label_.end())
-            {
-                return nullptr;
-            }
-            const auto &group = group_it->second;
-            QuotientCosetValuesPtr base_values;
-            {
-                std::lock_guard<std::mutex> lock(group->mutex);
-                if (group->base_values == nullptr)
-                {
-                    algebra::Polynomial semantic_polynomial;
-                    if (group->owner != nullptr)
-                    {
-                        semantic_polynomial = *group->owner;
-                    }
-                    else if (group->spilled_owner != nullptr)
-                    {
-                        semantic_polynomial =
-                            algebra::Polynomial::from_evaluations(
-                                group->owner_label,
-                                load_spilled_values(
-                                    *group->spilled_owner),
-                                context_domain_by_name(
-                                    context_,
-                                    group->spilled_owner
-                                        ->domain_name));
-                    }
-                    else
-                    {
-                        throw std::runtime_error(
-                            "semantic coset group has no owner: " + requested_name);
-                    }
-                    semantic_polynomial.zero_domain_blinder.clear();
-                    group->base_values =
-                        materialize_polynomial_coset(
-                            semantic_polynomial,
-                            group->owner_label);
-                }
-                base_values = group->base_values;
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(group->mutex);
-                if (group->remaining != 0)
-                {
-                    --group->remaining;
-                    if (group->remaining == 0)
-                    {
-                        group->base_values.reset();
-                    }
-                }
-            }
-            if (zero_domain_blinder.empty())
-            {
-                return base_values;
-            }
-            return retain_blinded_coset_view(
-                std::move(base_values), zero_domain_blinder);
-        }
-
-        QuotientCosetValuesPtr
-        reused_semantic_coset_values(
-            const std::string &requested_name,
-            const algebra::Polynomial &polynomial)
-        {
-            return reused_semantic_coset_group_values(
-                requested_name,
-                polynomial.zero_domain_blinder);
-        }
-
-        QuotientCosetValuesPtr
-        reused_spilled_semantic_coset_values(
-            const std::string &requested_name,
-            const TraceArtifacts::SpilledEvaluationPolynomial &spilled)
-        {
-            return reused_semantic_coset_group_values(
-                requested_name,
-                spilled.zero_domain_blinder);
-        }
-
-        void prewarm_coset_values(const std::vector<std::string> &labels)
-        {
-            std::vector<std::string> unique_labels;
-            unique_labels.reserve(labels.size());
-            for (const auto &label : labels)
-            {
-                if (std::find(unique_labels.begin(), unique_labels.end(), label) != unique_labels.end())
-                {
-                    continue;
-                }
-                {
-                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
-                    if (coset_cache_.find(label) != coset_cache_.end())
-                    {
-                        continue;
-                    }
-                }
-                unique_labels.push_back(label);
-            }
-            if (unique_labels.empty())
-            {
-                return;
-            }
-            seed_shared_source_coset_aliases(&unique_labels);
-
-            if (label_ == "t_edge")
-            {
-                // Registered derived columns can be evaluated as lazy
-                // linear views of their authenticated sources plus the
-                // exact difference between source and target blinders.
-                // Seed the shared point geometry before parallel prewarm.
-                seed_lazy_blinder_geometry();
-            }
-
-            auto derived_begin = std::stable_partition(
-                unique_labels.begin(),
-                unique_labels.end(),
-                [&](const std::string &label)
-                {
-                    return !is_edge_derived_coset_request(label);
-                });
-            progress_note(
-                "prove:quotient:" + label_ + ":coset_prewarm:base_count=" + std::to_string(static_cast<std::size_t>(std::distance(unique_labels.begin(), derived_begin))) + ":derived_count=" + std::to_string(static_cast<std::size_t>(std::distance(derived_begin, unique_labels.end()))));
-
-            auto prewarm_range = [&](std::string_view wave_name, auto begin_it, auto end_it)
-            {
-                const auto wave_size = static_cast<std::size_t>(std::distance(begin_it, end_it));
-                if (wave_size == 0)
-                {
-                    return;
-                }
-                std::vector<std::string> wave(begin_it, end_it);
-                if (wave_name == std::string_view("base"))
-                {
-                    seed_semantic_coset_groups(wave);
-                    seed_canonical_coset_aliases(wave);
-                }
-                progress_note(
-                    "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":start:size=" + std::to_string(wave.size()));
-                const auto cpu_count =
-                    std::max<std::size_t>(
-                        1,
-                        std::thread::hardware_concurrency());
-
-                std::size_t worker_cap = 4;
-
-                if (
-                    label_ == "t_edge" &&
-                    target_size_ <= (std::size_t{1} << 22) &&
-                    cpu_count >= 8)
-                {
-                    worker_cap =
-                        std::min<std::size_t>(
-                            24,
-                            std::max<std::size_t>(
-                                8,
-                                cpu_count));
-                }
-                auto worker_count =
-                    std::min<std::size_t>(
-                        std::min<std::size_t>(
-                            cpu_count,
-                            worker_cap),
-                        wave.size());
-
-                if (use_file_backed_coset_storage() && coset_host_available_at_start_bytes_ != 0)
-                {
-                    const auto coset_bytes =
-                        coset_byte_count(
-                            target_size_,
-                            label_);
-
-                    const auto maximum =
-                        std::numeric_limits<
-                            std::size_t>::max();
-
-                    const auto estimated_worker_bytes =
-                        coset_bytes > maximum / 3
-                            ? maximum
-                            : coset_bytes * 3;
-
-                    const auto safe_available =
-                        coset_host_available_at_start_bytes_ > coset_host_reserve_bytes_
-                            ? coset_host_available_at_start_bytes_ - coset_host_reserve_bytes_
-                            : std::size_t{0};
-
-                    if (estimated_worker_bytes != 0)
-                    {
-                        const auto memory_workers =
-                            std::max<std::size_t>(
-                                1,
-                                safe_available / estimated_worker_bytes);
-
-                        worker_count =
-                            std::min(
-                                worker_count,
-                                memory_workers);
-                    }
-                }
-
-                const auto transform_worker_cap =
-                    std::max<std::size_t>(
-                        1,
-                        cpu_count / std::max<std::size_t>(
-                                        1,
-                                        worker_count));
-
-                const bool log_items =
-                    !(label_ == "t_edge" && wave_name == std::string_view("base") && wave.size() > 64 && std::getenv("GATZK_VERBOSE_T_EDGE_PREWARM") == nullptr);
-                progress_note(
-                    "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":workers=" + std::to_string(worker_count));
-                std::atomic<std::size_t> next{0};
-                std::vector<std::future<void>> futures;
-                futures.reserve(worker_count);
-                for (std::size_t worker = 0;
-                     worker < worker_count;
-                     ++worker)
-                {
-                    futures.push_back(
-                        std::async(
-                            std::launch::async,
-                            [&, wave_name]()
-                            {
-                                const ScopedQuotientTransformWorkerCap
-                                    transform_worker_scope(
-                                        transform_worker_cap);
-
-                                while (true)
+                                start_state.store(
+                                    -1,
+                                    std::memory_order_release);
+
+                                for (auto &worker : workers)
                                 {
-                                    const auto index =
-                                        next.fetch_add(1);
+                                    if (worker.joinable())
+                                    {
+                                        worker.join();
+                                    }
+                                }
 
-                                    if (index >= wave.size())
+                                throw;
+                            }
+
+                            start_state.store(
+                                1,
+                                std::memory_order_release);
+
+                            for (auto &worker : workers)
+                            {
+                                worker.join();
+                            }
+
+                            if (worker_error != nullptr)
+                            {
+                                std::rethrow_exception(
+                                    worker_error);
+                            }
+                        }
+                        else
+                        {
+                            for (std::size_t evaluation_begin = 0;
+                                 evaluation_begin < target_size_;
+                                 evaluation_begin +=
+                                 evaluation_block_size)
+                            {
+                                const auto evaluation_end =
+                                    std::min(
+                                        target_size_,
+                                        evaluation_begin + evaluation_block_size);
+
+                                const auto evaluation_count =
+                                    evaluation_end - evaluation_begin;
+
+                                const auto requested_task_count =
+                                    evaluation_count == 0
+                                        ? std::size_t{1}
+                                        : std::size_t{1} +
+                                              (evaluation_count - 1) /
+                                                  min_points_per_task;
+
+                                const auto task_count =
+                                    std::min<std::size_t>(
+                                        std::min<std::size_t>(
+                                            cpu_count,
+                                            32),
+                                        std::max<std::size_t>(
+                                            1,
+                                            requested_task_count));
+
+                                if (label_ == "t_N")
+                                {
+                                    progress_note(
+                                        "prove:quotient:t_N:"
+                                        "evaluation_scheduler:"
+                                        "workers=" +
+                                        std::to_string(
+                                            task_count) +
+                                        ":points=" +
+                                        std::to_string(
+                                            evaluation_count) +
+                                        ":min_points_per_task=" +
+                                        std::to_string(
+                                            min_points_per_task));
+                                }
+
+                                const auto chunk_size =
+                                    (evaluation_count + task_count - 1) / task_count;
+
+                                std::vector<std::future<void>> futures;
+                                futures.reserve(task_count);
+
+                                for (std::size_t task = 0;
+                                     task < task_count;
+                                     ++task)
+                                {
+                                    const auto begin =
+                                        evaluation_begin + task * chunk_size;
+
+                                    const auto end =
+                                        std::min(
+                                            evaluation_end,
+                                            begin + chunk_size);
+
+                                    if (begin >= end)
                                     {
                                         break;
                                     }
 
-                                    if (log_items)
-                                    {
-                                        progress_note(
-                                            "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":" + wave[index] + ":start");
-                                    }
+                                    futures.push_back(
+                                        std::async(
+                                            std::launch::async,
+                                            [&, begin, end]()
+                                            {
+                                                std::vector<mcl::Fr>
+                                                    denominator_products;
 
-                                    coset_values_ptr(
-                                        wave[index]);
-
-                                    if (log_items)
-                                    {
-                                        progress_note(
-                                            "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":" + wave[index] + ":done");
-                                    }
+                                                evaluate_range(
+                                                    begin,
+                                                    end,
+                                                    &denominator_products);
+                                            }));
                                 }
-                            }));
+
+                                for (auto &future : futures)
+                                {
+                                    future.get();
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        auto z = shift_;
+
+                        for (std::size_t i = 0;
+                             i < target_size_;
+                             ++i)
+                        {
+                            quotient_values[i] =
+                                evaluate_at_index(i, z);
+
+                            z *= root;
+                        }
+                    }
+                }
+
+                if (label_ == "t_edge")
+                {
+                    if (!cuda_t_edge_route)
+                    {
+                        progress_note(
+                            "prove:quotient:t_edge:"
+                            "evaluate:done:ms=" +
+                            std::to_string(
+                                elapsed_ms(
+                                    point_evaluation_start,
+                                    Clock::now())));
+                    }
+
+                    progress_note(
+                        "prove:quotient:t_edge:"
+                        "coefficients:start");
+                }
+                else if (label_ == "t_FH")
+                {
+                    progress_note(
+                        "prove:quotient:t_FH:evaluate:done:ms=" + std::to_string(elapsed_ms(
+                                                                      point_evaluation_start, Clock::now())));
+                    progress_note(
+                        "prove:quotient:t_FH:coefficients:start");
+                }
+                else if (label_ == "t_N")
+                {
+                    progress_note(
+                        "prove:quotient:t_N:evaluate:done:ms=" + std::to_string(elapsed_ms(
+                                                                     point_evaluation_start, Clock::now())));
+                    progress_note("prove:quotient:t_N:coefficients:start");
+                }
+
+                const auto coefficient_start =
+                    Clock::now();
+
+                std::vector<FieldElement>
+                    coefficients;
+
+                std::shared_ptr<
+                    const algebra::
+                        CudaResidentCoefficientBuffer>
+                    cuda_generic_resident_coefficients;
+
+                if (cuda_t_edge_route)
+                {
+                    coefficients =
+                        std::move(
+                            cuda_t_edge_coefficients);
+
+                    algebra::
+                        record_cuda_quotient_call();
+
+                    algebra::
+                        record_cuda_t_edge_call();
+                }
+                else if (
+                    target_size_ >= 2 &&
+                    algebra::
+                        should_use_cuda_coset_transform(
+                            target_size_))
+                {
+                    coefficients.assign(
+                        target_size_,
+                        FieldElement::zero());
+
+                    constexpr std::size_t
+                        kResidentCoefficientThreshold =
+                            std::size_t{1} << 18;
+
+                    const bool
+                        keep_coefficients_resident =
+                            target_size_ >=
+                            kResidentCoefficientThreshold;
+
+                    const bool cuda_materialized =
+                        keep_coefficients_resident
+                            ? algebra::
+                                  cuda_coset_host_to_resident_coefficients_exact(
+                                      FieldElement::
+                                          native_array_data(
+                                              quotient_values.data()),
+                                      target_size_,
+                                      shift_,
+                                      FieldElement::
+                                          mutable_native_array_data(
+                                              coefficients.data()),
+                                      &cuda_generic_resident_coefficients)
+                            : algebra::
+                                  cuda_coset_host_to_coefficients_exact(
+                                      FieldElement::
+                                          native_array_data(
+                                              quotient_values.data()),
+                                      target_size_,
+                                      shift_,
+                                      FieldElement::
+                                          mutable_native_array_data(
+                                              coefficients.data()));
+
+                    if (cuda_materialized)
+                    {
+                        algebra::
+                            record_cuda_quotient_call();
+
+                        quotient_values.clear();
+                        quotient_values.shrink_to_fit();
+                    }
+                    else
+                    {
+                        throw std::runtime_error(
+                            "selected CUDA coset-to-coefficient execution was not admitted: target_size=" +
+                            std::to_string(target_size_) + " domain=" +
+                            (domain_ == nullptr ? std::string("unknown") : domain_->name));
+                    }
+                }
+                else
+                {
+                    coefficients =
+                        coefficients_from_coset_evaluations_in_place(
+                            std::move(
+                                quotient_values),
+                            shift_);
+                }
+                if (label_ == "t_edge")
+                {
+                    progress_note(
+                        "prove:quotient:t_edge:coefficients:done:ms=" + std::to_string(elapsed_ms(
+                                                                            coefficient_start, Clock::now())));
+                }
+                else if (label_ == "t_FH")
+                {
+                    progress_note(
+                        "prove:quotient:t_FH:coefficients:done:ms=" + std::to_string(elapsed_ms(
+                                                                          coefficient_start, Clock::now())));
+                }
+                else if (label_ == "t_N")
+                {
+                    progress_note(
+                        "prove:quotient:t_N:coefficients:done:ms=" + std::to_string(elapsed_ms(
+                                                                         coefficient_start, Clock::now())));
+                }
+                if (coefficients.size() >
+                    key.pk.degree_bound + 1)
+                {
+                    throw std::runtime_error(
+                        "materialized quotient exceeds SRS degree bound: " +
+                        label_);
+                }
+
+                auto polynomial =
+                    algebra::Polynomial::
+                        from_coefficients(
+                            label_,
+                            std::move(
+                                coefficients));
+
+                if (label_ == "t_edge" &&
+                    cuda_t_edge_resident_coefficients_ !=
+                        nullptr)
+                {
+                    const auto &resident =
+                        *cuda_t_edge_resident_coefficients_;
+
+                    if (resident.device_montgomery_limbs ==
+                            nullptr ||
+                        resident.device < 0 ||
+                        resident.logical_count == 0 ||
+                        resident.logical_count >
+                            polynomial.size() ||
+                        resident.logical_count >
+                            resident.capacity ||
+                        resident.nonzero_count >
+                            resident.logical_count)
+                    {
+                        throw std::runtime_error(
+                            "CUDA t_edge resident coefficient metadata is invalid");
+                    }
+
+                    polynomial
+                        .cuda_resident_coefficients =
+                        std::move(
+                            cuda_t_edge_resident_coefficients_);
+                }
+                else if (
+                    cuda_generic_resident_coefficients !=
+                    nullptr)
+                {
+                    const auto &resident =
+                        *cuda_generic_resident_coefficients;
+
+                    if (resident.device_montgomery_limbs ==
+                            nullptr ||
+                        resident.device < 0 ||
+                        resident.logical_count == 0 ||
+                        resident.logical_count >
+                            polynomial.size() ||
+                        resident.logical_count >
+                            resident.capacity ||
+                        resident.nonzero_count >
+                            resident.logical_count)
+                    {
+                        throw std::runtime_error(
+                            "CUDA generic quotient resident coefficient metadata is invalid: " +
+                            label_);
+                    }
+
+                    polynomial
+                        .cuda_resident_coefficients =
+                        std::move(
+                            cuda_generic_resident_coefficients);
+                }
+
+                return polynomial;
+            }
+
+        private:
+            struct FHQuotientCosetSlots
+            {
+                const QuotientCosetValues *q_table = nullptr;
+                const QuotientCosetValues *q_query = nullptr;
+                const QuotientCosetValues *table = nullptr;
+                const QuotientCosetValues *query = nullptr;
+                const QuotientCosetValues *multiplicity = nullptr;
+                const QuotientCosetValues *j_table = nullptr;
+                const QuotientCosetValues *j_query = nullptr;
+                const QuotientCosetValues *accumulator = nullptr;
+                const QuotientCosetValues *table_row = nullptr;
+                const QuotientCosetValues *table_column = nullptr;
+                const QuotientCosetValues *table_feature = nullptr;
+                const QuotientCosetValues *query_row = nullptr;
+                const QuotientCosetValues *query_column = nullptr;
+                const QuotientCosetValues *query_feature = nullptr;
+
+                bool ready() const
+                {
+                    return q_table != nullptr && q_query != nullptr && table != nullptr && query != nullptr && multiplicity != nullptr && j_table != nullptr && j_query != nullptr && accumulator != nullptr;
+                }
+            };
+
+            struct TEdgeCosetAccess
+            {
+                std::string name;
+                const QuotientCosetValues *values = nullptr;
+                bool rotated = false;
+            };
+
+            bool use_file_backed_coset_storage() const
+            {
+                return (label_ == "t_edge" || label_ == "t_FH") && target_size_ >= (1ULL << 17);
+            }
+
+            std::size_t coset_byte_count(
+                std::size_t element_count,
+                const std::string &label) const
+            {
+                return util::checked_spill_bytes(
+                    element_count,
+                    sizeof(FieldElement),
+                    label);
+            }
+
+            bool try_reserve_in_memory_coset_bytes(
+                std::size_t byte_count)
+            {
+                if (byte_count > in_memory_coset_budget_bytes_)
+                {
+                    return false;
+                }
+
+                auto retained_bytes =
+                    in_memory_coset_bytes_.load(
+                        std::memory_order_relaxed);
+
+                while (true)
+                {
+                    if (retained_bytes > in_memory_coset_budget_bytes_ || byte_count > in_memory_coset_budget_bytes_ - retained_bytes)
+                    {
+                        return false;
+                    }
+
+                    if (in_memory_coset_bytes_
+                            .compare_exchange_weak(
+                                retained_bytes,
+                                retained_bytes + byte_count,
+                                std::memory_order_relaxed))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            bool new_coset_is_file_backed(
+                std::size_t byte_count)
+            {
+                if (cuda_t_edge_transient_leaf_mode_)
+                {
+                    return false;
+                }
+
+                if (!use_file_backed_coset_storage())
+                {
+                    return false;
+                }
+
+                return !try_reserve_in_memory_coset_bytes(
+                    byte_count);
+            }
+
+            void record_file_backed_coset(
+                std::size_t byte_count)
+            {
+                file_backed_coset_count_.fetch_add(
+                    1,
+                    std::memory_order_relaxed);
+
+                file_backed_coset_bytes_.fetch_add(
+                    byte_count,
+                    std::memory_order_relaxed);
+            }
+            QuotientCosetValuesPtr retain_coset_values(
+                std::vector<FieldElement> values,
+                const std::string &label)
+            {
+                const auto byte_count =
+                    coset_byte_count(
+                        values.size(),
+                        label);
+
+                const bool file_backed =
+                    new_coset_is_file_backed(
+                        byte_count);
+
+                auto retained =
+                    std::make_shared<
+                        const QuotientCosetValues>(
+                        std::move(values),
+                        file_backed
+                            ? spill_arena_
+                            : nullptr,
+                        label);
+
+                if (file_backed)
+                {
+                    record_file_backed_coset(
+                        byte_count);
+                }
+
+                return retained;
+            }
+
+            template <typename FillFn>
+            QuotientCosetValuesPtr
+            materialize_coset_values(
+                std::size_t element_count,
+                const std::string &label,
+                FillFn &&fill,
+                bool even_odd_split_layout = false)
+            {
+                const auto byte_count =
+                    coset_byte_count(
+                        element_count,
+                        label);
+
+                const bool file_backed =
+                    new_coset_is_file_backed(
+                        byte_count);
+
+                auto retained =
+                    std::make_shared<QuotientCosetValues>(
+                        element_count,
+                        file_backed
+                            ? spill_arena_
+                            : nullptr,
+                        label,
+                        even_odd_split_layout);
+
+                fill(retained->mutable_data());
+                retained->publish(label);
+
+                if (file_backed)
+                {
+                    record_file_backed_coset(
+                        byte_count);
+                }
+
+                return retained;
+            }
+            bool can_preserve_split_lane_output(
+                const algebra::Polynomial &polynomial) const
+            {
+                // t_edge already has its dedicated device-resident fused
+                // executor.  Enable physical split-lane storage only for the
+                // genuinely large FH family where the generic host/tiered
+                // transform otherwise allocates two full half-size
+                // temporaries and then interleaves them into another full
+                // output vector.
+                if (label_ != "t_FH" ||
+                    target_size_ <
+                        (std::size_t{1} << 26) ||
+                    target_size_ < 2)
+                {
+                    return false;
+                }
+
+                const auto half_size =
+                    target_size_ / 2;
+
+                if (polynomial.basis ==
+                    algebra::
+                        PolynomialBasis::
+                            Coefficient)
+                {
+                    return polynomial.size() <=
+                           half_size;
+                }
+
+                if (polynomial.domain == nullptr)
+                {
+                    return false;
+                }
+
+                const auto domain_size =
+                    polynomial.domain->size;
+
+                if (domain_size >
+                    half_size)
+                {
+                    return false;
+                }
+
+                if (polynomial.zero_domain_blinder.size() >
+                    half_size - domain_size)
+                {
+                    return false;
+                }
+
+                return true;
+            }
+            QuotientCosetValuesPtr
+            materialize_polynomial_coset(
+                const algebra::Polynomial &polynomial,
+                const std::string &label)
+            {
+                const bool preserve_split_lane =
+                    can_preserve_split_lane_output(
+                        polynomial);
+
+                auto retained =
+                    materialize_coset_values(
+                        target_size_,
+                        label,
+                        [&](FieldElement *output)
+                        {
+                            bool cuda_materialized =
+                                false;
+                            bool cuda_route_attempted =
+                                false;
+
+                            if (util::route2_options()
+                                    .cuda_field_hotspots &&
+                                target_size_ >= 2 &&
+                                algebra::
+                                    should_use_cuda_coset_transform(
+                                        target_size_))
+                            {
+                                auto *native_output =
+                                    FieldElement::
+                                        mutable_native_array_data(
+                                            output);
+
+                                if (polynomial.basis ==
+                                        algebra::
+                                            PolynomialBasis::
+                                                Evaluation &&
+                                    polynomial.domain != nullptr &&
+                                    polynomial.domain->size >= 2 &&
+                                    polynomial.domain->size <= target_size_ / 2 &&
+                                    polynomial.zero_domain_blinder.size() <= target_size_ / 2 - polynomial.domain->size)
+                                {
+                                    const auto &values =
+                                        polynomial.values();
+
+                                    const auto &blinder =
+                                        polynomial
+                                            .zero_domain_blinder;
+
+                                    cuda_route_attempted = true;
+                                    cuda_materialized =
+                                        algebra::
+                                            cuda_coset_evaluations_to_host_exact(
+                                                FieldElement::
+                                                    native_array_data(
+                                                        values.data()),
+                                                values.size(),
+                                                polynomial
+                                                    .domain
+                                                    ->size,
+                                                blinder.empty()
+                                                    ? nullptr
+                                                    : FieldElement::
+                                                          native_array_data(
+                                                              blinder.data()),
+                                                blinder.size(),
+                                                shift_,
+                                                native_output,
+                                                target_size_,
+                                                preserve_split_lane);
+                                }
+                                else if (
+                                    polynomial.basis ==
+                                    algebra::
+                                        PolynomialBasis::
+                                            Coefficient)
+                                {
+                                    const auto &coefficients =
+                                        polynomial.values();
+
+                                    cuda_route_attempted = true;
+                                    cuda_materialized =
+                                        algebra::
+                                            cuda_coset_coefficients_to_host_exact(
+                                                coefficients.empty()
+                                                    ? nullptr
+                                                    : FieldElement::
+                                                          native_array_data(
+                                                              coefficients.data()),
+                                                coefficients.size(),
+                                                shift_,
+                                                native_output,
+                                                target_size_,
+                                                preserve_split_lane);
+                                }
+                            }
+
+                            if (!cuda_materialized)
+                            {
+                                if (cuda_route_attempted)
+                                {
+                                    throw std::runtime_error(
+                                        "CUDA quotient coset route was selected but "
+                                        "materialization was not admitted: target_size=" +
+                                        std::to_string(target_size_) +
+                                        " domain=" +
+                                        (domain_ == nullptr
+                                             ? std::string("unknown")
+                                             : domain_->name) +
+                                        " route=cuda_coset_to_host");
+                                }
+                                coset_evaluate_polynomial_into(
+                                    polynomial,
+                                    target_size_,
+                                    shift_,
+                                    label,
+                                    &shift_powers(),
+                                    output,
+                                    preserve_split_lane);
+                            }
+                        },
+                        preserve_split_lane);
+
+                if (preserve_split_lane)
+                {
+                    const auto byte_count =
+                        coset_byte_count(
+                            target_size_,
+                            label);
+
+                    split_lane_coset_count_.fetch_add(
+                        1,
+                        std::memory_order_relaxed);
+
+                    split_lane_temporary_bytes_avoided_.fetch_add(
+                        byte_count,
+                        std::memory_order_relaxed);
+
+                    split_lane_interleave_bytes_avoided_.fetch_add(
+                        byte_count,
+                        std::memory_order_relaxed);
+                }
+
+                return retained;
+            }
+            QuotientCosetValuesPtr
+            materialize_coefficient_coset(
+                const std::vector<mcl::Fr>
+                    &coefficients,
+                const std::string &label)
+            {
+                return materialize_coset_values(
+                    target_size_,
+                    label,
+                    [&](FieldElement *output)
+                    {
+                        if (algebra::should_use_cuda_coset_transform(target_size_) &&
+                            coefficients.size() <= target_size_ / 2)
+                        {
+                            if (!algebra::cuda_coset_coefficients_to_host_exact(
+                                    coefficients.empty() ? nullptr : coefficients.data(), coefficients.size(), shift_,
+                                    FieldElement::mutable_native_array_data(output), target_size_, false))
+                                throw std::runtime_error("CUDA coefficient coset was not admitted: " + label);
+                            return;
+                        }
+                        coset_evaluate_coefficients_into(coefficients.data(), coefficients.size(), target_size_,
+                                                         shift_, label, &shift_powers(), output);
+                    });
+            }
+
+            QuotientCosetValuesPtr retain_blinded_coset_view(
+                QuotientCosetValuesPtr semantic_values,
+                const std::vector<FieldElement> &zero_domain_blinder)
+            {
+                auto retained =
+                    std::make_shared<const QuotientCosetValues>(
+                        std::move(semantic_values),
+                        zero_domain_blinder,
+                        semantic_coset_points_,
+                        semantic_coset_zero_cycle_);
+                lazy_blinder_coset_count_.fetch_add(
+                    1, std::memory_order_relaxed);
+                lazy_blinder_coset_bytes_avoided_.fetch_add(
+                    target_size_ * sizeof(FieldElement),
+                    std::memory_order_relaxed);
+                return retained;
+            }
+
+            QuotientCosetValuesPtr retain_blinded_coset_view(
+                QuotientCosetValuesPtr semantic_values,
+                const algebra::Polynomial &polynomial)
+            {
+                return retain_blinded_coset_view(
+                    std::move(semantic_values),
+                    polynomial.zero_domain_blinder);
+            }
+
+            std::vector<QuotientCosetValuesPtr>
+            file_backed_coset_discard_set()
+            {
+                std::unordered_map<
+                    const QuotientCosetValues *,
+                    QuotientCosetValuesPtr>
+                    unique;
+
+                {
+                    std::lock_guard<std::mutex> lock(
+                        coset_cache_mutex_);
+
+                    unique.reserve(coset_cache_.size());
+
+                    for (const auto &[_, values] :
+                         coset_cache_)
+                    {
+                        if (values != nullptr && values->file_backed())
+                        {
+                            unique.emplace(
+                                values.get(),
+                                values);
+                        }
+                    }
+                }
+
+                std::vector<QuotientCosetValuesPtr> out;
+                out.reserve(unique.size());
+
+                for (const auto &[_, values] : unique)
+                {
+                    out.push_back(values);
+                }
+
+                return out;
+            }
+
+            void discard_consumed_coset_pages(
+                const std::vector<
+                    QuotientCosetValuesPtr> &discard_set,
+                std::size_t end_index) const
+            {
+                for (const auto &values : discard_set)
+                {
+                    if (values != nullptr)
+                    {
+                        values->discard_prefix(end_index);
+                    }
+                }
+            }
+
+            template <class Fn>
+            void parallel_for_chunks(
+                std::size_t count,
+                std::size_t min_parallel_count,
+                std::size_t max_worker_count,
+                Fn &&fn) const
+            {
+                const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+                const auto available_workers =
+                    max_worker_count == 0 ? cpu_count : std::min<std::size_t>(cpu_count, max_worker_count);
+                if (count < min_parallel_count || available_workers <= 1)
+                {
+                    fn(0, count);
+                    return;
+                }
+                const auto task_count = std::min<std::size_t>(
+                    available_workers,
+                    std::max<std::size_t>(2, count / min_parallel_count));
+                const auto chunk_size = (count + task_count - 1) / task_count;
+                std::vector<std::future<void>> futures;
+                futures.reserve(task_count);
+                for (std::size_t task = 0; task < task_count; ++task)
+                {
+                    const auto begin = task * chunk_size;
+                    const auto end = std::min(count, begin + chunk_size);
+                    if (begin >= end)
+                    {
+                        break;
+                    }
+                    futures.push_back(std::async(std::launch::async, [&, begin, end]()
+                                                 { fn(begin, end); }));
                 }
                 for (auto &future : futures)
                 {
                     future.get();
                 }
-                progress_note(
-                    "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":done");
-            };
-
-            prewarm_range("base", unique_labels.begin(), derived_begin);
-            prewarm_range("derived", derived_begin, unique_labels.end());
-        }
-
-        void seed_canonical_coset_aliases(const std::vector<std::string> &wave)
-        {
-            if (label_ != "t_edge")
-            {
-                return;
-            }
-            const auto has_label = [&](const std::string &name)
-            {
-                return std::find(wave.begin(), wave.end(), name) != wave.end();
-            };
-            if (!has_label("P_Q_edge_valid"))
-            {
-                return;
             }
 
-            std::vector<std::string> aliases;
-            for (const auto &name : {"P_Q_qry_src", "P_Q_qry_dst", "P_Q_qry_L", "P_Q_qry_R", "P_Q_qry_exp"})
+            const QuotientCosetValues &coset_values(const std::string &requested_name)
             {
-                if (has_label(name))
+                return *coset_values_ptr(requested_name);
+            }
+
+            void seed_fast_coset_lookup(const std::vector<std::string> &labels)
+            {
+                fast_coset_lookup_.clear();
+                fast_coset_lookup_.reserve(labels.size() * 2);
+                for (const auto &label : labels)
                 {
-                    aliases.emplace_back(name);
-                }
-            }
-            if (aliases.empty())
-            {
-                return;
-            }
-
-            const auto values = coset_values_ptr("P_Q_edge_valid");
-            std::lock_guard<std::mutex> lock(coset_cache_mutex_);
-            for (const auto &alias : aliases)
-            {
-                coset_cache_.emplace(alias, values);
-            }
-        }
-
-        std::string coset_source_key(const std::string &label) const
-        {
-            const auto *polynomial = lookup_polynomial(label);
-            if (polynomial == nullptr || polynomial->basis != algebra::PolynomialBasis::Evaluation || polynomial->domain == nullptr || polynomial->shared_data == nullptr)
-            {
-                return {};
-            }
-
-            std::lock_guard<std::mutex> lock(
-                semantic_source_identity_mutex_);
-            for (auto it = semantic_source_identity_cache_.begin();
-                 it != semantic_source_identity_cache_.end();)
-            {
-                const auto retained = it->values.lock();
-                if (retained == nullptr)
-                {
-                    it = semantic_source_identity_cache_.erase(it);
-                    continue;
-                }
-                if (it->domain_name == polynomial->domain->name &&
-                    it->size == polynomial->size() &&
-                    retained.get() == polynomial->shared_data.get() &&
-                    !retained.owner_before(polynomial->shared_data) &&
-                    !polynomial->shared_data.owner_before(retained))
-                {
-                    return polynomial->domain->name + ":" +
-                           std::to_string(polynomial->domain->size) + ":" +
-                           std::to_string(it->token);
-                }
-                ++it;
-            }
-
-            if (next_semantic_source_token_ == 0)
-            {
-                throw std::runtime_error(
-                    "quotient semantic source token exhausted");
-            }
-            const auto token = next_semantic_source_token_++;
-            if (next_semantic_source_token_ == 0)
-            {
-                throw std::runtime_error(
-                    "quotient semantic source token exhausted");
-            }
-            semantic_source_identity_cache_.push_back(
-                SemanticSourceIdentityEntry{
-                    .values = polynomial->shared_data,
-                    .domain_name = polynomial->domain->name,
-                    .size = polynomial->size(),
-                    .token = token,
-                });
-            return polynomial->domain->name + ":" +
-                   std::to_string(polynomial->domain->size) + ":" +
-                   std::to_string(token);
-        }
-
-        void seed_shared_source_coset_aliases(std::vector<std::string> *labels)
-        {
-            if (labels == nullptr || labels->size() <= 1)
-            {
-                return;
-            }
-            std::unordered_map<std::string, std::string> owner_by_source;
-            owner_by_source.reserve(labels->size());
-            std::vector<std::pair<std::string, std::string>> aliases;
-            aliases.reserve(labels->size());
-            std::vector<std::string> filtered;
-            filtered.reserve(labels->size());
-            for (const auto &label : *labels)
-            {
-                const auto *polynomial = lookup_polynomial(label);
-                // A shared evaluation buffer does not imply a shared
-                // formal polynomial: private trace objects carry
-                // independently sampled Z_domain blinders.  Keep those
-                // labels in the materialization wave so semantic coset
-                // reuse can share only the canonical evaluations and add
-                // each registered blinder lazily.  Direct aliases are
-                // valid only for unblinded columns.
-                if (polynomial != nullptr && polynomial->is_zero_domain_blinded())
-                {
-                    filtered.push_back(label);
-                    continue;
-                }
-                const auto source_key = coset_source_key(label);
-                if (source_key.empty())
-                {
-                    filtered.push_back(label);
-                    continue;
-                }
-                const auto [it, inserted] = owner_by_source.emplace(source_key, label);
-                if (inserted)
-                {
-                    filtered.push_back(label);
-                }
-                else
-                {
-                    aliases.push_back({label, it->second});
-                }
-            }
-            if (aliases.empty())
-            {
-                return;
-            }
-            {
-                std::lock_guard<std::mutex> lock(coset_cache_mutex_);
-                for (const auto &[alias, owner] : aliases)
-                {
-                    coset_aliases_[alias] = owner;
-                }
-            }
-            labels->swap(filtered);
-            if (label_ == "t_edge")
-            {
-                progress_note(
-                    "prove:quotient:t_edge:coset_prewarm:shared_source_aliases=" + std::to_string(aliases.size()));
-            }
-        }
-
-        std::vector<FieldElement> registered_blinder_for_label(
-            const std::string &label) const
-        {
-            if (const auto *polynomial = lookup_polynomial(label);
-                polynomial != nullptr)
-            {
-                return polynomial->zero_domain_blinder;
-            }
-            if (const auto spilled_it =
-                    trace_.spilled_polynomials.find(label);
-                spilled_it != trace_.spilled_polynomials.end())
-            {
-                return spilled_it->second.zero_domain_blinder;
-            }
-            const auto canonical = canonical_coset_label(label);
-            if (canonical != label)
-            {
-                return registered_blinder_for_label(canonical);
-            }
-            return {};
-        }
-
-        const std::vector<FieldElement> *registered_blinder_data_for_label(
-            const std::string &label) const
-        {
-            if (const auto *polynomial = lookup_polynomial(label);
-                polynomial != nullptr)
-            {
-                return &polynomial->zero_domain_blinder;
-            }
-            if (const auto spilled_it =
-                    trace_.spilled_polynomials.find(label);
-                spilled_it != trace_.spilled_polynomials.end())
-            {
-                return &spilled_it->second.zero_domain_blinder;
-            }
-            const auto canonical = canonical_coset_label(label);
-            if (canonical != label)
-            {
-                return registered_blinder_data_for_label(canonical);
-            }
-            return nullptr;
-        }
-
-        std::optional<TEdgeDerivedLinearDescriptor>
-        t_edge_derived_linear_descriptor(
-            const std::string &name) const
-        {
-            if (label_ != "t_edge")
-            {
-                return std::nullopt;
-            }
-
-            const auto collision_predicate =
-                [this](std::string_view candidate)
-            {
-                const auto candidate_name =
-                    std::string(candidate);
-                return lookup_polynomial(candidate_name) != nullptr ||
-                       trace_.spilled_polynomials.contains(candidate_name);
-            };
-
-            auto descriptor =
-                internal::make_t_edge_derived_linear_descriptor(
-                    name,
-                    t_edge_descriptor_shape_,
-                    challenges_,
-                    collision_predicate);
-            if (descriptor.has_value())
-            {
-                // Registered blinder ownership stays in the production
-                // materializer; the pure mapper only describes semantics.
-                descriptor->target_zero_domain_blinder =
-                    registered_blinder_for_label(name);
-            }
-            return descriptor;
-        }
-
-        bool is_edge_derived_coset_request(
-            const std::string &name) const
-        {
-            return t_edge_derived_linear_descriptor(name).has_value();
-        }
-
-        TEdgeDerivedLinearFlattenResult
-        flatten_t_edge_descriptor_sources(
-            const TEdgeDerivedLinearDescriptor &descriptor) const
-        {
-            const auto lookup =
-                [this](std::string_view label)
-                -> std::optional<TEdgeDerivedLinearDescriptor>
-            {
-                return t_edge_derived_linear_descriptor(
-                    std::string(label));
-            };
-            const auto is_registered_source =
-                [this](std::string_view label)
-            {
-                const auto candidate = std::string(label);
-                if (lookup_polynomial(candidate) != nullptr ||
-                    trace_.spilled_polynomials.contains(candidate))
-                {
-                    return true;
-                }
-                const auto canonical =
-                    canonical_coset_label(candidate);
-                return canonical != candidate &&
-                       (lookup_polynomial(canonical) != nullptr ||
-                        trace_.spilled_polynomials.contains(canonical));
-            };
-            return internal::flatten_t_edge_derived_linear_sources(
-                descriptor,
-                lookup,
-                is_registered_source);
-        }
-
-        QuotientCosetValuesPtr scaled_coset_sum(
-            const TEdgeDerivedLinearDescriptor &descriptor)
-        {
-            const auto flattened =
-                flatten_t_edge_descriptor_sources(descriptor);
-            if (flattened.status ==
-                    TEdgeDerivedLinearFlattenStatus::Cycle ||
-                flattened.status ==
-                    TEdgeDerivedLinearFlattenStatus::DepthExceeded)
-            {
-                throw std::runtime_error(
-                    "invalid recursive t_edge derived descriptor: " +
-                    descriptor.target_label);
-            }
-            const auto &terms =
-                flattened.status ==
-                        TEdgeDerivedLinearFlattenStatus::Success
-                    ? flattened.sources
-                    : descriptor.sources;
-
-            std::vector<std::pair<
-                QuotientCosetValuesPtr,
-                FieldElement>>
-                resolved_terms;
-            resolved_terms.reserve(terms.size());
-            auto correction =
-                descriptor.target_zero_domain_blinder;
-            for (const auto &source : terms)
-            {
-                if (source.scale.is_zero())
-                {
-                    continue;
-                }
-                const auto values = coset_values_ptr(source.label);
-                if (values->size() != target_size_)
-                {
-                    throw std::runtime_error(
-                        "linear coset dependency size mismatch: " +
-                        source.label);
-                }
-                resolved_terms.push_back({values, source.scale});
-                const auto source_blinder =
-                    registered_blinder_for_label(source.label);
-                if (correction.size() < source_blinder.size())
-                {
-                    correction.resize(
-                        source_blinder.size(),
-                        FieldElement::zero());
-                }
-                for (std::size_t coefficient = 0;
-                     coefficient < source_blinder.size();
-                     ++coefficient)
-                {
-                    correction[coefficient] -=
-                        source.scale * source_blinder[coefficient];
-                }
-            }
-            trim_field_coefficients(&correction);
-            if (resolved_terms.empty())
-            {
-                throw std::runtime_error(
-                    "derived t_edge linear view has no terms: " +
-                    descriptor.target_label);
-            }
-            if (resolved_terms.size() == 1 &&
-                resolved_terms.front().second == FieldElement::one() &&
-                correction.empty())
-            {
-                return resolved_terms.front().first;
-            }
-            if (!correction.empty() &&
-                semantic_coset_zero_cycle_.empty())
-            {
-                throw std::runtime_error(
-                    "derived t_edge linear view is missing blinder geometry: " +
-                    descriptor.target_label);
-            }
-            auto retained =
-                std::make_shared<const QuotientCosetValues>(
-                    std::move(resolved_terms),
-                    std::move(correction),
-                    semantic_coset_points_,
-                    semantic_coset_zero_cycle_);
-            lazy_blinder_coset_count_.fetch_add(
-                1, std::memory_order_relaxed);
-            lazy_blinder_coset_bytes_avoided_.fetch_add(
-                target_size_ * sizeof(FieldElement),
-                std::memory_order_relaxed);
-            return retained;
-        }
-
-        QuotientCosetValuesPtr derived_hidden_edge_coset(
-            const std::string &name)
-        {
-            const auto descriptor =
-                t_edge_derived_linear_descriptor(name);
-            return descriptor.has_value()
-                       ? scaled_coset_sum(*descriptor)
-                       : nullptr;
-        }
-
-        QuotientCosetValuesPtr derived_output_edge_coset(
-            const std::string &name)
-        {
-            const auto descriptor =
-                t_edge_derived_linear_descriptor(name);
-            return descriptor.has_value()
-                       ? scaled_coset_sum(*descriptor)
-                       : nullptr;
-        }
-
-        bool append_t_edge_materializer_dependency(
-            std::vector<std::string> *labels,
-            const std::string &name) const
-        {
-            if (label_ != "t_edge" || labels == nullptr)
-            {
-                return false;
-            }
-            // A registered artifact takes the direct/spilled materializer
-            // path.  This preserves the pre-existing collision
-            // precedence for direct artifacts whose suffix resembles a
-            // derived label.
-            if (lookup_polynomial(name) != nullptr ||
-                trace_.spilled_polynomials.contains(name))
-            {
-                return false;
-            }
-            const auto descriptor =
-                t_edge_derived_linear_descriptor(name);
-            if (!descriptor.has_value())
-            {
-                return false;
-            }
-            const auto flattened =
-                flatten_t_edge_descriptor_sources(*descriptor);
-            const auto &sources =
-                flattened.status ==
-                        TEdgeDerivedLinearFlattenStatus::Success
-                    ? flattened.sources
-                    : descriptor->sources;
-            for (const auto &source : sources)
-            {
-                if (!source.scale.is_zero())
-                {
-                    labels->push_back(source.label);
-                }
-            }
-            return true;
-        }
-
-        std::optional<FieldElement> t_edge_derived_value_at(
-            const std::string &name,
-            std::size_t index)
-        {
-            if (label_ != "t_edge" ||
-                lookup_polynomial(name) != nullptr ||
-                trace_.spilled_polynomials.contains(name))
-            {
-                return std::nullopt;
-            }
-            const auto descriptor =
-                t_edge_derived_linear_descriptor(name);
-            if (!descriptor.has_value())
-            {
-                return std::nullopt;
-            }
-            const auto flattened =
-                flatten_t_edge_descriptor_sources(*descriptor);
-            if (flattened.status ==
-                    TEdgeDerivedLinearFlattenStatus::Cycle ||
-                flattened.status ==
-                    TEdgeDerivedLinearFlattenStatus::DepthExceeded)
-            {
-                throw std::runtime_error(
-                    "invalid recursive t_edge derived descriptor: " +
-                    name);
-            }
-            const auto &terms =
-                flattened.status ==
-                        TEdgeDerivedLinearFlattenStatus::Success
-                    ? flattened.sources
-                    : descriptor->sources;
-            FieldElement value = FieldElement::zero();
-            auto correction =
-                descriptor->target_zero_domain_blinder;
-            for (const auto &source : terms)
-            {
-                if (source.scale.is_zero())
-                {
-                    continue;
-                }
-                value +=
-                    source.scale * coset_value_at(source.label, index);
-                const auto source_blinder =
-                    registered_blinder_for_label(source.label);
-                if (correction.size() < source_blinder.size())
-                {
-                    correction.resize(
-                        source_blinder.size(),
-                        FieldElement::zero());
-                }
-                for (std::size_t coefficient = 0;
-                     coefficient < source_blinder.size();
-                     ++coefficient)
-                {
-                    correction[coefficient] -=
-                        source.scale * source_blinder[coefficient];
-                }
-            }
-            trim_field_coefficients(&correction);
-            if (correction.empty())
-            {
-                return value;
-            }
-            seed_lazy_blinder_geometry();
-            if (semantic_coset_points_ == nullptr ||
-                semantic_coset_zero_cycle_.empty())
-            {
-                throw std::runtime_error(
-                    "t_edge derived descriptor is missing blinder geometry: " +
-                    name);
-            }
-            const auto &point = (*semantic_coset_points_)[index];
-            value +=
-                semantic_coset_zero_cycle_[index % rotation_step_] *
-                algebra::horner(correction, point);
-            return value;
-        }
-
-        std::string canonical_coset_label(const std::string &name) const
-        {
-            if (label_ == "t_edge" && (name == "P_Q_qry_src" || name == "P_Q_qry_dst" || name == "P_Q_qry_L" || name == "P_Q_qry_R" || name == "P_Q_qry_exp"))
-            {
-                return "P_Q_edge_valid";
-            }
-            return name;
-        }
-
-        QuotientCosetValuesPtr feature_selector_coset(const std::string &requested_name)
-        {
-            if (label_ != "t_FH" || domain_ != context_.domains.fh)
-            {
-                return nullptr;
-            }
-            if (requested_name != "P_Q_tbl_feat" && requested_name != "P_Q_qry_feat")
-            {
-                return nullptr;
-            }
-            const auto *polynomial = lookup_polynomial(requested_name);
-            if (polynomial == nullptr)
-            {
-                return nullptr;
-            }
-            if (polynomial->basis != algebra::PolynomialBasis::Evaluation || polynomial->domain == nullptr || polynomial->domain->size != domain_->size || !(polynomial->domain->omega == domain_->omega) || polynomial->values().size() != domain_->size)
-            {
-                throw std::runtime_error("FH selector fast path domain mismatch: " + requested_name);
-            }
-            if (target_size_ != domain_->size * quotient_coset_multiplier(label_) || rotation_step_ != target_size_ / domain_->size)
-            {
-                throw std::runtime_error("FH selector fast path target coset mismatch: " + requested_name);
-            }
-            const auto one = FieldElement::one();
-            if (!(domain_->point_at(0) == one) || !(domain_->point_at(1) == domain_->omega))
-            {
-                throw std::runtime_error("FH selector fast path requires canonical domain order: " + requested_name);
-            }
-            const auto shifted_zero = shift_.pow(domain_->size);
-            if (shifted_zero == one || shifted_zero == -one)
-            {
-                throw std::runtime_error("FH selector fast path requires non-overlapping shifted coset: " + requested_name);
-            }
-
-            const std::size_t row_count =
-                requested_name == "P_Q_tbl_feat" ? context_.dataset.num_nodes : context_.local.num_nodes;
-            const std::size_t feature_count =
-                requested_name == "P_Q_tbl_feat" ? context_.dataset.num_features : context_.local.num_features;
-            if (feature_count != 0 && row_count > std::numeric_limits<std::size_t>::max() / feature_count)
-            {
-                throw std::runtime_error("feature selector size overflow while materializing " + requested_name);
-            }
-            const auto valid_count = row_count * feature_count;
-
-            progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coefficients:start");
-            auto coefficients = prefix_selector_coefficients_native(*domain_, valid_count, requested_name);
-            progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coefficients:done");
-            progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coset:start");
-            auto values =
-                materialize_coefficient_coset(
-                    coefficients,
-                    requested_name);
-            progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coset:done");
-            return values;
-        }
-
-        QuotientCosetValuesPtr cached_public_fh_material_coset(const std::string &requested_name)
-        {
-            if (label_ != "t_FH" || domain_ != context_.domains.fh)
-            {
-                return nullptr;
-            }
-            const auto it = context_.public_fh_coefficient_materials.find(requested_name);
-            if (it == context_.public_fh_coefficient_materials.end() || it->second == nullptr)
-            {
-                return nullptr;
-            }
-            progress_note("prove:quotient:t_FH:public_coeff:" + requested_name + ":coset:start");
-            auto values =
-                materialize_polynomial_coset(
-                    *it->second,
-                    requested_name);
-            progress_note("prove:quotient:t_FH:public_coeff:" + requested_name + ":coset:done");
-            return values;
-        }
-
-        std::vector<FieldElement> blinder_difference(
-            const std::vector<FieldElement> &left,
-            const std::vector<FieldElement> &right) const
-        {
-            const auto size = std::max(left.size(), right.size());
-            std::vector<FieldElement> difference(
-                size, FieldElement::zero());
-            for (std::size_t i = 0; i < size; ++i)
-            {
-                const auto left_value =
-                    i < left.size()
-                        ? left[i]
-                        : FieldElement::zero();
-                const auto right_value =
-                    i < right.size()
-                        ? right[i]
-                        : FieldElement::zero();
-                difference[i] = left_value - right_value;
-            }
-            trim_field_coefficients(&difference);
-            if (difference.size() == 1 && difference.front().is_zero())
-            {
-                difference.clear();
-            }
-            return difference;
-        }
-
-        QuotientCosetValuesPtr retain_coset_with_blinder_correction(
-            QuotientCosetValuesPtr base_values,
-            std::vector<FieldElement> semantic_values,
-            const std::vector<FieldElement> &blinder_correction,
-            const std::string &label)
-        {
-            if (semantic_values.empty())
-            {
-                if (base_values != nullptr && blinder_correction.empty())
-                {
-                    return base_values;
-                }
-                semantic_values.resize(
-                    target_size_, FieldElement::zero());
-            }
-            if (semantic_values.size() != target_size_ || (base_values != nullptr && base_values->size() != target_size_))
-            {
-                throw std::runtime_error(
-                    "lazy spilled FH semantic coset size mismatch: " + label);
-            }
-
-            const auto root =
-                FieldElement::root_of_unity(target_size_);
-            const auto zero_step =
-                root.pow(domain_->size);
-            const auto shifted_zero =
-                shift_.pow(domain_->size);
-            const auto one = FieldElement::one();
-            parallel_for_chunks(
-                target_size_,
-                std::size_t{1} << 15,
-                0,
-                [&](std::size_t begin, std::size_t end)
-                {
-                    auto point = shift_ * root.pow(
-                                              static_cast<std::uint64_t>(begin));
-                    auto zero_power = shifted_zero * zero_step.pow(
-                                                         static_cast<std::uint64_t>(begin));
-                    for (std::size_t i = begin; i < end; ++i)
+                    if (fast_coset_lookup_.find(label) != fast_coset_lookup_.end())
                     {
-                        auto value = base_values != nullptr
-                                         ? (*base_values)[i]
-                                         : semantic_values[i];
-                        if (!blinder_correction.empty())
-                        {
-                            value += (zero_power - one) * algebra::horner(
-                                                              blinder_correction,
-                                                              point);
-                        }
-                        semantic_values[i] = value;
-                        point *= root;
-                        zero_power *= zero_step;
+                        continue;
                     }
-                });
-            return retain_coset_values(
-                std::move(semantic_values), label);
-        }
-
-        QuotientCosetValuesPtr retain_lazy_coset_with_blinder_correction(
-            QuotientCosetValuesPtr base_values,
-            const std::vector<FieldElement> &blinder_correction,
-            const std::string &label)
-        {
-            seed_lazy_blinder_geometry();
-            if (semantic_coset_points_ == nullptr || semantic_coset_points_->size() != target_size_ || semantic_coset_zero_cycle_.empty() || semantic_coset_zero_cycle_.size() != rotation_step_ || target_size_ % semantic_coset_zero_cycle_.size() != 0)
-            {
-                throw std::runtime_error(
-                    "lazy spilled quotient blinder geometry mismatch: " + label);
+                    const auto values = coset_values_ptr(label);
+                    fast_coset_lookup_.emplace(label, values.get());
+                }
             }
-            if (base_values != nullptr)
+
+            void require_t_edge_fast_coset_lookup(
+                const std::vector<std::string> &labels) const
             {
-                if (base_values->size() != target_size_)
+                if (label_ != "t_edge")
                 {
                     throw std::runtime_error(
-                        "lazy spilled quotient semantic coset size mismatch: " + label);
+                        "t_edge fast lookup validation requested for " + label_);
                 }
-                if (blinder_correction.empty())
+                std::size_t derived_count = 0;
+                for (const auto &name : labels)
+                {
+                    const auto it = fast_coset_lookup_.find(name);
+                    if (it == fast_coset_lookup_.end() || it->second == nullptr || it->second->size() != target_size_)
+                    {
+                        throw std::runtime_error(
+                            "t_edge quotient fast lookup failed to bind dependency: " + name);
+                    }
+                    if (is_edge_derived_coset_request(name))
+                    {
+                        ++derived_count;
+                    }
+                }
+                progress_note(
+                    "prove:quotient:t_edge:fast_lookup:dependencies=" + std::to_string(labels.size()) + ":derived_views=" + std::to_string(derived_count) + ":missing_or_null=0");
+            }
+
+            const QuotientCosetValues *bind_t_edge_fast_coset(
+                const std::string &name)
+            {
+                if (label_ != "t_edge")
+                {
+                    throw std::runtime_error(
+                        "t_edge fast lookup binding requested for " + label_);
+                }
+                auto it = fast_coset_lookup_.find(name);
+                if (it == fast_coset_lookup_.end())
+                {
+                    // The dependency registry is intentionally a prewarm
+                    // hint, not an alternate protocol equation.  Bind any
+                    // evaluator-discovered name once through the generic
+                    // resolver while recording the access plan.  The formal
+                    // point loop below remains a pointer-only replay path.
+                    const auto values = coset_values_ptr(name);
+                    it = fast_coset_lookup_.emplace(name, values.get()).first;
+                    ++edge_access_plan_late_bind_count_;
+                }
+                if (it->second == nullptr || it->second->size() != target_size_)
+                {
+                    throw std::runtime_error(
+                        "t_edge quotient access-plan dependency is not bound to a full coset view: " + name);
+                }
+                return it->second;
+            }
+
+            void bind_fh_coset_slots()
+            {
+                if (label_ != "t_FH")
+                {
+                    throw std::runtime_error(
+                        "FH coset slots requested for non-FH quotient");
+                }
+                const auto bind = [&](const char *name)
+                    -> const QuotientCosetValues *
+                {
+                    const auto it = fast_coset_lookup_.find(name);
+                    if (it == fast_coset_lookup_.end() || it->second == nullptr || it->second->size() != target_size_)
+                    {
+                        throw std::runtime_error(
+                            "FH fixed coset slot is missing or has the wrong size: " + std::string(name));
+                    }
+                    return it->second;
+                };
+                fh_coset_slots_.q_table = bind("P_Q_tbl_feat");
+                fh_coset_slots_.q_query = bind("P_Q_qry_feat");
+                fh_coset_slots_.table = bind("P_Table_feat");
+                fh_coset_slots_.query = bind("P_Query_feat");
+                fh_coset_slots_.multiplicity = bind("P_m_feat");
+                fh_coset_slots_.j_table = bind("P_J_tbl_feat");
+                fh_coset_slots_.j_query = bind("P_J_qry_feat");
+                fh_coset_slots_.accumulator = bind("P_R_feat");
+                if (!fh_feature_encoding_terms_are_identically_zero_)
+                {
+                    fh_coset_slots_.table_row = bind("P_Row_feat_tbl");
+                    fh_coset_slots_.table_column = bind("P_Col_feat_tbl");
+                    fh_coset_slots_.table_feature = bind("P_T_H");
+                    fh_coset_slots_.query_row = bind("P_I_feat_qry");
+                    fh_coset_slots_.query_column = bind("P_Col_feat_qry");
+                    fh_coset_slots_.query_feature = bind("P_H");
+                }
+                if (!fh_coset_slots_.ready())
+                {
+                    throw std::runtime_error(
+                        "FH fixed coset slots were not fully initialized");
+                }
+            }
+
+            QuotientBoundaryValues fh_boundary_values(
+                const FieldElement &z) const
+            {
+                const auto one = FieldElement::one();
+                const auto last_point =
+                    domain_->point_at(domain_->size - 1);
+                const auto zero = domain_->zero_polynomial_eval(z);
+                if (zero.is_zero())
+                {
+                    return QuotientBoundaryValues{
+                        .first = z == one
+                                     ? one
+                                     : FieldElement::zero(),
+                        .last = z == last_point
+                                    ? one
+                                    : FieldElement::zero(),
+                        .zero = zero,
+                        .zero_inverse = std::nullopt,
+                    };
+                }
+                const auto first_denominator = z - one;
+                const auto last_denominator = z - last_point;
+                const auto denominator_product_inverse =
+                    (first_denominator * last_denominator).inv();
+                const auto zero_scaled = zero * domain_->inv_size;
+                return QuotientBoundaryValues{
+                    .first = zero_scaled * last_denominator * denominator_product_inverse,
+                    .last = zero_scaled * last_point * first_denominator * denominator_product_inverse,
+                    .zero = zero,
+                    .zero_inverse = std::nullopt,
+                };
+            }
+
+            const QuotientCosetValues &fast_coset_values(const std::string &requested_name)
+            {
+                if (!fast_coset_lookup_.empty())
+                {
+                    if (const auto it = fast_coset_lookup_.find(requested_name); it != fast_coset_lookup_.end())
+                    {
+                        return *it->second;
+                    }
+                }
+                return coset_values(requested_name);
+            }
+
+            bool is_direct_t_edge_coset_request(const std::string &name) const
+            {
+                if (label_ != "t_edge")
+                {
+                    return false;
+                }
+                for (std::size_t layer_index = 0;
+                     layer_index < context_.model.hidden_layers.size();
+                     ++layer_index)
+                    for (std::size_t local_head_index = 0;
+                         local_head_index < context_.model.hidden_layers[layer_index].heads.size();
+                         ++local_head_index)
+                    {
+                        const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
+                        if (name.rfind(prefix, 0) == 0)
+                        {
+                            const auto suffix = std::string_view(name).substr(prefix.size());
+                            return suffix == "w_psq" || suffix == "T_psq_edge";
+                        }
+                    }
+                for (std::size_t head_index = 0; head_index < context_.model.output_layer.heads.size(); ++head_index)
+                {
+                    const auto prefix = output_head_prefix(head_index) + "_";
+                    if (name.rfind(prefix, 0) == 0)
+                    {
+                        const auto suffix = std::string_view(name).substr(prefix.size());
+                        return suffix == "w";
+                    }
+                }
+                return false;
+            }
+
+            FieldElement coset_value_at(const std::string &requested_name, std::size_t index)
+            {
+                if (label_ == "t_edge")
+                {
+                    if (const auto it = fast_coset_lookup_.find(requested_name);
+                        it != fast_coset_lookup_.end())
+                    {
+                        return (*it->second)[index];
+                    }
+                    if (const auto derived = t_edge_derived_value_at(requested_name, index); derived.has_value())
+                    {
+                        return *derived;
+                    }
+                }
+                return fast_coset_values(requested_name)[index];
+            }
+
+            std::vector<FieldElement> quotient_alpha_powers_;
+
+            struct SemanticCosetGroup
+            {
+                const algebra::Polynomial *owner = nullptr;
+                const TraceArtifacts::SpilledEvaluationPolynomial *
+                    spilled_owner = nullptr;
+                std::string owner_label;
+                std::vector<std::string> labels;
+                std::mutex mutex;
+                QuotientCosetValuesPtr base_values;
+                std::size_t remaining = 0;
+            };
+
+            std::uint64_t semantic_values_hash(
+                const std::vector<FieldElement> &values) const
+            {
+                std::uint64_t hash = 1469598103934665603ULL;
+                for (const auto &value : values)
+                {
+                    const auto *units = value.native().getUnit();
+                    for (std::size_t unit = 0;
+                         unit < mcl::Fr::getUnitSize(); ++unit)
+                    {
+                        hash ^= static_cast<std::uint64_t>(units[unit]);
+                        hash *= 1099511628211ULL;
+                    }
+                }
+                hash ^= values.size();
+                hash *= 1099511628211ULL;
+                return hash;
+            }
+
+            void seed_semantic_coset_groups(
+                const std::vector<std::string> &wave)
+            {
+                semantic_coset_group_by_label_.clear();
+                semantic_coset_groups_.clear();
+                std::unordered_map<
+                    std::uint64_t,
+                    std::vector<std::shared_ptr<SemanticCosetGroup>>>
+                    groups_by_hash;
+                std::unordered_map<
+                    std::string,
+                    std::shared_ptr<SemanticCosetGroup>>
+                    spilled_groups_by_source;
+                std::size_t semantic_objects = 0;
+                for (const auto &item_label : wave)
+                {
+                    const auto *polynomial = lookup_polynomial(item_label);
+                    if (polynomial != nullptr && polynomial->basis == algebra::PolynomialBasis::Evaluation && polynomial->domain.get() == domain_.get())
+                    {
+                        ++semantic_objects;
+                        const auto &values = polynomial->values();
+                        auto &candidates = groups_by_hash[semantic_values_hash(values)];
+                        auto group = std::find_if(
+                            candidates.begin(),
+                            candidates.end(),
+                            [&](const auto &candidate)
+                            {
+                                return candidate->owner->values() == values;
+                            });
+                        if (group == candidates.end())
+                        {
+                            auto created =
+                                std::make_shared<SemanticCosetGroup>();
+                            created->owner = polynomial;
+                            created->owner_label = item_label;
+                            created->labels.push_back(item_label);
+                            candidates.push_back(created);
+                        }
+                        else
+                        {
+                            (*group)->labels.push_back(item_label);
+                        }
+                        continue;
+                    }
+
+                    const auto spilled_it =
+                        trace_.spilled_polynomials.find(item_label);
+                    if (spilled_it == trace_.spilled_polynomials.end() || spilled_it->second.semantic_source_id == 0 || spilled_it->second.domain_name != domain_->name)
+                    {
+                        continue;
+                    }
+                    if (spilled_it->second.size > domain_->size)
+                    {
+                        throw std::runtime_error(
+                            "spilled semantic coset source exceeds domain: " + item_label);
+                    }
+                    if (spilled_it->second.size == 0)
+                    {
+                        continue;
+                    }
+                    ++semantic_objects;
+                    const auto source_key =
+                        spilled_it->second.domain_name + ":" +
+                        std::to_string(spilled_it->second.size) + ":" +
+                        std::to_string(spilled_file_value_count(spilled_it->second)) + ":" +
+                        (spilled_it->second.zero_tail_compacted ? "compact:" : "full:") +
+                        spilled_it->second.path + ":" +
+                        std::to_string(spilled_it->second.semantic_source_id);
+                    const auto [group_it, inserted] =
+                        spilled_groups_by_source.emplace(
+                            source_key, nullptr);
+                    if (inserted)
+                    {
+                        auto created =
+                            std::make_shared<SemanticCosetGroup>();
+                        created->spilled_owner = &spilled_it->second;
+                        created->owner_label = item_label;
+                        created->labels.push_back(item_label);
+                        group_it->second = std::move(created);
+                    }
+                    else
+                    {
+                        group_it->second->labels.push_back(item_label);
+                    }
+                }
+
+                std::size_t semantic_unique = 0;
+                const auto register_group = [&](const auto &group)
+                {
+                    if (group->labels.size() <= 1)
+                    {
+                        return;
+                    }
+                    group->remaining = group->labels.size();
+                    semantic_coset_groups_.push_back(group);
+                    for (const auto &item_label : group->labels)
+                    {
+                        semantic_coset_group_by_label_.emplace(
+                            item_label, group);
+                    }
+                };
+                for (auto &[_, candidates] : groups_by_hash)
+                {
+                    semantic_unique += candidates.size();
+                    for (auto &group : candidates)
+                    {
+                        register_group(group);
+                    }
+                }
+                semantic_unique += spilled_groups_by_source.size();
+                for (auto &[_, group] : spilled_groups_by_source)
+                {
+                    register_group(group);
+                }
+
+                if (!semantic_coset_groups_.empty())
+                {
+                    seed_lazy_blinder_geometry();
+                }
+
+                if (progress_enabled())
+                {
+                    progress_note(
+                        "prove:quotient:" + label_ + ":coset_prewarm:semantic_objects=" + std::to_string(semantic_objects) + ":semantic_unique=" + std::to_string(semantic_unique) + ":semantic_duplicates=" + std::to_string(semantic_objects - semantic_unique) + ":semantic_reuse_groups=" + std::to_string(semantic_coset_groups_.size()));
+                }
+            }
+
+            void seed_lazy_blinder_geometry()
+            {
+                if (semantic_coset_points_ != nullptr)
+                {
+                    return;
+                }
+                auto points =
+                    std::make_shared<std::vector<FieldElement>>(
+                        target_size_, FieldElement::zero());
+                semantic_coset_zero_cycle_.resize(
+                    rotation_step_, FieldElement::zero());
+                const auto root = FieldElement::root_of_unity(target_size_);
+                const auto zero_step = root.pow(domain_->size);
+                auto point = shift_;
+                auto zero_power = shift_.pow(domain_->size);
+                const auto one = FieldElement::one();
+                for (std::size_t index = 0; index < target_size_; ++index)
+                {
+                    (*points)[index] = point;
+                    point *= root;
+                }
+                for (std::size_t index = 0;
+                     index < rotation_step_; ++index)
+                {
+                    semantic_coset_zero_cycle_[index] =
+                        zero_power - one;
+                    zero_power *= zero_step;
+                }
+                semantic_coset_points_ = std::move(points);
+            }
+
+            QuotientCosetValuesPtr
+            reused_semantic_coset_group_values(
+                const std::string &requested_name,
+                const std::vector<FieldElement> &zero_domain_blinder)
+            {
+                const auto group_it = semantic_coset_group_by_label_.find(
+                    requested_name);
+                if (group_it == semantic_coset_group_by_label_.end())
+                {
+                    return nullptr;
+                }
+                const auto &group = group_it->second;
+                QuotientCosetValuesPtr base_values;
+                {
+                    std::lock_guard<std::mutex> lock(group->mutex);
+                    if (group->base_values == nullptr)
+                    {
+                        algebra::Polynomial semantic_polynomial;
+                        if (group->owner != nullptr)
+                        {
+                            semantic_polynomial = *group->owner;
+                        }
+                        else if (group->spilled_owner != nullptr)
+                        {
+                            semantic_polynomial =
+                                algebra::Polynomial::from_evaluations(
+                                    group->owner_label,
+                                    load_spilled_values(
+                                        *group->spilled_owner),
+                                    context_domain_by_name(
+                                        context_,
+                                        group->spilled_owner
+                                            ->domain_name));
+                        }
+                        else
+                        {
+                            throw std::runtime_error(
+                                "semantic coset group has no owner: " + requested_name);
+                        }
+                        semantic_polynomial.zero_domain_blinder.clear();
+                        group->base_values =
+                            materialize_polynomial_coset(
+                                semantic_polynomial,
+                                group->owner_label);
+                    }
+                    base_values = group->base_values;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(group->mutex);
+                    if (group->remaining != 0)
+                    {
+                        --group->remaining;
+                        if (group->remaining == 0)
+                        {
+                            group->base_values.reset();
+                        }
+                    }
+                }
+                if (zero_domain_blinder.empty())
                 {
                     return base_values;
                 }
                 return retain_blinded_coset_view(
-                    std::move(base_values),
-                    blinder_correction);
+                    std::move(base_values), zero_domain_blinder);
             }
-            auto retained =
-                std::make_shared<const QuotientCosetValues>(
-                    QuotientCosetValues::PureZeroSemanticTag{},
-                    target_size_,
-                    blinder_correction,
-                    semantic_coset_points_,
-                    semantic_coset_zero_cycle_);
-            lazy_blinder_coset_count_.fetch_add(
-                1, std::memory_order_relaxed);
-            lazy_blinder_coset_bytes_avoided_.fetch_add(
-                target_size_ * sizeof(FieldElement),
-                std::memory_order_relaxed);
-            return retained;
-        }
 
-        QuotientCosetValuesPtr
-        spilled_pure_zero_semantic_coset(
-            const std::string &requested_name,
-            const TraceArtifacts::SpilledEvaluationPolynomial
-                &spilled)
-        {
-            if (!spilled.compact_semantic_source_all_zero)
+            QuotientCosetValuesPtr
+            reused_semantic_coset_values(
+                const std::string &requested_name,
+                const algebra::Polynomial &polynomial)
             {
-                return nullptr;
+                return reused_semantic_coset_group_values(
+                    requested_name,
+                    polynomial.zero_domain_blinder);
             }
-            const bool signed_division_compact_source =
-                requested_name.find("_Div_Limb_") != std::string::npos || (requested_name.find("_Div_Range_") != std::string::npos && requested_name.ends_with("_Query"));
-            if (label_ != "t_edge" || !signed_division_compact_source || spilled.semantic_source_id == 0 || spilled.domain_name != domain_->name || spilled.size == 0 || spilled.size >= domain_->size || spilled.zero_domain_blinder.empty())
-            {
-                throw std::runtime_error(
-                    "invalid pure-zero compact spilled quotient metadata: " + requested_name);
-            }
-            return retain_lazy_coset_with_blinder_correction(
-                nullptr,
-                spilled.zero_domain_blinder,
-                requested_name);
-        }
 
-        QuotientCosetValuesPtr
-        materialize_spilled_lazy_feature_coset(
-            const std::string &requested_name,
-            const TraceArtifacts::SpilledEvaluationPolynomial
-                &spilled)
-        {
-            const bool full_feature_identity =
-                lazy_full_feature_lookup_trace_enabled(context_);
-            const bool identical_feature_inverse =
-                requested_name == "P_J_tbl_feat" || requested_name == "P_J_qry_feat";
-            if (!full_feature_identity || (!is_lazy_full_feature_lookup_trace_label(
-                                               requested_name) &&
-                                           !identical_feature_inverse))
+            QuotientCosetValuesPtr
+            reused_spilled_semantic_coset_values(
+                const std::string &requested_name,
+                const TraceArtifacts::SpilledEvaluationPolynomial &spilled)
             {
-                return nullptr;
+                return reused_semantic_coset_group_values(
+                    requested_name,
+                    spilled.zero_domain_blinder);
             }
-            // Table is already the authenticated evaluation column written
-            // by the trace.  Transform it once directly.  Reconstructing
-            // it from Row/Col/T_H performed three full 4x-FH transforms
-            // merely to recover the same committed polynomial.
-            if (requested_name == "P_Table_feat" || requested_name == "P_J_tbl_feat")
+
+            void prewarm_coset_values(const std::vector<std::string> &labels)
             {
-                return nullptr;
-            }
-            progress_note(
-                "prove:quotient:t_FH:spilled_lazy:" + requested_name + ":start");
-            QuotientCosetValuesPtr base_values;
-            std::vector<FieldElement> semantic_values;
-            auto correction = spilled.zero_domain_blinder;
-            if (requested_name == "P_Query_feat")
-            {
-                base_values =
-                    coset_values_ptr("P_Table_feat");
-                const auto table_it =
-                    trace_.spilled_polynomials.find(
-                        "P_Table_feat");
-                if (table_it == trace_.spilled_polynomials.end())
+                std::vector<std::string> unique_labels;
+                unique_labels.reserve(labels.size());
+                for (const auto &label : labels)
                 {
-                    throw std::runtime_error(
-                        "spilled FH query is missing its "
-                        "full-identity table source");
+                    if (std::find(unique_labels.begin(), unique_labels.end(), label) != unique_labels.end())
+                    {
+                        continue;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+                        if (coset_cache_.find(label) != coset_cache_.end())
+                        {
+                            continue;
+                        }
+                    }
+                    unique_labels.push_back(label);
                 }
-                correction = blinder_difference(
-                    spilled.zero_domain_blinder,
-                    table_it->second.zero_domain_blinder);
-            }
-            else if (requested_name == "P_J_qry_feat")
-            {
-                base_values =
-                    coset_values_ptr("P_J_tbl_feat");
-                const auto table_inverse_it =
-                    trace_.spilled_polynomials.find(
-                        "P_J_tbl_feat");
-                if (table_inverse_it == trace_.spilled_polynomials.end())
+                if (unique_labels.empty())
                 {
-                    throw std::runtime_error(
-                        "spilled FH query inverse is missing its "
-                        "identical table inverse source");
+                    return;
                 }
-                correction = blinder_difference(
-                    spilled.zero_domain_blinder,
-                    table_inverse_it->second.zero_domain_blinder);
-            }
-            else if (requested_name == "P_m_feat")
-            {
-                base_values =
-                    coset_values_ptr("P_Q_tbl_feat");
-            }
-            else if (requested_name != "P_R_feat")
-            {
-                return nullptr;
-            }
-            const bool use_lazy_blinder_view =
-                label_ == "t_FH" && target_size_ >= (std::size_t{1} << 26);
-            auto values = use_lazy_blinder_view
-                              ? retain_lazy_coset_with_blinder_correction(
-                                    std::move(base_values),
-                                    correction,
-                                    requested_name)
-                              : retain_coset_with_blinder_correction(
-                                    std::move(base_values),
-                                    std::move(semantic_values),
-                                    correction,
-                                    requested_name);
-            progress_note(
-                "prove:quotient:t_FH:spilled_lazy:" + requested_name + ":done");
-            return values;
-        }
+                seed_shared_source_coset_aliases(&unique_labels);
 
-        QuotientCosetValuesPtr coset_values_ptr(const std::string &requested_name)
-        {
-            std::string alias_owner;
+                if (label_ == "t_edge")
+                {
+                    // Registered derived columns can be evaluated as lazy
+                    // linear views of their authenticated sources plus the
+                    // exact difference between source and target blinders.
+                    // Seed the shared point geometry before parallel prewarm.
+                    seed_lazy_blinder_geometry();
+                }
+
+                auto derived_begin = std::stable_partition(
+                    unique_labels.begin(),
+                    unique_labels.end(),
+                    [&](const std::string &label)
+                    {
+                        return !is_edge_derived_coset_request(label);
+                    });
+                progress_note(
+                    "prove:quotient:" + label_ + ":coset_prewarm:base_count=" + std::to_string(static_cast<std::size_t>(std::distance(unique_labels.begin(), derived_begin))) + ":derived_count=" + std::to_string(static_cast<std::size_t>(std::distance(derived_begin, unique_labels.end()))));
+
+                auto prewarm_range = [&](std::string_view wave_name, auto begin_it, auto end_it)
+                {
+                    const auto wave_size = static_cast<std::size_t>(std::distance(begin_it, end_it));
+                    if (wave_size == 0)
+                    {
+                        return;
+                    }
+                    std::vector<std::string> wave(begin_it, end_it);
+                    if (wave_name == std::string_view("base"))
+                    {
+                        seed_semantic_coset_groups(wave);
+                        seed_canonical_coset_aliases(wave);
+                    }
+                    progress_note(
+                        "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":start:size=" + std::to_string(wave.size()));
+                    const auto cpu_count =
+                        std::max<std::size_t>(
+                            1,
+                            std::thread::hardware_concurrency());
+
+                    std::size_t worker_cap = 4;
+
+                    if (
+                        label_ == "t_edge" &&
+                        target_size_ <= (std::size_t{1} << 22) &&
+                        cpu_count >= 8)
+                    {
+                        worker_cap =
+                            std::min<std::size_t>(
+                                24,
+                                std::max<std::size_t>(
+                                    8,
+                                    cpu_count));
+                    }
+                    auto worker_count =
+                        std::min<std::size_t>(
+                            std::min<std::size_t>(
+                                cpu_count,
+                                worker_cap),
+                            wave.size());
+
+                    if (use_file_backed_coset_storage() && coset_host_available_at_start_bytes_ != 0)
+                    {
+                        const auto coset_bytes =
+                            coset_byte_count(
+                                target_size_,
+                                label_);
+
+                        const auto maximum =
+                            std::numeric_limits<
+                                std::size_t>::max();
+
+                        const auto estimated_worker_bytes =
+                            coset_bytes > maximum / 3
+                                ? maximum
+                                : coset_bytes * 3;
+
+                        const auto safe_available =
+                            coset_host_available_at_start_bytes_ > coset_host_reserve_bytes_
+                                ? coset_host_available_at_start_bytes_ - coset_host_reserve_bytes_
+                                : std::size_t{0};
+
+                        if (estimated_worker_bytes != 0)
+                        {
+                            const auto memory_workers =
+                                std::max<std::size_t>(
+                                    1,
+                                    safe_available / estimated_worker_bytes);
+
+                            worker_count =
+                                std::min(
+                                    worker_count,
+                                    memory_workers);
+                        }
+                    }
+
+                    const auto transform_worker_cap =
+                        std::max<std::size_t>(
+                            1,
+                            cpu_count / std::max<std::size_t>(
+                                            1,
+                                            worker_count));
+
+                    const bool log_items =
+                        !(label_ == "t_edge" && wave_name == std::string_view("base") && wave.size() > 64 && std::getenv("GATZK_VERBOSE_T_EDGE_PREWARM") == nullptr);
+                    progress_note(
+                        "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":workers=" + std::to_string(worker_count));
+                    std::atomic<std::size_t> next{0};
+                    std::vector<std::future<void>> futures;
+                    futures.reserve(worker_count);
+                    for (std::size_t worker = 0;
+                         worker < worker_count;
+                         ++worker)
+                    {
+                        futures.push_back(
+                            std::async(
+                                std::launch::async,
+                                [&, wave_name]()
+                                {
+                                    const ScopedQuotientTransformWorkerCap
+                                        transform_worker_scope(
+                                            transform_worker_cap);
+
+                                    while (true)
+                                    {
+                                        const auto index =
+                                            next.fetch_add(1);
+
+                                        if (index >= wave.size())
+                                        {
+                                            break;
+                                        }
+
+                                        if (log_items)
+                                        {
+                                            progress_note(
+                                                "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":" + wave[index] + ":start");
+                                        }
+
+                                        coset_values_ptr(
+                                            wave[index]);
+
+                                        if (log_items)
+                                        {
+                                            progress_note(
+                                                "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":" + wave[index] + ":done");
+                                        }
+                                    }
+                                }));
+                    }
+                    for (auto &future : futures)
+                    {
+                        future.get();
+                    }
+                    progress_note(
+                        "prove:quotient:" + label_ + ":coset_prewarm:" + std::string(wave_name) + ":done");
+                };
+
+                prewarm_range("base", unique_labels.begin(), derived_begin);
+                prewarm_range("derived", derived_begin, unique_labels.end());
+            }
+
+            void seed_canonical_coset_aliases(const std::vector<std::string> &wave)
             {
+                if (label_ != "t_edge")
+                {
+                    return;
+                }
+                const auto has_label = [&](const std::string &name)
+                {
+                    return std::find(wave.begin(), wave.end(), name) != wave.end();
+                };
+                if (!has_label("P_Q_edge_valid"))
+                {
+                    return;
+                }
+
+                std::vector<std::string> aliases;
+                for (const auto &name : {"P_Q_qry_src", "P_Q_qry_dst", "P_Q_qry_L", "P_Q_qry_R", "P_Q_qry_exp"})
+                {
+                    if (has_label(name))
+                    {
+                        aliases.emplace_back(name);
+                    }
+                }
+                if (aliases.empty())
+                {
+                    return;
+                }
+
+                const auto values = coset_values_ptr("P_Q_edge_valid");
                 std::lock_guard<std::mutex> lock(coset_cache_mutex_);
-                if (const auto it = coset_cache_.find(requested_name); it != coset_cache_.end())
+                for (const auto &alias : aliases)
                 {
-                    return it->second;
-                }
-                if (const auto alias_it = coset_aliases_.find(requested_name); alias_it != coset_aliases_.end())
-                {
-                    alias_owner = alias_it->second;
+                    coset_cache_.emplace(alias, values);
                 }
             }
-            // The cache -> derived -> resolver order is canonical.  A
-            // derived name is described once and all host consumers use
-            // the same descriptor, including recursive source flattening
-            // and its independent blinder correction.
-            if (const auto descriptor =
-                    t_edge_derived_linear_descriptor(requested_name);
-                descriptor.has_value())
+
+            std::string coset_source_key(const std::string &label) const
             {
-                auto values = scaled_coset_sum(*descriptor);
+                const auto *polynomial = lookup_polynomial(label);
+                if (polynomial == nullptr || polynomial->basis != algebra::PolynomialBasis::Evaluation || polynomial->domain == nullptr || polynomial->shared_data == nullptr)
+                {
+                    return {};
+                }
+
                 std::lock_guard<std::mutex> lock(
-                    coset_cache_mutex_);
-                const auto [it, inserted] =
-                    coset_cache_.emplace(
-                        requested_name, values);
-                return inserted ? values : it->second;
-            }
-            if (const auto *polynomial =
-                    lookup_polynomial(requested_name);
-                polynomial != nullptr)
-            {
-                auto direct_values =
-                    reused_semantic_coset_values(
-                        requested_name, *polynomial);
-                if (direct_values == nullptr && polynomial
-                                                    ->is_zero_domain_blinded())
+                    semantic_source_identity_mutex_);
+                for (auto it = semantic_source_identity_cache_.begin();
+                     it != semantic_source_identity_cache_.end();)
                 {
-                    direct_values =
+                    const auto retained = it->values.lock();
+                    if (retained == nullptr)
+                    {
+                        it = semantic_source_identity_cache_.erase(it);
+                        continue;
+                    }
+                    if (it->domain_name == polynomial->domain->name &&
+                        it->size == polynomial->size() &&
+                        retained.get() == polynomial->shared_data.get() &&
+                        !retained.owner_before(polynomial->shared_data) &&
+                        !polynomial->shared_data.owner_before(retained))
+                    {
+                        return polynomial->domain->name + ":" +
+                               std::to_string(polynomial->domain->size) + ":" +
+                               std::to_string(it->token);
+                    }
+                    ++it;
+                }
+
+                if (next_semantic_source_token_ == 0)
+                {
+                    throw std::runtime_error(
+                        "quotient semantic source token exhausted");
+                }
+                const auto token = next_semantic_source_token_++;
+                if (next_semantic_source_token_ == 0)
+                {
+                    throw std::runtime_error(
+                        "quotient semantic source token exhausted");
+                }
+                semantic_source_identity_cache_.push_back(
+                    SemanticSourceIdentityEntry{
+                        .values = polynomial->shared_data,
+                        .domain_name = polynomial->domain->name,
+                        .size = polynomial->size(),
+                        .token = token,
+                    });
+                return polynomial->domain->name + ":" +
+                       std::to_string(polynomial->domain->size) + ":" +
+                       std::to_string(token);
+            }
+
+            void seed_shared_source_coset_aliases(std::vector<std::string> *labels)
+            {
+                if (labels == nullptr || labels->size() <= 1)
+                {
+                    return;
+                }
+                std::unordered_map<std::string, std::string> owner_by_source;
+                owner_by_source.reserve(labels->size());
+                std::vector<std::pair<std::string, std::string>> aliases;
+                aliases.reserve(labels->size());
+                std::vector<std::string> filtered;
+                filtered.reserve(labels->size());
+                for (const auto &label : *labels)
+                {
+                    const auto *polynomial = lookup_polynomial(label);
+                    // A shared evaluation buffer does not imply a shared
+                    // formal polynomial: private trace objects carry
+                    // independently sampled Z_domain blinders.  Keep those
+                    // labels in the materialization wave so semantic coset
+                    // reuse can share only the canonical evaluations and add
+                    // each registered blinder lazily.  Direct aliases are
+                    // valid only for unblinded columns.
+                    if (polynomial != nullptr && polynomial->is_zero_domain_blinded())
+                    {
+                        filtered.push_back(label);
+                        continue;
+                    }
+                    const auto source_key = coset_source_key(label);
+                    if (source_key.empty())
+                    {
+                        filtered.push_back(label);
+                        continue;
+                    }
+                    const auto [it, inserted] = owner_by_source.emplace(source_key, label);
+                    if (inserted)
+                    {
+                        filtered.push_back(label);
+                    }
+                    else
+                    {
+                        aliases.push_back({label, it->second});
+                    }
+                }
+                if (aliases.empty())
+                {
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+                    for (const auto &[alias, owner] : aliases)
+                    {
+                        coset_aliases_[alias] = owner;
+                    }
+                }
+                labels->swap(filtered);
+                if (label_ == "t_edge")
+                {
+                    progress_note(
+                        "prove:quotient:t_edge:coset_prewarm:shared_source_aliases=" + std::to_string(aliases.size()));
+                }
+            }
+
+            std::vector<FieldElement> registered_blinder_for_label(
+                const std::string &label) const
+            {
+                if (const auto *polynomial = lookup_polynomial(label);
+                    polynomial != nullptr)
+                {
+                    return polynomial->zero_domain_blinder;
+                }
+                if (const auto spilled_it =
+                        trace_.spilled_polynomials.find(label);
+                    spilled_it != trace_.spilled_polynomials.end())
+                {
+                    return spilled_it->second.zero_domain_blinder;
+                }
+                const auto canonical = canonical_coset_label(label);
+                if (canonical != label)
+                {
+                    return registered_blinder_for_label(canonical);
+                }
+                return {};
+            }
+
+            const std::vector<FieldElement> *registered_blinder_data_for_label(
+                const std::string &label) const
+            {
+                if (const auto *polynomial = lookup_polynomial(label);
+                    polynomial != nullptr)
+                {
+                    return &polynomial->zero_domain_blinder;
+                }
+                if (const auto spilled_it =
+                        trace_.spilled_polynomials.find(label);
+                    spilled_it != trace_.spilled_polynomials.end())
+                {
+                    return &spilled_it->second.zero_domain_blinder;
+                }
+                const auto canonical = canonical_coset_label(label);
+                if (canonical != label)
+                {
+                    return registered_blinder_data_for_label(canonical);
+                }
+                return nullptr;
+            }
+
+            std::optional<TEdgeDerivedLinearDescriptor>
+            t_edge_derived_linear_descriptor(
+                const std::string &name) const
+            {
+                if (label_ != "t_edge")
+                {
+                    return std::nullopt;
+                }
+
+                const auto collision_predicate =
+                    [this](std::string_view candidate)
+                {
+                    const auto candidate_name =
+                        std::string(candidate);
+                    return lookup_polynomial(candidate_name) != nullptr ||
+                           trace_.spilled_polynomials.contains(candidate_name);
+                };
+
+                auto descriptor =
+                    internal::make_t_edge_derived_linear_descriptor(
+                        name,
+                        t_edge_descriptor_shape_,
+                        challenges_,
+                        collision_predicate);
+                if (descriptor.has_value())
+                {
+                    // Registered blinder ownership stays in the production
+                    // materializer; the pure mapper only describes semantics.
+                    descriptor->target_zero_domain_blinder =
+                        registered_blinder_for_label(name);
+                }
+                return descriptor;
+            }
+
+            bool is_edge_derived_coset_request(
+                const std::string &name) const
+            {
+                return t_edge_derived_linear_descriptor(name).has_value();
+            }
+
+            TEdgeDerivedLinearFlattenResult
+            flatten_t_edge_descriptor_sources(
+                const TEdgeDerivedLinearDescriptor &descriptor) const
+            {
+                const auto lookup =
+                    [this](std::string_view label)
+                    -> std::optional<TEdgeDerivedLinearDescriptor>
+                {
+                    return t_edge_derived_linear_descriptor(
+                        std::string(label));
+                };
+                const auto is_registered_source =
+                    [this](std::string_view label)
+                {
+                    const auto candidate = std::string(label);
+                    if (lookup_polynomial(candidate) != nullptr ||
+                        trace_.spilled_polynomials.contains(candidate))
+                    {
+                        return true;
+                    }
+                    const auto canonical =
+                        canonical_coset_label(candidate);
+                    return canonical != candidate &&
+                           (lookup_polynomial(canonical) != nullptr ||
+                            trace_.spilled_polynomials.contains(canonical));
+                };
+                return internal::flatten_t_edge_derived_linear_sources(
+                    descriptor,
+                    lookup,
+                    is_registered_source);
+            }
+
+            QuotientCosetValuesPtr scaled_coset_sum(
+                const TEdgeDerivedLinearDescriptor &descriptor)
+            {
+                const auto flattened =
+                    flatten_t_edge_descriptor_sources(descriptor);
+                if (flattened.status ==
+                        TEdgeDerivedLinearFlattenStatus::Cycle ||
+                    flattened.status ==
+                        TEdgeDerivedLinearFlattenStatus::DepthExceeded)
+                {
+                    throw std::runtime_error(
+                        "invalid recursive t_edge derived descriptor: " +
+                        descriptor.target_label);
+                }
+                const auto &terms =
+                    flattened.status ==
+                            TEdgeDerivedLinearFlattenStatus::Success
+                        ? flattened.sources
+                        : descriptor.sources;
+
+                std::vector<std::pair<
+                    QuotientCosetValuesPtr,
+                    FieldElement>>
+                    resolved_terms;
+                resolved_terms.reserve(terms.size());
+                auto correction =
+                    descriptor.target_zero_domain_blinder;
+                for (const auto &source : terms)
+                {
+                    if (source.scale.is_zero())
+                    {
+                        continue;
+                    }
+                    const auto values = coset_values_ptr(source.label);
+                    if (values->size() != target_size_)
+                    {
+                        throw std::runtime_error(
+                            "linear coset dependency size mismatch: " +
+                            source.label);
+                    }
+                    resolved_terms.push_back({values, source.scale});
+                    const auto source_blinder =
+                        registered_blinder_for_label(source.label);
+                    if (correction.size() < source_blinder.size())
+                    {
+                        correction.resize(
+                            source_blinder.size(),
+                            FieldElement::zero());
+                    }
+                    for (std::size_t coefficient = 0;
+                         coefficient < source_blinder.size();
+                         ++coefficient)
+                    {
+                        correction[coefficient] -=
+                            source.scale * source_blinder[coefficient];
+                    }
+                }
+                trim_field_coefficients(&correction);
+                if (resolved_terms.empty())
+                {
+                    throw std::runtime_error(
+                        "derived t_edge linear view has no terms: " +
+                        descriptor.target_label);
+                }
+                if (resolved_terms.size() == 1 &&
+                    resolved_terms.front().second == FieldElement::one() &&
+                    correction.empty())
+                {
+                    return resolved_terms.front().first;
+                }
+                if (!correction.empty() &&
+                    semantic_coset_zero_cycle_.empty())
+                {
+                    throw std::runtime_error(
+                        "derived t_edge linear view is missing blinder geometry: " +
+                        descriptor.target_label);
+                }
+                auto retained =
+                    std::make_shared<const QuotientCosetValues>(
+                        std::move(resolved_terms),
+                        std::move(correction),
+                        semantic_coset_points_,
+                        semantic_coset_zero_cycle_);
+                lazy_blinder_coset_count_.fetch_add(
+                    1, std::memory_order_relaxed);
+                lazy_blinder_coset_bytes_avoided_.fetch_add(
+                    target_size_ * sizeof(FieldElement),
+                    std::memory_order_relaxed);
+                return retained;
+            }
+
+            QuotientCosetValuesPtr derived_hidden_edge_coset(
+                const std::string &name)
+            {
+                const auto descriptor =
+                    t_edge_derived_linear_descriptor(name);
+                return descriptor.has_value()
+                           ? scaled_coset_sum(*descriptor)
+                           : nullptr;
+            }
+
+            QuotientCosetValuesPtr derived_output_edge_coset(
+                const std::string &name)
+            {
+                const auto descriptor =
+                    t_edge_derived_linear_descriptor(name);
+                return descriptor.has_value()
+                           ? scaled_coset_sum(*descriptor)
+                           : nullptr;
+            }
+
+            bool append_t_edge_materializer_dependency(
+                std::vector<std::string> *labels,
+                const std::string &name) const
+            {
+                if (label_ != "t_edge" || labels == nullptr)
+                {
+                    return false;
+                }
+                // A registered artifact takes the direct/spilled materializer
+                // path.  This preserves the pre-existing collision
+                // precedence for direct artifacts whose suffix resembles a
+                // derived label.
+                if (lookup_polynomial(name) != nullptr ||
+                    trace_.spilled_polynomials.contains(name))
+                {
+                    return false;
+                }
+                const auto descriptor =
+                    t_edge_derived_linear_descriptor(name);
+                if (!descriptor.has_value())
+                {
+                    return false;
+                }
+                const auto flattened =
+                    flatten_t_edge_descriptor_sources(*descriptor);
+                const auto &sources =
+                    flattened.status ==
+                            TEdgeDerivedLinearFlattenStatus::Success
+                        ? flattened.sources
+                        : descriptor->sources;
+                for (const auto &source : sources)
+                {
+                    if (!source.scale.is_zero())
+                    {
+                        labels->push_back(source.label);
+                    }
+                }
+                return true;
+            }
+
+            std::optional<FieldElement> t_edge_derived_value_at(
+                const std::string &name,
+                std::size_t index)
+            {
+                if (label_ != "t_edge" ||
+                    lookup_polynomial(name) != nullptr ||
+                    trace_.spilled_polynomials.contains(name))
+                {
+                    return std::nullopt;
+                }
+                const auto descriptor =
+                    t_edge_derived_linear_descriptor(name);
+                if (!descriptor.has_value())
+                {
+                    return std::nullopt;
+                }
+                const auto flattened =
+                    flatten_t_edge_descriptor_sources(*descriptor);
+                if (flattened.status ==
+                        TEdgeDerivedLinearFlattenStatus::Cycle ||
+                    flattened.status ==
+                        TEdgeDerivedLinearFlattenStatus::DepthExceeded)
+                {
+                    throw std::runtime_error(
+                        "invalid recursive t_edge derived descriptor: " +
+                        name);
+                }
+                const auto &terms =
+                    flattened.status ==
+                            TEdgeDerivedLinearFlattenStatus::Success
+                        ? flattened.sources
+                        : descriptor->sources;
+                FieldElement value = FieldElement::zero();
+                auto correction =
+                    descriptor->target_zero_domain_blinder;
+                for (const auto &source : terms)
+                {
+                    if (source.scale.is_zero())
+                    {
+                        continue;
+                    }
+                    value +=
+                        source.scale * coset_value_at(source.label, index);
+                    const auto source_blinder =
+                        registered_blinder_for_label(source.label);
+                    if (correction.size() < source_blinder.size())
+                    {
+                        correction.resize(
+                            source_blinder.size(),
+                            FieldElement::zero());
+                    }
+                    for (std::size_t coefficient = 0;
+                         coefficient < source_blinder.size();
+                         ++coefficient)
+                    {
+                        correction[coefficient] -=
+                            source.scale * source_blinder[coefficient];
+                    }
+                }
+                trim_field_coefficients(&correction);
+                if (correction.empty())
+                {
+                    return value;
+                }
+                seed_lazy_blinder_geometry();
+                if (semantic_coset_points_ == nullptr ||
+                    semantic_coset_zero_cycle_.empty())
+                {
+                    throw std::runtime_error(
+                        "t_edge derived descriptor is missing blinder geometry: " +
+                        name);
+                }
+                const auto &point = (*semantic_coset_points_)[index];
+                value +=
+                    semantic_coset_zero_cycle_[index % rotation_step_] *
+                    algebra::horner(correction, point);
+                return value;
+            }
+
+            std::string canonical_coset_label(const std::string &name) const
+            {
+                if (label_ == "t_edge" && (name == "P_Q_qry_src" || name == "P_Q_qry_dst" || name == "P_Q_qry_L" || name == "P_Q_qry_R" || name == "P_Q_qry_exp"))
+                {
+                    return "P_Q_edge_valid";
+                }
+                return name;
+            }
+
+            QuotientCosetValuesPtr feature_selector_coset(const std::string &requested_name)
+            {
+                if (label_ != "t_FH" || domain_ != context_.domains.fh)
+                {
+                    return nullptr;
+                }
+                if (requested_name != "P_Q_tbl_feat" && requested_name != "P_Q_qry_feat")
+                {
+                    return nullptr;
+                }
+                const auto *polynomial = lookup_polynomial(requested_name);
+                if (polynomial == nullptr)
+                {
+                    return nullptr;
+                }
+                if (polynomial->basis != algebra::PolynomialBasis::Evaluation || polynomial->domain == nullptr || polynomial->domain->size != domain_->size || !(polynomial->domain->omega == domain_->omega) || polynomial->values().size() != domain_->size)
+                {
+                    throw std::runtime_error("FH selector fast path domain mismatch: " + requested_name);
+                }
+                if (target_size_ != domain_->size * quotient_coset_multiplier(label_) || rotation_step_ != target_size_ / domain_->size)
+                {
+                    throw std::runtime_error("FH selector fast path target coset mismatch: " + requested_name);
+                }
+                const auto one = FieldElement::one();
+                if (!(domain_->point_at(0) == one) || !(domain_->point_at(1) == domain_->omega))
+                {
+                    throw std::runtime_error("FH selector fast path requires canonical domain order: " + requested_name);
+                }
+                const auto shifted_zero = shift_.pow(domain_->size);
+                if (shifted_zero == one || shifted_zero == -one)
+                {
+                    throw std::runtime_error("FH selector fast path requires non-overlapping shifted coset: " + requested_name);
+                }
+
+                const std::size_t row_count =
+                    requested_name == "P_Q_tbl_feat" ? context_.dataset.num_nodes : context_.local.num_nodes;
+                const std::size_t feature_count =
+                    requested_name == "P_Q_tbl_feat" ? context_.dataset.num_features : context_.local.num_features;
+                if (feature_count != 0 && row_count > std::numeric_limits<std::size_t>::max() / feature_count)
+                {
+                    throw std::runtime_error("feature selector size overflow while materializing " + requested_name);
+                }
+                const auto valid_count = row_count * feature_count;
+
+                progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coefficients:start");
+                auto coefficients = prefix_selector_coefficients_native(*domain_, valid_count, requested_name);
+                progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coefficients:done");
+                progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coset:start");
+                auto values =
+                    materialize_coefficient_coset(
+                        coefficients,
+                        requested_name);
+                progress_note("prove:quotient:t_FH:selector:" + requested_name + ":coset:done");
+                return values;
+            }
+
+            QuotientCosetValuesPtr cached_public_fh_material_coset(const std::string &requested_name)
+            {
+                if (label_ != "t_FH" || domain_ != context_.domains.fh)
+                {
+                    return nullptr;
+                }
+                const auto it = context_.public_fh_coefficient_materials.find(requested_name);
+                if (it == context_.public_fh_coefficient_materials.end() || it->second == nullptr)
+                {
+                    return nullptr;
+                }
+                progress_note("prove:quotient:t_FH:public_coeff:" + requested_name + ":coset:start");
+                auto values =
+                    materialize_polynomial_coset(
+                        *it->second,
+                        requested_name);
+                progress_note("prove:quotient:t_FH:public_coeff:" + requested_name + ":coset:done");
+                return values;
+            }
+
+            std::vector<FieldElement> blinder_difference(
+                const std::vector<FieldElement> &left,
+                const std::vector<FieldElement> &right) const
+            {
+                const auto size = std::max(left.size(), right.size());
+                std::vector<FieldElement> difference(
+                    size, FieldElement::zero());
+                for (std::size_t i = 0; i < size; ++i)
+                {
+                    const auto left_value =
+                        i < left.size()
+                            ? left[i]
+                            : FieldElement::zero();
+                    const auto right_value =
+                        i < right.size()
+                            ? right[i]
+                            : FieldElement::zero();
+                    difference[i] = left_value - right_value;
+                }
+                trim_field_coefficients(&difference);
+                if (difference.size() == 1 && difference.front().is_zero())
+                {
+                    difference.clear();
+                }
+                return difference;
+            }
+
+            QuotientCosetValuesPtr retain_coset_with_blinder_correction(
+                QuotientCosetValuesPtr base_values,
+                std::vector<FieldElement> semantic_values,
+                const std::vector<FieldElement> &blinder_correction,
+                const std::string &label)
+            {
+                if (semantic_values.empty())
+                {
+                    if (base_values != nullptr && blinder_correction.empty())
+                    {
+                        return base_values;
+                    }
+                    semantic_values.resize(
+                        target_size_, FieldElement::zero());
+                }
+                if (semantic_values.size() != target_size_ || (base_values != nullptr && base_values->size() != target_size_))
+                {
+                    throw std::runtime_error(
+                        "lazy spilled FH semantic coset size mismatch: " + label);
+                }
+
+                const auto root =
+                    FieldElement::root_of_unity(target_size_);
+                const auto zero_step =
+                    root.pow(domain_->size);
+                const auto shifted_zero =
+                    shift_.pow(domain_->size);
+                const auto one = FieldElement::one();
+                parallel_for_chunks(
+                    target_size_,
+                    std::size_t{1} << 15,
+                    0,
+                    [&](std::size_t begin, std::size_t end)
+                    {
+                        auto point = shift_ * root.pow(
+                                                  static_cast<std::uint64_t>(begin));
+                        auto zero_power = shifted_zero * zero_step.pow(
+                                                             static_cast<std::uint64_t>(begin));
+                        for (std::size_t i = begin; i < end; ++i)
+                        {
+                            auto value = base_values != nullptr
+                                             ? (*base_values)[i]
+                                             : semantic_values[i];
+                            if (!blinder_correction.empty())
+                            {
+                                value += (zero_power - one) * algebra::horner(
+                                                                  blinder_correction,
+                                                                  point);
+                            }
+                            semantic_values[i] = value;
+                            point *= root;
+                            zero_power *= zero_step;
+                        }
+                    });
+                return retain_coset_values(
+                    std::move(semantic_values), label);
+            }
+
+            QuotientCosetValuesPtr retain_lazy_coset_with_blinder_correction(
+                QuotientCosetValuesPtr base_values,
+                const std::vector<FieldElement> &blinder_correction,
+                const std::string &label)
+            {
+                seed_lazy_blinder_geometry();
+                if (semantic_coset_points_ == nullptr || semantic_coset_points_->size() != target_size_ || semantic_coset_zero_cycle_.empty() || semantic_coset_zero_cycle_.size() != rotation_step_ || target_size_ % semantic_coset_zero_cycle_.size() != 0)
+                {
+                    throw std::runtime_error(
+                        "lazy spilled quotient blinder geometry mismatch: " + label);
+                }
+                if (base_values != nullptr)
+                {
+                    if (base_values->size() != target_size_)
+                    {
+                        throw std::runtime_error(
+                            "lazy spilled quotient semantic coset size mismatch: " + label);
+                    }
+                    if (blinder_correction.empty())
+                    {
+                        return base_values;
+                    }
+                    return retain_blinded_coset_view(
+                        std::move(base_values),
+                        blinder_correction);
+                }
+                auto retained =
+                    std::make_shared<const QuotientCosetValues>(
+                        QuotientCosetValues::PureZeroSemanticTag{},
+                        target_size_,
+                        blinder_correction,
+                        semantic_coset_points_,
+                        semantic_coset_zero_cycle_);
+                lazy_blinder_coset_count_.fetch_add(
+                    1, std::memory_order_relaxed);
+                lazy_blinder_coset_bytes_avoided_.fetch_add(
+                    target_size_ * sizeof(FieldElement),
+                    std::memory_order_relaxed);
+                return retained;
+            }
+
+            QuotientCosetValuesPtr
+            spilled_pure_zero_semantic_coset(
+                const std::string &requested_name,
+                const TraceArtifacts::SpilledEvaluationPolynomial
+                    &spilled)
+            {
+                if (!spilled.compact_semantic_source_all_zero)
+                {
+                    return nullptr;
+                }
+                const bool signed_division_compact_source =
+                    requested_name.find("_Div_Limb_") != std::string::npos || (requested_name.find("_Div_Range_") != std::string::npos && requested_name.ends_with("_Query"));
+                if (label_ != "t_edge" || !signed_division_compact_source || spilled.semantic_source_id == 0 || spilled.domain_name != domain_->name || spilled.size == 0 || spilled.size >= domain_->size || spilled.zero_domain_blinder.empty())
+                {
+                    throw std::runtime_error(
+                        "invalid pure-zero compact spilled quotient metadata: " + requested_name);
+                }
+                return retain_lazy_coset_with_blinder_correction(
+                    nullptr,
+                    spilled.zero_domain_blinder,
+                    requested_name);
+            }
+
+            QuotientCosetValuesPtr
+            materialize_spilled_lazy_feature_coset(
+                const std::string &requested_name,
+                const TraceArtifacts::SpilledEvaluationPolynomial
+                    &spilled)
+            {
+                const bool full_feature_identity =
+                    lazy_full_feature_lookup_trace_enabled(context_);
+                const bool identical_feature_inverse =
+                    requested_name == "P_J_tbl_feat" || requested_name == "P_J_qry_feat";
+                if (!full_feature_identity || (!is_lazy_full_feature_lookup_trace_label(
+                                                   requested_name) &&
+                                               !identical_feature_inverse))
+                {
+                    return nullptr;
+                }
+                // Table is already the authenticated evaluation column written
+                // by the trace.  Transform it once directly.  Reconstructing
+                // it from Row/Col/T_H performed three full 4x-FH transforms
+                // merely to recover the same committed polynomial.
+                if (requested_name == "P_Table_feat" || requested_name == "P_J_tbl_feat")
+                {
+                    return nullptr;
+                }
+                progress_note(
+                    "prove:quotient:t_FH:spilled_lazy:" + requested_name + ":start");
+                QuotientCosetValuesPtr base_values;
+                std::vector<FieldElement> semantic_values;
+                auto correction = spilled.zero_domain_blinder;
+                if (requested_name == "P_Query_feat")
+                {
+                    base_values =
+                        coset_values_ptr("P_Table_feat");
+                    const auto table_it =
+                        trace_.spilled_polynomials.find(
+                            "P_Table_feat");
+                    if (table_it == trace_.spilled_polynomials.end())
+                    {
+                        throw std::runtime_error(
+                            "spilled FH query is missing its "
+                            "full-identity table source");
+                    }
+                    correction = blinder_difference(
+                        spilled.zero_domain_blinder,
+                        table_it->second.zero_domain_blinder);
+                }
+                else if (requested_name == "P_J_qry_feat")
+                {
+                    base_values =
+                        coset_values_ptr("P_J_tbl_feat");
+                    const auto table_inverse_it =
+                        trace_.spilled_polynomials.find(
+                            "P_J_tbl_feat");
+                    if (table_inverse_it == trace_.spilled_polynomials.end())
+                    {
+                        throw std::runtime_error(
+                            "spilled FH query inverse is missing its "
+                            "identical table inverse source");
+                    }
+                    correction = blinder_difference(
+                        spilled.zero_domain_blinder,
+                        table_inverse_it->second.zero_domain_blinder);
+                }
+                else if (requested_name == "P_m_feat")
+                {
+                    base_values =
+                        coset_values_ptr("P_Q_tbl_feat");
+                }
+                else if (requested_name != "P_R_feat")
+                {
+                    return nullptr;
+                }
+                const bool use_lazy_blinder_view =
+                    label_ == "t_FH" && target_size_ >= (std::size_t{1} << 26);
+                auto values = use_lazy_blinder_view
+                                  ? retain_lazy_coset_with_blinder_correction(
+                                        std::move(base_values),
+                                        correction,
+                                        requested_name)
+                                  : retain_coset_with_blinder_correction(
+                                        std::move(base_values),
+                                        std::move(semantic_values),
+                                        correction,
+                                        requested_name);
+                progress_note(
+                    "prove:quotient:t_FH:spilled_lazy:" + requested_name + ":done");
+                return values;
+            }
+
+            QuotientCosetValuesPtr coset_values_ptr(const std::string &requested_name)
+            {
+                std::string alias_owner;
+                {
+                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+                    if (const auto it = coset_cache_.find(requested_name); it != coset_cache_.end())
+                    {
+                        return it->second;
+                    }
+                    if (const auto alias_it = coset_aliases_.find(requested_name); alias_it != coset_aliases_.end())
+                    {
+                        alias_owner = alias_it->second;
+                    }
+                }
+                // The cache -> derived -> resolver order is canonical.  A
+                // derived name is described once and all host consumers use
+                // the same descriptor, including recursive source flattening
+                // and its independent blinder correction.
+                if (const auto descriptor =
+                        t_edge_derived_linear_descriptor(requested_name);
+                    descriptor.has_value())
+                {
+                    auto values = scaled_coset_sum(*descriptor);
+                    std::lock_guard<std::mutex> lock(
+                        coset_cache_mutex_);
+                    const auto [it, inserted] =
+                        coset_cache_.emplace(
+                            requested_name, values);
+                    return inserted ? values : it->second;
+                }
+                if (const auto *polynomial =
+                        lookup_polynomial(requested_name);
+                    polynomial != nullptr)
+                {
+                    auto direct_values =
+                        reused_semantic_coset_values(
+                            requested_name, *polynomial);
+                    if (direct_values == nullptr && polynomial
+                                                        ->is_zero_domain_blinded())
+                    {
+                        direct_values =
+                            materialize_polynomial_coset(
+                                *polynomial,
+                                requested_name);
+                    }
+                    if (direct_values != nullptr)
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            coset_cache_mutex_);
+                        const auto [it, inserted] =
+                            coset_cache_.emplace(
+                                requested_name, direct_values);
+                        return inserted ? direct_values : it->second;
+                    }
+                }
+                // A spilled trace object is still the committed private
+                // polynomial, including its independently sampled
+                // Z_domain blinder.  Resolve it before public/lazy semantic
+                // aliases: those aliases reproduce only the canonical
+                // evaluation column and would silently drop the registered
+                // blinding tail after the object becomes file-backed.
+                if (const auto spilled_it =
+                        trace_.spilled_polynomials.find(requested_name);
+                    spilled_it != trace_.spilled_polynomials.end())
+                {
+                    if (auto zero_values =
+                            spilled_pure_zero_semantic_coset(
+                                requested_name,
+                                spilled_it->second);
+                        zero_values != nullptr)
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            coset_cache_mutex_);
+                        const auto [it, inserted] =
+                            coset_cache_.emplace(
+                                requested_name,
+                                zero_values);
+                        return inserted
+                                   ? zero_values
+                                   : it->second;
+                    }
+                    if (auto shared_values =
+                            reused_spilled_semantic_coset_values(
+                                requested_name,
+                                spilled_it->second);
+                        shared_values != nullptr)
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            coset_cache_mutex_);
+                        const auto [it, inserted] =
+                            coset_cache_.emplace(
+                                requested_name,
+                                shared_values);
+                        return inserted
+                                   ? shared_values
+                                   : it->second;
+                    }
+                    if (auto lazy_values =
+                            materialize_spilled_lazy_feature_coset(
+                                requested_name,
+                                spilled_it->second);
+                        lazy_values != nullptr)
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            coset_cache_mutex_);
+                        const auto [it, inserted] =
+                            coset_cache_.emplace(
+                                requested_name,
+                                lazy_values);
+                        return inserted
+                                   ? lazy_values
+                                   : it->second;
+                    }
+                    auto polynomial =
+                        algebra::Polynomial::from_evaluations(
+                            requested_name,
+                            load_spilled_values(spilled_it->second),
+                            context_domain_by_name(
+                                context_,
+                                spilled_it->second.domain_name));
+                    if (!spilled_it->second.zero_domain_blinder.empty())
+                    {
+                        polynomial.set_zero_domain_blinder(
+                            spilled_it->second.zero_domain_blinder);
+                    }
+                    auto values =
+                        materialize_polynomial_coset(
+                            polynomial,
+                            requested_name);
+                    std::lock_guard<std::mutex> lock(
+                        coset_cache_mutex_);
+                    const auto [it, inserted] =
+                        coset_cache_.emplace(
+                            requested_name, values);
+                    return inserted ? values : it->second;
+                }
+                if (!alias_owner.empty() && alias_owner != requested_name)
+                {
+                    auto values = coset_values_ptr(alias_owner);
+                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+                    const auto [it, inserted] = coset_cache_.emplace(requested_name, values);
+                    return inserted ? values : it->second;
+                }
+                QuotientCosetValuesPtr values;
+                const auto canonical_name = canonical_coset_label(requested_name);
+                if (canonical_name != requested_name)
+                {
+                    values = coset_values_ptr(canonical_name);
+                }
+                else if (full_graph_feature_identity_enabled(context_) && requested_name == "P_Q_qry_feat")
+                {
+                    values = coset_values_ptr("P_Q_tbl_feat");
+                }
+                else if (full_graph_feature_identity_enabled(context_) && (requested_name == "P_Row_feat_qry" || requested_name == "P_I_feat_qry"))
+                {
+                    values = coset_values_ptr("P_Row_feat_tbl");
+                }
+                else if (full_graph_feature_identity_enabled(context_) && requested_name == "P_Col_feat_qry")
+                {
+                    values = coset_values_ptr("P_Col_feat_tbl");
+                }
+                else if (requested_name == "P_H" && lazy_full_feature_lookup_trace_enabled(context_))
+                {
+                    values = coset_values_ptr("P_T_H");
+                }
+                else if (lazy_full_feature_lookup_trace_enabled(context_) && is_lazy_full_feature_lookup_trace_label(requested_name))
+                {
+                    values = materialize_lazy_feature_lookup_trace(requested_name);
+                }
+                else if (auto public_material = cached_public_fh_material_coset(requested_name); public_material != nullptr)
+                {
+                    values = std::move(public_material);
+                }
+                else if (auto selector = feature_selector_coset(requested_name); selector != nullptr)
+                {
+                    values = std::move(selector);
+                }
+                else if (const auto *polynomial =
+                             lookup_polynomial(
+                                 requested_name);
+                         polynomial != nullptr)
+                {
+                    values =
                         materialize_polynomial_coset(
                             *polynomial,
                             requested_name);
                 }
-                if (direct_values != nullptr)
+                else
                 {
-                    std::lock_guard<std::mutex> lock(
-                        coset_cache_mutex_);
-                    const auto [it, inserted] =
-                        coset_cache_.emplace(
-                            requested_name, direct_values);
-                    return inserted ? direct_values : it->second;
+                    throw std::runtime_error("missing quotient dependency polynomial: " + requested_name);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+                    const auto [it, inserted] = coset_cache_.emplace(requested_name, values);
+                    return inserted ? values : it->second;
                 }
             }
-            // A spilled trace object is still the committed private
-            // polynomial, including its independently sampled
-            // Z_domain blinder.  Resolve it before public/lazy semantic
-            // aliases: those aliases reproduce only the canonical
-            // evaluation column and would silently drop the registered
-            // blinding tail after the object becomes file-backed.
-            if (const auto spilled_it =
-                    trace_.spilled_polynomials.find(requested_name);
-                spilled_it != trace_.spilled_polynomials.end())
-            {
-                if (auto zero_values =
-                        spilled_pure_zero_semantic_coset(
-                            requested_name,
-                            spilled_it->second);
-                    zero_values != nullptr)
-                {
-                    std::lock_guard<std::mutex> lock(
-                        coset_cache_mutex_);
-                    const auto [it, inserted] =
-                        coset_cache_.emplace(
-                            requested_name,
-                            zero_values);
-                    return inserted
-                               ? zero_values
-                               : it->second;
-                }
-                if (auto shared_values =
-                        reused_spilled_semantic_coset_values(
-                            requested_name,
-                            spilled_it->second);
-                    shared_values != nullptr)
-                {
-                    std::lock_guard<std::mutex> lock(
-                        coset_cache_mutex_);
-                    const auto [it, inserted] =
-                        coset_cache_.emplace(
-                            requested_name,
-                            shared_values);
-                    return inserted
-                               ? shared_values
-                               : it->second;
-                }
-                if (auto lazy_values =
-                        materialize_spilled_lazy_feature_coset(
-                            requested_name,
-                            spilled_it->second);
-                    lazy_values != nullptr)
-                {
-                    std::lock_guard<std::mutex> lock(
-                        coset_cache_mutex_);
-                    const auto [it, inserted] =
-                        coset_cache_.emplace(
-                            requested_name,
-                            lazy_values);
-                    return inserted
-                               ? lazy_values
-                               : it->second;
-                }
-                auto polynomial =
-                    algebra::Polynomial::from_evaluations(
-                        requested_name,
-                        load_spilled_values(spilled_it->second),
-                        context_domain_by_name(
-                            context_,
-                            spilled_it->second.domain_name));
-                if (!spilled_it->second.zero_domain_blinder.empty())
-                {
-                    polynomial.set_zero_domain_blinder(
-                        spilled_it->second.zero_domain_blinder);
-                }
-                auto values =
-                    materialize_polynomial_coset(
-                        polynomial,
-                        requested_name);
-                std::lock_guard<std::mutex> lock(
-                    coset_cache_mutex_);
-                const auto [it, inserted] =
-                    coset_cache_.emplace(
-                        requested_name, values);
-                return inserted ? values : it->second;
-            }
-            if (!alias_owner.empty() && alias_owner != requested_name)
-            {
-                auto values = coset_values_ptr(alias_owner);
-                std::lock_guard<std::mutex> lock(coset_cache_mutex_);
-                const auto [it, inserted] = coset_cache_.emplace(requested_name, values);
-                return inserted ? values : it->second;
-            }
-            QuotientCosetValuesPtr values;
-            const auto canonical_name = canonical_coset_label(requested_name);
-            if (canonical_name != requested_name)
-            {
-                values = coset_values_ptr(canonical_name);
-            }
-            else if (full_graph_feature_identity_enabled(context_) && requested_name == "P_Q_qry_feat")
-            {
-                values = coset_values_ptr("P_Q_tbl_feat");
-            }
-            else if (full_graph_feature_identity_enabled(context_) && (requested_name == "P_Row_feat_qry" || requested_name == "P_I_feat_qry"))
-            {
-                values = coset_values_ptr("P_Row_feat_tbl");
-            }
-            else if (full_graph_feature_identity_enabled(context_) && requested_name == "P_Col_feat_qry")
-            {
-                values = coset_values_ptr("P_Col_feat_tbl");
-            }
-            else if (requested_name == "P_H" && lazy_full_feature_lookup_trace_enabled(context_))
-            {
-                values = coset_values_ptr("P_T_H");
-            }
-            else if (lazy_full_feature_lookup_trace_enabled(context_) && is_lazy_full_feature_lookup_trace_label(requested_name))
-            {
-                values = materialize_lazy_feature_lookup_trace(requested_name);
-            }
-            else if (auto public_material = cached_public_fh_material_coset(requested_name); public_material != nullptr)
-            {
-                values = std::move(public_material);
-            }
-            else if (auto selector = feature_selector_coset(requested_name); selector != nullptr)
-            {
-                values = std::move(selector);
-            }
-            else if (const auto *polynomial =
-                         lookup_polynomial(
-                             requested_name);
-                     polynomial != nullptr)
-            {
-                values =
-                    materialize_polynomial_coset(
-                        *polynomial,
-                        requested_name);
-            }
-            else
-            {
-                throw std::runtime_error("missing quotient dependency polynomial: " + requested_name);
-            }
-            {
-                std::lock_guard<std::mutex> lock(coset_cache_mutex_);
-                const auto [it, inserted] = coset_cache_.emplace(requested_name, values);
-                return inserted ? values : it->second;
-            }
-        }
 
-        QuotientCosetValuesPtr
-        materialize_lazy_feature_lookup_trace(
-            const std::string &name)
-        {
-            if (name == "P_R_feat")
+            QuotientCosetValuesPtr
+            materialize_lazy_feature_lookup_trace(
+                const std::string &name)
             {
+                if (name == "P_R_feat")
+                {
+                    return materialize_coset_values(
+                        target_size_,
+                        name,
+                        [](FieldElement *) {});
+                }
+
+                if (name == "P_m_feat")
+                {
+                    return full_graph_feature_identity_enabled(
+                               context_)
+                               ? coset_values_ptr(
+                                     "P_Q_tbl_feat")
+                               : coset_values_ptr(
+                                     "P_Q_qry_feat");
+                }
+
+                if (name == "P_Query_feat" && full_graph_feature_identity_enabled(
+                                                  context_))
+                {
+                    return coset_values_ptr(
+                        "P_Table_feat");
+                }
+
+                const auto eta_feat =
+                    challenges_.at("eta_feat");
+
+                const auto eta_feat_sq =
+                    eta_feat * eta_feat;
+
+                const auto &rows =
+                    coset_values(
+                        name == "P_Table_feat"
+                            ? "P_Row_feat_tbl"
+                            : "P_Row_feat_qry");
+
+                const auto &cols =
+                    coset_values(
+                        name == "P_Table_feat"
+                            ? "P_Col_feat_tbl"
+                            : "P_Col_feat_qry");
+
+                const auto &features =
+                    coset_values("P_T_H");
+
                 return materialize_coset_values(
                     target_size_,
                     name,
-                    [](FieldElement *) {});
-            }
-
-            if (name == "P_m_feat")
-            {
-                return full_graph_feature_identity_enabled(
-                           context_)
-                           ? coset_values_ptr(
-                                 "P_Q_tbl_feat")
-                           : coset_values_ptr(
-                                 "P_Q_qry_feat");
-            }
-
-            if (name == "P_Query_feat" && full_graph_feature_identity_enabled(
-                                              context_))
-            {
-                return coset_values_ptr(
-                    "P_Table_feat");
-            }
-
-            const auto eta_feat =
-                challenges_.at("eta_feat");
-
-            const auto eta_feat_sq =
-                eta_feat * eta_feat;
-
-            const auto &rows =
-                coset_values(
-                    name == "P_Table_feat"
-                        ? "P_Row_feat_tbl"
-                        : "P_Row_feat_qry");
-
-            const auto &cols =
-                coset_values(
-                    name == "P_Table_feat"
-                        ? "P_Col_feat_tbl"
-                        : "P_Col_feat_qry");
-
-            const auto &features =
-                coset_values("P_T_H");
-
-            return materialize_coset_values(
-                target_size_,
-                name,
-                [&](FieldElement *output)
-                {
-                    parallel_for_chunks_static(
-                        target_size_,
-                        std::size_t{1} << 15,
-                        0,
-                        [&](std::size_t begin,
-                            std::size_t end)
-                        {
-                            for (std::size_t i = begin;
-                                 i < end;
-                                 ++i)
+                    [&](FieldElement *output)
+                    {
+                        parallel_for_chunks_static(
+                            target_size_,
+                            std::size_t{1} << 15,
+                            0,
+                            [&](std::size_t begin,
+                                std::size_t end)
                             {
-                                output[i] =
-                                    rows[i] + eta_feat * cols[i] + eta_feat_sq * features[i];
-                            }
-                        });
-                });
-        }
+                                for (std::size_t i = begin;
+                                     i < end;
+                                     ++i)
+                                {
+                                    output[i] =
+                                        rows[i] + eta_feat * cols[i] + eta_feat_sq * features[i];
+                                }
+                            });
+                    });
+            }
 
-        std::vector<mcl::Fr> dependency_coefficients(
-            const std::string &name,
-            const algebra::Polynomial &polynomial) const
-        {
-            (void)name;
-            return coefficients_native_from_polynomial(polynomial);
-        }
-        const std::vector<mcl::Fr> &
-        shift_powers()
-        {
-            std::call_once(
-                shift_powers_once_,
-                [&]()
-                {
-                    // Quotient cosets are 4x their authenticated domain.
-                    // A retained power table is useful on medium shapes
-                    // because many dependency transforms reuse it, but
-                    // 1-2 GiB tables on FH=2^24/2^25 cause more unified-
-                    // memory pressure than the saved geometric recurrence.
-                    constexpr std::size_t
-                        kMaximumRetainedShiftPowerBytes =
-                            std::size_t{512} << 20;
-
-                    const auto power_count =
-                        target_size_ >= 2
-                            ? target_size_ / 2
-                            : target_size_;
-
-                    if (power_count == 0)
+            std::vector<mcl::Fr> dependency_coefficients(
+                const std::string &name,
+                const algebra::Polynomial &polynomial) const
+            {
+                (void)name;
+                return coefficients_native_from_polynomial(polynomial);
+            }
+            const std::vector<mcl::Fr> &
+            shift_powers()
+            {
+                std::call_once(
+                    shift_powers_once_,
+                    [&]()
                     {
-                        return;
-                    }
+                        // Quotient cosets are 4x their authenticated domain.
+                        // A retained power table is useful on medium shapes
+                        // because many dependency transforms reuse it, but
+                        // 1-2 GiB tables on FH=2^24/2^25 cause more unified-
+                        // memory pressure than the saved geometric recurrence.
+                        constexpr std::size_t
+                            kMaximumRetainedShiftPowerBytes =
+                                std::size_t{512} << 20;
 
-                    const auto maximum_count =
-                        kMaximumRetainedShiftPowerBytes /
-                        sizeof(mcl::Fr);
+                        const auto power_count =
+                            target_size_ >= 2
+                                ? target_size_ / 2
+                                : target_size_;
 
-                    if (power_count >
-                        maximum_count)
-                    {
-                        // Empty means that
-                        // coset_evaluate_coefficients_into()
-                        // uses its bounded streaming geometric-scaling
-                        // path instead of retaining a giant lookup table.
-                        progress_note(
-                            "prove:quotient:" +
-                            label_ +
-                            ":shift_powers:"
-                            "streaming:count=" +
-                            std::to_string(
-                                power_count));
+                        if (power_count == 0)
+                        {
+                            return;
+                        }
 
-                        return;
-                    }
+                        const auto maximum_count =
+                            kMaximumRetainedShiftPowerBytes /
+                            sizeof(mcl::Fr);
 
-                    shift_powers_.resize(
-                        power_count);
+                        if (power_count >
+                            maximum_count)
+                        {
+                            // Empty means that
+                            // coset_evaluate_coefficients_into()
+                            // uses its bounded streaming geometric-scaling
+                            // path instead of retaining a giant lookup table.
+                            progress_note(
+                                "prove:quotient:" +
+                                label_ +
+                                ":shift_powers:"
+                                "streaming:count=" +
+                                std::to_string(
+                                    power_count));
 
-                    algebra::geometric_powers_native(
-                        shift_powers_.data(),
-                        shift_powers_.size(),
-                        shift_,
-                        quotient_transform_worker_cap);
-                });
+                            return;
+                        }
 
-            return shift_powers_;
-        }
-        const algebra::Polynomial *lookup_polynomial(const std::string &name) const
-        {
-            if (const auto it = trace_.polynomials.find(name); it != trace_.polynomials.end())
-            {
-                return &it->second;
+                        shift_powers_.resize(
+                            power_count);
+
+                        algebra::geometric_powers_native(
+                            shift_powers_.data(),
+                            shift_powers_.size(),
+                            shift_,
+                            quotient_transform_worker_cap);
+                    });
+
+                return shift_powers_;
             }
-            if (const auto it = context_.public_polynomials.find(name); it != context_.public_polynomials.end())
+            const algebra::Polynomial *lookup_polynomial(const std::string &name) const
             {
-                return &it->second;
-            }
-            return nullptr;
-        }
-
-        const ProtocolContext &context_;
-        const TraceArtifacts &trace_;
-        const std::map<std::string, FieldElement> &challenges_;
-        std::string label_;
-        internal::TEdgeDescriptorShape t_edge_descriptor_shape_;
-        std::shared_ptr<algebra::RootOfUnityDomain> domain_;
-
-        std::shared_ptr<
-            const algebra::
-                CudaResidentCoefficientBuffer>
-            cuda_t_edge_resident_coefficients_;
-
-        std::size_t
-            cuda_t_edge_selected_cache_slots_ = 0;
-        std::size_t target_size_ = 0;
-        std::size_t rotation_step_ = 0;
-        FieldElement shift_;
-        std::once_flag shift_powers_once_;
-        std::vector<mcl::Fr> shift_powers_;
-        std::shared_ptr<const TEdgeEvaluationPlan> edge_evaluation_plan_;
-        std::optional<FHQuotientParameters> fh_parameters_;
-        FHQuotientCosetSlots fh_coset_slots_;
-        bool fh_feature_encoding_terms_are_identically_zero_ = false;
-        std::shared_ptr<QuotientCosetSpillArena> spill_arena_;
-        std::vector<TEdgeCosetAccess> edge_access_sequence_;
-        bool record_edge_access_sequence_ = false;
-        std::size_t edge_access_plan_late_bind_count_ = 0;
-        std::mutex coset_cache_mutex_;
-        std::unordered_map<std::string, QuotientCosetValuesPtr> coset_cache_;
-        std::unordered_map<std::string, std::string> coset_aliases_;
-        std::unordered_map<std::string, const QuotientCosetValues *> fast_coset_lookup_;
-        std::vector<std::shared_ptr<SemanticCosetGroup>> semantic_coset_groups_;
-        std::unordered_map<std::string, std::shared_ptr<SemanticCosetGroup>>
-            semantic_coset_group_by_label_;
-        struct SemanticSourceIdentityEntry
-        {
-            std::weak_ptr<const std::vector<FieldElement>> values;
-            std::string domain_name;
-            std::size_t size = 0;
-            std::uintptr_t token = 0;
-        };
-        mutable std::mutex semantic_source_identity_mutex_;
-        mutable std::vector<SemanticSourceIdentityEntry>
-            semantic_source_identity_cache_;
-        mutable std::uintptr_t next_semantic_source_token_ = 1;
-        std::shared_ptr<const std::vector<FieldElement>>
-            semantic_coset_points_;
-        std::vector<FieldElement> semantic_coset_zero_cycle_;
-        std::size_t coset_host_total_bytes_ = 0;
-        std::size_t
-            coset_host_available_at_start_bytes_ = 0;
-        std::size_t coset_host_reserve_bytes_ = 0;
-        std::size_t in_memory_coset_budget_bytes_ = 0;
-        std::atomic<std::size_t> in_memory_coset_bytes_{0};
-        std::atomic<std::size_t> file_backed_coset_count_{0};
-        std::atomic<std::size_t> file_backed_coset_bytes_{0};
-        std::atomic<std::size_t> lazy_blinder_coset_count_{0};
-        std::atomic<std::size_t>
-            lazy_blinder_coset_bytes_avoided_{0};
-        std::atomic<std::size_t>
-            split_lane_coset_count_{0};
-
-        std::atomic<std::size_t>
-            split_lane_temporary_bytes_avoided_{0};
-
-        std::atomic<std::size_t>
-            split_lane_interleave_bytes_avoided_{0};
-
-        bool cuda_t_edge_transient_leaf_mode_ = false;
-    };
-
-    std::vector<std::pair<std::string, algebra::Polynomial>>
-    materialize_quotient_polynomials(
-        const ProtocolContext &context,
-        const TraceArtifacts &trace,
-        const std::map<std::string, FieldElement> &challenges,
-        const std::vector<std::string> &labels,
-        RunMetrics *metrics)
-    {
-        // One scratch lifetime for the complete quotient family.
-        //
-        // Sequential large-family materialization can now reuse the
-        // coefficient capacity produced by t_edge/FH instead of returning
-        // multi-hundred-MiB/GiB buffers to the allocator after every
-        // quotient. Worker-thread scratch remains thread_local and is
-        // naturally destroyed when each async worker exits.
-        const ScopedQuotientCoefficientScratchRelease
-            family_coefficient_scratch_release;
-
-        std::vector<
-            std::pair<
-                std::string,
-                algebra::Polynomial>>
-            out;
-
-        out.reserve(
-            labels.size());
-
-        auto worker_count_for_labels = [&]()
-        {
-            const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-            if (labels.size() <= 1 || cpu_count < 8)
-            {
-                return std::size_t{1};
-            }
-            const auto fh_size = context.domains.fh != nullptr ? context.domains.fh->size : 0;
-            const auto edge_size = context.domains.edge != nullptr ? context.domains.edge->size : 0;
-            if (fh_size >= (1ULL << 25) || edge_size >= (1ULL << 22))
-            {
-                return std::size_t{1};
-            }
-            if (fh_size >= (1ULL << 23) || edge_size >= (1ULL << 18))
-            {
-                return std::min<std::size_t>(2, labels.size());
-            }
-            if (std::find(labels.begin(), labels.end(), "t_edge") != labels.end() && edge_size >= (1ULL << 15))
-            {
-                return std::min<std::size_t>(2, labels.size());
-            }
-            return std::min<std::size_t>(3, labels.size());
-        };
-
-        const auto materialize_one = [&](const std::string &label)
-        {
-            const auto start = Clock::now();
-            progress_note("prove:quotient:" + label + ":start");
-            QuotientPolynomialMaterializer materializer(
-                context,
-                trace,
-                challenges,
-                label);
-            auto polynomial = materializer.materialize(context.kzg);
-            progress_note("prove:quotient:" + label + ":done");
-            if (auto *metric = quotient_metric(metrics, label); metric != nullptr)
-            {
-                *metric += elapsed_ms(start, Clock::now());
-            }
-            return std::pair<std::string, algebra::Polynomial>{label, std::move(polynomial)};
-        };
-        const auto worker_count =
-            worker_count_for_labels();
-
-        const auto t_edge_it =
-            std::find(
-                labels.begin(),
-                labels.end(),
-                "t_edge");
-
-        const auto t_n_it =
-            std::find(
-                labels.begin(),
-                labels.end(),
-                "t_N");
-
-        const auto edge_size =
-            context.domains.edge != nullptr
-                ? context.domains.edge->size
-                : 0;
-
-        const auto n_size =
-            context.domains.n != nullptr
-                ? context.domains.n->size
-                : 0;
-
-        const bool prioritize_t_edge =
-            worker_count > 1 &&
-            t_edge_it != labels.end() &&
-            edge_size >=
-                (1ULL << 15);
-
-        // t_N owns substantial inner parallelism.  Running it inside the
-        // outer quotient worker pool would oversubscribe the same CPU
-        // cores with t_FH/in/d/cat/C materialization workers.
-        const bool prioritize_t_n =
-            worker_count > 1 &&
-            t_n_it != labels.end() &&
-            n_size >=
-                (1ULL << 12);
-
-        if (prioritize_t_edge ||
-            prioritize_t_n)
-        {
-            std::vector<
-                std::optional<
-                    std::pair<
-                        std::string,
-                        algebra::Polynomial>>>
-                results(
-                    labels.size());
-
-            std::vector<bool>
-                completed(
-                    labels.size(),
-                    false);
-
-            if (prioritize_t_edge)
-            {
-                append_note(
-                    metrics,
-                    "quotient_materialization_t_edge_priority=1");
-
-                const auto t_edge_index =
-                    static_cast<std::size_t>(
-                        std::distance(
-                            labels.begin(),
-                            t_edge_it));
-
-                results[t_edge_index] =
-                    materialize_one(
-                        "t_edge");
-
-                completed[t_edge_index] =
-                    true;
-            }
-
-            if (prioritize_t_n)
-            {
-                append_note(
-                    metrics,
-                    "quotient_materialization_t_N_exclusive=1");
-
-                const auto t_n_index =
-                    static_cast<std::size_t>(
-                        std::distance(
-                            labels.begin(),
-                            t_n_it));
-
-                if (!completed[t_n_index])
+                if (const auto it = trace_.polynomials.find(name); it != trace_.polynomials.end())
                 {
-                    results[t_n_index] =
-                        materialize_one(
-                            "t_N");
-
-                    completed[t_n_index] =
-                        true;
+                    return &it->second;
                 }
+                if (const auto it = context_.public_polynomials.find(name); it != context_.public_polynomials.end())
+                {
+                    return &it->second;
+                }
+                return nullptr;
             }
 
-            std::vector<std::size_t>
-                remaining_indices;
+            const ProtocolContext &context_;
+            const TraceArtifacts &trace_;
+            const std::map<std::string, FieldElement> &challenges_;
+            std::string label_;
+            internal::TEdgeDescriptorShape t_edge_descriptor_shape_;
+            std::shared_ptr<algebra::RootOfUnityDomain> domain_;
 
-            remaining_indices.reserve(
+            std::shared_ptr<
+                const algebra::
+                    CudaResidentCoefficientBuffer>
+                cuda_t_edge_resident_coefficients_;
+
+            std::size_t
+                cuda_t_edge_selected_cache_slots_ = 0;
+            std::size_t target_size_ = 0;
+            std::size_t rotation_step_ = 0;
+            FieldElement shift_;
+            std::once_flag shift_powers_once_;
+            std::vector<mcl::Fr> shift_powers_;
+            std::shared_ptr<const TEdgeEvaluationPlan> edge_evaluation_plan_;
+            std::optional<FHQuotientParameters> fh_parameters_;
+            FHQuotientCosetSlots fh_coset_slots_;
+            bool fh_feature_encoding_terms_are_identically_zero_ = false;
+            std::shared_ptr<QuotientCosetSpillArena> spill_arena_;
+            std::vector<TEdgeCosetAccess> edge_access_sequence_;
+            bool record_edge_access_sequence_ = false;
+            std::size_t edge_access_plan_late_bind_count_ = 0;
+            std::mutex coset_cache_mutex_;
+            std::unordered_map<std::string, QuotientCosetValuesPtr> coset_cache_;
+            std::unordered_map<std::string, std::string> coset_aliases_;
+            std::unordered_map<std::string, const QuotientCosetValues *> fast_coset_lookup_;
+            std::vector<std::shared_ptr<SemanticCosetGroup>> semantic_coset_groups_;
+            std::unordered_map<std::string, std::shared_ptr<SemanticCosetGroup>>
+                semantic_coset_group_by_label_;
+            struct SemanticSourceIdentityEntry
+            {
+                std::weak_ptr<const std::vector<FieldElement>> values;
+                std::string domain_name;
+                std::size_t size = 0;
+                std::uintptr_t token = 0;
+            };
+            mutable std::mutex semantic_source_identity_mutex_;
+            mutable std::vector<SemanticSourceIdentityEntry>
+                semantic_source_identity_cache_;
+            mutable std::uintptr_t next_semantic_source_token_ = 1;
+            std::shared_ptr<const std::vector<FieldElement>>
+                semantic_coset_points_;
+            std::vector<FieldElement> semantic_coset_zero_cycle_;
+            std::size_t coset_host_total_bytes_ = 0;
+            std::size_t
+                coset_host_available_at_start_bytes_ = 0;
+            std::size_t coset_host_reserve_bytes_ = 0;
+            std::size_t in_memory_coset_budget_bytes_ = 0;
+            std::atomic<std::size_t> in_memory_coset_bytes_{0};
+            std::atomic<std::size_t> file_backed_coset_count_{0};
+            std::atomic<std::size_t> file_backed_coset_bytes_{0};
+            std::atomic<std::size_t> lazy_blinder_coset_count_{0};
+            std::atomic<std::size_t>
+                lazy_blinder_coset_bytes_avoided_{0};
+            std::atomic<std::size_t>
+                split_lane_coset_count_{0};
+
+            std::atomic<std::size_t>
+                split_lane_temporary_bytes_avoided_{0};
+
+            std::atomic<std::size_t>
+                split_lane_interleave_bytes_avoided_{0};
+
+            bool cuda_t_edge_transient_leaf_mode_ = false;
+        };
+
+        std::vector<std::pair<std::string, algebra::Polynomial>>
+        materialize_quotient_polynomials(
+            const ProtocolContext &context,
+            const TraceArtifacts &trace,
+            const std::map<std::string, FieldElement> &challenges,
+            const std::vector<std::string> &labels,
+            RunMetrics *metrics)
+        {
+            // One scratch lifetime for the complete quotient family.
+            //
+            // Sequential large-family materialization can now reuse the
+            // coefficient capacity produced by t_edge/FH instead of returning
+            // multi-hundred-MiB/GiB buffers to the allocator after every
+            // quotient. Worker-thread scratch remains thread_local and is
+            // naturally destroyed when each async worker exits.
+            const ScopedQuotientCoefficientScratchRelease
+                family_coefficient_scratch_release;
+
+            std::vector<
+                std::pair<
+                    std::string,
+                    algebra::Polynomial>>
+                out;
+
+            out.reserve(
                 labels.size());
 
-            for (std::size_t index = 0;
-                 index < labels.size();
-                 ++index)
+            auto worker_count_for_labels = [&]()
             {
-                if (!completed[index])
+                const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+                if (labels.size() <= 1 || cpu_count < 8)
                 {
-                    remaining_indices.push_back(
-                        index);
+                    return std::size_t{1};
                 }
-            }
+                const auto fh_size = context.domains.fh != nullptr ? context.domains.fh->size : 0;
+                const auto edge_size = context.domains.edge != nullptr ? context.domains.edge->size : 0;
+                if (fh_size >= (1ULL << 25) || edge_size >= (1ULL << 22))
+                {
+                    return std::size_t{1};
+                }
+                if (fh_size >= (1ULL << 23) || edge_size >= (1ULL << 18))
+                {
+                    return std::min<std::size_t>(2, labels.size());
+                }
+                if (std::find(labels.begin(), labels.end(), "t_edge") != labels.end() && edge_size >= (1ULL << 15))
+                {
+                    return std::min<std::size_t>(2, labels.size());
+                }
+                return std::min<std::size_t>(3, labels.size());
+            };
 
-            const auto remaining_worker_count =
-                std::min<std::size_t>(
-                    worker_count,
-                    remaining_indices.size());
-
-            if (!remaining_indices.empty())
+            const auto materialize_one = [&](const std::string &label)
             {
-                append_note(
-                    metrics,
-                    "parallel_quotient_materialization_workers_after_exclusive=" +
-                        std::to_string(
-                            remaining_worker_count));
-            }
-
-            if (remaining_worker_count <= 1)
-            {
-                for (const auto index :
-                     remaining_indices)
+                const auto start = Clock::now();
+                progress_note("prove:quotient:" + label + ":start");
+                QuotientPolynomialMaterializer materializer(
+                    context,
+                    trace,
+                    challenges,
+                    label);
+                auto polynomial = materializer.materialize(context.kzg);
+                progress_note("prove:quotient:" + label + ":done");
+                if (auto *metric = quotient_metric(metrics, label); metric != nullptr)
                 {
-                    results[index] =
-                        materialize_one(
-                            labels[index]);
+                    *metric += elapsed_ms(start, Clock::now());
                 }
-            }
-            else
-            {
-                std::atomic<std::size_t>
-                    next{0};
+                return std::pair<std::string, algebra::Polynomial>{label, std::move(polynomial)};
+            };
+            const auto worker_count =
+                worker_count_for_labels();
 
-                std::vector<
-                    std::future<void>>
-                    futures;
+            const auto t_edge_it =
+                std::find(
+                    labels.begin(),
+                    labels.end(),
+                    "t_edge");
 
-                futures.reserve(
-                    remaining_worker_count);
-
-                for (std::size_t worker = 0;
-                     worker <
-                     remaining_worker_count;
-                     ++worker)
-                {
-                    futures.push_back(
-                        std::async(
-                            std::launch::async,
-                            [&]()
-                            {
-                                while (true)
-                                {
-                                    const auto offset =
-                                        next.fetch_add(
-                                            1);
-
-                                    if (offset >=
-                                        remaining_indices
-                                            .size())
-                                    {
-                                        break;
-                                    }
-
-                                    const auto index =
-                                        remaining_indices[offset];
-
-                                    results[index] =
-                                        materialize_one(
-                                            labels[index]);
-                                }
-                            }));
-                }
-
-                for (auto &future :
-                     futures)
-                {
-                    future.get();
-                }
-            }
-
-            for (auto &result :
-                 results)
-            {
-                if (!result.has_value())
-                {
-                    throw std::runtime_error(
-                        "missing exclusive quotient materialization result");
-                }
-
-                out.push_back(
-                    std::move(
-                        *result));
-            }
-
-            return out;
-        }
-        if (worker_count <= 1)
-        {
-            const auto cpu_count =
-                std::max<std::size_t>(
-                    1,
-                    std::thread::hardware_concurrency());
-
-            const auto fh_size =
-                context.domains.fh != nullptr
-                    ? context.domains.fh->size
-                    : 0;
+            const auto t_n_it =
+                std::find(
+                    labels.begin(),
+                    labels.end(),
+                    "t_N");
 
             const auto edge_size =
                 context.domains.edge != nullptr
                     ? context.domains.edge->size
                     : 0;
 
-            const bool large_family_serial_policy =
-                labels.size() > 1 &&
-                (fh_size >= (1ULL << 25) ||
-                 edge_size >= (1ULL << 22));
+            const auto n_size =
+                context.domains.n != nullptr
+                    ? context.domains.n->size
+                    : 0;
 
-            if (!large_family_serial_policy)
+            const bool prioritize_t_edge =
+                worker_count > 1 &&
+                t_edge_it != labels.end() &&
+                edge_size >=
+                    (1ULL << 15);
+
+            // t_N owns substantial inner parallelism.  Running it inside the
+            // outer quotient worker pool would oversubscribe the same CPU
+            // cores with t_FH/in/d/cat/C materialization workers.
+            const bool prioritize_t_n =
+                worker_count > 1 &&
+                t_n_it != labels.end() &&
+                n_size >=
+                    (1ULL << 12);
+
+            if (prioritize_t_edge ||
+                prioritize_t_n)
             {
-                for (const auto &label : labels)
+                std::vector<
+                    std::optional<
+                        std::pair<
+                            std::string,
+                            algebra::Polynomial>>>
+                    results(
+                        labels.size());
+
+                std::vector<bool>
+                    completed(
+                        labels.size(),
+                        false);
+
+                if (prioritize_t_edge)
                 {
+                    append_note(
+                        metrics,
+                        "quotient_materialization_t_edge_priority=1");
+
+                    const auto t_edge_index =
+                        static_cast<std::size_t>(
+                            std::distance(
+                                labels.begin(),
+                                t_edge_it));
+
+                    results[t_edge_index] =
+                        materialize_one(
+                            "t_edge");
+
+                    completed[t_edge_index] =
+                        true;
+                }
+
+                if (prioritize_t_n)
+                {
+                    append_note(
+                        metrics,
+                        "quotient_materialization_t_N_exclusive=1");
+
+                    const auto t_n_index =
+                        static_cast<std::size_t>(
+                            std::distance(
+                                labels.begin(),
+                                t_n_it));
+
+                    if (!completed[t_n_index])
+                    {
+                        results[t_n_index] =
+                            materialize_one(
+                                "t_N");
+
+                        completed[t_n_index] =
+                            true;
+                    }
+                }
+
+                std::vector<std::size_t>
+                    remaining_indices;
+
+                remaining_indices.reserve(
+                    labels.size());
+
+                for (std::size_t index = 0;
+                     index < labels.size();
+                     ++index)
+                {
+                    if (!completed[index])
+                    {
+                        remaining_indices.push_back(
+                            index);
+                    }
+                }
+
+                const auto remaining_worker_count =
+                    std::min<std::size_t>(
+                        worker_count,
+                        remaining_indices.size());
+
+                if (!remaining_indices.empty())
+                {
+                    append_note(
+                        metrics,
+                        "parallel_quotient_materialization_workers_after_exclusive=" +
+                            std::to_string(
+                                remaining_worker_count));
+                }
+
+                if (remaining_worker_count <= 1)
+                {
+                    for (const auto index :
+                         remaining_indices)
+                    {
+                        results[index] =
+                            materialize_one(
+                                labels[index]);
+                    }
+                }
+                else
+                {
+                    std::atomic<std::size_t>
+                        next{0};
+
+                    std::vector<
+                        std::future<void>>
+                        futures;
+
+                    futures.reserve(
+                        remaining_worker_count);
+
+                    for (std::size_t worker = 0;
+                         worker <
+                         remaining_worker_count;
+                         ++worker)
+                    {
+                        futures.push_back(
+                            std::async(
+                                std::launch::async,
+                                [&]()
+                                {
+                                    while (true)
+                                    {
+                                        const auto offset =
+                                            next.fetch_add(
+                                                1);
+
+                                        if (offset >=
+                                            remaining_indices
+                                                .size())
+                                        {
+                                            break;
+                                        }
+
+                                        const auto index =
+                                            remaining_indices[offset];
+
+                                        results[index] =
+                                            materialize_one(
+                                                labels[index]);
+                                    }
+                                }));
+                    }
+
+                    for (auto &future :
+                         futures)
+                    {
+                        future.get();
+                    }
+                }
+
+                for (auto &result :
+                     results)
+                {
+                    if (!result.has_value())
+                    {
+                        throw std::runtime_error(
+                            "missing exclusive quotient materialization result");
+                    }
+
                     out.push_back(
-                        materialize_one(label));
+                        std::move(
+                            *result));
                 }
 
                 return out;
             }
-
-            const auto domain_size_for_label =
-                [&](const std::string &label)
-                -> std::size_t
+            if (worker_count <= 1)
             {
-                if (label == "t_FH")
+                const auto cpu_count =
+                    std::max<std::size_t>(
+                        1,
+                        std::thread::hardware_concurrency());
+
+                const auto fh_size =
+                    context.domains.fh != nullptr
+                        ? context.domains.fh->size
+                        : 0;
+
+                const auto edge_size =
+                    context.domains.edge != nullptr
+                        ? context.domains.edge->size
+                        : 0;
+
+                const bool large_family_serial_policy =
+                    labels.size() > 1 &&
+                    (fh_size >= (1ULL << 25) ||
+                     edge_size >= (1ULL << 22));
+
+                if (!large_family_serial_policy)
                 {
-                    return context.domains.fh != nullptr
-                               ? context.domains.fh->size
-                               : 0;
+                    for (const auto &label : labels)
+                    {
+                        out.push_back(
+                            materialize_one(label));
+                    }
+
+                    return out;
                 }
 
-                if (label == "t_edge")
+                const auto domain_size_for_label =
+                    [&](const std::string &label)
+                    -> std::size_t
                 {
-                    return context.domains.edge != nullptr
-                               ? context.domains.edge->size
-                               : 0;
-                }
+                    if (label == "t_FH")
+                    {
+                        return context.domains.fh != nullptr
+                                   ? context.domains.fh->size
+                                   : 0;
+                    }
 
-                if (label == "t_in")
-                {
-                    return context.domains.in != nullptr
-                               ? context.domains.in->size
-                               : 0;
-                }
+                    if (label == "t_edge")
+                    {
+                        return context.domains.edge != nullptr
+                                   ? context.domains.edge->size
+                                   : 0;
+                    }
 
-                if (label == "t_d" ||
-                    label == "t_d_h")
-                {
-                    return context.domains.d != nullptr
-                               ? context.domains.d->size
-                               : 0;
-                }
+                    if (label == "t_in")
+                    {
+                        return context.domains.in != nullptr
+                                   ? context.domains.in->size
+                                   : 0;
+                    }
 
-                if (label == "t_cat")
-                {
-                    return context.domains.cat != nullptr
-                               ? context.domains.cat->size
-                               : 0;
-                }
+                    if (label == "t_d" ||
+                        label == "t_d_h")
+                    {
+                        return context.domains.d != nullptr
+                                   ? context.domains.d->size
+                                   : 0;
+                    }
 
-                if (label == "t_C")
-                {
-                    return context.domains.c != nullptr
-                               ? context.domains.c->size
-                               : 0;
-                }
+                    if (label == "t_cat")
+                    {
+                        return context.domains.cat != nullptr
+                                   ? context.domains.cat->size
+                                   : 0;
+                    }
 
-                if (label == "t_N")
-                {
-                    return context.domains.n != nullptr
-                               ? context.domains.n->size
-                               : 0;
-                }
+                    if (label == "t_C")
+                    {
+                        return context.domains.c != nullptr
+                                   ? context.domains.c->size
+                                   : 0;
+                    }
 
-                return 0;
-            };
+                    if (label == "t_N")
+                    {
+                        return context.domains.n != nullptr
+                                   ? context.domains.n->size
+                                   : 0;
+                    }
 
-            constexpr std::size_t
-                kSerialQuotientDomainSize =
-                    1ULL << 22;
+                    return 0;
+                };
 
-            std::vector<std::size_t>
-                heavy_indices;
+                constexpr std::size_t
+                    kSerialQuotientDomainSize =
+                        1ULL << 22;
 
-            std::vector<std::size_t>
-                light_indices;
+                std::vector<std::size_t>
+                    heavy_indices;
 
-            heavy_indices.reserve(
-                labels.size());
+                std::vector<std::size_t>
+                    light_indices;
 
-            light_indices.reserve(
-                labels.size());
-
-            for (std::size_t index = 0;
-                 index < labels.size();
-                 ++index)
-            {
-                if (domain_size_for_label(
-                        labels[index]) >=
-                    kSerialQuotientDomainSize)
-                {
-                    heavy_indices.push_back(
-                        index);
-                }
-                else
-                {
-                    light_indices.push_back(
-                        index);
-                }
-            }
-
-            std::vector<
-                std::optional<
-                    std::pair<
-                        std::string,
-                        algebra::Polynomial>>>
-                results(
+                heavy_indices.reserve(
                     labels.size());
 
-            const auto run_one =
-                [&](std::size_t index)
-            {
-                results[index] =
-                    materialize_one(
-                        labels[index]);
-            };
+                light_indices.reserve(
+                    labels.size());
 
-            const auto t_edge_index =
-                [&]() -> std::optional<std::size_t>
-            {
-                const auto it =
-                    std::find(
-                        labels.begin(),
-                        labels.end(),
-                        "t_edge");
-
-                if (it == labels.end())
+                for (std::size_t index = 0;
+                     index < labels.size();
+                     ++index)
                 {
-                    return std::nullopt;
+                    if (domain_size_for_label(
+                            labels[index]) >=
+                        kSerialQuotientDomainSize)
+                    {
+                        heavy_indices.push_back(
+                            index);
+                    }
+                    else
+                    {
+                        light_indices.push_back(
+                            index);
+                    }
                 }
 
-                return static_cast<std::size_t>(
-                    std::distance(
-                        labels.begin(),
-                        it));
-            }();
+                std::vector<
+                    std::optional<
+                        std::pair<
+                            std::string,
+                            algebra::Polynomial>>>
+                    results(
+                        labels.size());
 
-            if (t_edge_index.has_value() &&
-                std::find(
-                    heavy_indices.begin(),
-                    heavy_indices.end(),
-                    *t_edge_index) !=
-                    heavy_indices.end())
-            {
-                append_note(
-                    metrics,
-                    "quotient_large_family_t_edge_first=1");
+                const auto run_one =
+                    [&](std::size_t index)
+                {
+                    results[index] =
+                        materialize_one(
+                            labels[index]);
+                };
 
-                run_one(
-                    *t_edge_index);
+                const auto t_edge_index =
+                    [&]() -> std::optional<std::size_t>
+                {
+                    const auto it =
+                        std::find(
+                            labels.begin(),
+                            labels.end(),
+                            "t_edge");
 
-                heavy_indices.erase(
-                    std::remove(
+                    if (it == labels.end())
+                    {
+                        return std::nullopt;
+                    }
+
+                    return static_cast<std::size_t>(
+                        std::distance(
+                            labels.begin(),
+                            it));
+                }();
+
+                if (t_edge_index.has_value() &&
+                    std::find(
                         heavy_indices.begin(),
                         heavy_indices.end(),
-                        *t_edge_index),
-                    heavy_indices.end());
-            }
-
-            std::stable_sort(
-                heavy_indices.begin(),
-                heavy_indices.end(),
-                [&](std::size_t lhs,
-                    std::size_t rhs)
+                        *t_edge_index) !=
+                        heavy_indices.end())
                 {
-                    return domain_size_for_label(
-                               labels[lhs]) >
-                           domain_size_for_label(
-                               labels[rhs]);
-                });
+                    append_note(
+                        metrics,
+                        "quotient_large_family_t_edge_first=1");
 
-            for (const auto index :
-                 heavy_indices)
-            {
-                run_one(index);
-            }
+                    run_one(
+                        *t_edge_index);
 
-            const auto light_worker_count =
-                std::min<std::size_t>(
-                    light_indices.size(),
-                    std::min<std::size_t>(
-                        3,
-                        std::max<std::size_t>(
-                            1,
-                            cpu_count / 2)));
+                    heavy_indices.erase(
+                        std::remove(
+                            heavy_indices.begin(),
+                            heavy_indices.end(),
+                            *t_edge_index),
+                        heavy_indices.end());
+                }
 
-            if (!light_indices.empty())
-            {
-                append_note(
-                    metrics,
-                    "parallel_quotient_light_wave_workers=" +
-                        std::to_string(
-                            light_worker_count));
-            }
+                std::stable_sort(
+                    heavy_indices.begin(),
+                    heavy_indices.end(),
+                    [&](std::size_t lhs,
+                        std::size_t rhs)
+                    {
+                        return domain_size_for_label(
+                                   labels[lhs]) >
+                               domain_size_for_label(
+                                   labels[rhs]);
+                    });
 
-            if (light_worker_count <= 1)
-            {
                 for (const auto index :
-                     light_indices)
+                     heavy_indices)
                 {
                     run_one(index);
                 }
-            }
-            else
-            {
-                std::atomic<std::size_t>
-                    next_light{0};
 
-                std::vector<
-                    std::future<void>>
-                    futures;
+                const auto light_worker_count =
+                    std::min<std::size_t>(
+                        light_indices.size(),
+                        std::min<std::size_t>(
+                            3,
+                            std::max<std::size_t>(
+                                1,
+                                cpu_count / 2)));
 
-                futures.reserve(
-                    light_worker_count);
-
-                for (std::size_t worker = 0;
-                     worker <
-                     light_worker_count;
-                     ++worker)
+                if (!light_indices.empty())
                 {
-                    futures.push_back(
-                        std::async(
-                            std::launch::async,
-                            [&]()
-                            {
-                                while (true)
+                    append_note(
+                        metrics,
+                        "parallel_quotient_light_wave_workers=" +
+                            std::to_string(
+                                light_worker_count));
+                }
+
+                if (light_worker_count <= 1)
+                {
+                    for (const auto index :
+                         light_indices)
+                    {
+                        run_one(index);
+                    }
+                }
+                else
+                {
+                    std::atomic<std::size_t>
+                        next_light{0};
+
+                    std::vector<
+                        std::future<void>>
+                        futures;
+
+                    futures.reserve(
+                        light_worker_count);
+
+                    for (std::size_t worker = 0;
+                         worker <
+                         light_worker_count;
+                         ++worker)
+                    {
+                        futures.push_back(
+                            std::async(
+                                std::launch::async,
+                                [&]()
                                 {
-                                    const auto position =
-                                        next_light
-                                            .fetch_add(
-                                                1);
-
-                                    if (position >=
-                                        light_indices
-                                            .size())
+                                    while (true)
                                     {
-                                        break;
+                                        const auto position =
+                                            next_light
+                                                .fetch_add(
+                                                    1);
+
+                                        if (position >=
+                                            light_indices
+                                                .size())
+                                        {
+                                            break;
+                                        }
+
+                                        run_one(
+                                            light_indices[position]);
                                     }
+                                }));
+                    }
 
-                                    run_one(
-                                        light_indices[position]);
-                                }
-                            }));
+                    for (auto &future :
+                         futures)
+                    {
+                        future.get();
+                    }
                 }
 
-                for (auto &future :
-                     futures)
+                for (auto &result :
+                     results)
                 {
-                    future.get();
-                }
-            }
+                    if (!result.has_value())
+                    {
+                        throw std::runtime_error(
+                            "missing large-family quotient "
+                            "materialization result");
+                    }
 
-            for (auto &result :
-                 results)
+                    out.push_back(
+                        std::move(
+                            *result));
+                }
+
+                return out;
+            }
+            append_note(metrics, "parallel_quotient_materialization_workers=" + std::to_string(worker_count));
+            std::vector<std::optional<std::pair<std::string, algebra::Polynomial>>> results(labels.size());
+            std::atomic<std::size_t> next{0};
+            std::vector<std::future<void>> futures;
+            futures.reserve(worker_count);
+            for (std::size_t worker = 0; worker < worker_count; ++worker)
             {
-                if (!result.has_value())
-                {
-                    throw std::runtime_error(
-                        "missing large-family quotient "
-                        "materialization result");
-                }
-
-                out.push_back(
-                    std::move(
-                        *result));
-            }
-
-            return out;
-        }
-        append_note(metrics, "parallel_quotient_materialization_workers=" + std::to_string(worker_count));
-        std::vector<std::optional<std::pair<std::string, algebra::Polynomial>>> results(labels.size());
-        std::atomic<std::size_t> next{0};
-        std::vector<std::future<void>> futures;
-        futures.reserve(worker_count);
-        for (std::size_t worker = 0; worker < worker_count; ++worker)
-        {
-            futures.push_back(std::async(std::launch::async, [&]()
-                                         {
+                futures.push_back(std::async(std::launch::async, [&]()
+                                             {
             while (true) {
                 const auto index = next.fetch_add(1);
                 if (index >= labels.size()) {
@@ -13038,1055 +13008,1055 @@ namespace gatzk::protocol
                 }
                 results[index] = materialize_one(labels[index]);
             } }));
-        }
-        for (auto &future : futures)
-        {
-            future.get();
-        }
-        for (auto &result : results)
-        {
-            if (!result.has_value())
-            {
-                throw std::runtime_error("missing parallel quotient materialization result");
             }
-            out.push_back(std::move(*result));
-        }
-        return out;
-    }
-
-    std::vector<FieldElement> sample_quotient_mask(
-        const ProtocolContext &context,
-        const std::string &label)
-    {
-        const auto kMaskCoefficientCount =
-            registered_blinder_coefficient_count(
-                context, quotient_mask_label(label));
-        std::vector<FieldElement> mask(kMaskCoefficientCount, FieldElement::zero());
-        std::array<std::uint8_t, 64> bytes{};
-        for (auto &coefficient : mask)
-        {
-            if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+            for (auto &future : futures)
             {
-                throw std::runtime_error("CSPRNG failed while sampling quotient mask: " + label);
+                future.get();
             }
-            coefficient = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
-        }
-        while (std::all_of(mask.begin(), mask.end(), [](const FieldElement &value)
-                           { return value.is_zero(); }))
-        {
-            if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+            for (auto &result : results)
             {
-                throw std::runtime_error("CSPRNG failed while resampling quotient mask: " + label);
+                if (!result.has_value())
+                {
+                    throw std::runtime_error("missing parallel quotient materialization result");
+                }
+                out.push_back(std::move(*result));
             }
-            mask.front() = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+            return out;
         }
-        return mask;
-    }
 
-    std::size_t quotient_domain_size(
-        const ProtocolContext &context,
-        const std::string &label)
-    {
-        if (label == "t_FH")
-            return context.domains.fh->size;
-        if (label == "t_edge")
-            return context.domains.edge->size;
-        if (label == "t_in")
-            return context.domains.in->size;
-        if (label == "t_d" || label == "t_d_h")
-            return context.domains.d->size;
-        if (label == "t_cat")
-            return context.domains.cat->size;
-        if (label == "t_C")
-            return context.domains.c->size;
-        if (label == "t_N")
-            return context.domains.n->size;
-        throw std::runtime_error("unknown quotient domain: " + label);
-    }
-
-    std::vector<std::pair<std::string, algebra::Polynomial>> blind_quotient_polynomials(
-        const ProtocolContext &context,
-        std::vector<std::pair<std::string, algebra::Polynomial>> &&quotients)
-    {
-        std::vector<std::pair<std::string, algebra::Polynomial>> out;
-        out.reserve(quotients.size() * 2);
-
-        for (auto &[label, quotient] : quotients)
+        std::vector<FieldElement> sample_quotient_mask(
+            const ProtocolContext &context,
+            const std::string &label)
         {
-            if (quotient.basis != algebra::PolynomialBasis::Coefficient)
+            const auto kMaskCoefficientCount =
+                registered_blinder_coefficient_count(
+                    context, quotient_mask_label(label));
+            std::vector<FieldElement> mask(kMaskCoefficientCount, FieldElement::zero());
+            std::array<std::uint8_t, 64> bytes{};
+            for (auto &coefficient : mask)
             {
-                throw std::runtime_error("quotient masking requires coefficient basis: " + label);
+                if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+                {
+                    throw std::runtime_error("CSPRNG failed while sampling quotient mask: " + label);
+                }
+                coefficient = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
             }
-
-            const auto resident =
-                quotient.cuda_resident_coefficients;
-
-            if (resident != nullptr)
+            while (std::all_of(mask.begin(), mask.end(), [](const FieldElement &value)
+                               { return value.is_zero(); }))
             {
-                if (resident->allocation == nullptr ||
-                    resident->device_montgomery_limbs == nullptr ||
-                    resident->device < 0 ||
-                    resident->logical_count == 0 ||
-                    resident->logical_count > resident->capacity ||
-                    resident->nonzero_count > resident->logical_count ||
-                    resident->logical_count > quotient.data.size())
+                if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+                {
+                    throw std::runtime_error("CSPRNG failed while resampling quotient mask: " + label);
+                }
+                mask.front() = FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
+            }
+            return mask;
+        }
+
+        std::size_t quotient_domain_size(
+            const ProtocolContext &context,
+            const std::string &label)
+        {
+            if (label == "t_FH")
+                return context.domains.fh->size;
+            if (label == "t_edge")
+                return context.domains.edge->size;
+            if (label == "t_in")
+                return context.domains.in->size;
+            if (label == "t_d" || label == "t_d_h")
+                return context.domains.d->size;
+            if (label == "t_cat")
+                return context.domains.cat->size;
+            if (label == "t_C")
+                return context.domains.c->size;
+            if (label == "t_N")
+                return context.domains.n->size;
+            throw std::runtime_error("unknown quotient domain: " + label);
+        }
+
+        std::vector<std::pair<std::string, algebra::Polynomial>> blind_quotient_polynomials(
+            const ProtocolContext &context,
+            std::vector<std::pair<std::string, algebra::Polynomial>> &&quotients)
+        {
+            std::vector<std::pair<std::string, algebra::Polynomial>> out;
+            out.reserve(quotients.size() * 2);
+
+            for (auto &[label, quotient] : quotients)
+            {
+                if (quotient.basis != algebra::PolynomialBasis::Coefficient)
+                {
+                    throw std::runtime_error("quotient masking requires coefficient basis: " + label);
+                }
+
+                const auto resident =
+                    quotient.cuda_resident_coefficients;
+
+                if (resident != nullptr)
+                {
+                    if (resident->allocation == nullptr ||
+                        resident->device_montgomery_limbs == nullptr ||
+                        resident->device < 0 ||
+                        resident->logical_count == 0 ||
+                        resident->logical_count > resident->capacity ||
+                        resident->nonzero_count > resident->logical_count ||
+                        resident->logical_count > quotient.data.size())
+                    {
+                        throw std::runtime_error(
+                            "invalid CUDA resident quotient coefficient metadata: " +
+                            label);
+                    }
+                }
+
+                auto mask =
+                    sample_quotient_mask(
+                        context,
+                        label);
+
+                const auto domain_size =
+                    quotient_domain_size(
+                        context,
+                        label);
+
+                if (domain_size >
+                    std::numeric_limits<std::size_t>::max() -
+                        mask.size())
                 {
                     throw std::runtime_error(
-                        "invalid CUDA resident quotient coefficient metadata: " +
+                        "masked quotient size overflow: " +
                         label);
                 }
-            }
 
-            auto mask =
-                sample_quotient_mask(
-                    context,
-                    label);
+                const auto required_size =
+                    domain_size +
+                    mask.size();
 
-            const auto domain_size =
-                quotient_domain_size(
-                    context,
-                    label);
+                if (required_size >
+                    context.kzg.pk.degree_bound + 1)
+                {
+                    throw std::runtime_error("masked quotient exceeds SRS degree bound: " + label);
+                }
 
-            if (domain_size >
-                std::numeric_limits<std::size_t>::max() -
-                    mask.size())
-            {
-                throw std::runtime_error(
-                    "masked quotient size overflow: " +
-                    label);
-            }
+                if (resident != nullptr &&
+                    required_size >
+                        resident->capacity)
+                {
+                    throw std::runtime_error(
+                        "masked CUDA resident quotient exceeds resident coefficient capacity: " +
+                        label);
+                }
 
-            const auto required_size =
-                domain_size +
-                mask.size();
+                if (resident != nullptr &&
+                    resident->host_transfer !=
+                        nullptr)
+                {
+                    resident->host_transfer
+                        ->wait();
+                }
 
-            if (required_size >
-                context.kzg.pk.degree_bound + 1)
-            {
-                throw std::runtime_error("masked quotient exceeds SRS degree bound: " + label);
-            }
+                if (quotient.data.size() <
+                    required_size)
+                {
+                    quotient.data.resize(
+                        required_size,
+                        FieldElement::zero());
+                }
 
-            if (resident != nullptr &&
-                required_size >
-                    resident->capacity)
-            {
-                throw std::runtime_error(
-                    "masked CUDA resident quotient exceeds resident coefficient capacity: " +
-                    label);
-            }
+                std::vector<std::size_t>
+                    affected_indices;
 
-            if (resident != nullptr &&
-                resident->host_transfer !=
-                    nullptr)
-            {
-                resident->host_transfer
-                    ->wait();
-            }
+                std::vector<std::uint8_t>
+                    affected_nonzero_before;
 
-            if (quotient.data.size() <
-                required_size)
-            {
-                quotient.data.resize(
-                    required_size,
-                    FieldElement::zero());
-            }
+                if (resident != nullptr)
+                {
+                    affected_indices.reserve(
+                        mask.size() * 2);
 
-            std::vector<std::size_t>
-                affected_indices;
+                    for (std::size_t i = 0;
+                         i < mask.size();
+                         ++i)
+                    {
+                        affected_indices.push_back(
+                            i);
 
-            std::vector<std::uint8_t>
-                affected_nonzero_before;
+                        affected_indices.push_back(
+                            domain_size + i);
+                    }
 
-            if (resident != nullptr)
-            {
-                affected_indices.reserve(
-                    mask.size() * 2);
+                    std::sort(
+                        affected_indices.begin(),
+                        affected_indices.end());
+
+                    affected_indices.erase(
+                        std::unique(
+                            affected_indices.begin(),
+                            affected_indices.end()),
+                        affected_indices.end());
+
+                    affected_nonzero_before.reserve(
+                        affected_indices.size());
+
+                    for (const auto index :
+                         affected_indices)
+                    {
+                        if (index >=
+                                resident->logical_count &&
+                            !quotient.data[index]
+                                 .is_zero())
+                        {
+                            throw std::runtime_error(
+                                "CUDA resident quotient metadata excludes a nonzero host coefficient: " +
+                                label);
+                        }
+
+                        affected_nonzero_before.push_back(
+                            quotient.data[index]
+                                    .is_zero()
+                                ? std::uint8_t{0}
+                                : std::uint8_t{1});
+                    }
+                }
 
                 for (std::size_t i = 0;
                      i < mask.size();
                      ++i)
                 {
-                    affected_indices.push_back(
-                        i);
+                    quotient.data[i] -=
+                        mask[i];
 
-                    affected_indices.push_back(
-                        domain_size + i);
+                    quotient.data[domain_size + i] +=
+                        mask[i];
                 }
 
-                std::sort(
-                    affected_indices.begin(),
-                    affected_indices.end());
-
-                affected_indices.erase(
-                    std::unique(
-                        affected_indices.begin(),
-                        affected_indices.end()),
-                    affected_indices.end());
-
-                affected_nonzero_before.reserve(
-                    affected_indices.size());
-
-                for (const auto index :
-                     affected_indices)
+                if (resident != nullptr)
                 {
-                    if (index >=
-                            resident->logical_count &&
-                        !quotient.data[index]
-                             .is_zero())
+                    auto updated_nonzero_count =
+                        resident->nonzero_count;
+
+                    for (std::size_t position = 0;
+                         position <
+                         affected_indices.size();
+                         ++position)
                     {
-                        throw std::runtime_error(
-                            "CUDA resident quotient metadata excludes a nonzero host coefficient: " +
-                            label);
-                    }
+                        const auto index =
+                            affected_indices[position];
 
-                    affected_nonzero_before.push_back(
-                        quotient.data[index]
-                                .is_zero()
-                            ? std::uint8_t{0}
-                            : std::uint8_t{1});
-                }
-            }
+                        const bool was_nonzero =
+                            affected_nonzero_before[position] != 0;
 
-            for (std::size_t i = 0;
-                 i < mask.size();
-                 ++i)
-            {
-                quotient.data[i] -=
-                    mask[i];
+                        const bool is_nonzero =
+                            !quotient.data[index]
+                                 .is_zero();
 
-                quotient.data[domain_size + i] +=
-                    mask[i];
-            }
-
-            if (resident != nullptr)
-            {
-                auto updated_nonzero_count =
-                    resident->nonzero_count;
-
-                for (std::size_t position = 0;
-                     position <
-                     affected_indices.size();
-                     ++position)
-                {
-                    const auto index =
-                        affected_indices[position];
-
-                    const bool was_nonzero =
-                        affected_nonzero_before[position] != 0;
-
-                    const bool is_nonzero =
-                        !quotient.data[index]
-                             .is_zero();
-
-                    if (!was_nonzero &&
-                        is_nonzero)
-                    {
-                        if (updated_nonzero_count ==
-                            std::numeric_limits<
-                                std::size_t>::max())
+                        if (!was_nonzero &&
+                            is_nonzero)
                         {
-                            throw std::runtime_error(
-                                "CUDA resident quotient nonzero count overflow: " +
-                                label);
-                        }
+                            if (updated_nonzero_count ==
+                                std::numeric_limits<
+                                    std::size_t>::max())
+                            {
+                                throw std::runtime_error(
+                                    "CUDA resident quotient nonzero count overflow: " +
+                                    label);
+                            }
 
-                        ++updated_nonzero_count;
-                    }
-                    else if (
-                        was_nonzero &&
-                        !is_nonzero)
-                    {
-                        if (updated_nonzero_count ==
-                            0)
+                            ++updated_nonzero_count;
+                        }
+                        else if (
+                            was_nonzero &&
+                            !is_nonzero)
                         {
-                            throw std::runtime_error(
-                                "CUDA resident quotient nonzero count underflow: " +
-                                label);
+                            if (updated_nonzero_count ==
+                                0)
+                            {
+                                throw std::runtime_error(
+                                    "CUDA resident quotient nonzero count underflow: " +
+                                    label);
+                            }
+
+                            --updated_nonzero_count;
                         }
-
-                        --updated_nonzero_count;
                     }
-                }
 
-                auto updated_logical_count =
-                    resident->logical_count;
+                    auto updated_logical_count =
+                        resident->logical_count;
 
-                for (const auto index :
-                     affected_indices)
-                {
-                    if (!quotient.data[index]
-                             .is_zero())
+                    for (const auto index :
+                         affected_indices)
+                    {
+                        if (!quotient.data[index]
+                                 .is_zero())
+                        {
+                            updated_logical_count =
+                                std::max(
+                                    updated_logical_count,
+                                    index + 1);
+                        }
+                    }
+
+                    if (updated_nonzero_count ==
+                        0)
                     {
                         updated_logical_count =
-                            std::max(
-                                updated_logical_count,
-                                index + 1);
+                            1;
                     }
-                }
-
-                if (updated_nonzero_count ==
-                    0)
-                {
-                    updated_logical_count =
-                        1;
-                }
-                else if (
-                    updated_logical_count ==
-                        resident->logical_count &&
-                    std::binary_search(
-                        affected_indices.begin(),
-                        affected_indices.end(),
-                        resident->logical_count -
-                            1) &&
-                    quotient.data[resident->logical_count -
-                                  1]
-                        .is_zero())
-                {
-                    while (
-                        updated_logical_count >
-                            0 &&
-                        quotient.data[updated_logical_count -
+                    else if (
+                        updated_logical_count ==
+                            resident->logical_count &&
+                        std::binary_search(
+                            affected_indices.begin(),
+                            affected_indices.end(),
+                            resident->logical_count -
+                                1) &&
+                        quotient.data[resident->logical_count -
                                       1]
                             .is_zero())
                     {
-                        --updated_logical_count;
+                        while (
+                            updated_logical_count >
+                                0 &&
+                            quotient.data[updated_logical_count -
+                                          1]
+                                .is_zero())
+                        {
+                            --updated_logical_count;
+                        }
+
+                        if (updated_logical_count ==
+                            0)
+                        {
+                            throw std::runtime_error(
+                                "CUDA resident quotient logical count became inconsistent: " +
+                                label);
+                        }
                     }
 
-                    if (updated_logical_count ==
-                        0)
+                    if (updated_logical_count >
+                            resident->capacity ||
+                        updated_nonzero_count >
+                            updated_logical_count)
                     {
                         throw std::runtime_error(
-                            "CUDA resident quotient logical count became inconsistent: " +
+                            "updated CUDA resident quotient metadata is invalid: " +
                             label);
                     }
-                }
-
-                if (updated_logical_count >
-                        resident->capacity ||
-                    updated_nonzero_count >
-                        updated_logical_count)
-                {
-                    throw std::runtime_error(
-                        "updated CUDA resident quotient metadata is invalid: " +
-                        label);
-                }
 
 #if GATZK_ENABLE_CUDA_BACKEND
-                if (!cuda_t_edge_update_resident_coefficient_ranges(
-                        *resident,
-                        quotient.data.data(),
-                        quotient.data.size(),
-                        0,
-                        mask.size(),
-                        domain_size,
-                        mask.size()))
-                {
-                    throw std::runtime_error(
-                        "CUDA resident quotient mask synchronization was not executed: " +
-                        label);
-                }
+                    if (!cuda_t_edge_update_resident_coefficient_ranges(
+                            *resident,
+                            quotient.data.data(),
+                            quotient.data.size(),
+                            0,
+                            mask.size(),
+                            domain_size,
+                            mask.size()))
+                    {
+                        throw std::runtime_error(
+                            "CUDA resident quotient mask synchronization was not executed: " +
+                            label);
+                    }
 #else
-                throw std::runtime_error(
-                    "CUDA resident quotient material is unavailable in a non-CUDA build");
+                    throw std::runtime_error(
+                        "CUDA resident quotient material is unavailable in a non-CUDA build");
 #endif
 
-                auto updated_resident =
-                    std::make_shared<
-                        algebra::
-                            CudaResidentCoefficientBuffer>();
+                    auto updated_resident =
+                        std::make_shared<
+                            algebra::
+                                CudaResidentCoefficientBuffer>();
 
-                updated_resident->allocation =
-                    resident->allocation;
+                    updated_resident->allocation =
+                        resident->allocation;
 
-                updated_resident->device_montgomery_limbs =
-                    resident->device_montgomery_limbs;
+                    updated_resident->device_montgomery_limbs =
+                        resident->device_montgomery_limbs;
 
-                updated_resident->capacity =
-                    resident->capacity;
+                    updated_resident->capacity =
+                        resident->capacity;
 
-                updated_resident->logical_count =
-                    updated_logical_count;
+                    updated_resident->logical_count =
+                        updated_logical_count;
 
-                updated_resident->nonzero_count =
-                    updated_nonzero_count;
+                    updated_resident->nonzero_count =
+                        updated_nonzero_count;
 
-                updated_resident->device =
-                    resident->device;
+                    updated_resident->device =
+                        resident->device;
 
-                updated_resident->host_transfer.reset();
+                    updated_resident->host_transfer.reset();
 
-                quotient.cuda_resident_coefficients =
-                    std::move(
-                        updated_resident);
+                    quotient.cuda_resident_coefficients =
+                        std::move(
+                            updated_resident);
+                }
+
+                auto mask_polynomial = algebra::Polynomial::from_coefficients(
+                    quotient_mask_label(label),
+                    std::move(mask));
+
+                out.push_back(
+                    {label,
+                     std::move(quotient)});
+
+                out.push_back(
+                    {mask_polynomial.name,
+                     std::move(mask_polynomial)});
             }
 
-            auto mask_polynomial = algebra::Polynomial::from_coefficients(
-                quotient_mask_label(label),
-                std::move(mask));
-
-            out.push_back(
-                {label,
-                 std::move(quotient)});
-
-            out.push_back(
-                {mask_polynomial.name,
-                 std::move(mask_polynomial)});
-        }
-
-        return out;
-    }
-
-    std::unordered_map<std::string, Commitment> batch_quotient_commitments(
-        std::vector<std::pair<std::string, algebra::Polynomial>> &&named_quotient_polynomials,
-        const crypto::KZGKeyPair &key,
-        crypto::CommitBatchProfile *profile)
-    {
-        std::unordered_map<std::string, Commitment> out;
-        out.reserve(named_quotient_polynomials.size());
-        if (named_quotient_polynomials.empty())
-        {
             return out;
         }
 
-        auto commitments = crypto::KZG::commit_owned_batch(
-            std::move(named_quotient_polynomials),
-            key,
-            profile,
-            "prove:quotient:commit_batch");
-        for (const auto &commitment : commitments)
+        std::unordered_map<std::string, Commitment> batch_quotient_commitments(
+            std::vector<std::pair<std::string, algebra::Polynomial>> &&named_quotient_polynomials,
+            const crypto::KZGKeyPair &key,
+            crypto::CommitBatchProfile *profile)
         {
-            out.emplace(commitment.name, commitment);
+            std::unordered_map<std::string, Commitment> out;
+            out.reserve(named_quotient_polynomials.size());
+            if (named_quotient_polynomials.empty())
+            {
+                return out;
+            }
+
+            auto commitments = crypto::KZG::commit_owned_batch(
+                std::move(named_quotient_polynomials),
+                key,
+                profile,
+                "prove:quotient:commit_batch");
+            for (const auto &commitment : commitments)
+            {
+                out.emplace(commitment.name, commitment);
+            }
+            return out;
         }
-        return out;
-    }
 
-    std::vector<Commitment> collect_commitments(
-        const TraceArtifacts &trace,
-        const std::unordered_map<std::string, Commitment> &quotient_commitments,
-        const std::vector<std::string> &labels)
-    {
-        std::vector<Commitment> out;
-        out.reserve(labels.size());
-        for (const auto &label : labels)
+        std::vector<Commitment> collect_commitments(
+            const TraceArtifacts &trace,
+            const std::unordered_map<std::string, Commitment> &quotient_commitments,
+            const std::vector<std::string> &labels)
         {
-            if (trace.commitments.contains(label))
+            std::vector<Commitment> out;
+            out.reserve(labels.size());
+            for (const auto &label : labels)
             {
-                out.push_back(trace.commitments.at(label));
-            }
-            else
-            {
-                out.push_back(quotient_commitments.at(label));
-            }
-        }
-        return out;
-    }
-
-    const std::vector<std::string> &quotient_dependencies_fh()
-    {
-        static const std::vector<std::string> labels = {
-            "P_H",
-            "P_R_feat",
-            "P_Table_feat",
-            "P_Query_feat",
-            "P_T_H",
-            "P_Row_feat_tbl",
-            "P_Col_feat_tbl",
-            "P_Row_feat_qry",
-            "P_Col_feat_qry",
-            "P_I_feat_qry",
-            "P_Q_tbl_feat",
-            "P_m_feat",
-            "P_Q_qry_feat",
-            "P_J_tbl_feat",
-            "P_J_qry_feat",
-        };
-        return labels;
-    }
-
-    void append_unique_labels(
-        std::vector<std::string> *target,
-        const std::vector<std::string> &labels)
-    {
-        for (const auto &label : labels)
-        {
-            if (std::find(target->begin(), target->end(), label) == target->end())
-            {
-                target->push_back(label);
-            }
-        }
-    }
-
-    std::vector<FieldElement> fh_dependency_points(
-        const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-        const std::vector<FieldElement> &points)
-    {
-        std::vector<FieldElement> out = points;
-        out.reserve(points.size() * 2);
-        for (const auto &point : points)
-        {
-            const auto rotated = point * domain->omega;
-            if (std::find(out.begin(), out.end(), rotated) == out.end())
-            {
-                out.push_back(rotated);
-            }
-        }
-        return out;
-    }
-
-    std::vector<std::string> multihead_edge_dependencies(const ProtocolContext &context)
-    {
-        std::vector<std::string> labels = {
-            "P_Q_edge_valid",
-            "P_Q_grp_new_edge",
-            "P_Q_grp_end_edge",
-            "P_Q_tbl_L",
-            "P_Q_qry_L",
-            "P_Q_tbl_R",
-            "P_Q_qry_R",
-            "P_Q_tbl_exp",
-            "P_Q_qry_exp",
-            "P_Q_tbl_ELU",
-            "P_T_L_x",
-            "P_T_L_y",
-            "P_T_range",
-            "P_T_exp_x",
-            "P_T_exp_y",
-            "P_T_ELU_x",
-            "P_T_ELU_y",
-            "P_src",
-            "P_dst",
-            "P_BiasIndex_edge",
-        };
-        auto append_label = [&](std::string label)
-        {
-            if (std::find(labels.begin(), labels.end(), label) == labels.end())
-            {
-                labels.push_back(std::move(label));
-            }
-        };
-        auto append_prefixed = [&](const std::string &prefix, const std::vector<std::string> &suffixes)
-        {
-            for (const auto &suffix : suffixes)
-            {
-                append_label(prefix + suffix);
-            }
-        };
-
-        const std::vector<std::string> hidden_suffixes = {
-            "R_src",
-            "Query_src",
-            "E_src_edge",
-            "E_dst_edge",
-            "H_src_star_edge",
-            "S",
-            "R_L",
-            "Table_L",
-            "Query_L",
-            "m_L",
-            "Z",
-            "Delta",
-            "M_edge",
-            "s_max",
-            "C_max",
-            "R_R",
-            "Table_R",
-            "Query_R",
-            "m_R",
-            "alpha",
-            "U",
-            "inv_edge",
-            "R_exp",
-            "Table_exp",
-            "Query_exp",
-            "m_exp",
-            "PSQ",
-            "w_psq",
-            "T_psq_edge",
-            "R_t",
-            "Query_t",
-            "R_ELU",
-            "Table_ELU",
-            "Query_ELU",
-            "m_ELU",
-            "H_agg_pre_flat",
-            "H_agg_flat",
-            "R_dst",
-            "Query_dst",
-            "Sum_edge",
-            "H_agg_star_edge",
-        };
-        const std::vector<std::string> division_suffixes = {
-            "Div_Active",
-            "Div_X",
-            "Div_D",
-            "Div_Y",
-            "Div_Sigma",
-            "Div_Zero",
-            "Div_A",
-            "Div_A_inv",
-            "Div_D_inv",
-            "Div_Q",
-            "Div_R",
-            "Div_Delta",
-        };
-        auto append_division_range_dependencies = [&](const std::string &division_prefix)
-        {
-            const auto limb_count = signed_division_limb_count(context.config.range_bits);
-            for (const auto *value_name : {"A", "DMinus1", "Q", "R", "Delta"})
-            {
-                for (std::size_t limb = 0; limb < limb_count; ++limb)
+                if (trace.commitments.contains(label))
                 {
-                    append_label(signed_division_limb_label(
-                        division_prefix, value_name, limb));
-                    for (const auto *column : {"Table", "Query", "m", "J_tbl", "J_qry", "R"})
-                    {
-                        append_label(signed_division_range_label(
-                            division_prefix, value_name, limb, column));
-                    }
+                    out.push_back(trace.commitments.at(label));
+                }
+                else
+                {
+                    out.push_back(quotient_commitments.at(label));
                 }
             }
-        };
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
-            for (std::size_t head_index = 0;
-                 head_index < context.model.hidden_layers[layer_index].heads.size();
-                 ++head_index)
-            {
-                const auto prefix = hidden_head_prefix(layer_index, head_index) + "_";
-                append_prefixed(prefix, hidden_suffixes);
-                append_prefixed(prefix, division_suffixes);
-                append_division_range_dependencies(prefix + "Div_");
-                append_label(hidden_q_nd_h_selector_label(layer_index));
-            }
-
-        const std::vector<std::string> output_suffixes = {
-            "R_src",
-            "Query_src",
-            "E_src_edge",
-            "E_dst_edge",
-            "S",
-            "R_L",
-            "Table_L",
-            "Query_L",
-            "m_L",
-            "Z",
-            "Delta",
-            "M_edge",
-            "s_max",
-            "C_max",
-            "R_R",
-            "Table_R",
-            "Query_R",
-            "m_R",
-            "alpha",
-            "U",
-            "inv_edge",
-            "R_exp",
-            "Table_exp",
-            "Query_exp",
-            "m_exp",
-            "PSQ",
-            "w",
-            "T_edge",
-            "R_t",
-            "Query_t",
-            "R_dst",
-            "Query_dst",
-            "Sum_edge",
-            "Y_star_edge",
-            "Y_pre_flat",
-            "Bias_flat",
-            "Y_flat",
-            "Bind_a",
-            "Bind_b",
-            "Bind_Acc",
-        };
-        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-        {
-            append_prefixed(output_head_prefix(head_index) + "_", output_suffixes);
-            append_prefixed(output_head_prefix(head_index) + "_", division_suffixes);
-            append_division_range_dependencies(
-                output_head_prefix(head_index) + "_Div_");
-            append_label("P_Q_div_out" + std::to_string(head_index));
-            const auto metadata = build_binding_relation_metadata(context);
-            const auto relation_id =
-                "bind:output:" + std::to_string(head_index);
-            const auto relation = std::find_if(
-                metadata.begin(), metadata.end(),
-                [&](const BindingRelationMeta &candidate)
-                { return candidate.relation_id == relation_id; });
-            if (relation == metadata.end() || relation->coefficient_basis_relations.size() != 1)
-                throw std::runtime_error(
-                    "edge quotient dependency registry is missing coefficient basis metadata");
-            const auto &basis =
-                relation->coefficient_basis_relations.front();
-            for (const auto &chunk : basis.chunks)
-            {
-                append_label(chunk.object_id);
-                for (const auto *region : {
-                         "active", "semantic", "gap", "tail"})
-                    append_label(output_bias_basis_region_selector_label(
-                        head_index, chunk.chunk_index, region));
-            }
-            // Gamma powers are a verifier-reconstructible virtual column,
-            // not a committed/opened Pi_bind object.  The prover keeps the
-            // interpolant only as quotient-construction material.
-            append_label(basis.power_object);
-            for (const auto &chunk : basis.chunks)
-                append_label(chunk.accumulator_object);
+            return out;
         }
-        for (const auto &suffix : division_suffixes)
+
+        const std::vector<std::string> &quotient_dependencies_fh()
         {
-            append_label("P_avg_" + suffix);
-        }
-        append_division_range_dependencies("P_avg_Div_");
-        append_label("P_Q_div_avg");
-        append_label("P_avg_Bind_a");
-        append_label("P_avg_Bind_b");
-        append_label("P_avg_Bind_Acc");
-        return labels;
-    }
-
-    std::vector<std::string> multihead_in_dependencies(const ProtocolContext &context)
-    {
-        std::vector<std::string> labels = domain_opening_labels(context, "in");
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
-            append_unique_labels(
-                &labels, {hidden_q_in_selector_label(layer_index)});
-        return labels;
-    }
-
-    std::vector<std::string> multihead_d_dependencies(const ProtocolContext &context)
-    {
-        std::vector<std::string> labels = domain_opening_labels(context, "d");
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
-            append_unique_labels(
-                &labels, {hidden_q_d_h_selector_label(layer_index)});
-        return labels;
-    }
-
-    std::vector<std::string> multihead_cat_dependencies(const ProtocolContext &context)
-    {
-        std::vector<std::string> labels = domain_opening_labels(context, "cat");
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
-            append_unique_labels(
-                &labels, {hidden_q_cat_selector_label(layer_index)});
-        append_unique_labels(&labels, {output_q_cat_selector_label()});
-        return labels;
-    }
-
-    std::vector<std::string> multihead_c_dependencies(const ProtocolContext &context)
-    {
-        std::vector<std::string> labels = domain_opening_labels(context, "C");
-        append_unique_labels(
-            &labels,
-            {"P_Q_C_valid", "P_BiasIndex_C", "P_BiasMultiplicity_C"});
-        return labels;
-    }
-
-    std::vector<std::string> multihead_n_dependencies(const ProtocolContext &context)
-    {
-        std::vector<std::string> labels = domain_opening_labels(context, "N");
-        append_unique_labels(
-            &labels,
-            {"P_I", "P_Q_N", "P_AggBind_index_N",
-             "P_AggBind_m_src", "P_AggBind_m_dst"});
-        return labels;
-    }
-
-    std::vector<std::string> quotient_dependency_labels(
-        const ProtocolContext &context,
-        const std::string &quotient_name)
-    {
-        if (quotient_name == "t_FH")
-            return quotient_dependencies_fh();
-        if (quotient_name == "t_edge")
-            return multihead_edge_dependencies(context);
-        if (quotient_name == "t_in")
-            return multihead_in_dependencies(context);
-        if (quotient_name == "t_d_h")
-            return multihead_d_dependencies(context);
-        if (quotient_name == "t_cat")
-            return multihead_cat_dependencies(context);
-        if (quotient_name == "t_C")
-            return multihead_c_dependencies(context);
-        if (quotient_name == "t_N")
-            return multihead_n_dependencies(context);
-        return {};
-    }
-
-    std::vector<std::string> quotient_materialization_dependency_labels(
-        const ProtocolContext &context,
-        const std::string &quotient_name)
-    {
-        auto labels =
-            quotient_dependency_labels(context, quotient_name);
-        if (quotient_name != "t_FH" || !full_graph_feature_identity_enabled(context))
-        {
-            return labels;
-        }
-        static const std::array<std::string_view, 7>
-            identically_cancelled_dependencies = {
+            static const std::vector<std::string> labels = {
                 "P_H",
+                "P_R_feat",
+                "P_Table_feat",
+                "P_Query_feat",
                 "P_T_H",
                 "P_Row_feat_tbl",
                 "P_Col_feat_tbl",
                 "P_Row_feat_qry",
                 "P_Col_feat_qry",
                 "P_I_feat_qry",
-        };
-        std::erase_if(
-            labels,
-            [&](const std::string &label)
-            {
-                return std::find(
-                           identically_cancelled_dependencies.begin(),
-                           identically_cancelled_dependencies.end(),
-                           label) != identically_cancelled_dependencies.end();
-            });
-        return labels;
-    }
+                "P_Q_tbl_feat",
+                "P_m_feat",
+                "P_Q_qry_feat",
+                "P_J_tbl_feat",
+                "P_J_qry_feat",
+            };
+            return labels;
+        }
 
-    DomainOpeningBundle make_bundle(
-        const ProtocolContext &context,
-        const TraceArtifacts &trace,
-        EvaluationMemoization &memo,
-        const std::unordered_map<std::string, Commitment> &quotient_commitments,
-        const std::vector<std::string> &labels,
-        const std::vector<FieldElement> &points,
-        RunMetrics *metrics = nullptr,
-        double *eval_gather_ms = nullptr,
-        const std::string &progress_prefix = "")
-    {
-        // 一个 bundle 对应 formal schema 中某个工作域的一次 opening。
-        // 这里必须严格复用 `domain_opening_labels()` 给出的标签顺序，
-        // 因为 prover 组包、verifier 取值和 proof_size_bytes 统计都依赖同一份 shape。
-        DomainOpeningBundle bundle;
-        bundle.points = points;
-        const auto commitments = collect_commitments(trace, quotient_commitments, labels);
-        const auto gather_start = Clock::now();
-        std::string quotient_name;
-        for (const auto &label : labels)
+        void append_unique_labels(
+            std::vector<std::string> *target,
+            const std::vector<std::string> &labels)
         {
-            if (!label.empty() && label[0] == 't')
-            {
-                quotient_name = label;
-                break;
-            }
-        }
-        const bool is_fh_bundle = quotient_name == "t_FH";
-        std::vector<std::vector<FieldElement>> values;
-        if (!progress_prefix.empty())
-        {
-            progress_note(progress_prefix + ":gather:start");
-        }
-        if (!quotient_name.empty())
-        {
-            const auto dependency_labels = quotient_dependency_labels(context, quotient_name);
-            std::shared_ptr<algebra::RootOfUnityDomain> domain;
-            if (quotient_name == "t_FH")
-            {
-                domain = context.domains.fh;
-            }
-            else if (quotient_name == "t_edge")
-            {
-                domain = context.domains.edge;
-            }
-            else if (quotient_name == "t_in")
-            {
-                domain = context.domains.in;
-            }
-            else if (quotient_name == "t_d" || quotient_name == "t_d_h")
-            {
-                domain = context.domains.d;
-            }
-            else if (quotient_name == "t_cat")
-            {
-                domain = context.domains.cat;
-            }
-            else if (quotient_name == "t_C")
-            {
-                domain = context.domains.c;
-            }
-            else if (quotient_name == "t_N")
-            {
-                domain = context.domains.n;
-            }
-            if (domain != nullptr && !dependency_labels.empty())
-            {
-                memo.precompute_named(dependency_labels, fh_dependency_points(domain, points));
-            }
-            values.reserve(labels.size());
             for (const auto &label : labels)
             {
-                if (const auto commitment_it = quotient_commitments.find(label);
-                    commitment_it != quotient_commitments.end())
+                if (std::find(target->begin(), target->end(), label) == target->end())
                 {
-                    if (commitment_it->second.opening_polynomial == nullptr)
-                    {
-                        throw std::runtime_error(
-                            "quotient opening material is unavailable: " + label);
-                    }
-                    std::vector<FieldElement> opened;
-                    opened.reserve(points.size());
-                    for (const auto &point : points)
-                    {
-                        opened.push_back(
-                            commitment_it->second.opening_polynomial->evaluate(point));
-                    }
-                    values.push_back(std::move(opened));
-                }
-                else
-                {
-                    values.push_back(
-                        memo.collect_named_values_from_cache({label}, points).front());
+                    target->push_back(label);
                 }
             }
         }
-        else
-        {
-            values = memo.collect_named_values(labels, points);
-        }
-        if (eval_gather_ms != nullptr)
-        {
-            *eval_gather_ms += elapsed_ms(gather_start, Clock::now());
-        }
-        if (!progress_prefix.empty())
-        {
-            progress_note(progress_prefix + ":gather:done");
-        }
-        if (metrics != nullptr && is_fh_bundle)
-        {
-            metrics->fh_open_gather_ms += elapsed_ms(gather_start, Clock::now());
-        }
-        for (std::size_t i = 0; i < labels.size(); ++i)
-        {
-            bundle.values.push_back({labels[i], values[i]});
-            bundle.value_kinds.push_back(payload_kind_for_label(context, labels[i]));
-        }
-        return bundle;
-    }
 
-} // namespace
-
-std::vector<algebra::FieldElement>
-evaluate_spilled_evaluation_polynomial_points(
-    const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
-    const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-    const std::vector<algebra::FieldElement> &points,
-    const std::vector<const algebra::DomainEvaluationWeights *> &weights)
-{
-    return evaluate_spilled_evaluation_polynomial_points_impl(
-        spilled,
-        domain,
-        points,
-        weights);
-}
-
-algebra::FieldElement evaluate_spilled_evaluation_polynomial(
-    const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
-    const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
-    const algebra::FieldElement &point,
-    const algebra::DomainEvaluationWeights &weights)
-{
-    return evaluate_spilled_evaluation_polynomial_points_impl(
-               spilled,
-               domain,
-               std::vector<algebra::FieldElement>{point},
-               std::vector<const algebra::DomainEvaluationWeights *>{&weights})
-        .front();
-}
-
-std::vector<std::vector<algebra::FieldElement>>
-evaluate_spilled_evaluation_requests(
-    const std::vector<SpilledEvaluationRequest> &requests,
-    std::size_t max_workers)
-{
-    constexpr std::size_t kWorkerCeiling = 4;
-    constexpr std::size_t kMinParallelFieldElements = 1U << 18U;
-
-    std::vector<std::vector<algebra::FieldElement>> results(requests.size());
-    if (requests.empty())
-    {
-        return results;
-    }
-
-    std::size_t bounded_work = 0;
-    std::size_t sequential_job_count = 0;
-    for (const auto &request : requests)
-    {
-        if (request.spilled == nullptr)
+        std::vector<FieldElement> fh_dependency_points(
+            const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
+            const std::vector<FieldElement> &points)
         {
-            throw std::runtime_error("spilled evaluation batch received null request");
-        }
-        if (request.domain == nullptr || request.points.size() != request.weights.size())
-        {
-            throw std::runtime_error("spilled evaluation batch received invalid point weights");
-        }
-        bool requires_sequential_scan = false;
-        for (const auto *weights : request.weights)
-        {
-            if (weights == nullptr)
+            std::vector<FieldElement> out = points;
+            out.reserve(points.size() * 2);
+            for (const auto &point : points)
             {
-                throw std::runtime_error("spilled evaluation batch received null point weights");
+                const auto rotated = point * domain->omega;
+                if (std::find(out.begin(), out.end(), rotated) == out.end())
+                {
+                    out.push_back(rotated);
+                }
             }
-            requires_sequential_scan = requires_sequential_scan || !weights->direct_index.has_value();
+            return out;
         }
-        if (!requires_sequential_scan)
-        {
-            continue;
-        }
-        ++sequential_job_count;
-        const auto remaining = kMinParallelFieldElements - bounded_work;
-        bounded_work += std::min(
-            spilled_file_value_count(*request.spilled),
-            remaining);
-    }
-    const auto available_workers = std::max<std::size_t>(
-        1, std::thread::hardware_concurrency());
-    const bool use_parallel = sequential_job_count >= 2 && bounded_work >= kMinParallelFieldElements && max_workers >= 2 && available_workers >= 2;
-    const auto worker_count = use_parallel
-                                  ? std::min({kWorkerCeiling,
-                                              max_workers,
-                                              available_workers,
-                                              requests.size()})
-                                  : std::size_t{1};
 
-    auto run_job = [&](std::size_t job_index)
-    {
-        const auto &request = requests[job_index];
-        results[job_index] =
-            evaluate_spilled_evaluation_polynomial_points_impl(
-                *request.spilled,
-                request.domain,
-                request.points,
-                request.weights);
-    };
-    if (worker_count == 1)
-    {
-        for (std::size_t job_index = 0;
-             job_index < requests.size();
-             ++job_index)
+        std::vector<std::string> multihead_edge_dependencies(const ProtocolContext &context)
         {
-            run_job(job_index);
+            std::vector<std::string> labels = {
+                "P_Q_edge_valid",
+                "P_Q_grp_new_edge",
+                "P_Q_grp_end_edge",
+                "P_Q_tbl_L",
+                "P_Q_qry_L",
+                "P_Q_tbl_R",
+                "P_Q_qry_R",
+                "P_Q_tbl_exp",
+                "P_Q_qry_exp",
+                "P_Q_tbl_ELU",
+                "P_T_L_x",
+                "P_T_L_y",
+                "P_T_range",
+                "P_T_exp_x",
+                "P_T_exp_y",
+                "P_T_ELU_x",
+                "P_T_ELU_y",
+                "P_src",
+                "P_dst",
+                "P_BiasIndex_edge",
+            };
+            auto append_label = [&](std::string label)
+            {
+                if (std::find(labels.begin(), labels.end(), label) == labels.end())
+                {
+                    labels.push_back(std::move(label));
+                }
+            };
+            auto append_prefixed = [&](const std::string &prefix, const std::vector<std::string> &suffixes)
+            {
+                for (const auto &suffix : suffixes)
+                {
+                    append_label(prefix + suffix);
+                }
+            };
+
+            const std::vector<std::string> hidden_suffixes = {
+                "R_src",
+                "Query_src",
+                "E_src_edge",
+                "E_dst_edge",
+                "H_src_star_edge",
+                "S",
+                "R_L",
+                "Table_L",
+                "Query_L",
+                "m_L",
+                "Z",
+                "Delta",
+                "M_edge",
+                "s_max",
+                "C_max",
+                "R_R",
+                "Table_R",
+                "Query_R",
+                "m_R",
+                "alpha",
+                "U",
+                "inv_edge",
+                "R_exp",
+                "Table_exp",
+                "Query_exp",
+                "m_exp",
+                "PSQ",
+                "w_psq",
+                "T_psq_edge",
+                "R_t",
+                "Query_t",
+                "R_ELU",
+                "Table_ELU",
+                "Query_ELU",
+                "m_ELU",
+                "H_agg_pre_flat",
+                "H_agg_flat",
+                "R_dst",
+                "Query_dst",
+                "Sum_edge",
+                "H_agg_star_edge",
+            };
+            const std::vector<std::string> division_suffixes = {
+                "Div_Active",
+                "Div_X",
+                "Div_D",
+                "Div_Y",
+                "Div_Sigma",
+                "Div_Zero",
+                "Div_A",
+                "Div_A_inv",
+                "Div_D_inv",
+                "Div_Q",
+                "Div_R",
+                "Div_Delta",
+            };
+            auto append_division_range_dependencies = [&](const std::string &division_prefix)
+            {
+                const auto limb_count = signed_division_limb_count(context.config.range_bits);
+                for (const auto *value_name : {"A", "DMinus1", "Q", "R", "Delta"})
+                {
+                    for (std::size_t limb = 0; limb < limb_count; ++limb)
+                    {
+                        append_label(signed_division_limb_label(
+                            division_prefix, value_name, limb));
+                        for (const auto *column : {"Table", "Query", "m", "J_tbl", "J_qry", "R"})
+                        {
+                            append_label(signed_division_range_label(
+                                division_prefix, value_name, limb, column));
+                        }
+                    }
+                }
+            };
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+                for (std::size_t head_index = 0;
+                     head_index < context.model.hidden_layers[layer_index].heads.size();
+                     ++head_index)
+                {
+                    const auto prefix = hidden_head_prefix(layer_index, head_index) + "_";
+                    append_prefixed(prefix, hidden_suffixes);
+                    append_prefixed(prefix, division_suffixes);
+                    append_division_range_dependencies(prefix + "Div_");
+                    append_label(hidden_q_nd_h_selector_label(layer_index));
+                }
+
+            const std::vector<std::string> output_suffixes = {
+                "R_src",
+                "Query_src",
+                "E_src_edge",
+                "E_dst_edge",
+                "S",
+                "R_L",
+                "Table_L",
+                "Query_L",
+                "m_L",
+                "Z",
+                "Delta",
+                "M_edge",
+                "s_max",
+                "C_max",
+                "R_R",
+                "Table_R",
+                "Query_R",
+                "m_R",
+                "alpha",
+                "U",
+                "inv_edge",
+                "R_exp",
+                "Table_exp",
+                "Query_exp",
+                "m_exp",
+                "PSQ",
+                "w",
+                "T_edge",
+                "R_t",
+                "Query_t",
+                "R_dst",
+                "Query_dst",
+                "Sum_edge",
+                "Y_star_edge",
+                "Y_pre_flat",
+                "Bias_flat",
+                "Y_flat",
+                "Bind_a",
+                "Bind_b",
+                "Bind_Acc",
+            };
+            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+            {
+                append_prefixed(output_head_prefix(head_index) + "_", output_suffixes);
+                append_prefixed(output_head_prefix(head_index) + "_", division_suffixes);
+                append_division_range_dependencies(
+                    output_head_prefix(head_index) + "_Div_");
+                append_label("P_Q_div_out" + std::to_string(head_index));
+                const auto metadata = build_binding_relation_metadata(context);
+                const auto relation_id =
+                    "bind:output:" + std::to_string(head_index);
+                const auto relation = std::find_if(
+                    metadata.begin(), metadata.end(),
+                    [&](const BindingRelationMeta &candidate)
+                    { return candidate.relation_id == relation_id; });
+                if (relation == metadata.end() || relation->coefficient_basis_relations.size() != 1)
+                    throw std::runtime_error(
+                        "edge quotient dependency registry is missing coefficient basis metadata");
+                const auto &basis =
+                    relation->coefficient_basis_relations.front();
+                for (const auto &chunk : basis.chunks)
+                {
+                    append_label(chunk.object_id);
+                    for (const auto *region : {
+                             "active", "semantic", "gap", "tail"})
+                        append_label(output_bias_basis_region_selector_label(
+                            head_index, chunk.chunk_index, region));
+                }
+                // Gamma powers are a verifier-reconstructible virtual column,
+                // not a committed/opened Pi_bind object.  The prover keeps the
+                // interpolant only as quotient-construction material.
+                append_label(basis.power_object);
+                for (const auto &chunk : basis.chunks)
+                    append_label(chunk.accumulator_object);
+            }
+            for (const auto &suffix : division_suffixes)
+            {
+                append_label("P_avg_" + suffix);
+            }
+            append_division_range_dependencies("P_avg_Div_");
+            append_label("P_Q_div_avg");
+            append_label("P_avg_Bind_a");
+            append_label("P_avg_Bind_b");
+            append_label("P_avg_Bind_Acc");
+            return labels;
         }
-        return results;
+
+        std::vector<std::string> multihead_in_dependencies(const ProtocolContext &context)
+        {
+            std::vector<std::string> labels = domain_opening_labels(context, "in");
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+                append_unique_labels(
+                    &labels, {hidden_q_in_selector_label(layer_index)});
+            return labels;
+        }
+
+        std::vector<std::string> multihead_d_dependencies(const ProtocolContext &context)
+        {
+            std::vector<std::string> labels = domain_opening_labels(context, "d");
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+                append_unique_labels(
+                    &labels, {hidden_q_d_h_selector_label(layer_index)});
+            return labels;
+        }
+
+        std::vector<std::string> multihead_cat_dependencies(const ProtocolContext &context)
+        {
+            std::vector<std::string> labels = domain_opening_labels(context, "cat");
+            for (std::size_t layer_index = 0;
+                 layer_index < context.model.hidden_layers.size();
+                 ++layer_index)
+                append_unique_labels(
+                    &labels, {hidden_q_cat_selector_label(layer_index)});
+            append_unique_labels(&labels, {output_q_cat_selector_label()});
+            return labels;
+        }
+
+        std::vector<std::string> multihead_c_dependencies(const ProtocolContext &context)
+        {
+            std::vector<std::string> labels = domain_opening_labels(context, "C");
+            append_unique_labels(
+                &labels,
+                {"P_Q_C_valid", "P_BiasIndex_C", "P_BiasMultiplicity_C"});
+            return labels;
+        }
+
+        std::vector<std::string> multihead_n_dependencies(const ProtocolContext &context)
+        {
+            std::vector<std::string> labels = domain_opening_labels(context, "N");
+            append_unique_labels(
+                &labels,
+                {"P_I", "P_Q_N", "P_AggBind_index_N",
+                 "P_AggBind_m_src", "P_AggBind_m_dst"});
+            return labels;
+        }
+
+        std::vector<std::string> quotient_dependency_labels(
+            const ProtocolContext &context,
+            const std::string &quotient_name)
+        {
+            if (quotient_name == "t_FH")
+                return quotient_dependencies_fh();
+            if (quotient_name == "t_edge")
+                return multihead_edge_dependencies(context);
+            if (quotient_name == "t_in")
+                return multihead_in_dependencies(context);
+            if (quotient_name == "t_d_h")
+                return multihead_d_dependencies(context);
+            if (quotient_name == "t_cat")
+                return multihead_cat_dependencies(context);
+            if (quotient_name == "t_C")
+                return multihead_c_dependencies(context);
+            if (quotient_name == "t_N")
+                return multihead_n_dependencies(context);
+            return {};
+        }
+
+        std::vector<std::string> quotient_materialization_dependency_labels(
+            const ProtocolContext &context,
+            const std::string &quotient_name)
+        {
+            auto labels =
+                quotient_dependency_labels(context, quotient_name);
+            if (quotient_name != "t_FH" || !full_graph_feature_identity_enabled(context))
+            {
+                return labels;
+            }
+            static const std::array<std::string_view, 7>
+                identically_cancelled_dependencies = {
+                    "P_H",
+                    "P_T_H",
+                    "P_Row_feat_tbl",
+                    "P_Col_feat_tbl",
+                    "P_Row_feat_qry",
+                    "P_Col_feat_qry",
+                    "P_I_feat_qry",
+            };
+            std::erase_if(
+                labels,
+                [&](const std::string &label)
+                {
+                    return std::find(
+                               identically_cancelled_dependencies.begin(),
+                               identically_cancelled_dependencies.end(),
+                               label) != identically_cancelled_dependencies.end();
+                });
+            return labels;
+        }
+
+        DomainOpeningBundle make_bundle(
+            const ProtocolContext &context,
+            const TraceArtifacts &trace,
+            EvaluationMemoization &memo,
+            const std::unordered_map<std::string, Commitment> &quotient_commitments,
+            const std::vector<std::string> &labels,
+            const std::vector<FieldElement> &points,
+            RunMetrics *metrics = nullptr,
+            double *eval_gather_ms = nullptr,
+            const std::string &progress_prefix = "")
+        {
+            // 一个 bundle 对应 formal schema 中某个工作域的一次 opening。
+            // 这里必须严格复用 `domain_opening_labels()` 给出的标签顺序，
+            // 因为 prover 组包、verifier 取值和 proof_size_bytes 统计都依赖同一份 shape。
+            DomainOpeningBundle bundle;
+            bundle.points = points;
+            const auto commitments = collect_commitments(trace, quotient_commitments, labels);
+            const auto gather_start = Clock::now();
+            std::string quotient_name;
+            for (const auto &label : labels)
+            {
+                if (!label.empty() && label[0] == 't')
+                {
+                    quotient_name = label;
+                    break;
+                }
+            }
+            const bool is_fh_bundle = quotient_name == "t_FH";
+            std::vector<std::vector<FieldElement>> values;
+            if (!progress_prefix.empty())
+            {
+                progress_note(progress_prefix + ":gather:start");
+            }
+            if (!quotient_name.empty())
+            {
+                const auto dependency_labels = quotient_dependency_labels(context, quotient_name);
+                std::shared_ptr<algebra::RootOfUnityDomain> domain;
+                if (quotient_name == "t_FH")
+                {
+                    domain = context.domains.fh;
+                }
+                else if (quotient_name == "t_edge")
+                {
+                    domain = context.domains.edge;
+                }
+                else if (quotient_name == "t_in")
+                {
+                    domain = context.domains.in;
+                }
+                else if (quotient_name == "t_d" || quotient_name == "t_d_h")
+                {
+                    domain = context.domains.d;
+                }
+                else if (quotient_name == "t_cat")
+                {
+                    domain = context.domains.cat;
+                }
+                else if (quotient_name == "t_C")
+                {
+                    domain = context.domains.c;
+                }
+                else if (quotient_name == "t_N")
+                {
+                    domain = context.domains.n;
+                }
+                if (domain != nullptr && !dependency_labels.empty())
+                {
+                    memo.precompute_named(dependency_labels, fh_dependency_points(domain, points));
+                }
+                values.reserve(labels.size());
+                for (const auto &label : labels)
+                {
+                    if (const auto commitment_it = quotient_commitments.find(label);
+                        commitment_it != quotient_commitments.end())
+                    {
+                        if (commitment_it->second.opening_polynomial == nullptr)
+                        {
+                            throw std::runtime_error(
+                                "quotient opening material is unavailable: " + label);
+                        }
+                        std::vector<FieldElement> opened;
+                        opened.reserve(points.size());
+                        for (const auto &point : points)
+                        {
+                            opened.push_back(
+                                commitment_it->second.opening_polynomial->evaluate(point));
+                        }
+                        values.push_back(std::move(opened));
+                    }
+                    else
+                    {
+                        values.push_back(
+                            memo.collect_named_values_from_cache({label}, points).front());
+                    }
+                }
+            }
+            else
+            {
+                values = memo.collect_named_values(labels, points);
+            }
+            if (eval_gather_ms != nullptr)
+            {
+                *eval_gather_ms += elapsed_ms(gather_start, Clock::now());
+            }
+            if (!progress_prefix.empty())
+            {
+                progress_note(progress_prefix + ":gather:done");
+            }
+            if (metrics != nullptr && is_fh_bundle)
+            {
+                metrics->fh_open_gather_ms += elapsed_ms(gather_start, Clock::now());
+            }
+            for (std::size_t i = 0; i < labels.size(); ++i)
+            {
+                bundle.values.push_back({labels[i], values[i]});
+                bundle.value_kinds.push_back(payload_kind_for_label(context, labels[i]));
+            }
+            return bundle;
+        }
+
+    } // namespace
+
+    std::vector<algebra::FieldElement>
+    evaluate_spilled_evaluation_polynomial_points(
+        const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
+        const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
+        const std::vector<algebra::FieldElement> &points,
+        const std::vector<const algebra::DomainEvaluationWeights *> &weights)
+    {
+        return evaluate_spilled_evaluation_polynomial_points_impl(
+            spilled,
+            domain,
+            points,
+            weights);
     }
 
-    std::atomic<std::size_t> next_job{0};
-    std::vector<std::future<void>> workers;
-    workers.reserve(worker_count);
-    for (std::size_t worker = 0; worker < worker_count; ++worker)
+    algebra::FieldElement evaluate_spilled_evaluation_polynomial(
+        const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
+        const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
+        const algebra::FieldElement &point,
+        const algebra::DomainEvaluationWeights &weights)
     {
-        workers.push_back(std::async(std::launch::async, [&]()
-                                     {
+        return evaluate_spilled_evaluation_polynomial_points_impl(
+                   spilled,
+                   domain,
+                   std::vector<algebra::FieldElement>{point},
+                   std::vector<const algebra::DomainEvaluationWeights *>{&weights})
+            .front();
+    }
+
+    std::vector<std::vector<algebra::FieldElement>>
+    evaluate_spilled_evaluation_requests(
+        const std::vector<SpilledEvaluationRequest> &requests,
+        std::size_t max_workers)
+    {
+        constexpr std::size_t kWorkerCeiling = 4;
+        constexpr std::size_t kMinParallelFieldElements = 1U << 18U;
+
+        std::vector<std::vector<algebra::FieldElement>> results(requests.size());
+        if (requests.empty())
+        {
+            return results;
+        }
+
+        std::size_t bounded_work = 0;
+        std::size_t sequential_job_count = 0;
+        for (const auto &request : requests)
+        {
+            if (request.spilled == nullptr)
+            {
+                throw std::runtime_error("spilled evaluation batch received null request");
+            }
+            if (request.domain == nullptr || request.points.size() != request.weights.size())
+            {
+                throw std::runtime_error("spilled evaluation batch received invalid point weights");
+            }
+            bool requires_sequential_scan = false;
+            for (const auto *weights : request.weights)
+            {
+                if (weights == nullptr)
+                {
+                    throw std::runtime_error("spilled evaluation batch received null point weights");
+                }
+                requires_sequential_scan = requires_sequential_scan || !weights->direct_index.has_value();
+            }
+            if (!requires_sequential_scan)
+            {
+                continue;
+            }
+            ++sequential_job_count;
+            const auto remaining = kMinParallelFieldElements - bounded_work;
+            bounded_work += std::min(
+                spilled_file_value_count(*request.spilled),
+                remaining);
+        }
+        const auto available_workers = std::max<std::size_t>(
+            1, std::thread::hardware_concurrency());
+        const bool use_parallel = sequential_job_count >= 2 && bounded_work >= kMinParallelFieldElements && max_workers >= 2 && available_workers >= 2;
+        const auto worker_count = use_parallel
+                                      ? std::min({kWorkerCeiling,
+                                                  max_workers,
+                                                  available_workers,
+                                                  requests.size()})
+                                      : std::size_t{1};
+
+        auto run_job = [&](std::size_t job_index)
+        {
+            const auto &request = requests[job_index];
+            results[job_index] =
+                evaluate_spilled_evaluation_polynomial_points_impl(
+                    *request.spilled,
+                    request.domain,
+                    request.points,
+                    request.weights);
+        };
+        if (worker_count == 1)
+        {
+            for (std::size_t job_index = 0;
+                 job_index < requests.size();
+                 ++job_index)
+            {
+                run_job(job_index);
+            }
+            return results;
+        }
+
+        std::atomic<std::size_t> next_job{0};
+        std::vector<std::future<void>> workers;
+        workers.reserve(worker_count);
+        for (std::size_t worker = 0; worker < worker_count; ++worker)
+        {
+            workers.push_back(std::async(std::launch::async, [&]()
+                                         {
                 while (true)
                 {
                     const auto job_index = next_job.fetch_add(1);
@@ -14096,1805 +14066,1771 @@ evaluate_spilled_evaluation_requests(
                     }
                     run_job(job_index);
                 } }));
-    }
-    std::exception_ptr first_error;
-    for (auto &worker : workers)
-    {
-        try
-        {
-            worker.get();
         }
-        catch (...)
+        std::exception_ptr first_error;
+        for (auto &worker : workers)
         {
-            if (first_error == nullptr)
+            try
             {
-                first_error = std::current_exception();
+                worker.get();
             }
-        }
-    }
-    if (first_error != nullptr)
-    {
-        std::rethrow_exception(first_error);
-    }
-    return results;
-}
-
-// 构建一次 formal run 的静态上下文，产出数据集、模型、工作域、公开列与静态承诺。
-// 这里禁止注入任何依赖单次 proof 的 witness 或挑战状态。
-struct StaticContextCachePayload
-{
-    ProtocolContext context;
-    // The cache key is retained in the payload so every hit can re-check
-    // the current private resource identity instead of trusting a map
-    // lookup alone.
-    std::string identity;
-    std::string compiler_artifact_identity;
-};
-
-std::string static_context_compiler_artifact_identity(
-    const ProtocolContext &context)
-{
-    if (context.compiler_artifact == nullptr || context.validated_compiler_artifact_identity != context.compiler_artifact.get())
-        return "missing";
-    return "sha256:" + cache_sha256_hex(
-                           context.compiler_artifact->protocol_canonical_bytes +
-                           context.compiler_artifact->instance_canonical_bytes);
-}
-
-ProtocolContext build_context(
-    const util::AppConfig &config,
-    RunMetrics *metrics,
-    bool retain_static_context_for_reuse)
-{
-    // Resolve the registered scale chain before cache lookup so every
-    // context identity includes the complete typed chain, not only an ID.
-    auto canonical_config = config;
-    canonical_config.quantization = util::canonical_quantization_scale_chain(
-        config.quant_cfg_id,
-        config.hidden_profile,
-        config.K_out,
-        (std::filesystem::path(config.project_root) / "configs/quantization_scale_chain.cfg").string());
-    static std::mutex cache_mutex;
-    static std::unordered_map<std::string, StaticContextCachePayload> cache;
-    // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
-    const bool allow_static_context_cache =
-        canonical_config.batching_rule != "multi_graph_batch";
-
-    const auto cache_lookup_start = Clock::now();
-    const auto cache_key = context_cache_key(canonical_config);
-    if (allow_static_context_cache)
-    {
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        if (const auto it = cache.find(cache_key); it != cache.end())
-        {
-            const auto &payload = it->second;
-            const bool compiler_identity_ok =
-                payload.compiler_artifact_identity != "missing" &&
-                payload.compiler_artifact_identity ==
-                    static_context_compiler_artifact_identity(payload.context);
-            if (payload.identity == cache_key && compiler_identity_ok)
+            catch (...)
             {
-                // 这里只缓存静态上下文：工作域、SRS、公开列、静态承诺和模型数据。
-                // 每次 proof 的 witness 与挑战派生值都必须重新生成。
-                auto node = cache.extract(it);
-                auto context = std::move(node.mapped().context);
-                context.config = canonical_config;
-                if (metrics != nullptr)
+                if (first_error == nullptr)
                 {
-                    metrics->load_static_ms += elapsed_ms(cache_lookup_start, Clock::now());
-                    append_note(metrics, "static_context_cache=hit_identity_revalidated");
+                    first_error = std::current_exception();
                 }
-                return context;
             }
-            // A same-path replacement, missing resource, or corrupted
-            // cached payload is a hard miss. Never expose a cached static
-            // context to a new proof statement.
-            cache.erase(it);
-            append_note(metrics, "static_context_cache=stale_identity_rejected");
         }
-    }
-
-    append_note(metrics, "static_context_cache=miss");
-    ProtocolContext context;
-    context.config = canonical_config;
-    // All model commitments below use the canonical, typed,
-    // layer/head-aware scale chain selected above.  Context construction
-    // selects one typed scale chain for the formal registry; no
-    // unvalidated scale source can enter this path.
-    const auto &scales = context.config.quantization;
-
-    progress_note("context:load_static:start");
-    auto start = Clock::now();
-
-    // 先把数据集和 checkpoint bundle 收束成 formal shape；
-    // 这一段还不接触任何 challenge 或 witness。
-    context.dataset = data::load_dataset(canonical_config);
-    context.local =
-        data::normalize_graph_input(
-            context.dataset,
-            canonical_config);
-    data::validate_input_feature_views(
-        context.dataset,
-        context.local,
-        scales.s_input,
-        canonical_config.input_preprocess_id);
-
-    if (config.checkpoint_bundle.empty())
-    {
-        throw std::runtime_error(
-            "formal model route requires checkpoint_bundle; "
-            "refusing to fall back to synthetic parameters");
-    }
-
-    const auto checkpoint_root =
-        resolve_project_path(
-            config.project_root,
-            config.checkpoint_bundle);
-
-    context.model =
-        model::load_checkpoint_bundle_parameters(
-            checkpoint_root.string());
-
-    if (context.model.quantization_scale_chain != scales.canonical_serialization())
-    {
-        throw std::runtime_error(
-            "checkpoint bundle quantization scale chain conflicts with formal config");
-    }
-    if (context.model.input_preprocess_id != canonical_config.input_preprocess_id)
-    {
-        throw std::runtime_error(
-            "checkpoint bundle input_preprocess_id conflicts with formal config");
-    }
-
-    append_note(
-        metrics,
-        "model_source=checkpoint_bundle");
-
-    std::size_t formal_hidden_head_count = 0;
-    for (const auto &layer : context.model.hidden_layers)
-        formal_hidden_head_count += layer.heads.size();
-    append_note(
-        metrics,
-        "hidden_head_count=" +
-            std::to_string(formal_hidden_head_count));
-
-    std::string family_reason;
-    if (!model::hidden_family_dimension_chain_is_valid(context.model, &family_reason))
-    {
-        throw std::runtime_error("formal family shape is invalid: " + family_reason);
-    }
-    bool hidden_profile_matches = context.model.hidden_profile.size() == config.hidden_profile.size();
-    for (std::size_t i = 0; hidden_profile_matches && i < config.hidden_profile.size(); ++i)
-    {
-        hidden_profile_matches =
-            context.model.hidden_profile[i].head_count == config.hidden_profile[i].head_count && context.model.hidden_profile[i].head_dim == config.hidden_profile[i].head_dim;
-    }
-    if (context.model.L != config.layer_count)
-    {
-        throw std::runtime_error(
-            "config L=" + std::to_string(config.layer_count) + " conflicts with model L=" + std::to_string(context.model.L));
-    }
-    if (!hidden_profile_matches)
-    {
-        throw std::runtime_error("config hidden_profile conflicts with checkpoint manifest hidden_profile");
-    }
-    if (!config.d_in_profile.empty() && context.model.d_in_profile != config.d_in_profile)
-    {
-        throw std::runtime_error("config d_in_profile conflicts with checkpoint manifest d_in_profile");
-    }
-    if (context.model.K_out != config.K_out)
-    {
-        throw std::runtime_error(
-            "config K_out=" + std::to_string(config.K_out) + " conflicts with model K_out=" + std::to_string(context.model.K_out));
-    }
-    if (context.model.C != config.num_classes)
-    {
-        throw std::runtime_error(
-            "config num_classes=" + std::to_string(config.num_classes) + " conflicts with model C=" + std::to_string(context.model.C));
-    }
-    if (context.model.model_arch_id != config.model_arch_id)
-    {
-        throw std::runtime_error(
-            "config model_arch_id conflicts with checkpoint manifest model_arch_id");
-    }
-    if (context.model.model_param_id != config.model_param_id)
-    {
-        throw std::runtime_error(
-            "config model_param_id conflicts with checkpoint manifest model_param_id");
-    }
-    if (context.model.quant_cfg_id != config.quant_cfg_id)
-    {
-        throw std::runtime_error(
-            "config quant_cfg_id conflicts with checkpoint manifest quant_cfg_id");
-    }
-    if (context.model.static_table_id != config.static_table_id)
-    {
-        throw std::runtime_error(
-            "config static_table_id conflicts with checkpoint manifest static_table_id");
-    }
-    if (context.model.degree_bound_id != config.degree_bound_id)
-    {
-        throw std::runtime_error(
-            "config degree_bound_id conflicts with checkpoint manifest degree_bound_id");
-    }
-    auto end = Clock::now();
-    if (metrics != nullptr)
-    {
-        metrics->load_static_ms += elapsed_ms(start, end);
-    }
-    progress_note("context:load_static:done");
-
-    progress_note("context:domains:start");
-    start = Clock::now();
-    // 工作域大小一次性按特征表、边域、隐藏维和查表规模展开，后面 trace / quotient / opening 共用这套布局。
-    const std::size_t fh_size = algebra::next_power_of_two(
-        [&]()
+        if (first_error != nullptr)
         {
-            const auto checked_product = [](std::size_t left,
-                                            std::size_t right,
-                                            std::string_view label)
-            {
-                if (right != 0 && left > std::numeric_limits<std::size_t>::max() / right)
-                    throw std::runtime_error(
-                        "feature table size overflows size_t: " + std::string(label));
-                return left * right;
-            };
-            return std::max(
-                       checked_product(
-                           context.dataset.num_nodes,
-                           context.dataset.num_features,
-                           "dataset"),
-                       checked_product(
-                           context.local.num_nodes,
-                           context.local.num_features,
-                           "local")) +
-                   2;
-        }());
-    const auto dataset_feature_count = context.dataset.num_nodes * context.dataset.num_features;
-    const std::size_t d_h = hidden_head_width(context.model);
-    const std::size_t d_cat = concat_width(context.model);
-    // The in-domain is a shared power-of-two capacity.  It must not be
-    // confused with any formal selector: each Q_in below uses its own
-    // layer.input_dim support.
-    const std::size_t in_domain_capacity =
-        std::max<std::size_t>(
-            context.local.num_features,
-            model::max_hidden_input_dim(context.model));
-    const auto minimum_edge_rows = minimum_edge_trace_length(
-        context.local.num_nodes,
-        context.local.edges.size(),
-        d_h,
-        context.local.num_classes);
-    // The same pure planner drives canonical table generation and this
-    // pre-SRS domain calculation.  In particular, ExpMap rows are derived
-    // from the certified LReLU output bound; T_range remains exactly 2^B.
-    const auto table_shape = plan_canonical_static_table_shape(context);
-    const std::size_t edge_size = algebra::next_power_of_two(
-        std::max<std::size_t>({
-            minimum_edge_rows,
-            table_shape.lrelu_table_size,
-            table_shape.elu_table_size,
-            table_shape.exp_table_size,
-            table_shape.range_table_size,
-        }) +
-        2);
-    const std::size_t in_size = algebra::next_power_of_two(in_domain_capacity + 2);
-    const std::size_t d_size = algebra::next_power_of_two(d_h + 2);
-    const std::size_t cat_size = algebra::next_power_of_two(d_cat + 2);
-    const std::size_t c_size = algebra::next_power_of_two(context.local.num_classes + 2);
-    const std::size_t n_size = algebra::next_power_of_two(context.local.num_nodes + 2);
+            std::rethrow_exception(first_error);
+        }
+        return results;
+    }
 
-    context.domains = WorkDomains{
-        .fh = algebra::RootOfUnityDomain::create("FH", fh_size),
-        .edge = algebra::RootOfUnityDomain::create("edge", edge_size),
-        .in = algebra::RootOfUnityDomain::create("in", in_size),
-        .d = algebra::RootOfUnityDomain::create("d", d_size),
-        .cat = algebra::RootOfUnityDomain::create("cat", cat_size),
-        .c = algebra::RootOfUnityDomain::create("C", c_size),
-        .n = algebra::RootOfUnityDomain::create("N", n_size),
-        .hidden_layers = {},
-        .output_head = std::nullopt,
+    // 构建一次 formal run 的静态上下文，产出数据集、模型、工作域、公开列与静态承诺。
+    // 这里禁止注入任何依赖单次 proof 的 witness 或挑战状态。
+    struct StaticContextCachePayload
+    {
+        ProtocolContext context;
+        // The cache key is retained in the payload so every hit can re-check
+        // the current private resource identity instead of trusting a map
+        // lookup alone.
+        std::string identity;
+        std::string compiler_artifact_identity;
     };
-    context.domains.hidden_layers.resize(
-        context.model.hidden_layers.size());
-    for (std::size_t layer_index = 0;
-         layer_index < context.model.hidden_layers.size();
-         ++layer_index)
-    {
-        auto &layer_domains = context.domains.hidden_layers[layer_index];
-        layer_domains.resize(
-            context.model.hidden_layers[layer_index].heads.size(),
-            AttentionHeadDomains{
-                .in = context.domains.in,
-                .d = context.domains.d,
-            });
-    }
-    context.domains.output_head = AttentionHeadDomains{.in = context.domains.cat, .d = context.domains.c};
-    end = Clock::now();
-    if (metrics != nullptr)
-    {
-        metrics->fft_plan_ms += elapsed_ms(start, end);
-    }
-    progress_note("context:domains:done");
 
-    progress_note("context:srs:start");
-    start = Clock::now();
-    // Every registered quotient is materialized on a 4|D| coset below.
-    // Check the complete coefficient resource here so an undersized SRS
-    // fails during context construction rather than midway through prove.
-    const std::size_t required_coefficient_count = std::max<std::size_t>({
-        fh_size * 4,
-        edge_size * 4,
-        in_size * 4,
-        d_size * 4,
-        cat_size * 4,
-        c_size * 4,
-        n_size * 4,
-    });
-    context.kzg = crypto::KZG::load_keys_for_domains(
-        resolve_project_path(config.project_root, config.srs_path).string(),
-        config.srs_type,
-        config.srs_id,
+    std::string static_context_compiler_artifact_identity(
+        const ProtocolContext &context)
+    {
+        if (context.compiler_artifact == nullptr || context.validated_compiler_artifact_identity != context.compiler_artifact.get())
+            return "missing";
+        return "sha256:" + cache_sha256_hex(
+                               context.compiler_artifact->protocol_canonical_bytes +
+                               context.compiler_artifact->instance_canonical_bytes);
+    }
+
+    ProtocolContext build_context(
+        const util::AppConfig &config,
+        RunMetrics *metrics,
+        bool retain_static_context_for_reuse)
+    {
+        // Resolve the registered scale chain before cache lookup so every
+        // context identity includes the complete typed chain, not only an ID.
+        auto canonical_config = config;
+        canonical_config.quantization = util::canonical_quantization_scale_chain(
+            config.quant_cfg_id,
+            config.hidden_profile,
+            config.K_out,
+            (std::filesystem::path(config.project_root) / "configs/quantization_scale_chain.cfg").string());
+        static std::mutex cache_mutex;
+        static std::unordered_map<std::string, StaticContextCachePayload> cache;
+        // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
+        const bool allow_static_context_cache =
+            canonical_config.batching_rule != "multi_graph_batch";
+
+        const auto cache_lookup_start = Clock::now();
+        const auto cache_key = context_cache_key(canonical_config);
+        if (allow_static_context_cache)
         {
-            {"FH", fh_size},
-            {"edge", edge_size},
-            {"in", in_size},
-            {"d", d_size},
-            {"cat", cat_size},
-            {"C", c_size},
-            {"N", n_size},
-        },
-        required_coefficient_count);
-    std::string envelope_reason;
-    if (!instance_within_authenticated_max_envelope(
-            context, &envelope_reason))
-        throw std::runtime_error(envelope_reason);
-    end = Clock::now();
-    if (metrics != nullptr)
-    {
-        metrics->srs_prepare_ms += elapsed_ms(start, end);
-    }
-    progress_note("context:srs:done");
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            if (const auto it = cache.find(cache_key); it != cache.end())
+            {
+                const auto &payload = it->second;
+                const bool compiler_identity_ok =
+                    payload.compiler_artifact_identity != "missing" &&
+                    payload.compiler_artifact_identity ==
+                        static_context_compiler_artifact_identity(payload.context);
+                if (payload.identity == cache_key && compiler_identity_ok)
+                {
+                    // 这里只缓存静态上下文：工作域、SRS、公开列、静态承诺和模型数据。
+                    // 每次 proof 的 witness 与挑战派生值都必须重新生成。
+                    auto node = cache.extract(it);
+                    auto context = std::move(node.mapped().context);
+                    context.config = canonical_config;
+                    if (metrics != nullptr)
+                    {
+                        metrics->load_static_ms += elapsed_ms(cache_lookup_start, Clock::now());
+                        append_note(metrics, "static_context_cache=hit_identity_revalidated");
+                    }
+                    return context;
+                }
+                // A same-path replacement, missing resource, or corrupted
+                // cached payload is a hard miss. Never expose a cached static
+                // context to a new proof statement.
+                cache.erase(it);
+                append_note(metrics, "static_context_cache=stale_identity_rejected");
+            }
+        }
 
-    progress_note("context:public_static:start");
-    start = Clock::now();
-    // 这里开始布置公开列、静态表和静态承诺；它们会直接进入 transcript 与 verifier 的公共视图。
-    // The canonical producer lives in the schema module and is also used
-    // by the independent verifier registration loader.  Keeping one
-    // producer ensures that a table with the right shape cannot diverge in
-    // one row from the table that was formally generated and committed.
-    context.tables = build_canonical_static_tables(context);
-    std::string static_table_reason;
-    if (!validate_static_tables(context, &static_table_reason))
-        throw std::runtime_error(
-            "canonical static table validation failed: " + static_table_reason);
+        append_note(metrics, "static_context_cache=miss");
+        ProtocolContext context;
+        context.config = canonical_config;
+        // All model commitments below use the canonical, typed,
+        // layer/head-aware scale chain selected above.  Context construction
+        // selects one typed scale chain for the formal registry; no
+        // unvalidated scale source can enter this path.
+        const auto &scales = context.config.quantization;
 
-    const auto edge_valid = build_selector(context.local.edges.size(), edge_size);
+        progress_note("context:load_static:start");
+        auto start = Clock::now();
 
-    const auto q_new_edge = q_new_selector(context.local.edges, edge_size);
-    const auto q_end_edge = q_end_selector(context.local.edges, edge_size);
-    const auto q_graph_new_edge = q_graph_new_selector(context.local.edges, edge_size);
-    const auto q_graph_end_edge = q_graph_end_selector(context.local.edges, edge_size);
-    const auto q_grp_new_edge = q_group_selector(q_graph_new_edge, q_new_edge);
-    const auto q_grp_end_edge = q_group_selector(q_graph_end_edge, q_end_edge);
+        // 先把数据集和 checkpoint bundle 收束成 formal shape；
+        // 这一段还不接触任何 challenge 或 witness。
+        context.dataset = data::load_dataset(canonical_config);
+        context.local =
+            data::normalize_graph_input(
+                context.dataset,
+                canonical_config);
+        data::validate_input_feature_views(
+            context.dataset,
+            context.local,
+            scales.s_input,
+            canonical_config.input_preprocess_id);
 
-    add_public_poly(
-        context,
-        "P_I",
-        make_shared_eval_poly("P_I", ids_to_field(context.local.absolute_ids, n_size), context.domains.n));
-    add_public_poly(
-        context,
-        "P_src",
-        make_shared_eval_poly("P_src", edge_component(context.local.edges, edge_size, true), context.domains.edge));
-    add_public_poly(
-        context,
-        "P_dst",
-        make_shared_eval_poly("P_dst", edge_component(context.local.edges, edge_size, false), context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_new_edge",
-        make_shared_eval_poly("P_Q_new_edge", q_new_edge, context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_end_edge",
-        make_shared_eval_poly("P_Q_end_edge", q_end_edge, context.domains.edge));
-    add_public_poly(
-        context,
-        "P_node_gid",
-        make_shared_eval_poly(
+        if (config.checkpoint_bundle.empty())
+        {
+            throw std::runtime_error(
+                "formal model route requires checkpoint_bundle; "
+                "refusing to fall back to synthetic parameters");
+        }
+
+        const auto checkpoint_root =
+            resolve_project_path(
+                config.project_root,
+                config.checkpoint_bundle);
+
+        context.model =
+            model::load_checkpoint_bundle_parameters(
+                checkpoint_root.string());
+
+        if (context.model.quantization_scale_chain != scales.canonical_serialization())
+        {
+            throw std::runtime_error(
+                "checkpoint bundle quantization scale chain conflicts with formal config");
+        }
+        if (context.model.input_preprocess_id != canonical_config.input_preprocess_id)
+        {
+            throw std::runtime_error(
+                "checkpoint bundle input_preprocess_id conflicts with formal config");
+        }
+
+        append_note(
+            metrics,
+            "model_source=checkpoint_bundle");
+
+        std::size_t formal_hidden_head_count = 0;
+        for (const auto &layer : context.model.hidden_layers)
+            formal_hidden_head_count += layer.heads.size();
+        append_note(
+            metrics,
+            "hidden_head_count=" +
+                std::to_string(formal_hidden_head_count));
+
+        std::string family_reason;
+        if (!model::hidden_family_dimension_chain_is_valid(context.model, &family_reason))
+        {
+            throw std::runtime_error("formal family shape is invalid: " + family_reason);
+        }
+        bool hidden_profile_matches = context.model.hidden_profile.size() == config.hidden_profile.size();
+        for (std::size_t i = 0; hidden_profile_matches && i < config.hidden_profile.size(); ++i)
+        {
+            hidden_profile_matches =
+                context.model.hidden_profile[i].head_count == config.hidden_profile[i].head_count && context.model.hidden_profile[i].head_dim == config.hidden_profile[i].head_dim;
+        }
+        if (context.model.L != config.layer_count)
+        {
+            throw std::runtime_error(
+                "config L=" + std::to_string(config.layer_count) + " conflicts with model L=" + std::to_string(context.model.L));
+        }
+        if (!hidden_profile_matches)
+        {
+            throw std::runtime_error("config hidden_profile conflicts with checkpoint manifest hidden_profile");
+        }
+        if (!config.d_in_profile.empty() && context.model.d_in_profile != config.d_in_profile)
+        {
+            throw std::runtime_error("config d_in_profile conflicts with checkpoint manifest d_in_profile");
+        }
+        if (context.model.K_out != config.K_out)
+        {
+            throw std::runtime_error(
+                "config K_out=" + std::to_string(config.K_out) + " conflicts with model K_out=" + std::to_string(context.model.K_out));
+        }
+        if (context.model.C != config.num_classes)
+        {
+            throw std::runtime_error(
+                "config num_classes=" + std::to_string(config.num_classes) + " conflicts with model C=" + std::to_string(context.model.C));
+        }
+        if (context.model.model_arch_id != config.model_arch_id)
+        {
+            throw std::runtime_error(
+                "config model_arch_id conflicts with checkpoint manifest model_arch_id");
+        }
+        if (context.model.model_param_id != config.model_param_id)
+        {
+            throw std::runtime_error(
+                "config model_param_id conflicts with checkpoint manifest model_param_id");
+        }
+        if (context.model.quant_cfg_id != config.quant_cfg_id)
+        {
+            throw std::runtime_error(
+                "config quant_cfg_id conflicts with checkpoint manifest quant_cfg_id");
+        }
+        if (context.model.static_table_id != config.static_table_id)
+        {
+            throw std::runtime_error(
+                "config static_table_id conflicts with checkpoint manifest static_table_id");
+        }
+        if (context.model.degree_bound_id != config.degree_bound_id)
+        {
+            throw std::runtime_error(
+                "config degree_bound_id conflicts with checkpoint manifest degree_bound_id");
+        }
+        auto end = Clock::now();
+        if (metrics != nullptr)
+        {
+            metrics->load_static_ms += elapsed_ms(start, end);
+        }
+        progress_note("context:load_static:done");
+
+        progress_note("context:domains:start");
+        start = Clock::now();
+        // 工作域大小一次性按特征表、边域、隐藏维和查表规模展开，后面 trace / quotient / opening 共用这套布局。
+        const std::size_t fh_size = algebra::next_power_of_two(
+            [&]()
+            {
+                const auto checked_product = [](std::size_t left,
+                                                std::size_t right,
+                                                std::string_view label)
+                {
+                    if (right != 0 && left > std::numeric_limits<std::size_t>::max() / right)
+                        throw std::runtime_error(
+                            "feature table size overflows size_t: " + std::string(label));
+                    return left * right;
+                };
+                return std::max(
+                           checked_product(
+                               context.dataset.num_nodes,
+                               context.dataset.num_features,
+                               "dataset"),
+                           checked_product(
+                               context.local.num_nodes,
+                               context.local.num_features,
+                               "local")) +
+                       2;
+            }());
+        const auto dataset_feature_count = context.dataset.num_nodes * context.dataset.num_features;
+        const std::size_t d_h = hidden_head_width(context.model);
+        const std::size_t d_cat = concat_width(context.model);
+        // The in-domain is a shared power-of-two capacity.  It must not be
+        // confused with any formal selector: each Q_in below uses its own
+        // layer.input_dim support.
+        const std::size_t in_domain_capacity =
+            std::max<std::size_t>(
+                context.local.num_features,
+                model::max_hidden_input_dim(context.model));
+        const auto minimum_edge_rows = minimum_edge_trace_length(
+            context.local.num_nodes,
+            context.local.edges.size(),
+            d_h,
+            context.local.num_classes);
+        // The same pure planner drives canonical table generation and this
+        // pre-SRS domain calculation.  In particular, ExpMap rows are derived
+        // from the certified LReLU output bound; T_range remains exactly 2^B.
+        const auto table_shape = plan_canonical_static_table_shape(context);
+        const std::size_t edge_size = algebra::next_power_of_two(
+            std::max<std::size_t>({
+                minimum_edge_rows,
+                table_shape.lrelu_table_size,
+                table_shape.elu_table_size,
+                table_shape.exp_table_size,
+                table_shape.range_table_size,
+            }) +
+            2);
+        const std::size_t in_size = algebra::next_power_of_two(in_domain_capacity + 2);
+        const std::size_t d_size = algebra::next_power_of_two(d_h + 2);
+        const std::size_t cat_size = algebra::next_power_of_two(d_cat + 2);
+        const std::size_t c_size = algebra::next_power_of_two(context.local.num_classes + 2);
+        const std::size_t n_size = algebra::next_power_of_two(context.local.num_nodes + 2);
+
+        context.domains = WorkDomains{
+            .fh = algebra::RootOfUnityDomain::create("FH", fh_size),
+            .edge = algebra::RootOfUnityDomain::create("edge", edge_size),
+            .in = algebra::RootOfUnityDomain::create("in", in_size),
+            .d = algebra::RootOfUnityDomain::create("d", d_size),
+            .cat = algebra::RootOfUnityDomain::create("cat", cat_size),
+            .c = algebra::RootOfUnityDomain::create("C", c_size),
+            .n = algebra::RootOfUnityDomain::create("N", n_size),
+            .hidden_layers = {},
+            .output_head = std::nullopt,
+        };
+        context.domains.hidden_layers.resize(
+            context.model.hidden_layers.size());
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
+        {
+            auto &layer_domains = context.domains.hidden_layers[layer_index];
+            layer_domains.resize(
+                context.model.hidden_layers[layer_index].heads.size(),
+                AttentionHeadDomains{
+                    .in = context.domains.in,
+                    .d = context.domains.d,
+                });
+        }
+        context.domains.output_head = AttentionHeadDomains{.in = context.domains.cat, .d = context.domains.c};
+        end = Clock::now();
+        if (metrics != nullptr)
+        {
+            metrics->fft_plan_ms += elapsed_ms(start, end);
+        }
+        progress_note("context:domains:done");
+
+        progress_note("context:srs:start");
+        start = Clock::now();
+        // Every registered quotient is materialized on a 4|D| coset below.
+        // Check the complete coefficient resource here so an undersized SRS
+        // fails during context construction rather than midway through prove.
+        const std::size_t required_coefficient_count = std::max<std::size_t>({
+            fh_size * 4,
+            edge_size * 4,
+            in_size * 4,
+            d_size * 4,
+            cat_size * 4,
+            c_size * 4,
+            n_size * 4,
+        });
+        context.kzg = crypto::KZG::load_keys_for_domains(
+            resolve_project_path(config.project_root, config.srs_path).string(),
+            config.srs_type,
+            config.srs_id,
+            {
+                {"FH", fh_size},
+                {"edge", edge_size},
+                {"in", in_size},
+                {"d", d_size},
+                {"cat", cat_size},
+                {"C", c_size},
+                {"N", n_size},
+            },
+            required_coefficient_count);
+        std::string envelope_reason;
+        if (!instance_within_authenticated_max_envelope(
+                context, &envelope_reason))
+            throw std::runtime_error(envelope_reason);
+        end = Clock::now();
+        if (metrics != nullptr)
+        {
+            metrics->srs_prepare_ms += elapsed_ms(start, end);
+        }
+        progress_note("context:srs:done");
+
+        progress_note("context:public_static:start");
+        start = Clock::now();
+        // 这里开始布置公开列、静态表和静态承诺；它们会直接进入 transcript 与 verifier 的公共视图。
+        // The canonical producer lives in the schema module and is also used
+        // by the independent verifier registration loader.  Keeping one
+        // producer ensures that a table with the right shape cannot diverge in
+        // one row from the table that was formally generated and committed.
+        context.tables = build_canonical_static_tables(context);
+        std::string static_table_reason;
+        if (!validate_static_tables(context, &static_table_reason))
+            throw std::runtime_error(
+                "canonical static table validation failed: " + static_table_reason);
+
+        const auto edge_valid = build_selector(context.local.edges.size(), edge_size);
+
+        const auto q_new_edge = q_new_selector(context.local.edges, edge_size);
+        const auto q_end_edge = q_end_selector(context.local.edges, edge_size);
+        const auto q_graph_new_edge = q_graph_new_selector(context.local.edges, edge_size);
+        const auto q_graph_end_edge = q_graph_end_selector(context.local.edges, edge_size);
+        const auto q_grp_new_edge = q_group_selector(q_graph_new_edge, q_new_edge);
+        const auto q_grp_end_edge = q_group_selector(q_graph_end_edge, q_end_edge);
+
+        add_public_poly(
+            context,
+            "P_I",
+            make_shared_eval_poly("P_I", ids_to_field(context.local.absolute_ids, n_size), context.domains.n));
+        add_public_poly(
+            context,
+            "P_src",
+            make_shared_eval_poly("P_src", edge_component(context.local.edges, edge_size, true), context.domains.edge));
+        add_public_poly(
+            context,
+            "P_dst",
+            make_shared_eval_poly("P_dst", edge_component(context.local.edges, edge_size, false), context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_new_edge",
+            make_shared_eval_poly("P_Q_new_edge", q_new_edge, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_end_edge",
+            make_shared_eval_poly("P_Q_end_edge", q_end_edge, context.domains.edge));
+        add_public_poly(
+            context,
             "P_node_gid",
-            node_gid_column(context.local.node_ptr, context.local.num_nodes, n_size),
-            context.domains.n));
-    add_public_poly(
-        context,
-        "P_edge_gid",
-        make_shared_eval_poly("P_edge_gid", edge_gid_column(context.local.edges, edge_size), context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_graph_new_edge",
-        make_shared_eval_poly("P_Q_graph_new_edge", q_graph_new_edge, context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_graph_end_edge",
-        make_shared_eval_poly("P_Q_graph_end_edge", q_graph_end_edge, context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_grp_new_edge",
-        make_shared_eval_poly("P_Q_grp_new_edge", q_grp_new_edge, context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_grp_end_edge",
-        make_shared_eval_poly("P_Q_grp_end_edge", q_grp_end_edge, context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_edge_valid",
-        make_shared_eval_poly("P_Q_edge_valid", edge_valid, context.domains.edge));
-    // Each hidden layer owns its own valid selectors.  The selector
-    // support is the layer's real shape; the surrounding work domain
-    // may still be a shared power-of-two capacity.
-    for (std::size_t layer_index = 0;
-         layer_index < context.model.hidden_layers.size();
-         ++layer_index)
-    {
-        const auto &layer = context.model.hidden_layers[layer_index];
-        const auto q_in_label = hidden_q_in_selector_label(layer_index);
-        const auto q_d_label = hidden_q_d_h_selector_label(layer_index);
-        const auto q_cat_label = hidden_q_cat_selector_label(layer_index);
-        const auto q_nd_h_label = hidden_q_nd_h_selector_label(layer_index);
+            make_shared_eval_poly(
+                "P_node_gid",
+                node_gid_column(context.local.node_ptr, context.local.num_nodes, n_size),
+                context.domains.n));
         add_public_poly(
             context,
-            q_in_label,
-            make_shared_eval_poly(
+            "P_edge_gid",
+            make_shared_eval_poly("P_edge_gid", edge_gid_column(context.local.edges, edge_size), context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_graph_new_edge",
+            make_shared_eval_poly("P_Q_graph_new_edge", q_graph_new_edge, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_graph_end_edge",
+            make_shared_eval_poly("P_Q_graph_end_edge", q_graph_end_edge, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_grp_new_edge",
+            make_shared_eval_poly("P_Q_grp_new_edge", q_grp_new_edge, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_grp_end_edge",
+            make_shared_eval_poly("P_Q_grp_end_edge", q_grp_end_edge, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_edge_valid",
+            make_shared_eval_poly("P_Q_edge_valid", edge_valid, context.domains.edge));
+        // Each hidden layer owns its own valid selectors.  The selector
+        // support is the layer's real shape; the surrounding work domain
+        // may still be a shared power-of-two capacity.
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
+        {
+            const auto &layer = context.model.hidden_layers[layer_index];
+            const auto q_in_label = hidden_q_in_selector_label(layer_index);
+            const auto q_d_label = hidden_q_d_h_selector_label(layer_index);
+            const auto q_cat_label = hidden_q_cat_selector_label(layer_index);
+            const auto q_nd_h_label = hidden_q_nd_h_selector_label(layer_index);
+            add_public_poly(
+                context,
                 q_in_label,
-                build_selector(layer.input_dim, in_size),
-                context.domains.in));
-        add_public_poly(
-            context,
-            q_d_label,
-            make_shared_eval_poly(
+                make_shared_eval_poly(
+                    q_in_label,
+                    build_selector(layer.input_dim, in_size),
+                    context.domains.in));
+            add_public_poly(
+                context,
                 q_d_label,
-                build_selector(layer.shape.head_dim, d_size),
-                context.domains.d));
+                make_shared_eval_poly(
+                    q_d_label,
+                    build_selector(layer.shape.head_dim, d_size),
+                    context.domains.d));
+            add_public_poly(
+                context,
+                q_cat_label,
+                make_shared_eval_poly(
+                    q_cat_label,
+                    build_selector(layer.shape.head_count * layer.shape.head_dim, cat_size),
+                    context.domains.cat));
+            add_public_poly(
+                context,
+                q_nd_h_label,
+                make_shared_eval_poly(
+                    q_nd_h_label,
+                    build_selector(context.local.num_nodes * layer.shape.head_dim, edge_size),
+                    context.domains.edge));
+        }
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+        {
+            const auto label = "P_Q_div_out" + std::to_string(head_index);
+            add_public_poly(
+                context,
+                label,
+                make_shared_eval_poly(
+                    label,
+                    build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
+                    context.domains.edge));
+        }
         add_public_poly(
             context,
-            q_cat_label,
+            "P_Q_div_avg",
             make_shared_eval_poly(
-                q_cat_label,
-                build_selector(layer.shape.head_count * layer.shape.head_dim, cat_size),
+                "P_Q_div_avg",
+                build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
+                context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_N",
+            make_shared_eval_poly("P_Q_N", build_selector(context.local.num_nodes, n_size), context.domains.n));
+        std::vector<FieldElement> aggregation_src_multiplicity(
+            n_size, FieldElement::zero());
+        std::vector<FieldElement> aggregation_dst_multiplicity(
+            n_size, FieldElement::zero());
+        for (const auto &edge : context.local.edges)
+        {
+            if (edge.src >= context.local.num_nodes || edge.dst >= context.local.num_nodes)
+                throw std::runtime_error(
+                    "aggregation multiplicity edge escapes local node range");
+            aggregation_src_multiplicity[edge.src] += FieldElement::one();
+            aggregation_dst_multiplicity[edge.dst] += FieldElement::one();
+        }
+        add_public_poly(
+            context,
+            "P_AggBind_m_src",
+            make_shared_eval_poly(
+                "P_AggBind_m_src", std::move(aggregation_src_multiplicity),
+                context.domains.n));
+        add_public_poly(
+            context,
+            "P_AggBind_m_dst",
+            make_shared_eval_poly(
+                "P_AggBind_m_dst", std::move(aggregation_dst_multiplicity),
+                context.domains.n));
+        std::vector<FieldElement> aggregation_node_index(
+            n_size, FieldElement::zero());
+        for (std::size_t node = 0; node < context.local.num_nodes; ++node)
+            aggregation_node_index[node] = FieldElement(node);
+        add_public_poly(
+            context,
+            "P_AggBind_index_N",
+            make_shared_eval_poly(
+                "P_AggBind_index_N", std::move(aggregation_node_index),
+                context.domains.n));
+        add_public_poly(
+            context,
+            output_q_cat_selector_label(),
+            make_shared_eval_poly(
+                output_q_cat_selector_label(),
+                build_selector(context.model.output_layer.input_dim, cat_size),
                 context.domains.cat));
         add_public_poly(
             context,
-            q_nd_h_label,
-            make_shared_eval_poly(
-                q_nd_h_label,
-                build_selector(context.local.num_nodes * layer.shape.head_dim, edge_size),
-                context.domains.edge));
-    }
-    for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-    {
-        const auto label = "P_Q_div_out" + std::to_string(head_index);
+            "P_Q_C_valid",
+            make_shared_eval_poly("P_Q_C_valid", build_selector(context.local.num_classes, c_size), context.domains.c));
+        std::vector<FieldElement> bias_index_c(c_size, FieldElement::zero());
+        std::vector<FieldElement> bias_multiplicity_c(c_size, FieldElement::zero());
+        for (std::size_t column = 0; column < context.local.num_classes; ++column)
+        {
+            bias_index_c[column] = FieldElement(column);
+            bias_multiplicity_c[column] = FieldElement(context.local.num_nodes);
+        }
         add_public_poly(
             context,
-            label,
+            "P_BiasIndex_C",
             make_shared_eval_poly(
-                label,
-                build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
-                context.domains.edge));
-    }
-    add_public_poly(
-        context,
-        "P_Q_div_avg",
-        make_shared_eval_poly(
-            "P_Q_div_avg",
-            build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
-            context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_N",
-        make_shared_eval_poly("P_Q_N", build_selector(context.local.num_nodes, n_size), context.domains.n));
-    std::vector<FieldElement> aggregation_src_multiplicity(
-        n_size, FieldElement::zero());
-    std::vector<FieldElement> aggregation_dst_multiplicity(
-        n_size, FieldElement::zero());
-    for (const auto &edge : context.local.edges)
-    {
-        if (edge.src >= context.local.num_nodes || edge.dst >= context.local.num_nodes)
-            throw std::runtime_error(
-                "aggregation multiplicity edge escapes local node range");
-        aggregation_src_multiplicity[edge.src] += FieldElement::one();
-        aggregation_dst_multiplicity[edge.dst] += FieldElement::one();
-    }
-    add_public_poly(
-        context,
-        "P_AggBind_m_src",
-        make_shared_eval_poly(
-            "P_AggBind_m_src", std::move(aggregation_src_multiplicity),
-            context.domains.n));
-    add_public_poly(
-        context,
-        "P_AggBind_m_dst",
-        make_shared_eval_poly(
-            "P_AggBind_m_dst", std::move(aggregation_dst_multiplicity),
-            context.domains.n));
-    std::vector<FieldElement> aggregation_node_index(
-        n_size, FieldElement::zero());
-    for (std::size_t node = 0; node < context.local.num_nodes; ++node)
-        aggregation_node_index[node] = FieldElement(node);
-    add_public_poly(
-        context,
-        "P_AggBind_index_N",
-        make_shared_eval_poly(
-            "P_AggBind_index_N", std::move(aggregation_node_index),
-            context.domains.n));
-    add_public_poly(
-        context,
-        output_q_cat_selector_label(),
-        make_shared_eval_poly(
-            output_q_cat_selector_label(),
-            build_selector(context.model.output_layer.input_dim, cat_size),
-            context.domains.cat));
-    add_public_poly(
-        context,
-        "P_Q_C_valid",
-        make_shared_eval_poly("P_Q_C_valid", build_selector(context.local.num_classes, c_size), context.domains.c));
-    std::vector<FieldElement> bias_index_c(c_size, FieldElement::zero());
-    std::vector<FieldElement> bias_multiplicity_c(c_size, FieldElement::zero());
-    for (std::size_t column = 0; column < context.local.num_classes; ++column)
-    {
-        bias_index_c[column] = FieldElement(column);
-        bias_multiplicity_c[column] = FieldElement(context.local.num_nodes);
-    }
-    add_public_poly(
-        context,
-        "P_BiasIndex_C",
-        make_shared_eval_poly(
-            "P_BiasIndex_C", std::move(bias_index_c), context.domains.c));
-    add_public_poly(
-        context,
-        "P_BiasMultiplicity_C",
-        make_shared_eval_poly(
-            "P_BiasMultiplicity_C", std::move(bias_multiplicity_c), context.domains.c));
-    std::vector<FieldElement> bias_index_edge(edge_size, FieldElement::zero());
-    const auto output_flat_count =
-        context.local.num_nodes * context.local.num_classes;
-    for (std::size_t index = 0; index < output_flat_count; ++index)
-        bias_index_edge[index] = FieldElement(index % context.local.num_classes);
-    add_public_poly(
-        context,
-        "P_BiasIndex_edge",
-        make_shared_eval_poly(
-            "P_BiasIndex_edge", std::move(bias_index_edge), context.domains.edge));
-    constexpr std::size_t kCoefficientTailBaseObservationCount = 3;
-    const auto bias_basis_chunks = coefficient_chunk_layout(
-        context.local.num_classes + kCoefficientTailBaseObservationCount,
-        edge_size);
-    for (std::size_t head = 0;
-         head < context.model.output_layer.heads.size(); ++head)
-    {
-        for (const auto &chunk : bias_basis_chunks)
+                "P_BiasIndex_C", std::move(bias_index_c), context.domains.c));
+        add_public_poly(
+            context,
+            "P_BiasMultiplicity_C",
+            make_shared_eval_poly(
+                "P_BiasMultiplicity_C", std::move(bias_multiplicity_c), context.domains.c));
+        std::vector<FieldElement> bias_index_edge(edge_size, FieldElement::zero());
+        const auto output_flat_count =
+            context.local.num_nodes * context.local.num_classes;
+        for (std::size_t index = 0; index < output_flat_count; ++index)
+            bias_index_edge[index] = FieldElement(index % context.local.num_classes);
+        add_public_poly(
+            context,
+            "P_BiasIndex_edge",
+            make_shared_eval_poly(
+                "P_BiasIndex_edge", std::move(bias_index_edge), context.domains.edge));
+        constexpr std::size_t kCoefficientTailBaseObservationCount = 3;
+        const auto bias_basis_chunks = coefficient_chunk_layout(
+            context.local.num_classes + kCoefficientTailBaseObservationCount,
+            edge_size);
+        for (std::size_t head = 0;
+             head < context.model.output_layer.heads.size(); ++head)
         {
-            std::vector<FieldElement> active(
-                edge_size, FieldElement::zero());
-            std::vector<FieldElement> semantic(
-                edge_size, FieldElement::zero());
-            std::vector<FieldElement> gap(
-                edge_size, FieldElement::zero());
-            std::vector<FieldElement> tail(
-                edge_size, FieldElement::zero());
-            for (std::size_t row = 0; row < chunk.length; ++row)
+            for (const auto &chunk : bias_basis_chunks)
             {
-                const auto global_index = chunk.offset + row;
-                active[row] = FieldElement::one();
-                if (global_index < context.local.num_classes)
-                    semantic[row] = FieldElement::one();
-                else
-                    tail[row] = FieldElement::one();
-            }
-            for (const auto &[region, values] :
-                 std::vector<std::pair<std::string,
-                                       std::vector<FieldElement>>>{
-                     {"active", std::move(active)},
-                     {"semantic", std::move(semantic)},
-                     {"gap", std::move(gap)},
-                     {"tail", std::move(tail)}})
-            {
-                const auto label =
-                    output_bias_basis_region_selector_label(
-                        head, chunk.chunk_index, region);
-                add_public_poly(
-                    context, label,
-                    make_shared_eval_poly(
-                        label, values, context.domains.edge));
+                std::vector<FieldElement> active(
+                    edge_size, FieldElement::zero());
+                std::vector<FieldElement> semantic(
+                    edge_size, FieldElement::zero());
+                std::vector<FieldElement> gap(
+                    edge_size, FieldElement::zero());
+                std::vector<FieldElement> tail(
+                    edge_size, FieldElement::zero());
+                for (std::size_t row = 0; row < chunk.length; ++row)
+                {
+                    const auto global_index = chunk.offset + row;
+                    active[row] = FieldElement::one();
+                    if (global_index < context.local.num_classes)
+                        semantic[row] = FieldElement::one();
+                    else
+                        tail[row] = FieldElement::one();
+                }
+                for (const auto &[region, values] :
+                     std::vector<std::pair<std::string,
+                                           std::vector<FieldElement>>>{
+                         {"active", std::move(active)},
+                         {"semantic", std::move(semantic)},
+                         {"gap", std::move(gap)},
+                         {"tail", std::move(tail)}})
+                {
+                    const auto label =
+                        output_bias_basis_region_selector_label(
+                            head, chunk.chunk_index, region);
+                    add_public_poly(
+                        context, label,
+                        make_shared_eval_poly(
+                            label, values, context.domains.edge));
+                }
             }
         }
-    }
-    if (lazy_fh_public_enabled(context))
-    {
-        add_public_poly(
-            context,
-            "P_Q_tbl_feat",
-            make_shared_eval_poly("P_Q_tbl_feat", build_selector(dataset_feature_count, fh_size), context.domains.fh));
-        add_public_poly(
-            context,
-            "P_Row_feat_tbl",
-            make_shared_eval_poly(
+        if (lazy_fh_public_enabled(context))
+        {
+            add_public_poly(
+                context,
+                "P_Q_tbl_feat",
+                make_shared_eval_poly("P_Q_tbl_feat", build_selector(dataset_feature_count, fh_size), context.domains.fh));
+            add_public_poly(
+                context,
                 "P_Row_feat_tbl",
-                feature_table_row_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
-                context.domains.fh));
-        add_public_poly(
-            context,
-            "P_Col_feat_tbl",
-            make_shared_eval_poly(
+                make_shared_eval_poly(
+                    "P_Row_feat_tbl",
+                    feature_table_row_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
+                    context.domains.fh));
+            add_public_poly(
+                context,
                 "P_Col_feat_tbl",
-                feature_table_col_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
-                context.domains.fh));
-        if (full_graph_feature_identity_enabled(context))
-        {
-            add_public_poly_from_existing_material_checked(context, "P_Q_qry_feat", "P_Q_tbl_feat");
-            add_public_poly_from_existing_material_checked(context, "P_Row_feat_qry", "P_Row_feat_tbl");
-            add_public_poly_from_existing_material_checked(context, "P_Col_feat_qry", "P_Col_feat_tbl");
-            add_public_poly_from_existing_material_checked(context, "P_I_feat_qry", "P_Row_feat_tbl");
-        }
-        else
-        {
-            add_public_poly(
-                context,
-                "P_Q_qry_feat",
-                make_shared_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
-            add_public_poly(
-                context,
-                "P_Row_feat_qry",
                 make_shared_eval_poly(
-                    "P_Row_feat_qry",
-                    feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                    "P_Col_feat_tbl",
+                    feature_table_col_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
                     context.domains.fh));
-            add_public_poly(
-                context,
-                "P_Col_feat_qry",
-                make_shared_eval_poly(
-                    "P_Col_feat_qry",
-                    feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
-                    context.domains.fh));
-            add_public_poly(
-                context,
-                "P_I_feat_qry",
-                make_shared_eval_poly(
-                    "P_I_feat_qry",
-                    feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
-                    context.domains.fh));
-        }
-    }
-    else
-    {
-        add_public_poly(
-            context,
-            "P_Q_tbl_feat",
-            make_shared_eval_poly("P_Q_tbl_feat", build_selector(dataset_feature_count, fh_size), context.domains.fh));
-        add_public_poly(
-            context,
-            "P_Row_feat_tbl",
-            make_shared_eval_poly(
-                "P_Row_feat_tbl",
-                feature_table_row_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
-                context.domains.fh));
-        add_public_poly(
-            context,
-            "P_Col_feat_tbl",
-            make_shared_eval_poly(
-                "P_Col_feat_tbl",
-                feature_table_col_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
-                context.domains.fh));
-        if (full_graph_feature_identity_enabled(context))
-        {
-            add_public_poly_from_existing_material_checked(context, "P_Q_qry_feat", "P_Q_tbl_feat");
-            add_public_poly_from_existing_material_checked(context, "P_Row_feat_qry", "P_Row_feat_tbl");
-            add_public_poly_from_existing_material_checked(context, "P_Col_feat_qry", "P_Col_feat_tbl");
-            add_public_poly_from_existing_material_checked(context, "P_I_feat_qry", "P_Row_feat_tbl");
-        }
-        else
-        {
-            add_public_poly(
-                context,
-                "P_Q_qry_feat",
-                make_shared_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
-            add_public_poly(
-                context,
-                "P_Row_feat_qry",
-                make_shared_eval_poly(
-                    "P_Row_feat_qry",
-                    feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
-                    context.domains.fh));
-            add_public_poly(
-                context,
-                "P_Col_feat_qry",
-                make_shared_eval_poly(
-                    "P_Col_feat_qry",
-                    feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
-                    context.domains.fh));
-            add_public_poly(
-                context,
-                "P_I_feat_qry",
-                make_shared_eval_poly(
-                    "P_I_feat_qry",
-                    feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
-                    context.domains.fh));
-        }
-    }
-    add_public_poly(
-        context,
-        "P_Q_qry_src",
-        make_shared_eval_poly("P_Q_qry_src", edge_valid, context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_qry_dst",
-        make_shared_eval_poly("P_Q_qry_dst", edge_valid, context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_tbl_L",
-        make_shared_eval_poly("P_Q_tbl_L", build_selector(context.tables.lrelu.size(), edge_size), context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_qry_L",
-        make_shared_eval_poly("P_Q_qry_L", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_tbl_R",
-        make_shared_eval_poly("P_Q_tbl_R", build_selector(context.tables.range.size(), edge_size), context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_qry_R",
-        make_shared_eval_poly("P_Q_qry_R", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_tbl_exp",
-        make_shared_eval_poly("P_Q_tbl_exp", build_selector(context.tables.exp.size(), edge_size), context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_qry_exp",
-        make_shared_eval_poly("P_Q_qry_exp", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
-    add_public_poly(
-        context,
-        "P_Q_tbl_ELU",
-        make_shared_eval_poly("P_Q_tbl_ELU", build_selector(context.tables.elu.size(), edge_size), context.domains.edge));
-    const auto &feature_matrix_for_h =
-        !context.dataset.features.empty() ? context.dataset.features : context.local.features;
-    if (lazy_fh_public_enabled(context))
-    {
-        add_static_commitment(
-            context,
-            "V_T_H",
-            make_coeff_poly("V_T_H", algebra::flatten_matrix_coefficients(feature_matrix_for_h)));
-        add_public_poly(
-            context,
-            "P_T_H",
-            make_shared_eval_poly(
-                "P_T_H",
-                padded(algebra::flatten_matrix_coefficients(feature_matrix_for_h), fh_size),
-                context.domains.fh));
-    }
-    else
-    {
-        add_static_commitment(
-            context,
-            "V_T_H",
-            make_coeff_poly("V_T_H", algebra::flatten_matrix_coefficients(feature_matrix_for_h)));
-        add_public_poly(
-            context,
-            "P_T_H",
-            make_shared_eval_poly(
-                "P_T_H",
-                padded(algebra::flatten_matrix_coefficients(feature_matrix_for_h), fh_size),
-                context.domains.fh));
-    }
-
-    if (full_graph_feature_identity_enabled(context))
-    {
-        cache_public_fh_coefficient_material(context, "P_T_H");
-        cache_public_fh_coefficient_material(context, "P_Q_tbl_feat");
-        cache_public_fh_coefficient_material(context, "P_Row_feat_tbl");
-        cache_public_fh_coefficient_material(context, "P_Col_feat_tbl");
-        rebind_public_fh_opening_material(context, "P_T_H", "P_T_H");
-        rebind_public_fh_opening_material(context, "P_Q_tbl_feat", "P_Q_tbl_feat");
-        rebind_public_fh_opening_material(context, "P_Q_qry_feat", "P_Q_tbl_feat");
-        rebind_public_fh_opening_material(context, "P_Row_feat_tbl", "P_Row_feat_tbl");
-        rebind_public_fh_opening_material(context, "P_Row_feat_qry", "P_Row_feat_tbl");
-        rebind_public_fh_opening_material(context, "P_I_feat_qry", "P_Row_feat_tbl");
-        rebind_public_fh_opening_material(context, "P_Col_feat_tbl", "P_Col_feat_tbl");
-        rebind_public_fh_opening_material(context, "P_Col_feat_qry", "P_Col_feat_tbl");
-    }
-
-    std::vector<FieldElement> l_x(edge_size, FieldElement::zero());
-    std::vector<FieldElement> l_y(edge_size, FieldElement::zero());
-    for (std::size_t i = 0; i < context.tables.lrelu.size(); ++i)
-    {
-        l_x[i] = context.tables.lrelu[i].first;
-        l_y[i] = context.tables.lrelu[i].second;
-    }
-    add_public_poly(context, "P_T_L_x", make_shared_eval_poly("P_T_L_x", l_x, context.domains.edge));
-    add_public_poly(context, "P_T_L_y", make_shared_eval_poly("P_T_L_y", l_y, context.domains.edge));
-    add_static_commitment(context, "V_T_L_x", make_eval_poly("V_T_L_x", l_x, context.domains.edge));
-    add_static_commitment(context, "V_T_L_y", make_eval_poly("V_T_L_y", l_y, context.domains.edge));
-
-    std::vector<FieldElement> elu_x(edge_size, FieldElement::zero());
-    std::vector<FieldElement> elu_y(edge_size, FieldElement::zero());
-    for (std::size_t i = 0; i < context.tables.elu.size(); ++i)
-    {
-        elu_x[i] = context.tables.elu[i].first;
-        elu_y[i] = context.tables.elu[i].second;
-    }
-    add_public_poly(context, "P_T_ELU_x", make_shared_eval_poly("P_T_ELU_x", elu_x, context.domains.edge));
-    add_public_poly(context, "P_T_ELU_y", make_shared_eval_poly("P_T_ELU_y", elu_y, context.domains.edge));
-    add_static_commitment(context, "V_T_ELU_x", make_eval_poly("V_T_ELU_x", elu_x, context.domains.edge));
-    add_static_commitment(context, "V_T_ELU_y", make_eval_poly("V_T_ELU_y", elu_y, context.domains.edge));
-
-    std::vector<FieldElement> exp_x(edge_size, FieldElement::zero());
-    std::vector<FieldElement> exp_y(edge_size, FieldElement::zero());
-    for (std::size_t i = 0; i < context.tables.exp.size(); ++i)
-    {
-        exp_x[i] = context.tables.exp[i].first;
-        exp_y[i] = context.tables.exp[i].second;
-    }
-    add_public_poly(context, "P_T_exp_x", make_shared_eval_poly("P_T_exp_x", exp_x, context.domains.edge));
-    add_public_poly(context, "P_T_exp_y", make_shared_eval_poly("P_T_exp_y", exp_y, context.domains.edge));
-    add_static_commitment(context, "V_T_exp_x", make_eval_poly("V_T_exp_x", exp_x, context.domains.edge));
-    add_static_commitment(context, "V_T_exp_y", make_eval_poly("V_T_exp_y", exp_y, context.domains.edge));
-    add_public_poly(
-        context,
-        "P_T_range",
-        make_shared_eval_poly("P_T_range", padded(context.tables.range, edge_size), context.domains.edge));
-    add_static_commitment(
-        context,
-        "V_T_range",
-        make_eval_poly("V_T_range", padded(context.tables.range, edge_size), context.domains.edge));
-
-    // 模型参数在 context 阶段就固定成静态承诺，后面的 trace 只引用标签，不再重复构造权重对象。
-    for (std::size_t layer_index = 0;
-         layer_index < context.model.hidden_layers.size();
-         ++layer_index)
-    {
-        const auto &layer = context.model.hidden_layers[layer_index];
-        for (std::size_t head_index = 0;
-             head_index < layer.heads.size();
-             ++head_index)
-        {
-            const auto &head = layer.heads[head_index];
-            const auto weight = quantize_model_matrix(
-                head.seq_kernel_fp,
-                scales.s_w_hidden.at(layer_index).at(head_index));
-            const auto column_count = weight.empty() ? 0 : weight.front().size();
-            for (std::size_t column = 0; column < column_count; ++column)
+            if (full_graph_feature_identity_enabled(context))
             {
-                std::vector<FieldElement> values(
-                    context.domains.in->size, FieldElement::zero());
-                for (std::size_t row = 0; row < weight.size(); ++row)
-                    values[row] = weight[row][column];
-                const auto label = hidden_weight_column_label(
-                    layer_index, head_index, column);
-                add_static_commitment(
-                    context, label,
-                    make_eval_poly(label, values, context.domains.in));
-            }
-            const auto src_label = hidden_src_label(layer_index, head_index);
-            add_static_commitment(
-                context, src_label,
-                make_eval_poly(
-                    src_label,
-                    padded(quantize_model_vector_at_scale(
-                               head.attn_src_kernel_fp,
-                               scales.s_a_src_hidden.at(layer_index).at(head_index)),
-                           context.domains.d->size),
-                    context.domains.d));
-            const auto dst_label = hidden_dst_label(layer_index, head_index);
-            add_static_commitment(
-                context, dst_label,
-                make_eval_poly(
-                    dst_label,
-                    padded(quantize_model_vector_at_scale(
-                               head.attn_dst_kernel_fp,
-                               scales.s_a_dst_hidden.at(layer_index).at(head_index)),
-                           context.domains.d->size),
-                    context.domains.d));
-        }
-    }
-    for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-    {
-        const auto &head = context.model.output_layer.heads[head_index];
-        const auto weight = quantize_model_matrix(
-            head.seq_kernel_fp,
-            scales.s_w_output.at(head_index));
-        const auto column_count = weight.empty() ? 0 : weight.front().size();
-        for (std::size_t column = 0; column < column_count; ++column)
-        {
-            std::vector<FieldElement> values(context.domains.cat->size, FieldElement::zero());
-            for (std::size_t row = 0; row < weight.size(); ++row)
-                values[row] = weight[row][column];
-            const auto label = output_weight_column_label(head_index, column);
-            add_static_commitment(context, label, make_eval_poly(label, values, context.domains.cat));
-        }
-        add_static_commitment(
-            context,
-            output_src_label(head_index),
-            make_eval_poly(
-                output_src_label(head_index),
-                padded(quantize_model_vector_at_scale(
-                           head.attn_src_kernel_fp,
-                           scales.s_a_src_output.at(head_index)),
-                       context.domains.c->size),
-                context.domains.c));
-        add_static_commitment(
-            context,
-            output_dst_label(head_index),
-            make_eval_poly(
-                output_dst_label(head_index),
-                padded(quantize_model_vector_at_scale(
-                           head.attn_dst_kernel_fp,
-                           scales.s_a_dst_output.at(head_index)),
-                       context.domains.c->size),
-                context.domains.c));
-        add_static_commitment(
-            context,
-            output_bias_label(head_index),
-            make_eval_poly(
-                output_bias_label(head_index),
-                padded(
-                    quantize_model_vector(
-                        head.output_bias_fp,
-                        scales.s_b_output.at(head_index)),
-                    context.domains.c->size),
-                context.domains.c));
-    }
-    end = Clock::now();
-    if (metrics != nullptr)
-    {
-        metrics->load_static_ms += elapsed_ms(start, end);
-    }
-    progress_note("context:public_static:done");
-
-    auto compiler_artifact = std::make_shared<ProtocolCompilerArtifact>(
-        build_protocol_compiler_artifact(context));
-    std::string compiler_artifact_reason;
-    if (!validate_protocol_compiler_artifact(
-            context, *compiler_artifact, &compiler_artifact_reason))
-    {
-        throw std::runtime_error(
-            "instance ProtocolCompilerArtifact validation failed: " + compiler_artifact_reason);
-    }
-    context.compiler_artifact = std::move(compiler_artifact);
-    context.validated_compiler_artifact_identity =
-        context.compiler_artifact.get();
-
-    if (full_graph_feature_identity_enabled(context))
-    {
-        context.dataset.features.clear();
-        context.dataset.features.shrink_to_fit();
-        context.dataset.features_fp.clear();
-        context.dataset.features_fp.shrink_to_fit();
-    }
-
-    const auto final_cache_key = context_cache_key(context.config);
-    if (final_cache_key != cache_key)
-        throw std::runtime_error(
-            "static context identity changed while loading private resources");
-    const bool cacheable_static_context =
-        context.domains.fh != nullptr && context.domains.edge != nullptr && context.domains.fh->size < (1ULL << 24) && context.domains.edge->size < (1ULL << 22);
-    if (retain_static_context_for_reuse &&
-        allow_static_context_cache && cacheable_static_context)
-    {
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        cache[cache_key] = StaticContextCachePayload{
-            .context = context,
-            .identity = final_cache_key,
-            .compiler_artifact_identity =
-                static_context_compiler_artifact_identity(context),
-        };
-    }
-    return context;
-}
-
-// 消费 trace 生成最终 proof，对外保证 commitment 顺序、block 顺序与 opening 结构稳定。
-Proof prove(const ProtocolContext &context, const TraceArtifacts &trace, RunMetrics *metrics)
-{
-    if (context.verifier_shape_only)
-        throw std::runtime_error(
-            "prover rejects verifier shape-only execution context");
-    // Prove is the commitment-producing boundary.  Revalidate the input
-    // views here as well because a caller may retain a trace and mutate
-    // or replace the context after build_trace returned.
-    data::validate_input_feature_views(
-        context.dataset,
-        context.local,
-        context.config.quantization.s_input,
-        context.config.input_preprocess_id);
-    const auto &route2 = util::route2_options();
-    // prove 入口只消费 trace 和固定挑战顺序，不在这里改写 proof schema 或 block 顺序。
-    if (trace.commitment_order != dynamic_commitment_labels(context))
-    {
-        throw std::runtime_error("trace commitment order does not match the protocol commitment order");
-    }
-
-    ScopedCudaProverCacheRelease
-        cuda_cache_release_guard;
-
-    auto stage_start = Clock::now();
-    progress_note("prove:quotient:start");
-    // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
-    const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
-    std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
-    if (route2.packed_fft_backend)
-    {
-        // Packed backends retain non-owning polynomial pointers.
-        // Keep this registry proof-local so those pointers never
-        // outlive the current context or trace.  Construction only
-        // indexes labels; subset materialization remains lazy.
-        backend_registry =
-            std::make_shared<ProofEvaluationBackendRegistry>(
-                context, trace);
-    }
-    auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
-    const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
-    append_note(metrics, "quotient_cache=miss");
-
-    // On integrated-memory CUDA systems a large resident SRS cache
-    // competes directly with the file-backed quotient working set.
-    //
-    // Keep the cache across phases for ordinary workloads, where its
-    // reuse is beneficial. Release it only for quotient shapes that
-    // already enter the large edge/FH working-set class.
-    const bool large_quotient_working_set =
-        (context.domains.edge != nullptr &&
-         context.domains.edge->size >= (1ULL << 23)) ||
-        (context.domains.fh != nullptr &&
-         context.domains.fh->size >= (1ULL << 25));
-
-    if (route2.cuda_field_hotspots &&
-        large_quotient_working_set)
-    {
-        // Scalar conversion buffers and streamed-MSM staging are not
-        // useful during quotient construction. Release those first
-        // without throwing away immutable SRS bases.
-        crypto::
-            release_cuda_g1_msm_execution_workspace();
-
-        constexpr std::size_t
-            kMinimumRetainedCudaMsmBaseBytes =
-                std::size_t{512} << 20;
-
-        constexpr std::size_t
-            kMaximumIntegratedRetainedCudaMsmBaseBytes =
-                std::size_t{8} << 30;
-
-        std::size_t
-            retained_cuda_msm_base_bytes =
-                kMinimumRetainedCudaMsmBaseBytes;
-
-        if (crypto::
-                cuda_g1_msm_integrated_memory_device())
-        {
-            const auto host_budget =
-                quotient_coset_memory_budget();
-
-            if (host_budget.available_bytes >
-                    host_budget.reserve_bytes &&
-                host_budget.available_known)
-            {
-                const auto live_after_reserve =
-                    host_budget.available_bytes -
-                    host_budget.reserve_bytes;
-
-                // Give only 1/16 of currently safe host/unified
-                // headroom to cross-phase SRS residency.  Quotient
-                // cosets retain the dominant share while useful
-                // PPI/OGBN Lagrange prefixes can survive.
-                retained_cuda_msm_base_bytes =
-                    std::min(
-                        host_budget.budget_bytes,
-                        std::min(
-                            live_after_reserve /
-                                std::size_t{8},
-                            kMaximumIntegratedRetainedCudaMsmBaseBytes));
+                add_public_poly_from_existing_material_checked(context, "P_Q_qry_feat", "P_Q_tbl_feat");
+                add_public_poly_from_existing_material_checked(context, "P_Row_feat_qry", "P_Row_feat_tbl");
+                add_public_poly_from_existing_material_checked(context, "P_Col_feat_qry", "P_Col_feat_tbl");
+                add_public_poly_from_existing_material_checked(context, "P_I_feat_qry", "P_Row_feat_tbl");
             }
             else
             {
-                // The historical 512 MiB floor is only an optimization
-                // hint.  It must not survive when effective admission is
-                // unavailable or below that floor on a constrained UMA
-                // host.
-                retained_cuda_msm_base_bytes =
-                    host_budget.available_known
-                        ? std::min(
-                              kMinimumRetainedCudaMsmBaseBytes,
-                              host_budget.budget_bytes)
-                        : 0;
+                add_public_poly(
+                    context,
+                    "P_Q_qry_feat",
+                    make_shared_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
+                add_public_poly(
+                    context,
+                    "P_Row_feat_qry",
+                    make_shared_eval_poly(
+                        "P_Row_feat_qry",
+                        feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                        context.domains.fh));
+                add_public_poly(
+                    context,
+                    "P_Col_feat_qry",
+                    make_shared_eval_poly(
+                        "P_Col_feat_qry",
+                        feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                        context.domains.fh));
+                add_public_poly(
+                    context,
+                    "P_I_feat_qry",
+                    make_shared_eval_poly(
+                        "P_I_feat_qry",
+                        feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
+                        context.domains.fh));
             }
-        }
-
-        progress_note(
-            "prove:quotient:"
-            "trim_cuda_msm_cache:start:"
-            "maximum_bytes=" +
-            std::to_string(
-                retained_cuda_msm_base_bytes));
-
-        crypto::
-            trim_cuda_g1_msm_resident_cache(
-                retained_cuda_msm_base_bytes);
-
-        progress_note(
-            "prove:quotient:"
-            "trim_cuda_msm_cache:done:"
-            "maximum_bytes=" +
-            std::to_string(
-                retained_cuda_msm_base_bytes));
-    }
-
-    auto named_quotient_polynomials = materialize_quotient_polynomials(
-        context,
-        trace,
-        pre_quotient_challenges,
-        quotient_labels,
-        metrics);
-    named_quotient_polynomials = blind_quotient_polynomials(
-        context,
-        std::move(named_quotient_polynomials));
-
-    if (route2.cuda_field_hotspots)
-    {
-        progress_note(
-            "prove:quotient:"
-            "release_cuda_transform_transients:start");
-
-        // Quotient coefficients are now canonical host-side prover
-        // material. t_edge execution state and CUDA NTT workspace are
-        // dead, so release them before coefficient-SRS KZG waves.
-        release_cuda_t_edge_executor_cache();
-
-        algebra::release_cuda_ntt_workspace();
-
-        // Scalar/stream MSM staging is also phase-local.  Preserve
-        // resident immutable SRS bases: they are useful again for
-        // quotient commitments and, later, folded openings.
-        crypto::
-            release_cuda_g1_msm_execution_workspace();
-
-        progress_note(
-            "prove:quotient:"
-            "release_cuda_transform_transients:done");
-    }
-
-    progress_note("prove:quotient:commit_batch:start");
-    const auto quotient_commit_batch_start = Clock::now();
-    crypto::CommitBatchProfile quotient_commit_profile;
-    auto quotient_commitments = [&]()
-    {
-        // The owned batch may use CUDA waves or CPU worker
-        // dispatch. Measure the synchronously joined call as one
-        // wall-clock commitment span; never sum per-worker MSM
-        // profiles into the formal total.
-        timing::ScopedCommitment commitment_scope(metrics);
-        return batch_quotient_commitments(
-            std::move(named_quotient_polynomials),
-            context.kzg,
-            metrics != nullptr ? &quotient_commit_profile : nullptr);
-    }();
-    progress_note(
-        "prove:quotient:commit_batch:done:ms=" + std::to_string(elapsed_ms(
-                                                     quotient_commit_batch_start, Clock::now())));
-    if (metrics != nullptr)
-    {
-        metrics->quotient_commitment_ms +=
-            quotient_commit_profile.msm_ms;
-    }
-    // Quotient polynomials and commitments are proof-specific and must not be
-    // reused by a later fresh-proof measurement.
-    const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments, &trace.public_metadata);
-    if (metrics != nullptr)
-    {
-        metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
-    }
-    progress_note("prove:quotient:done");
-
-    // 组装 proof 时必须严格按 schema 的 label 顺序回填，
-    // 否则 serializer / parser 与 verifier 会同时失配。
-    Proof proof;
-    proof.public_metadata = trace.public_metadata;
-    proof.block_order = proof_block_order();
-    proof.challenges = challenges;
-    proof.route_references =
-        route_opening_references(context, proof.challenges);
-    if (trace.pi_bind == nullptr)
-    {
-        throw std::runtime_error("trace is missing Pi_bind proof material");
-    }
-    proof.pi_bind = *trace.pi_bind;
-    for (const auto &label : dynamic_commitment_labels(context))
-    {
-        proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
-    }
-    for (const auto &label : quotient_commitment_labels(context))
-    {
-        proof.quotient_commitments.push_back({label, quotient_commitments.at(label)});
-    }
-
-    struct BundleSpec
-    {
-        std::string bundle_name;
-        std::string trace_domain_name;
-        std::shared_ptr<algebra::RootOfUnityDomain> domain;
-        std::string z_name;
-        std::string v_name;
-        std::string quotient_name;
-    };
-    const std::vector<BundleSpec> bundle_specs = {
-        {"FH", "FH", context.domains.fh, "z_FH", "v_FH", "t_FH"},
-        {"edge", "edge", context.domains.edge, "z_edge", "v_edge", "t_edge"},
-        {"in", "in", context.domains.in, "z_in", "v_in", "t_in"},
-        {"d_h", "d", context.domains.d, "z_d_h", "v_d_h", "t_d_h"},
-        {"cat", "cat", context.domains.cat, "z_cat", "v_cat", "t_cat"},
-        {"C", "C", context.domains.c, "z_C", "v_C", "t_C"},
-        {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
-    };
-    stage_start = Clock::now();
-    progress_note("prove:domain_opening:start");
-    struct BundleBuildResult
-    {
-        std::string bundle_name;
-        DomainOpeningBundle bundle;
-        double gather_ms = 0.0;
-        double total_ms = 0.0;
-        RunMetrics local_metrics;
-    };
-    auto build_bundle = [&](const BundleSpec &spec) -> BundleBuildResult
-    {
-        const auto progress_prefix = "prove:domain_opening:" + spec.bundle_name;
-        progress_note(progress_prefix + ":start");
-        RunMetrics local_metrics;
-        EvaluationMemoization opening_memo(
-            context,
-            trace,
-            challenges,
-            backend_registry,
-            proof_domain_weight_cache,
-            &local_metrics);
-        auto labels = domain_opening_labels(context, spec.trace_domain_name);
-        labels.push_back(spec.quotient_name);
-        labels.push_back(quotient_mask_label(spec.quotient_name));
-        const std::vector<FieldElement> points = {
-            challenges.at(spec.z_name),
-            challenges.at(spec.z_name) * spec.domain->omega,
-        };
-        double gather_ms = 0.0;
-        const auto local_start = Clock::now();
-        auto bundle = make_bundle(
-            context,
-            trace,
-            opening_memo,
-            quotient_commitments,
-            labels,
-            points,
-            &local_metrics,
-            &gather_ms,
-            progress_prefix);
-        if (spec.bundle_name == "FH")
-        {
-            const auto nested_ms =
-                local_metrics.fh_eval_prep_ms + local_metrics.fh_interpolation_ms + local_metrics.fh_public_eval_reuse_ms + local_metrics.fh_quotient_assembly_ms;
-            local_metrics.fh_open_gather_ms =
-                std::max(0.0, local_metrics.fh_open_gather_ms - nested_ms);
-        }
-        const auto total_ms = elapsed_ms(local_start, Clock::now());
-        progress_note(
-            progress_prefix + ":done:gather_ms=" + std::to_string(gather_ms) + ":total_ms=" + std::to_string(total_ms));
-        return {
-            spec.bundle_name,
-            std::move(bundle),
-            gather_ms,
-            total_ms,
-            std::move(local_metrics),
-        };
-    };
-    std::vector<BundleBuildResult> bundle_results;
-    bundle_results.reserve(bundle_specs.size());
-    // 并行构造 opening bundle 之前先预热 barycentric 权重和 FH 公开值缓存。
-    // 大域权重向量体量极大，若在多个 bundle 中同时构造，会明显放大缺页和带宽争抢。
-
-    const auto spilled_bytes_for_domain =
-        [&](const std::string &domain_name)
-    {
-        std::size_t bytes = 0;
-
-        for (const auto &[name, spilled] :
-             trace.spilled_polynomials)
-        {
-            (void)name;
-
-            if (spilled.domain_name !=
-                domain_name)
-            {
-                continue;
-            }
-
-            const auto physical_size =
-                spilled_file_value_count(spilled);
-            const auto added =
-                algebra::field_elements_binary_size(
-                    physical_size);
-
-            if (bytes >
-                std::numeric_limits<
-                    std::size_t>::max() -
-                    added)
-            {
-                throw std::runtime_error(
-                    "domain opening spill "
-                    "byte overflow");
-            }
-
-            bytes += added;
-        }
-
-        return bytes;
-    };
-
-    constexpr std::size_t
-        kLargeOpeningSpillBytes =
-            std::size_t{2} << 30;
-
-    std::vector<std::size_t>
-        large_indices;
-
-    std::vector<std::size_t>
-        small_indices;
-
-    for (std::size_t index = 0;
-         index < bundle_specs.size();
-         ++index)
-    {
-        const auto spill_bytes =
-            spilled_bytes_for_domain(
-                bundle_specs[index]
-                    .trace_domain_name);
-
-        if (route2.cuda_field_hotspots &&
-            spill_bytes >=
-                kLargeOpeningSpillBytes)
-        {
-            large_indices.push_back(
-                index);
         }
         else
         {
-            small_indices.push_back(
-                index);
+            add_public_poly(
+                context,
+                "P_Q_tbl_feat",
+                make_shared_eval_poly("P_Q_tbl_feat", build_selector(dataset_feature_count, fh_size), context.domains.fh));
+            add_public_poly(
+                context,
+                "P_Row_feat_tbl",
+                make_shared_eval_poly(
+                    "P_Row_feat_tbl",
+                    feature_table_row_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
+                    context.domains.fh));
+            add_public_poly(
+                context,
+                "P_Col_feat_tbl",
+                make_shared_eval_poly(
+                    "P_Col_feat_tbl",
+                    feature_table_col_indices(context.dataset.num_nodes, context.dataset.num_features, fh_size),
+                    context.domains.fh));
+            if (full_graph_feature_identity_enabled(context))
+            {
+                add_public_poly_from_existing_material_checked(context, "P_Q_qry_feat", "P_Q_tbl_feat");
+                add_public_poly_from_existing_material_checked(context, "P_Row_feat_qry", "P_Row_feat_tbl");
+                add_public_poly_from_existing_material_checked(context, "P_Col_feat_qry", "P_Col_feat_tbl");
+                add_public_poly_from_existing_material_checked(context, "P_I_feat_qry", "P_Row_feat_tbl");
+            }
+            else
+            {
+                add_public_poly(
+                    context,
+                    "P_Q_qry_feat",
+                    make_shared_eval_poly("P_Q_qry_feat", build_selector(context.local.num_nodes * context.local.num_features, fh_size), context.domains.fh));
+                add_public_poly(
+                    context,
+                    "P_Row_feat_qry",
+                    make_shared_eval_poly(
+                        "P_Row_feat_qry",
+                        feature_query_row_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                        context.domains.fh));
+                add_public_poly(
+                    context,
+                    "P_Col_feat_qry",
+                    make_shared_eval_poly(
+                        "P_Col_feat_qry",
+                        feature_query_col_indices(context.local.num_nodes, context.local.num_features, fh_size),
+                        context.domains.fh));
+                add_public_poly(
+                    context,
+                    "P_I_feat_qry",
+                    make_shared_eval_poly(
+                        "P_I_feat_qry",
+                        feature_query_absolute_ids(context.local.absolute_ids, context.local.num_features, fh_size),
+                        context.domains.fh));
+            }
         }
-    }
-
-    std::sort(
-        large_indices.begin(),
-        large_indices.end(),
-        [&](std::size_t lhs,
-            std::size_t rhs)
+        add_public_poly(
+            context,
+            "P_Q_qry_src",
+            make_shared_eval_poly("P_Q_qry_src", edge_valid, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_qry_dst",
+            make_shared_eval_poly("P_Q_qry_dst", edge_valid, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_tbl_L",
+            make_shared_eval_poly("P_Q_tbl_L", build_selector(context.tables.lrelu.size(), edge_size), context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_qry_L",
+            make_shared_eval_poly("P_Q_qry_L", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_tbl_R",
+            make_shared_eval_poly("P_Q_tbl_R", build_selector(context.tables.range.size(), edge_size), context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_qry_R",
+            make_shared_eval_poly("P_Q_qry_R", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_tbl_exp",
+            make_shared_eval_poly("P_Q_tbl_exp", build_selector(context.tables.exp.size(), edge_size), context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_qry_exp",
+            make_shared_eval_poly("P_Q_qry_exp", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
+        add_public_poly(
+            context,
+            "P_Q_tbl_ELU",
+            make_shared_eval_poly("P_Q_tbl_ELU", build_selector(context.tables.elu.size(), edge_size), context.domains.edge));
+        const auto &feature_matrix_for_h =
+            !context.dataset.features.empty() ? context.dataset.features : context.local.features;
+        if (lazy_fh_public_enabled(context))
         {
-            return spilled_bytes_for_domain(
-                       bundle_specs[lhs]
-                           .trace_domain_name) >
-                   spilled_bytes_for_domain(
-                       bundle_specs[rhs]
-                           .trace_domain_name);
-        });
-
-    for (const auto index :
-         large_indices)
-    {
-        const auto &spec =
-            bundle_specs[index];
-
-        const auto z =
-            challenges.at(
-                spec.z_name);
-
-        proof_domain_weight_cache->get(
-            spec.domain,
-            z);
-
-        bundle_results.push_back(
-            build_bundle(spec));
-    }
-
-    if (std::thread::hardware_concurrency() >
-        1)
-    {
-        std::vector<
-            std::future<
-                BundleBuildResult>>
-            futures;
-
-        futures.reserve(
-            small_indices.size());
-
-        for (const auto index :
-             small_indices)
+            add_static_commitment(
+                context,
+                "V_T_H",
+                make_coeff_poly("V_T_H", algebra::flatten_matrix_coefficients(feature_matrix_for_h)));
+            add_public_poly(
+                context,
+                "P_T_H",
+                make_shared_eval_poly(
+                    "P_T_H",
+                    padded(algebra::flatten_matrix_coefficients(feature_matrix_for_h), fh_size),
+                    context.domains.fh));
+        }
+        else
         {
-            futures.push_back(
-                std::async(
-                    std::launch::async,
-                    build_bundle,
-                    bundle_specs[index]));
+            add_static_commitment(
+                context,
+                "V_T_H",
+                make_coeff_poly("V_T_H", algebra::flatten_matrix_coefficients(feature_matrix_for_h)));
+            add_public_poly(
+                context,
+                "P_T_H",
+                make_shared_eval_poly(
+                    "P_T_H",
+                    padded(algebra::flatten_matrix_coefficients(feature_matrix_for_h), fh_size),
+                    context.domains.fh));
         }
 
-        for (auto &future :
-             futures)
+        if (full_graph_feature_identity_enabled(context))
         {
-            bundle_results.push_back(
-                future.get());
+            cache_public_fh_coefficient_material(context, "P_T_H");
+            cache_public_fh_coefficient_material(context, "P_Q_tbl_feat");
+            cache_public_fh_coefficient_material(context, "P_Row_feat_tbl");
+            cache_public_fh_coefficient_material(context, "P_Col_feat_tbl");
+            rebind_public_fh_opening_material(context, "P_T_H", "P_T_H");
+            rebind_public_fh_opening_material(context, "P_Q_tbl_feat", "P_Q_tbl_feat");
+            rebind_public_fh_opening_material(context, "P_Q_qry_feat", "P_Q_tbl_feat");
+            rebind_public_fh_opening_material(context, "P_Row_feat_tbl", "P_Row_feat_tbl");
+            rebind_public_fh_opening_material(context, "P_Row_feat_qry", "P_Row_feat_tbl");
+            rebind_public_fh_opening_material(context, "P_I_feat_qry", "P_Row_feat_tbl");
+            rebind_public_fh_opening_material(context, "P_Col_feat_tbl", "P_Col_feat_tbl");
+            rebind_public_fh_opening_material(context, "P_Col_feat_qry", "P_Col_feat_tbl");
         }
-    }
-    else
-    {
-        for (const auto index :
-             small_indices)
+
+        std::vector<FieldElement> l_x(edge_size, FieldElement::zero());
+        std::vector<FieldElement> l_y(edge_size, FieldElement::zero());
+        for (std::size_t i = 0; i < context.tables.lrelu.size(); ++i)
         {
-            bundle_results.push_back(
-                build_bundle(
-                    bundle_specs[index]));
+            l_x[i] = context.tables.lrelu[i].first;
+            l_y[i] = context.tables.lrelu[i].second;
         }
-    }
-    for (const auto &spec : bundle_specs)
-    {
-        const auto it = std::find_if(
-            bundle_results.begin(),
-            bundle_results.end(),
-            [&](const BundleBuildResult &result)
-            { return result.bundle_name == spec.bundle_name; });
-        if (it == bundle_results.end())
+        add_public_poly(context, "P_T_L_x", make_shared_eval_poly("P_T_L_x", l_x, context.domains.edge));
+        add_public_poly(context, "P_T_L_y", make_shared_eval_poly("P_T_L_y", l_y, context.domains.edge));
+        add_static_commitment(context, "V_T_L_x", make_eval_poly("V_T_L_x", l_x, context.domains.edge));
+        add_static_commitment(context, "V_T_L_y", make_eval_poly("V_T_L_y", l_y, context.domains.edge));
+
+        std::vector<FieldElement> elu_x(edge_size, FieldElement::zero());
+        std::vector<FieldElement> elu_y(edge_size, FieldElement::zero());
+        for (std::size_t i = 0; i < context.tables.elu.size(); ++i)
         {
-            throw std::runtime_error("missing bundle build result for " + spec.bundle_name);
+            elu_x[i] = context.tables.elu[i].first;
+            elu_y[i] = context.tables.elu[i].second;
         }
-        proof.domain_openings.push_back({it->bundle_name, it->bundle});
+        add_public_poly(context, "P_T_ELU_x", make_shared_eval_poly("P_T_ELU_x", elu_x, context.domains.edge));
+        add_public_poly(context, "P_T_ELU_y", make_shared_eval_poly("P_T_ELU_y", elu_y, context.domains.edge));
+        add_static_commitment(context, "V_T_ELU_x", make_eval_poly("V_T_ELU_x", elu_x, context.domains.edge));
+        add_static_commitment(context, "V_T_ELU_y", make_eval_poly("V_T_ELU_y", elu_y, context.domains.edge));
+
+        std::vector<FieldElement> exp_x(edge_size, FieldElement::zero());
+        std::vector<FieldElement> exp_y(edge_size, FieldElement::zero());
+        for (std::size_t i = 0; i < context.tables.exp.size(); ++i)
+        {
+            exp_x[i] = context.tables.exp[i].first;
+            exp_y[i] = context.tables.exp[i].second;
+        }
+        add_public_poly(context, "P_T_exp_x", make_shared_eval_poly("P_T_exp_x", exp_x, context.domains.edge));
+        add_public_poly(context, "P_T_exp_y", make_shared_eval_poly("P_T_exp_y", exp_y, context.domains.edge));
+        add_static_commitment(context, "V_T_exp_x", make_eval_poly("V_T_exp_x", exp_x, context.domains.edge));
+        add_static_commitment(context, "V_T_exp_y", make_eval_poly("V_T_exp_y", exp_y, context.domains.edge));
+        add_public_poly(
+            context,
+            "P_T_range",
+            make_shared_eval_poly("P_T_range", padded(context.tables.range, edge_size), context.domains.edge));
+        add_static_commitment(
+            context,
+            "V_T_range",
+            make_eval_poly("V_T_range", padded(context.tables.range, edge_size), context.domains.edge));
+
+        // 模型参数在 context 阶段就固定成静态承诺，后面的 trace 只引用标签，不再重复构造权重对象。
+        for (std::size_t layer_index = 0;
+             layer_index < context.model.hidden_layers.size();
+             ++layer_index)
+        {
+            const auto &layer = context.model.hidden_layers[layer_index];
+            for (std::size_t head_index = 0;
+                 head_index < layer.heads.size();
+                 ++head_index)
+            {
+                const auto &head = layer.heads[head_index];
+                const auto weight = quantize_model_matrix(
+                    head.seq_kernel_fp,
+                    scales.s_w_hidden.at(layer_index).at(head_index));
+                const auto column_count = weight.empty() ? 0 : weight.front().size();
+                for (std::size_t column = 0; column < column_count; ++column)
+                {
+                    std::vector<FieldElement> values(
+                        context.domains.in->size, FieldElement::zero());
+                    for (std::size_t row = 0; row < weight.size(); ++row)
+                        values[row] = weight[row][column];
+                    const auto label = hidden_weight_column_label(
+                        layer_index, head_index, column);
+                    add_static_commitment(
+                        context, label,
+                        make_eval_poly(label, values, context.domains.in));
+                }
+                const auto src_label = hidden_src_label(layer_index, head_index);
+                add_static_commitment(
+                    context, src_label,
+                    make_eval_poly(
+                        src_label,
+                        padded(quantize_model_vector_at_scale(
+                                   head.attn_src_kernel_fp,
+                                   scales.s_a_src_hidden.at(layer_index).at(head_index)),
+                               context.domains.d->size),
+                        context.domains.d));
+                const auto dst_label = hidden_dst_label(layer_index, head_index);
+                add_static_commitment(
+                    context, dst_label,
+                    make_eval_poly(
+                        dst_label,
+                        padded(quantize_model_vector_at_scale(
+                                   head.attn_dst_kernel_fp,
+                                   scales.s_a_dst_hidden.at(layer_index).at(head_index)),
+                               context.domains.d->size),
+                        context.domains.d));
+            }
+        }
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
+        {
+            const auto &head = context.model.output_layer.heads[head_index];
+            const auto weight = quantize_model_matrix(
+                head.seq_kernel_fp,
+                scales.s_w_output.at(head_index));
+            const auto column_count = weight.empty() ? 0 : weight.front().size();
+            for (std::size_t column = 0; column < column_count; ++column)
+            {
+                std::vector<FieldElement> values(context.domains.cat->size, FieldElement::zero());
+                for (std::size_t row = 0; row < weight.size(); ++row)
+                    values[row] = weight[row][column];
+                const auto label = output_weight_column_label(head_index, column);
+                add_static_commitment(context, label, make_eval_poly(label, values, context.domains.cat));
+            }
+            add_static_commitment(
+                context,
+                output_src_label(head_index),
+                make_eval_poly(
+                    output_src_label(head_index),
+                    padded(quantize_model_vector_at_scale(
+                               head.attn_src_kernel_fp,
+                               scales.s_a_src_output.at(head_index)),
+                           context.domains.c->size),
+                    context.domains.c));
+            add_static_commitment(
+                context,
+                output_dst_label(head_index),
+                make_eval_poly(
+                    output_dst_label(head_index),
+                    padded(quantize_model_vector_at_scale(
+                               head.attn_dst_kernel_fp,
+                               scales.s_a_dst_output.at(head_index)),
+                           context.domains.c->size),
+                    context.domains.c));
+            add_static_commitment(
+                context,
+                output_bias_label(head_index),
+                make_eval_poly(
+                    output_bias_label(head_index),
+                    padded(
+                        quantize_model_vector(
+                            head.output_bias_fp,
+                            scales.s_b_output.at(head_index)),
+                        context.domains.c->size),
+                    context.domains.c));
+        }
+        end = Clock::now();
         if (metrics != nullptr)
         {
-            metrics->domain_eval_gather_ms += it->gather_ms;
-            metrics->domain_open_denominator_inverse_ms += it->local_metrics.domain_open_denominator_inverse_ms;
-            metrics->domain_open_denominator_inverse_reuse_ms +=
-                it->local_metrics.domain_open_denominator_inverse_reuse_ms;
-            metrics->domain_open_denominator_inverse_reuse_hits +=
-                it->local_metrics.domain_open_denominator_inverse_reuse_hits;
-            metrics->domain_open_denominator_inverse_cache_misses +=
-                it->local_metrics.domain_open_denominator_inverse_cache_misses;
-            metrics->domain_open_point_parallel_batches +=
-                it->local_metrics.domain_open_point_parallel_batches;
-            metrics->domain_open_point_parallel_workers +=
-                it->local_metrics.domain_open_point_parallel_workers;
-            metrics->domain_open_point_msm_worker_cap +=
-                it->local_metrics.domain_open_point_msm_worker_cap;
-            if (auto *metric = domain_open_metric(metrics, it->bundle_name); metric != nullptr)
+            metrics->load_static_ms += elapsed_ms(start, end);
+        }
+        progress_note("context:public_static:done");
+
+        auto compiler_artifact = std::make_shared<ProtocolCompilerArtifact>(
+            build_protocol_compiler_artifact(context));
+        std::string compiler_artifact_reason;
+        if (!validate_protocol_compiler_artifact(
+                context, *compiler_artifact, &compiler_artifact_reason))
+        {
+            throw std::runtime_error(
+                "instance ProtocolCompilerArtifact validation failed: " + compiler_artifact_reason);
+        }
+        context.compiler_artifact = std::move(compiler_artifact);
+        context.validated_compiler_artifact_identity =
+            context.compiler_artifact.get();
+
+        if (full_graph_feature_identity_enabled(context))
+        {
+            context.dataset.features.clear();
+            context.dataset.features.shrink_to_fit();
+            context.dataset.features_fp.clear();
+            context.dataset.features_fp.shrink_to_fit();
+        }
+
+        const auto final_cache_key = context_cache_key(context.config);
+        if (final_cache_key != cache_key)
+            throw std::runtime_error(
+                "static context identity changed while loading private resources");
+        const bool cacheable_static_context =
+            context.domains.fh != nullptr && context.domains.edge != nullptr && context.domains.fh->size < (1ULL << 24) && context.domains.edge->size < (1ULL << 22);
+        if (retain_static_context_for_reuse &&
+            allow_static_context_cache && cacheable_static_context)
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            cache[cache_key] = StaticContextCachePayload{
+                .context = context,
+                .identity = final_cache_key,
+                .compiler_artifact_identity =
+                    static_context_compiler_artifact_identity(context),
+            };
+        }
+        return context;
+    }
+
+    // 消费 trace 生成最终 proof，对外保证 commitment 顺序、block 顺序与 opening 结构稳定。
+    Proof prove(const ProtocolContext &context, const TraceArtifacts &trace, RunMetrics *metrics)
+    {
+        if (context.verifier_shape_only)
+            throw std::runtime_error(
+                "prover rejects verifier shape-only execution context");
+        // Prove is the commitment-producing boundary.  Revalidate the input
+        // views here as well because a caller may retain a trace and mutate
+        // or replace the context after build_trace returned.
+        data::validate_input_feature_views(
+            context.dataset,
+            context.local,
+            context.config.quantization.s_input,
+            context.config.input_preprocess_id);
+        const auto &route2 = util::route2_options();
+        // prove 入口只消费 trace 和固定挑战顺序，不在这里改写 proof schema 或 block 顺序。
+        if (trace.commitment_order != dynamic_commitment_labels(context))
+        {
+            throw std::runtime_error("trace commitment order does not match the protocol commitment order");
+        }
+
+        ScopedCudaProverCacheRelease
+            cuda_cache_release_guard;
+
+        auto stage_start = Clock::now();
+        progress_note("prove:quotient:start");
+        // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
+        const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
+        std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
+        if (route2.packed_fft_backend)
+        {
+            // Packed backends retain non-owning polynomial pointers.
+            // Keep this registry proof-local so those pointers never
+            // outlive the current context or trace.  Construction only
+            // indexes labels; subset materialization remains lazy.
+            backend_registry =
+                std::make_shared<ProofEvaluationBackendRegistry>(
+                    context, trace);
+        }
+        auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
+        const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
+        append_note(metrics, "quotient_cache=miss");
+
+        // On integrated-memory CUDA systems a large resident SRS cache
+        // competes directly with the file-backed quotient working set.
+        //
+        // Keep the cache across phases for ordinary workloads, where its
+        // reuse is beneficial. Release it only for quotient shapes that
+        // already enter the large edge/FH working-set class.
+        const bool large_quotient_working_set =
+            (context.domains.edge != nullptr &&
+             context.domains.edge->size >= (1ULL << 23)) ||
+            (context.domains.fh != nullptr &&
+             context.domains.fh->size >= (1ULL << 25));
+
+        if (route2.cuda_field_hotspots &&
+            large_quotient_working_set)
+        {
+            // Scalar conversion buffers and streamed-MSM staging are not
+            // useful during quotient construction. Release those first
+            // without throwing away immutable SRS bases.
+            crypto::
+                release_cuda_g1_msm_execution_workspace();
+
+            constexpr std::size_t
+                kMinimumRetainedCudaMsmBaseBytes =
+                    std::size_t{512} << 20;
+
+            constexpr std::size_t
+                kMaximumIntegratedRetainedCudaMsmBaseBytes =
+                    std::size_t{8} << 30;
+
+            std::size_t
+                retained_cuda_msm_base_bytes =
+                    kMinimumRetainedCudaMsmBaseBytes;
+
+            if (crypto::
+                    cuda_g1_msm_integrated_memory_device())
             {
-                *metric += it->total_ms;
+                const auto host_budget =
+                    quotient_coset_memory_budget();
+
+                if (host_budget.available_bytes >
+                        host_budget.reserve_bytes &&
+                    host_budget.available_known)
+                {
+                    const auto live_after_reserve =
+                        host_budget.available_bytes -
+                        host_budget.reserve_bytes;
+
+                    // Give only 1/16 of currently safe host/unified
+                    // headroom to cross-phase SRS residency.  Quotient
+                    // cosets retain the dominant share while useful
+                    // PPI/OGBN Lagrange prefixes can survive.
+                    retained_cuda_msm_base_bytes =
+                        std::min(
+                            host_budget.budget_bytes,
+                            std::min(
+                                live_after_reserve /
+                                    std::size_t{8},
+                                kMaximumIntegratedRetainedCudaMsmBaseBytes));
+                }
+                else
+                {
+                    // The historical 512 MiB floor is only an optimization
+                    // hint.  It must not survive when effective admission is
+                    // unavailable or below that floor on a constrained UMA
+                    // host.
+                    retained_cuda_msm_base_bytes =
+                        host_budget.available_known
+                            ? std::min(
+                                  kMinimumRetainedCudaMsmBaseBytes,
+                                  host_budget.budget_bytes)
+                            : 0;
+                }
             }
-            if (it->bundle_name == "FH")
+
+            progress_note(
+                "prove:quotient:"
+                "trim_cuda_msm_cache:start:"
+                "maximum_bytes=" +
+                std::to_string(
+                    retained_cuda_msm_base_bytes));
+
+            crypto::
+                trim_cuda_g1_msm_resident_cache(
+                    retained_cuda_msm_base_bytes);
+
+            progress_note(
+                "prove:quotient:"
+                "trim_cuda_msm_cache:done:"
+                "maximum_bytes=" +
+                std::to_string(
+                    retained_cuda_msm_base_bytes));
+        }
+
+        auto named_quotient_polynomials = materialize_quotient_polynomials(
+            context,
+            trace,
+            pre_quotient_challenges,
+            quotient_labels,
+            metrics);
+        named_quotient_polynomials = blind_quotient_polynomials(
+            context,
+            std::move(named_quotient_polynomials));
+
+        if (route2.cuda_field_hotspots)
+        {
+            progress_note(
+                "prove:quotient:"
+                "release_cuda_transform_transients:start");
+
+            // Quotient coefficients are now canonical host-side prover
+            // material. t_edge execution state and CUDA NTT workspace are
+            // dead, so release them before coefficient-SRS KZG waves.
+            release_cuda_t_edge_executor_cache();
+
+            algebra::release_cuda_ntt_workspace();
+
+            // Scalar/stream MSM staging is also phase-local.  Preserve
+            // resident immutable SRS bases: they are useful again for
+            // quotient commitments and, later, folded openings.
+            crypto::
+                release_cuda_g1_msm_execution_workspace();
+
+            progress_note(
+                "prove:quotient:"
+                "release_cuda_transform_transients:done");
+        }
+
+        progress_note("prove:quotient:commit_batch:start");
+        const auto quotient_commit_batch_start = Clock::now();
+        crypto::CommitBatchProfile quotient_commit_profile;
+        auto quotient_commitments = [&]()
+        {
+            // The owned batch may use CUDA waves or CPU worker
+            // dispatch. Measure the synchronously joined call as one
+            // wall-clock commitment span; never sum per-worker MSM
+            // profiles into the formal total.
+            timing::ScopedCommitment commitment_scope(metrics);
+            return batch_quotient_commitments(
+                std::move(named_quotient_polynomials),
+                context.kzg,
+                metrics != nullptr ? &quotient_commit_profile : nullptr);
+        }();
+        progress_note(
+            "prove:quotient:commit_batch:done:ms=" + std::to_string(elapsed_ms(
+                                                         quotient_commit_batch_start, Clock::now())));
+        if (metrics != nullptr)
+        {
+            metrics->quotient_commitment_ms +=
+                quotient_commit_profile.msm_ms;
+        }
+        // Quotient polynomials and commitments are proof-specific and must not be
+        // reused by a later fresh-proof measurement.
+        const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments, &trace.public_metadata);
+        if (metrics != nullptr)
+        {
+            metrics->quotient_build_ms += elapsed_ms(stage_start, Clock::now());
+        }
+        progress_note("prove:quotient:done");
+
+        // 组装 proof 时必须严格按 schema 的 label 顺序回填，
+        // 否则 serializer / parser 与 verifier 会同时失配。
+        Proof proof;
+        proof.public_metadata = trace.public_metadata;
+        proof.block_order = proof_block_order();
+        proof.challenges = challenges;
+        proof.route_references =
+            route_opening_references(context, proof.challenges);
+        if (trace.pi_bind == nullptr)
+        {
+            throw std::runtime_error("trace is missing Pi_bind proof material");
+        }
+        proof.pi_bind = *trace.pi_bind;
+        for (const auto &label : dynamic_commitment_labels(context))
+        {
+            proof.dynamic_commitments.push_back({label, trace.commitments.at(label)});
+        }
+        for (const auto &label : quotient_commitment_labels(context))
+        {
+            proof.quotient_commitments.push_back({label, quotient_commitments.at(label)});
+        }
+
+        struct BundleSpec
+        {
+            std::string bundle_name;
+            std::string trace_domain_name;
+            std::shared_ptr<algebra::RootOfUnityDomain> domain;
+            std::string z_name;
+            std::string v_name;
+            std::string quotient_name;
+        };
+        const std::vector<BundleSpec> bundle_specs = {
+            {"FH", "FH", context.domains.fh, "z_FH", "v_FH", "t_FH"},
+            {"edge", "edge", context.domains.edge, "z_edge", "v_edge", "t_edge"},
+            {"in", "in", context.domains.in, "z_in", "v_in", "t_in"},
+            {"d_h", "d", context.domains.d, "z_d_h", "v_d_h", "t_d_h"},
+            {"cat", "cat", context.domains.cat, "z_cat", "v_cat", "t_cat"},
+            {"C", "C", context.domains.c, "z_C", "v_C", "t_C"},
+            {"N", "N", context.domains.n, "z_N", "v_N", "t_N"},
+        };
+        stage_start = Clock::now();
+        progress_note("prove:domain_opening:start");
+        struct BundleBuildResult
+        {
+            std::string bundle_name;
+            DomainOpeningBundle bundle;
+            double gather_ms = 0.0;
+            double total_ms = 0.0;
+            RunMetrics local_metrics;
+        };
+        auto build_bundle = [&](const BundleSpec &spec) -> BundleBuildResult
+        {
+            const auto progress_prefix = "prove:domain_opening:" + spec.bundle_name;
+            progress_note(progress_prefix + ":start");
+            RunMetrics local_metrics;
+            EvaluationMemoization opening_memo(
+                context,
+                trace,
+                challenges,
+                backend_registry,
+                proof_domain_weight_cache,
+                &local_metrics);
+            auto labels = domain_opening_labels(context, spec.trace_domain_name);
+            labels.push_back(spec.quotient_name);
+            labels.push_back(quotient_mask_label(spec.quotient_name));
+            const std::vector<FieldElement> points = {
+                challenges.at(spec.z_name),
+                challenges.at(spec.z_name) * spec.domain->omega,
+            };
+            double gather_ms = 0.0;
+            const auto local_start = Clock::now();
+            auto bundle = make_bundle(
+                context,
+                trace,
+                opening_memo,
+                quotient_commitments,
+                labels,
+                points,
+                &local_metrics,
+                &gather_ms,
+                progress_prefix);
+            if (spec.bundle_name == "FH")
             {
-                metrics->fh_eval_prep_ms += it->local_metrics.fh_eval_prep_ms;
-                metrics->fh_interpolation_ms += it->local_metrics.fh_interpolation_ms;
-                metrics->fh_public_eval_reuse_ms += it->local_metrics.fh_public_eval_reuse_ms;
-                metrics->fh_quotient_assembly_ms += it->local_metrics.fh_quotient_assembly_ms;
-                metrics->fh_open_gather_ms += it->local_metrics.fh_open_gather_ms;
-                metrics->fh_open_witness_ms += it->local_metrics.fh_open_witness_ms;
-                metrics->fh_open_fold_prepare_ms += it->local_metrics.fh_open_fold_prepare_ms;
+                const auto nested_ms =
+                    local_metrics.fh_eval_prep_ms + local_metrics.fh_interpolation_ms + local_metrics.fh_public_eval_reuse_ms + local_metrics.fh_quotient_assembly_ms;
+                local_metrics.fh_open_gather_ms =
+                    std::max(0.0, local_metrics.fh_open_gather_ms - nested_ms);
+            }
+            const auto total_ms = elapsed_ms(local_start, Clock::now());
+            progress_note(
+                progress_prefix + ":done:gather_ms=" + std::to_string(gather_ms) + ":total_ms=" + std::to_string(total_ms));
+            return {
+                spec.bundle_name,
+                std::move(bundle),
+                gather_ms,
+                total_ms,
+                std::move(local_metrics),
+            };
+        };
+        std::vector<BundleBuildResult> bundle_results;
+        bundle_results.reserve(bundle_specs.size());
+        // 并行构造 opening bundle 之前先预热 barycentric 权重和 FH 公开值缓存。
+        // 大域权重向量体量极大，若在多个 bundle 中同时构造，会明显放大缺页和带宽争抢。
+
+        const auto spilled_bytes_for_domain =
+            [&](const std::string &domain_name)
+        {
+            std::size_t bytes = 0;
+
+            for (const auto &[name, spilled] :
+                 trace.spilled_polynomials)
+            {
+                (void)name;
+
+                if (spilled.domain_name !=
+                    domain_name)
+                {
+                    continue;
+                }
+
+                const auto physical_size =
+                    spilled_file_value_count(spilled);
+                const auto added =
+                    algebra::field_elements_binary_size(
+                        physical_size);
+
+                if (bytes >
+                    std::numeric_limits<
+                        std::size_t>::max() -
+                        added)
+                {
+                    throw std::runtime_error(
+                        "domain opening spill "
+                        "byte overflow");
+                }
+
+                bytes += added;
+            }
+
+            return bytes;
+        };
+
+        constexpr std::size_t
+            kLargeOpeningSpillBytes =
+                std::size_t{2} << 30;
+
+        std::vector<std::size_t>
+            large_indices;
+
+        std::vector<std::size_t>
+            small_indices;
+
+        for (std::size_t index = 0;
+             index < bundle_specs.size();
+             ++index)
+        {
+            const auto spill_bytes =
+                spilled_bytes_for_domain(
+                    bundle_specs[index]
+                        .trace_domain_name);
+
+            if (route2.cuda_field_hotspots &&
+                spill_bytes >=
+                    kLargeOpeningSpillBytes)
+            {
+                large_indices.push_back(
+                    index);
+            }
+            else
+            {
+                small_indices.push_back(
+                    index);
             }
         }
-    }
-    const auto domain_bundle_wall_ms =
-        elapsed_ms(stage_start, Clock::now());
-    if (metrics != nullptr)
-    {
-        metrics->domain_opening_ms += domain_bundle_wall_ms;
-    }
-    progress_note(
-        "prove:domain_opening:done:ms=" + std::to_string(domain_bundle_wall_ms));
 
-    // Every domain-opening scalar value has now been gathered into
-    // proof.domain_openings. The barycentric weight vectors are not
-    // needed by point-group witness construction below.
-    //
-    // In particular, large FH/edge instances can retain multiple
-    // GiB of challenge-specific weight vectors. Release them before
-    // folded opening plans allocate their own full-domain buffers.
-    proof_domain_weight_cache.reset();
+        std::sort(
+            large_indices.begin(),
+            large_indices.end(),
+            [&](std::size_t lhs,
+                std::size_t rhs)
+            {
+                return spilled_bytes_for_domain(
+                           bundle_specs[lhs]
+                               .trace_domain_name) >
+                       spilled_bytes_for_domain(
+                           bundle_specs[rhs]
+                               .trace_domain_name);
+            });
 
-    progress_note(
-        "prove:domain_opening:weight_cache:released");
+        for (const auto index :
+             large_indices)
+        {
+            const auto &spec =
+                bundle_specs[index];
 
-    // Eval_bind owns every Pi_bind claim value.  The same claims remain
-    // inside the in-memory domain bundle solely so Open_dom can fold one
-    // global point group; the wire codec omits them from Eval_dom.
-    for (std::size_t head_index = 0;
-         head_index < context.model.output_layer.heads.size();
-         ++head_index)
-    {
-        const auto relation_id =
-            "bind:output:" + std::to_string(head_index);
-        auto subproof_it = std::find_if(
-            proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
-            [&](const BindingSubproof &subproof)
-            { return subproof.relation_meta.relation_id == relation_id; });
-        if (subproof_it == proof.pi_bind.subproofs.end())
-            throw std::runtime_error("missing output Eval_bind owner");
-        for (const auto *expected_bundle_name : {"C", "edge"})
+            const auto z =
+                challenges.at(
+                    spec.z_name);
+
+            proof_domain_weight_cache->get(
+                spec.domain,
+                z);
+
+            bundle_results.push_back(
+                build_bundle(spec));
+        }
+
+        if (std::thread::hardware_concurrency() >
+            1)
+        {
+            std::vector<
+                std::future<
+                    BundleBuildResult>>
+                futures;
+
+            futures.reserve(
+                small_indices.size());
+
+            for (const auto index :
+                 small_indices)
+            {
+                futures.push_back(
+                    std::async(
+                        std::launch::async,
+                        build_bundle,
+                        bundle_specs[index]));
+            }
+
+            for (auto &future :
+                 futures)
+            {
+                bundle_results.push_back(
+                    future.get());
+            }
+        }
+        else
+        {
+            for (const auto index :
+                 small_indices)
+            {
+                bundle_results.push_back(
+                    build_bundle(
+                        bundle_specs[index]));
+            }
+        }
+        for (const auto &spec : bundle_specs)
+        {
+            const auto it = std::find_if(
+                bundle_results.begin(),
+                bundle_results.end(),
+                [&](const BundleBuildResult &result)
+                { return result.bundle_name == spec.bundle_name; });
+            if (it == bundle_results.end())
+            {
+                throw std::runtime_error("missing bundle build result for " + spec.bundle_name);
+            }
+            proof.domain_openings.push_back({it->bundle_name, it->bundle});
+            if (metrics != nullptr)
+            {
+                metrics->domain_eval_gather_ms += it->gather_ms;
+                metrics->domain_open_denominator_inverse_ms += it->local_metrics.domain_open_denominator_inverse_ms;
+                metrics->domain_open_denominator_inverse_reuse_ms +=
+                    it->local_metrics.domain_open_denominator_inverse_reuse_ms;
+                metrics->domain_open_denominator_inverse_reuse_hits +=
+                    it->local_metrics.domain_open_denominator_inverse_reuse_hits;
+                metrics->domain_open_denominator_inverse_cache_misses +=
+                    it->local_metrics.domain_open_denominator_inverse_cache_misses;
+                metrics->domain_open_point_parallel_batches +=
+                    it->local_metrics.domain_open_point_parallel_batches;
+                metrics->domain_open_point_parallel_workers +=
+                    it->local_metrics.domain_open_point_parallel_workers;
+                metrics->domain_open_point_msm_worker_cap +=
+                    it->local_metrics.domain_open_point_msm_worker_cap;
+                if (auto *metric = domain_open_metric(metrics, it->bundle_name); metric != nullptr)
+                {
+                    *metric += it->total_ms;
+                }
+                if (it->bundle_name == "FH")
+                {
+                    metrics->fh_eval_prep_ms += it->local_metrics.fh_eval_prep_ms;
+                    metrics->fh_interpolation_ms += it->local_metrics.fh_interpolation_ms;
+                    metrics->fh_public_eval_reuse_ms += it->local_metrics.fh_public_eval_reuse_ms;
+                    metrics->fh_quotient_assembly_ms += it->local_metrics.fh_quotient_assembly_ms;
+                    metrics->fh_open_gather_ms += it->local_metrics.fh_open_gather_ms;
+                    metrics->fh_open_witness_ms += it->local_metrics.fh_open_witness_ms;
+                    metrics->fh_open_fold_prepare_ms += it->local_metrics.fh_open_fold_prepare_ms;
+                }
+            }
+        }
+        const auto domain_bundle_wall_ms =
+            elapsed_ms(stage_start, Clock::now());
+        if (metrics != nullptr)
+        {
+            metrics->domain_opening_ms += domain_bundle_wall_ms;
+        }
+        progress_note(
+            "prove:domain_opening:done:ms=" + std::to_string(domain_bundle_wall_ms));
+
+        // Every domain-opening scalar value has now been gathered into
+        // proof.domain_openings. The barycentric weight vectors are not
+        // needed by point-group witness construction below.
+        //
+        // In particular, large FH/edge instances can retain multiple
+        // GiB of challenge-specific weight vectors. Release them before
+        // folded opening plans allocate their own full-domain buffers.
+        proof_domain_weight_cache.reset();
+
+        progress_note(
+            "prove:domain_opening:weight_cache:released");
+
+        // Eval_bind owns every Pi_bind claim value.  The same claims remain
+        // inside the in-memory domain bundle solely so Open_dom can fold one
+        // global point group; the wire codec omits them from Eval_dom.
+        for (std::size_t head_index = 0;
+             head_index < context.model.output_layer.heads.size();
+             ++head_index)
+        {
+            const auto relation_id =
+                "bind:output:" + std::to_string(head_index);
+            auto subproof_it = std::find_if(
+                proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
+                [&](const BindingSubproof &subproof)
+                { return subproof.relation_meta.relation_id == relation_id; });
+            if (subproof_it == proof.pi_bind.subproofs.end())
+                throw std::runtime_error("missing output Eval_bind owner");
+            for (const auto *expected_bundle_name : {"C", "edge"})
+            {
+                const auto bundle_it = std::find_if(
+                    proof.domain_openings.begin(),
+                    proof.domain_openings.end(),
+                    [&](const auto &entry)
+                    { return entry.first == expected_bundle_name; });
+                if (bundle_it == proof.domain_openings.end())
+                    throw std::runtime_error(
+                        "missing Pi_bind global opening bundle: " + std::string(expected_bundle_name));
+                const auto &bundle_name = bundle_it->first;
+                const auto &bundle = bundle_it->second;
+                const bool is_c = bundle_name == "C";
+                std::vector<std::string> owned_labels;
+                if (is_c)
+                {
+                    owned_labels = {
+                        model_proof_local_label(output_bias_label(head_index)),
+                        output_bias_view_label(head_index, "Table_can"),
+                        output_bias_view_label(head_index, "m_can"),
+                        output_bias_view_label(head_index, "J_can"),
+                        output_bias_view_label(head_index, "R_can"),
+                    };
+                }
+                else
+                {
+                    owned_labels = {
+                        output_bias_view_label(head_index, "Query"),
+                        output_bias_view_label(head_index, "J_qry"),
+                        output_bias_view_label(head_index, "R_qry"),
+                    };
+                    if (subproof_it->relation_meta
+                            .coefficient_basis_relations.size() != 1)
+                        throw std::runtime_error(
+                            "missing output coefficient basis Eval_bind metadata");
+                    const auto &basis = subproof_it->relation_meta
+                                            .coefficient_basis_relations.front();
+                    for (const auto &chunk : basis.chunks)
+                    {
+                        owned_labels.push_back(chunk.object_id);
+                        owned_labels.push_back(chunk.accumulator_object);
+                    }
+                }
+                for (const auto &label : owned_labels)
+                {
+                    const auto value_it = std::find_if(
+                        bundle.values.begin(), bundle.values.end(),
+                        [&](const auto &entry)
+                        { return entry.first == label; });
+                    if (value_it == bundle.values.end())
+                        throw std::runtime_error(
+                            "Pi_bind domain value missing from global opening: " + label);
+                    subproof_it->evaluations.push_back(BindingEvaluation{
+                        .domain = bundle_name,
+                        .object_id = label,
+                        .values = value_it->second,
+                        .kind = label.ends_with("_BiasView_m_can")
+                                    ? PayloadValueKind::PublicValue
+                                    : PayloadValueKind::MaskedPrivateValue,
+                    });
+                }
+                for (const auto &point : bundle.points)
+                {
+                    const auto group_id =
+                        "Open_dom:" + bundle_name + ":" + point.to_string();
+                    if (std::none_of(
+                            subproof_it->opening_references.begin(),
+                            subproof_it->opening_references.end(),
+                            [&](const MetadataReference &reference)
+                            { return reference.object_id == group_id; }))
+                        subproof_it->opening_references.push_back({group_id});
+                }
+            }
+        }
+        const auto n_bundle_it = std::find_if(
+            proof.domain_openings.begin(), proof.domain_openings.end(),
+            [](const auto &entry)
+            { return entry.first == "N"; });
+        if (n_bundle_it == proof.domain_openings.end())
+            throw std::runtime_error(
+                "missing canonical matrix N-domain opening bundle");
+        for (auto &subproof : proof.pi_bind.subproofs)
+        {
+            if (subproof.relation_meta.canonical_matrices.empty())
+                continue;
+            for (const auto &matrix :
+                 subproof.relation_meta.canonical_matrices)
+            {
+                auto owned_objects = matrix.column_objects;
+                owned_objects.push_back(matrix.compressed_object);
+                for (const auto &column : owned_objects)
+                {
+                    const auto value_it = std::find_if(
+                        n_bundle_it->second.values.begin(),
+                        n_bundle_it->second.values.end(),
+                        [&](const auto &entry)
+                        { return entry.first == column; });
+                    if (value_it == n_bundle_it->second.values.end())
+                        throw std::runtime_error(
+                            "canonical matrix value missing from N opening: " + column);
+                    subproof.evaluations.push_back(BindingEvaluation{
+                        .domain = "N",
+                        .object_id = column,
+                        .values = value_it->second,
+                        .kind = PayloadValueKind::MaskedPrivateValue,
+                    });
+                }
+            }
+            for (const auto &point : n_bundle_it->second.points)
+            {
+                const auto group_id =
+                    "Open_dom:N:" + point.to_string();
+                if (std::none_of(
+                        subproof.opening_references.begin(),
+                        subproof.opening_references.end(),
+                        [&](const MetadataReference &reference)
+                        { return reference.object_id == group_id; }))
+                    subproof.opening_references.push_back({group_id});
+            }
+        }
+        const auto append_binding_domain_values = [&](
+                                                      BindingSubproof &subproof,
+                                                      const std::string &bundle_name,
+                                                      const std::vector<std::string> &objects)
         {
             const auto bundle_it = std::find_if(
                 proof.domain_openings.begin(),
                 proof.domain_openings.end(),
                 [&](const auto &entry)
-                { return entry.first == expected_bundle_name; });
+                { return entry.first == bundle_name; });
             if (bundle_it == proof.domain_openings.end())
                 throw std::runtime_error(
-                    "missing Pi_bind global opening bundle: " + std::string(expected_bundle_name));
-            const auto &bundle_name = bundle_it->first;
-            const auto &bundle = bundle_it->second;
-            const bool is_c = bundle_name == "C";
-            std::vector<std::string> owned_labels;
-            if (is_c)
-            {
-                owned_labels = {
-                    model_proof_local_label(output_bias_label(head_index)),
-                    output_bias_view_label(head_index, "Table_can"),
-                    output_bias_view_label(head_index, "m_can"),
-                    output_bias_view_label(head_index, "J_can"),
-                    output_bias_view_label(head_index, "R_can"),
-                };
-            }
-            else
-            {
-                owned_labels = {
-                    output_bias_view_label(head_index, "Query"),
-                    output_bias_view_label(head_index, "J_qry"),
-                    output_bias_view_label(head_index, "R_qry"),
-                };
-                if (subproof_it->relation_meta
-                        .coefficient_basis_relations.size() != 1)
-                    throw std::runtime_error(
-                        "missing output coefficient basis Eval_bind metadata");
-                const auto &basis = subproof_it->relation_meta
-                                        .coefficient_basis_relations.front();
-                for (const auto &chunk : basis.chunks)
-                {
-                    owned_labels.push_back(chunk.object_id);
-                    owned_labels.push_back(chunk.accumulator_object);
-                }
-            }
-            for (const auto &label : owned_labels)
+                    "aggregation binding opening bundle missing: " + bundle_name);
+            for (const auto &object : objects)
             {
                 const auto value_it = std::find_if(
-                    bundle.values.begin(), bundle.values.end(),
+                    bundle_it->second.values.begin(),
+                    bundle_it->second.values.end(),
                     [&](const auto &entry)
-                    { return entry.first == label; });
-                if (value_it == bundle.values.end())
+                    { return entry.first == object; });
+                if (value_it == bundle_it->second.values.end())
                     throw std::runtime_error(
-                        "Pi_bind domain value missing from global opening: " + label);
-                subproof_it->evaluations.push_back(BindingEvaluation{
-                    .domain = bundle_name,
-                    .object_id = label,
-                    .values = value_it->second,
-                    .kind = label.ends_with("_BiasView_m_can")
-                                ? PayloadValueKind::PublicValue
-                                : PayloadValueKind::MaskedPrivateValue,
-                });
-            }
-            for (const auto &point : bundle.points)
-            {
-                const auto group_id =
-                    "Open_dom:" + bundle_name + ":" + point.to_string();
-                if (std::none_of(
-                        subproof_it->opening_references.begin(),
-                        subproof_it->opening_references.end(),
-                        [&](const MetadataReference &reference)
-                        { return reference.object_id == group_id; }))
-                    subproof_it->opening_references.push_back({group_id});
-            }
-        }
-    }
-    const auto n_bundle_it = std::find_if(
-        proof.domain_openings.begin(), proof.domain_openings.end(),
-        [](const auto &entry)
-        { return entry.first == "N"; });
-    if (n_bundle_it == proof.domain_openings.end())
-        throw std::runtime_error(
-            "missing canonical matrix N-domain opening bundle");
-    for (auto &subproof : proof.pi_bind.subproofs)
-    {
-        if (subproof.relation_meta.canonical_matrices.empty())
-            continue;
-        for (const auto &matrix :
-             subproof.relation_meta.canonical_matrices)
-        {
-            auto owned_objects = matrix.column_objects;
-            owned_objects.push_back(matrix.compressed_object);
-            for (const auto &column : owned_objects)
-            {
-                const auto value_it = std::find_if(
-                    n_bundle_it->second.values.begin(),
-                    n_bundle_it->second.values.end(),
-                    [&](const auto &entry)
-                    { return entry.first == column; });
-                if (value_it == n_bundle_it->second.values.end())
-                    throw std::runtime_error(
-                        "canonical matrix value missing from N opening: " + column);
+                        "aggregation binding domain value missing: " + object);
                 subproof.evaluations.push_back(BindingEvaluation{
-                    .domain = "N",
-                    .object_id = column,
+                    .domain = bundle_name,
+                    .object_id = object,
                     .values = value_it->second,
                     .kind = PayloadValueKind::MaskedPrivateValue,
                 });
             }
-        }
-        for (const auto &point : n_bundle_it->second.points)
-        {
-            const auto group_id =
-                "Open_dom:N:" + point.to_string();
-            if (std::none_of(
-                    subproof.opening_references.begin(),
-                    subproof.opening_references.end(),
-                    [&](const MetadataReference &reference)
-                    { return reference.object_id == group_id; }))
-                subproof.opening_references.push_back({group_id});
-        }
-    }
-    const auto append_binding_domain_values = [&](
-                                                  BindingSubproof &subproof,
-                                                  const std::string &bundle_name,
-                                                  const std::vector<std::string> &objects)
-    {
-        const auto bundle_it = std::find_if(
-            proof.domain_openings.begin(),
-            proof.domain_openings.end(),
-            [&](const auto &entry)
-            { return entry.first == bundle_name; });
-        if (bundle_it == proof.domain_openings.end())
-            throw std::runtime_error(
-                "aggregation binding opening bundle missing: " + bundle_name);
-        for (const auto &object : objects)
-        {
-            const auto value_it = std::find_if(
-                bundle_it->second.values.begin(),
-                bundle_it->second.values.end(),
-                [&](const auto &entry)
-                { return entry.first == object; });
-            if (value_it == bundle_it->second.values.end())
-                throw std::runtime_error(
-                    "aggregation binding domain value missing: " + object);
-            subproof.evaluations.push_back(BindingEvaluation{
-                .domain = bundle_name,
-                .object_id = object,
-                .values = value_it->second,
-                .kind = PayloadValueKind::MaskedPrivateValue,
-            });
-        }
-        for (const auto &point : bundle_it->second.points)
-        {
-            const auto group_id = "Open_dom:" + bundle_name + ":" + point.to_string();
-            if (std::none_of(
-                    subproof.opening_references.begin(),
-                    subproof.opening_references.end(),
-                    [&](const MetadataReference &reference)
-                    { return reference.object_id == group_id; }))
-                subproof.opening_references.push_back({group_id});
-        }
-    };
-    for (auto &subproof : proof.pi_bind.subproofs)
-    {
-        for (const auto &relation :
-             subproof.relation_meta.aggregation_relations)
-        {
-            std::vector<std::string> node_objects = {
-                relation.source_node_object,
-                relation.target_node_object,
-            };
-            std::vector<std::string> edge_objects = {
-                relation.source_edge_object,
-                relation.target_edge_object,
-                relation.product_object,
-                relation.psq_object,
-            };
-            for (const auto *route : {
-                     &relation.source_route,
-                     &relation.target_route})
+            for (const auto &point : bundle_it->second.points)
             {
-                node_objects.push_back(route->table_object);
-                node_objects.push_back(route->node_inverse_object);
-                node_objects.push_back(
-                    route->node_accumulator_object);
-                edge_objects.push_back(route->query_object);
-                edge_objects.push_back(route->edge_inverse_object);
-                edge_objects.push_back(
-                    route->edge_accumulator_object);
+                const auto group_id = "Open_dom:" + bundle_name + ":" + point.to_string();
+                if (std::none_of(
+                        subproof.opening_references.begin(),
+                        subproof.opening_references.end(),
+                        [&](const MetadataReference &reference)
+                        { return reference.object_id == group_id; }))
+                    subproof.opening_references.push_back({group_id});
             }
-            append_binding_domain_values(
-                subproof, relation.node_domain, node_objects);
-            append_binding_domain_values(
-                subproof, relation.edge_domain, edge_objects);
-        }
-    }
-
-    const auto point_group_registry_start = Clock::now();
-    StandardPointGroupRegistry opening_registry;
-    for (const auto &spec : bundle_specs)
-    {
-        const auto bundle_it = std::find_if(
-            proof.domain_openings.begin(),
-            proof.domain_openings.end(),
-            [&](const auto &entry)
-            { return entry.first == spec.bundle_name; });
-        if (bundle_it == proof.domain_openings.end())
+        };
+        for (auto &subproof : proof.pi_bind.subproofs)
         {
-            throw std::runtime_error(
-                "missing domain bundle while building global point groups: " + spec.bundle_name);
+            for (const auto &relation :
+                 subproof.relation_meta.aggregation_relations)
+            {
+                std::vector<std::string> node_objects = {
+                    relation.source_node_object,
+                    relation.target_node_object,
+                };
+                std::vector<std::string> edge_objects = {
+                    relation.source_edge_object,
+                    relation.target_edge_object,
+                    relation.product_object,
+                    relation.psq_object,
+                };
+                for (const auto *route : {
+                         &relation.source_route,
+                         &relation.target_route})
+                {
+                    node_objects.push_back(route->table_object);
+                    node_objects.push_back(route->node_inverse_object);
+                    node_objects.push_back(
+                        route->node_accumulator_object);
+                    edge_objects.push_back(route->query_object);
+                    edge_objects.push_back(route->edge_inverse_object);
+                    edge_objects.push_back(
+                        route->edge_accumulator_object);
+                }
+                append_binding_domain_values(
+                    subproof, relation.node_domain, node_objects);
+                append_binding_domain_values(
+                    subproof, relation.edge_domain, edge_objects);
+            }
         }
-        auto labels = domain_opening_labels(
-            context, spec.trace_domain_name);
-        labels.push_back(spec.quotient_name);
-        labels.push_back(quotient_mask_label(spec.quotient_name));
-        add_domain_bundle_claims(
-            opening_registry,
-            spec.bundle_name,
-            bundle_it->second,
-            collect_commitments(trace, quotient_commitments, labels));
-    }
 
-    attach_public_output_statement(context, trace, &proof);
-    const auto ext_specs = multihead_external_specs(context);
-    std::vector<std::pair<Commitment, FieldElement>> external_commitments;
-    std::vector<FieldElement> external_points;
-    stage_start = Clock::now();
-    progress_note("prove:external_opening:start");
-    for (const auto &spec : ext_specs)
-    {
-        const auto value = trace.external_evaluations.at(spec.proof_name);
-        proof.external_evaluations.push_back({spec.proof_name, value});
-        proof.external_evaluation_kinds.push_back(payload_kind_for_label(context, spec.label));
-        external_commitments.push_back({spec.static_commitment ? context.static_commitments.at(spec.label) : trace.commitments.at(spec.label),
-                                        value});
-        external_points.push_back(challenges.at(spec.challenge_name));
-    }
-    for (const auto &subproof : proof.pi_bind.subproofs)
-    {
-        for (const auto &relation :
-             subproof.relation_meta.route_terminal_relations)
+        const auto point_group_registry_start = Clock::now();
+        StandardPointGroupRegistry opening_registry;
+        for (const auto &spec : bundle_specs)
         {
-            const auto evaluation_id =
-                relation.shifted_accumulator_object + ":u_rel";
-            const auto evaluation = std::find_if(
-                subproof.evaluations.begin(),
-                subproof.evaluations.end(),
-                [&](const BindingEvaluation &candidate)
-                { return candidate.object_id == evaluation_id; });
-            if (evaluation == subproof.evaluations.end() || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
+            const auto bundle_it = std::find_if(
+                proof.domain_openings.begin(),
+                proof.domain_openings.end(),
+                [&](const auto &entry)
+                { return entry.first == spec.bundle_name; });
+            if (bundle_it == proof.domain_openings.end())
+            {
                 throw std::runtime_error(
-                    "missing route terminal shift value: " + relation.relation_id);
-            const auto y_rel = challenges.at(
-                relation.challenge_label);
-            external_commitments.push_back({trace.commitments.at(
-                                                relation.shifted_accumulator_object),
-                                            evaluation->values.front()});
-            external_points.push_back(y_rel);
-            external_commitments.push_back({trace.commitments.at(
-                                                relation.edge_accumulator_object),
-                                            evaluation->values.front()});
-            external_points.push_back(
-                y_rel + relation.terminal_delta);
-            external_commitments.push_back({trace.commitments.at(
-                                                relation.relation_virtual_object),
-                                            FieldElement::zero()});
-            external_points.push_back(
-                relation.node_terminal_point);
+                    "missing domain bundle while building global point groups: " + spec.bundle_name);
+            }
+            auto labels = domain_opening_labels(
+                context, spec.trace_domain_name);
+            labels.push_back(spec.quotient_name);
+            labels.push_back(quotient_mask_label(spec.quotient_name));
+            add_domain_bundle_claims(
+                opening_registry,
+                spec.bundle_name,
+                bundle_it->second,
+                collect_commitments(trace, quotient_commitments, labels));
         }
-        for (const auto &relation :
-             subproof.relation_meta.aggregation_relations)
+
+        attach_public_output_statement(context, trace, &proof);
+        const auto ext_specs = multihead_external_specs(context);
+        std::vector<std::pair<Commitment, FieldElement>> external_commitments;
+        std::vector<FieldElement> external_points;
+        stage_start = Clock::now();
+        progress_note("prove:external_opening:start");
+        for (const auto &spec : ext_specs)
         {
-            for (const auto *route : {
-                     &relation.source_route,
-                     &relation.target_route})
+            const auto value = trace.external_evaluations.at(spec.proof_name);
+            proof.external_evaluations.push_back({spec.proof_name, value});
+            proof.external_evaluation_kinds.push_back(payload_kind_for_label(context, spec.label));
+            external_commitments.push_back({spec.static_commitment ? context.static_commitments.at(spec.label) : trace.commitments.at(spec.label),
+                                            value});
+            external_points.push_back(challenges.at(spec.challenge_name));
+        }
+        for (const auto &subproof : proof.pi_bind.subproofs)
+        {
+            for (const auto &relation :
+                 subproof.relation_meta.route_terminal_relations)
             {
                 const auto evaluation_id =
-                    route->shifted_accumulator_object + ":u_rel";
+                    relation.shifted_accumulator_object + ":u_rel";
                 const auto evaluation = std::find_if(
                     subproof.evaluations.begin(),
                     subproof.evaluations.end(),
@@ -15902,477 +15838,369 @@ Proof prove(const ProtocolContext &context, const TraceArtifacts &trace, RunMetr
                     { return candidate.object_id == evaluation_id; });
                 if (evaluation == subproof.evaluations.end() || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
                     throw std::runtime_error(
-                        "missing aggregation terminal shift value: " + route->relation_id);
+                        "missing route terminal shift value: " + relation.relation_id);
                 const auto y_rel = challenges.at(
-                    route->terminal_challenge_label);
+                    relation.challenge_label);
                 external_commitments.push_back({trace.commitments.at(
-                                                    route->shifted_accumulator_object),
+                                                    relation.shifted_accumulator_object),
                                                 evaluation->values.front()});
                 external_points.push_back(y_rel);
                 external_commitments.push_back({trace.commitments.at(
-                                                    route->edge_accumulator_object),
+                                                    relation.edge_accumulator_object),
                                                 evaluation->values.front()});
                 external_points.push_back(
-                    y_rel + route->terminal_delta);
+                    y_rel + relation.terminal_delta);
                 external_commitments.push_back({trace.commitments.at(
-                                                    route->relation_virtual_object),
+                                                    relation.relation_virtual_object),
                                                 FieldElement::zero()});
                 external_points.push_back(
-                    route->node_terminal_point);
+                    relation.node_terminal_point);
+            }
+            for (const auto &relation :
+                 subproof.relation_meta.aggregation_relations)
+            {
+                for (const auto *route : {
+                         &relation.source_route,
+                         &relation.target_route})
+                {
+                    const auto evaluation_id =
+                        route->shifted_accumulator_object + ":u_rel";
+                    const auto evaluation = std::find_if(
+                        subproof.evaluations.begin(),
+                        subproof.evaluations.end(),
+                        [&](const BindingEvaluation &candidate)
+                        { return candidate.object_id == evaluation_id; });
+                    if (evaluation == subproof.evaluations.end() || evaluation->values.size() != 1 || evaluation->kind != PayloadValueKind::MaskedPrivateValue)
+                        throw std::runtime_error(
+                            "missing aggregation terminal shift value: " + route->relation_id);
+                    const auto y_rel = challenges.at(
+                        route->terminal_challenge_label);
+                    external_commitments.push_back({trace.commitments.at(
+                                                        route->shifted_accumulator_object),
+                                                    evaluation->values.front()});
+                    external_points.push_back(y_rel);
+                    external_commitments.push_back({trace.commitments.at(
+                                                        route->edge_accumulator_object),
+                                                    evaluation->values.front()});
+                    external_points.push_back(
+                        y_rel + route->terminal_delta);
+                    external_commitments.push_back({trace.commitments.at(
+                                                        route->relation_virtual_object),
+                                                    FieldElement::zero()});
+                    external_points.push_back(
+                        route->node_terminal_point);
+                }
             }
         }
-    }
-    for (std::size_t head_index = 0;
-         head_index < context.model.output_layer.heads.size();
-         ++head_index)
-    {
-        const auto relation_id =
-            "bind:output:" + std::to_string(head_index);
-        const auto subproof_it = std::find_if(
-            proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
-            [&](const BindingSubproof &subproof)
-            { return subproof.relation_meta.relation_id == relation_id; });
-        if (subproof_it == proof.pi_bind.subproofs.end())
-            throw std::runtime_error("missing output bias shift proof");
-        const auto *relation_ptr = find_unique_shift_relation_by_kind(
-            subproof_it->relation_meta, "output-bias-terminal");
-        if (relation_ptr == nullptr)
-            throw std::runtime_error(
-                "output bias shift proof relation is not unique");
-        const auto &relation = *relation_ptr;
-        if (relation.configured_degrees.empty())
+        for (std::size_t head_index = 0;
+             head_index < context.model.output_layer.heads.size();
+             ++head_index)
         {
-            const auto y_public = challenges.at(relation.challenge_label);
+            const auto relation_id =
+                "bind:output:" + std::to_string(head_index);
+            const auto subproof_it = std::find_if(
+                proof.pi_bind.subproofs.begin(), proof.pi_bind.subproofs.end(),
+                [&](const BindingSubproof &subproof)
+                { return subproof.relation_meta.relation_id == relation_id; });
+            if (subproof_it == proof.pi_bind.subproofs.end())
+                throw std::runtime_error("missing output bias shift proof");
+            const auto *relation_ptr = find_unique_shift_relation_by_kind(
+                subproof_it->relation_meta, "output-bias-terminal");
+            if (relation_ptr == nullptr)
+                throw std::runtime_error(
+                    "output bias shift proof relation is not unique");
+            const auto &relation = *relation_ptr;
+            if (relation.configured_degrees.empty())
+            {
+                const auto y_public = challenges.at(relation.challenge_label);
+                external_commitments.push_back({trace.commitments.at(output_bias_view_label(
+                                                    head_index, "terminal_relation_virtual")),
+                                                FieldElement::zero()});
+                external_points.push_back(relation.canonical_points.front());
+                const auto public_m_id = output_bias_view_label(
+                                             head_index, "m_can") +
+                                         ":public_bind";
+                const auto public_m_it = std::find_if(
+                    subproof_it->evaluations.begin(),
+                    subproof_it->evaluations.end(),
+                    [&](const BindingEvaluation &evaluation)
+                    { return evaluation.object_id == public_m_id; });
+                if (public_m_it == subproof_it->evaluations.end() || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue)
+                    throw std::runtime_error(
+                        "missing same-point public bias multiplicity binding");
+                external_commitments.push_back({trace.commitments.at(output_bias_view_label(
+                                                    head_index, "m_can")),
+                                                public_m_it->values.front()});
+                external_points.push_back(y_public);
+                continue;
+            }
+            const auto shifted_label =
+                output_bias_view_label(head_index, "R_shifted");
+            const auto u_id = shifted_label + ":u_rel";
+            const auto u_it = std::find_if(
+                subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
+                [&](const BindingEvaluation &evaluation)
+                { return evaluation.object_id == u_id; });
+            if (u_it == subproof_it->evaluations.end() || u_it->values.size() != 1)
+                throw std::runtime_error("missing output bias shift check value");
+            const auto y_rel = challenges.at(relation.challenge_label);
+            external_commitments.push_back(
+                {trace.commitments.at(shifted_label), u_it->values.front()});
+            external_points.push_back(y_rel);
+            const auto virtual_prefix =
+                output_head_prefix(head_index) + "_BiasView_";
+            external_commitments.push_back(
+                {trace.commitments.at(virtual_prefix + "F2"), u_it->values.front()});
+            external_points.push_back(y_rel + relation.deltas.at(1));
             external_commitments.push_back({trace.commitments.at(output_bias_view_label(
                                                 head_index, "terminal_relation_virtual")),
                                             FieldElement::zero()});
-            external_points.push_back(relation.canonical_points.front());
-            const auto public_m_id = output_bias_view_label(
-                                         head_index, "m_can") +
-                                     ":public_bind";
+            external_points.push_back(relation.canonical_points.at(0));
+
+            const auto public_m_id =
+                output_bias_view_label(head_index, "m_can") + ":public_bind";
             const auto public_m_it = std::find_if(
-                subproof_it->evaluations.begin(),
-                subproof_it->evaluations.end(),
+                subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
                 [&](const BindingEvaluation &evaluation)
                 { return evaluation.object_id == public_m_id; });
             if (public_m_it == subproof_it->evaluations.end() || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue)
-                throw std::runtime_error(
-                    "missing same-point public bias multiplicity binding");
-            external_commitments.push_back({trace.commitments.at(output_bias_view_label(
-                                                head_index, "m_can")),
+                throw std::runtime_error("missing public bias multiplicity binding");
+            external_commitments.push_back({trace.commitments.at(output_bias_view_label(head_index, "m_can")),
                                             public_m_it->values.front()});
-            external_points.push_back(y_public);
-            continue;
-        }
-        const auto shifted_label =
-            output_bias_view_label(head_index, "R_shifted");
-        const auto u_id = shifted_label + ":u_rel";
-        const auto u_it = std::find_if(
-            subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
-            [&](const BindingEvaluation &evaluation)
-            { return evaluation.object_id == u_id; });
-        if (u_it == subproof_it->evaluations.end() || u_it->values.size() != 1)
-            throw std::runtime_error("missing output bias shift check value");
-        const auto y_rel = challenges.at(relation.challenge_label);
-        external_commitments.push_back(
-            {trace.commitments.at(shifted_label), u_it->values.front()});
-        external_points.push_back(y_rel);
-        const auto virtual_prefix =
-            output_head_prefix(head_index) + "_BiasView_";
-        external_commitments.push_back(
-            {trace.commitments.at(virtual_prefix + "F2"), u_it->values.front()});
-        external_points.push_back(y_rel + relation.deltas.at(1));
-        external_commitments.push_back({trace.commitments.at(output_bias_view_label(
-                                            head_index, "terminal_relation_virtual")),
-                                        FieldElement::zero()});
-        external_points.push_back(relation.canonical_points.at(0));
-
-        const auto public_m_id =
-            output_bias_view_label(head_index, "m_can") + ":public_bind";
-        const auto public_m_it = std::find_if(
-            subproof_it->evaluations.begin(), subproof_it->evaluations.end(),
-            [&](const BindingEvaluation &evaluation)
-            { return evaluation.object_id == public_m_id; });
-        if (public_m_it == subproof_it->evaluations.end() || public_m_it->values.size() != 1 || public_m_it->kind != PayloadValueKind::PublicValue)
-            throw std::runtime_error("missing public bias multiplicity binding");
-        external_commitments.push_back({trace.commitments.at(output_bias_view_label(head_index, "m_can")),
-                                        public_m_it->values.front()});
-        external_points.push_back(y_rel);
-    }
-    for (std::size_t head_index = 0;
-         head_index < context.model.output_layer.heads.size();
-         ++head_index)
-    {
-        const auto relation_id =
-            "bind:output:" + std::to_string(head_index);
-        const auto subproof_it = std::find_if(
-            proof.pi_bind.subproofs.begin(),
-            proof.pi_bind.subproofs.end(),
-            [&](const BindingSubproof &subproof)
-            { return subproof.relation_meta.relation_id == relation_id; });
-        if (subproof_it == proof.pi_bind.subproofs.end() || subproof_it->relation_meta
-                                                                    .coefficient_basis_relations.size() != 1)
-            throw std::runtime_error(
-                "missing output coefficient basis external proof");
-        const auto &basis = subproof_it->relation_meta
-                                .coefficient_basis_relations.front();
-        const auto gamma = challenges.at(
-            basis.gamma_challenge_label);
-        const auto y_rel = challenges.at(
-            basis.relation_challenge_label);
-        for (const auto &chunk : basis.chunks)
-        {
-            const auto u_id = chunk.shifted_accumulator_object + ":u_rel";
-            const auto u_it = std::find_if(
-                subproof_it->evaluations.begin(),
-                subproof_it->evaluations.end(),
-                [&](const BindingEvaluation &evaluation)
-                { return evaluation.object_id == u_id; });
-            if (u_it == subproof_it->evaluations.end() || u_it->values.size() != 1 || u_it->kind != PayloadValueKind::MaskedPrivateValue)
-                throw std::runtime_error(
-                    "missing output coefficient chunk shift value");
-            external_commitments.push_back({trace.commitments.at(
-                                                chunk.shifted_accumulator_object),
-                                            u_it->values.front()});
             external_points.push_back(y_rel);
-            external_commitments.push_back({trace.commitments.at(chunk.accumulator_object),
-                                            u_it->values.front()});
-            external_points.push_back(
-                y_rel + chunk.terminal_point - gamma);
         }
-        external_commitments.push_back({trace.commitments.at(output_bias_basis_label(
-                                            head_index, "relation_virtual")),
-                                        FieldElement::zero()});
-        external_points.push_back(gamma);
-    }
-    const auto output_binding = derive_public_output_challenges(
-        proof.public_metadata,
-        trace.commitments.at("P_Y"),
-        proof.public_logits,
-        context.local.num_nodes,
-        context.local.num_classes);
-    external_commitments.push_back({trace.commitments.at("P_Y"),
-                                    evaluate_coefficient_vector(proof.public_logits, output_binding.point)});
-    external_points.push_back(output_binding.point);
-    add_external_claims(
-        opening_registry,
-        external_commitments,
-        external_points,
-        proof.external_evaluation_kinds);
-    opening_registry.finalize();
-    if (metrics != nullptr)
-    {
-        metrics->point_group_registry_ms += elapsed_ms(
-            point_group_registry_start, Clock::now());
-    }
-    for (auto &subproof : proof.pi_bind.subproofs)
-    {
-        std::vector<MetadataReference> normalized;
-        normalized.reserve(subproof.opening_references.size());
-        for (auto reference : subproof.opening_references)
+        for (std::size_t head_index = 0;
+             head_index < context.model.output_layer.heads.size();
+             ++head_index)
         {
-            for (const auto &group : opening_registry.groups())
+            const auto relation_id =
+                "bind:output:" + std::to_string(head_index);
+            const auto subproof_it = std::find_if(
+                proof.pi_bind.subproofs.begin(),
+                proof.pi_bind.subproofs.end(),
+                [&](const BindingSubproof &subproof)
+                { return subproof.relation_meta.relation_id == relation_id; });
+            if (subproof_it == proof.pi_bind.subproofs.end() || subproof_it->relation_meta
+                                                                        .coefficient_basis_relations.size() != 1)
+                throw std::runtime_error(
+                    "missing output coefficient basis external proof");
+            const auto &basis = subproof_it->relation_meta
+                                    .coefficient_basis_relations.front();
+            const auto gamma = challenges.at(
+                basis.gamma_challenge_label);
+            const auto y_rel = challenges.at(
+                basis.relation_challenge_label);
+            for (const auto &chunk : basis.chunks)
             {
-                if (reference.object_id == "W_ext:" + group.point.to_string())
+                const auto u_id = chunk.shifted_accumulator_object + ":u_rel";
+                const auto u_it = std::find_if(
+                    subproof_it->evaluations.begin(),
+                    subproof_it->evaluations.end(),
+                    [&](const BindingEvaluation &evaluation)
+                    { return evaluation.object_id == u_id; });
+                if (u_it == subproof_it->evaluations.end() || u_it->values.size() != 1 || u_it->kind != PayloadValueKind::MaskedPrivateValue)
+                    throw std::runtime_error(
+                        "missing output coefficient chunk shift value");
+                external_commitments.push_back({trace.commitments.at(
+                                                    chunk.shifted_accumulator_object),
+                                                u_it->values.front()});
+                external_points.push_back(y_rel);
+                external_commitments.push_back({trace.commitments.at(chunk.accumulator_object),
+                                                u_it->values.front()});
+                external_points.push_back(
+                    y_rel + chunk.terminal_point - gamma);
+            }
+            external_commitments.push_back({trace.commitments.at(output_bias_basis_label(
+                                                head_index, "relation_virtual")),
+                                            FieldElement::zero()});
+            external_points.push_back(gamma);
+        }
+        const auto output_binding = derive_public_output_challenges(
+            proof.public_metadata,
+            trace.commitments.at("P_Y"),
+            proof.public_logits,
+            context.local.num_nodes,
+            context.local.num_classes);
+        external_commitments.push_back({trace.commitments.at("P_Y"),
+                                        evaluate_coefficient_vector(proof.public_logits, output_binding.point)});
+        external_points.push_back(output_binding.point);
+        add_external_claims(
+            opening_registry,
+            external_commitments,
+            external_points,
+            proof.external_evaluation_kinds);
+        opening_registry.finalize();
+        if (metrics != nullptr)
+        {
+            metrics->point_group_registry_ms += elapsed_ms(
+                point_group_registry_start, Clock::now());
+        }
+        for (auto &subproof : proof.pi_bind.subproofs)
+        {
+            std::vector<MetadataReference> normalized;
+            normalized.reserve(subproof.opening_references.size());
+            for (auto reference : subproof.opening_references)
+            {
+                for (const auto &group : opening_registry.groups())
                 {
-                    reference.object_id = group.group_id;
-                    break;
+                    if (reference.object_id == "W_ext:" + group.point.to_string())
+                    {
+                        reference.object_id = group.group_id;
+                        break;
+                    }
+                }
+                if (std::none_of(
+                        normalized.begin(), normalized.end(),
+                        [&](const MetadataReference &existing)
+                        { return existing == reference; }))
+                {
+                    normalized.push_back(std::move(reference));
                 }
             }
-            if (std::none_of(
-                    normalized.begin(), normalized.end(),
-                    [&](const MetadataReference &existing)
-                    { return existing == reference; }))
-            {
-                normalized.push_back(std::move(reference));
-            }
-        }
-        subproof.opening_references = std::move(normalized);
-    }
-
-    struct PointGroupOpeningResult
-    {
-        crypto::G1Point witness;
-        crypto::BatchOpeningProfile profile;
-        double elapsed_ms = 0.0;
-    };
-    const auto &point_groups = opening_registry.groups();
-
-    const auto resolved_claim_commitment =
-        [](const StandardOpeningClaim &claim)
-        -> const Commitment &
-    {
-        if (claim.execution_commitment ==
-            nullptr)
-        {
-            throw std::runtime_error(
-                "prover point-group claim has no interned commitment");
+            subproof.opening_references = std::move(normalized);
         }
 
-        return *claim.execution_commitment;
-    };
-
-    std::vector<PointGroupOpeningResult> opening_results(
-        point_groups.size());
-
-    // Older in-memory fixtures can still carry an id-zero spill
-    // descriptor.  Assign a proof-local descriptor token on demand for
-    // those entries; this map owns only scalar identities and never a
-    // source vector.  Current trace construction assigns the token when
-    // the spill is written, so this is a fail-safe compatibility seam.
-    std::mutex descriptor_semantic_source_token_mutex;
-    std::unordered_map<std::string, std::uintptr_t>
-        descriptor_semantic_source_tokens;
-    std::uintptr_t next_descriptor_semantic_source_token = 1;
-    const auto descriptor_semantic_source_token =
-        [&](const std::string &name)
-    {
-        std::lock_guard<std::mutex> lock(
-            descriptor_semantic_source_token_mutex);
-        if (const auto it = descriptor_semantic_source_tokens.find(name);
-            it != descriptor_semantic_source_tokens.end())
+        struct PointGroupOpeningResult
         {
-            return it->second;
-        }
-        if (next_descriptor_semantic_source_token == 0)
-        {
-            throw std::runtime_error(
-                "opening semantic source descriptor token exhausted");
-        }
-        const auto token = next_descriptor_semantic_source_token++;
-        if (next_descriptor_semantic_source_token == 0)
-        {
-            throw std::runtime_error(
-                "opening semantic source descriptor token exhausted");
-        }
-        descriptor_semantic_source_tokens.emplace(name, token);
-        return token;
-    };
-
-    const auto streamed_semantic_source_key =
-        [&](const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
-            std::uintptr_t source_token)
-    {
-        // Length-prefix each variable component so a path/domain/name
-        // boundary cannot collide.  The key is execution-only and never
-        // enters transcript or proof bytes.
-        const auto append_component =
-            [](std::string *out, std::string_view value)
-        {
-            out->append(std::to_string(value.size()));
-            out->push_back(':');
-            out->append(value);
-            out->push_back('|');
+            crypto::G1Point witness;
+            crypto::BatchOpeningProfile profile;
+            double elapsed_ms = 0.0;
         };
-        std::string key;
-        append_component(
-            &key,
-            spilled.semantic_source_id == 0
-                ? std::string_view("descriptor")
-                : std::string_view("authenticated"));
-        append_component(
-            &key,
-            std::to_string(source_token));
-        append_component(
-            &key,
-            spilled.domain_name);
-        append_component(
-            &key,
-            std::to_string(spilled.size));
-        append_component(
-            &key,
-            std::to_string(spilled_file_value_count(spilled)));
-        append_component(
-            &key,
-            spilled.zero_tail_compacted ? "compact" : "full");
-        append_component(
-            &key,
-            spilled.path);
-        return key;
-    };
+        const auto &point_groups = opening_registry.groups();
 
-    const crypto::OpeningPolynomialResolver
-        file_backed_opening_resolver =
-            [&](const Commitment &commitment)
-        -> std::shared_ptr<const algebra::Polynomial>
-    {
-        if (commitment.opening_polynomial != nullptr)
+        const auto resolved_claim_commitment =
+            [](const StandardOpeningClaim &claim)
+            -> const Commitment &
         {
-            return commitment.opening_polynomial;
-        }
-        const auto spilled_it =
-            trace.spilled_polynomials.find(
-                commitment.name);
-        if (spilled_it == trace.spilled_polynomials.end())
+            if (claim.execution_commitment ==
+                nullptr)
+            {
+                throw std::runtime_error(
+                    "prover point-group claim has no interned commitment");
+            }
+
+            return *claim.execution_commitment;
+        };
+
+        std::vector<PointGroupOpeningResult> opening_results(
+            point_groups.size());
+
+        // Older in-memory fixtures can still carry an id-zero spill
+        // descriptor.  Assign a proof-local descriptor token on demand for
+        // those entries; this map owns only scalar identities and never a
+        // source vector.  Current trace construction assigns the token when
+        // the spill is written, so this is a fail-safe compatibility seam.
+        std::mutex descriptor_semantic_source_token_mutex;
+        std::unordered_map<std::string, std::uintptr_t>
+            descriptor_semantic_source_tokens;
+        std::uintptr_t next_descriptor_semantic_source_token = 1;
+        const auto descriptor_semantic_source_token =
+            [&](const std::string &name)
         {
-            throw std::runtime_error(
-                "file-backed opening material is missing: " + commitment.name);
-        }
-        throw std::runtime_error(
-            "file-backed opening requires streamed semantic source: " +
-            commitment.name);
-    };
+            std::lock_guard<std::mutex> lock(
+                descriptor_semantic_source_token_mutex);
+            if (const auto it = descriptor_semantic_source_tokens.find(name);
+                it != descriptor_semantic_source_tokens.end())
+            {
+                return it->second;
+            }
+            if (next_descriptor_semantic_source_token == 0)
+            {
+                throw std::runtime_error(
+                    "opening semantic source descriptor token exhausted");
+            }
+            const auto token = next_descriptor_semantic_source_token++;
+            if (next_descriptor_semantic_source_token == 0)
+            {
+                throw std::runtime_error(
+                    "opening semantic source descriptor token exhausted");
+            }
+            descriptor_semantic_source_tokens.emplace(name, token);
+            return token;
+        };
 
-    const crypto::OpeningSemanticSourceResolver
-        file_backed_opening_semantic_source_resolver =
-            [&](const Commitment &commitment)
-        -> std::optional<
-            crypto::OpeningSemanticSourceInfo>
-    {
-        if (commitment.opening_polynomial != nullptr)
+        const auto streamed_semantic_source_key =
+            [&](const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
+                std::uintptr_t source_token)
         {
-            return std::nullopt;
-        }
-
-        const auto spilled_it =
-            trace.spilled_polynomials.find(
-                commitment.name);
-
-        if (spilled_it == trace.spilled_polynomials.end())
-        {
-            return std::nullopt;
-        }
-
-        const auto &spilled =
-            spilled_it->second;
-
-        const auto domain =
-            context_domain_by_name(
-                context,
+            // Length-prefix each variable component so a path/domain/name
+            // boundary cannot collide.  The key is execution-only and never
+            // enters transcript or proof bytes.
+            const auto append_component =
+                [](std::string *out, std::string_view value)
+            {
+                out->append(std::to_string(value.size()));
+                out->push_back(':');
+                out->append(value);
+                out->push_back('|');
+            };
+            std::string key;
+            append_component(
+                &key,
+                spilled.semantic_source_id == 0
+                    ? std::string_view("descriptor")
+                    : std::string_view("authenticated"));
+            append_component(
+                &key,
+                std::to_string(source_token));
+            append_component(
+                &key,
                 spilled.domain_name);
-
-        if (domain == nullptr)
-        {
-            throw std::runtime_error(
-                "file-backed opening semantic source has unknown domain: " + commitment.name);
-        }
-
-        const auto source_token =
-            spilled.semantic_source_id != 0
-                ? spilled.semantic_source_id
-                : descriptor_semantic_source_token(
-                      commitment.name);
-
-        return crypto::OpeningSemanticSourceInfo{
-            .key =
-                streamed_semantic_source_key(
-                    spilled,
-                    source_token),
-            .domain = domain,
-            .value_count = spilled.size,
-            .stored_value_count =
-                spilled_file_value_count(spilled),
-            .zero_tail_compacted =
-                spilled.zero_tail_compacted,
-
-            .zero_domain_blinder =
-                spilled.zero_domain_blinder,
-
-            .file_path =
-                spilled.path,
-
-            .file_backed =
-                true,
-            .lease =
-                spilled.lease,
-        };
-    };
-
-    constexpr std::size_t kOpeningStreamChunkValues =
-        std::size_t{1} << 20;
-
-    const auto add_opening_element_bytes =
-        [](std::size_t element_count,
-           std::size_t *target,
-           bool *overflow)
-    {
-        if (overflow == nullptr || target == nullptr || *overflow)
-        {
-            return;
-        }
-        if (element_count >
-            std::numeric_limits<std::size_t>::max() /
-                sizeof(FieldElement))
-        {
-            *overflow = true;
-            *target = std::numeric_limits<std::size_t>::max();
-            return;
-        }
-        const auto bytes = element_count * sizeof(FieldElement);
-        if (bytes >
-            std::numeric_limits<std::size_t>::max() - *target)
-        {
-            *overflow = true;
-            *target = std::numeric_limits<std::size_t>::max();
-            return;
-        }
-        *target += bytes;
-    };
-
-    const auto opening_group_workset =
-        [&](std::size_t index)
-    {
-        util::OpeningMemoryWorkset workset;
-        bool overflow = false;
-        std::unordered_set<std::string> folded_domains;
-
-        const auto add_evaluation_group =
-            [&](const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
-        {
-            if (domain == nullptr)
-            {
-                overflow = true;
-                return;
-            }
-            const auto key = domain->name + ":" +
-                             std::to_string(domain->size);
-            if (folded_domains.emplace(key).second)
-            {
-                add_opening_element_bytes(
-                    domain->size,
-                    &workset.folded_bytes,
-                    &overflow);
-                add_opening_element_bytes(
-                    domain->size,
-                    &workset.scratch_bytes,
-                    &overflow);
-            }
+            append_component(
+                &key,
+                std::to_string(spilled.size));
+            append_component(
+                &key,
+                std::to_string(spilled_file_value_count(spilled)));
+            append_component(
+                &key,
+                spilled.zero_tail_compacted ? "compact" : "full");
+            append_component(
+                &key,
+                spilled.path);
+            return key;
         };
 
-        for (const auto &claim : point_groups[index].claims)
+        const crypto::OpeningPolynomialResolver
+            file_backed_opening_resolver =
+                [&](const Commitment &commitment)
+            -> std::shared_ptr<const algebra::Polynomial>
         {
-            const auto &commitment =
-                resolved_claim_commitment(
-                    claim);
-
             if (commitment.opening_polynomial != nullptr)
             {
-                const auto &polynomial =
-                    *commitment.opening_polynomial;
+                return commitment.opening_polynomial;
+            }
+            const auto spilled_it =
+                trace.spilled_polynomials.find(
+                    commitment.name);
+            if (spilled_it == trace.spilled_polynomials.end())
+            {
+                throw std::runtime_error(
+                    "file-backed opening material is missing: " + commitment.name);
+            }
+            throw std::runtime_error(
+                "file-backed opening requires streamed semantic source: " +
+                commitment.name);
+        };
 
-                if (polynomial.basis ==
-                    algebra::PolynomialBasis::Evaluation)
-                {
-                    add_evaluation_group(
-                        polynomial.domain);
-                }
-
-                add_opening_element_bytes(
-                    polynomial.size(),
-                    &workset.source_bytes,
-                    &overflow);
-
-                continue;
+        const crypto::OpeningSemanticSourceResolver
+            file_backed_opening_semantic_source_resolver =
+                [&](const Commitment &commitment)
+            -> std::optional<
+                crypto::OpeningSemanticSourceInfo>
+        {
+            if (commitment.opening_polynomial != nullptr)
+            {
+                return std::nullopt;
             }
 
             const auto spilled_it =
                 trace.spilled_polynomials.find(
                     commitment.name);
 
-            if (spilled_it ==
-                trace.spilled_polynomials.end())
+            if (spilled_it == trace.spilled_polynomials.end())
             {
-                continue;
+                return std::nullopt;
             }
 
             const auto &spilled =
@@ -16383,207 +16211,173 @@ Proof prove(const ProtocolContext &context, const TraceArtifacts &trace, RunMetr
                     context,
                     spilled.domain_name);
 
-            add_evaluation_group(
-                domain);
-
-            add_opening_element_bytes(
-                std::min(
-                    spilled_file_value_count(
-                        spilled),
-                    kOpeningStreamChunkValues),
-                &workset.source_bytes,
-                &overflow);
-        }
-
-        if (overflow)
-        {
-            workset.folded_bytes =
-                std::numeric_limits<std::size_t>::max();
-            workset.scratch_bytes =
-                std::numeric_limits<std::size_t>::max();
-            workset.source_bytes =
-                std::numeric_limits<std::size_t>::max();
-        }
-        return workset;
-    };
-
-    const auto estimate_point_group_work =
-        [&](std::size_t index)
-    {
-        std::size_t total = 0;
-
-        for (const auto &claim :
-             point_groups[index].claims)
-        {
-            const auto &commitment =
-                resolved_claim_commitment(
-                    claim);
-
-            if (commitment.opening_polynomial !=
-                nullptr)
+            if (domain == nullptr)
             {
-                total +=
-                    commitment
-                        .opening_polynomial
-                        ->size();
+                throw std::runtime_error(
+                    "file-backed opening semantic source has unknown domain: " + commitment.name);
             }
-            else if (
+
+            const auto source_token =
+                spilled.semantic_source_id != 0
+                    ? spilled.semantic_source_id
+                    : descriptor_semantic_source_token(
+                          commitment.name);
+
+            return crypto::OpeningSemanticSourceInfo{
+                .key =
+                    streamed_semantic_source_key(
+                        spilled,
+                        source_token),
+                .domain = domain,
+                .value_count = spilled.size,
+                .stored_value_count =
+                    spilled_file_value_count(spilled),
+                .zero_tail_compacted =
+                    spilled.zero_tail_compacted,
+
+                .zero_domain_blinder =
+                    spilled.zero_domain_blinder,
+
+                .file_path =
+                    spilled.path,
+
+                .file_backed =
+                    true,
+                .lease =
+                    spilled.lease,
+            };
+        };
+
+        constexpr std::size_t kOpeningStreamChunkValues =
+            std::size_t{1} << 20;
+
+        const auto add_opening_element_bytes =
+            [](std::size_t element_count,
+               std::size_t *target,
+               bool *overflow)
+        {
+            if (overflow == nullptr || target == nullptr || *overflow)
+            {
+                return;
+            }
+            if (element_count >
+                std::numeric_limits<std::size_t>::max() /
+                    sizeof(FieldElement))
+            {
+                *overflow = true;
+                *target = std::numeric_limits<std::size_t>::max();
+                return;
+            }
+            const auto bytes = element_count * sizeof(FieldElement);
+            if (bytes >
+                std::numeric_limits<std::size_t>::max() - *target)
+            {
+                *overflow = true;
+                *target = std::numeric_limits<std::size_t>::max();
+                return;
+            }
+            *target += bytes;
+        };
+
+        const auto opening_group_workset =
+            [&](std::size_t index)
+        {
+            util::OpeningMemoryWorkset workset;
+            bool overflow = false;
+            std::unordered_set<std::string> folded_domains;
+
+            const auto add_evaluation_group =
+                [&](const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
+            {
+                if (domain == nullptr)
+                {
+                    overflow = true;
+                    return;
+                }
+                const auto key = domain->name + ":" +
+                                 std::to_string(domain->size);
+                if (folded_domains.emplace(key).second)
+                {
+                    add_opening_element_bytes(
+                        domain->size,
+                        &workset.folded_bytes,
+                        &overflow);
+                    add_opening_element_bytes(
+                        domain->size,
+                        &workset.scratch_bytes,
+                        &overflow);
+                }
+            };
+
+            for (const auto &claim : point_groups[index].claims)
+            {
+                const auto &commitment =
+                    resolved_claim_commitment(
+                        claim);
+
+                if (commitment.opening_polynomial != nullptr)
+                {
+                    const auto &polynomial =
+                        *commitment.opening_polynomial;
+
+                    if (polynomial.basis ==
+                        algebra::PolynomialBasis::Evaluation)
+                    {
+                        add_evaluation_group(
+                            polynomial.domain);
+                    }
+
+                    add_opening_element_bytes(
+                        polynomial.size(),
+                        &workset.source_bytes,
+                        &overflow);
+
+                    continue;
+                }
+
                 const auto spilled_it =
-                    trace.spilled_polynomials
-                        .find(
-                            commitment.name);
-                spilled_it !=
-                trace.spilled_polynomials
-                    .end())
-            {
-                total +=
-                    spilled_it->second.size;
-            }
-        }
+                    trace.spilled_polynomials.find(
+                        commitment.name);
 
-        return total;
-    };
+                if (spilled_it ==
+                    trace.spilled_polynomials.end())
+                {
+                    continue;
+                }
 
-    const auto
-        shared_file_backed_semantic_source_count =
-            [&](std::size_t first_index,
-                std::size_t second_index)
-    {
-        // Keep small/medium resident opening paths unchanged.
-        // The paired source scan is reserved for genuinely large
-        // streamed sources where memory traffic dominates.
-        constexpr std::size_t
-            kMinimumSharedStreamSourceValues =
-                1ULL << 22;
+                const auto &spilled =
+                    spilled_it->second;
 
-        std::unordered_map<
-            std::string,
-            std::string>
-            first_sources;
+                const auto domain =
+                    context_domain_by_name(
+                        context,
+                        spilled.domain_name);
 
-        for (const auto &claim :
-             point_groups[first_index].claims)
-        {
-            const auto &commitment =
-                resolved_claim_commitment(
-                    claim);
+                add_evaluation_group(
+                    domain);
 
-            if (commitment.opening_polynomial !=
-                nullptr)
-            {
-                continue;
+                add_opening_element_bytes(
+                    std::min(
+                        spilled_file_value_count(
+                            spilled),
+                        kOpeningStreamChunkValues),
+                    &workset.source_bytes,
+                    &overflow);
             }
 
-            const auto spilled_it =
-                trace.spilled_polynomials.find(
-                    commitment.name);
-
-            if (spilled_it ==
-                trace.spilled_polynomials.end())
+            if (overflow)
             {
-                continue;
+                workset.folded_bytes =
+                    std::numeric_limits<std::size_t>::max();
+                workset.scratch_bytes =
+                    std::numeric_limits<std::size_t>::max();
+                workset.source_bytes =
+                    std::numeric_limits<std::size_t>::max();
             }
+            return workset;
+        };
 
-            const auto &spilled =
-                spilled_it->second;
-
-            if (spilled.semantic_source_id == 0 ||
-                spilled.size <
-                    kMinimumSharedStreamSourceValues)
-            {
-                continue;
-            }
-
-            const auto key =
-                spilled.domain_name + ":" +
-                std::to_string(spilled.size) + ":" +
-                std::to_string(spilled_file_value_count(spilled)) + ":" +
-                (spilled.zero_tail_compacted ? "compact:" : "full:") +
-                spilled.path + ":" +
-                std::to_string(spilled.semantic_source_id);
-
-            first_sources.try_emplace(
-                key,
-                commitment.name);
-        }
-
-        std::size_t shared = 0;
-
-        std::unordered_map<
-            std::string,
-            bool>
-            counted;
-
-        for (const auto &claim :
-             point_groups[second_index].claims)
-        {
-            const auto &commitment =
-                resolved_claim_commitment(
-                    claim);
-
-            if (commitment.opening_polynomial !=
-                nullptr)
-            {
-                continue;
-            }
-
-            const auto spilled_it =
-                trace.spilled_polynomials.find(
-                    commitment.name);
-
-            if (spilled_it ==
-                trace.spilled_polynomials.end())
-            {
-                continue;
-            }
-
-            const auto &spilled =
-                spilled_it->second;
-
-            if (spilled.semantic_source_id == 0 ||
-                spilled.size <
-                    kMinimumSharedStreamSourceValues)
-            {
-                continue;
-            }
-
-            const auto key =
-                spilled.domain_name + ":" +
-                std::to_string(spilled.size) + ":" +
-                std::to_string(spilled_file_value_count(spilled)) + ":" +
-                (spilled.zero_tail_compacted ? "compact:" : "full:") +
-                spilled.path + ":" +
-                std::to_string(spilled.semantic_source_id);
-
-            const auto first =
-                first_sources.find(
-                    key);
-
-            if (first ==
-                first_sources.end())
-            {
-                continue;
-            }
-
-            if (counted.emplace(
-                           key,
-                           true)
-                    .second)
-            {
-                ++shared;
-            }
-        }
-
-        return shared;
-    };
-
-    const auto open_group_indices = [&](const std::vector<std::size_t> &indices)
-    {
-        if (indices.empty())
-            return 0.0;
-        const auto phase_start = Clock::now();
-        auto work_order = indices;
-        const auto estimated_work =
+        const auto estimate_point_group_work =
             [&](std::size_t index)
         {
             std::size_t total = 0;
@@ -16605,10 +16399,12 @@ Proof prove(const ProtocolContext &context, const TraceArtifacts &trace, RunMetr
                 }
                 else if (
                     const auto spilled_it =
-                        trace.spilled_polynomials.find(
-                            commitment.name);
+                        trace.spilled_polynomials
+                            .find(
+                                commitment.name);
                     spilled_it !=
-                    trace.spilled_polynomials.end())
+                    trace.spilled_polynomials
+                        .end())
                 {
                     total +=
                         spilled_it->second.size;
@@ -16617,786 +16413,960 @@ Proof prove(const ProtocolContext &context, const TraceArtifacts &trace, RunMetr
 
             return total;
         };
-        std::stable_sort(
-            work_order.begin(), work_order.end(),
-            [&](std::size_t lhs, std::size_t rhs)
+
+        const auto
+            shared_file_backed_semantic_source_count =
+                [&](std::size_t first_index,
+                    std::size_t second_index)
+        {
+            // Keep small/medium resident opening paths unchanged.
+            // The paired source scan is reserved for genuinely large
+            // streamed sources where memory traffic dominates.
+            constexpr std::size_t
+                kMinimumSharedStreamSourceValues =
+                    1ULL << 22;
+
+            std::unordered_map<
+                std::string,
+                std::string>
+                first_sources;
+
+            for (const auto &claim :
+                 point_groups[first_index].claims)
             {
-                return estimated_work(lhs) > estimated_work(rhs);
-            });
-        const auto hardware_workers =
-            std::max<unsigned>(
-                1,
-                std::thread::hardware_concurrency());
+                const auto &commitment =
+                    resolved_claim_commitment(
+                        claim);
 
-        std::vector<util::OpeningMemoryWorkset>
-            opening_worksets;
-        opening_worksets.reserve(work_order.size());
-        for (const auto index : work_order)
-        {
-            opening_worksets.push_back(
-                opening_group_workset(index));
-        }
-
-        const bool external_phase =
-            point_groups[work_order.front()]
-                .owner_block == "W_ext";
-
-        const bool has_file_backed_openings =
-            std::any_of(
-                work_order.begin(),
-                work_order.end(),
-                [&](std::size_t index)
-                {
-                    return std::any_of(
-                        point_groups[index].claims.begin(),
-                        point_groups[index].claims.end(),
-                        [&](const auto &claim)
-                        {
-                            const auto &commitment =
-                                resolved_claim_commitment(
-                                    claim);
-
-                            return commitment
-                                           .opening_polynomial ==
-                                       nullptr &&
-                                   trace.spilled_polynomials
-                                       .contains(
-                                           commitment.name);
-                        });
-                });
-
-        const auto outer_worker_limit =
-            external_phase
-                ? std::min<std::size_t>(
-                      20,
-                      hardware_workers)
-                : std::min<std::size_t>(
-                      8,
-                      std::max<unsigned>(
-                          1,
-                          hardware_workers / 4));
-
-        const auto memory_snapshot =
-            util::cached_effective_memory_snapshot();
-        const auto memory_reserve =
-            util::recommended_memory_reserve_bytes(
-                memory_snapshot,
-                std::size_t{1} << 30,
-                1,
-                8);
-        const auto memory_admission =
-            util::admit_opening_memory(
-                memory_snapshot,
-                opening_worksets.data(),
-                opening_worksets.size(),
-                memory_reserve,
-                outer_worker_limit);
-        const auto memory_worker_cap =
-            std::max<std::size_t>(
-                1,
-                memory_admission.maximum_parallel_groups);
-
-        const auto worker_count =
-            std::min<std::size_t>(
-                work_order.size(),
-                has_file_backed_openings
-                    ? std::min<std::size_t>(
-                          2,
-                          std::min(
-                              outer_worker_limit,
-                              memory_worker_cap))
-                    : std::min(
-                          outer_worker_limit,
-                          memory_worker_cap));
-
-        // One CPU budget is shared by all concurrently opened groups.
-        // Previously each large domain group could independently request
-        // up to 16 inner workers on top of the outer group parallelism,
-        // producing substantial nested oversubscription.
-        const auto per_group_inner_worker_budget =
-            std::max<std::size_t>(
-                1,
-                static_cast<std::size_t>(
-                    hardware_workers) /
-                    std::max<std::size_t>(
-                        1,
-                        worker_count));
-
-        const auto base_inner_worker_count =
-            std::min<std::size_t>(
-                16,
-                per_group_inner_worker_budget);
-        if (memory_admission.overflow ||
-            !memory_admission.memory_known ||
-            memory_admission.maximum_parallel_groups <= 1)
-        {
-            progress_note(
-                "prove:opening:"
-                "phase_policy="
-                "effective_memory_serial:groups=" +
-                std::to_string(work_order.size()) +
-                ":budget_bytes=" +
-                std::to_string(memory_admission.budget_bytes) +
-                ":largest_workset_bytes=" +
-                std::to_string(memory_admission.largest_workset_bytes));
-        }
-        std::atomic<std::size_t> next{0};
-        crypto::g1_parallel_msm_batch_workers(
-            worker_count,
-            [&](std::size_t)
-            {
-                while (true)
-                {
-                    const auto position = next.fetch_add(1);
-                    if (position >= work_order.size())
-                        break;
-                    const auto group_index = work_order[position];
-                    const auto &group = point_groups[group_index];
-                    std::vector<Commitment> commitments;
-                    std::vector<FieldElement> values;
-
-                    commitments.reserve(
-                        group.claims.size());
-
-                    values.reserve(
-                        group.claims.size());
-
-                    for (const auto &claim :
-                         group.claims)
-                    {
-                        commitments.push_back(
-                            resolved_claim_commitment(
-                                claim));
-
-                        values.push_back(
-                            claim.value);
-                    }
-
-                    // The outer scheduler already parallelizes independent
-                    // groups.  Never let one group reacquire the whole
-                    // machine merely because its work estimate is large.
-                    // Large and small groups use the same globally bounded
-                    // per-group cap; KZG still decides internally how much
-                    // of that cap is useful.
-                    const auto inner_worker_count =
-                        base_inner_worker_count;
-
-                    const crypto::
-                        PointGroupOpeningExecutionOptions
-                            execution_options{
-                                .max_field_worker_count =
-                                    inner_worker_count,
-                                .msm = {
-                                    .max_worker_count =
-                                        inner_worker_count,
-                                },
-                    };
-                    const auto local_start = Clock::now();
-                    opening_results[group_index].witness =
-                        crypto::KZG::open_point_group(
-                            commitments,
-                            group.point,
-                            values,
-                            derive_point_group_challenge(
-                                proof.public_metadata, group),
-                            context.kzg,
-                            &opening_results[group_index].profile,
-                            inner_worker_count != 0
-                                ? &execution_options
-                                : nullptr,
-                            trace.spilled_polynomials.empty()
-                                ? nullptr
-                                : &file_backed_opening_resolver,
-                            trace.spilled_polynomials.empty()
-                                ? nullptr
-                                : &file_backed_opening_semantic_source_resolver);
-                    opening_results[group_index].profile.point_parallel_batches = 1;
-                    opening_results[group_index].profile.point_parallel_workers =
-                        worker_count;
-                    opening_results[group_index].elapsed_ms =
-                        elapsed_ms(local_start, Clock::now());
-                }
-            });
-        return elapsed_ms(phase_start, Clock::now());
-    };
-
-    std::vector<std::size_t> domain_group_indices;
-    std::vector<std::size_t> external_group_indices;
-    for (std::size_t i = 0; i < point_groups.size(); ++i)
-    {
-        (point_groups[i].owner_block == "W_ext"
-             ? external_group_indices
-             : domain_group_indices)
-            .push_back(i);
-    }
-    struct SharedStreamPairSelection
-    {
-        std::array<std::size_t, 2>
-            groups{0, 0};
-
-        std::size_t shared_source_count = 0;
-
-        std::size_t estimated_work = 0;
-    };
-
-    const auto opening_workset_total =
-        [](const util::OpeningMemoryWorkset &workset,
-           std::size_t *total)
-    {
-        if (total == nullptr ||
-            workset.folded_bytes >
-                std::numeric_limits<std::size_t>::max() -
-                    workset.scratch_bytes)
-        {
-            return false;
-        }
-        *total = workset.folded_bytes + workset.scratch_bytes;
-        if (workset.source_bytes >
-            std::numeric_limits<std::size_t>::max() - *total)
-        {
-            return false;
-        }
-        *total += workset.source_bytes;
-        return true;
-    };
-
-    const auto select_shared_stream_pairs =
-        [&](const std::vector<std::size_t> &candidates,
-            bool require_same_owner)
-    {
-        std::vector<
-            SharedStreamPairSelection>
-            selections;
-
-        if (candidates.size() < 2)
-        {
-            return selections;
-        }
-
-        const auto memory_snapshot =
-            util::cached_effective_memory_snapshot();
-        const auto memory_reserve =
-            util::recommended_memory_reserve_bytes(
-                memory_snapshot,
-                std::size_t{1} << 30,
-                1,
-                8);
-
-        std::unordered_set<std::size_t>
-            consumed;
-
-        while (true)
-        {
-            bool found = false;
-
-            SharedStreamPairSelection
-                best;
-
-            for (std::size_t lhs_position = 0;
-                 lhs_position <
-                 candidates.size();
-                 ++lhs_position)
-            {
-                const auto lhs =
-                    candidates[lhs_position];
-
-                if (consumed.contains(lhs))
+                if (commitment.opening_polynomial !=
+                    nullptr)
                 {
                     continue;
                 }
 
-                for (std::size_t rhs_position =
-                         lhs_position + 1;
-                     rhs_position <
-                     candidates.size();
-                     ++rhs_position)
+                const auto spilled_it =
+                    trace.spilled_polynomials.find(
+                        commitment.name);
+
+                if (spilled_it ==
+                    trace.spilled_polynomials.end())
                 {
-                    const auto rhs =
-                        candidates[rhs_position];
+                    continue;
+                }
 
-                    if (consumed.contains(rhs))
-                    {
-                        continue;
-                    }
+                const auto &spilled =
+                    spilled_it->second;
 
-                    if (require_same_owner &&
-                        point_groups[lhs]
-                                .owner_block !=
-                            point_groups[rhs]
-                                .owner_block)
-                    {
-                        continue;
-                    }
+                if (spilled.semantic_source_id == 0 ||
+                    spilled.size <
+                        kMinimumSharedStreamSourceValues)
+                {
+                    continue;
+                }
 
-                    const auto shared =
-                        shared_file_backed_semantic_source_count(
-                            lhs,
-                            rhs);
+                const auto key =
+                    spilled.domain_name + ":" +
+                    std::to_string(spilled.size) + ":" +
+                    std::to_string(spilled_file_value_count(spilled)) + ":" +
+                    (spilled.zero_tail_compacted ? "compact:" : "full:") +
+                    spilled.path + ":" +
+                    std::to_string(spilled.semantic_source_id);
 
-                    if (shared == 0)
-                    {
-                        continue;
-                    }
+                first_sources.try_emplace(
+                    key,
+                    commitment.name);
+            }
 
-                    const std::array<
-                        util::OpeningMemoryWorkset,
-                        2>
-                        pair_worksets{
-                            opening_group_workset(lhs),
-                            opening_group_workset(rhs),
-                    };
-                    std::size_t first_workset_bytes = 0;
-                    std::size_t second_workset_bytes = 0;
-                    std::size_t pair_workset_bytes = 0;
-                    if (!opening_workset_total(
-                            pair_worksets[0],
-                            &first_workset_bytes) ||
-                        !opening_workset_total(
-                            pair_worksets[1],
-                            &second_workset_bytes) ||
-                        first_workset_bytes >
-                            std::numeric_limits<std::size_t>::max() -
-                                second_workset_bytes)
-                    {
-                        continue;
-                    }
-                    pair_workset_bytes =
-                        first_workset_bytes +
-                        second_workset_bytes;
-                    const auto pair_admission =
-                        util::admit_opening_memory(
-                            memory_snapshot,
-                            pair_worksets.data(),
-                            pair_worksets.size(),
-                            memory_reserve,
-                            2);
-                    if (pair_admission.overflow ||
-                        !pair_admission.memory_known ||
-                        pair_admission.maximum_parallel_groups < 2 ||
-                        pair_workset_bytes >
-                            pair_admission.budget_bytes)
-                    {
-                        continue;
-                    }
+            std::size_t shared = 0;
 
-                    const auto work =
-                        estimate_point_group_work(
-                            lhs) +
-                        estimate_point_group_work(
-                            rhs);
+            std::unordered_map<
+                std::string,
+                bool>
+                counted;
 
-                    if (!found ||
-                        shared >
-                            best.shared_source_count ||
-                        (shared ==
-                             best.shared_source_count &&
-                         work >
-                             best.estimated_work))
-                    {
-                        best.groups = {
-                            lhs,
-                            rhs,
-                        };
+            for (const auto &claim :
+                 point_groups[second_index].claims)
+            {
+                const auto &commitment =
+                    resolved_claim_commitment(
+                        claim);
 
-                        best.shared_source_count =
-                            shared;
+                if (commitment.opening_polynomial !=
+                    nullptr)
+                {
+                    continue;
+                }
 
-                        best.estimated_work =
-                            work;
+                const auto spilled_it =
+                    trace.spilled_polynomials.find(
+                        commitment.name);
 
-                        found = true;
-                    }
+                if (spilled_it ==
+                    trace.spilled_polynomials.end())
+                {
+                    continue;
+                }
+
+                const auto &spilled =
+                    spilled_it->second;
+
+                if (spilled.semantic_source_id == 0 ||
+                    spilled.size <
+                        kMinimumSharedStreamSourceValues)
+                {
+                    continue;
+                }
+
+                const auto key =
+                    spilled.domain_name + ":" +
+                    std::to_string(spilled.size) + ":" +
+                    std::to_string(spilled_file_value_count(spilled)) + ":" +
+                    (spilled.zero_tail_compacted ? "compact:" : "full:") +
+                    spilled.path + ":" +
+                    std::to_string(spilled.semantic_source_id);
+
+                const auto first =
+                    first_sources.find(
+                        key);
+
+                if (first ==
+                    first_sources.end())
+                {
+                    continue;
+                }
+
+                if (counted.emplace(
+                               key,
+                               true)
+                        .second)
+                {
+                    ++shared;
                 }
             }
 
-            if (!found)
-            {
-                break;
-            }
-
-            consumed.insert(
-                best.groups[0]);
-
-            consumed.insert(
-                best.groups[1]);
-
-            selections.push_back(
-                best);
-        }
-
-        return selections;
-    };
-
-    const auto
-        shared_stream_domain_pairs =
-            select_shared_stream_pairs(
-                domain_group_indices,
-                true);
-
-    const auto
-        shared_stream_external_pairs =
-            select_shared_stream_pairs(
-                external_group_indices,
-                false);
-    const auto external_claim_assembly_ms =
-        elapsed_ms(
-            stage_start,
-            Clock::now());
-
-    const auto domain_witness_start =
-        Clock::now();
-
-    auto open_shared_stream_pair =
-        [&](const SharedStreamPairSelection
-                &selection)
-    {
-        const auto pair =
-            selection.groups;
-
-        std::array<
-            std::vector<Commitment>,
-            2>
-            pair_commitments;
-
-        std::array<
-            std::vector<FieldElement>,
-            2>
-            pair_values;
-
-        std::array<FieldElement, 2>
-            pair_points{
-                point_groups[pair[0]].point,
-                point_groups[pair[1]].point,
+            return shared;
         };
 
-        std::array<FieldElement, 2>
-            pair_challenges{
-                derive_point_group_challenge(
-                    proof.public_metadata,
-                    point_groups[pair[0]]),
-                derive_point_group_challenge(
-                    proof.public_metadata,
-                    point_groups[pair[1]]),
-        };
-
-        for (std::size_t slot = 0;
-             slot < 2;
-             ++slot)
+        const auto open_group_indices = [&](const std::vector<std::size_t> &indices)
         {
-            const auto &group =
-                point_groups[pair[slot]];
-
-            pair_commitments[slot]
-                .reserve(
-                    group.claims.size());
-
-            pair_values[slot]
-                .reserve(
-                    group.claims.size());
-
-            for (const auto &claim :
-                 group.claims)
+            if (indices.empty())
+                return 0.0;
+            const auto phase_start = Clock::now();
+            auto work_order = indices;
+            const auto estimated_work =
+                [&](std::size_t index)
             {
-                pair_commitments[slot]
-                    .push_back(
+                std::size_t total = 0;
+
+                for (const auto &claim :
+                     point_groups[index].claims)
+                {
+                    const auto &commitment =
                         resolved_claim_commitment(
-                            claim));
+                            claim);
 
-                pair_values[slot]
-                    .push_back(
-                        claim.value);
+                    if (commitment.opening_polynomial !=
+                        nullptr)
+                    {
+                        total +=
+                            commitment
+                                .opening_polynomial
+                                ->size();
+                    }
+                    else if (
+                        const auto spilled_it =
+                            trace.spilled_polynomials.find(
+                                commitment.name);
+                        spilled_it !=
+                        trace.spilled_polynomials.end())
+                    {
+                        total +=
+                            spilled_it->second.size;
+                    }
+                }
+
+                return total;
+            };
+            std::stable_sort(
+                work_order.begin(), work_order.end(),
+                [&](std::size_t lhs, std::size_t rhs)
+                {
+                    return estimated_work(lhs) > estimated_work(rhs);
+                });
+            const auto hardware_workers =
+                std::max<unsigned>(
+                    1,
+                    std::thread::hardware_concurrency());
+
+            std::vector<util::OpeningMemoryWorkset>
+                opening_worksets;
+            opening_worksets.reserve(work_order.size());
+            for (const auto index : work_order)
+            {
+                opening_worksets.push_back(
+                    opening_group_workset(index));
             }
-        }
 
-        const auto hardware_workers =
-            std::max<unsigned>(
-                1,
-                std::thread::
-                    hardware_concurrency());
+            const bool external_phase =
+                point_groups[work_order.front()]
+                    .owner_block == "W_ext";
 
-        // open_point_group_pair_shared_stream() drives two independent
-        // opening constructions.  Split one global CPU budget between
-        // them instead of granting both the full 16-worker allowance.
-        const auto inner_worker_count =
-            std::min<std::size_t>(
-                16,
+            const bool has_file_backed_openings =
+                std::any_of(
+                    work_order.begin(),
+                    work_order.end(),
+                    [&](std::size_t index)
+                    {
+                        return std::any_of(
+                            point_groups[index].claims.begin(),
+                            point_groups[index].claims.end(),
+                            [&](const auto &claim)
+                            {
+                                const auto &commitment =
+                                    resolved_claim_commitment(
+                                        claim);
+
+                                return commitment
+                                               .opening_polynomial ==
+                                           nullptr &&
+                                       trace.spilled_polynomials
+                                           .contains(
+                                               commitment.name);
+                            });
+                    });
+
+            const auto outer_worker_limit =
+                external_phase
+                    ? std::min<std::size_t>(
+                          20,
+                          hardware_workers)
+                    : std::min<std::size_t>(
+                          8,
+                          std::max<unsigned>(
+                              1,
+                              hardware_workers / 4));
+
+            const auto memory_snapshot =
+                util::cached_effective_memory_snapshot();
+            const auto memory_reserve =
+                util::recommended_memory_reserve_bytes(
+                    memory_snapshot,
+                    std::size_t{1} << 30,
+                    1,
+                    8);
+            const auto memory_admission =
+                util::admit_opening_memory(
+                    memory_snapshot,
+                    opening_worksets.data(),
+                    opening_worksets.size(),
+                    memory_reserve,
+                    outer_worker_limit);
+            const auto memory_worker_cap =
+                std::max<std::size_t>(
+                    1,
+                    memory_admission.maximum_parallel_groups);
+
+            const auto worker_count =
+                std::min<std::size_t>(
+                    work_order.size(),
+                    has_file_backed_openings
+                        ? std::min<std::size_t>(
+                              2,
+                              std::min(
+                                  outer_worker_limit,
+                                  memory_worker_cap))
+                        : std::min(
+                              outer_worker_limit,
+                              memory_worker_cap));
+
+            // One CPU budget is shared by all concurrently opened groups.
+            // Previously each large domain group could independently request
+            // up to 16 inner workers on top of the outer group parallelism,
+            // producing substantial nested oversubscription.
+            const auto per_group_inner_worker_budget =
                 std::max<std::size_t>(
                     1,
                     static_cast<std::size_t>(
                         hardware_workers) /
-                        2));
+                        std::max<std::size_t>(
+                            1,
+                            worker_count));
 
-        const std::array<
-            crypto::
-                PointGroupOpeningExecutionOptions,
-            2>
-            pair_execution_options{
-                crypto::
-                    PointGroupOpeningExecutionOptions{
-                        .max_field_worker_count =
-                            inner_worker_count,
-                        .msm = {
-                            .max_worker_count =
-                                inner_worker_count,
-                        },
-                    },
-                crypto::PointGroupOpeningExecutionOptions{
-                    .max_field_worker_count = inner_worker_count,
-                    .msm = {
-                        .max_worker_count = inner_worker_count,
-                    },
-                },
+            const auto base_inner_worker_count =
+                std::min<std::size_t>(
+                    16,
+                    per_group_inner_worker_budget);
+            if (memory_admission.overflow ||
+                !memory_admission.memory_known ||
+                memory_admission.maximum_parallel_groups <= 1)
+            {
+                progress_note(
+                    "prove:opening:"
+                    "phase_policy="
+                    "effective_memory_serial:groups=" +
+                    std::to_string(work_order.size()) +
+                    ":budget_bytes=" +
+                    std::to_string(memory_admission.budget_bytes) +
+                    ":largest_workset_bytes=" +
+                    std::to_string(memory_admission.largest_workset_bytes));
+            }
+            std::atomic<std::size_t> next{0};
+            crypto::g1_parallel_msm_batch_workers(
+                worker_count,
+                [&](std::size_t)
+                {
+                    while (true)
+                    {
+                        const auto position = next.fetch_add(1);
+                        if (position >= work_order.size())
+                            break;
+                        const auto group_index = work_order[position];
+                        const auto &group = point_groups[group_index];
+                        std::vector<Commitment> commitments;
+                        std::vector<FieldElement> values;
+
+                        commitments.reserve(
+                            group.claims.size());
+
+                        values.reserve(
+                            group.claims.size());
+
+                        for (const auto &claim :
+                             group.claims)
+                        {
+                            commitments.push_back(
+                                resolved_claim_commitment(
+                                    claim));
+
+                            values.push_back(
+                                claim.value);
+                        }
+
+                        // The outer scheduler already parallelizes independent
+                        // groups.  Never let one group reacquire the whole
+                        // machine merely because its work estimate is large.
+                        // Large and small groups use the same globally bounded
+                        // per-group cap; KZG still decides internally how much
+                        // of that cap is useful.
+                        const auto inner_worker_count =
+                            base_inner_worker_count;
+
+                        const crypto::
+                            PointGroupOpeningExecutionOptions
+                                execution_options{
+                                    .max_field_worker_count =
+                                        inner_worker_count,
+                                    .msm = {
+                                        .max_worker_count =
+                                            inner_worker_count,
+                                    },
+                        };
+                        const auto local_start = Clock::now();
+                        opening_results[group_index].witness =
+                            crypto::KZG::open_point_group(
+                                commitments,
+                                group.point,
+                                values,
+                                derive_point_group_challenge(
+                                    proof.public_metadata, group),
+                                context.kzg,
+                                &opening_results[group_index].profile,
+                                inner_worker_count != 0
+                                    ? &execution_options
+                                    : nullptr,
+                                trace.spilled_polynomials.empty()
+                                    ? nullptr
+                                    : &file_backed_opening_resolver,
+                                trace.spilled_polynomials.empty()
+                                    ? nullptr
+                                    : &file_backed_opening_semantic_source_resolver);
+                        opening_results[group_index].profile.point_parallel_batches = 1;
+                        opening_results[group_index].profile.point_parallel_workers =
+                            worker_count;
+                        opening_results[group_index].elapsed_ms =
+                            elapsed_ms(local_start, Clock::now());
+                    }
+                });
+            return elapsed_ms(phase_start, Clock::now());
         };
 
-        std::array<
-            crypto::BatchOpeningProfile,
-            2>
-            pair_profiles;
+        std::vector<std::size_t> domain_group_indices;
+        std::vector<std::size_t> external_group_indices;
+        for (std::size_t i = 0; i < point_groups.size(); ++i)
+        {
+            (point_groups[i].owner_block == "W_ext"
+                 ? external_group_indices
+                 : domain_group_indices)
+                .push_back(i);
+        }
+        struct SharedStreamPairSelection
+        {
+            std::array<std::size_t, 2>
+                groups{0, 0};
 
-        const auto pair_start =
-            Clock::now();
+            std::size_t shared_source_count = 0;
 
-        const auto witnesses =
-            crypto::KZG::
-                open_point_group_pair_shared_stream(
-                    pair_commitments,
-                    pair_points,
-                    pair_values,
-                    pair_challenges,
-                    context.kzg,
-                    &pair_profiles,
-                    &pair_execution_options,
-                    trace.spilled_polynomials
-                            .empty()
-                        ? nullptr
-                        : &file_backed_opening_resolver,
-                    trace.spilled_polynomials
-                            .empty()
-                        ? nullptr
-                        : &file_backed_opening_semantic_source_resolver);
+            std::size_t estimated_work = 0;
+        };
 
-        const auto pair_wall_ms =
+        const auto opening_workset_total =
+            [](const util::OpeningMemoryWorkset &workset,
+               std::size_t *total)
+        {
+            if (total == nullptr ||
+                workset.folded_bytes >
+                    std::numeric_limits<std::size_t>::max() -
+                        workset.scratch_bytes)
+            {
+                return false;
+            }
+            *total = workset.folded_bytes + workset.scratch_bytes;
+            if (workset.source_bytes >
+                std::numeric_limits<std::size_t>::max() - *total)
+            {
+                return false;
+            }
+            *total += workset.source_bytes;
+            return true;
+        };
+
+        const auto select_shared_stream_pairs =
+            [&](const std::vector<std::size_t> &candidates,
+                bool require_same_owner)
+        {
+            std::vector<
+                SharedStreamPairSelection>
+                selections;
+
+            if (candidates.size() < 2)
+            {
+                return selections;
+            }
+
+            const auto memory_snapshot =
+                util::cached_effective_memory_snapshot();
+            const auto memory_reserve =
+                util::recommended_memory_reserve_bytes(
+                    memory_snapshot,
+                    std::size_t{1} << 30,
+                    1,
+                    8);
+
+            std::unordered_set<std::size_t>
+                consumed;
+
+            while (true)
+            {
+                bool found = false;
+
+                SharedStreamPairSelection
+                    best;
+
+                for (std::size_t lhs_position = 0;
+                     lhs_position <
+                     candidates.size();
+                     ++lhs_position)
+                {
+                    const auto lhs =
+                        candidates[lhs_position];
+
+                    if (consumed.contains(lhs))
+                    {
+                        continue;
+                    }
+
+                    for (std::size_t rhs_position =
+                             lhs_position + 1;
+                         rhs_position <
+                         candidates.size();
+                         ++rhs_position)
+                    {
+                        const auto rhs =
+                            candidates[rhs_position];
+
+                        if (consumed.contains(rhs))
+                        {
+                            continue;
+                        }
+
+                        if (require_same_owner &&
+                            point_groups[lhs]
+                                    .owner_block !=
+                                point_groups[rhs]
+                                    .owner_block)
+                        {
+                            continue;
+                        }
+
+                        const auto shared =
+                            shared_file_backed_semantic_source_count(
+                                lhs,
+                                rhs);
+
+                        if (shared == 0)
+                        {
+                            continue;
+                        }
+
+                        const std::array<
+                            util::OpeningMemoryWorkset,
+                            2>
+                            pair_worksets{
+                                opening_group_workset(lhs),
+                                opening_group_workset(rhs),
+                        };
+                        std::size_t first_workset_bytes = 0;
+                        std::size_t second_workset_bytes = 0;
+                        std::size_t pair_workset_bytes = 0;
+                        if (!opening_workset_total(
+                                pair_worksets[0],
+                                &first_workset_bytes) ||
+                            !opening_workset_total(
+                                pair_worksets[1],
+                                &second_workset_bytes) ||
+                            first_workset_bytes >
+                                std::numeric_limits<std::size_t>::max() -
+                                    second_workset_bytes)
+                        {
+                            continue;
+                        }
+                        pair_workset_bytes =
+                            first_workset_bytes +
+                            second_workset_bytes;
+                        const auto pair_admission =
+                            util::admit_opening_memory(
+                                memory_snapshot,
+                                pair_worksets.data(),
+                                pair_worksets.size(),
+                                memory_reserve,
+                                2);
+                        if (pair_admission.overflow ||
+                            !pair_admission.memory_known ||
+                            pair_admission.maximum_parallel_groups < 2 ||
+                            pair_workset_bytes >
+                                pair_admission.budget_bytes)
+                        {
+                            continue;
+                        }
+
+                        const auto work =
+                            estimate_point_group_work(
+                                lhs) +
+                            estimate_point_group_work(
+                                rhs);
+
+                        if (!found ||
+                            shared >
+                                best.shared_source_count ||
+                            (shared ==
+                                 best.shared_source_count &&
+                             work >
+                                 best.estimated_work))
+                        {
+                            best.groups = {
+                                lhs,
+                                rhs,
+                            };
+
+                            best.shared_source_count =
+                                shared;
+
+                            best.estimated_work =
+                                work;
+
+                            found = true;
+                        }
+                    }
+                }
+
+                if (!found)
+                {
+                    break;
+                }
+
+                consumed.insert(
+                    best.groups[0]);
+
+                consumed.insert(
+                    best.groups[1]);
+
+                selections.push_back(
+                    best);
+            }
+
+            return selections;
+        };
+
+        const auto
+            shared_stream_domain_pairs =
+                select_shared_stream_pairs(
+                    domain_group_indices,
+                    true);
+
+        const auto
+            shared_stream_external_pairs =
+                select_shared_stream_pairs(
+                    external_group_indices,
+                    false);
+        const auto external_claim_assembly_ms =
             elapsed_ms(
-                pair_start,
+                stage_start,
                 Clock::now());
 
-        for (std::size_t slot = 0;
-             slot < 2;
-             ++slot)
+        const auto domain_witness_start =
+            Clock::now();
+
+        auto open_shared_stream_pair =
+            [&](const SharedStreamPairSelection
+                    &selection)
         {
-            const auto index =
-                pair[slot];
+            const auto pair =
+                selection.groups;
 
-            pair_profiles[slot]
-                .point_parallel_batches = 1;
+            std::array<
+                std::vector<Commitment>,
+                2>
+                pair_commitments;
 
-            pair_profiles[slot]
-                .point_parallel_workers = 2;
+            std::array<
+                std::vector<FieldElement>,
+                2>
+                pair_values;
 
-            opening_results[index]
-                .witness =
-                witnesses[slot];
+            std::array<FieldElement, 2>
+                pair_points{
+                    point_groups[pair[0]].point,
+                    point_groups[pair[1]].point,
+            };
 
-            opening_results[index]
-                .profile =
-                pair_profiles[slot];
+            std::array<FieldElement, 2>
+                pair_challenges{
+                    derive_point_group_challenge(
+                        proof.public_metadata,
+                        point_groups[pair[0]]),
+                    derive_point_group_challenge(
+                        proof.public_metadata,
+                        point_groups[pair[1]]),
+            };
 
-            opening_results[index]
-                .elapsed_ms =
-                pair_profiles[slot]
-                    .precompute_ms +
-                pair_profiles[slot]
-                    .finalize_ms;
-        }
+            for (std::size_t slot = 0;
+                 slot < 2;
+                 ++slot)
+            {
+                const auto &group =
+                    point_groups[pair[slot]];
 
-        progress_note(
-            "prove:opening:"
-            "shared_stream_pair:"
-            "first_owner=" +
-            point_groups[pair[0]]
-                .owner_block +
-            ":second_owner=" +
-            point_groups[pair[1]]
-                .owner_block +
-            ":shared_sources=" +
-            std::to_string(
-                selection
-                    .shared_source_count) +
-            ":ms=" +
-            std::to_string(
-                pair_wall_ms));
-    };
+                pair_commitments[slot]
+                    .reserve(
+                        group.claims.size());
 
-    const auto erase_opened_pair =
-        [](std::vector<std::size_t> *indices,
-           const std::array<std::size_t, 2>
-               &pair)
-    {
-        indices->erase(
-            std::remove_if(
-                indices->begin(),
-                indices->end(),
-                [&](std::size_t index)
+                pair_values[slot]
+                    .reserve(
+                        group.claims.size());
+
+                for (const auto &claim :
+                     group.claims)
                 {
-                    return index ==
-                               pair[0] ||
-                           index ==
-                               pair[1];
-                }),
-            indices->end());
-    };
+                    pair_commitments[slot]
+                        .push_back(
+                            resolved_claim_commitment(
+                                claim));
 
-    auto remaining_domain_group_indices =
-        domain_group_indices;
+                    pair_values[slot]
+                        .push_back(
+                            claim.value);
+                }
+            }
 
-    for (const auto &selection :
-         shared_stream_domain_pairs)
-    {
-        open_shared_stream_pair(
-            selection);
+            const auto hardware_workers =
+                std::max<unsigned>(
+                    1,
+                    std::thread::
+                        hardware_concurrency());
 
-        erase_opened_pair(
-            &remaining_domain_group_indices,
-            selection.groups);
-    }
+            // open_point_group_pair_shared_stream() drives two independent
+            // opening constructions.  Split one global CPU budget between
+            // them instead of granting both the full 16-worker allowance.
+            const auto inner_worker_count =
+                std::min<std::size_t>(
+                    16,
+                    std::max<std::size_t>(
+                        1,
+                        static_cast<std::size_t>(
+                            hardware_workers) /
+                            2));
 
-    (void)open_group_indices(
-        remaining_domain_group_indices);
+            const std::array<
+                crypto::
+                    PointGroupOpeningExecutionOptions,
+                2>
+                pair_execution_options{
+                    crypto::
+                        PointGroupOpeningExecutionOptions{
+                            .max_field_worker_count =
+                                inner_worker_count,
+                            .msm = {
+                                .max_worker_count =
+                                    inner_worker_count,
+                            },
+                        },
+                    crypto::PointGroupOpeningExecutionOptions{
+                        .max_field_worker_count = inner_worker_count,
+                        .msm = {
+                            .max_worker_count = inner_worker_count,
+                        },
+                    },
+            };
 
-    const auto domain_witness_wall_ms =
-        elapsed_ms(
-            domain_witness_start,
-            Clock::now());
+            std::array<
+                crypto::BatchOpeningProfile,
+                2>
+                pair_profiles;
 
-    for (const auto group_index :
-         domain_group_indices)
-    {
-        const auto &group =
-            point_groups[group_index];
+            const auto pair_start =
+                Clock::now();
 
-        const auto &profile =
-            opening_results[group_index]
-                .profile;
+            const auto witnesses =
+                crypto::KZG::
+                    open_point_group_pair_shared_stream(
+                        pair_commitments,
+                        pair_points,
+                        pair_values,
+                        pair_challenges,
+                        context.kzg,
+                        &pair_profiles,
+                        &pair_execution_options,
+                        trace.spilled_polynomials
+                                .empty()
+                            ? nullptr
+                            : &file_backed_opening_resolver,
+                        trace.spilled_polynomials
+                                .empty()
+                            ? nullptr
+                            : &file_backed_opening_semantic_source_resolver);
+
+            const auto pair_wall_ms =
+                elapsed_ms(
+                    pair_start,
+                    Clock::now());
+
+            for (std::size_t slot = 0;
+                 slot < 2;
+                 ++slot)
+            {
+                const auto index =
+                    pair[slot];
+
+                pair_profiles[slot]
+                    .point_parallel_batches = 1;
+
+                pair_profiles[slot]
+                    .point_parallel_workers = 2;
+
+                opening_results[index]
+                    .witness =
+                    witnesses[slot];
+
+                opening_results[index]
+                    .profile =
+                    pair_profiles[slot];
+
+                opening_results[index]
+                    .elapsed_ms =
+                    pair_profiles[slot]
+                        .precompute_ms +
+                    pair_profiles[slot]
+                        .finalize_ms;
+            }
+
+            progress_note(
+                "prove:opening:"
+                "shared_stream_pair:"
+                "first_owner=" +
+                point_groups[pair[0]]
+                    .owner_block +
+                ":second_owner=" +
+                point_groups[pair[1]]
+                    .owner_block +
+                ":shared_sources=" +
+                std::to_string(
+                    selection
+                        .shared_source_count) +
+                ":ms=" +
+                std::to_string(
+                    pair_wall_ms));
+        };
+
+        const auto erase_opened_pair =
+            [](std::vector<std::size_t> *indices,
+               const std::array<std::size_t, 2>
+                   &pair)
+        {
+            indices->erase(
+                std::remove_if(
+                    indices->begin(),
+                    indices->end(),
+                    [&](std::size_t index)
+                    {
+                        return index ==
+                                   pair[0] ||
+                               index ==
+                                   pair[1];
+                    }),
+                indices->end());
+        };
+
+        auto remaining_domain_group_indices =
+            domain_group_indices;
+
+        for (const auto &selection :
+             shared_stream_domain_pairs)
+        {
+            open_shared_stream_pair(
+                selection);
+
+            erase_opened_pair(
+                &remaining_domain_group_indices,
+                selection.groups);
+        }
+
+        (void)open_group_indices(
+            remaining_domain_group_indices);
+
+        const auto domain_witness_wall_ms =
+            elapsed_ms(
+                domain_witness_start,
+                Clock::now());
+
+        for (const auto group_index :
+             domain_group_indices)
+        {
+            const auto &group =
+                point_groups[group_index];
+
+            const auto &profile =
+                opening_results[group_index]
+                    .profile;
+
+            progress_note(
+                "prove:domain_witness:group:" +
+                group.owner_block +
+                ":ms=" +
+                std::to_string(
+                    opening_results[group_index]
+                        .elapsed_ms) +
+                ":precompute_ms=" +
+                std::to_string(
+                    profile.precompute_ms) +
+                ":inverse_ms=" +
+                std::to_string(
+                    profile
+                        .denominator_inverse_ms) +
+                ":assembly_ms=" +
+                std::to_string(
+                    profile
+                        .quotient_assembly_ms) +
+                ":witness_msm_ms=" +
+                std::to_string(
+                    profile
+                        .witness_msm_ms) +
+                ":blinder_ms=" +
+                std::to_string(
+                    profile
+                        .blinder_witness_ms) +
+                ":workers=" +
+                std::to_string(
+                    profile
+                        .point_msm_worker_cap) +
+                ":outer_workers=" +
+                std::to_string(
+                    profile
+                        .point_parallel_workers));
+        }
 
         progress_note(
-            "prove:domain_witness:group:" +
-            group.owner_block +
-            ":ms=" +
+            "prove:domain_witness:done:ms=" +
             std::to_string(
-                opening_results[group_index]
-                    .elapsed_ms) +
-            ":precompute_ms=" +
-            std::to_string(
-                profile.precompute_ms) +
-            ":inverse_ms=" +
-            std::to_string(
-                profile
-                    .denominator_inverse_ms) +
-            ":assembly_ms=" +
-            std::to_string(
-                profile
-                    .quotient_assembly_ms) +
-            ":witness_msm_ms=" +
-            std::to_string(
-                profile
-                    .witness_msm_ms) +
-            ":blinder_ms=" +
-            std::to_string(
-                profile
-                    .blinder_witness_ms) +
-            ":workers=" +
-            std::to_string(
-                profile
-                    .point_msm_worker_cap) +
-            ":outer_workers=" +
-            std::to_string(
-                profile
-                    .point_parallel_workers));
-    }
+                domain_witness_wall_ms));
 
-    progress_note(
-        "prove:domain_witness:done:ms=" +
-        std::to_string(
-            domain_witness_wall_ms));
+        auto remaining_external_group_indices =
+            external_group_indices;
 
-    auto remaining_external_group_indices =
-        external_group_indices;
+        const auto external_witness_start =
+            Clock::now();
 
-    const auto external_witness_start =
-        Clock::now();
-
-    for (const auto &selection :
-         shared_stream_external_pairs)
-    {
-        open_shared_stream_pair(
-            selection);
-
-        erase_opened_pair(
-            &remaining_external_group_indices,
-            selection.groups);
-    }
-
-    (void)open_group_indices(
-        remaining_external_group_indices);
-
-    const auto external_witness_wall_ms =
-        elapsed_ms(
-            external_witness_start,
-            Clock::now());
-
-    proof.opening_groups.reserve(point_groups.size());
-    for (std::size_t i = 0; i < point_groups.size(); ++i)
-    {
-        proof.opening_groups.push_back(PointGroupOpening{
-            .group_id = point_groups[i].group_id,
-            .owner_block = point_groups[i].owner_block,
-            .point = point_groups[i].point,
-            .witness = opening_results[i].witness,
-        });
-        if (metrics == nullptr)
-            continue;
-        const auto &profile = opening_results[i].profile;
-        metrics->domain_open_denominator_inverse_ms +=
-            profile.denominator_inverse_ms;
-        metrics->domain_open_denominator_inverse_reuse_ms +=
-            profile.denominator_inverse_reuse_ms;
-        metrics->domain_open_denominator_inverse_reuse_hits +=
-            profile.denominator_inverse_reuse_hits;
-        metrics->domain_open_denominator_inverse_cache_misses +=
-            profile.denominator_inverse_cache_misses;
-        if (point_groups[i].owner_block.rfind(
-                "Open_dom:", 0) == 0)
+        for (const auto &selection :
+             shared_stream_external_pairs)
         {
-            const auto domain = point_groups[i].owner_block.substr(9);
-            metrics->domain_open_witness_ms +=
-                opening_results[i].elapsed_ms;
-            if (auto *metric = domain_open_metric(metrics, domain);
-                metric != nullptr)
+            open_shared_stream_pair(
+                selection);
+
+            erase_opened_pair(
+                &remaining_external_group_indices,
+                selection.groups);
+        }
+
+        (void)open_group_indices(
+            remaining_external_group_indices);
+
+        const auto external_witness_wall_ms =
+            elapsed_ms(
+                external_witness_start,
+                Clock::now());
+
+        proof.opening_groups.reserve(point_groups.size());
+        for (std::size_t i = 0; i < point_groups.size(); ++i)
+        {
+            proof.opening_groups.push_back(PointGroupOpening{
+                .group_id = point_groups[i].group_id,
+                .owner_block = point_groups[i].owner_block,
+                .point = point_groups[i].point,
+                .witness = opening_results[i].witness,
+            });
+            if (metrics == nullptr)
+                continue;
+            const auto &profile = opening_results[i].profile;
+            metrics->domain_open_denominator_inverse_ms +=
+                profile.denominator_inverse_ms;
+            metrics->domain_open_denominator_inverse_reuse_ms +=
+                profile.denominator_inverse_reuse_ms;
+            metrics->domain_open_denominator_inverse_reuse_hits +=
+                profile.denominator_inverse_reuse_hits;
+            metrics->domain_open_denominator_inverse_cache_misses +=
+                profile.denominator_inverse_cache_misses;
+            if (point_groups[i].owner_block.rfind(
+                    "Open_dom:", 0) == 0)
             {
-                *metric += opening_results[i].elapsed_ms;
-            }
-            if (domain == "FH")
-            {
-                metrics->fh_open_fold_prepare_ms += profile.precompute_ms;
-                metrics->fh_fold_prep_ms += profile.precompute_ms;
-                metrics->fh_open_witness_ms += std::max(
-                    0.0,
-                    opening_results[i].elapsed_ms - profile.precompute_ms);
+                const auto domain = point_groups[i].owner_block.substr(9);
+                metrics->domain_open_witness_ms +=
+                    opening_results[i].elapsed_ms;
+                if (auto *metric = domain_open_metric(metrics, domain);
+                    metric != nullptr)
+                {
+                    *metric += opening_results[i].elapsed_ms;
+                }
+                if (domain == "FH")
+                {
+                    metrics->fh_open_fold_prepare_ms += profile.precompute_ms;
+                    metrics->fh_fold_prep_ms += profile.precompute_ms;
+                    metrics->fh_open_witness_ms += std::max(
+                        0.0,
+                        opening_results[i].elapsed_ms - profile.precompute_ms);
+                }
             }
         }
-    }
-    if (metrics != nullptr)
-    {
-        metrics->domain_opening_ms += domain_witness_wall_ms;
-        metrics->external_opening_ms +=
-            external_claim_assembly_ms + external_witness_wall_ms;
-    }
-    progress_note("prove:external_opening:done");
-    strip_prover_material_from_proof(&proof);
+        if (metrics != nullptr)
+        {
+            metrics->domain_opening_ms += domain_witness_wall_ms;
+            metrics->external_opening_ms +=
+                external_claim_assembly_ms + external_witness_wall_ms;
+        }
+        progress_note("prove:external_opening:done");
+        strip_prover_material_from_proof(&proof);
 
-    cuda_cache_release_guard.dismiss();
+        cuda_cache_release_guard.dismiss();
 
-    return proof;
-}
+        return proof;
+    }
 
 } // namespace gatzk::protocol
