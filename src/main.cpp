@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <iomanip>
@@ -663,6 +664,8 @@ int main(int argc, char **argv)
                 metrics.fft_backend_route = "plain_domain";
             }
             append_note(metrics, "benchmark_mode=" + mode_label);
+            append_note(metrics, "benchmark_preparation=context_ready_single_run");
+            append_note(metrics, "independent_reference_forward=separately_timed");
             append_note(metrics, "compute_backend=" + metrics.compute_backend_name);
             append_note(
                 metrics,
@@ -710,6 +713,9 @@ int main(int argc, char **argv)
             }
 
             progress(mode_label + ":trace:start");
+            if (metrics.commitment_time_ms != 0.0)
+                throw std::runtime_error("online commitment work was measured before the trace interval");
+            gatzk::protocol::timing::start_prove_timer(&metrics);
             const auto trace_start = std::chrono::steady_clock::now();
             auto trace = gatzk::protocol::build_trace(context, &metrics);
             const auto trace_elapsed_ms =
@@ -724,11 +730,8 @@ int main(int argc, char **argv)
                 mode_label + ":trace:done:ms=" + format_ms(trace_elapsed_ms));
             progress(
                 mode_label + ":trace:profile" + ":commit_dynamic_ms=" + format_ms(metrics.commit_dynamic_ms) + ":materialization_ms=" + format_ms(metrics.dynamic_polynomial_materialization_ms) + ":msm_ms=" + format_ms(metrics.dynamic_commit_msm_ms) + ":derived_point_ms=" + format_ms(metrics.derived_commitment_point_ms) + ":trace_generation_ms=" + format_ms(metrics.trace_generation_ms) + ":forward_ms=" + format_ms(metrics.forward_ms) + ":lookup_inverse_ms=" + format_ms(metrics.lookup_inverse_ms) + ":lookup_accumulator_ms=" + format_ms(metrics.lookup_accumulator_ms) + ":lookup_pack_ms=" + format_ms(metrics.lookup_query_pack_ms + metrics.lookup_multiplicity_ms + metrics.lookup_key_build_ms) + ":lookup_nested_total_ms=" + format_ms(metrics.lookup_trace_ms) + ":hidden_stage_ms=" + format_ms(metrics.hidden_head_trace_ms) + ":output_stage_ms=" + format_ms(metrics.output_head_trace_ms) + ":trace_other_ms=" + format_ms(trace_other_ms) + ":finalize_ms=" + format_ms(metrics.trace_finalize_ms));
-            metrics.reference_forward_ms = metrics.forward_ms;
+            metrics.reference_forward_ms = metrics.prover_reference_audit_ms;
             progress(mode_label + ":prove:start");
-
-            gatzk::protocol::timing::
-                start_prove_timer(&metrics);
 
             const auto proof = [&]()
             {
@@ -804,19 +807,19 @@ int main(int argc, char **argv)
                     metrics.prove_timer_wall_start)
                     .count();
 
-            const auto prove_commitment_ms =
-                clamp_non_negative(
-                    metrics.commitment_time_ms -
-                    metrics.prove_timer_commitment_baseline_ms);
-
-            metrics.prove_accounted_ms =
-                clamp_non_negative(
-                    prove_wall_ms -
-                    prove_commitment_ms);
-
-            metrics.prove_accounting_gap_ms =
-                metrics.prove_time_ms -
-                metrics.prove_accounted_ms;
+            const auto prove_commitment_ms = metrics.commitment_time_ms - metrics.prove_timer_commitment_baseline_ms;
+            metrics.prover_wall_including_audit_ms = prove_wall_ms;
+            metrics.prover_total_ms = prove_wall_ms - metrics.prover_reference_audit_ms;
+            metrics.prove_accounted_ms = metrics.prover_total_ms - prove_commitment_ms;
+            metrics.prove_accounting_gap_ms = metrics.prove_time_ms - metrics.prove_accounted_ms;
+            const auto timing_tolerance_ms = std::max(0.1, prove_wall_ms * 1e-6);
+            if (!std::isfinite(metrics.prover_total_ms) || !std::isfinite(metrics.prove_time_ms) ||
+                !std::isfinite(metrics.commitment_time_ms) || !std::isfinite(metrics.prover_reference_audit_ms) ||
+                metrics.prover_total_ms < 0.0 || metrics.prove_time_ms < 0.0 || prove_commitment_ms < 0.0 ||
+                metrics.prover_reference_audit_ms < 0.0 ||
+                std::abs(metrics.prove_accounting_gap_ms) > timing_tolerance_ms ||
+                std::abs(metrics.prover_total_ms - metrics.commitment_time_ms - metrics.prove_time_ms) > timing_tolerance_ms)
+                throw std::runtime_error("online prover timing failed the wall-clock partition check");
 
             prover_cuda_execution_state_release
                 .release_now();

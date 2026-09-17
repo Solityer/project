@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple
 # Only manifests produced with the canonical protocol-verifier timing boundary
 # may enter the official benchmark table.  This keeps the reported timings
 # under one stable measurement definition.
-CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify"
+CANONICAL_TIMING_SCHEMA = "online_trace_commit_prove_protocol_verify_v2"
 
 
 _AGGREGATE_PATH = pathlib.Path(__file__).resolve().with_name("aggregate_secure_results.py")
@@ -336,6 +336,7 @@ def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, obj
         raise ValueError(
             f"official benchmark export requires timing_schema={CANONICAL_TIMING_SCHEMA!r} for {dataset}, got {timing_schema!r}"
         )
+    _AGGREGATE.validate_online_timing(manifest, context)
     timing_values = {}
     for field in ("commitment_time_ms", "prove_time_ms", "verify_time_ms"):
         value = _AGGREGATE.as_float(manifest.get(field), field, context)

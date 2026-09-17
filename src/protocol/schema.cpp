@@ -18,6 +18,7 @@
 #include <numeric>
 #include <tuple>
 #include <memory>
+#include <unordered_map>
 #include <openssl/bn.h>
 #include <openssl/sha.h>
 
@@ -1840,9 +1841,31 @@ namespace gatzk::protocol
         return out;
     }
 
-    std::vector<BindingRelationMeta> build_binding_relation_metadata(
-        const ProtocolContext &context)
+    std::vector<BindingRelationMeta> build_binding_relation_metadata(const ProtocolContext &context)
     {
+        if (context.compiler_artifact == nullptr)
+            throw std::runtime_error("binding RelationMeta requires ProtocolCompilerArtifact");
+        return build_binding_relation_metadata(context, *context.compiler_artifact);
+    }
+
+    std::vector<BindingRelationMeta> build_binding_relation_metadata(
+        const ProtocolContext &context, const ProtocolCompilerArtifact &artifact)
+    {
+        std::unordered_map<std::string, std::size_t> blinder_counts;
+        blinder_counts.reserve(artifact.observation_ledger.size());
+        for (const auto &entry : artifact.observation_ledger)
+        {
+            if (entry.object_or_challenge.empty() || entry.query_bound == 0 ||
+                !blinder_counts.emplace(entry.object_or_challenge, entry.query_bound).second)
+                throw std::runtime_error("invalid or duplicate ObservationLedger owner: " + entry.object_or_challenge);
+        }
+        const auto blinder_count = [&](const std::string &object_id)
+        {
+            const auto found = blinder_counts.find(object_id);
+            if (found == blinder_counts.end())
+                throw std::runtime_error("missing ObservationLedger blinder resource: " + object_id);
+            return found->second;
+        };
         std::vector<BindingRelationMeta> out;
         const auto canonical_matrix = [&](
                                           std::string relation_id,
@@ -1901,7 +1924,7 @@ namespace gatzk::protocol
             };
             route.terminal_delta =
                 route.edge_terminal_point - route.node_terminal_point;
-            route.configured_shift_degree = context.domains.edge->size + registered_blinder_coefficient_count(context, route.edge_accumulator_object) - 1;
+            route.configured_shift_degree = context.domains.edge->size + blinder_count(route.edge_accumulator_object) - 1;
             route.shift_domain_size = next_power_of_two_checked(
                 2 * route.configured_shift_degree + 1);
             return route;
@@ -1984,7 +2007,7 @@ namespace gatzk::protocol
             relation.challenge_label =
                 "y_route_terminal:" + relation.relation_id;
             relation.terminal_delta = relation.edge_terminal_point - relation.node_terminal_point;
-            relation.configured_shift_degree = context.domains.edge->size + registered_blinder_coefficient_count(context, relation.edge_accumulator_object) - 1;
+            relation.configured_shift_degree = context.domains.edge->size + blinder_count(relation.edge_accumulator_object) - 1;
             relation.shift_domain_size = next_power_of_two_checked(
                 2 * relation.configured_shift_degree + 1);
             return relation;
@@ -2129,12 +2152,8 @@ namespace gatzk::protocol
                 .commitment_order = logup_order,
             });
 
-            if (context.compiler_artifact == nullptr)
-                throw std::runtime_error(
-                    "coefficient basis RelationMeta requires ProtocolCompilerArtifact");
             const auto coefficient_object = output_bias_basis_label(head, "Coeff");
-            const auto tail_length = registered_blinder_coefficient_count(
-                context, coefficient_object);
+            const auto tail_length = blinder_count(coefficient_object);
             std::vector<std::size_t> semantic_positions(
                 context.local.num_classes, 0);
             std::iota(
@@ -2167,7 +2186,7 @@ namespace gatzk::protocol
                     .length = chunk.length,
                     .terminal_point = context.domains.edge->point_at(
                         chunk.length),
-                    .configured_shift_degree = context.domains.edge->size + registered_blinder_coefficient_count(context, output_bias_basis_chunk_accumulator_label(head, chunk.chunk_index)) - 1,
+                    .configured_shift_degree = context.domains.edge->size + blinder_count(output_bias_basis_chunk_accumulator_label(head, chunk.chunk_index)) - 1,
                 });
                 basis_chunks.back().shift_domain_size =
                     next_power_of_two_checked(
@@ -2237,8 +2256,7 @@ namespace gatzk::protocol
             const auto shifted_source_label = c_first
                                                   ? output_bias_view_label(head, "R_qry")
                                                   : output_bias_view_label(head, "R_can");
-            const auto kRegisteredBlinderCoefficients =
-                registered_blinder_coefficient_count(context, shifted_source_label);
+            const auto kRegisteredBlinderCoefficients = blinder_count(shifted_source_label);
             const auto shift_degree = second_domain->size + kRegisteredBlinderCoefficients - 1;
             meta.shift_relations.push_back(KZGShiftRelationMeta{
                 .relation_id = "shift:output-bias-terminal:" + std::to_string(head),
@@ -2371,12 +2389,7 @@ namespace gatzk::protocol
                 relation.edge_terminal_point -
                 relation.node_terminal_point;
 
-            relation.configured_shift_degree =
-                right_domain->size +
-                registered_blinder_coefficient_count(
-                    context,
-                    right_accumulator) -
-                1;
+            relation.configured_shift_degree = right_domain->size + blinder_count(right_accumulator) - 1;
 
             relation.shift_domain_size =
                 next_power_of_two_checked(
@@ -4728,10 +4741,7 @@ namespace gatzk::protocol
                         "average-value-rows"),
             "output-average");
 
-        auto relation_context = context;
-        relation_context.compiler_artifact =
-            std::make_shared<ProtocolCompilerArtifact>(artifact);
-        for (const auto &meta : build_binding_relation_metadata(relation_context))
+        for (const auto &meta : build_binding_relation_metadata(context, artifact))
         {
             for (const auto &matrix : meta.canonical_matrices)
                 add_tuple_compression(
@@ -4773,10 +4783,7 @@ namespace gatzk::protocol
             for (const auto &relation :
                  meta.route_terminal_relations)
             {
-                const auto relation_domain_size =
-                    registered_domain_size(
-                        relation_context,
-                        relation.edge_domain);
+                const auto relation_domain_size = registered_domain_size(context, relation.edge_domain);
 
                 if (!relation_domain_size.has_value())
                 {
@@ -5015,10 +5022,7 @@ namespace gatzk::protocol
         // compile RelationMeta only after all independent blinder resources
         // have been fixed.  The temporary context is read-only and prevents a
         // prover-selected resource from entering the registry.
-        auto binding_context = context;
-        binding_context.compiler_artifact =
-            std::make_shared<ProtocolCompilerArtifact>(artifact);
-        for (const auto &meta : build_binding_relation_metadata(binding_context))
+        for (const auto &meta : build_binding_relation_metadata(context, artifact))
             artifact.binding_relation_registry.push_back(
                 binding_relation_string(meta));
 
@@ -5355,6 +5359,20 @@ namespace gatzk::protocol
             return fail("compiler artifact instance canonical bytes mismatch");
         if (context.verifier_shape_only)
         {
+            try
+            {
+                if (!(artifact.proof_schema == build_proof_schema(context)))
+                    return fail("verifier registration ProofSchema does not match the current public shape");
+                std::vector<std::string> expected_bindings;
+                for (const auto &meta : build_binding_relation_metadata(context, artifact))
+                    expected_bindings.push_back(binding_relation_string(meta));
+                if (artifact.binding_relation_registry != expected_bindings)
+                    return fail("verifier registration binding registry does not match the current public shape");
+            }
+            catch (const std::exception &error)
+            {
+                return fail(std::string("verifier registration compiler compatibility failure: ") + error.what());
+            }
             if (reason != nullptr)
                 reason->clear();
             return true;

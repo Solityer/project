@@ -42,6 +42,5 @@ namespace gatzk::protocol
     }
 
     void release_cuda_t_edge_executor_cache()
-    {
-    }
+    {}
 }

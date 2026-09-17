@@ -1920,24 +1920,8 @@ namespace gatzk::protocol
                             future.get();
                         }
 
-                        // This remains a protocol-correctness boundary.  All
-                        // thread-local ICICLE streams must have completed before
-                        // the resident leaf set can become visible to derived
-                        // leaves and quotient execution.
-                        status =
-                            cudaDeviceSynchronize();
-
-                        if (status !=
-                            cudaSuccess)
-                        {
-                            throw_cuda_t_edge_error(
-                                "batched evaluation leaf completion",
-                                status);
-                        }
-
-                        algebra::
-                            record_cuda_stream_sync();
-
+                        // Each joined batch call used make_default_stream_wait=false
+                        // and completed its own stream before returning.
                         if (!batch_declined.load(
                                 std::memory_order_acquire))
                         {
@@ -1984,16 +1968,10 @@ namespace gatzk::protocol
                             algebra::
                                 record_cuda_h2d(
                                     layout_bytes);
-
-                            status =
-                                cudaDeviceSynchronize();
-
-                            if (status !=
-                                cudaSuccess)
+                            status = cudaStreamSynchronize(nullptr);
+                            if (status != cudaSuccess)
                             {
-                                throw_cuda_t_edge_error(
-                                    "batched leaf-layout completion",
-                                    status);
+                                throw_cuda_t_edge_error("batched leaf-layout completion", status);
                             }
 
                             algebra::

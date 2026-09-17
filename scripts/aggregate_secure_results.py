@@ -36,7 +36,7 @@ CANONICAL_DATASETS = frozenset(DATASET_ORDER)
 # The verifier timing boundary is part of the result contract.  Every accepted
 # manifest must use this one timing definition so the paper table has a single
 # measurement meaning.
-CANONICAL_TIMING_SCHEMA = "exclusive_commit_prove_protocol_verify"
+CANONICAL_TIMING_SCHEMA = "online_trace_commit_prove_protocol_verify_v2"
 EXPECTED_MODEL_ARCH = {
     "cora": "gat_family_L3_hid8x8-8x8_kout2_c7",
     "citeseer": "gat_family_L3_hid8x8-8x8_kout2_c6",
@@ -399,14 +399,27 @@ def nonempty_string(value: Any, field: str, context: str) -> str:
     return value.strip()
 
 
+def validate_online_timing(manifest: Dict[str, Any], context: str) -> None:
+    fields = ("commitment_time_ms", "prove_time_ms", "verify_time_ms", "prover_total_ms",
+              "prover_wall_including_audit_ms", "prover_reference_audit_ms")
+    values = {name: as_float(manifest.get(name), name, context) for name in fields}
+    for name, value in values.items():
+        require(value >= 0.0, f"{context}: {name} must not be negative")
+    wall = values["prover_wall_including_audit_ms"]
+    total = values["prover_total_ms"]
+    audit = values["prover_reference_audit_ms"]
+    tolerance = max(0.11, wall * 1e-6)
+    require(abs(total - values["commitment_time_ms"] - values["prove_time_ms"]) <= tolerance,
+            f"{context}: online prover total does not equal commitment plus exclusive proving")
+    require(abs(wall - total - audit) <= tolerance,
+            f"{context}: prover wall time does not equal online total plus independent audit")
+
+
 def require_canonical_timing_schema(manifest: Dict[str, Any], context: str) -> str:
-    timing_schema = nonempty_string(
-        manifest.get("timing_schema"), "timing_schema", context
-    )
-    require(
-        timing_schema == CANONICAL_TIMING_SCHEMA,
-        f"{context}: unsupported timing_schema {timing_schema!r}; expected {CANONICAL_TIMING_SCHEMA!r}",
-    )
+    timing_schema = nonempty_string(manifest.get("timing_schema"), "timing_schema", context)
+    require(timing_schema == CANONICAL_TIMING_SCHEMA,
+            f"{context}: unsupported timing_schema {timing_schema!r}; expected {CANONICAL_TIMING_SCHEMA!r}")
+    validate_online_timing(manifest, context)
     return timing_schema
 
 

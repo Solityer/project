@@ -31,7 +31,7 @@ namespace gatzk::protocol
     }
 
     inline constexpr const char *kFormalTimingSchema =
-        "exclusive_commit_prove_protocol_verify";
+        "online_trace_commit_prove_protocol_verify_v2";
 
     // 固定静态查表集合，对应 formal note 中的激活、指数与范围表。
     struct StaticTables
@@ -1021,6 +1021,9 @@ namespace gatzk::protocol
         double prove_accounted_ms = 0.0;
         double prove_accounting_gap_ms = 0.0;
         double prove_time_ms = 0.0;
+        double prover_total_ms = 0.0;
+        double prover_wall_including_audit_ms = 0.0;
+        double prover_reference_audit_ms = 0.0;
         // Canonical protocol-verifier wall clock: parse_proof start through
         // the return of verify(...).  Public-output digest, payload audit,
         // reference consistency, final acceptance, tamper checks, and export
@@ -1099,6 +1102,7 @@ namespace gatzk::protocol
         bool prove_timer_started = false;
         bool prove_timer_running = false;
         bool prove_timer_finished = false;
+        bool reference_audit_timer_running = false;
         std::size_t commitment_timer_depth = 0;
         double prove_timer_commitment_baseline_ms = 0.0;
         std::chrono::steady_clock::time_point prove_timer_wall_start{};
@@ -1141,7 +1145,8 @@ namespace gatzk::protocol
             if (metrics == nullptr)
                 return;
             require_valid(*metrics);
-            if (metrics->prove_timer_started || metrics->prove_timer_finished || metrics->commitment_timer_depth != 0)
+            if (metrics->prove_timer_started || metrics->prove_timer_finished ||
+                metrics->commitment_timer_depth != 0 || metrics->reference_audit_timer_running)
             {
                 mark_invalid(
                     metrics,
@@ -1153,6 +1158,9 @@ namespace gatzk::protocol
                 Clock::now();
 
             metrics->prove_time_ms = 0.0;
+            metrics->prover_total_ms = 0.0;
+            metrics->prover_wall_including_audit_ms = 0.0;
+            metrics->prover_reference_audit_ms = 0.0;
             metrics->prove_timer_commitment_baseline_ms =
                 metrics->commitment_time_ms;
             metrics->prove_timer_started = true;
@@ -1169,7 +1177,8 @@ namespace gatzk::protocol
             if (metrics == nullptr)
                 return;
             require_valid(*metrics);
-            if (!metrics->prove_timer_started || !metrics->prove_timer_running || metrics->commitment_timer_depth != 0)
+            if (!metrics->prove_timer_started || !metrics->prove_timer_running ||
+                metrics->commitment_timer_depth != 0 || metrics->reference_audit_timer_running)
             {
                 mark_invalid(
                     metrics,
@@ -1208,13 +1217,13 @@ namespace gatzk::protocol
             if (metrics == nullptr)
                 return;
             require_valid(*metrics);
-            if (metrics->prove_timer_finished)
+            if (metrics->prove_timer_finished || metrics->reference_audit_timer_running)
             {
                 mark_invalid(
                     metrics,
-                    "commitment started after formal prove serialization");
+                    "commitment started outside a valid proof-production interval");
                 throw std::runtime_error(
-                    "commitment started after formal prove serialization");
+                    "commitment started outside a valid proof-production interval");
             }
             if (metrics->commitment_timer_depth == 0)
             {
@@ -1278,7 +1287,8 @@ namespace gatzk::protocol
         inline void assert_quiescent(RunMetrics &metrics)
         {
             require_valid(metrics);
-            if (metrics.commitment_timer_depth != 0 || metrics.prove_timer_started || metrics.prove_timer_running)
+            if (metrics.commitment_timer_depth != 0 || metrics.prove_timer_started ||
+                metrics.prove_timer_running || metrics.reference_audit_timer_running)
             {
                 mark_invalid(
                     &metrics,
@@ -1291,7 +1301,8 @@ namespace gatzk::protocol
         inline void assert_prove_finished(RunMetrics &metrics)
         {
             require_valid(metrics);
-            if (!metrics.prove_timer_finished || metrics.prove_timer_started || metrics.prove_timer_running || metrics.commitment_timer_depth != 0)
+            if (!metrics.prove_timer_finished || metrics.prove_timer_started || metrics.prove_timer_running ||
+                metrics.commitment_timer_depth != 0 || metrics.reference_audit_timer_running)
             {
                 mark_invalid(
                     &metrics,
@@ -1300,6 +1311,64 @@ namespace gatzk::protocol
                     "formal prove timer has not completed canonical serialization");
             }
         }
+
+        class ScopedReferenceAudit
+        {
+        public:
+            explicit ScopedReferenceAudit(RunMetrics *metrics) : metrics_(metrics)
+            {
+                if (metrics_ == nullptr)
+                    return;
+                require_valid(*metrics_);
+                if (metrics_->reference_audit_timer_running || metrics_->commitment_timer_depth != 0 ||
+                    metrics_->prove_timer_finished)
+                {
+                    mark_invalid(metrics_, "reference audit started in an invalid timing state");
+                    throw std::runtime_error("reference audit started in an invalid timing state");
+                }
+                started_ = Clock::now();
+                resume_prove_ = metrics_->prove_timer_running;
+                if (resume_prove_)
+                {
+                    metrics_->prove_time_ms += elapsed_ms(metrics_->prove_timer_segment_start, started_);
+                    metrics_->prove_timer_running = false;
+                }
+                metrics_->reference_audit_timer_running = true;
+            }
+            ScopedReferenceAudit(const ScopedReferenceAudit &) = delete;
+            ScopedReferenceAudit &operator=(const ScopedReferenceAudit &) = delete;
+
+            ~ScopedReferenceAudit() noexcept
+            {
+                if (metrics_ == nullptr)
+                    return;
+                const auto finished = Clock::now();
+                const auto duration = elapsed_ms(started_, finished);
+                if (duration < 0.0 || !metrics_->reference_audit_timer_running ||
+                    metrics_->commitment_timer_depth != 0)
+                {
+                    mark_invalid(metrics_, "reference audit failed to close");
+                    return;
+                }
+                metrics_->prover_reference_audit_ms += duration;
+                metrics_->reference_audit_timer_running = false;
+                if (resume_prove_)
+                {
+                    if (!metrics_->prove_timer_started || metrics_->prove_timer_finished)
+                    {
+                        mark_invalid(metrics_, "reference audit cannot resume the prover clock");
+                        return;
+                    }
+                    metrics_->prove_timer_segment_start = finished;
+                    metrics_->prove_timer_running = true;
+                }
+            }
+
+        private:
+            RunMetrics *metrics_ = nullptr;
+            Clock::time_point started_{};
+            bool resume_prove_ = false;
+        };
 
         class ScopedCommitment
         {

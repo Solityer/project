@@ -821,163 +821,73 @@ namespace gatzk::algebra
         constexpr std::size_t kIcicleDomainHeadroomBytes =
             std::size_t{1} << 30;
 
-        bool admit_large_coset_workspace(
-            std::size_t target_size,
-            int device,
-            const CudaNttWorkspace &workspace,
-            std::size_t caller_buffer_bytes,
-            std::size_t batch_count)
+        bool admit_cuda_ntt_growth(std::size_t additional_bytes, int device)
         {
-            if (target_size < 2 ||
-                (target_size & (target_size - 1U)) != 0U ||
-                target_size > kMaximumCudaCosetTargetSize ||
-                batch_count == 0)
-            {
+            if (device < 0 || static_cast<std::size_t>(device) >= device_context::MAX_DEVICES)
                 return false;
-            }
-
-            std::size_t one_buffer_bytes = 0;
-            std::size_t icicle_domain_bytes = 0;
-            try
+            std::size_t domain_bytes = 0;
             {
-                one_buffer_bytes =
-                    checked_ntt_bytes(
-                        target_size,
-                        batch_count);
-                icicle_domain_bytes =
-                    checked_ntt_bytes(
-                        kMaximumCudaNttSize + 1,
-                        1);
+                std::lock_guard<std::mutex> lock(cuda_ntt_domain_mutex());
+                if (!cuda_ntt_domain_initialized()[static_cast<std::size_t>(device)])
+                    domain_bytes = checked_ntt_bytes(kMaximumCudaNttSize + 1, 1);
             }
-            catch (...)
-            {
+            const auto maximum = std::numeric_limits<std::size_t>::max();
+            if (additional_bytes > maximum - domain_bytes)
                 return false;
-            }
-
-            if (one_buffer_bytes >
-                std::numeric_limits<std::size_t>::max() / 2)
-            {
+            additional_bytes += domain_bytes;
+            if (additional_bytes > maximum - kIcicleDomainHeadroomBytes)
                 return false;
-            }
-
-            const auto persistent_workspace_bytes =
-                2 * one_buffer_bytes;
-            const bool reusable =
-                workspace.can_reuse(
-                    one_buffer_bytes,
-                    device,
-                    false);
-            const auto resident_workspace_bytes =
-                workspace.device == device
-                    ? workspace.resident_bytes()
-                    : 0;
-
-            // ensure() releases an undersized workspace before allocating the
-            // replacement.  When capacity is reusable, all existing buffers
-            // (including staged scratch) remain live and are already reflected
-            // in the free-memory query.  Otherwise the replacement is the
-            // conservative peak to admit before any allocation occurs.
-            const auto live_workspace_bytes =
-                reusable
-                    ? resident_workspace_bytes
-                    : persistent_workspace_bytes;
-
-            std::size_t required_bytes = live_workspace_bytes;
-            const auto add_required =
-                [&required_bytes](std::size_t value)
-            {
-                if (value >
-                    std::numeric_limits<std::size_t>::max() -
-                        required_bytes)
-                {
-                    return false;
-                }
-                required_bytes += value;
-                return true;
-            };
-
-            // host_output / source buffers are caller-owned but are live for
-            // the complete transform.  Include them in the UMA and discrete
-            // conservative budget so a new large caller buffer cannot bypass
-            // the CUDA admission gate.
-            if (!add_required(caller_buffer_bytes) ||
-                !add_required(icicle_domain_bytes) ||
-                !add_required(kIcicleDomainHeadroomBytes))
-            {
-                return false;
-            }
+            additional_bytes += kIcicleDomainHeadroomBytes;
 
             int integrated = 0;
-            auto status =
-                cudaDeviceGetAttribute(
-                    &integrated,
-                    cudaDevAttrIntegrated,
-                    device);
+            auto status = cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, device);
             if (status != cudaSuccess)
-            {
-                (void)cudaGetLastError();
-                return false;
-            }
-
+                throw_cuda_ntt_error("memory admission device attribute", status);
             if (integrated != 0)
             {
-                const auto host =
-                    util::cached_effective_memory_snapshot();
+                const auto host = util::read_effective_memory_snapshot();
                 if (!host.effective_available_known)
-                {
                     return false;
-                }
-
-                constexpr std::size_t kMinimumIntegratedReserve =
-                    std::size_t{8} << 30;
-                constexpr std::size_t kIntegratedTransformHeadroom =
-                    std::size_t{3} << 30;
-                const auto reserve_bytes =
-                    std::max(
-                        kMinimumIntegratedReserve,
-                        !host.effective_total_known
-                            ? kMinimumIntegratedReserve
-                            : host.effective_total_bytes / 16);
-                if (reserve_bytes >
-                    std::numeric_limits<std::size_t>::max() -
-                        kIntegratedTransformHeadroom)
-                {
+                constexpr std::size_t minimum_reserve = std::size_t{8} << 30;
+                constexpr std::size_t transform_headroom = std::size_t{3} << 30;
+                const auto reserve = std::max(minimum_reserve,
+                                              host.effective_total_known ? host.effective_total_bytes / 16 : minimum_reserve);
+                if (reserve > maximum - transform_headroom)
                     return false;
-                }
-                const auto fixed_reserve =
-                    reserve_bytes +
-                    kIntegratedTransformHeadroom;
-                if (host.effective_available_bytes <= fixed_reserve)
-                {
-                    return false;
-                }
-                return required_bytes <=
-                       host.effective_available_bytes -
-                           fixed_reserve;
+                const auto fixed_reserve = reserve + transform_headroom;
+                return host.effective_available_bytes > fixed_reserve &&
+                       additional_bytes <= host.effective_available_bytes - fixed_reserve;
             }
 
             std::size_t free_bytes = 0;
             std::size_t total_bytes = 0;
-            status =
-                cudaMemGetInfo(
-                    &free_bytes,
-                    &total_bytes);
+            status = cudaMemGetInfo(&free_bytes, &total_bytes);
             if (status != cudaSuccess)
-            {
-                (void)cudaGetLastError();
-                return false;
-            }
+                throw_cuda_ntt_error("memory admission free-memory query", status);
+            const auto reserve = std::max(kCudaNttReserveBytes, total_bytes / 8);
+            return free_bytes > reserve && additional_bytes <= free_bytes - reserve;
+        }
 
-            const auto reserve_bytes =
-                std::max(
-                    kCudaNttReserveBytes,
-                    total_bytes / 8);
-            if (free_bytes <= reserve_bytes)
-            {
+        bool admit_large_coset_workspace(std::size_t target_size, int device,
+                                         const CudaNttWorkspace &workspace, std::size_t caller_buffer_bytes, std::size_t batch_count)
+        {
+            if (target_size < 2 || (target_size & (target_size - 1U)) != 0U ||
+                target_size > kMaximumCudaCosetTargetSize || batch_count == 0)
                 return false;
-            }
-            return required_bytes <=
-                   free_bytes - reserve_bytes;
+            const auto one_buffer_bytes = checked_ntt_bytes(target_size, batch_count);
+            if (one_buffer_bytes > std::numeric_limits<std::size_t>::max() / 2)
+                return false;
+            const bool reusable = workspace.can_reuse(one_buffer_bytes, device, false);
+            const auto replacement_bytes = 2 * one_buffer_bytes;
+            const auto releasable_bytes = workspace.device == device ? workspace.resident_bytes() : std::size_t{0};
+            if (releasable_bytes == std::numeric_limits<std::size_t>::max())
+                return false;
+            const auto additional_workspace_bytes = reusable || replacement_bytes <= releasable_bytes
+                                                        ? std::size_t{0}
+                                                        : replacement_bytes - releasable_bytes;
+            if (caller_buffer_bytes > std::numeric_limits<std::size_t>::max() - additional_workspace_bytes)
+                return false;
+            return admit_cuda_ntt_growth(additional_workspace_bytes + caller_buffer_bytes, device);
         }
 
         using GpuFr =
@@ -2134,160 +2044,28 @@ namespace gatzk::algebra
             return true;
         }
 
-        // Generic production NTTs use the same two persistent buffers as the
-        // direct path.  A staged transform additionally needs two full-size
-        // scratch buffers for residue decomposition and radix combines.  Do
-        // this admission before CudaNttWorkspace::ensure() so an accepted
-        // large route cannot fail halfway through allocation.
-        bool admit_generic_ntt_workspace(
-            std::size_t size,
-            std::size_t batch_size,
-            int device,
-            const CudaNttWorkspace &workspace,
-            std::size_t caller_buffer_bytes)
+        bool admit_generic_ntt_workspace(std::size_t size, std::size_t batch_size, int device,
+                                         const CudaNttWorkspace &workspace, std::size_t caller_buffer_bytes)
         {
-            if (size < 2 ||
-                (size & (size - 1U)) != 0U ||
-                size > kMaximumCudaStagedNttSize ||
-                batch_size == 0 ||
-                batch_size > 2)
-            {
+            if (size < 2 || (size & (size - 1U)) != 0U || size > kMaximumCudaStagedNttSize ||
+                batch_size == 0 || batch_size > 2)
                 return false;
-            }
-
-            std::size_t total_bytes = 0;
-            std::size_t icicle_domain_bytes = 0;
-            try
-            {
-                total_bytes = checked_ntt_bytes(size, batch_size);
-                icicle_domain_bytes =
-                    checked_ntt_bytes(
-                        kMaximumCudaNttSize + 1,
-                        1);
-            }
-            catch (...)
-            {
+            const auto total_bytes = checked_ntt_bytes(size, batch_size);
+            const bool staged = size > kMaximumCudaNttSize;
+            const auto buffer_count = staged ? std::size_t{4} : std::size_t{2};
+            if (total_bytes > std::numeric_limits<std::size_t>::max() / buffer_count)
                 return false;
-            }
-
-            const auto buffer_count =
-                size > kMaximumCudaNttSize
-                    ? std::size_t{4}
-                    : std::size_t{2};
-            if (total_bytes >
-                std::numeric_limits<std::size_t>::max() /
-                    buffer_count)
-            {
+            const auto replacement_bytes = buffer_count * total_bytes;
+            const auto releasable_bytes = workspace.device == device ? workspace.resident_bytes() : std::size_t{0};
+            if (releasable_bytes == std::numeric_limits<std::size_t>::max())
                 return false;
-            }
-            const auto required_workspace_bytes =
-                buffer_count * total_bytes;
-            const bool reusable =
-                workspace.can_reuse(
-                    total_bytes,
-                    device,
-                    size > kMaximumCudaNttSize);
-            const auto resident_workspace_bytes =
-                workspace.device == device
-                    ? workspace.resident_bytes()
-                    : 0;
-            const auto live_workspace_bytes =
-                reusable
-                    ? resident_workspace_bytes
-                    : required_workspace_bytes;
-
-            std::size_t required_bytes = live_workspace_bytes;
-            const auto add_required =
-                [&required_bytes](std::size_t value)
-            {
-                if (value >
-                    std::numeric_limits<std::size_t>::max() -
-                        required_bytes)
-                {
-                    return false;
-                }
-                required_bytes += value;
-                return true;
-            };
-            if (!add_required(caller_buffer_bytes) ||
-                !add_required(icicle_domain_bytes) ||
-                !add_required(kIcicleDomainHeadroomBytes))
-            {
+            const auto additional_workspace_bytes = workspace.can_reuse(total_bytes, device, staged) ||
+                                                            replacement_bytes <= releasable_bytes
+                                                        ? std::size_t{0}
+                                                        : replacement_bytes - releasable_bytes;
+            if (caller_buffer_bytes > std::numeric_limits<std::size_t>::max() - additional_workspace_bytes)
                 return false;
-            }
-
-            int integrated = 0;
-            auto status =
-                cudaDeviceGetAttribute(
-                    &integrated,
-                    cudaDevAttrIntegrated,
-                    device);
-            if (status != cudaSuccess)
-            {
-                (void)cudaGetLastError();
-                return false;
-            }
-
-            if (integrated != 0)
-            {
-                const auto host =
-                    util::cached_effective_memory_snapshot();
-                if (!host.effective_available_known)
-                {
-                    return false;
-                }
-
-                constexpr std::size_t kMinimumIntegratedReserve =
-                    std::size_t{8} << 30;
-                constexpr std::size_t kIntegratedTransformHeadroom =
-                    std::size_t{3} << 30;
-                const auto reserve_bytes =
-                    std::max(
-                        kMinimumIntegratedReserve,
-                        !host.effective_total_known
-                            ? kMinimumIntegratedReserve
-                            : host.effective_total_bytes / 16);
-                if (reserve_bytes >
-                    std::numeric_limits<std::size_t>::max() -
-                        kIntegratedTransformHeadroom)
-                {
-                    return false;
-                }
-                const auto fixed_reserve =
-                    reserve_bytes +
-                    kIntegratedTransformHeadroom;
-                if (host.effective_available_bytes <= fixed_reserve)
-                {
-                    return false;
-                }
-                return required_bytes <=
-                       host.effective_available_bytes -
-                           fixed_reserve;
-            }
-
-            std::size_t free_bytes = 0;
-            std::size_t total_device_bytes = 0;
-            status =
-                cudaMemGetInfo(
-                    &free_bytes,
-                    &total_device_bytes);
-            if (status != cudaSuccess)
-            {
-                (void)cudaGetLastError();
-                return false;
-            }
-            const auto reserve_bytes =
-                std::max(
-                    kCudaNttReserveBytes,
-                    total_device_bytes / 8);
-            if (required_bytes >
-                std::numeric_limits<std::size_t>::max() -
-                    reserve_bytes)
-            {
-                return false;
-            }
-            return free_bytes >=
-                   required_bytes + reserve_bytes;
+            return admit_cuda_ntt_growth(additional_workspace_bytes + caller_buffer_bytes, device);
         }
 
         bool run_cuda_ntt_batch(
@@ -2344,15 +2122,8 @@ namespace gatzk::algebra
             const bool staged =
                 size > kMaximumCudaNttSize;
 
-            auto &workspace =
-                cuda_ntt_workspace();
-
-            if (!admit_generic_ntt_workspace(
-                    size,
-                    batch_size,
-                    device,
-                    workspace,
-                    total_bytes))
+            auto &workspace = cuda_ntt_workspace();
+            if (!admit_generic_ntt_workspace(size, batch_size, device, workspace, 0))
             {
                 return false;
             }

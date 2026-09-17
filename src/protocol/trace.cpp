@@ -5281,8 +5281,7 @@ namespace gatzk::protocol
                     layer_outputs,
                     "independent hidden layer concat");
             }
-
-            const auto output_input = layer_input;
+            const auto &output_input = layer_input;
             std::vector<RawMatrix> output_heads;
             output_heads.reserve(context.model.output_layer.heads.size());
             for (std::size_t head_index = 0;
@@ -5418,17 +5417,14 @@ namespace gatzk::protocol
         }
 
         std::shared_ptr<const CachedForwardArtifacts> cached_forward_artifacts(
-            const ProtocolContext &context,
-            const std::vector<Edge> &edges,
-            const std::vector<std::size_t> &edge_src_indices,
-            const std::vector<std::size_t> &edge_dst_indices,
-            const std::vector<std::pair<std::size_t, std::size_t>>
-                &destination_groups,
-            std::size_t edge_domain_size)
+            const ProtocolContext &context, const std::vector<Edge> &edges,
+            const std::vector<std::size_t> &edge_src_indices, const std::vector<std::size_t> &edge_dst_indices,
+            const std::vector<std::pair<std::size_t, std::size_t>> &destination_groups,
+            std::size_t edge_domain_size, RunMetrics *metrics)
         {
             auto artifacts = std::make_shared<CachedForwardArtifacts>();
             auto forward = model::forward_note_style(context.local.features_fp, edges, context.model, &artifacts->profile);
-            artifacts->reference_logits_fp32 = forward.Y;
+            artifacts->reference_logits_fp32 = std::move(forward.Y);
             artifacts->hidden_layer_inputs_quantized.reserve(forward.hidden_layer_traces.size());
             artifacts->hidden_layer_concat_quantized.reserve(forward.hidden_layer_traces.size());
             artifacts->hidden_head_quantized.resize(
@@ -5448,12 +5444,11 @@ namespace gatzk::protocol
             for (std::size_t layer_index = 0; layer_index < forward.hidden_layer_traces.size(); ++layer_index)
             {
                 const auto &layer_trace = forward.hidden_layer_traces[layer_index];
-                const RawMatrix input_raw =
-                    layer_index == 0
-                        ? quantize_matrix_raw_at_scale(
-                              context.local.features_fp,
-                              context.config.quantization.s_input)
-                        : hidden_layer_concat_raw.back();
+                RawMatrix first_input_raw;
+                if (layer_index == 0)
+                    first_input_raw = quantize_matrix_raw_at_scale(
+                        context.local.features_fp, context.config.quantization.s_input);
+                const RawMatrix &input_raw = layer_index == 0 ? first_input_raw : hidden_layer_concat_raw.back();
                 artifacts->hidden_layer_inputs_quantized.push_back(field_matrix_from_raw(input_raw));
 
                 std::vector<RawMatrix> layer_head_outputs_raw;
@@ -5531,8 +5526,9 @@ namespace gatzk::protocol
 
             per_head_y_raw_matrices.reserve(
                 forward.output_head_traces.size());
-            const RawMatrix output_input_raw =
-                hidden_layer_concat_raw.empty() ? RawMatrix{} : hidden_layer_concat_raw.back();
+            if (hidden_layer_concat_raw.empty())
+                throw std::runtime_error("output witness has no hidden-layer input");
+            const RawMatrix &output_input_raw = hidden_layer_concat_raw.back();
             for (std::size_t head_index = 0; head_index < forward.output_head_traces.size(); ++head_index)
             {
                 const auto &head = context.model.output_layer.heads.at(head_index);
@@ -5647,12 +5643,13 @@ namespace gatzk::protocol
                 }
                 artifacts->report_live_bytes("output-average-built");
             }
-            artifacts->reference_quantized_logits =
-                independent_quantized_reference_forward(
-                    context,
-                    edge_src_indices,
-                    edge_dst_indices,
-                    destination_groups);
+            forward = {};
+            std::vector<RawMatrix>().swap(hidden_layer_concat_raw);
+            {
+                timing::ScopedReferenceAudit reference_scope(metrics);
+                artifacts->reference_quantized_logits = independent_quantized_reference_forward(
+                    context, edge_src_indices, edge_dst_indices, destination_groups);
+            }
             artifacts->report_live_bytes("forward-built");
             return artifacts;
         }
@@ -5953,15 +5950,97 @@ namespace gatzk::protocol
 
             return out;
         }
+        class TraceCacheDigest
+        {
+        public:
+            TraceCacheDigest()
+            {
+                if (SHA256_Init(&context_) != 1)
+                    throw std::runtime_error("trace cache SHA-256 initialization failed");
+            }
+            TraceCacheDigest(const TraceCacheDigest &) = delete;
+            TraceCacheDigest &operator=(const TraceCacheDigest &) = delete;
+
+            void append(const void *data, std::size_t size)
+            {
+                if (finished_ || (size != 0 && data == nullptr))
+                    throw std::runtime_error("invalid trace cache digest append");
+                const auto *source = static_cast<const unsigned char *>(data);
+                while (size != 0)
+                {
+                    const auto count = std::min(size, buffer_.size() - used_);
+                    std::memcpy(buffer_.data() + used_, source, count);
+                    source += count;
+                    size -= count;
+                    used_ += count;
+                    if (used_ == buffer_.size())
+                        flush();
+                }
+            }
+
+            std::string finish()
+            {
+                if (finished_)
+                    throw std::runtime_error("trace cache digest finalized twice");
+                flush();
+                std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+                if (SHA256_Final(digest.data(), &context_) != 1)
+                    throw std::runtime_error("trace cache SHA-256 finalization failed");
+                finished_ = true;
+                static constexpr char hex[] = "0123456789abcdef";
+                std::string out(digest.size() * 2, '0');
+                for (std::size_t i = 0; i < digest.size(); ++i)
+                {
+                    out[2 * i] = hex[digest[i] >> 4U];
+                    out[2 * i + 1] = hex[digest[i] & 15U];
+                }
+                return out;
+            }
+
+        private:
+            void flush()
+            {
+                if (used_ != 0 && SHA256_Update(&context_, buffer_.data(), used_) != 1)
+                    throw std::runtime_error("trace cache SHA-256 update failed");
+                used_ = 0;
+            }
+            SHA256_CTX context_{};
+            std::array<unsigned char, 65536> buffer_{};
+            std::size_t used_ = 0;
+            bool finished_ = false;
+        };
+
+        void append_cache_u64(TraceCacheDigest *out, std::uint64_t value)
+        {
+            std::array<unsigned char, 8> bytes{};
+            for (std::size_t i = 0; i < bytes.size(); ++i)
+                bytes[i] = static_cast<unsigned char>(value >> (8U * i));
+            out->append(bytes.data(), bytes.size());
+        }
+
+        void append_cache_string(TraceCacheDigest *out, std::string_view value)
+        {
+            append_cache_u64(out, value.size());
+            out->append(value.data(), value.size());
+        }
+
+        void append_cache_field(TraceCacheDigest *out, const FieldElement &value)
+        {
+            std::array<std::uint8_t, 32> bytes{};
+            value.write_little_endian(bytes.data(), bytes.size());
+            out->append(bytes.data(), bytes.size());
+        }
+
+        void append_cache_field_vector(TraceCacheDigest *out, const std::vector<FieldElement> &values)
+        {
+            append_cache_u64(out, values.size());
+            for (const auto &value : values)
+                append_cache_field(out, value);
+        }
+
         std::string trace_cache_prefix(const ProtocolContext &context)
         {
-            // This identity is deliberately independent of filesystem paths
-            // and process-local addresses.  It binds every public object that
-            // can affect the static trace cache, including selector columns,
-            // topology/order/padding rules, quantized features, the concrete
-            // compiler instance, model/static registries, SRS identity, and
-            // all domain dimensions.
-            std::string bytes;
+            TraceCacheDigest bytes;
             append_cache_string(&bytes, "zkgat:trace-cache-identity");
             append_cache_string(&bytes, context.config.dataset);
             append_cache_string(&bytes, context.config.task_type);
@@ -6091,7 +6170,7 @@ namespace gatzk::protocol
             append_table(context.tables.lrelu);
             append_table(context.tables.elu);
             append_table(context.tables.exp);
-            return "sha256:" + sha256_hex(bytes);
+            return "sha256:" + bytes.finish();
         }
 
         struct TraceStaticArtifacts
@@ -7386,17 +7465,17 @@ namespace gatzk::protocol
             // the first Fiat--Shamir challenge.  Compute the registered integer
             // forward once here; all later witness construction consumes this same
             // immutable artifact.
+            const auto audit_before = metrics != nullptr ? metrics->prover_reference_audit_ms : 0.0;
             const auto forward_start = Clock::now();
             const auto forward_artifacts = cached_forward_artifacts(
-                context,
-                edges,
-                edge_src_indices,
-                edge_dst_indices,
-                edge_groups_by_dst,
-                domains.edge->size);
+                context, edges, edge_src_indices, edge_dst_indices, edge_groups_by_dst, domains.edge->size, metrics);
             if (metrics != nullptr)
             {
-                metrics->forward_ms += elapsed_ms(forward_start, Clock::now());
+                const auto forward_wall_ms = elapsed_ms(forward_start, Clock::now());
+                const auto reference_audit_ms = metrics->prover_reference_audit_ms - audit_before;
+                if (reference_audit_ms < 0.0 || reference_audit_ms > forward_wall_ms)
+                    throw std::runtime_error("forward/reference timing interval is inconsistent");
+                metrics->forward_ms += forward_wall_ms - reference_audit_ms;
                 metrics->feature_projection_ms +=
                     forward_artifacts->profile.hidden_projection_ms + forward_artifacts->profile.output_projection_ms;
                 metrics->hidden_forward_projection_ms += forward_artifacts->profile.hidden_projection_ms;

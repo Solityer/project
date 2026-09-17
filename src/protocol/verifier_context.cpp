@@ -2373,30 +2373,26 @@ namespace gatzk::protocol
         if (input.gcount() != static_cast<std::streamsize>(bytes.size()))
             throw std::runtime_error(
                 "failed to read verifier registration artifact: " + registry_path);
-        const auto artifact = parse_verifier_registration_artifact(
-            bytes, trusted_registry_digest);
+        auto artifact = parse_verifier_registration_artifact(bytes, trusted_registry_digest);
+        std::vector<std::uint8_t>().swap(bytes);
         VerifierContext out;
-        out.config = artifact.config;
-        out.dataset = artifact.dataset;
-        out.local = artifact.local;
-        // The verifier needs only the quantized public feature table.  Keep a
-        // single owned copy and never reconstruct a training-side dataset.
-        out.dataset.features = out.local.features;
-        out.model = artifact.model;
-        out.tables = artifact.tables;
-        out.domains = artifact.domains;
-        out.srs = artifact.srs;
-        out.kzg_vk = artifact.kzg_vk;
+        out.config = std::move(artifact.config);
+        out.dataset = std::move(artifact.dataset);
+        out.local = std::move(artifact.local);
+        out.model = std::move(artifact.model);
+        out.tables = std::move(artifact.tables);
+        out.domains = std::move(artifact.domains);
+        out.srs = std::move(artifact.srs);
+        out.kzg_vk = std::move(artifact.kzg_vk);
         out.kzg_vk.g2_one_prepared = std::make_shared<crypto::PreparedG2>(
             crypto::prepare_g2(out.kzg_vk.g2_one));
         out.kzg_vk.g2_tau_prepared = std::make_shared<crypto::PreparedG2>(
             crypto::prepare_g2(out.kzg_vk.g2_tau));
-        out.public_polynomial_descriptors = artifact.public_polynomial_descriptors;
-        out.public_commitments = artifact.public_commitments;
-        out.static_commitments = artifact.static_commitments;
-        out.compiler_artifact = std::make_shared<const ProtocolCompilerArtifact>(
-            artifact.compiler_artifact);
-        out.registry = artifact.registry;
+        out.public_polynomial_descriptors = std::move(artifact.public_polynomial_descriptors);
+        out.public_commitments = std::move(artifact.public_commitments);
+        out.static_commitments = std::move(artifact.static_commitments);
+        out.compiler_artifact = std::make_shared<const ProtocolCompilerArtifact>(std::move(artifact.compiler_artifact));
+        out.registry = std::move(artifact.registry);
         out.authenticated_registry_digest = trusted_registry_digest;
         out.trusted_registry_digest = trusted_registry_digest;
 

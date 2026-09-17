@@ -318,6 +318,8 @@ namespace gatzk::protocol
     ProofSchema build_proof_schema(const ProtocolContext &context);
     ProtocolCompilerArtifact build_protocol_compiler_artifact(const ProtocolContext &context);
     std::vector<BindingRelationMeta> build_binding_relation_metadata(const ProtocolContext &context);
+    std::vector<BindingRelationMeta> build_binding_relation_metadata(
+        const ProtocolContext &context, const ProtocolCompilerArtifact &artifact);
     std::vector<MatrixFoldBindingSpec> matrix_fold_binding_specs(
         const ProtocolContext &context);
 
@@ -329,7 +331,7 @@ namespace gatzk::protocol
     // Canonical S_route payload.  Every entry is a reference to the unique
     // standard point-group owner in Open_dom/W_ext; no route terminal value is
     // ever materialized in the proof object.
-    
+
     std::vector<MetadataReference> route_opening_references(
         const ProtocolContext &context,
         const std::map<std::string, algebra::FieldElement> &challenges);

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -37,6 +38,8 @@
 #include <sys/mman.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
+#include <linux/magic.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -4127,11 +4130,20 @@ namespace gatzk::protocol
         void batch_invert_native_in_place(std::vector<mcl::Fr> *values)
         {
             if (values == nullptr || values->empty())
+                return;
+            const auto count = values->size();
+            if (util::route2_options().cuda_field_hotspots && count >= (std::size_t{1} << 18) &&
+                algebra::cuda_backend_unified_addressing_available())
             {
+                if (std::any_of(values->begin(), values->end(), [](const mcl::Fr &value)
+                                { return value.isZero(); }))
+                    throw std::runtime_error("native batch inversion encountered zero");
+                std::vector<mcl::Fr> inverses(count);
+                if (!algebra::try_cuda_batch_inverse_native(values->data(), inverses.data(), count))
+                    throw std::runtime_error("selected CUDA quotient batch inverse was not admitted");
+                values->swap(inverses);
                 return;
             }
-
-            const auto count = values->size();
             const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
             if (count >= (1ULL << 14) && cpu_count > 1)
             {
@@ -5472,6 +5484,10 @@ namespace gatzk::protocol
                         throw std::runtime_error(
                             "failed to determine quotient spill page size");
                     page_size_ = static_cast<std::size_t>(page_size_raw);
+                    struct statfs filesystem{};
+                    if (::fstatfs(fd_, &filesystem) != 0)
+                        throw std::system_error(errno, std::generic_category(), "failed to inspect quotient spill filesystem");
+                    memory_backed_ = filesystem.f_type == TMPFS_MAGIC || filesystem.f_type == RAMFS_MAGIC;
                 }
                 catch (...)
                 {
@@ -5534,11 +5550,10 @@ namespace gatzk::protocol
                         "quotient coset spill arena is poisoned after rollback failure for " +
                         label);
                 }
-                const auto aligned_bytes =
-                    util::spill_align_up(
-                        byte_count,
-                        page_size_,
-                        label);
+                const auto aligned_bytes = util::spill_align_up(byte_count, page_size_, label);
+                if (aligned_bytes > total_cap_bytes_ || pending_write_bytes_ > total_cap_bytes_ - aligned_bytes)
+                    throw std::runtime_error("quotient spill in-flight write budget exceeded: " + label);
+                trim_published_windows(total_cap_bytes_ - pending_write_bytes_ - aligned_bytes);
                 const bool fits_existing =
                     !chunks_.empty() &&
                     [&]()
@@ -5569,64 +5584,95 @@ namespace gatzk::protocol
                         "quotient coset spill allocation exceeds chunk for " +
                         label);
                 }
+                auto *data = static_cast<std::uint8_t *>(chunk.mapping) + begin;
+                const auto inserted = pending_writes_.emplace(data, PublishedWindow{data, aligned_bytes, chunk.file_offset + begin});
+                if (!inserted.second)
+                    throw std::runtime_error("duplicate quotient spill allocation: " + label);
                 chunk.used = begin + aligned_bytes;
-                return {
-                    .data = reinterpret_cast<FieldElement *>(
-                        static_cast<std::uint8_t *>(chunk.mapping) + begin),
-                };
+                pending_write_bytes_ += aligned_bytes;
+                return {.data = reinterpret_cast<FieldElement *>(data)};
+            }
+
+            void publish(void *data, std::size_t byte_count, const std::string &label)
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto pending = pending_writes_.find(data);
+                if (pending == pending_writes_.end() || byte_count == 0 ||
+                    util::spill_align_up(byte_count, page_size_, label) != pending->second.bytes)
+                    throw std::runtime_error("invalid quotient spill publication: " + label);
+                const auto range = pending->second;
+                if (published_bytes_ > std::numeric_limits<std::size_t>::max() - range.bytes)
+                    throw std::runtime_error("quotient spill publication size overflow: " + label);
+                published_windows_.push_back(range);
+                published_bytes_ += range.bytes;
+                pending_write_bytes_ -= range.bytes;
+                pending_writes_.erase(pending);
+                std::size_t keep_bytes = total_cap_bytes_ - pending_write_bytes_;
+                const auto snapshot = util::read_effective_memory_snapshot();
+                if (!snapshot.effective_available_known)
+                {
+                    keep_bytes = 0;
+                }
+                else
+                {
+                    const auto reserve = util::recommended_memory_reserve_bytes(snapshot, std::size_t{4} << 30, 1, 16);
+                    auto available = snapshot.effective_available_bytes;
+                    for (const auto deduction : {reserve, transient_bytes_, geometry_bytes_})
+                        available = deduction >= available ? 0 : available - deduction;
+                    keep_bytes = std::min(keep_bytes, available);
+                }
+                trim_published_windows(keep_bytes);
             }
 
         private:
+            struct PublishedWindow
+            {
+                void *mapping = nullptr;
+                std::size_t bytes = 0;
+                std::size_t file_offset = 0;
+            };
+
+            void trim_published_windows(std::size_t keep_bytes)
+            {
+                while (published_bytes_ > keep_bytes && !published_windows_.empty())
+                {
+                    const auto range = published_windows_.front();
+                    if (::msync(range.mapping, range.bytes, MS_SYNC) != 0)
+                        throw std::system_error(errno, std::generic_category(), "quotient spill writeback failed");
+                    if (::madvise(range.mapping, range.bytes, MADV_DONTNEED) != 0)
+                        throw std::system_error(errno, std::generic_category(), "quotient spill page release failed");
+                    const auto error = ::posix_fadvise(fd_, static_cast<off_t>(range.file_offset),
+                                                       static_cast<off_t>(range.bytes), POSIX_FADV_DONTNEED);
+                    if (error != 0)
+                        throw std::system_error(error, std::generic_category(), "quotient spill cache release failed");
+                    published_bytes_ -= range.bytes;
+                    published_windows_.pop_front();
+                }
+            }
+
             struct Chunk
             {
                 void *mapping = nullptr;
                 std::size_t capacity = 0;
                 std::size_t used = 0;
-                std::unique_ptr<util::FilesystemSpaceReservation>
-                    reservation;
+                std::size_t file_offset = 0;
+                std::unique_ptr<util::FilesystemSpaceReservation> reservation;
             };
 
             void add_chunk(
                 std::size_t minimum_capacity,
                 const std::string &label)
             {
-                constexpr std::size_t kChunkBytes =
-                    std::size_t{1} << 30;
-                if (!util::spill_arena_can_grow(
-                        file_size_,
-                        minimum_capacity,
-                        total_cap_bytes_))
+                constexpr std::size_t kChunkBytes = std::size_t{1} << 30;
+                auto capacity = util::spill_align_up(std::max(kChunkBytes, minimum_capacity), page_size_, label);
+                if (memory_backed_)
                 {
-                    throw std::runtime_error(
-                        "quotient coset spill arena effective-memory cap exceeded for " +
-                        label);
-                }
-
-                const auto preferred_capacity =
-                    std::max(kChunkBytes, minimum_capacity);
-                auto capacity =
-                    util::spill_align_up(
-                        preferred_capacity,
-                        page_size_,
-                        label);
-                const auto remaining_cap =
-                    total_cap_bytes_ - file_size_;
-                if (capacity > remaining_cap)
-                {
-                    capacity =
-                        util::spill_align_up(
-                            minimum_capacity,
-                            page_size_,
-                            label);
-                }
-                if (!util::spill_arena_can_grow(
-                        file_size_,
-                        capacity,
-                        total_cap_bytes_))
-                {
-                    throw std::runtime_error(
-                        "quotient coset spill arena chunk cap exceeded for " +
-                        label);
+                    if (!util::spill_arena_can_grow(file_size_, minimum_capacity, total_cap_bytes_))
+                        throw std::runtime_error("memory-backed quotient spill cannot exceed its RAM budget: " + label);
+                    if (!util::spill_arena_can_grow(file_size_, capacity, total_cap_bytes_))
+                        capacity = util::spill_align_up(minimum_capacity, page_size_, label);
+                    if (!util::spill_arena_can_grow(file_size_, capacity, total_cap_bytes_))
+                        throw std::runtime_error("memory-backed quotient spill chunk exceeds its RAM budget: " + label);
                 }
                 const auto offset = file_size_;
                 if (capacity > static_cast<std::size_t>(
@@ -5694,6 +5740,7 @@ namespace gatzk::protocol
                     .mapping = mapping,
                     .capacity = capacity,
                     .used = 0,
+                    .file_offset = offset,
                     .reservation = std::move(reservation),
                 };
                 try
@@ -5753,6 +5800,11 @@ namespace gatzk::protocol
             std::size_t total_cap_bytes_ = 0;
             std::size_t transient_bytes_ = 0;
             std::size_t geometry_bytes_ = 0;
+            bool memory_backed_ = false;
+            std::size_t pending_write_bytes_ = 0;
+            std::size_t published_bytes_ = 0;
+            std::unordered_map<void *, PublishedWindow> pending_writes_;
+            std::deque<PublishedWindow> published_windows_;
 
             std::mutex mutex_;
             std::vector<Chunk> chunks_;
@@ -5830,6 +5882,7 @@ namespace gatzk::protocol
                 }
 
                 std::vector<FieldElement>().swap(values);
+                publish(label);
             }
 
             QuotientCosetValues(
@@ -6007,13 +6060,23 @@ namespace gatzk::protocol
 
             ~QuotientCosetValues() = default;
 
+            void publish(const std::string &label)
+            {
+                if (mapping_ != nullptr && !published_)
+                {
+                    spill_arena_->publish(mapping_, util::checked_spill_bytes(size_, sizeof(FieldElement), label), label);
+                    published_ = true;
+                }
+            }
+
             std::size_t size() const
             {
                 return size_;
             }
-
             FieldElement *mutable_data()
             {
+                if (published_)
+                    throw std::runtime_error("published quotient spill data is immutable");
                 if (pure_zero_semantic_ || semantic_values_ != nullptr || !linear_terms_.empty())
                 {
                     throw std::runtime_error(
@@ -6380,6 +6443,7 @@ namespace gatzk::protocol
             std::vector<FieldElement> zero_cycle_;
             void *mapping_ = nullptr;
             std::size_t size_ = 0;
+            bool published_ = false;
 
             // Non-zero only for the large CUDA t_edge physical layout:
             // [even lane][odd lane].
@@ -6622,10 +6686,20 @@ namespace gatzk::protocol
                                 .label);
                     }
 
-                    minimum =
-                        std::max(
-                            minimum,
-                            term_labels.size());
+                    const auto direct_labels = term_labels;
+                    for (const auto &label : direct_labels)
+                    {
+                        const auto descriptor = t_edge_derived_linear_descriptor(label);
+                        if (!descriptor.has_value())
+                            continue;
+                        const auto flattened = flatten_t_edge_descriptor_sources(*descriptor);
+                        if (flattened.status != TEdgeDerivedLinearFlattenStatus::Success)
+                            throw std::runtime_error("CUDA t_edge cannot resolve the leaf dependency closure: " + label);
+                        for (const auto &source : flattened.sources)
+                            if (!source.scale.is_zero())
+                                term_labels.insert(source.label);
+                    }
+                    minimum = std::max(minimum, term_labels.size());
                 }
 
                 // Derived linear leaves can require registered source leaves
@@ -7076,10 +7150,7 @@ namespace gatzk::protocol
                 executor->prepare_program(
                     program);
 
-                const bool strict_cuda_leaf_route =
-                    algebra::
-                        should_use_cuda_coset_transform(
-                            target_size_);
+                const bool strict_cuda_leaf_route = true;
 
                 // CUDA t_edge materializes registered derived
                 // linear views directly instead of going through
@@ -7209,15 +7280,7 @@ namespace gatzk::protocol
                 resident_slot_by_label.reserve(
                     executor->cache_slot_count());
 
-                constexpr std::size_t
-                    kUploadChunkElements =
-                        std::size_t{1} << 20;
-
-                std::vector<FieldElement>
-                    staging(
-                        std::min(
-                            target_size_,
-                            kUploadChunkElements));
+                const std::array<FieldElement, 1> boundary_evaluation{FieldElement::one()};
 
                 const auto clear_label_mapping =
                     [&](const std::string &label)
@@ -7427,12 +7490,9 @@ namespace gatzk::protocol
                             algebra::PolynomialBasis::Evaluation)
                         {
                             return polynomial->domain != nullptr &&
-                                   polynomial->domain->size ==
-                                       domain_->size &&
-                                   polynomial->domain->omega ==
-                                       domain_->omega &&
-                                   polynomial->values().size() ==
-                                       domain_->size;
+                                   polynomial->domain->size == domain_->size &&
+                                   polynomial->domain->omega == domain_->omega &&
+                                   polynomial->values().size() <= domain_->size;
                         }
                         if (polynomial->basis ==
                             algebra::PolynomialBasis::Coefficient)
@@ -7516,8 +7576,18 @@ namespace gatzk::protocol
                         std::string,
                         std::size_t>>
                         missing_sources;
-                    std::unordered_set<std::size_t>
-                        reserved_slots;
+                    std::unordered_set<std::size_t> reserved_slots;
+                    reserved_slots.insert(target_slot);
+                    for (const auto &source : flattened.sources)
+                    {
+                        const auto resident = resident_slot_by_label.find(source.label);
+                        if (resident == resident_slot_by_label.end())
+                            continue;
+                        const auto slot = resident->second;
+                        if (slot >= slot_labels.size() || slot == target_slot || slot_labels[slot] != source.label)
+                            throw std::runtime_error("CUDA t_edge has an invalid resident source binding: " + source.label);
+                        reserved_slots.insert(slot);
+                    }
 
                     for (const auto &source : flattened.sources)
                     {
@@ -7731,11 +7801,17 @@ namespace gatzk::protocol
                     }
                     return true;
                 };
-                const auto materialize_label =
-                    [&](const std::string &label,
-                        std::size_t slot,
-                        const std::vector<std::string> &required)
+                const auto materialize_label = [&](const std::string &label, std::size_t slot,
+                                                   const std::vector<std::string> &required)
                 {
+                    if (label == "__t_edge_boundary_l0")
+                    {
+                        if (!executor->materialize_evaluation_leaf(slot,
+                                                                   FieldElement::native_array_data(boundary_evaluation.data()), 1, nullptr, 0))
+                            throw std::runtime_error("CUDA t_edge boundary leaf was not admitted");
+                        reset_cuda_t_edge_transient_leaf_state();
+                        return;
+                    }
                     // Preserve the canonical cache -> derived -> direct /
                     // spill resolver order.  A descriptor target must first
                     // attempt resident-linear materialization; every decline
@@ -7760,8 +7836,12 @@ namespace gatzk::protocol
                         {
                             throw std::runtime_error(
                                 "CUDA t_edge strict leaf route was selected but "
-                                "linear leaf execution failed: target_size=" +
-                                std::to_string(target_size_) +
+                                "linear leaf execution failed: label=" +
+                                label +
+                                " capacity_declines=" + std::to_string(linear_telemetry.fallback_capacity) +
+                                " unsupported_declines=" + std::to_string(linear_telemetry.fallback_unsupported) +
+                                " api_declines=" + std::to_string(linear_telemetry.fallback_api_declined) +
+                                " target_size=" + std::to_string(target_size_) +
                                 " domain=" +
                                 (domain_ == nullptr
                                      ? std::string("unknown")
@@ -7790,8 +7870,9 @@ namespace gatzk::protocol
                             {
                                 throw std::runtime_error(
                                     "CUDA t_edge strict leaf route was selected but "
-                                    "direct leaf execution failed: target_size=" +
-                                    std::to_string(target_size_) +
+                                    "direct leaf execution failed: label=" +
+                                    label +
+                                    " target_size=" + std::to_string(target_size_) +
                                     " domain=" +
                                     (domain_ == nullptr
                                          ? std::string("unknown")
@@ -7813,79 +7894,13 @@ namespace gatzk::protocol
                               .host_leaf_materialization_required;
                     }
 
-                    QuotientCosetValuesPtr values;
-
-                    if (label ==
-                        "__t_edge_boundary_l0")
-                    {
-                        std::vector<FieldElement>
-                            boundary_values(
-                                domain_->size,
-                                FieldElement::zero());
-
-                        boundary_values[0] =
-                            FieldElement::one();
-
-                        auto boundary_polynomial =
-                            algebra::Polynomial::
-                                from_evaluations(
-                                    label,
-                                    std::move(
-                                        boundary_values),
-                                    domain_);
-
-                        values =
-                            materialize_polynomial_coset(
-                                boundary_polynomial,
-                                label);
-                    }
-                    else
-                    {
-                        values =
-                            coset_values_ptr(
-                                label);
-                    }
-
-                    if (values == nullptr ||
-                        values->size() !=
-                            target_size_)
-                    {
-                        throw std::runtime_error(
-                            "CUDA t_edge "
-                            "materialized leaf "
-                            "has wrong size: " +
-                            label);
-                    }
-
-                    for (std::size_t offset = 0;
-                         offset < target_size_;)
-                    {
-                        const auto count =
-                            std::min(
-                                staging.size(),
-                                target_size_ -
-                                    offset);
-
-                        values->copy_logical_range(
-                            offset,
-                            count,
-                            staging.data());
-
-                        executor->upload_leaf_chunk(
-                            slot,
-                            offset,
-                            FieldElement::
-                                native_array_data(
-                                    staging
-                                        .data()),
-                            count);
-
-                        offset += count;
-                    }
-
-                    values.reset();
-
-                    reset_cuda_t_edge_transient_leaf_state();
+                    throw std::runtime_error(
+                        "CUDA t_edge leaf has no admitted GPU execution path: label=" + label +
+                        " target_size=" + std::to_string(target_size_) +
+                        " cache_slots=" + std::to_string(executor->cache_slot_count()) +
+                        " capacity_declines=" + std::to_string(linear_telemetry.fallback_capacity) +
+                        " unsupported_declines=" + std::to_string(linear_telemetry.fallback_unsupported) +
+                        " api_declines=" + std::to_string(linear_telemetry.fallback_api_declined));
                 };
 
                 cuda_t_edge_transient_leaf_mode_ =
@@ -8229,9 +8244,15 @@ namespace gatzk::protocol
                         //     existing canonical host fallback
                         //   * the boundary polynomial
                         //
-                        // No slot is evicted in this path.
-                        for (const auto &label :
-                             full_resident_labels)
+                        // Materialize independent leaves before their derived consumers.
+                        auto pending_labels = full_resident_labels;
+                        std::stable_partition(pending_labels.begin(), pending_labels.end(),
+                                              [&](const std::string &label)
+                                              {
+                                                  return label == "__t_edge_boundary_l0" ||
+                                                         !t_edge_derived_linear_descriptor(label).has_value();
+                                              });
+                        for (const auto &label : pending_labels)
                         {
                             if (resident_slot_by_label
                                     .contains(label))
@@ -9919,23 +9940,10 @@ namespace gatzk::protocol
                     }
                     else
                     {
-                        if (target_size_ > (std::size_t{1} << 24))
-                        {
-                            throw std::runtime_error(
-                                "CUDA quotient coset route was selected but "
-                                "materialization was not admitted: target_size=" +
-                                std::to_string(target_size_) +
-                                " domain=" +
-                                (domain_ == nullptr
-                                     ? std::string("unknown")
-                                     : domain_->name) +
-                                " route=cuda_coset_host_to_coefficients");
-                        }
-                        coefficients =
-                            coefficients_from_coset_evaluations_in_place(
-                                std::move(
-                                    quotient_values),
-                                shift_);
+                        throw std::runtime_error(
+                            "selected CUDA coset-to-coefficient execution was not admitted: target_size=" +
+                            std::to_string(target_size_) + " domain=" +
+                            (domain_ == nullptr ? std::string("unknown") : domain_->name));
                     }
                 }
                 else
@@ -10200,6 +10208,7 @@ namespace gatzk::protocol
                         even_odd_split_layout);
 
                 fill(retained->mutable_data());
+                retained->publish(label);
 
                 if (file_backed)
                 {
@@ -10297,11 +10306,9 @@ namespace gatzk::protocol
                                             PolynomialBasis::
                                                 Evaluation &&
                                     polynomial.domain != nullptr &&
-                                    algebra::
-                                        should_use_cuda_intt(
-                                            polynomial
-                                                .domain
-                                                ->size))
+                                    polynomial.domain->size >= 2 &&
+                                    polynomial.domain->size <= target_size_ / 2 &&
+                                    polynomial.zero_domain_blinder.size() <= target_size_ / 2 - polynomial.domain->size)
                                 {
                                     const auto &values =
                                         polynomial.values();
@@ -10360,8 +10367,7 @@ namespace gatzk::protocol
 
                             if (!cuda_materialized)
                             {
-                                if (cuda_route_attempted &&
-                                    target_size_ > (std::size_t{1} << 24))
+                                if (cuda_route_attempted)
                                 {
                                     throw std::runtime_error(
                                         "CUDA quotient coset route was selected but "
@@ -10418,14 +10424,17 @@ namespace gatzk::protocol
                     label,
                     [&](FieldElement *output)
                     {
-                        coset_evaluate_coefficients_into(
-                            coefficients.data(),
-                            coefficients.size(),
-                            target_size_,
-                            shift_,
-                            label,
-                            &shift_powers(),
-                            output);
+                        if (algebra::should_use_cuda_coset_transform(target_size_) &&
+                            coefficients.size() <= target_size_ / 2)
+                        {
+                            if (!algebra::cuda_coset_coefficients_to_host_exact(
+                                    coefficients.empty() ? nullptr : coefficients.data(), coefficients.size(), shift_,
+                                    FieldElement::mutable_native_array_data(output), target_size_, false))
+                                throw std::runtime_error("CUDA coefficient coset was not admitted: " + label);
+                            return;
+                        }
+                        coset_evaluate_coefficients_into(coefficients.data(), coefficients.size(), target_size_,
+                                                         shift_, label, &shift_powers(), output);
                     });
             }
 

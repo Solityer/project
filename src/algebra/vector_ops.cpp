@@ -2168,17 +2168,24 @@ namespace gatzk::algebra
 
     // 点积是 polynomial / KZG / verifier 会反复调用的基础热路径。
     // 这里根据规模决定串行、并行或 CUDA 执行，但返回值必须完全一致。
-    FieldElement dot_product(
-        const std::vector<FieldElement> &lhs,
-        const std::vector<FieldElement> &rhs)
+    FieldElement dot_product(const std::vector<FieldElement> &lhs,
+                             const std::vector<FieldElement> &rhs)
     {
         if (lhs.size() != rhs.size())
-        {
             throw std::runtime_error("dot product size mismatch");
-        }
         if (lhs.empty())
-        {
             return FieldElement::zero();
+        if (should_use_cuda_weighted_evaluation(lhs.size(), 1))
+        {
+            static_assert(sizeof(mcl::Fr) == 4 * sizeof(std::uint64_t));
+            const std::uint64_t *columns[] = {
+                reinterpret_cast<const std::uint64_t *>(FieldElement::native_array_data(lhs.data()))};
+            mcl::Fr sum;
+            if (!weighted_poly_eval_gpu_multi(
+                    reinterpret_cast<const std::uint64_t *>(FieldElement::native_array_data(rhs.data())), columns,
+                    reinterpret_cast<std::uint64_t *>(&sum), lhs.size(), 1))
+                throw std::runtime_error("selected CUDA dot_product was not admitted");
+            return FieldElement::from_native(sum);
         }
 
         const auto &route2 = util::route2_options();
@@ -2223,20 +2230,26 @@ namespace gatzk::algebra
     }
 
     // 计算左向量（FieldElement）与右向量（mcl::Fr 原生权重）的点积（--parallel-fft on）
-    FieldElement dot_product_native_weights(
-        const std::vector<FieldElement> &lhs,
-        const std::vector<mcl::Fr> &rhs)
+    FieldElement dot_product_native_weights(const std::vector<FieldElement> &lhs,
+                                            const std::vector<mcl::Fr> &rhs)
     {
         if (lhs.size() != rhs.size())
-        {
             throw std::runtime_error("dot product size mismatch");
-        }
         if (lhs.empty())
-        {
             return FieldElement::zero();
+        if (should_use_cuda_weighted_evaluation(lhs.size(), 1))
+        {
+            static_assert(sizeof(mcl::Fr) == 4 * sizeof(std::uint64_t));
+            const std::uint64_t *columns[] = {
+                reinterpret_cast<const std::uint64_t *>(FieldElement::native_array_data(lhs.data()))};
+            mcl::Fr sum;
+            if (!weighted_poly_eval_gpu_multi(
+                    reinterpret_cast<const std::uint64_t *>(rhs.data()), columns,
+                    reinterpret_cast<std::uint64_t *>(&sum), lhs.size(), 1))
+                throw std::runtime_error("selected CUDA dot_product_native_weights was not admitted");
+            return FieldElement::from_native(sum);
         }
 
-        // CPU 路径：按 native 权重做同样的归约
         const auto &route2 = util::route2_options();
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         if (!route2.parallel_fft || lhs.size() < 1024 || cpu_count == 1)
