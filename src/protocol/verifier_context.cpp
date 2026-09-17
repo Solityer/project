@@ -1350,8 +1350,6 @@ namespace gatzk::protocol
             {
                 data::validate_normalized_graph_input(local);
 
-                // Re-run the canonical public-input normalizer against the
-                // decoded dataset/topology.  The inexpensive structural
                 // Re-run only the canonical public topology normalization.
                 // The verifier artifact stores the complete quantized feature
                 // matrix once in LocalGraph. A one-column dummy feature view
