@@ -1352,21 +1352,19 @@ namespace gatzk::protocol
 
                 // Re-run the canonical public-input normalizer against the
                 // decoded dataset/topology.  The inexpensive structural
-                // checks above establish local consistency; this second pass
-                // establishes that local is actually the deterministic
-                // normalization of dataset (including deduplication, loops,
-                // local ids, stable destination ordering and all pointer
-                // cardinalities).  Raw feature provenance is intentionally
-                // absent from a verifier artifact, so use the already public
-                // quantized feature matrix only for the normalizer's shape
-                // lookup and compare the resulting public graph structure.
+                // Re-run only the canonical public topology normalization.
+                // The verifier artifact stores the complete quantized feature
+                // matrix once in LocalGraph. A one-column dummy feature view
+                // satisfies the generic normalizer without duplicating that
+                // public matrix in GraphDataset.
                 auto normalization_dataset = dataset;
+                normalization_dataset.num_features = 1;
                 normalization_dataset.features_fp.assign(
                     dataset.num_nodes,
-                    std::vector<double>(dataset.num_features, 0.0));
-                if (dataset.features.size() < local.num_nodes)
-                    return false;
-                normalization_dataset.features = dataset.features;
+                    std::vector<double>(1, 0.0));
+                normalization_dataset.features.assign(
+                    dataset.num_nodes,
+                    std::vector<FieldElement>(1, FieldElement::zero()));
                 util::AppConfig normalization_config;
                 normalization_config.task_type = context.config.task_type;
                 normalization_config.report_unit = context.config.report_unit;
@@ -1391,7 +1389,7 @@ namespace gatzk::protocol
                 {
                     return lhs.src == rhs.src && lhs.dst == rhs.dst && lhs.graph_id == rhs.graph_id && lhs.stable_index == rhs.stable_index;
                 };
-                if (normalized.name != local.name || normalized.num_nodes != local.num_nodes || normalized.num_features != local.num_features || normalized.num_classes != local.num_classes || normalized.graph_count != local.graph_count || normalized.absolute_ids != local.absolute_ids || normalized.node_ptr != local.node_ptr || normalized.edge_ptr != local.edge_ptr || normalized.public_input.N_total != local.public_input.N_total || normalized.public_input.N != local.public_input.N || normalized.public_input.E != local.public_input.E || normalized.public_input.G_batch != local.public_input.G_batch || normalized.public_input.I != local.public_input.I || normalized.public_input.src != local.public_input.src || normalized.public_input.dst != local.public_input.dst || normalized.public_input.node_ptr != local.public_input.node_ptr || normalized.public_input.edge_ptr != local.public_input.edge_ptr || normalized.edges.size() != local.edges.size() || !std::equal(normalized.edges.begin(), normalized.edges.end(), local.edges.begin(), same_edge))
+                if (normalized.name != local.name || normalized.num_nodes != local.num_nodes || normalized.num_classes != local.num_classes || normalized.graph_count != local.graph_count || normalized.absolute_ids != local.absolute_ids || normalized.node_ptr != local.node_ptr || normalized.edge_ptr != local.edge_ptr || normalized.public_input.N_total != local.public_input.N_total || normalized.public_input.N != local.public_input.N || normalized.public_input.E != local.public_input.E || normalized.public_input.G_batch != local.public_input.G_batch || normalized.public_input.I != local.public_input.I || normalized.public_input.src != local.public_input.src || normalized.public_input.dst != local.public_input.dst || normalized.public_input.node_ptr != local.public_input.node_ptr || normalized.public_input.edge_ptr != local.public_input.edge_ptr || normalized.edges.size() != local.edges.size() || !std::equal(normalized.edges.begin(), normalized.edges.end(), local.edges.begin(), same_edge))
                     return false;
             }
             catch (const std::exception &)

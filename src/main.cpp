@@ -412,7 +412,7 @@ int main(int argc, char **argv)
         };
 
         std::string config_path;
-        std::string benchmark_mode = "warm";
+        std::string benchmark_mode = "single";
         std::string compute_backend = "cpu";
         std::string export_tag;
         gatzk::util::Route2Options route2;
@@ -496,9 +496,9 @@ int main(int argc, char **argv)
         {
             throw std::runtime_error("usage: gatzk_run --config <path>");
         }
-        if (benchmark_mode != "warm")
+        if (benchmark_mode != "single")
         {
-            throw std::runtime_error("formal mainline only supports --benchmark-mode warm");
+            throw std::runtime_error("formal mainline only supports --benchmark-mode single");
         }
         if (!export_tag.empty())
         {
@@ -587,8 +587,8 @@ int main(int argc, char **argv)
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
         gatzk::util::set_route2_options(route2);
 
-        // warm-up 与 measured run 共用这条正式执行入口，
-        // 但只有 measured run 会输出正式单行结果。
+        // Formal mainline performs one measured run. Static setup/context
+        // preparation remains outside the online prover timing interval.
         auto run_once = [&](
                             const gatzk::util::AppConfig &run_config,
                             const std::string &mode_label,
@@ -1040,10 +1040,10 @@ int main(int argc, char **argv)
                             metrics.gpu_msm_batch_calls);
 
                     metrics.gpu_fallback_stages =
-                        "pairing,workloads_below_cuda_threshold_or_resource_admission";
+                        "pairing,workloads_below_cuda_threshold";
 
                     metrics.gpu_fallback_reason =
-                        "workload_aware_hybrid_routing";
+                        "workload_aware_hybrid_routing;selected_cuda_routes_fail_closed";
 
                     metrics.gpu_acceleration_status =
                         "cuda_hotspots_executed;"
@@ -1101,9 +1101,9 @@ int main(int argc, char **argv)
         {
             segments.push_back(export_tag);
         }
-        segments.push_back("warm");
+        segments.push_back("single");
         const bool accepted = run_once(
-            with_export_suffix(loaded_config, segments), "warm");
+            with_export_suffix(loaded_config, segments), "single");
         return accepted ? 0 : 1;
     }
     catch (const std::exception &error)

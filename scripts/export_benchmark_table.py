@@ -284,7 +284,7 @@ def infer_benchmark_mode(manifest: Dict[str, object]) -> str:
 
 
 def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, object]:
-    # 主表只接收正式 warm + full-dataset + complete-acceptance manifest，
+    # 主表只接收正式 single + full-dataset + complete-acceptance manifest，
     # 避免仅 protocol verifier 通过的实验 run 混入 accepted truth。
     # `backend_name` 与 `is_full_dataset` 只保留在 latest.json 这类机器复核产物中，
     # 不会进入 latest.csv / summary.md 的正式展示面。
@@ -311,8 +311,8 @@ def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, obj
         PROJECT_ROOT, dataset, manifest, context
     )
     benchmark_mode = infer_benchmark_mode(manifest)
-    if benchmark_mode != "warm":
-        raise ValueError(f"official benchmark export only supports warm manifests, got {benchmark_mode!r} for {dataset}")
+    if benchmark_mode != "single":
+        raise ValueError(f"official benchmark export only supports single manifests, got {benchmark_mode!r} for {dataset}")
     if _AGGREGATE.as_bool(
         manifest.get("is_full_dataset"), "is_full_dataset", f"benchmark export/{dataset}"
     ) is not True:
@@ -388,15 +388,15 @@ def ensure_consistent_benchmark_mode(rows: List[Dict[str, object]]) -> str:
     modes = {str(row["benchmark_mode"]) for row in rows if row["status"] == "ok"}
     if not modes:
         blocked_modes = {str(row["benchmark_mode"]) for row in rows}
-        mode = next(iter(blocked_modes)) if blocked_modes else "warm"
-        if mode != "warm":
-            raise ValueError(f"official benchmark export only supports warm mode, got {mode!r}")
+        mode = next(iter(blocked_modes)) if blocked_modes else "single"
+        if mode != "single":
+            raise ValueError(f"official benchmark export only supports single mode, got {mode!r}")
         return mode
     if len(modes) != 1:
         raise ValueError(f"inconsistent benchmark_mode across successful rows: {sorted(modes)}")
     mode = next(iter(modes))
-    if mode != "warm":
-        raise ValueError(f"official benchmark export only supports warm mode, got {mode!r}")
+    if mode != "single":
+        raise ValueError(f"official benchmark export only supports single mode, got {mode!r}")
     return mode
 
 

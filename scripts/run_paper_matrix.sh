@@ -36,7 +36,7 @@ run_cell() {
         printf 'config=%s\nexport_tag=%s\n' "$config" "$tag"
     } > "$cell_log" || return 1
     command=("$binary" --config "$config" --compute-backend "$compute_backend"
-             --benchmark-mode warm --export-tag "$tag")
+             --benchmark-mode single --export-tag "$tag")
     printf '===== START %s %s =====\n' "$backend" "$dataset"
     "${command[@]}" 2>&1 | tee -a "$cell_log"
     pipeline_status=("${PIPESTATUS[@]}")

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Aggregate the ten verified formal runs into one source-locked result set.
 
-This command is intentionally fail-closed.  It does not create any result
-file until exactly one complete warm CPU and CUDA run has passed all manifest,
-proof, provenance, and security checks for each canonical dataset.  Controlled
+This command is intentionally fail-closed. It does not create any result
+file until exactly one complete single CPU and CUDA run has passed all manifest,
+proof, provenance, and security checks for each canonical dataset. Controlled
 smoke/stage runs therefore cannot be promoted into the paper result directory.
 """
 from __future__ import annotations
@@ -1864,7 +1864,7 @@ def check_manifest(
     require(as_bool(manifest.get("is_full_dataset"), "is_full_dataset", context), f"{context}: is_full_dataset is not true")
     require(as_bool(manifest.get("stale_result"), "stale_result", context) is False,
             f"{context}: stale_result must be false")
-    require(manifest.get("benchmark_mode") == "warm", f"{context}: benchmark_mode must be warm")
+    require(manifest.get("benchmark_mode") == "single", f"{context}: benchmark_mode must be single")
 
     expected_compute_backend = "cpu" if backend == "cpu" else "cuda_hotspots"
     expected_backend = "cpu" if backend == "cpu" else "gpu"
@@ -1976,7 +1976,7 @@ def check_manifest(
         "manifest_dataset": expected_manifest_dataset,
         "backend": backend,
         "status": "VERIFY_OK",
-        "benchmark_mode": "warm",
+        "benchmark_mode": "single",
         "timing_schema": timing_schema,
         "run_dir": str(run_dir.relative_to(project_root)),
         "config": str(config_path.relative_to(project_root)),
@@ -2096,7 +2096,7 @@ def write_outputs(
     ]
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "benchmark_mode": "warm",
+        "benchmark_mode": "single",
         "run_count": len(rows),
         "rows": rows,
         "security_tests": {
@@ -2158,7 +2158,7 @@ def write_outputs(
     lines = [
         "# 最新正式结果",
         "",
-        "本表只由十个 `VERIFY_OK`、full-dataset、warm manifest 聚合生成；CPU/CUDA 每个数据集的配置、模型、量化、静态表和 SRS 标识已逐项配对校验。",
+        "本表只由十个 `VERIFY_OK`、full-dataset、single manifest 聚合生成；CPU/CUDA 每个数据集的配置、模型、量化、静态表和 SRS 标识已逐项配对校验。",
         "",
         "| 数据集 | 后端 | 状态 | commitment (ms) | prove (ms) | verify (ms) | proof bytes | GPU kernels |",
         "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",

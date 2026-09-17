@@ -300,10 +300,9 @@ namespace gatzk::protocol
 
         bool lower_hex_256(std::string_view value)
         {
-            return value.size() == SHA256_DIGEST_LENGTH * 2
-                && std::all_of(
-                    value.begin(), value.end(), [](unsigned char ch)
-                    { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
+            return value.size() == SHA256_DIGEST_LENGTH * 2 && std::all_of(
+                                                                   value.begin(), value.end(), [](unsigned char ch)
+                                                                   { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
         }
 
         std::array<std::uint8_t, SHA256_DIGEST_LENGTH> sha256_raw(
@@ -320,8 +319,7 @@ namespace gatzk::protocol
             const auto value = algebra::FieldElement::from_little_endian_mod(
                 bytes.data(), bytes.size());
             std::array<std::uint8_t, kFieldBytes> canonical{};
-            if (value.write_little_endian(canonical.data(), canonical.size()) > canonical.size()
-                || !std::equal(bytes.begin(), bytes.end(), canonical.begin()))
+            if (value.write_little_endian(canonical.data(), canonical.size()) > canonical.size() || !std::equal(bytes.begin(), bytes.end(), canonical.begin()))
                 throw std::runtime_error("non-canonical field element in verifier registration");
             return value;
         }
@@ -564,22 +562,39 @@ namespace gatzk::protocol
             append_u64(out, q.s_input);
             append_u64(out, q.s_delta);
             append_u64(out, q.s_exp);
-            append_vector(out, q.s_h, [&](auto value) { append_u64(out, value); });
-            append_vector(out, q.s_w_hidden, [&](const auto &row) { append_vector(out, row, [&](auto value) { append_u64(out, value); }); });
-            append_vector(out, q.s_h_prime, [&](const auto &row) { append_vector(out, row, [&](auto value) { append_u64(out, value); }); });
-            append_vector(out, q.s_a_src_hidden, [&](const auto &row) { append_vector(out, row, [&](auto value) { append_u64(out, value); }); });
-            append_vector(out, q.s_a_dst_hidden, [&](const auto &row) { append_vector(out, row, [&](auto value) { append_u64(out, value); }); });
-            append_vector(out, q.s_agg_pre, [&](auto value) { append_u64(out, value); });
-            append_vector(out, q.s_agg, [&](auto value) { append_u64(out, value); });
-            append_vector(out, q.s_cat, [&](auto value) { append_u64(out, value); });
+            append_vector(out, q.s_h, [&](auto value)
+                          { append_u64(out, value); });
+            append_vector(out, q.s_w_hidden, [&](const auto &row)
+                          { append_vector(out, row, [&](auto value)
+                                          { append_u64(out, value); }); });
+            append_vector(out, q.s_h_prime, [&](const auto &row)
+                          { append_vector(out, row, [&](auto value)
+                                          { append_u64(out, value); }); });
+            append_vector(out, q.s_a_src_hidden, [&](const auto &row)
+                          { append_vector(out, row, [&](auto value)
+                                          { append_u64(out, value); }); });
+            append_vector(out, q.s_a_dst_hidden, [&](const auto &row)
+                          { append_vector(out, row, [&](auto value)
+                                          { append_u64(out, value); }); });
+            append_vector(out, q.s_agg_pre, [&](auto value)
+                          { append_u64(out, value); });
+            append_vector(out, q.s_agg, [&](auto value)
+                          { append_u64(out, value); });
+            append_vector(out, q.s_cat, [&](auto value)
+                          { append_u64(out, value); });
             append_u64(out, q.s_out_pre);
             append_u64(out, q.s_out_head);
             append_u64(out, q.s_out);
-            append_vector(out, q.s_w_output, [&](auto value) { append_u64(out, value); });
-            append_vector(out, q.s_y_prime, [&](auto value) { append_u64(out, value); });
-            append_vector(out, q.s_a_src_output, [&](auto value) { append_u64(out, value); });
-            append_vector(out, q.s_a_dst_output, [&](auto value) { append_u64(out, value); });
-            append_vector(out, q.s_b_output, [&](auto value) { append_u64(out, value); });
+            append_vector(out, q.s_w_output, [&](auto value)
+                          { append_u64(out, value); });
+            append_vector(out, q.s_y_prime, [&](auto value)
+                          { append_u64(out, value); });
+            append_vector(out, q.s_a_src_output, [&](auto value)
+                          { append_u64(out, value); });
+            append_vector(out, q.s_a_dst_output, [&](auto value)
+                          { append_u64(out, value); });
+            append_vector(out, q.s_b_output, [&](auto value)
+                          { append_u64(out, value); });
             append_string(out, config.model_arch_id);
             append_string(out, config.model_param_id);
             append_string(out, config.input_preprocess_id);
@@ -602,8 +617,7 @@ namespace gatzk::protocol
             append_vector(out, config.hidden_profile, [&](const auto &profile)
                           {
                               append_size(out, profile.head_count);
-                              append_size(out, profile.head_dim);
-                          });
+                              append_size(out, profile.head_dim); });
             append_size_vector(out, config.d_in_profile);
         }
 
@@ -611,14 +625,16 @@ namespace gatzk::protocol
         {
             return read_vector<std::uint64_t>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return inner.u64("u64-vector.value"); });
+                [](Reader &inner)
+                { return inner.u64("u64-vector.value"); });
         }
 
         std::vector<std::vector<std::uint64_t>> read_u64_matrix(Reader &reader)
         {
             return read_vector<std::vector<std::uint64_t>>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_u64_vector(inner); });
+                [](Reader &inner)
+                { return read_u64_vector(inner); });
         }
 
         VerifierConfig read_config(Reader &reader)
@@ -689,8 +705,8 @@ namespace gatzk::protocol
             const data::GraphDataset &dataset)
         {
             // The candidate writer intentionally excludes labels and floating
-            // point/raw feature storage.  Quantized public features live in the
-            // LocalGraph section and are copied into dataset.features on load.
+            // point/raw feature storage. Quantized public features live only in
+            // the LocalGraph section and are consumed directly by the verifier.
             if (!dataset.features_fp.empty() || !dataset.labels.empty() || !dataset.labels_multi.empty())
                 throw std::runtime_error("verifier registration cannot contain private dataset material");
             append_string(out, dataset.name);
@@ -699,7 +715,8 @@ namespace gatzk::protocol
             append_size(out, dataset.num_features);
             append_size(out, dataset.num_classes);
             append_size(out, dataset.graph_count);
-            append_vector(out, dataset.edges, [&](const auto &edge) { append_edge(out, edge); });
+            append_vector(out, dataset.edges, [&](const auto &edge)
+                          { append_edge(out, edge); });
             append_size_vector(out, dataset.node_ptr);
             append_size_vector(out, dataset.edge_ptr);
             append_string(out, dataset.task_type);
@@ -717,7 +734,8 @@ namespace gatzk::protocol
             dataset.graph_count = reader.size("dataset.graph_count");
             dataset.edges = read_vector<data::Edge>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_edge(inner); });
+                [](Reader &inner)
+                { return read_edge(inner); });
             dataset.node_ptr = read_size_vector(reader);
             dataset.edge_ptr = read_size_vector(reader);
             dataset.task_type = reader.string("dataset.task_type");
@@ -738,7 +756,8 @@ namespace gatzk::protocol
             append_size(out, local.num_classes);
             append_size_vector(out, local.absolute_ids);
             append_field_matrix(out, local.features);
-            append_vector(out, local.edges, [&](const auto &edge) { append_edge(out, edge); });
+            append_vector(out, local.edges, [&](const auto &edge)
+                          { append_edge(out, edge); });
             append_normalized_input(out, local.public_input);
             append_size(out, local.graph_count);
             append_size_vector(out, local.node_ptr);
@@ -764,7 +783,8 @@ namespace gatzk::protocol
             local.features = read_field_matrix(reader);
             local.edges = read_vector<data::Edge>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_edge(inner); });
+                [](Reader &inner)
+                { return read_edge(inner); });
             local.public_input = read_normalized_input(reader);
             local.graph_count = reader.size("local.graph_count");
             local.node_ptr = read_size_vector(reader);
@@ -794,8 +814,7 @@ namespace gatzk::protocol
             append_vector(out, model.hidden_profile, [&](const auto &shape)
                           {
                               append_size(out, shape.head_count);
-                              append_size(out, shape.head_dim);
-                          });
+                              append_size(out, shape.head_dim); });
             append_size(out, model.K_out);
             append_size(out, model.C);
             append_vector(out, model.hidden_layers, [&](const auto &layer)
@@ -804,8 +823,7 @@ namespace gatzk::protocol
                               append_size(out, layer.input_dim);
                               append_size(out, layer.shape.head_count);
                               append_size(out, layer.shape.head_dim);
-                              append_size(out, layer.heads.size());
-                          });
+                              append_size(out, layer.heads.size()); });
             append_size(out, model.output_layer.input_dim);
             append_size(out, model.output_layer.output_dim);
             append_size(out, model.output_layer.head_count);
@@ -930,10 +948,7 @@ namespace gatzk::protocol
             // verifier execution contexts, but the registration wire carries
             // only the public shape.  The canonical generator is the sole
             // source of the rows on the independent parser side.
-            if (tables.range.size() != shape.range_table_size
-                || tables.lrelu.size() != shape.lrelu_table_size
-                || tables.elu.size() != shape.elu_table_size
-                || tables.exp.size() != shape.exp_table_size)
+            if (tables.range.size() != shape.range_table_size || tables.lrelu.size() != shape.lrelu_table_size || tables.elu.size() != shape.elu_table_size || tables.exp.size() != shape.exp_table_size)
                 throw std::runtime_error(
                     "verifier registration static-table cardinality is not canonical");
             append_static_table_shape(out, shape);
@@ -974,8 +989,7 @@ namespace gatzk::protocol
             const auto omega = read_field(reader, "domain.omega");
             const auto inv_size = read_field(reader, "domain.inv_size");
             auto expected = algebra::RootOfUnityDomain::create(name, size);
-            if (expected->omega != omega || expected->inv_size != inv_size
-                || expected->name != name || expected->size != size)
+            if (expected->omega != omega || expected->inv_size != inv_size || expected->name != name || expected->size != size)
                 throw std::runtime_error("domain data is not canonical");
             return expected;
         }
@@ -1010,15 +1024,12 @@ namespace gatzk::protocol
                 append_domain(out, **domain);
             }
             append_vector(out, domains.hidden_layers, [&](const auto &layer)
-                          {
-                              append_vector(out, layer, [&](const auto &head)
-                                            {
+                          { append_vector(out, layer, [&](const auto &head)
+                                          {
                                                 if (head.in == nullptr || head.d == nullptr)
                                                     throw std::runtime_error("verifier registration has a missing head domain");
                                                 append_string(out, head.in->name);
-                                                append_string(out, head.d->name);
-                                            });
-                          });
+                                                append_string(out, head.d->name); }); });
             append_bool(out, domains.output_head.has_value());
             if (domains.output_head.has_value())
             {
@@ -1234,8 +1245,7 @@ namespace gatzk::protocol
             };
             for (const auto &[key, descriptor] : sorted)
             {
-                if (key.empty() || (!previous.empty() && key <= previous)
-                    || descriptor.name != key || descriptor.size == 0)
+                if (key.empty() || (!previous.empty() && key <= previous) || descriptor.name != key || descriptor.size == 0)
                     throw std::runtime_error("public polynomial descriptor order/name mismatch");
                 if (descriptor.basis == algebra::PolynomialBasis::Evaluation)
                 {
@@ -1261,10 +1271,7 @@ namespace gatzk::protocol
             const WorkDomains &domains)
         {
             std::unordered_map<std::string, std::shared_ptr<algebra::RootOfUnityDomain>> by_name = {
-                {domains.fh->name, domains.fh}, {domains.edge->name, domains.edge},
-                {domains.in->name, domains.in}, {domains.d->name, domains.d},
-                {domains.cat->name, domains.cat}, {domains.c->name, domains.c},
-                {domains.n->name, domains.n}};
+                {domains.fh->name, domains.fh}, {domains.edge->name, domains.edge}, {domains.in->name, domains.in}, {domains.d->name, domains.d}, {domains.cat->name, domains.cat}, {domains.c->name, domains.c}, {domains.n->name, domains.n}};
             const auto count = reader.size("public-polynomials.count");
             if (count > kMaxVectorEntries)
                 throw std::runtime_error("public polynomial count exceeds cap");
@@ -1471,10 +1478,12 @@ namespace gatzk::protocol
             edge.derived_object = reader.string("observation-edge.derived-object");
             edge.source_objects = read_vector<std::string>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return inner.string("observation-edge.source"); });
+                [](Reader &inner)
+                { return inner.string("observation-edge.source"); });
             edge.serialized_observations = read_vector<std::string>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return inner.string("observation-edge.observation"); });
+                [](Reader &inner)
+                { return inner.string("observation-edge.observation"); });
             edge.transcript_stage = reader.string("observation-edge.stage");
             edge.propagation_rule = reader.string("observation-edge.rule");
             const auto random = reader.u8("observation-edge.randomness");
@@ -1528,13 +1537,15 @@ namespace gatzk::protocol
             ProtocolCompilerArtifact artifact;
             artifact.proof_schema.entries = read_vector<ProofSchemaEntry>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_proof_schema_entry(inner); });
+                [](Reader &inner)
+                { return read_proof_schema_entry(inner); });
             artifact.proof_schema.private_plain_value_count = reader.size("compiler.private-plain-count");
             auto read_string_vec = [&](std::string_view what)
             {
                 return read_vector<std::string>(
                     reader, kMaxVectorEntries,
-                    [&](Reader &inner) { return inner.string(what); });
+                    [&](Reader &inner)
+                    { return inner.string(what); });
             };
             artifact.binding_relation_registry = read_string_vec("compiler.binding-relation");
             artifact.proof_blocks = read_string_vec("compiler.proof-block");
@@ -1549,19 +1560,24 @@ namespace gatzk::protocol
             artifact.padding_registry = read_string_vec("compiler.padding");
             artifact.observation_dependency_dag = read_vector<ObservationDependencyEdge>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_observation_edge(inner); });
+                [](Reader &inner)
+                { return read_observation_edge(inner); });
             artifact.observation_ledger = read_vector<CompilerLedgerEntry>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_ledger_entry(inner); });
+                [](Reader &inner)
+                { return read_ledger_entry(inner); });
             artifact.random_identity_ledger = read_vector<CompilerLedgerEntry>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_ledger_entry(inner); });
+                [](Reader &inner)
+                { return read_ledger_entry(inner); });
             artifact.security_budget_ledger = read_vector<CompilerLedgerEntry>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_ledger_entry(inner); });
+                [](Reader &inner)
+                { return read_ledger_entry(inner); });
             artifact.integer_bound_ledger = read_vector<IntegerBoundLedgerEntry>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_integer_bound(inner); });
+                [](Reader &inner)
+                { return read_integer_bound(inner); });
             artifact.kzg_assumption_profile = reader.string("compiler.kzg-profile");
             artifact.shift_algorithm_id = reader.string("compiler.shift-id");
             artifact.shift_algorithm_spec = reader.string("compiler.shift-spec");
@@ -1711,13 +1727,16 @@ namespace gatzk::protocol
             registry.security_budget_exact = reader.string("registry.security-exact");
             registry.integer_bound_ledger = read_vector<IntegerBoundLedgerEntry>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_integer_bound(inner); });
+                [](Reader &inner)
+                { return read_integer_bound(inner); });
             registry.model_entries = read_vector<VerifierRegistryEntry>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_registry_entry(inner); });
+                [](Reader &inner)
+                { return read_registry_entry(inner); });
             registry.static_entries = read_vector<VerifierRegistryEntry>(
                 reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_registry_entry(inner); });
+                [](Reader &inner)
+                { return read_registry_entry(inner); });
             return registry;
         }
 
@@ -1743,23 +1762,45 @@ namespace gatzk::protocol
         {
             switch (expected)
             {
-            case Section::Config: artifact->config = read_config(section); break;
-            case Section::Dataset: artifact->dataset = read_dataset(section); break;
-            case Section::LocalGraph: artifact->local = read_local(section); break;
-            case Section::ModelShape: artifact->model = read_model_shape(section); break;
+            case Section::Config:
+                artifact->config = read_config(section);
+                break;
+            case Section::Dataset:
+                artifact->dataset = read_dataset(section);
+                break;
+            case Section::LocalGraph:
+                artifact->local = read_local(section);
+                break;
+            case Section::ModelShape:
+                artifact->model = read_model_shape(section);
+                break;
             case Section::StaticTables:
                 artifact->tables = read_tables(
                     section,
                     static_table_shape_inputs(
                         artifact->config, artifact->dataset, artifact->local));
                 break;
-            case Section::Domains: artifact->domains = read_domains(section); break;
-            case Section::SrsAndVk: read_srs(section, &artifact->srs, &artifact->kzg_vk); break;
-            case Section::PublicPolynomials: artifact->public_polynomial_descriptors = read_polynomial_descriptors(section, artifact->domains); break;
-            case Section::PublicCommitments: artifact->public_commitments = read_point_map(section); break;
-            case Section::StaticCommitments: artifact->static_commitments = read_point_map(section); break;
-            case Section::CompilerArtifact: artifact->compiler_artifact = read_compiler(section); break;
-            case Section::Registry: artifact->registry = read_registry(section); break;
+            case Section::Domains:
+                artifact->domains = read_domains(section);
+                break;
+            case Section::SrsAndVk:
+                read_srs(section, &artifact->srs, &artifact->kzg_vk);
+                break;
+            case Section::PublicPolynomials:
+                artifact->public_polynomial_descriptors = read_polynomial_descriptors(section, artifact->domains);
+                break;
+            case Section::PublicCommitments:
+                artifact->public_commitments = read_point_map(section);
+                break;
+            case Section::StaticCommitments:
+                artifact->static_commitments = read_point_map(section);
+                break;
+            case Section::CompilerArtifact:
+                artifact->compiler_artifact = read_compiler(section);
+                break;
+            case Section::Registry:
+                artifact->registry = read_registry(section);
+                break;
             }
             section.require_empty("section");
         }
@@ -1773,18 +1814,30 @@ namespace gatzk::protocol
         const auto static_table_shape = plan_canonical_static_table_shape(
             static_table_shape_inputs(config, dataset, local));
         const std::array<std::vector<std::uint8_t>, kSectionCount> sections = {
-            make_section(Section::Config, [&](auto *payload) { append_config(payload, config); }),
-            make_section(Section::Dataset, [&](auto *payload) { append_dataset(payload, dataset); }),
-            make_section(Section::LocalGraph, [&](auto *payload) { append_local(payload, local); }),
-            make_section(Section::ModelShape, [&](auto *payload) { append_model_shape(payload, model); }),
-            make_section(Section::StaticTables, [&](auto *payload) { append_tables(payload, tables, static_table_shape); }),
-            make_section(Section::Domains, [&](auto *payload) { append_domains(payload, domains); }),
-            make_section(Section::SrsAndVk, [&](auto *payload) { append_srs(payload, srs, kzg_vk); }),
-            make_section(Section::PublicPolynomials, [&](auto *payload) { append_polynomial_descriptors(payload, public_polynomial_descriptors, domains); }),
-            make_section(Section::PublicCommitments, [&](auto *payload) { append_point_map(payload, public_commitments); }),
-            make_section(Section::StaticCommitments, [&](auto *payload) { append_point_map(payload, static_commitments); }),
-            make_section(Section::CompilerArtifact, [&](auto *payload) { append_compiler(payload, compiler_artifact); }),
-            make_section(Section::Registry, [&](auto *payload) { append_registry(payload, registry); }),
+            make_section(Section::Config, [&](auto *payload)
+                         { append_config(payload, config); }),
+            make_section(Section::Dataset, [&](auto *payload)
+                         { append_dataset(payload, dataset); }),
+            make_section(Section::LocalGraph, [&](auto *payload)
+                         { append_local(payload, local); }),
+            make_section(Section::ModelShape, [&](auto *payload)
+                         { append_model_shape(payload, model); }),
+            make_section(Section::StaticTables, [&](auto *payload)
+                         { append_tables(payload, tables, static_table_shape); }),
+            make_section(Section::Domains, [&](auto *payload)
+                         { append_domains(payload, domains); }),
+            make_section(Section::SrsAndVk, [&](auto *payload)
+                         { append_srs(payload, srs, kzg_vk); }),
+            make_section(Section::PublicPolynomials, [&](auto *payload)
+                         { append_polynomial_descriptors(payload, public_polynomial_descriptors, domains); }),
+            make_section(Section::PublicCommitments, [&](auto *payload)
+                         { append_point_map(payload, public_commitments); }),
+            make_section(Section::StaticCommitments, [&](auto *payload)
+                         { append_point_map(payload, static_commitments); }),
+            make_section(Section::CompilerArtifact, [&](auto *payload)
+                         { append_compiler(payload, compiler_artifact); }),
+            make_section(Section::Registry, [&](auto *payload)
+                         { append_registry(payload, registry); }),
         };
         for (const auto &section : sections)
             out.insert(out.end(), section.begin(), section.end());
@@ -1818,8 +1871,7 @@ namespace gatzk::protocol
         if (!lower_hex_256(trusted_registry_digest))
             throw std::runtime_error(
                 "formal verifier registry load requires an out-of-band trusted SHA-256 digest");
-        if (sha256_hex(std::span<const std::uint8_t>(bytes.data(), bytes.size()))
-            != trusted_registry_digest)
+        if (sha256_hex(std::span<const std::uint8_t>(bytes.data(), bytes.size())) != trusted_registry_digest)
             throw std::runtime_error(
                 "verifier registration artifact digest does not match the trusted registry root");
         return parse_verifier_registration_artifact(bytes);
@@ -1828,8 +1880,7 @@ namespace gatzk::protocol
     VerifierRegistrationArtifact parse_verifier_registration_artifact(
         const std::vector<std::uint8_t> &bytes)
     {
-        if (bytes.size() < kMagic.size() + sizeof(std::uint32_t) + SHA256_DIGEST_LENGTH
-            || bytes.size() > kMaxArtifactBytes)
+        if (bytes.size() < kMagic.size() + sizeof(std::uint32_t) + SHA256_DIGEST_LENGTH || bytes.size() > kMaxArtifactBytes)
             throw std::runtime_error("verifier registration artifact size is invalid");
         const auto body_size = bytes.size() - SHA256_DIGEST_LENGTH;
         if (!std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))

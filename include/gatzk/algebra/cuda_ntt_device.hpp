@@ -20,6 +20,7 @@ namespace gatzk::algebra
         int device = -1;
         bool has_input_output = false;
         bool has_staged_scratch = false;
+        bool domain_initialized = false;
     };
 
     CudaNttWorkspaceResidency cuda_ntt_workspace_residency();

@@ -3691,9 +3691,9 @@ namespace gatzk::protocol
             shape.domain_size == 0 ||
             shape.domain_size > target_size ||
             target_size % shape.domain_size != 0 ||
-            shape.max_linear_source_count >
-                cache_slot_count ||
-            shape.max_linear_source_blinder_count >
+            (shape.max_linear_source_count != 0 &&
+             shape.max_linear_source_count >= cache_slot_count) ||
+            shape.max_linear_single_source_blinder_count >
                 target_size - shape.domain_size ||
             shape.max_linear_target_blinder_count >
                 target_size - shape.domain_size)
@@ -3719,18 +3719,10 @@ namespace gatzk::protocol
             return false;
         }
 
-        const auto half_size =
-            target_size / 2;
-
-        const bool staged_leaf_ntt =
-            half_size > (std::size_t{1} << 24);
-
-        std::size_t ntt_buffer_count =
-            staged_leaf_ntt ? 4 : 2;
         std::size_t ntt_workspace_bytes = 0;
         if (!checked_mul_size(
                 leaf_bytes,
-                ntt_buffer_count,
+                std::size_t{2},
                 &ntt_workspace_bytes))
         {
             return false;
@@ -3906,12 +3898,6 @@ namespace gatzk::protocol
             return false;
         }
 
-        // Device allocations owned by the executor, the complete prepare-
-        // program arrays, all linear-buffer arrays used by
-        // ensure_linear_buffers(), the bounded transform workspace, ICICLE's
-        // lazily initialized domain, and conservative metadata/headroom are
-        // admitted together.  This is intentionally the same allocation
-        // shape as the constructor plus materialize_linear_leaf().
         if (!add_device(leaf_cache_bytes) ||
             !add_device(table_bytes) ||
             !add_device(layout_bytes) ||
@@ -3930,8 +3916,6 @@ namespace gatzk::protocol
             !add_device(linear_target_blinder_bytes) ||
             !add_device(lane_power_bytes) ||
             !add_device(block_power_bytes) ||
-            !add_device(ntt_workspace_bytes) ||
-            !add_device(icicle_domain_bytes) ||
             !add_device(kFixedMetadataBytes) ||
             !add_device(kAdmissionHeadroomBytes))
         {
@@ -4005,9 +3989,7 @@ namespace gatzk::protocol
         const bool workspace_reusable =
             same_workspace_device &&
             workspace.capacity_bytes >= leaf_bytes &&
-            workspace.has_input_output &&
-            (!staged_leaf_ntt ||
-             workspace.has_staged_scratch);
+            workspace.has_input_output;
         const auto resident_workspace_bytes =
             same_workspace_device
                 ? workspace.resident_bytes
@@ -4016,10 +3998,18 @@ namespace gatzk::protocol
             workspace_reusable
                 ? resident_workspace_bytes
                 : ntt_workspace_bytes;
+        const auto icicle_domain_growth_bytes =
+            workspace.domain_initialized
+                ? std::size_t{0}
+                : icicle_domain_bytes;
 
         if (!checked_add_size(
                 device_required_bytes,
                 workspace_peak_bytes,
+                &device_required_bytes) ||
+            !checked_add_size(
+                device_required_bytes,
+                icicle_domain_growth_bytes,
                 &device_required_bytes))
         {
             return false;
