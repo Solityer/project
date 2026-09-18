@@ -36,6 +36,11 @@ run_cell() {
     } > "$cell_log" || return 1
     command=("$binary" --config "$config" --compute-backend "$compute_backend"
              --benchmark-mode single --export-tag "$tag")
+    if [[ -x /usr/bin/time ]]; then
+        command=(/usr/bin/time -v -o "$log_dir/${backend}_${dataset}.resource.txt" -- "${command[@]}")
+    else
+        printf 'Resource receipt unavailable: /usr/bin/time is missing.\n' >> "$cell_log"
+    fi
     printf '===== START %s %s =====\n' "$backend" "$dataset"
     "${command[@]}" 2>&1 | tee -a "$cell_log"
     pipeline_status=("${PIPESTATUS[@]}")

@@ -2050,21 +2050,26 @@ namespace gatzk::algebra
             if (size < 2 || (size & (size - 1U)) != 0U || size > kMaximumCudaStagedNttSize ||
                 batch_size == 0 || batch_size > 2)
                 return false;
+
             const auto total_bytes = checked_ntt_bytes(size, batch_size);
-            const bool staged = size > kMaximumCudaNttSize;
-            const auto buffer_count = staged ? std::size_t{4} : std::size_t{2};
+            constexpr std::size_t buffer_count = 2;
             if (total_bytes > std::numeric_limits<std::size_t>::max() / buffer_count)
                 return false;
+
             const auto replacement_bytes = buffer_count * total_bytes;
             const auto releasable_bytes = workspace.device == device ? workspace.resident_bytes() : std::size_t{0};
             if (releasable_bytes == std::numeric_limits<std::size_t>::max())
                 return false;
-            const auto additional_workspace_bytes = workspace.can_reuse(total_bytes, device, staged) ||
-                                                            replacement_bytes <= releasable_bytes
-                                                        ? std::size_t{0}
-                                                        : replacement_bytes - releasable_bytes;
+
+            // The staged schedule reuses output for residue scratch and input
+            // for leaf outputs. It needs two physical buffers, not four.
+            const auto additional_workspace_bytes =
+                workspace.can_reuse(total_bytes, device, false) || replacement_bytes <= releasable_bytes
+                    ? std::size_t{0}
+                    : replacement_bytes - releasable_bytes;
             if (caller_buffer_bytes > std::numeric_limits<std::size_t>::max() - additional_workspace_bytes)
                 return false;
+
             return admit_cuda_ntt_growth(additional_workspace_bytes + caller_buffer_bytes, device);
         }
 
@@ -2075,192 +2080,141 @@ namespace gatzk::algebra
             std::size_t batch_size,
             ntt::NTTDir direction)
         {
-            if (size < 2 ||
-                (size & (size - 1U)) != 0U ||
-                size > kMaximumCudaStagedNttSize)
-            {
+            if (size < 2 || (size & (size - 1U)) != 0U || size > kMaximumCudaStagedNttSize)
                 return false;
-            }
-
-            if (first == nullptr ||
-                (batch_size == 2 &&
-                 second == nullptr))
-            {
-                throw std::runtime_error(
-                    "CUDA quotient NTT received a null input");
-            }
-
-            if (batch_size != 1 &&
-                batch_size != 2)
-            {
-                throw std::runtime_error(
-                    "CUDA quotient NTT supports only batch size 1 or 2");
-            }
+            if (batch_size != 1 && batch_size != 2)
+                throw std::runtime_error("CUDA quotient NTT supports only batch size 1 or 2");
+            if (first == nullptr || (batch_size == 2 && second == nullptr))
+                throw std::runtime_error("CUDA quotient NTT received a null input");
 
             int device = 0;
-
-            auto status =
-                cudaGetDevice(&device);
-
+            auto status = cudaGetDevice(&device);
             if (status != cudaSuccess)
-            {
-                throw_cuda_ntt_error(
-                    "device lookup",
-                    status);
-            }
+                throw_cuda_ntt_error("device lookup", status);
 
-            const auto one_vector_bytes =
-                checked_ntt_bytes(
-                    size,
-                    1);
-
-            const auto total_bytes =
-                checked_ntt_bytes(
-                    size,
-                    batch_size);
-
-            const bool staged =
-                size > kMaximumCudaNttSize;
-
+            const auto one_vector_bytes = checked_ntt_bytes(size, 1);
+            const auto total_bytes = checked_ntt_bytes(size, batch_size);
+            const bool staged = size > kMaximumCudaNttSize;
             auto &workspace = cuda_ntt_workspace();
-            if (!admit_generic_ntt_workspace(size, batch_size, device, workspace, 0))
+
+            const auto prepare = [&]()
             {
-                return false;
-            }
+                return admit_generic_ntt_workspace(size, batch_size, device, workspace, 0) &&
+                       workspace.ensure(total_bytes, device, false);
+            };
 
-            if (!workspace.ensure(
-                    total_bytes,
-                    device,
-                    staged))
+            if (!prepare())
             {
-                return false;
-            }
-
-            const auto stream =
-                workspace.stream;
-
-            status =
-                cudaMemcpyAsync(
-                    workspace.input,
-                    first,
-                    one_vector_bytes,
-                    cudaMemcpyHostToDevice,
-                    stream);
-
-            if (status != cudaSuccess)
-            {
+                // Only this thread's transient workspace is reclaimed. The
+                // shared ICICLE domain and resident SRS bases remain intact.
+                if (workspace.stream != nullptr)
+                {
+                    if (workspace.device != device)
+                        throw std::runtime_error("CUDA NTT reclaim encountered a different workspace device");
+                    status = cudaStreamSynchronize(workspace.stream);
+                    if (status != cudaSuccess)
+                        throw_cuda_ntt_error("workspace reclaim synchronization", status);
+                    record_cuda_stream_sync();
+                }
                 workspace.release();
 
-                throw_cuda_ntt_error(
-                    "first input upload",
-                    status);
-            }
-
-            record_cuda_h2d(
-                one_vector_bytes);
-
-            if (batch_size == 2)
-            {
-                status =
-                    cudaMemcpyAsync(
-                        workspace.input + size,
-                        second,
-                        one_vector_bytes,
-                        cudaMemcpyHostToDevice,
-                        stream);
-
-                if (status != cudaSuccess)
+                cudaMemPool_t pool = nullptr;
+                status = cudaDeviceGetDefaultMemPool(&pool, device);
+                if (status == cudaErrorNotSupported)
                 {
-                    workspace.release();
-
-                    throw_cuda_ntt_error(
-                        "second input upload",
-                        status);
+                    (void)cudaGetLastError();
+                }
+                else
+                {
+                    if (status != cudaSuccess)
+                        throw_cuda_ntt_error("workspace reclaim memory-pool query", status);
+                    status = cudaMemPoolTrimTo(pool, 0);
+                    if (status != cudaSuccess)
+                        throw_cuda_ntt_error("workspace reclaim memory-pool trim", status);
                 }
 
-                record_cuda_h2d(
-                    one_vector_bytes);
-            }
-
-            if (!run_bounded_ntt_device(
-                    reinterpret_cast<const mcl::Fr *>(
-                        workspace.input),
-                    reinterpret_cast<mcl::Fr *>(
-                        workspace.output),
-                    size,
-                    batch_size,
-                    direction,
-                    device,
-                    stream,
-                    reinterpret_cast<mcl::Fr *>(
-                        workspace.scratch_a),
-                    reinterpret_cast<mcl::Fr *>(
-                        workspace.scratch_b)))
-            {
-                return false;
-            }
-
-            status =
-                cudaMemcpyAsync(
-                    first,
-                    workspace.output,
-                    one_vector_bytes,
-                    cudaMemcpyDeviceToHost,
-                    stream);
-
-            if (status != cudaSuccess)
-            {
-                workspace.release();
-
-                throw_cuda_ntt_error(
-                    "first output download",
-                    status);
-            }
-
-            record_cuda_d2h(
-                one_vector_bytes);
-
-            if (batch_size == 2)
-            {
-                status =
-                    cudaMemcpyAsync(
-                        second,
-                        workspace.output + size,
-                        one_vector_bytes,
-                        cudaMemcpyDeviceToHost,
-                        stream);
-
-                if (status != cudaSuccess)
+                if (!prepare())
                 {
-                    workspace.release();
+                    if (batch_size == 1)
+                        return false;
 
-                    throw_cuda_ntt_error(
-                        "second output download",
-                        status);
+                    // Replan a pair as two GPU transforms. Never return a
+                    // recoverable decline after the first host vector changed.
+                    if (!run_cuda_ntt_batch(first, nullptr, size, 1, direction))
+                        return false;
+                    if (!run_cuda_ntt_batch(second, nullptr, size, 1, direction))
+                        throw std::runtime_error(
+                            "second CUDA NTT wave was not admitted after the first wave completed");
+                    return true;
+                }
+            }
+
+            const auto stream = workspace.stream;
+            auto *device_result = staged && size / kMaximumCudaNttSize == 2
+                                      ? workspace.input
+                                      : workspace.output;
+
+            try
+            {
+                status = cudaMemcpyAsync(workspace.input, first, one_vector_bytes,
+                                         cudaMemcpyHostToDevice, stream);
+                if (status != cudaSuccess)
+                    throw_cuda_ntt_error("first input upload", status);
+                record_cuda_h2d(one_vector_bytes);
+
+                if (batch_size == 2)
+                {
+                    status = cudaMemcpyAsync(workspace.input + size, second, one_vector_bytes,
+                                             cudaMemcpyHostToDevice, stream);
+                    if (status != cudaSuccess)
+                        throw_cuda_ntt_error("second input upload", status);
+                    record_cuda_h2d(one_vector_bytes);
                 }
 
-                record_cuda_d2h(
-                    one_vector_bytes);
+                // Split: input -> output. Leaf NTTs: output -> input.
+                // Radix-2 combines in input; radix-4 combines back into output.
+                // Stream ordering makes the reuse safe, and the final result
+                // already occupies its destination without a full D2D copy.
+                if (!run_bounded_ntt_device(
+                        reinterpret_cast<const mcl::Fr *>(workspace.input),
+                        reinterpret_cast<mcl::Fr *>(device_result),
+                        size, batch_size, direction, device, stream,
+                        reinterpret_cast<mcl::Fr *>(workspace.output),
+                        reinterpret_cast<mcl::Fr *>(workspace.input)))
+                {
+                    throw std::runtime_error("admitted CUDA NTT execution unexpectedly declined");
+                }
+
+                status = cudaMemcpyAsync(first, device_result, one_vector_bytes,
+                                         cudaMemcpyDeviceToHost, stream);
+                if (status != cudaSuccess)
+                    throw_cuda_ntt_error("first output download", status);
+                record_cuda_d2h(one_vector_bytes);
+
+                if (batch_size == 2)
+                {
+                    status = cudaMemcpyAsync(second, device_result + size, one_vector_bytes,
+                                             cudaMemcpyDeviceToHost, stream);
+                    if (status != cudaSuccess)
+                        throw_cuda_ntt_error("second output download", status);
+                    record_cuda_d2h(one_vector_bytes);
+                }
+
+                status = cudaStreamSynchronize(stream);
+                if (status != cudaSuccess)
+                    throw_cuda_ntt_error("synchronization", status);
+                record_cuda_stream_sync();
+                return true;
             }
-
-            status =
-                cudaStreamSynchronize(
-                    stream);
-
-            if (status != cudaSuccess)
+            catch (...)
             {
+                // A caller may destroy host buffers while unwinding. Drain
+                // submitted transfers before allowing that ownership change.
+                (void)cudaStreamSynchronize(stream);
                 workspace.release();
-
-                throw_cuda_ntt_error(
-                    "synchronization",
-                    status);
+                throw;
             }
-
-            record_cuda_stream_sync();
-
-            return true;
         }
-
     }
 
     CudaNttWorkspaceResidency

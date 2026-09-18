@@ -36,6 +36,7 @@ The attacker cannot read prover memory private witness, cannot read blinding ran
 
 This main experiment does not hide graph structure or node features. It does not publish only labels; logits are public. It does not prove training. It does not claim resistance to side channels, timing leakage, memory-access leakage, GPU-kernel side channels, or a compromised prover host. It does not claim this repository implements a full trusted ceremony; it loads and binds a trusted/MPC SRS manifest. It does not claim baselines use the same SRS, opening, metadata, or proof schema.
 
+
 ## Trust Assumptions
 
 KZG security depends on the setup toxic secret not being available to prover or verifier after setup. Prover, verifier, and formal run code load SRS files and manifest data. SRS hash, domain size, degree bound, curve id, field modulus id, and `srs_type` mismatch must hard fail. Fiat-Shamir transcript order is fixed and public metadata is absorbed before dynamic commitments produce challenges.

@@ -5,6 +5,7 @@
 #include <array>
 #include <cerrno>
 #include <cmath>
+#include <condition_variable>
 #include <cstdlib>
 #include <chrono>
 #include <cstdint>
@@ -4888,6 +4889,190 @@ namespace gatzk::protocol
             return result;
         }
 
+        struct QuotientWorkingSetPlan
+        {
+            bool enabled = false;
+            std::size_t target_size = 0;
+            std::size_t total_bytes = 0;
+            std::size_t available_bytes = 0;
+            std::size_t reserve_bytes = 0;
+            std::size_t admitted_bytes = 0;
+            std::size_t transient_bytes = 0;
+            std::size_t geometry_bytes = 0;
+            std::size_t hot_cache_bytes = 0;
+            std::size_t arena_bytes = 0;
+            std::size_t writers = 1;
+        };
+
+        class ScopedQuotientWorkingSet
+        {
+        public:
+            ScopedQuotientWorkingSet(std::size_t target_size, bool cuda_enabled, const std::string &label)
+            {
+                plan_.target_size = target_size;
+                if (target_size < (std::size_t{1} << 17))
+                    return;
+                if (thread_owns_working_set())
+                    throw std::runtime_error("nested quotient working-set admission is not supported: " + label);
+
+                const auto maximum = std::numeric_limits<std::size_t>::max();
+                const auto checked_add = [&](std::size_t left, std::size_t right)
+                {
+                    if (right > maximum - left)
+                        throw std::runtime_error("quotient working-set size overflow: " + label);
+                    return left + right;
+                };
+                const auto checked_mul = [&](std::size_t left, std::size_t right)
+                {
+                    if (right != 0 && left > maximum / right)
+                        throw std::runtime_error("quotient working-set size overflow: " + label);
+                    return left * right;
+                };
+
+                const auto one_coset = checked_mul(target_size, sizeof(FieldElement));
+                const auto page_size_raw = ::sysconf(_SC_PAGESIZE);
+                if (page_size_raw <= 0)
+                    throw std::runtime_error("cannot determine quotient spill page size: " + label);
+                const auto mapped_coset = util::spill_align_up(
+                    one_coset, static_cast<std::size_t>(page_size_raw), label);
+                const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+                std::size_t maximum_writers = 1;
+                if (label == "t_edge" && !cuda_enabled)
+                {
+                    maximum_writers = target_size <= (std::size_t{1} << 22) && cpu_count >= 8
+                                          ? std::min<std::size_t>(24, cpu_count)
+                                          : std::min<std::size_t>(4, cpu_count);
+                }
+
+                // The two geometry vectors cover quotient values and shared
+                // coset points. Each producer has three scratch-vector units
+                // and one not-yet-published output-vector unit.
+                const auto geometry = checked_mul(one_coset, 2);
+                auto device_headroom = cuda_enabled ? (std::size_t{4} << 30) : 0;
+                if (cuda_enabled && label == "t_edge" && target_size >= (std::size_t{1} << 25))
+                    device_headroom = checked_add(device_headroom, std::size_t{6} << 30);
+                const auto fixed_bytes = checked_add(geometry, device_headroom);
+                const auto writer_bytes = checked_add(checked_mul(one_coset, 3), mapped_coset);
+                const auto minimum_bytes = checked_add(fixed_bytes, writer_bytes);
+                constexpr std::size_t maximum_hot_cache = std::size_t{24} << 30;
+                const auto preferred_bytes = checked_add(
+                    checked_add(fixed_bytes, checked_mul(writer_bytes, maximum_writers)), maximum_hot_cache);
+
+                exclusive_ = cuda_enabled && label == "t_edge";
+                auto &shared = state();
+                std::unique_lock<std::mutex> lock(shared.mutex);
+                for (;;)
+                {
+                    if (shared.exclusive || (exclusive_ && shared.active != 0))
+                    {
+                        shared.changed.wait(lock);
+                        continue;
+                    }
+
+                    const auto snapshot = util::read_effective_memory_snapshot();
+                    const auto reserve = util::recommended_memory_reserve_bytes(
+                        snapshot, std::size_t{16} << 30, 1, 4);
+                    const auto admission = util::admit_effective_memory(
+                        snapshot, 0, 0, reserve, 1, maximum);
+                    const auto safe_bytes = admission.budget_bytes;
+                    const auto free_credit = safe_bytes > shared.reserved_bytes
+                                                 ? safe_bytes - shared.reserved_bytes
+                                                 : 0;
+                    if (free_credit >= minimum_bytes)
+                    {
+                        const auto grant = std::min(preferred_bytes, free_credit);
+                        const auto writers = std::min(maximum_writers, (grant - fixed_bytes) / writer_bytes);
+                        const auto producer_bytes = checked_mul(writer_bytes, writers);
+                        const auto hot_bytes = std::min(maximum_hot_cache, grant - fixed_bytes - producer_bytes);
+                        const auto transient = checked_add(
+                            checked_mul(checked_mul(one_coset, 3), writers), device_headroom);
+
+                        plan_.enabled = true;
+                        plan_.total_bytes = snapshot.effective_total_bytes;
+                        plan_.available_bytes = snapshot.effective_available_bytes;
+                        plan_.reserve_bytes = reserve;
+                        plan_.admitted_bytes = grant;
+                        plan_.transient_bytes = transient;
+                        plan_.geometry_bytes = geometry;
+                        plan_.hot_cache_bytes = hot_bytes;
+                        plan_.arena_bytes = grant - transient - geometry - hot_bytes;
+                        plan_.writers = writers;
+
+                        shared.reserved_bytes += grant;
+                        ++shared.active;
+                        shared.exclusive = exclusive_;
+                        armed_ = true;
+                        thread_owns_working_set() = true;
+                        return;
+                    }
+
+                    if (shared.active == 0)
+                    {
+                        throw std::runtime_error(
+                            "quotient minimum working set is not admitted: label=" + label +
+                            " target_size=" + std::to_string(target_size) +
+                            " minimum_bytes=" + std::to_string(minimum_bytes) +
+                            " available_bytes=" + std::to_string(snapshot.effective_available_bytes) +
+                            " reserve_bytes=" + std::to_string(reserve) +
+                            " available_known=" + std::to_string(snapshot.effective_available_known ? 1 : 0));
+                    }
+
+                    // No producer-side lock is held here. Every admitted
+                    // materializer can finish and release its reservation.
+                    shared.changed.wait(lock);
+                }
+            }
+
+            ScopedQuotientWorkingSet(const ScopedQuotientWorkingSet &) = delete;
+            ScopedQuotientWorkingSet &operator=(const ScopedQuotientWorkingSet &) = delete;
+
+            ~ScopedQuotientWorkingSet() noexcept
+            {
+                if (!armed_)
+                    return;
+                thread_owns_working_set() = false;
+                auto &shared = state();
+                {
+                    std::lock_guard<std::mutex> lock(shared.mutex);
+                    if (shared.active == 0 || shared.reserved_bytes < plan_.admitted_bytes)
+                        std::terminate();
+                    shared.reserved_bytes -= plan_.admitted_bytes;
+                    --shared.active;
+                    if (exclusive_)
+                        shared.exclusive = false;
+                }
+                shared.changed.notify_all();
+            }
+
+            const QuotientWorkingSetPlan &plan() const noexcept { return plan_; }
+
+        private:
+            struct State
+            {
+                std::mutex mutex;
+                std::condition_variable changed;
+                std::size_t reserved_bytes = 0;
+                std::size_t active = 0;
+                bool exclusive = false;
+            };
+
+            static State &state()
+            {
+                static State value;
+                return value;
+            }
+
+            static bool &thread_owns_working_set()
+            {
+                thread_local bool value = false;
+                return value;
+            }
+
+            QuotientWorkingSetPlan plan_;
+            bool exclusive_ = false;
+            bool armed_ = false;
+        };
+
         std::vector<std::string> quotient_materialization_dependency_labels(
             const ProtocolContext &context,
             const std::string &quotient_name);
@@ -5350,10 +5535,12 @@ namespace gatzk::protocol
             QuotientCosetSpillArena(
                 std::size_t total_cap_bytes,
                 std::size_t transient_bytes,
-                std::size_t geometry_bytes)
+                std::size_t geometry_bytes,
+                std::size_t reserve_bytes)
                 : total_cap_bytes_(total_cap_bytes),
                   transient_bytes_(transient_bytes),
-                  geometry_bytes_(geometry_bytes)
+                  geometry_bytes_(geometry_bytes),
+                  reserve_bytes_(reserve_bytes)
             {
                 int arena_lock_fd = -1;
                 try
@@ -5551,8 +5738,22 @@ namespace gatzk::protocol
                         label);
                 }
                 const auto aligned_bytes = util::spill_align_up(byte_count, page_size_, label);
-                if (aligned_bytes > total_cap_bytes_ || pending_write_bytes_ > total_cap_bytes_ - aligned_bytes)
-                    throw std::runtime_error("quotient spill in-flight write budget exceeded: " + label);
+                if (aligned_bytes > total_cap_bytes_)
+                {
+                    throw std::runtime_error(
+                        "quotient spill single allocation exceeds its admitted window: label=" + label +
+                        " requested_bytes=" + std::to_string(aligned_bytes) +
+                        " cap_bytes=" + std::to_string(total_cap_bytes_));
+                }
+                if (pending_write_bytes_ > total_cap_bytes_ - aligned_bytes)
+                {
+                    throw std::runtime_error(
+                        "quotient spill producer plan exceeded its admitted concurrency: label=" + label +
+                        " requested_bytes=" + std::to_string(aligned_bytes) +
+                        " pending_bytes=" + std::to_string(pending_write_bytes_) +
+                        " published_bytes=" + std::to_string(published_bytes_) +
+                        " cap_bytes=" + std::to_string(total_cap_bytes_));
+                }
                 trim_published_windows(total_cap_bytes_ - pending_write_bytes_ - aligned_bytes);
                 const bool fits_existing =
                     !chunks_.empty() &&
@@ -5615,7 +5816,8 @@ namespace gatzk::protocol
                 }
                 else
                 {
-                    const auto reserve = util::recommended_memory_reserve_bytes(snapshot, std::size_t{4} << 30, 1, 16);
+                    const auto reserve = std::max(reserve_bytes_, util::recommended_memory_reserve_bytes(
+                                                                      snapshot, std::size_t{4} << 30, 1, 16));
                     auto available = snapshot.effective_available_bytes;
                     for (const auto deduction : {reserve, transient_bytes_, geometry_bytes_})
                         available = deduction >= available ? 0 : available - deduction;
@@ -5800,6 +6002,7 @@ namespace gatzk::protocol
             std::size_t total_cap_bytes_ = 0;
             std::size_t transient_bytes_ = 0;
             std::size_t geometry_bytes_ = 0;
+            std::size_t reserve_bytes_ = 0;
             bool memory_backed_ = false;
             std::size_t pending_write_bytes_ = 0;
             std::size_t published_bytes_ = 0;
@@ -6465,7 +6668,8 @@ namespace gatzk::protocol
                 const ProtocolContext &context,
                 const TraceArtifacts &trace,
                 const std::map<std::string, FieldElement> &challenges,
-                std::string label)
+                std::string label,
+                const QuotientWorkingSetPlan &working_set)
                 : context_(context),
                   trace_(trace),
                   challenges_(challenges),
@@ -6534,97 +6738,29 @@ namespace gatzk::protocol
                 }
                 if (use_file_backed_coset_storage())
                 {
-                    const auto memory_budget =
-                        quotient_coset_memory_budget();
-
-                    coset_host_total_bytes_ =
-                        memory_budget.total_bytes;
-
-                    coset_host_available_at_start_bytes_ =
-                        memory_budget.available_bytes;
-
-                    coset_host_reserve_bytes_ =
-                        memory_budget.reserve_bytes;
-
-                    in_memory_coset_budget_bytes_ =
-                        memory_budget.budget_bytes;
-
-                    // Large CUDA t_edge already carries several GiB of
-                    // transform scratch plus the CUDA NTT workspace on UMA.
-                    // Do not consume the full generic 24 GiB coset allowance:
-                    // leave headroom for transform staging and kernel/page-cache
-                    // activity while retaining a bounded hot coset set.
-                    if (label_ == "t_edge" &&
-                        target_size_ >= (std::size_t{1} << 25) &&
-                        util::route2_options().cuda_field_hotspots)
+                    const auto one_coset = coset_byte_count(target_size_, label_);
+                    if (!working_set.enabled || working_set.target_size != target_size_ ||
+                        working_set.writers == 0 || working_set.arena_bytes < one_coset)
                     {
-                        constexpr std::size_t
-                            kCudaTedgeWorkspaceReserveBytes =
-                                std::size_t{6} << 30;
-
-                        in_memory_coset_budget_bytes_ =
-                            in_memory_coset_budget_bytes_ >
-                                    kCudaTedgeWorkspaceReserveBytes
-                                ? in_memory_coset_budget_bytes_ -
-                                      kCudaTedgeWorkspaceReserveBytes
-                                : 0;
-
-                        progress_note(
-                            "prove:quotient:t_edge:"
-                            "cuda_host_coset_budget_bytes=" +
-                            std::to_string(
-                                in_memory_coset_budget_bytes_) +
-                            ":cuda_workspace_reserve_bytes=" +
-                            std::to_string(
-                                kCudaTedgeWorkspaceReserveBytes));
+                        throw std::runtime_error("missing or inconsistent quotient working-set plan: " + label_);
                     }
 
-                    constexpr std::size_t
-                        kMaximumQuotientSpillArenaBytes =
-                            std::size_t{128} << 30;
+                    coset_host_total_bytes_ = working_set.total_bytes;
+                    coset_host_available_at_start_bytes_ = working_set.available_bytes;
+                    coset_host_reserve_bytes_ = working_set.reserve_bytes;
+                    in_memory_coset_budget_bytes_ = working_set.hot_cache_bytes;
+                    maximum_materialization_workers_ = working_set.writers;
 
-                    const auto geometry_bytes =
-                        coset_byte_count(
-                            target_size_,
-                            label_);
-                    const auto triple_geometry_bytes =
-                        geometry_bytes >
-                                std::numeric_limits<std::size_t>::max() / 3
-                            ? std::numeric_limits<std::size_t>::max()
-                            : geometry_bytes * 3;
-                    std::size_t transient_bytes =
-                        triple_geometry_bytes;
-                    if (label_ == "t_edge" &&
-                        target_size_ >= (std::size_t{1} << 25) &&
-                        util::route2_options().cuda_field_hotspots)
-                    {
-                        constexpr std::size_t
-                            kCudaTedgeWorkspaceReserveBytes =
-                                std::size_t{6} << 30;
-                        transient_bytes =
-                            transient_bytes >
-                                    std::numeric_limits<std::size_t>::max() -
-                                        kCudaTedgeWorkspaceReserveBytes
-                                ? std::numeric_limits<std::size_t>::max()
-                                : transient_bytes +
-                                      kCudaTedgeWorkspaceReserveBytes;
-                    }
+                    spill_arena_ = std::make_shared<QuotientCosetSpillArena>(
+                        working_set.arena_bytes, working_set.transient_bytes,
+                        working_set.geometry_bytes, working_set.reserve_bytes);
 
-                    const auto spill_admission =
-                        util::admit_effective_memory(
-                            util::cached_effective_memory_snapshot(),
-                            transient_bytes,
-                            geometry_bytes,
-                            memory_budget.reserve_bytes,
-                            1,
-                            kMaximumQuotientSpillArenaBytes);
-
-                    spill_arena_ =
-                        std::make_shared<
-                            QuotientCosetSpillArena>(
-                            spill_admission.budget_bytes,
-                            transient_bytes,
-                            geometry_bytes);
+                    progress_note(
+                        "prove:quotient:" + label_ + ":working_set:admitted_bytes=" +
+                        std::to_string(working_set.admitted_bytes) +
+                        ":hot_cache_bytes=" + std::to_string(working_set.hot_cache_bytes) +
+                        ":arena_bytes=" + std::to_string(working_set.arena_bytes) +
+                        ":writers=" + std::to_string(working_set.writers));
                 }
             }
 
@@ -9518,8 +9654,19 @@ namespace gatzk::protocol
                             const auto evaluation_block_count =
                                 (target_size_ + evaluation_block_size - 1) / evaluation_block_size;
 
-                            const auto discard_set =
-                                file_backed_coset_discard_set();
+                            auto discard_set = file_backed_coset_discard_set();
+                            std::unordered_set<const QuotientCosetValues *> discard_owners;
+                            discard_owners.reserve(discard_set.size() + t_n_public_source_expected_cosets.size());
+                            for (const auto &values : discard_set)
+                                discard_owners.insert(values.get());
+                            for (const auto &[_, values] : t_n_public_source_expected_cosets)
+                            {
+                                if (values != nullptr && values->file_backed() &&
+                                    discard_owners.insert(values.get()).second)
+                                {
+                                    discard_set.push_back(values);
+                                }
+                            }
 
                             // file_backed_coset_count_ is a cumulative execution counter.
                             // A file-backed value may have been created and released before
@@ -9816,15 +9963,30 @@ namespace gatzk::protocol
                     progress_note("prove:quotient:t_N:coefficients:start");
                 }
 
-                const auto coefficient_start =
-                    Clock::now();
+                const auto coefficient_start = Clock::now();
 
-                std::vector<FieldElement>
-                    coefficients;
+                // Every evaluation worker has joined. The next phase consumes
+                // only quotient_values (or CUDA t_edge coefficients), not the
+                // dependency cosets. Preserve the output and resident result.
+                fh_coset_slots_ = {};
+                fast_coset_lookup_.clear();
+                edge_access_sequence_.clear();
+                t_n_public_source_expected_cosets.clear();
+                {
+                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+                    coset_cache_.clear();
+                    coset_aliases_.clear();
+                }
+                semantic_coset_group_by_label_.clear();
+                semantic_coset_groups_.clear();
+                semantic_coset_points_.reset();
+                std::vector<FieldElement>().swap(semantic_coset_zero_cycle_);
+                std::vector<mcl::Fr>().swap(shift_powers_);
+                spill_arena_.reset();
+                in_memory_coset_bytes_.store(0, std::memory_order_relaxed);
 
-                std::shared_ptr<
-                    const algebra::
-                        CudaResidentCoefficientBuffer>
+                std::vector<FieldElement> coefficients;
+                std::shared_ptr<const algebra::CudaResidentCoefficientBuffer>
                     cuda_generic_resident_coefficients;
 
                 if (cuda_t_edge_route)
@@ -10031,7 +10193,7 @@ namespace gatzk::protocol
 
             bool use_file_backed_coset_storage() const
             {
-                return (label_ == "t_edge" || label_ == "t_FH") && target_size_ >= (1ULL << 17);
+                return target_size_ >= (std::size_t{1} << 17);
             }
 
             std::size_t coset_byte_count(
@@ -11078,6 +11240,9 @@ namespace gatzk::protocol
                                 cpu_count,
                                 worker_cap),
                             wave.size());
+
+                    if (use_file_backed_coset_storage())
+                        worker_count = std::min(worker_count, maximum_materialization_workers_);
 
                     if (use_file_backed_coset_storage() && coset_host_available_at_start_bytes_ != 0)
                     {
@@ -12406,6 +12571,7 @@ namespace gatzk::protocol
                 coset_host_available_at_start_bytes_ = 0;
             std::size_t coset_host_reserve_bytes_ = 0;
             std::size_t in_memory_coset_budget_bytes_ = 0;
+            std::size_t maximum_materialization_workers_ = 1;
             std::atomic<std::size_t> in_memory_coset_bytes_{0};
             std::atomic<std::size_t> file_backed_coset_count_{0};
             std::atomic<std::size_t> file_backed_coset_bytes_{0};
@@ -12479,11 +12645,17 @@ namespace gatzk::protocol
             {
                 const auto start = Clock::now();
                 progress_note("prove:quotient:" + label + ":start");
+                const auto domain = quotient_domain(context, label);
+                const auto multiplier = quotient_coset_multiplier(label);
+                if (domain == nullptr || multiplier == 0 ||
+                    domain->size > std::numeric_limits<std::size_t>::max() / multiplier)
+                {
+                    throw std::runtime_error("invalid quotient working-set domain: " + label);
+                }
+                const ScopedQuotientWorkingSet working_set(
+                    domain->size * multiplier, util::route2_options().cuda_field_hotspots, label);
                 QuotientPolynomialMaterializer materializer(
-                    context,
-                    trace,
-                    challenges,
-                    label);
+                    context, trace, challenges, label, working_set.plan());
                 auto polynomial = materializer.materialize(context.kzg);
                 progress_note("prove:quotient:" + label + ":done");
                 if (auto *metric = quotient_metric(metrics, label); metric != nullptr)

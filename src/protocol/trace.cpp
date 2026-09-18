@@ -6615,13 +6615,13 @@ namespace gatzk::protocol
             const std::vector<FieldElement> &values,
             std::size_t valid_count)
         {
-            std::string bytes;
-            append_cache_string(&bytes, "zkgat:lookup-index:value");
+            (void)label;
+            TraceCacheDigest bytes;
+            append_cache_string(&bytes, "zkgat:lookup-index:value:semantic-v1");
             append_cache_string(&bytes, cache_namespace);
-            append_cache_string(&bytes, label);
             append_cache_u64(&bytes, valid_count);
             append_cache_field_vector(&bytes, values);
-            return "sha256:" + sha256_hex(bytes);
+            return "sha256:" + bytes.finish();
         }
 
         std::string pair_index_cache_key(
@@ -6629,17 +6629,17 @@ namespace gatzk::protocol
             const std::string &label,
             const std::vector<std::pair<FieldElement, FieldElement>> &values)
         {
-            std::string bytes;
-            append_cache_string(&bytes, "zkgat:lookup-index:pair");
+            (void)label;
+            TraceCacheDigest bytes;
+            append_cache_string(&bytes, "zkgat:lookup-index:pair:semantic-v1");
             append_cache_string(&bytes, cache_namespace);
-            append_cache_string(&bytes, label);
             append_cache_u64(&bytes, values.size());
             for (const auto &[left, right] : values)
             {
                 append_cache_field(&bytes, left);
                 append_cache_field(&bytes, right);
             }
-            return "sha256:" + sha256_hex(bytes);
+            return "sha256:" + bytes.finish();
         }
 
         std::string single_table_cache_key(
@@ -6648,13 +6648,13 @@ namespace gatzk::protocol
             const std::vector<FieldElement> &values,
             std::size_t domain_size)
         {
-            std::string bytes;
-            append_cache_string(&bytes, "zkgat:lookup-table:single");
+            (void)label;
+            TraceCacheDigest bytes;
+            append_cache_string(&bytes, "zkgat:lookup-table:single:semantic-v1");
             append_cache_string(&bytes, cache_namespace);
-            append_cache_string(&bytes, label);
             append_cache_u64(&bytes, domain_size);
             append_cache_field_vector(&bytes, values);
-            return "sha256:" + sha256_hex(bytes);
+            return "sha256:" + bytes.finish();
         }
 
         std::string pair_table_cache_key(
@@ -6743,10 +6743,10 @@ namespace gatzk::protocol
         std::string field_vector_payload_digest(
             const std::vector<FieldElement> &values)
         {
-            std::string bytes;
+            TraceCacheDigest bytes;
             append_cache_string(&bytes, "zkgat:lookup-table-payload:vector");
             append_cache_field_vector(&bytes, values);
-            return "sha256:" + sha256_hex(bytes);
+            return "sha256:" + bytes.finish();
         }
 
         std::shared_ptr<const std::unordered_map<std::uint64_t, std::size_t>> cached_value_index_map(
