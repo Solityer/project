@@ -6902,70 +6902,45 @@ namespace gatzk::protocol
             std::size_t domain_size)
         {
             static std::mutex cache_mutex;
-            static std::unordered_map<
-                std::string,
-                std::shared_ptr<CachedFieldVectorPayload>>
-                cache;
+            static std::unordered_map<std::string, std::shared_ptr<CachedFieldVectorPayload>> cache;
 
-            const auto cache_key = single_table_cache_key(
-                cache_namespace,
-                label,
-                values,
-                domain_size);
+            const auto cache_key = single_table_cache_key(cache_namespace, label, values, domain_size);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
                 const auto it = cache.find(cache_key);
-                if (it != cache.end() && it->second != nullptr &&
-                    it->second->identity == cache_key &&
-                    it->second->payload_digest ==
-                        field_vector_payload_digest(it->second->values))
-                {
-                    return std::shared_ptr<const std::vector<FieldElement>>(
-                        it->second,
-                        &it->second->values);
-                }
+                if (it != cache.end() && it->second != nullptr && it->second->identity == cache_key)
+                    return std::shared_ptr<const std::vector<FieldElement>>(it->second, &it->second->values);
                 if (it != cache.end())
                     cache.erase(it);
             }
+
             if (values.size() > domain_size)
-                throw std::runtime_error(
-                    "single lookup table rows exceed domain size");
+                throw std::runtime_error("single lookup table rows exceed domain size");
             auto packed = std::make_shared<CachedFieldVectorPayload>();
             packed->identity = cache_key;
             packed->values.assign(domain_size, FieldElement::zero());
             std::copy(values.begin(), values.end(), packed->values.begin());
             packed->payload_digest = field_vector_payload_digest(packed->values);
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                auto [it, inserted] = cache.emplace(cache_key, packed);
-                if (!inserted &&
-                    (it->second == nullptr ||
-                     it->second->identity != cache_key ||
-                     it->second->payload_digest !=
-                         field_vector_payload_digest(it->second->values)))
-                {
-                    it->second = std::move(packed);
-                }
-                return std::shared_ptr<const std::vector<FieldElement>>(
-                    it->second,
-                    &it->second->values);
-            }
+
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            auto [it, inserted] = cache.emplace(cache_key, packed);
+            if (!inserted && (it->second == nullptr || it->second->identity != cache_key))
+                it->second = packed;
+            return std::shared_ptr<const std::vector<FieldElement>>(it->second, &it->second->values);
         }
 
-        const std::vector<FieldElement> &cached_single_lookup_table(
+        std::shared_ptr<const std::vector<FieldElement>>
+        cached_single_lookup_table(
             std::string_view cache_namespace,
             const std::string &label,
             const std::vector<FieldElement> &values,
             std::size_t domain_size)
         {
-            return *cached_single_lookup_table_shared(
-                cache_namespace,
-                label,
-                values,
-                domain_size);
+            return cached_single_lookup_table_shared(cache_namespace, label, values, domain_size);
         }
 
-        const std::vector<FieldElement> &cached_pair_lookup_table(
+        std::shared_ptr<const std::vector<FieldElement>>
+        cached_pair_lookup_table(
             std::string_view cache_namespace,
             const std::string &label,
             const std::vector<std::pair<FieldElement, FieldElement>> &values,
@@ -6973,54 +6948,39 @@ namespace gatzk::protocol
             std::size_t domain_size)
         {
             static std::mutex cache_mutex;
-            static std::unordered_map<
-                std::string,
-                std::shared_ptr<CachedFieldVectorPayload>>
-                cache;
+            static std::unordered_map<std::string, std::weak_ptr<CachedFieldVectorPayload>> cache;
 
-            const auto cache_key = pair_table_cache_key(
-                cache_namespace,
-                label,
-                values,
-                eta,
-                domain_size);
+            const auto cache_key = pair_table_cache_key(cache_namespace, label, values, eta, domain_size);
             {
                 std::lock_guard<std::mutex> lock(cache_mutex);
                 const auto it = cache.find(cache_key);
-                if (it != cache.end() && it->second != nullptr &&
-                    it->second->identity == cache_key &&
-                    it->second->payload_digest ==
-                        field_vector_payload_digest(it->second->values))
-                {
-                    return it->second->values;
-                }
                 if (it != cache.end())
+                {
+                    const auto retained = it->second.lock();
+                    if (retained != nullptr && retained->identity == cache_key)
+                        return std::shared_ptr<const std::vector<FieldElement>>(retained, &retained->values);
                     cache.erase(it);
+                }
             }
+
             if (values.size() > domain_size)
-                throw std::runtime_error(
-                    "pair lookup table rows exceed domain size");
+                throw std::runtime_error("pair lookup table rows exceed domain size");
             auto packed = std::make_shared<CachedFieldVectorPayload>();
             packed->identity = cache_key;
             packed->values.assign(domain_size, FieldElement::zero());
             for (std::size_t i = 0; i < values.size(); ++i)
-            {
                 packed->values[i] = values[i].first + eta * values[i].second;
-            }
             packed->payload_digest = field_vector_payload_digest(packed->values);
+
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            if (const auto it = cache.find(cache_key); it != cache.end())
             {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                auto [it, inserted] = cache.emplace(cache_key, packed);
-                if (!inserted &&
-                    (it->second == nullptr ||
-                     it->second->identity != cache_key ||
-                     it->second->payload_digest !=
-                         field_vector_payload_digest(it->second->values)))
-                {
-                    it->second = std::move(packed);
-                }
-                return it->second->values;
+                const auto retained = it->second.lock();
+                if (retained != nullptr && retained->identity == cache_key)
+                    return std::shared_ptr<const std::vector<FieldElement>>(retained, &retained->values);
             }
+            cache[cache_key] = packed;
+            return std::shared_ptr<const std::vector<FieldElement>>(packed, &packed->values);
         }
 
         struct SingleLookupArtifacts
@@ -9047,20 +9007,14 @@ namespace gatzk::protocol
                 transcript.absorb_commitment("V_T_L_y", context.static_commitments.at("V_T_L_y").point);
                 const auto eta_l = transcript.challenge(challenge("eta_L_h"));
                 trace.challenges[challenge("eta_L_h")] = eta_l;
-                std::vector<FieldElement> table_l =
+                const auto table_l_storage =
                     cached_pair_lookup_table(cache_namespace, prefix + "L", context.tables.lrelu, eta_l, domains.edge->size);
+                const auto &table_l = *table_l_storage;
                 const auto lrelu_artifacts = cached_pair_lookup_artifacts(
                     [&]()
                     {
                         return build_pair_lookup_artifacts(
-                            *lrelu_index,
-                            s,
-                            z,
-                            eta_l,
-                            domains.edge->size,
-                            n_edges,
-                            prefix + "L",
-                            metrics);
+                            *lrelu_index, s, z, eta_l, domains.edge->size, n_edges, prefix + "L", metrics);
                     });
                 const auto &query_l = lrelu_artifacts->query;
                 const auto &m_l = lrelu_artifacts->multiplicity;
@@ -9068,30 +9022,16 @@ namespace gatzk::protocol
                     trace,
                     {
                         deferred_linear_column_spec(
-                            prefix + "Table_L",
-                            table_l,
-                            domains.edge,
+                            prefix + "Table_L", table_l_storage, domains.edge,
                             {
-                                linear_commitment_term(
-                                    context.public_commitments.at(
-                                        "P_T_L_x"),
-                                    FieldElement::one()),
-                                linear_commitment_term(
-                                    context.public_commitments.at(
-                                        "P_T_L_y"),
-                                    eta_l),
+                                linear_commitment_term(context.public_commitments.at("P_T_L_x"), FieldElement::one()),
+                                linear_commitment_term(context.public_commitments.at("P_T_L_y"), eta_l),
                             }),
                         deferred_linear_column_spec(
-                            prefix + "Query_L",
-                            query_l,
-                            domains.edge,
+                            prefix + "Query_L", query_l, domains.edge,
                             {
-                                linear_label_term(
-                                    prefix + "S",
-                                    FieldElement::one()),
-                                linear_label_term(
-                                    prefix + "Z",
-                                    eta_l),
+                                linear_label_term(prefix + "S", FieldElement::one()),
+                                linear_label_term(prefix + "Z", eta_l),
                             }),
                         column_spec(prefix + "m_L", m_l, domains.edge),
                     },
@@ -9141,25 +9081,21 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(prefix + "M_edge", trace.commitments.at(prefix + "M_edge").point);
                 transcript.absorb_commitment(prefix + "Delta", trace.commitments.at(prefix + "Delta").point);
                 transcript.absorb_commitment("V_T_range", context.static_commitments.at("V_T_range").point);
-                std::vector<FieldElement> table_r =
+                const auto table_r_storage =
                     cached_single_lookup_table(cache_namespace, prefix + "R", context.tables.range, domains.edge->size);
+                const auto &table_r = *table_r_storage;
                 const auto range_artifacts = cached_single_lookup_artifacts(
                     [&]()
                     {
                         return build_single_lookup_artifacts(
-                            *range_index,
-                            delta,
-                            domains.edge->size,
-                            n_edges,
-                            prefix + "R",
-                            metrics);
+                            *range_index, delta, domains.edge->size, n_edges, prefix + "R", metrics);
                     });
                 const auto &query_r = range_artifacts->query;
                 const auto &m_r = range_artifacts->multiplicity;
                 add_dynamic_commitment_batch(
                     trace,
                     {
-                        column_spec(prefix + "Table_R", table_r, domains.edge),
+                        column_spec(prefix + "Table_R", table_r_storage, domains.edge),
                         column_spec(prefix + "Query_R", query_r, domains.edge),
                         column_spec(prefix + "m_R", m_r, domains.edge),
                     },
@@ -9204,8 +9140,9 @@ namespace gatzk::protocol
                 transcript.absorb_commitment("V_T_exp_y", context.static_commitments.at("V_T_exp_y").point);
                 const auto eta_exp = transcript.challenge(challenge("eta_exp_h"));
                 trace.challenges[challenge("eta_exp_h")] = eta_exp;
-                std::vector<FieldElement> table_exp =
+                const auto table_exp_storage =
                     cached_pair_lookup_table(cache_namespace, prefix + "exp", context.tables.exp, eta_exp, domains.edge->size);
+                const auto &table_exp = *table_exp_storage;
                 const auto exp_artifacts = cached_pair_lookup_artifacts(
                     [&]()
                     {
@@ -9218,30 +9155,16 @@ namespace gatzk::protocol
                     trace,
                     {
                         deferred_linear_column_spec(
-                            prefix + "Table_exp",
-                            table_exp,
-                            domains.edge,
+                            prefix + "Table_exp", table_exp_storage, domains.edge,
                             {
-                                linear_commitment_term(
-                                    context.public_commitments.at(
-                                        "P_T_exp_x"),
-                                    FieldElement::one()),
-                                linear_commitment_term(
-                                    context.public_commitments.at(
-                                        "P_T_exp_y"),
-                                    eta_exp),
+                                linear_commitment_term(context.public_commitments.at("P_T_exp_x"), FieldElement::one()),
+                                linear_commitment_term(context.public_commitments.at("P_T_exp_y"), eta_exp),
                             }),
                         deferred_linear_column_spec(
-                            prefix + "Query_exp",
-                            query_exp,
-                            domains.edge,
+                            prefix + "Query_exp", query_exp, domains.edge,
                             {
-                                linear_label_term(
-                                    prefix + "Delta",
-                                    FieldElement::one()),
-                                linear_label_term(
-                                    prefix + "U",
-                                    eta_exp),
+                                linear_label_term(prefix + "Delta", FieldElement::one()),
+                                linear_label_term(prefix + "U", eta_exp),
                             }),
                         column_spec(prefix + "m_exp", m_exp, domains.edge),
                     },
@@ -9598,20 +9521,15 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(prefix + "H_agg_flat", trace.commitments.at(prefix + "H_agg_flat").point);
                 const auto eta_elu = transcript.challenge(challenge("eta_ELU_h"));
                 trace.challenges[challenge("eta_ELU_h")] = eta_elu;
-                std::vector<FieldElement> table_elu =
+                const auto table_elu_storage =
                     cached_pair_lookup_table(cache_namespace, prefix + "ELU", context.tables.elu, eta_elu, domains.edge->size);
+                const auto &table_elu = *table_elu_storage;
                 const auto elu_artifacts = cached_pair_lookup_artifacts(
                     [&]()
                     {
                         return build_pair_lookup_artifacts(
-                            *elu_index,
-                            elu_in_flat,
-                            agg_flat,
-                            eta_elu,
-                            domains.edge->size,
-                            n_nodes * head_dim,
-                            prefix + "ELU",
-                            metrics);
+                            *elu_index, elu_in_flat, agg_flat, eta_elu,
+                            domains.edge->size, n_nodes * head_dim, prefix + "ELU", metrics);
                     });
                 const auto &query_elu = elu_artifacts->query;
                 const auto &m_elu = elu_artifacts->multiplicity;
@@ -9619,30 +9537,16 @@ namespace gatzk::protocol
                     trace,
                     {
                         deferred_linear_column_spec(
-                            prefix + "Table_ELU",
-                            table_elu,
-                            domains.edge,
+                            prefix + "Table_ELU", table_elu_storage, domains.edge,
                             {
-                                linear_commitment_term(
-                                    context.public_commitments.at(
-                                        "P_T_ELU_x"),
-                                    FieldElement::one()),
-                                linear_commitment_term(
-                                    context.public_commitments.at(
-                                        "P_T_ELU_y"),
-                                    eta_elu),
+                                linear_commitment_term(context.public_commitments.at("P_T_ELU_x"), FieldElement::one()),
+                                linear_commitment_term(context.public_commitments.at("P_T_ELU_y"), eta_elu),
                             }),
                         deferred_linear_column_spec(
-                            prefix + "Query_ELU",
-                            query_elu,
-                            domains.edge,
+                            prefix + "Query_ELU", query_elu, domains.edge,
                             {
-                                linear_label_term(
-                                    prefix + "H_ELU_in_flat",
-                                    FieldElement::one()),
-                                linear_label_term(
-                                    prefix + "H_agg_flat",
-                                    eta_elu),
+                                linear_label_term(prefix + "H_ELU_in_flat", FieldElement::one()),
+                                linear_label_term(prefix + "H_agg_flat", eta_elu),
                             }),
                         column_spec(prefix + "m_ELU", m_elu, domains.edge),
                     },
@@ -10502,7 +10406,7 @@ namespace gatzk::protocol
                 auto commit_output_logup_round = [&](
                                                      const std::string &suffix,
                                                      const std::string &beta_name,
-                                                     const std::vector<FieldElement> &table,
+                                                     std::shared_ptr<const std::vector<FieldElement>> table_storage,
                                                      const std::vector<FieldElement> &query,
                                                      const std::vector<FieldElement> &multiplicity,
                                                      const std::vector<FieldElement> &q_table,
@@ -10511,21 +10415,19 @@ namespace gatzk::protocol
                                                      std::vector<DynamicCommitmentLinearTerm> query_terms,
                                                      std::size_t active_count)
                 {
+                    if (table_storage == nullptr)
+                        throw std::runtime_error("output logup table storage is null: " + suffix);
+                    const auto &table = *table_storage;
+
                     auto table_spec = table_terms.empty()
-                                          ? column_spec(
-                                                prefix + "Table_" + suffix,
-                                                table,
-                                                domains.edge)
+                                          ? column_spec(prefix + "Table_" + suffix, table_storage, domains.edge)
                                           : deferred_linear_column_spec(
                                                 prefix + "Table_" + suffix,
-                                                table,
+                                                table_storage,
                                                 domains.edge,
                                                 std::move(table_terms));
                     auto query_spec = query_terms.empty()
-                                          ? column_spec(
-                                                prefix + "Query_" + suffix,
-                                                query,
-                                                domains.edge)
+                                          ? column_spec(prefix + "Query_" + suffix, query, domains.edge)
                                           : deferred_linear_column_spec(
                                                 prefix + "Query_" + suffix,
                                                 query,
@@ -10546,17 +10448,13 @@ namespace gatzk::protocol
                         const auto label = prefix + stem + suffix;
                         transcript.absorb_commitment(label, trace.commitments.at(label).point);
                     }
+
                     const auto beta = transcript.challenge(beta_name);
                     trace.challenges[beta_name] = beta;
                     auto inverses = profiled_logup_inverse(table, query, q_table, q_query, beta);
-                    auto accumulator =
-                        profiled_logup_accumulator(
-                            inverses.table,
-                            inverses.query,
-                            multiplicity,
-                            q_table,
-                            q_query,
-                            active_count);
+                    auto accumulator = profiled_logup_accumulator(
+                        inverses.table, inverses.query, multiplicity,
+                        q_table, q_query, active_count);
                     add_dynamic_commitment_batch(
                         trace,
                         {
@@ -10582,7 +10480,7 @@ namespace gatzk::protocol
                 const auto eta_l_out_name = output_challenge_name("eta_L_out", head_index);
                 const auto eta_l_out = transcript.challenge(eta_l_out_name);
                 trace.challenges[eta_l_out_name] = eta_l_out;
-                const std::vector<FieldElement> out_table_l =
+                const auto out_table_l =
                     cached_pair_lookup_table(cache_namespace, prefix_base + "_L", context.tables.lrelu, eta_l_out, domains.edge->size);
                 const auto out_l_artifacts = cached_pair_lookup_artifacts(
                     [&]()
@@ -10638,7 +10536,7 @@ namespace gatzk::protocol
                 transcript.absorb_commitment(prefix + "M_edge", trace.commitments.at(prefix + "M_edge").point);
                 transcript.absorb_commitment(prefix + "Delta", trace.commitments.at(prefix + "Delta").point);
                 transcript.absorb_commitment("V_T_range", context.static_commitments.at("V_T_range").point);
-                const std::vector<FieldElement> out_table_r =
+                const auto out_table_r =
                     cached_single_lookup_table(cache_namespace, prefix_base + "_R", context.tables.range, domains.edge->size);
                 const auto out_r_artifacts = cached_single_lookup_artifacts(
                     [&]()
@@ -10670,7 +10568,7 @@ namespace gatzk::protocol
                 const auto eta_exp_out_name = output_challenge_name("eta_exp_out", head_index);
                 const auto eta_exp_out = transcript.challenge(eta_exp_out_name);
                 trace.challenges[eta_exp_out_name] = eta_exp_out;
-                const std::vector<FieldElement> out_table_exp =
+                const auto out_table_exp =
                     cached_pair_lookup_table(cache_namespace, prefix_base + "_exp", context.tables.exp, eta_exp_out, domains.edge->size);
                 const auto out_exp_artifacts = cached_pair_lookup_artifacts(
                     [&]()

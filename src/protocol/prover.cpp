@@ -387,32 +387,23 @@ namespace gatzk::protocol
             const std::string &name,
             const std::string &source_name)
         {
-            if (!full_graph_feature_identity_enabled(context))
-            {
-                throw std::runtime_error("public polynomial source reuse requires full feature identity: " + name);
-            }
             const auto polynomial_it = context.public_polynomials.find(source_name);
-            if (polynomial_it == context.public_polynomials.end())
-            {
-                throw std::runtime_error("missing public polynomial source for reuse: " + source_name);
-            }
             const auto commitment_it = context.public_commitments.find(source_name);
-            if (commitment_it == context.public_commitments.end())
-            {
-                throw std::runtime_error("missing public commitment source for reuse: " + source_name);
-            }
+            if (polynomial_it == context.public_polynomials.end() || commitment_it == context.public_commitments.end())
+                throw std::runtime_error("missing public polynomial source for reuse: " + source_name);
             if (commitment_it->second.opening_polynomial == nullptr)
-            {
                 throw std::runtime_error("public commitment source is missing opening material: " + source_name);
-            }
+
             const auto &source_polynomial = polynomial_it->second;
             const auto &source_material = *commitment_it->second.opening_polynomial;
             const bool same_shared_material =
-                source_polynomial.shared_data != nullptr && source_material.shared_data != nullptr && source_polynomial.shared_data.get() == source_material.shared_data.get() && source_polynomial.basis == source_material.basis && same_polynomial_domain(source_polynomial.domain, source_material.domain);
+                source_polynomial.shared_data != nullptr && source_material.shared_data != nullptr &&
+                source_polynomial.shared_data.get() == source_material.shared_data.get() &&
+                source_polynomial.basis == source_material.basis &&
+                same_polynomial_domain(source_polynomial.domain, source_material.domain);
             if (!same_shared_material && !same_polynomial_material(source_material, source_polynomial))
-            {
                 throw std::runtime_error("public commitment source material mismatch: " + name + " -> " + source_name);
-            }
+
             progress_note("context:public_reuse:" + name + "<-" + source_name + ":start");
             auto reused_polynomial = source_polynomial;
             reused_polynomial.name = name;
@@ -492,6 +483,35 @@ namespace gatzk::protocol
             progress_note("context:static:" + name + ":start");
             context.static_commitments[name] = crypto::KZG::commit(name, polynomial, context.kzg);
             progress_note("context:static:" + name + ":done");
+        }
+
+        void add_static_commitment_from_public_material_checked(
+            ProtocolContext &context,
+            const std::string &name,
+            const std::string &source_name)
+        {
+            const auto polynomial_it = context.public_polynomials.find(source_name);
+            const auto commitment_it = context.public_commitments.find(source_name);
+            if (polynomial_it == context.public_polynomials.end() || commitment_it == context.public_commitments.end())
+                throw std::runtime_error("missing public commitment source for static reuse: " + source_name);
+            if (commitment_it->second.opening_polynomial == nullptr)
+                throw std::runtime_error("public commitment source is missing opening material for static reuse: " + source_name);
+
+            const auto &source_polynomial = polynomial_it->second;
+            const auto &source_material = *commitment_it->second.opening_polynomial;
+            const bool same_shared_material =
+                source_polynomial.shared_data != nullptr && source_material.shared_data != nullptr &&
+                source_polynomial.shared_data.get() == source_material.shared_data.get() &&
+                source_polynomial.basis == source_material.basis &&
+                same_polynomial_domain(source_polynomial.domain, source_material.domain);
+            if (!same_shared_material && !same_polynomial_material(source_material, source_polynomial))
+                throw std::runtime_error("public/static commitment source material mismatch: " + name + " <- " + source_name);
+
+            progress_note("context:static_reuse:" + name + "<-" + source_name + ":start");
+            auto commitment = commitment_it->second;
+            commitment.name = name;
+            context.static_commitments[name] = std::move(commitment);
+            progress_note("context:static_reuse:" + name + "<-" + source_name + ":done");
         }
 
         std::vector<FieldElement> padded(const std::vector<FieldElement> &values, std::size_t size)
@@ -12657,6 +12677,16 @@ namespace gatzk::protocol
                 QuotientPolynomialMaterializer materializer(
                     context, trace, challenges, label, working_set.plan());
                 auto polynomial = materializer.materialize(context.kzg);
+
+                if (label == "t_edge" && util::route2_options().cuda_field_hotspots &&
+                    domain->size >= (1ULL << 15))
+                {
+                    if (polynomial.cuda_resident_coefficients != nullptr &&
+                        polynomial.cuda_resident_coefficients->host_transfer != nullptr)
+                        polynomial.cuda_resident_coefficients->host_transfer->wait();
+                    algebra::release_cuda_ntt_execution_workspace();
+                }
+
                 progress_note("prove:quotient:" + label + ":done");
                 if (auto *metric = quotient_metric(metrics, label); metric != nullptr)
                 {
@@ -14639,11 +14669,11 @@ namespace gatzk::protocol
         add_public_poly(
             context,
             "P_Q_new_edge",
-            make_shared_eval_poly("P_Q_new_edge", q_new_edge, context.domains.edge));
+            make_shared_eval_poly("P_Q_new_edge", std::move(q_new_edge), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_end_edge",
-            make_shared_eval_poly("P_Q_end_edge", q_end_edge, context.domains.edge));
+            make_shared_eval_poly("P_Q_end_edge", std::move(q_end_edge), context.domains.edge));
         add_public_poly(
             context,
             "P_node_gid",
@@ -14658,19 +14688,19 @@ namespace gatzk::protocol
         add_public_poly(
             context,
             "P_Q_graph_new_edge",
-            make_shared_eval_poly("P_Q_graph_new_edge", q_graph_new_edge, context.domains.edge));
+            make_shared_eval_poly("P_Q_graph_new_edge", std::move(q_graph_new_edge), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_graph_end_edge",
-            make_shared_eval_poly("P_Q_graph_end_edge", q_graph_end_edge, context.domains.edge));
+            make_shared_eval_poly("P_Q_graph_end_edge", std::move(q_graph_end_edge), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_grp_new_edge",
-            make_shared_eval_poly("P_Q_grp_new_edge", q_grp_new_edge, context.domains.edge));
+            make_shared_eval_poly("P_Q_grp_new_edge", std::move(q_grp_new_edge), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_grp_end_edge",
-            make_shared_eval_poly("P_Q_grp_end_edge", q_grp_end_edge, context.domains.edge));
+            make_shared_eval_poly("P_Q_grp_end_edge", std::move(q_grp_end_edge), context.domains.edge));
         add_public_poly(
             context,
             "P_Q_edge_valid",
@@ -14719,24 +14749,21 @@ namespace gatzk::protocol
                     build_selector(context.local.num_nodes * layer.shape.head_dim, edge_size),
                     context.domains.edge));
         }
-        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
-        {
-            const auto label = "P_Q_div_out" + std::to_string(head_index);
-            add_public_poly(
-                context,
-                label,
-                make_shared_eval_poly(
-                    label,
-                    build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
-                    context.domains.edge));
-        }
+        if (context.model.output_layer.heads.empty())
+            throw std::runtime_error("output layer has no heads while building division selectors");
+
+        const std::string first_output_div_label = "P_Q_div_out0";
         add_public_poly(
             context,
-            "P_Q_div_avg",
+            first_output_div_label,
             make_shared_eval_poly(
-                "P_Q_div_avg",
+                first_output_div_label,
                 build_selector(context.local.num_nodes * context.local.num_classes, edge_size),
                 context.domains.edge));
+        for (std::size_t head_index = 1; head_index < context.model.output_layer.heads.size(); ++head_index)
+            add_public_poly_from_existing_material_checked(
+                context, "P_Q_div_out" + std::to_string(head_index), first_output_div_label);
+        add_public_poly_from_existing_material_checked(context, "P_Q_div_avg", first_output_div_label);
         add_public_poly(
             context,
             "P_Q_N",
@@ -14815,46 +14842,40 @@ namespace gatzk::protocol
                 "P_BiasIndex_edge", std::move(bias_index_edge), context.domains.edge));
         constexpr std::size_t kCoefficientTailBaseObservationCount = 3;
         const auto bias_basis_chunks = coefficient_chunk_layout(
-            context.local.num_classes + kCoefficientTailBaseObservationCount,
-            edge_size);
-        for (std::size_t head = 0;
-             head < context.model.output_layer.heads.size(); ++head)
+            context.local.num_classes + kCoefficientTailBaseObservationCount, edge_size);
+        for (const auto &chunk : bias_basis_chunks)
         {
-            for (const auto &chunk : bias_basis_chunks)
+            std::vector<FieldElement> active(edge_size, FieldElement::zero());
+            std::vector<FieldElement> semantic(edge_size, FieldElement::zero());
+            std::vector<FieldElement> gap(edge_size, FieldElement::zero());
+            std::vector<FieldElement> tail(edge_size, FieldElement::zero());
+            for (std::size_t row = 0; row < chunk.length; ++row)
             {
-                std::vector<FieldElement> active(
-                    edge_size, FieldElement::zero());
-                std::vector<FieldElement> semantic(
-                    edge_size, FieldElement::zero());
-                std::vector<FieldElement> gap(
-                    edge_size, FieldElement::zero());
-                std::vector<FieldElement> tail(
-                    edge_size, FieldElement::zero());
-                for (std::size_t row = 0; row < chunk.length; ++row)
-                {
-                    const auto global_index = chunk.offset + row;
-                    active[row] = FieldElement::one();
-                    if (global_index < context.local.num_classes)
-                        semantic[row] = FieldElement::one();
-                    else
-                        tail[row] = FieldElement::one();
-                }
-                for (const auto &[region, values] :
-                     std::vector<std::pair<std::string,
-                                           std::vector<FieldElement>>>{
-                         {"active", std::move(active)},
-                         {"semantic", std::move(semantic)},
-                         {"gap", std::move(gap)},
-                         {"tail", std::move(tail)}})
-                {
-                    const auto label =
-                        output_bias_basis_region_selector_label(
-                            head, chunk.chunk_index, region);
-                    add_public_poly(
-                        context, label,
-                        make_shared_eval_poly(
-                            label, values, context.domains.edge));
-                }
+                const auto global_index = chunk.offset + row;
+                active[row] = FieldElement::one();
+                if (global_index < context.local.num_classes)
+                    semantic[row] = FieldElement::one();
+                else
+                    tail[row] = FieldElement::one();
+            }
+
+            std::vector<std::pair<std::string, std::vector<FieldElement>>> regions{
+                {"active", std::move(active)},
+                {"semantic", std::move(semantic)},
+                {"gap", std::move(gap)},
+                {"tail", std::move(tail)},
+            };
+            for (auto &[region, values] : regions)
+            {
+                const auto base_label = output_bias_basis_region_selector_label(0, chunk.chunk_index, region);
+                add_public_poly(
+                    context, base_label,
+                    make_shared_eval_poly(base_label, std::move(values), context.domains.edge));
+                for (std::size_t head = 1; head < context.model.output_layer.heads.size(); ++head)
+                    add_public_poly_from_existing_material_checked(
+                        context,
+                        output_bias_basis_region_selector_label(head, chunk.chunk_index, region),
+                        base_label);
             }
         }
         if (lazy_fh_public_enabled(context))
@@ -14969,75 +14990,44 @@ namespace gatzk::protocol
                         context.domains.fh));
             }
         }
-        add_public_poly(
-            context,
-            "P_Q_qry_src",
-            make_shared_eval_poly("P_Q_qry_src", edge_valid, context.domains.edge));
-        add_public_poly(
-            context,
-            "P_Q_qry_dst",
-            make_shared_eval_poly("P_Q_qry_dst", edge_valid, context.domains.edge));
+        add_public_poly_from_existing_material_checked(context, "P_Q_qry_src", "P_Q_edge_valid");
+        add_public_poly_from_existing_material_checked(context, "P_Q_qry_dst", "P_Q_edge_valid");
         add_public_poly(
             context,
             "P_Q_tbl_L",
             make_shared_eval_poly("P_Q_tbl_L", build_selector(context.tables.lrelu.size(), edge_size), context.domains.edge));
-        add_public_poly(
-            context,
-            "P_Q_qry_L",
-            make_shared_eval_poly("P_Q_qry_L", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
+        add_public_poly_from_existing_material_checked(context, "P_Q_qry_L", "P_Q_edge_valid");
         add_public_poly(
             context,
             "P_Q_tbl_R",
             make_shared_eval_poly("P_Q_tbl_R", build_selector(context.tables.range.size(), edge_size), context.domains.edge));
-        add_public_poly(
-            context,
-            "P_Q_qry_R",
-            make_shared_eval_poly("P_Q_qry_R", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
+        add_public_poly_from_existing_material_checked(context, "P_Q_qry_R", "P_Q_edge_valid");
         add_public_poly(
             context,
             "P_Q_tbl_exp",
             make_shared_eval_poly("P_Q_tbl_exp", build_selector(context.tables.exp.size(), edge_size), context.domains.edge));
-        add_public_poly(
-            context,
-            "P_Q_qry_exp",
-            make_shared_eval_poly("P_Q_qry_exp", build_selector(context.local.edges.size(), edge_size), context.domains.edge));
+        add_public_poly_from_existing_material_checked(context, "P_Q_qry_exp", "P_Q_edge_valid");
         add_public_poly(
             context,
             "P_Q_tbl_ELU",
             make_shared_eval_poly("P_Q_tbl_ELU", build_selector(context.tables.elu.size(), edge_size), context.domains.edge));
         const auto &feature_matrix_for_h =
             !context.dataset.features.empty() ? context.dataset.features : context.local.features;
-        if (lazy_fh_public_enabled(context))
-        {
-            add_static_commitment(
-                context,
-                "V_T_H",
-                make_coeff_poly("V_T_H", algebra::flatten_matrix_coefficients(feature_matrix_for_h)));
-            add_public_poly(
-                context,
-                "P_T_H",
-                make_shared_eval_poly(
-                    "P_T_H",
-                    padded(algebra::flatten_matrix_coefficients(feature_matrix_for_h), fh_size),
-                    context.domains.fh));
-        }
-        else
-        {
-            add_static_commitment(
-                context,
-                "V_T_H",
-                make_coeff_poly("V_T_H", algebra::flatten_matrix_coefficients(feature_matrix_for_h)));
-            add_public_poly(
-                context,
-                "P_T_H",
-                make_shared_eval_poly(
-                    "P_T_H",
-                    padded(algebra::flatten_matrix_coefficients(feature_matrix_for_h), fh_size),
-                    context.domains.fh));
-        }
-
+        auto feature_coefficients = algebra::flatten_matrix_coefficients(feature_matrix_for_h);
+        auto feature_evaluations = padded(feature_coefficients, fh_size);
+        add_static_commitment(
+            context,
+            "V_T_H",
+            make_coeff_poly("V_T_H", std::move(feature_coefficients)));
+        add_public_poly(
+            context,
+            "P_T_H",
+            make_shared_eval_poly("P_T_H", std::move(feature_evaluations), context.domains.fh));
         if (full_graph_feature_identity_enabled(context))
         {
+            if (util::route2_options().cuda_field_hotspots && fh_size >= (1ULL << 22))
+                crypto::release_cuda_g1_msm_execution_workspace();
+
             cache_public_fh_coefficient_material(context, "P_T_H");
             cache_public_fh_coefficient_material(context, "P_Q_tbl_feat");
             cache_public_fh_coefficient_material(context, "P_Row_feat_tbl");
@@ -15059,10 +15049,10 @@ namespace gatzk::protocol
             l_x[i] = context.tables.lrelu[i].first;
             l_y[i] = context.tables.lrelu[i].second;
         }
-        add_public_poly(context, "P_T_L_x", make_shared_eval_poly("P_T_L_x", l_x, context.domains.edge));
-        add_public_poly(context, "P_T_L_y", make_shared_eval_poly("P_T_L_y", l_y, context.domains.edge));
-        add_static_commitment(context, "V_T_L_x", make_eval_poly("V_T_L_x", l_x, context.domains.edge));
-        add_static_commitment(context, "V_T_L_y", make_eval_poly("V_T_L_y", l_y, context.domains.edge));
+        add_public_poly(context, "P_T_L_x", make_shared_eval_poly("P_T_L_x", std::move(l_x), context.domains.edge));
+        add_public_poly(context, "P_T_L_y", make_shared_eval_poly("P_T_L_y", std::move(l_y), context.domains.edge));
+        add_static_commitment_from_public_material_checked(context, "V_T_L_x", "P_T_L_x");
+        add_static_commitment_from_public_material_checked(context, "V_T_L_y", "P_T_L_y");
 
         std::vector<FieldElement> elu_x(edge_size, FieldElement::zero());
         std::vector<FieldElement> elu_y(edge_size, FieldElement::zero());
@@ -15071,10 +15061,10 @@ namespace gatzk::protocol
             elu_x[i] = context.tables.elu[i].first;
             elu_y[i] = context.tables.elu[i].second;
         }
-        add_public_poly(context, "P_T_ELU_x", make_shared_eval_poly("P_T_ELU_x", elu_x, context.domains.edge));
-        add_public_poly(context, "P_T_ELU_y", make_shared_eval_poly("P_T_ELU_y", elu_y, context.domains.edge));
-        add_static_commitment(context, "V_T_ELU_x", make_eval_poly("V_T_ELU_x", elu_x, context.domains.edge));
-        add_static_commitment(context, "V_T_ELU_y", make_eval_poly("V_T_ELU_y", elu_y, context.domains.edge));
+        add_public_poly(context, "P_T_ELU_x", make_shared_eval_poly("P_T_ELU_x", std::move(elu_x), context.domains.edge));
+        add_public_poly(context, "P_T_ELU_y", make_shared_eval_poly("P_T_ELU_y", std::move(elu_y), context.domains.edge));
+        add_static_commitment_from_public_material_checked(context, "V_T_ELU_x", "P_T_ELU_x");
+        add_static_commitment_from_public_material_checked(context, "V_T_ELU_y", "P_T_ELU_y");
 
         std::vector<FieldElement> exp_x(edge_size, FieldElement::zero());
         std::vector<FieldElement> exp_y(edge_size, FieldElement::zero());
@@ -15083,18 +15073,14 @@ namespace gatzk::protocol
             exp_x[i] = context.tables.exp[i].first;
             exp_y[i] = context.tables.exp[i].second;
         }
-        add_public_poly(context, "P_T_exp_x", make_shared_eval_poly("P_T_exp_x", exp_x, context.domains.edge));
-        add_public_poly(context, "P_T_exp_y", make_shared_eval_poly("P_T_exp_y", exp_y, context.domains.edge));
-        add_static_commitment(context, "V_T_exp_x", make_eval_poly("V_T_exp_x", exp_x, context.domains.edge));
-        add_static_commitment(context, "V_T_exp_y", make_eval_poly("V_T_exp_y", exp_y, context.domains.edge));
-        add_public_poly(
-            context,
-            "P_T_range",
-            make_shared_eval_poly("P_T_range", padded(context.tables.range, edge_size), context.domains.edge));
-        add_static_commitment(
-            context,
-            "V_T_range",
-            make_eval_poly("V_T_range", padded(context.tables.range, edge_size), context.domains.edge));
+        add_public_poly(context, "P_T_exp_x", make_shared_eval_poly("P_T_exp_x", std::move(exp_x), context.domains.edge));
+        add_public_poly(context, "P_T_exp_y", make_shared_eval_poly("P_T_exp_y", std::move(exp_y), context.domains.edge));
+        add_static_commitment_from_public_material_checked(context, "V_T_exp_x", "P_T_exp_x");
+        add_static_commitment_from_public_material_checked(context, "V_T_exp_y", "P_T_exp_y");
+
+        auto range_values = padded(context.tables.range, edge_size);
+        add_public_poly(context, "P_T_range", make_shared_eval_poly("P_T_range", std::move(range_values), context.domains.edge));
+        add_static_commitment_from_public_material_checked(context, "V_T_range", "P_T_range");
 
         // 模型参数在 context 阶段就固定成静态承诺，后面的 trace 只引用标签，不再重复构造权重对象。
         for (std::size_t layer_index = 0;
