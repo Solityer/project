@@ -12697,11 +12697,7 @@ namespace gatzk::protocol
             const auto worker_count =
                 worker_count_for_labels();
 
-            const auto t_edge_it =
-                std::find(
-                    labels.begin(),
-                    labels.end(),
-                    "t_edge");
+            const auto t_edge_it = std::find(labels.begin(), labels.end(), "t_edge");
 
             const auto t_n_it =
                 std::find(
