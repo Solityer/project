@@ -14611,14 +14611,18 @@ namespace gatzk::protocol
             throw std::runtime_error(
                 "canonical static table validation failed: " + static_table_reason);
 
-        const auto edge_valid = build_selector(context.local.edges.size(), edge_size);
+        const auto edge_valid =
+            std::make_shared<const std::vector<FieldElement>>(
+                build_selector(
+                    context.local.edges.size(),
+                    edge_size));
 
-        const auto q_new_edge = q_new_selector(context.local.edges, edge_size);
-        const auto q_end_edge = q_end_selector(context.local.edges, edge_size);
-        const auto q_graph_new_edge = q_graph_new_selector(context.local.edges, edge_size);
-        const auto q_graph_end_edge = q_graph_end_selector(context.local.edges, edge_size);
-        const auto q_grp_new_edge = q_group_selector(q_graph_new_edge, q_new_edge);
-        const auto q_grp_end_edge = q_group_selector(q_graph_end_edge, q_end_edge);
+        auto q_new_edge = q_new_selector(context.local.edges, edge_size);
+        auto q_end_edge = q_end_selector(context.local.edges, edge_size);
+        auto q_graph_new_edge = q_graph_new_selector(context.local.edges, edge_size);
+        auto q_graph_end_edge = q_graph_end_selector(context.local.edges, edge_size);
+        auto q_grp_new_edge = q_group_selector(q_graph_new_edge, q_new_edge);
+        auto q_grp_end_edge = q_group_selector(q_graph_end_edge, q_end_edge);
 
         add_public_poly(
             context,
@@ -14670,7 +14674,10 @@ namespace gatzk::protocol
         add_public_poly(
             context,
             "P_Q_edge_valid",
-            make_shared_eval_poly("P_Q_edge_valid", edge_valid, context.domains.edge));
+            Polynomial::from_shared_evaluations(
+                "P_Q_edge_valid",
+                edge_valid,
+                context.domains.edge));
         // Each hidden layer owns its own valid selectors.  The selector
         // support is the layer's real shape; the surrounding work domain
         // may still be a shared power-of-two capacity.

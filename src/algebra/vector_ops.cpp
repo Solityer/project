@@ -973,8 +973,8 @@ namespace gatzk::algebra
                     size))
             {
                 throw std::runtime_error(
-                    "CUDA production INTT route "
-                    "was selected but not admitted");
+                    "CUDA production INTT route was selected but not admitted: size=" +
+                    std::to_string(size) + " batch_size=1");
             }
 
             return;
@@ -1013,8 +1013,8 @@ namespace gatzk::algebra
                     size))
             {
                 throw std::runtime_error(
-                    "CUDA production NTT route "
-                    "was selected but not admitted");
+                    "CUDA production NTT route was selected but not admitted: size=" +
+                    std::to_string(size) + " batch_size=1");
             }
 
             return;
@@ -1046,8 +1046,8 @@ namespace gatzk::algebra
                     size))
             {
                 throw std::runtime_error(
-                    "CUDA production paired NTT route "
-                    "was selected but not admitted");
+                    "CUDA production paired NTT route was selected but not admitted: size=" +
+                    std::to_string(size) + " batch_size=2");
             }
 
             return;
@@ -1427,6 +1427,10 @@ namespace gatzk::algebra
     }
 
     void release_cuda_ntt_workspace()
+    {
+    }
+
+    void release_cuda_ntt_execution_workspace()
     {
     }
 

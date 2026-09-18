@@ -5153,6 +5153,71 @@ namespace gatzk::algebra
             2,
             ntt::NTTDir::kForward);
     }
+    void release_cuda_ntt_execution_workspace()
+    {
+        auto &workspace = cuda_ntt_workspace();
+
+        int device = 0;
+        auto status = cudaGetDevice(&device);
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "execution workspace device lookup",
+                status);
+        }
+
+        if (workspace.device >= 0 &&
+            workspace.device != device)
+        {
+            throw std::runtime_error(
+                "CUDA NTT execution workspace belongs to another device");
+        }
+
+        if (workspace.stream != nullptr)
+        {
+            status = cudaStreamSynchronize(
+                workspace.stream);
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "execution workspace synchronization",
+                    status);
+            }
+            record_cuda_stream_sync();
+        }
+
+        workspace.release();
+
+        cudaMemPool_t pool = nullptr;
+        status = cudaDeviceGetDefaultMemPool(
+            &pool,
+            device);
+
+        if (status == cudaErrorNotSupported)
+        {
+            (void)cudaGetLastError();
+            return;
+        }
+        if (status != cudaSuccess)
+        {
+            throw_cuda_ntt_error(
+                "execution workspace memory-pool lookup",
+                status);
+        }
+        if (pool != nullptr)
+        {
+            status = cudaMemPoolTrimTo(
+                pool,
+                0);
+            if (status != cudaSuccess)
+            {
+                throw_cuda_ntt_error(
+                    "execution workspace memory-pool trim",
+                    status);
+            }
+        }
+    }
+
     void release_cuda_ntt_workspace()
     {
         cuda_ntt_workspace().release();
