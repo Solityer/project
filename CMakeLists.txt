@@ -286,3 +286,12 @@ add_executable(gatzk_srs_setup tools/srs/generate_srs.cpp)
 target_include_directories(gatzk_srs_setup PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(gatzk_srs_setup PRIVATE gatzkml)
 
+option(GATZK_BUILD_CORE_EXECUTION_REGRESSION "Build isolated core execution regression" OFF)
+if(GATZK_BUILD_CORE_EXECUTION_REGRESSION)
+    add_executable(gatzk_core_execution_regression EXCLUDE_FROM_ALL
+        tests/core_execution_regression.cpp)
+    target_link_libraries(gatzk_core_execution_regression PRIVATE gatzkml)
+    target_compile_definitions(gatzk_core_execution_regression PRIVATE
+        GATZK_EXECUTION_TEST_ROOT="${PROJECT_SOURCE_DIR}/tests/.core_execution")
+endif()
+

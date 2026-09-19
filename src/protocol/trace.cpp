@@ -269,6 +269,14 @@ namespace gatzk::protocol
                 configured_degree,
                 delta,
                 key);
+            if (shifted.cuda_resident_coefficients != nullptr)
+                throw std::runtime_error("unexpected resident Taylor coefficient owner");
+            if (shifted.shared_data == nullptr && shifted.data.size() >= 1024)
+            {
+                shifted.shared_data =
+                    std::make_shared<const std::vector<FieldElement>>(
+                        std::move(shifted.data));
+            }
 
             progress_note(
                 "trace:taylor_shift_commit:" +
@@ -365,11 +373,10 @@ namespace gatzk::protocol
             return out;
         }
 
-        Polynomial coeff_poly(const std::string &name, const std::vector<FieldElement> &values)
+        Polynomial coeff_poly(const std::string &name, std::vector<FieldElement> values)
         {
-            return Polynomial::from_coefficients(name, values);
+            return Polynomial::from_coefficients(name, std::move(values));
         }
-
         void add_metric(double *metric, const Clock::time_point &start)
         {
             if (metric != nullptr)
@@ -583,32 +590,59 @@ namespace gatzk::protocol
             return out;
         }
 
+        struct TraceWeightCache
+        {
+            std::mutex mutex;
+            std::size_t active_traces = 0;
+            std::unordered_map<std::string, std::shared_ptr<std::vector<mcl::Fr>>> values;
+        };
+
+        TraceWeightCache &trace_weight_cache()
+        {
+            static TraceWeightCache cache;
+            return cache;
+        }
+
+        class ScopedTraceWeightCache
+        {
+        public:
+            ScopedTraceWeightCache()
+            {
+                auto &cache = trace_weight_cache();
+                std::lock_guard<std::mutex> lock(cache.mutex);
+                if (cache.active_traces == std::numeric_limits<std::size_t>::max())
+                    throw std::runtime_error("trace weight-cache owner count overflow");
+                if (cache.active_traces == 0)
+                    cache.values.clear();
+                ++cache.active_traces;
+            }
+            ~ScopedTraceWeightCache()
+            {
+                auto &cache = trace_weight_cache();
+                std::lock_guard<std::mutex> lock(cache.mutex);
+                if (--cache.active_traces == 0)
+                    cache.values.clear();
+            }
+            ScopedTraceWeightCache(const ScopedTraceWeightCache &) = delete;
+            ScopedTraceWeightCache &operator=(const ScopedTraceWeightCache &) = delete;
+        };
+
         const std::vector<mcl::Fr> &cached_barycentric_weights_native(
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
             const FieldElement &point)
         {
-            static std::mutex cache_mutex;
-            static std::unordered_map<
-                std::string,
-                std::shared_ptr<std::vector<mcl::Fr>>>
-                cache;
-
-            const auto cache_key =
-                domain->name + ":" + std::to_string(domain->size) + ":" + point.to_string();
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                if (const auto it = cache.find(cache_key); it != cache.end())
-                {
-                    return *it->second;
-                }
-            }
-
-            auto weights = std::make_shared<std::vector<mcl::Fr>>(domain->barycentric_weights_native(point));
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                const auto [it, _] = cache.emplace(cache_key, weights);
-                return *it->second;
-            }
+            if (domain == nullptr)
+                throw std::runtime_error("trace weight cache requires a domain");
+            auto &cache = trace_weight_cache();
+            const auto key = domain->name + ":" + std::to_string(domain->size) + ":" +
+                             domain->omega.to_string() + ":" + point.to_string();
+            std::lock_guard<std::mutex> lock(cache.mutex);
+            const auto found = cache.values.find(key);
+            if (found != cache.values.end())
+                return *found->second;
+            auto weights = std::make_shared<std::vector<mcl::Fr>>(
+                domain->barycentric_weights_native(point));
+            return *cache.values.emplace(key, std::move(weights)).first->second;
         }
 
         std::vector<FieldElement> weighted_column_sum_native(
@@ -1068,6 +1102,8 @@ namespace gatzk::protocol
             {
                 return polynomial_it->second.evaluate(point);
             }
+            if (trace.spilled_coefficient_polynomials.contains(name))
+                return resolve_trace_coefficient_polynomial(trace, name)->evaluate(point);
             const auto spilled_it =
                 trace.spilled_polynomials.find(name);
             if (spilled_it == trace.spilled_polynomials.end())
@@ -2024,6 +2060,12 @@ namespace gatzk::protocol
                 out.matrix_export = *spec.matrix;
             }
             out.polynomial.emplace(coeff_poly(spec.name, algebra::flatten_matrix_coefficients(*spec.matrix)));
+            if (out.polynomial->shared_data == nullptr && out.polynomial->data.size() >= 1024)
+            {
+                out.polynomial->shared_data =
+                    std::make_shared<const std::vector<FieldElement>>(
+                        std::move(out.polynomial->data));
+            }
             attach_precomputed_commitment(&out, spec);
             out.materialization_ms = elapsed_ms(materialize_start, Clock::now());
             return out;
@@ -2153,18 +2195,19 @@ namespace gatzk::protocol
         }
 
         bool should_spill_dynamic_polynomial(
+            const TraceArtifacts &trace,
             const std::string &name,
             const algebra::Polynomial &polynomial,
             bool keep_trace_payloads)
         {
-            // A single 2^22 evaluation column is already 128 MiB. Retaining
-            // every edge/FH opening column makes whole-graph traces grow with
-            // the number of committed objects and can exceed host memory.
-            // File backing is execution-only: values, blinders, commitments,
-            // labels, and the canonical proof schema remain unchanged.
-            constexpr std::size_t kMinFileBackedValueCount = 1ULL << 20;
             (void)name;
-            return !keep_trace_payloads && polynomial.basis == algebra::PolynomialBasis::Evaluation && polynomial.domain != nullptr && polynomial.domain->size >= kMinFileBackedValueCount;
+            const auto minimum_size = trace.large_execution_working_set
+                                          ? (std::size_t{1} << 16)
+                                          : (std::size_t{1} << 20);
+            return !keep_trace_payloads &&
+                   polynomial.basis == algebra::PolynomialBasis::Evaluation &&
+                   polynomial.domain != nullptr &&
+                   polynomial.domain->size >= minimum_size;
         }
 
         using TraceSpillReservation =
@@ -2545,6 +2588,90 @@ namespace gatzk::protocol
             }
 
             return spilled;
+        }
+
+        void spill_completed_coefficient_polynomial(
+            TraceArtifacts &trace,
+            const std::string &name,
+            bool keep_trace_payloads)
+        {
+            if (keep_trace_payloads)
+                return;
+            auto found = trace.commitments.find(name);
+            if (found == trace.commitments.end())
+                throw std::runtime_error("coefficient spill has no commitment: " + name);
+            const auto material = found->second.opening_polynomial;
+            if (material == nullptr)
+            {
+                if (trace.spilled_coefficient_polynomials.contains(name))
+                    return;
+                throw std::runtime_error("coefficient spill has no material: " + name);
+            }
+            if (material->basis != algebra::PolynomialBasis::Coefficient ||
+                material->domain != nullptr || !material->zero_domain_blinder.empty() ||
+                material->cuda_resident_coefficients != nullptr)
+                throw std::runtime_error("coefficient spill received incompatible material: " + name);
+            if (material->size() < (std::size_t{1} << 20))
+                return;
+            if (trace.spilled_coefficient_polynomials.contains(name))
+                throw std::runtime_error("duplicate coefficient spill publication: " + name);
+
+            std::filesystem::path storage;
+            const auto &root = ensure_trace_spill_directory(trace, &storage);
+            const auto filename = "coefficient_" +
+                                  sha256_hex(name + ":" + std::to_string(material->size())) +
+                                  ".bin";
+            const auto path = root / filename;
+            const auto bytes = algebra::field_elements_binary_size(material->size());
+            TraceSpillReservation reservation(root, bytes, name);
+            try
+            {
+                auto stream = trace.spill_directory_lease->create_payload_stream(filename);
+                if (!stream || !*stream)
+                    throw std::runtime_error("cannot create coefficient spill: " + name);
+                algebra::write_field_elements_binary(
+                    *stream, std::span<const FieldElement>(
+                                 material->values().data(), material->size()));
+                stream->flush();
+                if (!*stream)
+                    throw std::runtime_error("cannot flush coefficient spill: " + name);
+            }
+            catch (...)
+            {
+                trace.spill_directory_lease->remove_payload(filename);
+                throw;
+            }
+            TraceArtifacts::SpilledCoefficientPolynomial descriptor{
+                .path = path.string(),
+                .size = material->size(),
+                .lease = trace.spill_directory_lease,
+            };
+            trace.spilled_coefficient_polynomials.emplace(name, std::move(descriptor));
+            trace.polynomial_domains[name] = "coef";
+            trace.polynomials.erase(name);
+            found->second.opening_polynomial.reset();
+            // Pi_bind keeps independent Commitment copies, all of which must
+            // release their execution-only owners after successful publication.
+            if (trace.pi_bind != nullptr)
+            {
+                for (auto &subproof : trace.pi_bind->subproofs)
+                {
+                    for (auto *group : {
+                             &subproof.view_commitments,
+                             &subproof.view_logup_commitments,
+                             &subproof.aggregation_commitments,
+                             &subproof.basis_commitments,
+                             &subproof.crpc_commitments,
+                             &subproof.relation_commitments})
+                    {
+                        for (auto &entry : *group)
+                            if (entry.first == name)
+                                entry.second.opening_polynomial.reset();
+                    }
+                }
+            }
+            progress_note("trace:coefficient_spill:" + name +
+                          ":values=" + std::to_string(material->size()));
         }
 
         void detach_retained_aggregate_column_owner(
@@ -3387,7 +3514,7 @@ namespace gatzk::protocol
                     {
                         trace.polynomial_domains[item.name] = (*item.polynomial).domain->name;
                     }
-                    if (should_spill_dynamic_polynomial(item.name, *item.polynomial, keep_trace_payloads))
+                    if (should_spill_dynamic_polynomial(trace, item.name, *item.polynomial, keep_trace_payloads))
                     {
                         trace.spilled_polynomials[item.name] =
                             spill_evaluation_polynomial(
@@ -7249,6 +7376,11 @@ namespace gatzk::protocol
             const auto initial_forward_ms = metrics != nullptr ? metrics->forward_ms : 0.0;
             const auto initial_commit_dynamic_ms = metrics != nullptr ? metrics->commit_dynamic_ms : 0.0;
             TraceArtifacts trace;
+            trace.large_execution_working_set =
+                (context.domains.edge != nullptr &&
+                 context.domains.edge->size >= (std::size_t{1} << 22)) ||
+                (context.domains.fh != nullptr &&
+                 context.domains.fh->size >= (std::size_t{1} << 25));
             trace.compiler_artifact = context.compiler_artifact;
             trace.evaluation_commitment_cache =
                 std::make_shared<crypto::EvaluationCommitmentCache>();
@@ -11516,6 +11648,7 @@ namespace gatzk::protocol
                          &route.node_accumulator_object,
                          &route.edge_accumulator_object})
                     append_aggregation_commitment(subproof, *object);
+                route_trace.reset();
 
                 const auto edge_accumulator =
                     trace_commitment_with_opening_material(
@@ -11567,14 +11700,26 @@ namespace gatzk::protocol
                     materialize_blinded_coefficients(
                         *node_accumulator,
                         relation_degree);
-                const auto shifted_coefficients =
-                    materialize_blinded_coefficients(
-                        *shifted.opening_polynomial, relation_degree);
-                for (std::size_t coefficient = 0;
-                     coefficient < relation_coefficients.size();
-                     ++coefficient)
-                    relation_coefficients[coefficient] -=
-                        shifted_coefficients[coefficient];
+                if (shifted.opening_polynomial == nullptr ||
+                    shifted.opening_polynomial->basis != algebra::PolynomialBasis::Coefficient ||
+                    !shifted.opening_polynomial->zero_domain_blinder.empty() ||
+                    shifted.opening_polynomial->size() > relation_coefficients.size())
+                    throw std::runtime_error("invalid shifted route coefficient material");
+                const auto &shifted_coefficients = shifted.opening_polynomial->values();
+                const auto minus_one = FieldElement::zero() - FieldElement::one();
+                if (!algebra::try_cuda_scaled_accumulate_native(
+                        FieldElement::mutable_native_array_data(relation_coefficients.data()),
+                        FieldElement::native_array_data(shifted_coefficients.data()),
+                        minus_one.native(), shifted_coefficients.size()))
+                {
+                    parallel_for_ranges(
+                        shifted_coefficients.size(), std::size_t{1} << 15,
+                        [&](std::size_t begin, std::size_t end)
+                        {
+                            for (std::size_t i = begin; i < end; ++i)
+                                relation_coefficients[i] -= shifted_coefficients[i];
+                        });
+                }
                 auto relation_polynomial = std::make_shared<Polynomial>(
                     Polynomial::from_coefficients(
                         route.relation_virtual_object,
@@ -11609,6 +11754,11 @@ namespace gatzk::protocol
                             { return reference.object_id == group_id; }))
                         subproof.opening_references.push_back({group_id});
                 }
+                persist_completed_trace_coefficient(
+                    trace, route.shifted_accumulator_object, keep_trace_payloads);
+                persist_completed_trace_coefficient(
+                    trace, route.relation_virtual_object, keep_trace_payloads);
+                shifted.opening_polynomial.reset();
             };
             const auto build_route_terminal_relation = [&](
                                                            BindingSubproof &subproof,
@@ -11706,14 +11856,26 @@ namespace gatzk::protocol
                     materialize_blinded_coefficients(
                         *node_accumulator,
                         relation_degree);
-                const auto shifted_coefficients =
-                    materialize_blinded_coefficients(
-                        *shifted.opening_polynomial, relation_degree);
-                for (std::size_t coefficient = 0;
-                     coefficient < relation_coefficients.size();
-                     ++coefficient)
-                    relation_coefficients[coefficient] -=
-                        shifted_coefficients[coefficient];
+                if (shifted.opening_polynomial == nullptr ||
+                    shifted.opening_polynomial->basis != algebra::PolynomialBasis::Coefficient ||
+                    !shifted.opening_polynomial->zero_domain_blinder.empty() ||
+                    shifted.opening_polynomial->size() > relation_coefficients.size())
+                    throw std::runtime_error("invalid shifted route coefficient material");
+                const auto &shifted_coefficients = shifted.opening_polynomial->values();
+                const auto minus_one = FieldElement::zero() - FieldElement::one();
+                if (!algebra::try_cuda_scaled_accumulate_native(
+                        FieldElement::mutable_native_array_data(relation_coefficients.data()),
+                        FieldElement::native_array_data(shifted_coefficients.data()),
+                        minus_one.native(), shifted_coefficients.size()))
+                {
+                    parallel_for_ranges(
+                        shifted_coefficients.size(), std::size_t{1} << 15,
+                        [&](std::size_t begin, std::size_t end)
+                        {
+                            for (std::size_t i = begin; i < end; ++i)
+                                relation_coefficients[i] -= shifted_coefficients[i];
+                        });
+                }
                 auto relation_polynomial = std::make_shared<Polynomial>(
                     Polynomial::from_coefficients(
                         relation.relation_virtual_object,
@@ -11748,6 +11910,11 @@ namespace gatzk::protocol
                             { return reference.object_id == group_id; }))
                         subproof.opening_references.push_back({group_id});
                 }
+                persist_completed_trace_coefficient(
+                    trace, relation.shifted_accumulator_object, keep_trace_payloads);
+                persist_completed_trace_coefficient(
+                    trace, relation.relation_virtual_object, keep_trace_payloads);
+                shifted.opening_polynomial.reset();
             };
             const auto soundness_domain =
                 [&](const std::string &name)
@@ -13456,21 +13623,80 @@ namespace gatzk::protocol
     }
 
     // trace 总入口：当前正式路径只接受已校验的多层多头模型。
+    void persist_completed_trace_coefficient(
+        TraceArtifacts &trace,
+        const std::string &label,
+        bool keep_trace_payloads)
+    {
+        spill_completed_coefficient_polynomial(trace, label, keep_trace_payloads);
+    }
+
+    std::shared_ptr<const algebra::Polynomial> resolve_trace_coefficient_polynomial(
+        const TraceArtifacts &trace,
+        const std::string &label)
+    {
+        const auto commitment = trace.commitments.find(label);
+        if (commitment == trace.commitments.end())
+            throw std::runtime_error("coefficient resolver has no commitment: " + label);
+        if (commitment->second.opening_polynomial != nullptr)
+        {
+            const auto &material = commitment->second.opening_polynomial;
+            if (material->basis != algebra::PolynomialBasis::Coefficient ||
+                !material->zero_domain_blinder.empty())
+                throw std::runtime_error("coefficient resolver received another basis: " + label);
+            return material;
+        }
+        const auto found = trace.spilled_coefficient_polynomials.find(label);
+        const auto domain = trace.polynomial_domains.find(label);
+        if (found == trace.spilled_coefficient_polynomials.end() ||
+            domain == trace.polynomial_domains.end() || domain->second != "coef")
+            throw std::runtime_error("coefficient spill registration is missing: " + label);
+        const auto &spilled = found->second;
+        if (spilled.lease == nullptr || spilled.size == 0)
+            throw std::runtime_error("coefficient spill descriptor is invalid: " + label);
+        const auto payload = spilled.lease->payload_name(spilled.path);
+        if (spilled.lease->payload_size(payload) !=
+            algebra::field_elements_binary_size(spilled.size))
+            throw std::runtime_error("coefficient spill length mismatch: " + label);
+        auto stream = spilled.lease->open_payload_stream(payload);
+        if (!stream || !*stream)
+            throw std::runtime_error("cannot open coefficient spill: " + label);
+        std::vector<algebra::FieldElement> values(spilled.size, algebra::FieldElement::zero());
+        algebra::read_field_elements_binary_into(
+            *stream, std::span<algebra::FieldElement>(values.data(), values.size()));
+        return std::make_shared<const algebra::Polynomial>(
+            algebra::Polynomial::from_coefficients(label, std::move(values)));
+    }
+
     TraceArtifacts build_trace(const ProtocolContext &context, RunMetrics *metrics)
     {
         if (context.verifier_shape_only)
             throw std::runtime_error(
                 "trace builder rejects verifier shape-only execution context");
-        // Context construction performs the first validation before it may
-        // redact the duplicated full-graph dataset views.  Revalidate at the
-        // formal trace boundary so callers that assemble or mutate a context
-        // directly cannot bypass the registered S_input semantics.
         data::validate_input_feature_views(
             context.dataset,
             context.local,
             context.config.quantization.s_input,
             context.config.input_preprocess_id);
-        return build_multihead_trace(context, metrics);
+        const ScopedTraceWeightCache weight_cache_scope;
+        algebra::release_taylor_shift_cache();
+        try
+        {
+            auto trace = build_multihead_trace(context, metrics);
+            algebra::release_taylor_shift_cache();
+            return trace;
+        }
+        catch (...)
+        {
+            try
+            {
+                algebra::release_taylor_shift_cache();
+            }
+            catch (...)
+            {
+            }
+            throw;
+        }
     }
 
 } // namespace gatzk::protocol

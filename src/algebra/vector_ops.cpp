@@ -99,6 +99,11 @@ namespace gatzk::algebra
         mcl::Fr *first,
         mcl::Fr *second,
         std::size_t size);
+
+    bool cuda_taylor_convolution_in_place_exact(
+        mcl::Fr *values,
+        const mcl::Fr *kernel_ntt,
+        std::size_t size);
 #endif
 
     namespace
@@ -1174,6 +1179,28 @@ namespace gatzk::algebra
         (void)values;
         (void)size;
         return false;
+#endif
+    }
+
+    bool try_cuda_taylor_convolution(
+        mcl::Fr *values,
+        const mcl::Fr *kernel_ntt,
+        std::size_t size)
+    {
+        if (!should_use_cuda_ntt(size))
+            return false;
+        if (values == nullptr || kernel_ntt == nullptr ||
+            values == kernel_ntt || size < 2 ||
+            (size & (size - 1U)) != 0U)
+            throw std::runtime_error("invalid CUDA Taylor convolution input");
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!cuda_taylor_convolution_in_place_exact(values, kernel_ntt, size))
+            throw std::runtime_error(
+                "selected CUDA Taylor convolution was not admitted: size=" +
+                std::to_string(size));
+        return true;
+#else
+        throw std::runtime_error("CUDA Taylor convolution selected in a CPU build");
 #endif
     }
 

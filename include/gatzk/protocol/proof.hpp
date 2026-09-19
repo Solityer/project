@@ -485,6 +485,18 @@ namespace gatzk::protocol
         // 多项式视图与可选落盘信息。
         std::unordered_map<std::string, algebra::Polynomial> polynomials;
         std::unordered_map<std::string, SpilledEvaluationPolynomial> spilled_polynomials;
+
+        // Execution-only backing. Coefficient vectors retain their full,
+        // publicly configured length; this descriptor is never serialized.
+        struct SpilledCoefficientPolynomial
+        {
+            std::string path;
+            std::size_t size = 0;
+            std::shared_ptr<const util::TraceSpillLease> lease;
+        };
+        std::unordered_map<std::string, SpilledCoefficientPolynomial>
+            spilled_coefficient_polynomials;
+        bool large_execution_working_set = false;
         // Monotonic proof-local token source for spilled descriptors that do
         // not carry a shared backing identity.  This is execution metadata
         // only: it deliberately owns no evaluation values and is never

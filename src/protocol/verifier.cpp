@@ -17,6 +17,7 @@
 
 #include "gatzk/algebra/domain_evaluation.hpp"
 #include "gatzk/algebra/eval_backend.hpp"
+#include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/data/loader.hpp"
 #include "gatzk/protocol/challenges.hpp"
 #include "gatzk/protocol/opening_registry.hpp"
@@ -1501,13 +1502,7 @@ namespace gatzk::protocol
             const std::vector<FieldElement> &coefficients,
             const FieldElement &point)
         {
-            FieldElement out = FieldElement::zero();
-            for (auto it = coefficients.rbegin(); it != coefficients.rend(); ++it)
-            {
-                out *= point;
-                out += *it;
-            }
-            return out;
+            return algebra::horner(coefficients, point);
         }
 
         bool verify_public_output_binding(const ProtocolContext &context, const Proof &proof)
@@ -1566,6 +1561,44 @@ namespace gatzk::protocol
             return lhs.relation_id == rhs.relation_id && lhs.object_kind == rhs.object_kind && lhs.layer_id == rhs.layer_id && lhs.head_id == rhs.head_id && lhs.source_objects == rhs.source_objects && lhs.target_objects == rhs.target_objects && lhs.work_domains == rhs.work_domains && lhs.real_lengths == rhs.real_lengths && lhs.quotient_relations == rhs.quotient_relations && lhs.canonical_matrices == rhs.canonical_matrices && lhs.aggregation_relations == rhs.aggregation_relations && lhs.route_terminal_relations == rhs.route_terminal_relations && indexed_equal && lhs.coefficient_basis_relations == rhs.coefficient_basis_relations && shift_equal;
         }
 
+        template <typename Check>
+        bool verify_independent_checks(std::size_t count, Check &&check)
+        {
+            if (count == 0)
+                return true;
+            const auto hardware = std::max(1U, std::thread::hardware_concurrency());
+            const auto workers = count < 8
+                                     ? std::size_t{1}
+                                     : std::min<std::size_t>({count, hardware, 16});
+            if (workers == 1)
+            {
+                bool accepted = true;
+                for (std::size_t index = 0; index < count; ++index)
+                    accepted = check(index) && accepted;
+                return accepted;
+            }
+            std::atomic<std::size_t> next{0};
+            std::atomic<bool> accepted{true};
+            std::vector<std::future<void>> futures;
+            futures.reserve(workers);
+            for (std::size_t worker = 0; worker < workers; ++worker)
+            {
+                futures.push_back(std::async(std::launch::async, [&]
+                                             {
+                    for (;;)
+                    {
+                        const auto index = next.fetch_add(1, std::memory_order_relaxed);
+                        if (index >= count)
+                            break;
+                        if (!check(index))
+                            accepted.store(false, std::memory_order_relaxed);
+                    } }));
+            }
+            for (auto &future : futures)
+                future.get();
+            return accepted.load(std::memory_order_relaxed);
+        }
+
         bool validate_pi_bind_model_reblinds(
             const ProtocolContext &context,
             const Proof &proof,
@@ -1579,6 +1612,14 @@ namespace gatzk::protocol
             if (proof.pi_bind.subproofs.size() != expected_meta.size())
                 return false;
 
+            struct PendingModelReblindCheck
+            {
+                const crypto::Commitment *proof_local;
+                const crypto::Commitment *anchor;
+                const crypto::Commitment *blinder;
+                const std::string *domain;
+            };
+            std::vector<PendingModelReblindCheck> pending_reblinds;
             std::unordered_set<std::string> model_object_ids;
             for (std::size_t subproof_index = 0;
                  subproof_index < expected_meta.size(); ++subproof_index)
@@ -1629,15 +1670,12 @@ namespace gatzk::protocol
                     {
                         return false;
                     }
-                    if (!crypto::KZG::verify_domain_divisibility(
-                            entry.proof_local_commitment,
-                            anchor_it->second,
-                            entry.blinder_commitment,
-                            expected_domain,
-                            context.kzg.vk))
-                    {
-                        return false;
-                    }
+                    pending_reblinds.push_back(PendingModelReblindCheck{
+                        .proof_local = &entry.proof_local_commitment,
+                        .anchor = &anchor_it->second,
+                        .blinder = &entry.blinder_commitment,
+                        .domain = &entry.domain,
+                    });
                     if (!combined->emplace(
                                      entry.proof_local_commitment.name,
                                      entry.proof_local_commitment)
@@ -2046,7 +2084,13 @@ namespace gatzk::protocol
                     }
                 }
             }
-            return true;
+            return verify_independent_checks(
+                pending_reblinds.size(), [&](std::size_t index)
+                {
+                    const auto &item = pending_reblinds[index];
+                    return crypto::KZG::verify_domain_divisibility(
+                        *item.proof_local, *item.anchor, *item.blinder,
+                        *item.domain, context.kzg.vk); });
         }
 
         bool verify_model_binding_relations(
@@ -2163,50 +2207,13 @@ namespace gatzk::protocol
                     return false;
                 }
             }
-            std::vector<std::uint8_t> results(checks.size(), 0);
-            auto verify_range = [&](std::size_t begin, std::size_t end)
-            {
-                for (std::size_t index = begin; index < end; ++index)
+            return verify_independent_checks(
+                checks.size(), [&](std::size_t index)
                 {
                     const auto &check = checks[index];
-                    results[index] = crypto::KZG::verify_domain_divisibility(
-                                         check.proof_local,
-                                         check.anchor,
-                                         check.blinder,
-                                         check.domain_name,
-                                         context.kzg.vk)
-                                         ? 1
-                                         : 0;
-                }
-            };
-            const auto cpu_count = std::max<std::size_t>(
-                1, std::thread::hardware_concurrency());
-            const auto worker_count = std::min(checks.size(), cpu_count);
-            if (worker_count <= 1)
-            {
-                verify_range(0, checks.size());
-            }
-            else
-            {
-                const auto chunk_size = (checks.size() + worker_count - 1) / worker_count;
-                std::vector<std::future<void>> futures;
-                futures.reserve(worker_count);
-                for (std::size_t worker = 0; worker < worker_count; ++worker)
-                {
-                    const auto begin = worker * chunk_size;
-                    const auto end = std::min(checks.size(), begin + chunk_size);
-                    if (begin >= end)
-                        break;
-                    futures.push_back(std::async(
-                        std::launch::async, verify_range, begin, end));
-                }
-                for (auto &future : futures)
-                    future.get();
-            }
-            return std::all_of(
-                results.begin(), results.end(),
-                [](std::uint8_t result)
-                { return result != 0; });
+                    return crypto::KZG::verify_domain_divisibility(
+                        check.proof_local, check.anchor, check.blinder,
+                        check.domain_name, context.kzg.vk); });
         }
 
         PublicMetadata build_public_metadata(const ProtocolContext &context)

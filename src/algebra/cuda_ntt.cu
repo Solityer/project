@@ -5135,6 +5135,129 @@ namespace gatzk::algebra
             ntt::NTTDir::kInverse);
     }
 
+    namespace
+    {
+        __global__ void taylor_pointwise_product_kernel(
+            GpuFr *values,
+            const GpuFr *kernel,
+            std::size_t count)
+        {
+            const auto index =
+                static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+            if (index < count)
+                values[index] = gpu::fr_mul(values[index], kernel[index]);
+        }
+    }
+
+    bool cuda_taylor_convolution_in_place_exact(
+        mcl::Fr *values,
+        const mcl::Fr *kernel_ntt,
+        std::size_t size)
+    {
+        if (values == nullptr || kernel_ntt == nullptr || values == kernel_ntt)
+            throw std::runtime_error("CUDA Taylor convolution has invalid host buffers");
+        if (size < 2 || (size & (size - 1U)) != 0U ||
+            size > kMaximumCudaStagedNttSize)
+            return false;
+
+        int device = 0;
+        auto status = cudaGetDevice(&device);
+        if (status != cudaSuccess)
+            throw_cuda_ntt_error("Taylor device lookup", status);
+        const auto bytes = checked_ntt_bytes(size, 1);
+        auto &workspace = cuda_ntt_workspace();
+        const auto prepare = [&]()
+        {
+            return admit_generic_ntt_workspace(size, 1, device, workspace, 0) &&
+                   workspace.ensure(bytes, device, false);
+        };
+        if (!prepare())
+        {
+            if (workspace.stream != nullptr)
+            {
+                if (workspace.device != device)
+                    throw std::runtime_error("Taylor workspace belongs to another device");
+                status = cudaStreamSynchronize(workspace.stream);
+                if (status != cudaSuccess)
+                    throw_cuda_ntt_error("Taylor workspace drain", status);
+                record_cuda_stream_sync();
+            }
+            workspace.release();
+            cudaMemPool_t pool = nullptr;
+            status = cudaDeviceGetDefaultMemPool(&pool, device);
+            if (status == cudaErrorNotSupported)
+                (void)cudaGetLastError();
+            else
+            {
+                if (status != cudaSuccess)
+                    throw_cuda_ntt_error("Taylor pool lookup", status);
+                status = cudaMemPoolTrimTo(pool, 0);
+                if (status != cudaSuccess)
+                    throw_cuda_ntt_error("Taylor pool trim", status);
+            }
+            if (!prepare())
+                return false;
+        }
+
+        const auto stream = workspace.stream;
+        auto *a = reinterpret_cast<mcl::Fr *>(workspace.input);
+        auto *b = reinterpret_cast<mcl::Fr *>(workspace.output);
+        const bool radix_two = size > kMaximumCudaNttSize &&
+                               size / kMaximumCudaNttSize == 2;
+        auto *frequency = radix_two ? a : b;
+        auto *other = frequency == a ? b : a;
+        auto *result = radix_two ? frequency : other;
+        try
+        {
+            status = cudaMemcpyAsync(a, values, bytes, cudaMemcpyHostToDevice, stream);
+            if (status != cudaSuccess)
+                throw_cuda_ntt_error("Taylor input upload", status);
+            record_cuda_h2d(bytes);
+            if (!run_bounded_ntt_device(
+                    a, frequency, size, 1, ntt::NTTDir::kForward,
+                    device, stream, b, a))
+                throw std::runtime_error("admitted Taylor forward NTT declined");
+
+            status = cudaMemcpyAsync(other, kernel_ntt, bytes, cudaMemcpyHostToDevice, stream);
+            if (status != cudaSuccess)
+                throw_cuda_ntt_error("Taylor kernel upload", status);
+            record_cuda_h2d(bytes);
+            constexpr unsigned block_size = 256;
+            const auto blocks = (size + block_size - 1) / block_size;
+            if (blocks > std::numeric_limits<unsigned>::max())
+                throw std::runtime_error("Taylor product launch size overflow");
+            taylor_pointwise_product_kernel<<<
+                static_cast<unsigned>(blocks), block_size, 0, stream>>>(
+                reinterpret_cast<GpuFr *>(frequency),
+                reinterpret_cast<const GpuFr *>(other), size);
+            status = cudaGetLastError();
+            if (status != cudaSuccess)
+                throw_cuda_ntt_error("Taylor pointwise product", status);
+            record_cuda_kernel_invocations(1);
+
+            // Reuse the consumed kernel buffer as inverse-transform scratch.
+            if (!run_bounded_ntt_device(
+                    frequency, result, size, 1, ntt::NTTDir::kInverse,
+                    device, stream, other, frequency))
+                throw std::runtime_error("admitted Taylor inverse NTT declined");
+            status = cudaMemcpyAsync(values, result, bytes, cudaMemcpyDeviceToHost, stream);
+            if (status != cudaSuccess)
+                throw_cuda_ntt_error("Taylor output download", status);
+            record_cuda_d2h(bytes);
+            status = cudaStreamSynchronize(stream);
+            if (status != cudaSuccess)
+                throw_cuda_ntt_error("Taylor completion", status);
+            record_cuda_stream_sync();
+            return true;
+        }
+        catch (...)
+        {
+            (void)cudaStreamSynchronize(stream);
+            workspace.release();
+            throw;
+        }
+    }
+
     bool cuda_ntt_pair_in_place_exact(
         mcl::Fr *first,
         mcl::Fr *second,

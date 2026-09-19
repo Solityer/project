@@ -3905,7 +3905,8 @@ namespace gatzk::crypto
             FoldedOpeningPlan *plan,
             const std::vector<FieldElement> &source,
             const FieldElement &scale,
-            std::size_t worker_cap)
+            std::size_t worker_cap,
+            bool source_is_ephemeral = false)
         {
             if (plan == nullptr)
             {
@@ -3968,7 +3969,8 @@ namespace gatzk::crypto
                         source_native,
                         scale.native(),
                         0,
-                        source.size());
+                        source.size(),
+                        source_is_ephemeral);
 
                 plan->coefficient_fold_pristine =
                     false;
@@ -5595,7 +5597,8 @@ namespace gatzk::crypto
                             &plan,
                             material->values(),
                             scale,
-                            worker_cap);
+                            worker_cap,
+                            commitments[i].opening_polynomial == nullptr);
                     }
 
                     for (std::size_t point_index = 0;
@@ -5635,7 +5638,9 @@ namespace gatzk::crypto
                     source_values,
                     scale,
                     commitments[i].name,
-                    worker_cap);
+                    worker_cap,
+                    0,
+                    commitments[i].opening_polynomial == nullptr);
 
                 if (!scale.is_zero() && material
                                             ->is_zero_domain_blinded())

@@ -145,6 +145,12 @@ namespace gatzk::algebra
     bool should_use_cuda_ntt_pair(
         std::size_t size);
 
+    // False only for an unselected route; selected CUDA failures throw.
+    bool try_cuda_taylor_convolution(
+        mcl::Fr *values,
+        const mcl::Fr *kernel_ntt,
+        std::size_t size);
+
     // Bounded multi-stage quotient-coset transform route.  This is distinct
     // from the generic paired-NTT route: it decomposes a target transform into
     // ICICLE-supported 2^24 subtransforms plus exact radix-2 combine kernels.

@@ -64,6 +64,7 @@
 #include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/proof_codec.hpp"
 #include "gatzk/protocol/schema.hpp"
+#include "gatzk/protocol/trace.hpp"
 #include "gatzk/util/logging.hpp"
 #include "gatzk/util/route2.hpp"
 #include "gatzk/protocol/verifier.hpp"
@@ -259,13 +260,7 @@ namespace gatzk::protocol
             const std::vector<FieldElement> &coefficients,
             const FieldElement &point)
         {
-            FieldElement out = FieldElement::zero();
-            for (auto it = coefficients.rbegin(); it != coefficients.rend(); ++it)
-            {
-                out *= point;
-                out += *it;
-            }
-            return out;
+            return algebra::horner(coefficients, point);
         }
 
         void attach_public_output_statement(
@@ -2462,6 +2457,10 @@ namespace gatzk::protocol
                 else if (trace_.polynomials.contains(name))
                 {
                     value = eval_polynomial(trace_.polynomials.at(name), point);
+                }
+                else if (trace_.spilled_coefficient_polynomials.contains(name))
+                {
+                    value = resolve_trace_coefficient_polynomial(trace_, name)->evaluate(point);
                 }
                 else if (trace_.spilled_polynomials.contains(name))
                 {
@@ -16322,23 +16321,21 @@ namespace gatzk::protocol
             return key;
         };
 
+        const bool has_file_backed_material =
+            !trace.spilled_polynomials.empty() ||
+            !trace.spilled_coefficient_polynomials.empty();
         const crypto::OpeningPolynomialResolver
             file_backed_opening_resolver =
                 [&](const Commitment &commitment)
             -> std::shared_ptr<const algebra::Polynomial>
         {
             if (commitment.opening_polynomial != nullptr)
-            {
                 return commitment.opening_polynomial;
-            }
-            const auto spilled_it =
-                trace.spilled_polynomials.find(
-                    commitment.name);
-            if (spilled_it == trace.spilled_polynomials.end())
-            {
+            if (trace.spilled_coefficient_polynomials.contains(commitment.name))
+                return resolve_trace_coefficient_polynomial(trace, commitment.name);
+            if (!trace.spilled_polynomials.contains(commitment.name))
                 throw std::runtime_error(
                     "file-backed opening material is missing: " + commitment.name);
-            }
             throw std::runtime_error(
                 "file-backed opening requires streamed semantic source: " +
                 commitment.name);
@@ -16445,8 +16442,9 @@ namespace gatzk::protocol
         {
             util::OpeningMemoryWorkset workset;
             bool overflow = false;
+            std::size_t coefficient_count = 0;
+            std::size_t loaded_coefficient_count = 0;
             std::unordered_set<std::string> folded_domains;
-
             const auto add_evaluation_group =
                 [&](const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
             {
@@ -16455,85 +16453,57 @@ namespace gatzk::protocol
                     overflow = true;
                     return;
                 }
-                const auto key = domain->name + ":" +
-                                 std::to_string(domain->size);
+                const auto key = domain->name + ":" + std::to_string(domain->size);
                 if (folded_domains.emplace(key).second)
                 {
-                    add_opening_element_bytes(
-                        domain->size,
-                        &workset.folded_bytes,
-                        &overflow);
-                    add_opening_element_bytes(
-                        domain->size,
-                        &workset.scratch_bytes,
-                        &overflow);
+                    add_opening_element_bytes(domain->size, &workset.folded_bytes, &overflow);
+                    add_opening_element_bytes(domain->size, &workset.scratch_bytes, &overflow);
                 }
             };
-
             for (const auto &claim : point_groups[index].claims)
             {
-                const auto &commitment =
-                    resolved_claim_commitment(
-                        claim);
-
+                const auto &commitment = resolved_claim_commitment(claim);
                 if (commitment.opening_polynomial != nullptr)
                 {
-                    const auto &polynomial =
-                        *commitment.opening_polynomial;
-
-                    if (polynomial.basis ==
-                        algebra::PolynomialBasis::Evaluation)
-                    {
-                        add_evaluation_group(
-                            polynomial.domain);
-                    }
-
-                    add_opening_element_bytes(
-                        polynomial.size(),
-                        &workset.source_bytes,
-                        &overflow);
-
+                    const auto &polynomial = *commitment.opening_polynomial;
+                    if (polynomial.basis == algebra::PolynomialBasis::Evaluation)
+                        add_evaluation_group(polynomial.domain);
+                    else
+                        coefficient_count = std::max(coefficient_count, polynomial.size());
+                    add_opening_element_bytes(polynomial.size(), &workset.source_bytes, &overflow);
                     continue;
                 }
-
-                const auto spilled_it =
-                    trace.spilled_polynomials.find(
-                        commitment.name);
-
-                if (spilled_it ==
-                    trace.spilled_polynomials.end())
+                if (const auto coefficient = trace.spilled_coefficient_polynomials.find(commitment.name);
+                    coefficient != trace.spilled_coefficient_polynomials.end())
                 {
+                    coefficient_count = std::max(coefficient_count, coefficient->second.size);
+                    loaded_coefficient_count = std::max(
+                        loaded_coefficient_count, coefficient->second.size);
                     continue;
                 }
-
-                const auto &spilled =
-                    spilled_it->second;
-
-                const auto domain =
-                    context_domain_by_name(
-                        context,
-                        spilled.domain_name);
-
-                add_evaluation_group(
-                    domain);
-
+                const auto spilled = trace.spilled_polynomials.find(commitment.name);
+                if (spilled == trace.spilled_polynomials.end())
+                    throw std::runtime_error("opening workset has no source: " + commitment.name);
+                add_evaluation_group(context_domain_by_name(context, spilled->second.domain_name));
                 add_opening_element_bytes(
-                    std::min(
-                        spilled_file_value_count(
-                            spilled),
-                        kOpeningStreamChunkValues),
-                    &workset.source_bytes,
-                    &overflow);
+                    std::min(spilled_file_value_count(spilled->second), kOpeningStreamChunkValues),
+                    &workset.source_bytes, &overflow);
             }
-
+            // One live loaded coefficient source, one coefficient fold and
+            // one quotient. GPU folding additionally has bounded staging.
+            add_opening_element_bytes(loaded_coefficient_count, &workset.source_bytes, &overflow);
+            add_opening_element_bytes(coefficient_count, &workset.folded_bytes, &overflow);
+            add_opening_element_bytes(coefficient_count, &workset.scratch_bytes, &overflow);
+            if (route2.cuda_field_hotspots)
+            {
+                add_opening_element_bytes(coefficient_count, &workset.scratch_bytes, &overflow);
+                add_opening_element_bytes(loaded_coefficient_count, &workset.scratch_bytes, &overflow);
+            }
             if (overflow)
             {
-                workset.folded_bytes =
-                    std::numeric_limits<std::size_t>::max();
-                workset.scratch_bytes =
-                    std::numeric_limits<std::size_t>::max();
-                workset.source_bytes =
-                    std::numeric_limits<std::size_t>::max();
+                workset.folded_bytes = std::numeric_limits<std::size_t>::max();
+                workset.scratch_bytes = std::numeric_limits<std::size_t>::max();
+                workset.source_bytes = std::numeric_limits<std::size_t>::max();
             }
             return workset;
         };
@@ -16542,36 +16512,24 @@ namespace gatzk::protocol
             [&](std::size_t index)
         {
             std::size_t total = 0;
-
-            for (const auto &claim :
-                 point_groups[index].claims)
+            for (const auto &claim : point_groups[index].claims)
             {
-                const auto &commitment =
-                    resolved_claim_commitment(
-                        claim);
-
-                if (commitment.opening_polynomial !=
-                    nullptr)
-                {
-                    total +=
-                        commitment
-                            .opening_polynomial
-                            ->size();
-                }
-                else if (
-                    const auto spilled_it =
-                        trace.spilled_polynomials
-                            .find(
-                                commitment.name);
-                    spilled_it !=
-                    trace.spilled_polynomials
-                        .end())
-                {
-                    total +=
-                        spilled_it->second.size;
-                }
+                const auto &commitment = resolved_claim_commitment(claim);
+                std::size_t count = 0;
+                if (commitment.opening_polynomial != nullptr)
+                    count = commitment.opening_polynomial->size();
+                else if (const auto found = trace.spilled_coefficient_polynomials.find(commitment.name);
+                         found != trace.spilled_coefficient_polynomials.end())
+                    count = found->second.size;
+                else if (const auto found = trace.spilled_polynomials.find(commitment.name);
+                         found != trace.spilled_polynomials.end())
+                    count = found->second.size;
+                else
+                    throw std::runtime_error("opening estimate has no material: " + commitment.name);
+                if (count > std::numeric_limits<std::size_t>::max() - total)
+                    return std::numeric_limits<std::size_t>::max();
+                total += count;
             }
-
             return total;
         };
 
@@ -16714,40 +16672,7 @@ namespace gatzk::protocol
                 return 0.0;
             const auto phase_start = Clock::now();
             auto work_order = indices;
-            const auto estimated_work =
-                [&](std::size_t index)
-            {
-                std::size_t total = 0;
-
-                for (const auto &claim :
-                     point_groups[index].claims)
-                {
-                    const auto &commitment =
-                        resolved_claim_commitment(
-                            claim);
-
-                    if (commitment.opening_polynomial !=
-                        nullptr)
-                    {
-                        total +=
-                            commitment
-                                .opening_polynomial
-                                ->size();
-                    }
-                    else if (
-                        const auto spilled_it =
-                            trace.spilled_polynomials.find(
-                                commitment.name);
-                        spilled_it !=
-                        trace.spilled_polynomials.end())
-                    {
-                        total +=
-                            spilled_it->second.size;
-                    }
-                }
-
-                return total;
-            };
+            const auto &estimated_work = estimate_point_group_work;
             std::stable_sort(
                 work_order.begin(), work_order.end(),
                 [&](std::size_t lhs, std::size_t rhs)
@@ -16787,12 +16712,9 @@ namespace gatzk::protocol
                                     resolved_claim_commitment(
                                         claim);
 
-                                return commitment
-                                               .opening_polynomial ==
-                                           nullptr &&
-                                       trace.spilled_polynomials
-                                           .contains(
-                                               commitment.name);
+                                return commitment.opening_polynomial == nullptr &&
+                                       (trace.spilled_polynomials.contains(commitment.name) ||
+                                        trace.spilled_coefficient_polynomials.contains(commitment.name));
                             });
                     });
 
@@ -16935,12 +16857,12 @@ namespace gatzk::protocol
                                 inner_worker_count != 0
                                     ? &execution_options
                                     : nullptr,
-                                trace.spilled_polynomials.empty()
-                                    ? nullptr
-                                    : &file_backed_opening_resolver,
-                                trace.spilled_polynomials.empty()
-                                    ? nullptr
-                                    : &file_backed_opening_semantic_source_resolver);
+                                has_file_backed_material
+                                    ? &file_backed_opening_resolver
+                                    : nullptr,
+                                has_file_backed_material
+                                    ? &file_backed_opening_semantic_source_resolver
+                                    : nullptr);
                         opening_results[group_index].profile.point_parallel_batches = 1;
                         opening_results[group_index].profile.point_parallel_workers =
                             worker_count;
@@ -17297,14 +17219,12 @@ namespace gatzk::protocol
                         context.kzg,
                         &pair_profiles,
                         &pair_execution_options,
-                        trace.spilled_polynomials
-                                .empty()
-                            ? nullptr
-                            : &file_backed_opening_resolver,
-                        trace.spilled_polynomials
-                                .empty()
-                            ? nullptr
-                            : &file_backed_opening_semantic_source_resolver);
+                        has_file_backed_material
+                            ? &file_backed_opening_resolver
+                            : nullptr,
+                        has_file_backed_material
+                            ? &file_backed_opening_semantic_source_resolver
+                            : nullptr);
 
             const auto pair_wall_ms =
                 elapsed_ms(

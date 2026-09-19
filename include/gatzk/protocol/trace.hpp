@@ -46,6 +46,15 @@ namespace gatzk::protocol
         const std::string &label,
         const std::shared_ptr<algebra::RootOfUnityDomain> &expected_domain);
 
+    std::shared_ptr<const algebra::Polynomial> resolve_trace_coefficient_polynomial(
+        const TraceArtifacts &trace,
+        const std::string &label);
+
+    void persist_completed_trace_coefficient(
+        TraceArtifacts &trace,
+        const std::string &label,
+        bool keep_trace_payloads);
+
     // 构建 proving 主链需要的全部动态 trace 对象。
     // 它会同时产出动态承诺顺序、opening 取值来源、外点值与 witness 标量，是 prove 的唯一上游。
     // 这里若改变标签顺序，不仅会影响 prover / verifier，还会连带改变 proof_size_bytes 的统计对象。

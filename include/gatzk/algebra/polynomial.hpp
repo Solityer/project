@@ -149,6 +149,9 @@ namespace gatzk::algebra
         std::size_t configured_degree,
         const FieldElement &delta);
 
+    // Execution-only cache; live callers retain their immutable shared owners.
+    void release_taylor_shift_cache();
+
     // 将矩阵按 formal 约定的行主序拍平成多项式系数列。
     std::vector<FieldElement> flatten_matrix_coefficients(const std::vector<std::vector<FieldElement>> &matrix);
 
