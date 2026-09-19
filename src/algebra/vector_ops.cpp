@@ -970,6 +970,14 @@ namespace gatzk::algebra
                 "INTT requires a non-null power-of-two field vector");
         }
 
+        // A one-point inverse transform is the identity.  mcl does not build
+        // an NTT plan for size 1, so handle the mathematically valid boundary
+        // before either the CUDA route selector or the CPU plan cache.
+        if (size == 1)
+        {
+            return;
+        }
+
         if (should_use_cuda_intt(
                 size))
         {
@@ -1010,6 +1018,13 @@ namespace gatzk::algebra
                 "NTT requires a non-null power-of-two field vector");
         }
 
+        // A one-point forward transform is the identity.  Do not request an
+        // mcl NTT plan (or a CUDA transform) for this degenerate valid domain.
+        if (size == 1)
+        {
+            return;
+        }
+
         if (should_use_cuda_ntt(
                 size))
         {
@@ -1030,7 +1045,6 @@ namespace gatzk::algebra
         ntt_plan(size)->ntt(
             values);
     }
-
     void ntt_pair_in_place(
         mcl::Fr *first,
         mcl::Fr *second,

@@ -133,6 +133,19 @@ namespace
 
     void test_taylor()
     {
+        {
+            std::vector<F> singleton{F(37)};
+            const auto original = singleton;
+            algebra::ntt_in_place(
+                F::mutable_native_array_data(singleton.data()),
+                singleton.size());
+            require(singleton == original, "size-one NTT identity");
+            algebra::intt_in_place(
+                F::mutable_native_array_data(singleton.data()),
+                singleton.size());
+            require(singleton == original, "size-one INTT identity");
+        }
+
         for (const auto degree : std::array<std::size_t, 10>{0, 1, 2, 8, 17, 33, 65, 129, 257, 300})
         {
             const auto a = sample(degree + 1);

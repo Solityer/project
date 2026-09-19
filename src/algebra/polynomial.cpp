@@ -1085,6 +1085,13 @@ namespace gatzk::algebra
         if (configured_degree > (std::numeric_limits<std::size_t>::max() - 1) / 2)
             throw std::runtime_error("Taylor-shift convolution length overflow");
 
+        // P(X + delta) == P(X) for a constant polynomial.  Avoid constructing
+        // factorial/kernel cache state or invoking a one-point transform.
+        if (configured_degree == 0)
+        {
+            return coefficients;
+        }
+
         const auto prepared = cached_taylor_shift_precompute(configured_degree, delta);
         const auto &factorial = prepared->factorials->factorial;
         const auto &inverse_factorial = prepared->factorials->inverse_factorial;
