@@ -381,61 +381,37 @@ def resource_identity(root: Path, dataset: str) -> Dict[str, Any]:
 def build_binary(root: Path, backend: str) -> Path:
     if backend not in BACKENDS:
         raise ChainError(f"unknown backend: {backend}")
-    candidates = (
-        root / "build" / backend / "gat_adapter" / "zkgpt_gat_prover",
-        root / "build" / "gat_adapter" / "zkgpt_gat_prover",
-        root / "cmake-build-release" / "gat_adapter" / "zkgpt_gat_prover",
-        root / "cmake-build-debug" / "gat_adapter" / "zkgpt_gat_prover",
-        root / "cmake-build-relwithdebinfo" / "gat_adapter" / "zkgpt_gat_prover",
-        root / "cmake-build-minsizerel" / "gat_adapter" / "zkgpt_gat_prover",
-    )
-    for candidate in candidates:
-        if candidate.exists():
-            require_regular(candidate, f"{backend} prover executable")
-            if not os.access(candidate, os.X_OK):
-                raise ChainError(f"{backend} prover executable is not executable: {candidate}")
-            return candidate
-    raise ChainError(f"missing {backend} prover executable; run ./build.sh --{backend}")
+    candidate = root / "build" / backend / "gat_adapter" / "zkgpt_gat_prover"
+    if candidate.exists():
+        require_regular(candidate, f"{backend} prover executable")
+        if not os.access(candidate, os.X_OK):
+            raise ChainError(f"{backend} prover executable is not executable: {candidate}")
+        return candidate
+    raise ChainError(f"missing source-matched {backend} prover executable; run ./build.sh --{backend}")
 
 
 def verifier_binary(root: Path, backend: str) -> Path:
     if backend not in BACKENDS:
         raise ChainError(f"unknown backend: {backend}")
-    candidates = (
-        root / "build" / backend / "gat_adapter" / "zkgpt_gat_verifier",
-        root / "build" / "gat_adapter" / "zkgpt_gat_verifier",
-        root / "cmake-build-release" / "gat_adapter" / "zkgpt_gat_verifier",
-        root / "cmake-build-debug" / "gat_adapter" / "zkgpt_gat_verifier",
-        root / "cmake-build-relwithdebinfo" / "gat_adapter" / "zkgpt_gat_verifier",
-        root / "cmake-build-minsizerel" / "gat_adapter" / "zkgpt_gat_verifier",
-    )
-    for candidate in candidates:
-        if candidate.exists():
-            require_regular(candidate, f"{backend} verifier executable")
-            if not os.access(candidate, os.X_OK):
-                raise ChainError(f"{backend} verifier executable is not executable: {candidate}")
-            return candidate
-    raise ChainError(f"missing {backend} independent verifier executable; run ./build.sh --{backend}")
+    candidate = root / "build" / backend / "gat_adapter" / "zkgpt_gat_verifier"
+    if candidate.exists():
+        require_regular(candidate, f"{backend} verifier executable")
+        if not os.access(candidate, os.X_OK):
+            raise ChainError(f"{backend} verifier executable is not executable: {candidate}")
+        return candidate
+    raise ChainError(f"missing source-matched {backend} independent verifier executable; run ./build.sh --{backend}")
 
 
 def smoke_binary(root: Path, backend: str = "cpu") -> Path:
     if backend != "cpu":
         raise ChainError("only the CPU formal smoke is supported")
-    candidates = (
-        root / "build" / "cpu-tests" / "tests" / "gat_adapter_smoke",
-        root / "build" / "cpu-tests" / "gat_adapter_smoke",
-        root / "build" / "tests" / "gat_adapter_smoke",
-        root / "build" / "gat_adapter_smoke",
-        root / "cmake-build-release" / "tests" / "gat_adapter_smoke",
-        root / "cmake-build-debug" / "tests" / "gat_adapter_smoke",
-    )
-    for candidate in candidates:
-        if candidate.exists():
-            require_regular(candidate, "CPU formal smoke executable")
-            if not os.access(candidate, os.X_OK):
-                raise ChainError(f"CPU formal smoke executable is not executable: {candidate}")
-            return candidate
-    raise ChainError("missing CPU formal smoke executable; build the cpu test target")
+    candidate = root / "build" / "cpu-tests" / "tests" / "gat_adapter_smoke"
+    if candidate.exists():
+        require_regular(candidate, "CPU formal smoke executable")
+        if not os.access(candidate, os.X_OK):
+            raise ChainError(f"CPU formal smoke executable is not executable: {candidate}")
+        return candidate
+    raise ChainError("missing source-matched CPU formal smoke executable; run ./build.sh --cpu")
 
 
 def binary_fingerprint(path: Path, description: str) -> Dict[str, Any]:

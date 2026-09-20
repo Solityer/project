@@ -28,6 +28,10 @@ CANONICAL_PRIVACY = "model_and_trace_hidden"
 CANONICAL_STATEMENT_MODE = "external"
 CANONICAL_OUTPUT_MODE = "public_logits"
 NATIVE_SECURITY_PROFILE_ID = "halo2-kzg-shplonk"
+# The repository's 516-byte k=1 test SRS is intentionally below this bound.
+# Full GAT circuits require a materially larger native Halo2 KZG parameter
+# file; provision_srs.py enforces the same floor before staging it.
+MIN_FORMAL_SRS_BYTES = 4096
 CANONICAL_CONTRACT_KEYS = {
     "schema_version",
     "baseline",
@@ -128,7 +132,13 @@ def require_formal_srs(path: Path, label: str = "trusted official ezkl SRS") -> 
     reject_forbidden_path(path, label)
     if path.name.lower().endswith((".dummy", ".placeholder")):
         abort(f"{label} is not an authentic SRS: {path}")
-    return require_file(path, label)
+    result = require_file(path, label)
+    if result.stat().st_size < MIN_FORMAL_SRS_BYTES:
+        abort(
+            f"{label} is too small for a full formal Halo2 KZG circuit: "
+            f"{result.stat().st_size} bytes (minimum {MIN_FORMAL_SRS_BYTES})"
+        )
+    return result
 
 
 def resource_manifest_hash() -> str:
@@ -332,11 +342,7 @@ def validate_config(config: Path, dataset: str) -> dict[str, str]:
         abort(f"{config} has no srs_path")
     srs = local_path(srs_path, "config srs_path")
     reject_forbidden_path(srs, "config srs_path")
-    if values.get("trusted_srs_sha256") == "REQUIRED_EXTERNAL_OFFICIAL_EZKL_SRS_SHA256":
-        # The command-line hash is checked later.  The marker makes the
-        # missing ceremony explicit without fabricating a digest in config.
-        pass
-    elif not HEX64.fullmatch(values.get("trusted_srs_sha256", "")):
+    if not HEX64.fullmatch(values.get("trusted_srs_sha256", "")):
         abort(f"{config} has an invalid trusted_srs_sha256")
     if values.get("ezkl_security_profile_id") != NATIVE_SECURITY_PROFILE_ID:
         abort(f"{config} must pin native ezkl security profile {NATIVE_SECURITY_PROFILE_ID}")

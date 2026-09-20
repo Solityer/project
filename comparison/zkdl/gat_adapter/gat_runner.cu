@@ -339,6 +339,41 @@ std::string sha256_text(const std::string& text) {
     return sha256_bytes(text.data(), text.size());
 }
 
+std::string json_quote_config(const std::string& value) {
+    std::string result;
+    result.reserve(value.size() + 2U);
+    result.push_back('"');
+    for (const unsigned char byte : value) {
+        if (byte == '"' || byte == '\\') {
+            result.push_back('\\');
+            result.push_back(static_cast<char>(byte));
+        } else if (byte == '\n') {
+            result += "\\n";
+        } else if (byte == '\r') {
+            result += "\\r";
+        } else if (byte == '\t') {
+            result += "\\t";
+        } else {
+            result.push_back(static_cast<char>(byte));
+        }
+    }
+    result.push_back('"');
+    return result;
+}
+
+std::string config_identity_digest(const std::map<std::string, std::string>& values) {
+    std::string canonical = "{";
+    bool first = true;
+    for (const auto& [key, value] : values) {
+        if (key == "verifier_registry_digest" || key == "model_blinder_sidecar_digest") continue;
+        if (!first) canonical.push_back(',');
+        first = false;
+        canonical += json_quote_config(key) + ":" + json_quote_config(value);
+    }
+    canonical.push_back('}');
+    return sha256_text(canonical);
+}
+
 std::string sha256_file(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) fail("cannot open for hashing " + path.string());
@@ -2191,7 +2226,11 @@ Config load_config(const std::filesystem::path& path) {
         positive(config.quantization.output_attention_dst.at(head), "s_a_dst_output");
         positive(config.quantization.output_bias.at(head), "s_b_output");
     }
-    config.config_digest = sha256_file(absolute);
+    // Registry and owner-only sidecar digests are written after the registry
+    // identity is fixed; use the same canonical config identity as the
+    // baseline-local resource admission scripts rather than a circular raw
+    // file digest.
+    config.config_digest = config_identity_digest(values);
     return config;
 }
 

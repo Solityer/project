@@ -896,6 +896,18 @@ bool load_authenticated_srs(const Config& config,
         set_error(error, "BLOCKED: canonical SRS manifest identity/encoding mismatch");
         return false;
     }
+    std::string trust_status, provenance_id, authority, setup_transcript;
+    if (!resource_field_string(manifest, "setup", "trust_status", trust_status) ||
+        trust_status != "external_ceremony" ||
+        !resource_field_string(manifest, "setup", "provenance_id", provenance_id) ||
+        provenance_id.empty() ||
+        !resource_field_string(manifest, "setup", "authority", authority) ||
+        authority.empty() ||
+        !resource_field_string(manifest, "setup", "transcript_sha256", setup_transcript) ||
+        !canonical_digest_text(setup_transcript)) {
+        set_error(error, "BLOCKED: SRS manifest is not bound to an external ceremony provenance");
+        return false;
+    }
     std::uint64_t manifest_version = 1U;
     bool ignored_version_presence = false;
     if (!optional_json_u64(manifest, "manifest_version", manifest_version, ignored_version_presence) ||
@@ -909,6 +921,12 @@ bool load_authenticated_srs(const Config& config,
     // would incorrectly treat those legitimate repetitions as duplicates.
     std::string manifest_generator, manifest_transcript, manifest_seed;
     bool has_transcript = false;
+    bool top_level_transcript = false;
+    if (!first_json_string(manifest, {"ceremony_transcript_sha256"},
+                           manifest_transcript, top_level_transcript)) {
+        set_error(error, "BLOCKED: SRS manifest ceremony transcript metadata is malformed");
+        return false;
+    }
     const bool legacy_layout = manifest.find("\"families\"") == std::string::npos &&
                                manifest.find("\"chunks\"") == std::string::npos &&
                                manifest.find("\"family_chunks\"") == std::string::npos;
@@ -928,6 +946,10 @@ bool load_authenticated_srs(const Config& config,
     }
     if (!manifest_transcript.empty() && !canonical_digest_text(manifest_transcript)) {
         set_error(error, "BLOCKED: SRS manifest ceremony transcript digest is not canonical");
+        return false;
+    }
+    if (setup_transcript != manifest_transcript) {
+        set_error(error, "BLOCKED: SRS manifest setup transcript differs from ceremony transcript");
         return false;
     }
     if (!manifest_seed.empty() && !canonical_digest_text(manifest_seed)) {

@@ -152,6 +152,19 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
         fail("SRS encoding is not GATZKG1C")
     if required_string(manifest, "srs_id", "SRS manifest") != srs_id:
         fail("SRS id mismatch")
+    # A local seed-derived manifest is useful only for development and must
+    # never enter the formal authenticated path.  The external ceremony
+    # marker is intentionally checked independently of frame digests.
+    setup = manifest.get("setup")
+    if not isinstance(setup, dict) or setup.get("trust_status") != "external_ceremony":
+        fail("SRS manifest is not marked external_ceremony")
+    for key in ("provenance_id", "authority", "transcript_sha256"):
+        if not isinstance(setup.get(key), str) or not setup[key]:
+            fail(f"SRS manifest setup lacks external provenance field {key}")
+    if not HEX64.fullmatch(setup["transcript_sha256"]):
+        fail("SRS manifest setup transcript_sha256 is not lowercase SHA-256")
+    if setup["transcript_sha256"] != manifest.get("ceremony_transcript_sha256"):
+        fail("SRS manifest setup transcript is not bound to ceremony_transcript_sha256")
     version = manifest.get("manifest_version", 1)
     if not isinstance(version, int) or version < 1:
         fail("SRS manifest_version is invalid")

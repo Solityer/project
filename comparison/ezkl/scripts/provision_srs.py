@@ -21,6 +21,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+# The checked-in 516-byte kzg1 test fixture is a k=1 parameter file and cannot
+# support any of the full GAT circuits.  Keep a conservative lower bound here
+# so a tiny test/placeholder file is rejected before it reaches setup.
+MIN_FORMAL_SRS_BYTES = 4096
 SRS_ROOT = ROOT / "resources" / "native_srs"
 MANIFEST = SRS_ROOT / "srs_manifest.json"
 
@@ -45,13 +49,21 @@ def reject_source(path: Path) -> Path:
         fail(f"source must not be under tests/assets: {path}")
     if not path.is_file():
         fail(f"source must be a regular file: {path}")
+    size = path.stat().st_size
+    if size < MIN_FORMAL_SRS_BYTES:
+        fail(
+            f"source is too small for a full formal Halo2 KZG SRS: {size} bytes "
+            f"(minimum {MIN_FORMAL_SRS_BYTES})"
+        )
     return path
 
 
-def reject_destination(path: Path) -> None:
+def reject_destination(path: Path, *, replace: bool) -> None:
     if path.is_symlink():
         fail(f"destination must not be a symlink: {path}")
-    if path.exists():
+    if path.exists() and not path.is_file():
+        fail(f"destination must be a regular file: {path}")
+    if path.exists() and not replace:
         fail(f"destination already exists; refusing overwrite: {path}")
 
 
@@ -88,11 +100,48 @@ def atomic_write(path: Path, value: dict[str, Any]) -> None:
             temporary_path.unlink()
 
 
+def update_config_digest(dataset: str, sha256_value: str) -> None:
+    """Bind the provisioned SRS digest into the dataset's formal config."""
+
+    config = ROOT / "resources" / "canonical" / "configs" / f"{dataset}_secure.cfg"
+    if config.is_symlink() or not config.is_file():
+        fail(f"canonical secure config is missing or symlinked: {config}")
+    lines = config.read_text().splitlines()
+    output: list[str] = []
+    seen = False
+    for raw in lines:
+        key = raw.split("#", 1)[0].strip().split("=", 1)[0].strip() if "=" in raw else ""
+        if key == "trusted_srs_sha256":
+            output.append(f"trusted_srs_sha256 = {sha256_value}")
+            seen = True
+        else:
+            output.append(raw)
+    if not seen:
+        fail(f"{config} has no trusted_srs_sha256 field")
+    temporary = config.with_name(f".{config.name}.tmp")
+    if temporary.exists() or temporary.is_symlink():
+        fail(f"temporary config path already exists: {temporary}")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write("\n".join(output) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, config)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--dataset", choices=DATASETS, required=True)
     result.add_argument("--source", required=True, help="operator-supplied authentic official ezkl SRS")
     result.add_argument("--sha256", required=True, help="expected lowercase SHA-256 of --source")
+    result.add_argument(
+        "--replace",
+        action="store_true",
+        help="replace an existing baseline-local SRS after authenticating the new source",
+    )
     return result
 
 
@@ -105,7 +154,9 @@ def main(args: argparse.Namespace) -> int:
         fail(f"source SHA-256 mismatch: expected {args.sha256}, got {actual}")
 
     destination = SRS_ROOT / f"{args.dataset}_formal_srs"
-    reject_destination(destination)
+    if source.resolve() == destination.resolve():
+        fail("source must be outside the baseline-local destination")
+    reject_destination(destination, replace=args.replace)
     SRS_ROOT.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.tmp")
     if temporary.exists() or temporary.is_symlink():
@@ -141,8 +192,10 @@ def main(args: argparse.Namespace) -> int:
     }
     manifest["entries"] = entries
     atomic_write(MANIFEST, manifest)
+    update_config_digest(args.dataset, actual)
     print(f"staged {args.dataset} official ezkl SRS: {destination.relative_to(ROOT)}")
     print(f"sha256={actual}")
+    print(f"size_bytes={destination.stat().st_size}")
     print(f"config: trusted_srs_sha256 = {actual}")
     print(f"config: srs_path = {destination.relative_to(ROOT).as_posix()}")
     print(f"runner: --srs {destination.relative_to(ROOT).as_posix()} --srs-sha256 {actual}")

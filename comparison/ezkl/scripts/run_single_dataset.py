@@ -260,6 +260,8 @@ def main(args: argparse.Namespace) -> int:
     trusted_srs_sha = require_digest(args.srs_sha256 or "", "--srs-sha256")
     if sha256(srs) != trusted_srs_sha:
         abort("trusted SRS SHA-256 does not match the selected SRS")
+    if values.get("trusted_srs_sha256") != trusted_srs_sha:
+        abort("canonical secure config trusted_srs_sha256 does not match the selected SRS")
 
     binary = ensure_relative_arg(args.binary, "binary")
     require_file(binary, "official ezkl binary")

@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 
-set -u
-set -o pipefail
+set -euo pipefail
 
-ROOT="/home/pzh/project/comparison/zkGPT"
-cd "$ROOT" || exit 1
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "$ROOT"
+
+if [[ -n "${PYTHON:-}" ]]; then
+    PYTHON_BIN="$PYTHON"
+else
+    PYTHON_BIN="$(command -v python3 || command -v python || true)"
+fi
+if [[ -z "${PYTHON_BIN}" ]]; then
+    echo "error: no current Python interpreter found (python3 or python)" >&2
+    exit 127
+fi
 
 mkdir -p "$ROOT/logs"
 
@@ -64,22 +73,33 @@ echo "===== formal execution ====="
 
 run_step \
     "prepare_resources" \
-    python3 scripts/prepare_resources.py --check \
+    "$PYTHON_BIN" scripts/prepare_resources.py --check \
     || exit $?
 
 run_step \
     "build_cpu" \
-    ./build.sh --cpu \
+    "$ROOT/build.sh" --cpu \
     || exit $?
 
 run_step \
     "formal_preflight_cpu" \
-    python3 scripts/formal_preflight.py --backend cpu \
+    "$PYTHON_BIN" scripts/formal_preflight.py --backend cpu \
     || exit $?
 
 run_step \
     "five_datasets_cpu" \
-    python3 scripts/run_five_datasets.py --backend cpu \
+    "$PYTHON_BIN" scripts/run_five_datasets.py --backend cpu \
+    || exit $?
+
+run_step \
+    "collect_results_cpu" \
+    "$PYTHON_BIN" scripts/collect_results.py --backends cpu \
+    || exit $?
+
+run_step \
+    "validate_final_results_cpu" \
+    "$PYTHON_BIN" scripts/validate_final_results.py \
+        --input results/collected_results.json --backends cpu \
     || exit $?
 
 echo

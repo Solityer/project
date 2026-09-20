@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -122,6 +123,84 @@ def source_for(local_rel: Path, source_root: Path) -> tuple[Path, str, str]:
     else:
         fail(f"unexpected canonical resource path: {local_rel}")
     return source, dataset, role
+
+
+def canonical_archive_key(logical_name: str) -> str:
+    """Return the baseline-local NPZ key for a logical tensor name.
+
+    The Rust loader intentionally keeps slash-separated logical names in the
+    checkpoint manifest and applies this exact encoding only at the NPZ
+    boundary.  Keep the Python resource gate aligned with that contract so a
+    stale underscore/slash alias cannot silently select a different tensor.
+    """
+
+    if not logical_name or "\x00" in logical_name or "\\" in logical_name:
+        fail(f"invalid logical tensor name: {logical_name!r}")
+    encoded = logical_name.replace("/", "__").replace(":", "__")
+    if not encoded or "/" in encoded or ":" in encoded:
+        fail(f"logical tensor name is not encodable: {logical_name!r}")
+    return encoded
+
+
+def validate_checkpoint_archive(root: Path, manifest_path: Path, checkpoint: dict[str, Any]) -> None:
+    """Check manifest logical names, archive keys, metadata and NPZ members."""
+
+    tensor_index = checkpoint.get("tensor_index")
+    if not isinstance(tensor_index, dict) or not tensor_index:
+        fail(f"checkpoint tensor_index is missing or empty: {manifest_path}")
+    expected: dict[str, dict[str, Any]] = {}
+    for logical_name, metadata in tensor_index.items():
+        if not isinstance(logical_name, str) or not isinstance(metadata, dict):
+            fail(f"invalid tensor_index metadata in {manifest_path}")
+        required = {"archive_key", "dtype", "shape"}
+        if set(metadata) != required:
+            fail(f"tensor metadata schema mismatch for {logical_name} in {manifest_path}")
+        archive_key = metadata["archive_key"]
+        if not isinstance(archive_key, str) or archive_key != canonical_archive_key(logical_name):
+            fail(
+                f"tensor archive key mismatch for {logical_name} in {manifest_path}: "
+                f"expected {canonical_archive_key(logical_name)!r}, got {archive_key!r}"
+            )
+        if archive_key in expected:
+            fail(f"tensor archive-key collision in {manifest_path}: {archive_key}")
+        if not isinstance(metadata["dtype"], str) or not metadata["dtype"]:
+            fail(f"tensor dtype is missing for {logical_name} in {manifest_path}")
+        shape = metadata["shape"]
+        if (
+            not isinstance(shape, list)
+            or not shape
+            or any(isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0 for dimension in shape)
+        ):
+            fail(f"tensor shape is invalid for {logical_name} in {manifest_path}")
+        expected[archive_key] = metadata
+
+    if checkpoint.get("tensor_count") != len(expected):
+        fail(
+            f"tensor_count mismatch in {manifest_path}: "
+            f"declared {checkpoint.get('tensor_count')}, indexed {len(expected)}"
+        )
+    archive_path = manifest_path.parent / "tensors.npz"
+    if not archive_path.is_file() or archive_path.is_symlink():
+        fail(f"checkpoint tensor archive is missing or symlinked: {archive_path}")
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            members = [name for name in archive.namelist() if not name.endswith("/")]
+    except (OSError, zipfile.BadZipFile) as exc:
+        fail(f"invalid checkpoint tensor archive {archive_path}: {exc}")
+    actual = set()
+    for member in members:
+        if not member.endswith(".npy") or "/" in member[:-4]:
+            fail(f"unexpected NPZ member in {archive_path}: {member}")
+        key = member[:-4]
+        if key in actual:
+            fail(f"duplicate NPZ member in {archive_path}: {member}")
+        actual.add(key)
+    expected_keys = set(expected)
+    if actual != expected_keys:
+        fail(
+            f"checkpoint archive/manifest mismatch in {archive_path}: "
+            f"missing={sorted(expected_keys - actual)}, extra={sorted(actual - expected_keys)}"
+        )
 
 
 def source_snapshot(source_root: Path) -> dict[str, Any]:
@@ -233,6 +312,10 @@ def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool)
             prefix = checkpoint_manifest.get("checkpoint_prefix")
             if prefix != "best_model.pt":
                 fail(f"checkpoint_prefix is not bundle-local in {path_text}")
+            expected_dataset = CHECKPOINT_DATASETS.get(Path(path_text).parts[3])
+            if checkpoint_manifest.get("dataset") != expected_dataset:
+                fail(f"checkpoint dataset identity mismatch in {path_text}")
+            validate_checkpoint_archive(root, local, checkpoint_manifest)
         if verify_source:
             source = Path(entry["source_path"])
             if not source.is_file():

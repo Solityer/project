@@ -242,10 +242,6 @@ def validate_cell(path: Path) -> dict[str, Any]:
     if public_output_values(public_output, dataset=dataset) != statement_document["public_ezkl"]["y"]:
         abort(f"{path} public output Y disagrees element-by-element with statement")
     validate_proof_instances(result, proof)
-    proof_document = load_json(proof, "verifier-facing proof")
-    proof_flat = [value for column in proof_document["instances"] for value in column]
-    if proof_flat != statement_document["native_instances"]:
-        abort(f"{path} proof native instances disagree element-by-element with statement")
     artifact_manifest = path_from_result(result["artifact_manifest_path"], "artifact identity manifest")
     artifact = validate_artifact_identity(
         artifact_manifest,

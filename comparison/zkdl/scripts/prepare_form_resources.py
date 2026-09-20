@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Create baseline-local zkDL formal resources from an explicit ceremony input.
+"""Create baseline-local zkDL formal resources from explicit inputs.
 
-This tool is intentionally fail-closed.  A seed is never inferred from the
-repository and is never described as a public trusted ceremony: the supplied
-transcript must bind its SHA-256.  The default mode materializes the small Cora
-resource set only; the other datasets receive deterministic plan manifests
-until ``--full-dataset`` is explicitly requested.
+This tool is intentionally fail-closed.  The formal path accepts only an
+authenticated external GATZKG1C ceremony SRS.  Static tables, integer ledgers,
+model registries, and owner-only blinder sidecars are generated locally from
+the baseline's existing model/resource logic; the owner blinder seed is a
+separate explicit input and is never part of the ceremony bundle.
 """
 
 from __future__ import annotations
@@ -16,12 +16,14 @@ import json
 import math
 import os
 import re
+import shutil
 import struct
 from pathlib import Path
 from typing import Any, Iterable
 
 
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
+BUNDLE_SCHEMA = "zkDL_gat_external_ceremony_bundle_v1"
 R = int("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001", 16)
 P = int("1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab", 16)
 GX = int("17f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb", 16)
@@ -100,6 +102,152 @@ def update_config(path: Path, updates: dict[str, str]) -> None:
     if missing:
         output.extend(f"{key} = {updates[key]}" for key in sorted(missing))
     path.write_text("\n".join(output) + "\n", encoding="utf-8")
+
+
+def bundle_path(root: Path, bundle: Path, raw: str, label: str) -> Path:
+    candidate = Path(raw)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        die(f"external bundle {label} path must be relative: {raw}")
+    resolved = (bundle / candidate).resolve()
+    try:
+        resolved.relative_to(bundle.resolve())
+    except ValueError:
+        die(f"external bundle {label} path escapes bundle root: {raw}")
+    if resolved.is_symlink():
+        die(f"external bundle {label} is symlinked: {raw}")
+    return resolved
+
+
+def bundle_file(bundle: Path, descriptor: dict[str, Any], label: str) -> Path:
+    if not isinstance(descriptor, dict):
+        die(f"external bundle {label} descriptor is not an object")
+    raw = descriptor.get("path")
+    expected = descriptor.get("sha256")
+    if not isinstance(raw, str) or not raw or not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        die(f"external bundle {label} requires relative path and lowercase sha256")
+    path = bundle_path(bundle, bundle, raw, label)
+    if not path.is_file():
+        die(f"external bundle {label} is missing: {path}")
+    actual = sha256_file(path)
+    if actual != expected:
+        die(f"external bundle {label} digest mismatch")
+    return path
+
+
+def copy_verified(source: Path, destination: Path, label: str) -> None:
+    if destination.is_symlink():
+        die(f"destination {label} is symlinked: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+
+
+def copy_tree_verified(source: Path, destination: Path, label: str) -> None:
+    if source.is_symlink() or not source.is_dir():
+        die(f"external bundle {label} SRS directory is missing: {source}")
+    for path in source.rglob("*"):
+        if path.is_symlink() or (not path.is_file() and not path.is_dir()):
+            die(f"external bundle {label} contains symlink/non-file: {path}")
+    if destination.is_symlink():
+        die(f"destination {label} SRS directory is symlinked: {destination}")
+    destination.mkdir(parents=True, exist_ok=True)
+    for path in sorted(source.rglob("*")):
+        relative = path.relative_to(source)
+        target = destination / relative
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            copy_verified(path, target, f"{label}/{relative.as_posix()}")
+
+
+def install_external_bundle(root: Path, config_path: Path, bundle_arg: Path,
+                            blinder_seed_file: Path) -> str:
+    """Install one authoritative ceremony bundle into baseline-local paths.
+
+    The bundle contains only authenticated native GATZKG1C SRS trees.  The
+    baseline-local tables, ledger, model registry, and owner-only blinder
+    sidecar are generated after installation.  The exact layout is documented
+    by the ``zkDL_gat_external_ceremony_bundle_v1`` manifest.
+    """
+    bundle = bundle_arg.resolve()
+    if bundle.is_symlink() or not bundle.is_dir():
+        die(f"external ceremony bundle directory is missing: {bundle}")
+    manifest_path = bundle / "bundle_manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        die("external ceremony bundle must contain regular bundle_manifest.json")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        die(f"external ceremony bundle manifest is invalid JSON: {exc}")
+    if not isinstance(manifest, dict) or manifest.get("schema") != BUNDLE_SCHEMA:
+        die(f"external ceremony bundle schema must be {BUNDLE_SCHEMA}")
+    if manifest.get("baseline") != "zkdl" or manifest.get("trust_status") != "external_ceremony":
+        die("external ceremony bundle is not marked external_ceremony for zkdl")
+    if manifest.get("curve_id") != "bls12_381" or manifest.get("encoding") != "GATZKG1C":
+        die("external ceremony bundle curve/encoding is not BLS12-381/GATZKG1C")
+    bundle_id = manifest.get("bundle_id")
+    if not isinstance(bundle_id, str) or not bundle_id:
+        die("external ceremony bundle lacks bundle_id")
+    provenance = manifest.get("provenance")
+    if not isinstance(provenance, dict):
+        die("external ceremony bundle lacks provenance object")
+    for key in ("authority", "ceremony_id", "transcript_sha256", "generator_id"):
+        value = provenance.get(key)
+        if not isinstance(value, str) or not value:
+            die(f"external ceremony bundle provenance lacks {key}")
+    if not re.fullmatch(r"[0-9a-f]{64}", provenance["transcript_sha256"]):
+        die("external ceremony bundle transcript_sha256 is not lowercase SHA-256")
+    values = parse_config(config_path)
+    dataset = values.get("dataset")
+    if dataset not in DATASETS:
+        die(f"unsupported dataset in {config_path}")
+    datasets = manifest.get("datasets")
+    if not isinstance(datasets, dict) or set(datasets) != set(DATASETS):
+        die("external ceremony bundle must contain exactly the five canonical dataset SRS entries")
+    entry = datasets.get(dataset)
+    if not isinstance(entry, dict) or set(entry) != {"srs_id", "srs"}:
+        die(f"external ceremony bundle dataset entry for {dataset} must contain only srs_id and srs")
+    if entry.get("srs_id") != values.get("srs_id"):
+        die("external ceremony bundle SRS id does not match secure config")
+    srs_descriptor = entry["srs"]
+    if not isinstance(srs_descriptor, dict):
+        die("external ceremony bundle SRS descriptor is not an object")
+    srs_raw = srs_descriptor.get("path")
+    manifest_raw = srs_descriptor.get("manifest")
+    manifest_digest = srs_descriptor.get("manifest_sha256")
+    if (not isinstance(srs_raw, str) or not isinstance(manifest_raw, str) or
+            not isinstance(manifest_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", manifest_digest)):
+        die("external ceremony bundle SRS descriptor requires path/manifest/manifest_sha256")
+    source_srs = bundle_path(root, bundle, srs_raw, "srs")
+    source_manifest = bundle_path(root, bundle, manifest_raw, "srs manifest")
+    if source_manifest.parent != source_srs.resolve() or sha256_file(source_manifest) != manifest_digest:
+        die("external ceremony bundle SRS manifest path/digest is not bound to SRS directory")
+    try:
+        srs_manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        die(f"external ceremony SRS manifest is invalid JSON: {exc}")
+    if not isinstance(srs_manifest, dict) or srs_manifest.get("srs_id") != values.get("srs_id"):
+        die("external ceremony SRS manifest SRS id mismatch")
+    setup = srs_manifest.get("setup")
+    if not isinstance(setup, dict) or setup.get("trust_status") != "external_ceremony":
+        die("external ceremony SRS manifest is not marked external_ceremony")
+    if setup.get("provenance_id") not in {bundle_id, provenance.get("ceremony_id")}:
+        die("external ceremony SRS manifest provenance_id is not bundle-bound")
+    if setup.get("authority") != provenance["authority"]:
+        die("external ceremony SRS authority does not match bundle provenance")
+    if setup.get("transcript_sha256") != provenance["transcript_sha256"]:
+        die("external ceremony SRS transcript does not match bundle provenance")
+
+    destination_srs = root / values["srs_path"]
+    copy_tree_verified(source_srs, destination_srs, dataset)
+    installed_manifest = destination_srs / "srs_manifest.json"
+    if sha256_file(installed_manifest) != manifest_digest:
+        die("installed SRS manifest digest changed during copy")
+
+    # The ceremony bundle is SRS-only.  All remaining resources are generated
+    # locally using the baseline's canonical generators and the explicit
+    # owner-only blinder seed.
+    generate_external(root, config_path, blinder_seed_file, manifest_digest)
+    return sha256_file(manifest_path)
 
 
 def config_identity(path: Path) -> str:
@@ -631,7 +779,9 @@ def load_tensors(path: Path) -> list[tuple[str, list[int], list[float]]]:
     return result
 
 
-def model_entries(root: Path, values: dict[str, str], tau: int, h_point: tuple[int, int], blinders: dict[str, int]) -> list[dict[str, Any]]:
+def model_entries(root: Path, values: dict[str, str], tau: int | None,
+                  h_point: tuple[int, int], blinders: dict[str, int],
+                  generators: list[tuple[int, int]] | None = None) -> list[dict[str, Any]]:
     tensors_path = root / values["checkpoint_bundle"] / "tensors.txt"
     entries: list[dict[str, Any]] = []
     power = 1
@@ -648,14 +798,24 @@ def model_entries(root: Path, values: dict[str, str], tau: int, h_point: tuple[i
         logical = shape[1:] if len(shape) == 3 and shape[0] == 1 else shape
         padded = [next_pow2(int(axis)) for axis in logical]
         domain = math.prod(padded)
+        if generators is None and tau is None:
+            die("model commitment generation lacks an authenticated basis")
+        commitment: tuple[int, int] | None = None
         scalar = 0
         tau_power = 1
-        for value in floats:
+        for index, value in enumerate(floats):
             quantized = round_away(value * scale)
-            scalar = (scalar + quantized * tau_power) % R
-            tau_power = tau_power * tau % R
+            if generators is None:
+                scalar = (scalar + quantized * tau_power) % R
+                tau_power = tau_power * tau % R
+            else:
+                if index >= len(generators):
+                    die(f"authenticated SRS G frame is too short for model tensor: {mapped}")
+                commitment = point_add(commitment, point_mul(generators[index], quantized))
         blind = blinders[mapped]
-        commitment = point_add(point_mul(G, scalar), point_mul(h_point, blind))
+        if generators is None:
+            commitment = point_mul(G, scalar)
+        commitment = point_add(commitment, point_mul(h_point, blind))
         if commitment is None:
             commitment = G
         entries.append({"tensor_id": mapped, "domain_size": domain, "logical_shape": logical, "padded_shape": padded, "commitment": encode_g1(commitment).hex()})
@@ -663,6 +823,121 @@ def model_entries(root: Path, values: dict[str, str], tau: int, h_point: tuple[i
     if not entries:
         die(f"checkpoint has no canonical GAT model tensors: {tensors_path}")
     return entries
+
+
+def decode_g1(encoded: bytes, label: str) -> tuple[int, int]:
+    if len(encoded) != G1_POINT_BYTES:
+        die(f"external SRS {label} point has invalid encoded size")
+    flags = encoded[0]
+    if not (flags & 0x80) or flags & 0x40:
+        die(f"external SRS {label} point is not a finite compressed G1 point")
+    x_bytes = bytearray(encoded)
+    sort_flag = bool(x_bytes[0] & 0x20)
+    x_bytes[0] &= 0x1F
+    x = int.from_bytes(x_bytes, "big")
+    if x >= P or P % 4 != 3:
+        die(f"external SRS {label} point has an invalid field encoding")
+    rhs = (x * x * x + 4) % P
+    y = pow(rhs, (P + 1) // 4, P)
+    if y * y % P != rhs:
+        die(f"external SRS {label} point is not on the BLS12-381 G1 curve")
+    if (y > P - y) != sort_flag:
+        y = P - y
+    return x, y
+
+
+def srs_frame_path(srs_dir: Path, descriptor: dict[str, Any], label: str) -> tuple[Path, str, int]:
+    if not isinstance(descriptor, dict):
+        die(f"external SRS {label} frame descriptor is not an object")
+    raw = descriptor.get("path")
+    expected = descriptor.get("sha256")
+    count = descriptor.get("count")
+    if (not isinstance(raw, str) or not raw or Path(raw).is_absolute() or ".." in Path(raw).parts or
+            not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected) or
+            not isinstance(count, int) or count < 1):
+        die(f"external SRS {label} frame descriptor is malformed")
+    path = (srs_dir / Path(raw)).resolve()
+    try:
+        path.relative_to(srs_dir.resolve())
+    except ValueError:
+        die(f"external SRS {label} frame escapes SRS directory")
+    if path.is_symlink() or not path.is_file():
+        die(f"external SRS {label} frame is missing")
+    if sha256_file(path) != expected:
+        die(f"external SRS {label} frame digest mismatch")
+    return path, expected, count
+
+
+def read_srs_frame_prefix(srs_dir: Path, descriptor: dict[str, Any], label: str,
+                          required_count: int) -> list[tuple[int, int]]:
+    path, _, declared_count = srs_frame_path(srs_dir, descriptor, label)
+    if required_count < 1 or required_count > declared_count:
+        die(f"external SRS {label} frame does not cover required model domain")
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(SRS_FRAME_HEADER_BYTES)
+            if len(header) != SRS_FRAME_HEADER_BYTES or header[:8] != b"GATZKG1C":
+                die(f"external SRS {label} frame header is invalid")
+            version, point_size, count, domain, degree = struct.unpack("<IIQQQ", header[8:])
+            if (version != 1 or point_size != G1_POINT_BYTES or count != declared_count or
+                    domain < 1 or domain & (domain - 1) or degree < max(0, domain - 1)):
+                die(f"external SRS {label} frame metadata is invalid")
+            points: list[tuple[int, int]] = []
+            for index in range(required_count):
+                raw = stream.read(G1_POINT_BYTES)
+                if len(raw) != G1_POINT_BYTES:
+                    die(f"external SRS {label} frame is truncated at point {index}")
+                points.append(decode_g1(raw, f"{label}[{index}]"))
+            return points
+    except OSError as exc:
+        die(f"cannot read external SRS {label} frame: {exc}")
+
+
+def load_external_basis(root: Path, values: dict[str, str], required_domain: int) -> tuple[list[tuple[int, int]], tuple[int, int], str]:
+    srs_dir = root / values["srs_path"]
+    manifest_path = srs_dir / "srs_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        die(f"cannot read installed external SRS manifest: {exc}")
+    families = manifest.get("families") if isinstance(manifest, dict) else None
+    if not isinstance(families, list) or not families:
+        die("installed external SRS manifest has no authenticated families")
+    default_family = manifest.get("default_family_id")
+    default_chunk = manifest.get("default_chunk_id")
+    selected: dict[str, Any] | None = None
+    for family in families:
+        if not isinstance(family, dict):
+            continue
+        if default_family is not None and family.get("family_id") != default_family:
+            continue
+        chunks = family.get("chunks")
+        if not isinstance(chunks, list):
+            continue
+        for chunk in chunks:
+            if isinstance(chunk, dict) and (default_chunk is None or chunk.get("chunk_id") == default_chunk):
+                selected = chunk
+                break
+        if selected is not None:
+            break
+    if selected is None:
+        for family in families:
+            if not isinstance(family, dict) or family.get("family_id") != "*":
+                continue
+            chunks = family.get("chunks")
+            if isinstance(chunks, list) and chunks and isinstance(chunks[0], dict):
+                selected = chunks[0]
+                break
+    if selected is None:
+        die("installed external SRS manifest has no selectable default chunk")
+    generators = read_srs_frame_prefix(srs_dir, selected.get("G"), "G", required_domain)
+    h_points = read_srs_frame_prefix(srs_dir, selected.get("H"), "H", 1)
+    generator_digest = selected.get("generator_digest")
+    if not isinstance(generator_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", generator_digest):
+        die("installed external SRS default chunk has no canonical generator digest")
+    if generator_digest != selected["G"].get("sha256"):
+        die("installed external SRS generator digest is not bound to G")
+    return generators, h_points[0], generator_digest
 
 
 def make_tables(values: dict[str, str], quant_digest: str) -> dict[str, Any]:
@@ -887,20 +1162,146 @@ def generate(root: Path, config_path: Path, seed: bytes, seed_digest: str, trans
     return "MATERIALIZED"
 
 
+def read_owner_blinder_seed(path: Path) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        die(f"owner blinder seed file is missing or symlinked: {path}")
+    try:
+        seed = path.read_bytes()
+    except OSError as exc:
+        die(f"cannot read owner blinder seed file: {exc}")
+    if not seed:
+        die("owner blinder seed file is empty")
+    return seed
+
+
+def generate_external(root: Path, config_path: Path, blinder_seed_file: Path,
+                      srs_manifest_digest: str) -> str:
+    """Generate all non-SRS formal resources from an installed ceremony SRS."""
+    values = parse_config(config_path)
+    dataset = values.get("dataset")
+    if dataset not in DATASETS:
+        die(f"unsupported dataset in {config_path}")
+    quant_path = root / "configs" / "quantization_scale_chain.cfg"
+    quant_digest = sha256_file(quant_path)
+    table = make_tables(values, quant_digest)
+    table_path = root / values["static_table_descriptor"]
+    table_file_digest = write_json(table_path, table)
+    ledger = make_ledger(root, values, table, table_file_digest, quant_digest)
+    ledger_path = root / values["integer_bound_ledger"]
+    ledger_file_digest = write_json(ledger_path, ledger)
+    update_config(config_path, {
+        "degree_bound_id": ledger["degree_bound_id"],
+        "srs_manifest_digest": srs_manifest_digest,
+    })
+    values = parse_config(config_path)
+    tensors = load_tensors(root / values["checkpoint_bundle"] / "tensors.txt")
+    model_domains = []
+    for _, shape, _ in tensors:
+        logical = shape[1:] if len(shape) == 3 and shape[0] == 1 else shape
+        model_domains.append(math.prod(next_pow2(int(axis)) for axis in logical))
+    required_domain = max(model_domains, default=1)
+    generators, h_point, generator_digest = load_external_basis(root, values, required_domain)
+    owner_seed = read_owner_blinder_seed(blinder_seed_file.resolve())
+    blinders: dict[str, int] = {}
+    for name, _, _ in tensors:
+        mapped = name.replace("/seq/kernel", "/model/seq_kernel").replace("/attn_src/kernel", "/model/attn_src").replace("/attn_dst/kernel", "/model/attn_dst").replace("/output_bias", "/model/output_bias")
+        if "/model/" in mapped:
+            blinders[mapped] = derive_scalar(owner_seed, b"blinder:" + dataset.encode() + b":" + mapped.encode())
+    manifest_path = root / values["checkpoint_bundle"] / "manifest.json"
+    try:
+        model_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        die(f"checkpoint manifest is invalid: {exc}")
+    model_manifest["degree_bound_id"] = ledger["degree_bound_id"]
+    write_json(manifest_path, model_manifest)
+    registry_entries = model_entries(root, values, None, h_point, blinders, generators)
+    registry = {
+        "schema": "zkDL_gat_model_registry_v2",
+        "dataset": dataset,
+        "model_arch_id": values["model_arch_id"],
+        "model_param_id": values["model_param_id"],
+        "quant_cfg_id": values["quant_cfg_id"],
+        "static_table_id": values["static_table_id"],
+        "srs_id": values["srs_id"],
+        "srs_manifest_digest": srs_manifest_digest,
+        "generator_digest": generator_digest,
+        "config_digest": config_identity(config_path),
+        "scale_chain_digest": quant_digest,
+        "static_table_digest": table_file_digest,
+        "integer_bound_ledger_digest": ledger_file_digest,
+        "model_manifest_digest": sha256_file(manifest_path),
+        "model_tensors": registry_entries,
+        "source_root": "baseline-local",
+    }
+    registry["registry_identity_digest"] = sha256_bytes(compact(registry))
+    registry["verifier_registry_digest"] = registry["registry_identity_digest"]
+    registry_path = root / values["model_registry_path"]
+    registry_digest = write_json(registry_path, registry)
+    sidecar_entries = [{
+        "tensor_id": item["tensor_id"],
+        "blinder": blinders[item["tensor_id"]].to_bytes(32, "little").hex(),
+    } for item in registry_entries]
+    sidecar = {
+        "schema": "zkDL_gat_model_blinder_sidecar_v1",
+        "registry_digest": registry_digest,
+        "entries": sidecar_entries,
+        "source_root": "baseline-local",
+    }
+    sidecar_path = root / values["model_blinder_sidecar_path"]
+    sidecar_digest = write_json(sidecar_path, sidecar)
+    sidecar_path.chmod(0o600)
+    update_config(config_path, {
+        "degree_bound_id": ledger["degree_bound_id"],
+        "srs_manifest_digest": srs_manifest_digest,
+        "verifier_registry_digest": registry_digest,
+        "model_blinder_sidecar_digest": sidecar_digest,
+    })
+    return "MATERIALIZED_FROM_EXTERNAL_SRS"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--ceremony-seed-file", required=True, type=Path)
-    parser.add_argument("--ceremony-transcript-file", required=True, type=Path)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--ceremony-bundle", type=Path,
+                      help="authoritative external SRS-only bundle")
+    mode.add_argument("--ceremony-seed-file", type=Path,
+                      help="development-only local seed; never an authenticated ceremony")
+    parser.add_argument("--ceremony-transcript-file", type=Path)
+    parser.add_argument("--model-blinder-seed-file", type=Path,
+                        help="explicit owner-only seed for baseline-local model blinders")
+    parser.add_argument("--local-development", action="store_true",
+                        help="allow the non-authenticated seed-derived development generator")
     parser.add_argument("--full-dataset", action="store_true")
     args = parser.parse_args()
     config = args.config.resolve()
     root = config.parent.parent.resolve()
     if config.parent.name != "configs" or root.name != "zkdl":
         die("config must be under comparison/zkdl/configs")
+    if args.ceremony_bundle is not None:
+        if args.ceremony_transcript_file is not None or args.local_development:
+            die("--ceremony-bundle cannot be combined with local seed mode flags")
+        if not args.full_dataset:
+            die("external ceremony installation requires --full-dataset")
+        if args.model_blinder_seed_file is None:
+            die("external ceremony installation requires --model-blinder-seed-file")
+        manifest_digest = install_external_bundle(
+            root, config, args.ceremony_bundle, args.model_blinder_seed_file
+        )
+        print(json.dumps({"schema": "zkDL_gat_external_resource_install_v1",
+                          "config": config.relative_to(root).as_posix(),
+                          "bundle_manifest_digest": manifest_digest,
+                          "status": "EXTERNAL_BUNDLE_INSTALLED"}, sort_keys=True))
+        return 0
+    if not args.local_development:
+        die("local seed-derived resources are development-only; use --local-development")
+    if args.model_blinder_seed_file is not None:
+        die("--model-blinder-seed-file is only valid with --ceremony-bundle")
+    if args.ceremony_transcript_file is None:
+        die("--ceremony-transcript-file is required with --ceremony-seed-file")
     seed, seed_digest, transcript_digest = ceremony(args.ceremony_seed_file.resolve(), args.ceremony_transcript_file.resolve())
     status = generate(root, config, seed, seed_digest, transcript_digest, args.full_dataset)
-    print(json.dumps({"schema": "zkDL_gat_resource_generation_v1", "config": config.relative_to(root).as_posix(), "seed_sha256": seed_digest, "transcript_sha256": transcript_digest, "status": status}, sort_keys=True))
+    print(json.dumps({"schema": "zkDL_gat_resource_generation_v1", "config": config.relative_to(root).as_posix(), "seed_sha256": seed_digest, "transcript_sha256": transcript_digest, "status": "LOCAL_DEVELOPMENT_ONLY", "generated_status": status}, sort_keys=True))
     return 0
 
 

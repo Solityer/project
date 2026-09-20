@@ -142,19 +142,40 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
         raise ArtifactError("asset manifest does not authenticate srs_manifest.json")
     _digest(manifest["srs_manifest_digest"], "srs_manifest_digest")
     srs = _json(srs_manifest, "SRS manifest")
-    for key in ("G", "H", "U"):
-        item = srs.get(key)
+    setup = srs.get("setup")
+    if not isinstance(setup, dict) or setup.get("trust_status") != "external_ceremony":
+        raise ArtifactError("SRS manifest is not marked external_ceremony")
+    if not all(isinstance(setup.get(key), str) and setup[key]
+               for key in ("provenance_id", "authority", "transcript_sha256")):
+        raise ArtifactError("SRS manifest lacks external ceremony provenance")
+    if setup.get("transcript_sha256") != srs.get("ceremony_transcript_sha256"):
+        raise ArtifactError("SRS manifest provenance transcript mismatch")
+
+    def check_frame(item: Any, label: str) -> None:
         if not isinstance(item, dict):
-            raise ArtifactError(f"SRS manifest missing {key} frame")
+            raise ArtifactError(f"SRS manifest missing {label} frame")
         raw = item.get("path")
         declared = item.get("sha256")
         if not isinstance(raw, str) or not isinstance(declared, str) or not HEX64.fullmatch(declared):
-            raise ArtifactError(f"SRS manifest has malformed {key} frame identity")
-        frame = _local(srs_path, raw, f"SRS {key} frame")
-        _regular(frame, f"SRS {key} frame")
+            raise ArtifactError(f"SRS manifest has malformed {label} frame identity")
+        frame = _local(srs_path, raw, f"SRS {label} frame")
+        _regular(frame, f"SRS {label} frame")
         relative = frame.relative_to(root).as_posix()
         if relative not in digests or digests[relative] != declared:
-            raise ArtifactError(f"asset manifest does not authenticate SRS {key} frame")
+            raise ArtifactError(f"asset manifest does not authenticate SRS {label} frame")
+
+    if isinstance(srs.get("families"), list):
+        for family in srs["families"]:
+            if not isinstance(family, dict) or not isinstance(family.get("chunks"), list) or not family["chunks"]:
+                raise ArtifactError("SRS manifest has malformed family/chunk entries")
+            for chunk in family["chunks"]:
+                if not isinstance(chunk, dict):
+                    raise ArtifactError("SRS manifest has malformed chunk entry")
+                for key in ("G", "H", "U"):
+                    check_frame(chunk.get(key), f"{family.get('family_id', '?')}/{key}")
+    else:
+        for key in ("G", "H", "U"):
+            check_frame(srs.get(key), key)
 
     registry_path = _local(root, manifest["model_registry_path"], "model registry path")
     _regular(registry_path, "model registry")
