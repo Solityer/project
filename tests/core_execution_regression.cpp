@@ -237,6 +237,13 @@ namespace
         const std::string name = "test_completed_coefficient";
         const std::size_t count = (std::size_t{1} << 20) + 3;
         auto material = std::make_shared<P>(P::from_coefficients(name, sample(count)));
+        material->shared_data =
+            std::make_shared<const std::vector<F>>(
+                std::move(material->data));
+        material->data.clear();
+        require(
+            material->values().size() == count,
+            "shared coefficient publication source");
         std::weak_ptr<const P> weak = material;
         gatzk::crypto::Commitment commitment{
             .name = name, .point = gatzk::crypto::g1_zero(), .opening_polynomial = material};

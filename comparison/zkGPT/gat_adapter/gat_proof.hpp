@@ -12,6 +12,7 @@
 #include "verifier.hpp"
 #include "native_masked_sumcheck.hpp"
 #include "native_lasso.hpp"
+#include "gat_sparse_gkr.hpp"
 
 #include <cstdint>
 #include <array>
@@ -52,6 +53,9 @@ struct InputLayout {
 class SegmentedInputOracle {
 public:
     using ChunkCallback = std::function<void(std::size_t, const Fr &)>;
+    using FoldChunkCallback =
+        std::function<bool(std::uint64_t, const std::vector<Fr> &,
+                           std::string *reason)>;
 
     SegmentedInputOracle() = default;
 
@@ -92,6 +96,14 @@ public:
     // chunks, not for rebuilding the full four-segment input layer.
     std::vector<Fr> fold(std::size_t segment,
                          const std::vector<Fr> &prefix) const;
+
+    // Stream a folded domain in fixed-size chunks.  This is the production
+    // path for large inputs; it never allocates the remaining MLE domain and
+    // uses an explicit u64 domain/offset contract.
+    bool fold_chunks(std::size_t segment, const std::vector<Fr> &prefix,
+                     std::uint64_t chunk_entries,
+                     const FoldChunkCallback &callback,
+                     std::string *reason = nullptr) const;
 
     // Weighted sum over one segment.  The weight callback is evaluated only
     // for logical coordinates, while padded coordinates contribute zero.
@@ -151,6 +163,9 @@ struct FconnClaimLink {
     std::size_t lhs_offset = 0;
     std::size_t rhs_offset = 0;
     std::size_t output_offset = 0;
+    std::size_t rows = 0;
+    std::size_t inner = 0;
+    std::size_t cols = 0;
     std::string lhs_point_rule = "fconn/lhs/row-major-mle-v1";
     std::string rhs_point_rule = "fconn/rhs/column-major-padded-mle-v1";
     std::string output_point_rule = "fconn/output/row-major-mle-v1";
@@ -191,14 +206,20 @@ std::vector<Fr> pack_native_gkr_matmul_rhs(
 struct SparseGkrDescriptor {
     std::string relation_id;
     std::string family_id;
+    SparseGkrRelationKind relation_kind = SparseGkrRelationKind::Residual;
+    std::string relation_schema = kSparseGkrRelationSchema;
     std::size_t edge_count = 0;
     std::size_t value_width = 0;
+    std::size_t chunk_size = kSparseGkrChunkEntries;
     std::size_t input_offset = 0;
     std::size_t source_offset = 0;
     std::size_t destination_offset = 0;
     std::size_t output_offset = 0;
     std::string coordinate_rule = "edge_gid_then_dst_stable";
     std::string group_rule = "Q_grp_new_at_group_start,Q_grp_end_at_group_end";
+    std::string arithmetic_rule = kSparseGkrArithmeticRule;
+    std::string overflow_rule = kSparseGkrOverflowRule;
+    std::string terminal_rule = "terminal-claim-chain/input-output-binding-v1";
     std::vector<std::string> constraints;
 };
 
@@ -268,10 +289,14 @@ struct GatCapacityReport {
     std::uint64_t estimated_peak_host_memory_bytes = 0;
     std::size_t native_sparse_relation_count = 0;
     std::size_t scratch_chunk_entries = 0;
+    std::uint64_t sparse_domain_entries = 0;
+    std::uint64_t sparse_working_set_entries = 0;
+    std::uint64_t sparse_working_set_bytes = 0;
     std::size_t max_materialized_gate_bytes = 0;
     std::size_t max_materialized_vector_bytes = 0;
     bool ppi_node_ptr_boundary = false;
     bool ppi_edge_ptr_boundary = false;
+    bool sparse_ready = false;
     bool ready = false;
     std::string reason;
 };
@@ -289,6 +314,13 @@ struct GatCircuitPlan {
     // in a verifier context.
     std::string recipe_schema = "canonical_plan_recipe_v2";
     std::string relation_schema = "zkgpt-gat-relation-v1";
+    // Versioned sparse relation boundary.  A context carrying an older or
+    // unknown value is rejected before materialization/proof consumption.
+    std::string sparse_relation_schema = kSparseGkrRelationSchema;
+    std::uint32_t sparse_relation_version = kSparseGkrRelationVersion;
+    std::size_t sparse_chunk_size = kSparseGkrChunkEntries;
+    std::string sparse_plan_digest;
+    bool virtual_sparse = false;
     std::string model_arch_id;
     CanonicalModelShape model_shape;
     std::size_t graph_num_nodes = 0;

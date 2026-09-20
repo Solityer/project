@@ -12998,8 +12998,20 @@ namespace gatzk::protocol
                         const auto scale = gamma.pow(
                             basis_meta.chunks[chunk_index].offset);
                         const auto &shifted = shifted_accumulators[chunk_index];
+                        if (shifted.opening_polynomial == nullptr ||
+                            shifted.opening_polynomial->basis !=
+                                algebra::PolynomialBasis::Coefficient ||
+                            shifted.opening_polynomial->domain != nullptr ||
+                            !shifted.opening_polynomial->zero_domain_blinder.empty() ||
+                            shifted.opening_polynomial->cuda_resident_coefficients != nullptr ||
+                            shifted.opening_polynomial->size() >
+                                relation_coefficients.size())
+                        {
+                            throw std::runtime_error(
+                                "invalid output bias basis shifted coefficient material");
+                        }
                         const auto &shifted_coefficients =
-                            shifted.opening_polynomial->data;
+                            shifted.opening_polynomial->values();
                         for (std::size_t index = 0;
                              index < shifted_coefficients.size(); ++index)
                             relation_coefficients[index] -=
@@ -13044,6 +13056,22 @@ namespace gatzk::protocol
                             binding_subproof.opening_references.push_back(
                                 {group_id});
                     }
+                    for (std::size_t chunk_index = 0;
+                         chunk_index < basis_meta.chunks.size();
+                         ++chunk_index)
+                    {
+                        persist_completed_trace_coefficient(
+                            trace,
+                            basis_meta.chunks[chunk_index]
+                                .shifted_accumulator_object,
+                            keep_trace_payloads);
+                        shifted_accumulators[chunk_index]
+                            .opening_polynomial.reset();
+                    }
+                    persist_completed_trace_coefficient(
+                        trace,
+                        relation_label,
+                        keep_trace_payloads);
                 };
 
                 if (shift_meta.configured_degrees.empty())
@@ -13090,6 +13118,10 @@ namespace gatzk::protocol
                                 }),
                             .opening_polynomial = std::move(relation_polynomial),
                         });
+                    persist_completed_trace_coefficient(
+                        trace,
+                        relation_label,
+                        keep_trace_payloads);
                     const auto y_public = transcript.challenge(
                         shift_meta.challenge_label);
                     trace.challenges[shift_meta.challenge_label] = y_public;
@@ -13221,7 +13253,20 @@ namespace gatzk::protocol
                     shift_meta.configured_degrees.at(0));
                 auto relation_coefficients = materialize_blinded_coefficients(
                     *first_source.opening_polynomial, relation_degree);
-                const auto &shifted_coefficients = shifted.opening_polynomial->data;
+                if (shifted.opening_polynomial == nullptr ||
+                    shifted.opening_polynomial->basis !=
+                        algebra::PolynomialBasis::Coefficient ||
+                    shifted.opening_polynomial->domain != nullptr ||
+                    !shifted.opening_polynomial->zero_domain_blinder.empty() ||
+                    shifted.opening_polynomial->cuda_resident_coefficients != nullptr ||
+                    shifted.opening_polynomial->size() >
+                        relation_coefficients.size())
+                {
+                    throw std::runtime_error(
+                        "invalid output bias terminal shifted coefficient material");
+                }
+                const auto &shifted_coefficients =
+                    shifted.opening_polynomial->values();
                 for (std::size_t i = 0; i < shifted_coefficients.size(); ++i)
                     relation_coefficients[i] += shifted_coefficients[i];
                 const auto relation_label = output_bias_view_label(
@@ -13264,6 +13309,15 @@ namespace gatzk::protocol
                             { return reference.object_id == group_id; }))
                         binding_subproof.opening_references.push_back({group_id});
                 }
+                persist_completed_trace_coefficient(
+                    trace,
+                    shifted_label,
+                    keep_trace_payloads);
+                persist_completed_trace_coefficient(
+                    trace,
+                    relation_label,
+                    keep_trace_payloads);
+                shifted.opening_polynomial.reset();
                 build_coefficient_basis_relation();
             }
             transcript.absorb_commitment("P_Y_lin", trace.commitments.at("P_Y_lin").point);

@@ -3,6 +3,7 @@ add_library(gat_adapter STATIC
     gat_forward.cpp
     gat_native.cpp
     gat_input_oracle.cpp
+    gat_sparse_gkr.cpp
     gat_proof.cpp
     gat_cuda.hpp
 )

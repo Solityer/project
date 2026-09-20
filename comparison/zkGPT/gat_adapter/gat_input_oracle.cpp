@@ -176,24 +176,73 @@ std::vector<Fr> SegmentedInputOracle::fold(
     if (prefix.size() > bits)
         throw std::invalid_argument("segmented input oracle fold prefix is too long");
     const std::size_t remaining_bits = bits - prefix.size();
-    const std::size_t remaining = std::size_t(1) << remaining_bits;
-    // Folding a complete large domain would itself defeat the oracle.  The
-    // native caller must request bounded prefixes/chunks for such domains;
-    // tiny synthetic relations remain fully supported.
-    constexpr std::size_t kMaxFoldEntries = std::size_t(1) << 24;
-    if (remaining > kMaxFoldEntries)
-        throw std::length_error("segmented input oracle fold exceeds bounded chunk domain");
-    std::vector<Fr> result(remaining, Fr(0));
-    for (std::size_t index = 0; index < segments_[segment].size(); ++index) {
-        Fr weight = Fr(1);
-        std::size_t coordinate = index;
-        for (const Fr &challenge : prefix) {
-            weight *= (coordinate & 1U) != 0 ? challenge : (Fr(1) - challenge);
-            coordinate >>= 1;
-        }
-        result[coordinate] += segments_[segment][index] * weight;
-    }
+    if (remaining_bits >= 64)
+        throw std::length_error("segmented input oracle fold domain exceeds u64");
+    const std::uint64_t remaining = std::uint64_t(1) << remaining_bits;
+    if (remaining > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+        throw std::length_error("segmented input oracle fold domain exceeds host size");
+    std::vector<Fr> result;
+    result.reserve(static_cast<std::size_t>(remaining));
+    std::string reason;
+    const bool ok = fold_chunks(
+        segment, prefix, std::max<std::uint64_t>(1, std::min<std::uint64_t>(
+            remaining, 1ULL << 12)),
+        [&result](std::uint64_t, const std::vector<Fr> &chunk,
+                  std::string *) {
+            result.insert(result.end(), chunk.begin(), chunk.end());
+            return true;
+        },
+        &reason);
+    if (!ok) throw std::length_error(reason.empty() ? "segmented input oracle fold failed" : reason);
     return result;
+}
+
+bool SegmentedInputOracle::fold_chunks(
+    std::size_t segment, const std::vector<Fr> &prefix,
+    std::uint64_t chunk_entries, const FoldChunkCallback &callback,
+    std::string *reason) const {
+    const auto fail = [reason](const char *message) {
+        if (reason != nullptr) *reason = message;
+        return false;
+    };
+    if (segment >= segments_.size()) return fail("segmented input oracle fold segment is invalid");
+    if (!callback) return fail("segmented input oracle fold callback is empty");
+    if (chunk_entries == 0) return fail("segmented input oracle fold chunk is empty");
+    const std::size_t bits = oracle_log2(layout_.n_in);
+    if (prefix.size() > bits) return fail("segmented input oracle fold prefix is too long");
+    const std::size_t remaining_bits = bits - prefix.size();
+    if (remaining_bits >= 64) return fail("segmented input oracle fold domain exceeds u64");
+    const std::uint64_t remaining = std::uint64_t(1) << remaining_bits;
+    for (std::uint64_t offset = 0; offset < remaining;) {
+        const std::uint64_t length = std::min<std::uint64_t>(
+            chunk_entries, remaining - offset);
+        if (length > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+            return fail("segmented input oracle fold chunk exceeds host size");
+        std::vector<Fr> chunk(static_cast<std::size_t>(length), Fr(0));
+        for (std::size_t index = 0; index < segments_[segment].size(); ++index) {
+            Fr weight = Fr(1);
+            std::uint64_t coordinate = static_cast<std::uint64_t>(index);
+            for (const Fr &challenge : prefix) {
+                weight *= (coordinate & 1U) != 0 ? challenge : (Fr(1) - challenge);
+                coordinate >>= 1;
+            }
+            if (coordinate >= offset && coordinate - offset < length)
+                chunk[static_cast<std::size_t>(coordinate - offset)] +=
+                    segments_[segment][index] * weight;
+        }
+        std::string callback_reason;
+        if (!callback(offset, chunk, &callback_reason)) {
+            if (reason != nullptr)
+                *reason = callback_reason.empty()
+                              ? "segmented input oracle fold callback failed"
+                              : callback_reason;
+            return false;
+        }
+        if (length > std::numeric_limits<std::uint64_t>::max() - offset)
+            return fail("segmented input oracle fold offset overflow");
+        offset += length;
+    }
+    return true;
 }
 
 Fr SegmentedInputOracle::weighted_sum(

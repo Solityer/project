@@ -179,6 +179,26 @@ std::size_t checked_mul(std::size_t left, std::size_t right, const char *what) {
     return left * right;
 }
 
+SparseGkrRelationKind sparse_relation_kind_for_id(const std::string &relation_id) {
+    if (relation_id.find("attention.score/") == 0)
+        return SparseGkrRelationKind::AttentionScore;
+    if (relation_id.find("attention.softmax/") == 0)
+        return SparseGkrRelationKind::MaskedSoftmax;
+    if (relation_id.find("aggregation.") == 0)
+        return SparseGkrRelationKind::Aggregation;
+    if (relation_id.find("rounding/") == 0 ||
+        relation_id.find("signed_round_div") != std::string::npos)
+        return SparseGkrRelationKind::SignedRoundDiv;
+    if (relation_id.find("fconn") != std::string::npos ||
+        relation_id.find("projection.") == 0)
+        return SparseGkrRelationKind::Fconn;
+    if (relation_id.find("input") != std::string::npos)
+        return SparseGkrRelationKind::InputBinding;
+    if (relation_id.find("output") != std::string::npos)
+        return SparseGkrRelationKind::OutputBinding;
+    return SparseGkrRelationKind::Residual;
+}
+
 std::uint32_t as_u32(std::size_t value, const char *what) {
     if (value > std::numeric_limits<std::uint32_t>::max()) throw std::overflow_error(std::string("zkGPT circuit index overflow: ") + what);
     return static_cast<std::uint32_t>(value);
@@ -1475,6 +1495,11 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
     std::string encoded;
     append_string(encoded, plan.recipe_schema);
     append_string(encoded, plan.relation_schema);
+    append_string(encoded, plan.sparse_relation_schema);
+    append_u64(encoded, plan.sparse_relation_version);
+    append_u64(encoded, plan.sparse_chunk_size);
+    append_string(encoded, plan.sparse_plan_digest);
+    encoded.push_back(static_cast<char>(plan.virtual_sparse ? 1 : 0));
     append_string(encoded, plan.model_arch_id);
     append_string(encoded, plan.model_shape.model_arch_id);
     append_u64(encoded, plan.model_shape.tensor_count);
@@ -1559,6 +1584,9 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
         append_u64(encoded, link.lhs_offset);
         append_u64(encoded, link.rhs_offset);
         append_u64(encoded, link.output_offset);
+        append_u64(encoded, link.rows);
+        append_u64(encoded, link.inner);
+        append_u64(encoded, link.cols);
         append_string(encoded, link.lhs_point_rule);
         append_string(encoded, link.rhs_point_rule);
         append_string(encoded, link.output_point_rule);
@@ -1568,14 +1596,20 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
     for (const SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
         append_string(encoded, descriptor.relation_id);
         append_string(encoded, descriptor.family_id);
+        encoded.push_back(static_cast<char>(descriptor.relation_kind));
+        append_string(encoded, descriptor.relation_schema);
         append_u64(encoded, descriptor.edge_count);
         append_u64(encoded, descriptor.value_width);
+        append_u64(encoded, descriptor.chunk_size);
         append_u64(encoded, descriptor.input_offset);
         append_u64(encoded, descriptor.source_offset);
         append_u64(encoded, descriptor.destination_offset);
         append_u64(encoded, descriptor.output_offset);
         append_string(encoded, descriptor.coordinate_rule);
         append_string(encoded, descriptor.group_rule);
+        append_string(encoded, descriptor.arithmetic_rule);
+        append_string(encoded, descriptor.overflow_rule);
+        append_string(encoded, descriptor.terminal_rule);
         append_u64(encoded, static_cast<std::uint64_t>(descriptor.constraints.size()));
         for (const std::string &constraint : descriptor.constraints) append_string(encoded, constraint);
     }
@@ -1630,6 +1664,286 @@ std::string plan_encoding(const GatCircuitPlan &plan) {
 bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan,
                                     std::string *reason);
 
+GatCircuitPlan build_virtual_sparse_plan(const Graph &graph,
+                                          const Model &model,
+                                          const QuantConfig &quant) {
+    graph.validate();
+    model.validate_schema();
+    quant.validate();
+    GatCircuitPlan plan;
+    plan.recipe_schema = "canonical_plan_recipe_v2";
+    plan.relation_schema = "zkgpt-gat-relation-v1";
+    plan.sparse_relation_schema = kSparseGkrRelationSchema;
+    plan.sparse_relation_version = kSparseGkrRelationVersion;
+    plan.sparse_chunk_size = kSparseGkrChunkEntries;
+    plan.virtual_sparse = true;
+    plan.model_arch_id = model.manifest.model_arch_id;
+    plan.model_shape = canonical_model_shape(model);
+    plan.graph_num_nodes = graph.num_nodes;
+    plan.graph_num_features = graph.num_features;
+    plan.graph_count = graph.graph_count;
+    plan.graph_num_classes = graph.num_classes;
+    plan.graph_edge_count = graph.edges();
+    plan.graph_topology_digest = canonical_graph_topology_digest(graph);
+    plan.quant_cfg_id = quant.quant_cfg_id;
+    plan.quant_digest = canonical_quant_digest(quant);
+    plan.static_tables_id = StaticTables::build(quant).table_id;
+    plan.registry = RelationRegistry::canonical();
+    plan.input_layout = canonical_input_layout_impl(graph, model, quant);
+    plan.opening_policy = "same_r_three_terminal_openings_v1";
+    plan.terminal_openings = {"W@r", "Aux@r", "L_qry@r"};
+    const TraceCoordinates coordinates =
+        make_trace_coordinates(graph, model, plan.input_layout);
+    const std::size_t classes = model.classes();
+    std::vector<SparseGkrRelationSpec> sparse_specs;
+    sparse_specs.reserve(3 * (2 * 8 + 2) + 5);
+    auto add_spec = [&](const std::string &relation_id,
+                        const std::string &family_id,
+                        SparseGkrRelationKind kind, std::size_t items,
+                        std::size_t width, std::size_t input_offset,
+                        std::size_t source_offset,
+                        std::size_t destination_offset,
+                        std::size_t output_offset,
+                        const std::string &coordinate_rule,
+                        const std::string &group_rule,
+                        std::vector<std::string> equations) {
+        SparseGkrRelationSpec spec;
+        spec.relation_id = relation_id;
+        spec.family_id = family_id;
+        spec.kind = kind;
+        spec.item_count = items;
+        spec.value_width = width;
+        spec.input_offset = input_offset;
+        spec.source_offset = source_offset;
+        spec.destination_offset = destination_offset;
+        spec.output_offset = output_offset;
+        spec.chunk_size = kSparseGkrChunkEntries;
+        spec.coordinate_rule = coordinate_rule;
+        spec.group_rule = group_rule;
+        spec.equations = std::move(equations);
+        sparse_specs.push_back(spec);
+        SparseGkrDescriptor descriptor;
+        descriptor.relation_id = relation_id;
+        descriptor.family_id = family_id;
+        descriptor.relation_kind = kind;
+        descriptor.relation_schema = kSparseGkrRelationSchema;
+        descriptor.edge_count = items;
+        descriptor.value_width = width;
+        descriptor.chunk_size = kSparseGkrChunkEntries;
+        descriptor.input_offset = input_offset;
+        descriptor.source_offset = source_offset;
+        descriptor.destination_offset = destination_offset;
+        descriptor.output_offset = output_offset;
+        descriptor.coordinate_rule = coordinate_rule;
+        descriptor.group_rule = group_rule;
+        descriptor.arithmetic_rule = kSparseGkrArithmeticRule;
+        descriptor.overflow_rule = kSparseGkrOverflowRule;
+        descriptor.terminal_rule =
+            "terminal-claim-chain/input-output-binding-v1";
+        descriptor.constraints = sparse_specs.back().equations;
+        plan.sparse_gkr.push_back(std::move(descriptor));
+    };
+    add_spec("binding/input_segments", "input",
+              SparseGkrRelationKind::InputBinding, 4,
+              plan.input_layout.n_in, plan.input_layout.segments[0].offset,
+              plan.input_layout.segments[1].offset,
+              plan.input_layout.segments[2].offset,
+              plan.input_layout.segments[3].offset,
+              "segment_selector_low_bits_then_local_u64_coordinate",
+              plan.input_layout.selector,
+              {"logical segment values plus implicit zero padding",
+               "SegmentedInputOracle chunked fold binding"});
+    auto add_fconn = [&](const std::string &family, std::size_t rows,
+                         std::size_t inner, std::size_t cols,
+                         std::size_t lhs_offset, std::size_t rhs_offset,
+                         std::size_t output_offset) {
+        const std::string id = "fconn/" + family;
+        SparseGkrRelationSpec spec;
+        spec.relation_id = id;
+        spec.family_id = family;
+        spec.kind = SparseGkrRelationKind::Fconn;
+        spec.item_count = rows;
+        spec.value_width = checked_mul(inner, cols,
+                                       "virtual FCONN relation width");
+        spec.input_offset = lhs_offset;
+        spec.source_offset = rhs_offset;
+        spec.output_offset = output_offset;
+        spec.chunk_size = kSparseGkrChunkEntries;
+        spec.coordinate_rule = "row_major_exact[row,term,col]";
+        spec.group_rule = "descriptor_index_ordered_fconn_claims";
+        spec.equations = {
+            "FCONN lhs/rhs/output segment-local MLE claims",
+            "FCONN terminal claim consumed by output binding"};
+        sparse_specs.push_back(std::move(spec));
+        FconnClaimLink link;
+        link.descriptor_index = plan.fconn_claim_links.size();
+        link.relation_id = family;
+        link.family_id = family;
+        link.lhs_segment = "X_pub";
+        link.rhs_segment = "W";
+        link.output_segment = "Aux";
+        link.lhs_offset = lhs_offset;
+        link.rhs_offset = rhs_offset;
+        link.output_offset = output_offset;
+        link.rows = rows;
+        link.inner = inner;
+        link.cols = cols;
+        plan.fconn_claim_links.push_back(std::move(link));
+    };
+    // The virtual recipe carries one compact FCONN descriptor per projection
+    // family.  Its matrix arithmetic is streamed by the relation callback;
+    // no product/gate array is allocated here.
+    std::size_t virtual_weight_offset = plan.input_layout.segments[1].offset;
+    for (std::size_t layer = 0; layer < 2; ++layer) {
+        const std::size_t dim = model.tensor(
+            hidden_tensor_name(layer, 0, "seq/kernel")).shape.dims.at(2);
+        const std::size_t inner = model.tensor(
+            hidden_tensor_name(layer, 0, "seq/kernel")).shape.dims.at(1);
+        const std::size_t lhs = layer == 0
+            ? plan.input_layout.segments[0].offset
+            : coordinates.hidden_concat[layer - 1];
+        for (std::size_t head = 0; head < 8; ++head) {
+            const std::string family = hidden_family(layer, head);
+            add_fconn(family + "/projection", graph.num_nodes, inner, dim,
+                      lhs, virtual_weight_offset,
+                      coordinates.hidden[layer][head].projection);
+            virtual_weight_offset = checked_add(
+                virtual_weight_offset,
+                checked_mul(inner, dim, "virtual hidden weight cursor"),
+                "virtual hidden weight cursor");
+            add_spec("attention.score/" + family, family,
+                     SparseGkrRelationKind::AttentionScore, graph.edges(), dim,
+                     coordinates.hidden[layer][head].raw_score,
+                     coordinates.hidden[layer][head].source_score,
+                     coordinates.hidden[layer][head].destination_score,
+                     coordinates.hidden[layer][head].raw_score,
+                     "edge_gid_then_dst_stable[e].src=src[e],dst=dst[e]",
+                     "Q_grp_new/Q_grp_end public graph recurrence",
+                     {"raw_score=E_src[src]+E_dst[dst]",
+                      "leaky_score=T_LReLU(raw_score)"});
+            add_spec("attention.softmax/" + family, family,
+                     SparseGkrRelationKind::MaskedSoftmax, graph.edges(), dim,
+                     coordinates.hidden[layer][head].leaky_score,
+                     coordinates.hidden[layer][head].group_max,
+                     coordinates.hidden[layer][head].group_sum,
+                     coordinates.hidden[layer][head].alpha,
+                     "edge_gid_then_dst_stable[e].dst=dst[e]",
+                     "Q_grp_new/Q_grp_end public destination recurrence",
+                     {"group_max=max(leaky_score) by dst",
+                      "exp=T_exp(group_max-leaky_score)",
+                      "alpha=exp*group_inverse[dst]"});
+            add_spec("aggregation.hidden/" + family, family,
+                     SparseGkrRelationKind::Aggregation, graph.edges(), dim,
+                     coordinates.hidden[layer][head].alpha,
+                     coordinates.hidden[layer][head].projection,
+                     coordinates.hidden[layer][head].integer_numerator,
+                     coordinates.hidden[layer][head].recovered,
+                     "edge_gid_then_dst_stable[e].src=src[e],dst=dst[e],col-major-inner",
+                     "Q_grp_new/Q_grp_end public destination recurrence",
+                     {"integer_numerator=sum(alpha*projection[src])",
+                      "field_aggregate*group_sum=field_numerator",
+                      "recovered=SignedRoundDiv(...)"});
+        }
+    }
+    for (std::size_t head = 0; head < 2; ++head) {
+        const std::string family = output_family(head);
+        const std::size_t dim = classes;
+        const std::size_t inner = model.tensor(
+            output_tensor_name(head, "seq/kernel")).shape.dims.at(1);
+        add_fconn(family + "/projection", graph.num_nodes, inner, dim,
+                  coordinates.hidden_concat[1], virtual_weight_offset,
+                  coordinates.output[head].projection);
+        virtual_weight_offset = checked_add(
+            virtual_weight_offset,
+            checked_mul(inner, dim, "virtual output weight cursor"),
+            "virtual output weight cursor");
+        add_spec("attention.score/" + family, family,
+                 SparseGkrRelationKind::AttentionScore, graph.edges(), dim,
+                 coordinates.output[head].raw_score,
+                 coordinates.output[head].source_score,
+                 coordinates.output[head].destination_score,
+                 coordinates.output[head].raw_score,
+                 "edge_gid_then_dst_stable[e].src=src[e],dst=dst[e]",
+                 "Q_grp_new/Q_grp_end public graph recurrence",
+                 {"raw_score=E_src[src]+E_dst[dst]",
+                  "leaky_score=T_LReLU(raw_score)"});
+        add_spec("attention.softmax/" + family, family,
+                 SparseGkrRelationKind::MaskedSoftmax, graph.edges(), dim,
+                 coordinates.output[head].leaky_score,
+                 coordinates.output[head].group_max,
+                 coordinates.output[head].group_sum,
+                 coordinates.output[head].alpha,
+                 "edge_gid_then_dst_stable[e].dst=dst[e]",
+                 "Q_grp_new/Q_grp_end public destination recurrence",
+                 {"group_max=max(leaky_score) by dst",
+                  "exp=T_exp(group_max-leaky_score)",
+                  "alpha=exp*group_inverse[dst]"});
+        add_spec("aggregation.output/" + family, family,
+                 SparseGkrRelationKind::Aggregation, graph.edges(), dim,
+                 coordinates.output[head].alpha,
+                 coordinates.output[head].projection,
+                 coordinates.output[head].integer_numerator,
+                 coordinates.output[head].recovered,
+                 "edge_gid_then_dst_stable[e].src=src[e],dst=dst[e],col-major-inner",
+                 "Q_grp_new/Q_grp_end public destination recurrence",
+                 {"integer_numerator=sum(alpha*projection[src])",
+                  "field_aggregate*group_sum=field_numerator",
+                  "recovered=SignedRoundDiv(...)"});
+    }
+    add_spec("rounding/signed_round_div", "rounding",
+             SparseGkrRelationKind::SignedRoundDiv, graph.num_nodes, classes,
+             coordinates.final_average_divisions,
+             coordinates.head_sum, coordinates.final_logits,
+             coordinates.final_logits,
+             "node_gid_then_class_stable[node,class,witness_component]",
+             "node-local-fixed-width",
+             {"sigma,z boolean", "inverse and zero-product",
+              "SignedRoundDiv nearest-ties-away terminal equation"});
+    add_spec("binding/output_aux", "output",
+             SparseGkrRelationKind::OutputBinding, graph.num_nodes, classes,
+             coordinates.final_logits, coordinates.head_sum,
+             coordinates.final_logits, coordinates.final_logits,
+             "Aux/output[row_major_exact,node,class]",
+             "public-Y-prefix-plus-residual-tail",
+             {"Aux terminal claims bind public output Y",
+              "residual terminal claims bind canonical zero tail"});
+    SparseGkrPlan sparse_plan = build_sparse_gkr_plan(
+        graph, plan.graph_topology_digest, plan.static_tables_id, sparse_specs);
+    sparse_plan.claim_links.clear();
+    for (std::size_t index = 1; index < sparse_plan.relations.size(); ++index) {
+        SparseGkrClaimLink link;
+        link.from_relation = sparse_plan.relations[index - 1].relation_id;
+        link.to_relation = sparse_plan.relations[index].relation_id;
+        link.claim_name = "terminal->initial/" + link.from_relation;
+        sparse_plan.claim_links.push_back(std::move(link));
+    }
+    for (const FconnClaimLink &link : plan.fconn_claim_links) {
+        SparseGkrClaimLink binding;
+        binding.from_relation = "fconn/" + link.relation_id;
+        binding.to_relation = "binding/output_aux";
+        binding.claim_name = "FCONN:" + link.family_id + ":" +
+                             std::to_string(link.output_offset);
+        binding.from_terminal = static_cast<std::uint32_t>(link.descriptor_index);
+        sparse_plan.binding_links.push_back(std::move(binding));
+    }
+    plan.sparse_plan_digest = canonical_digest64(sparse_plan.encoding());
+    plan.public_output_coordinates = checked_mul(graph.num_nodes, classes,
+                                                 "virtual public output coordinates");
+    plan.residual_coordinates = plan.public_output_coordinates;
+    plan.native_api = {"SparseGKR::prove_stream", "SparseGKR::verify_stream",
+                       "SegmentedInputOracle::fold_chunks",
+                       "NativeMaskedSumcheckProver",
+                       "NativeMaskedSumcheckVerifier"};
+    plan.plan_digest = canonical_digest64(plan_encoding(plan));
+    plan.circuit_id = "R_GAT-zkGPT/" + plan.plan_digest;
+    plan.official_layered = true;
+    plan.has_placeholder = false;
+    std::string reason;
+    if (!validate_gat_circuit_plan_impl(plan, &reason))
+        throw std::invalid_argument("virtual sparse GAT plan validation failed: " + reason);
+    return plan;
+}
+
 GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
                                const QuantConfig &quant, const ForwardResult *forward) {
     graph.validate();
@@ -1644,6 +1958,8 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     // deterministically with a methodology-level reason instead of drifting
     // into OOM or a metadata-only pseudo-proof.
     const GatCapacityReport capacity = inspect_gat_capacity(graph, model, quant);
+    if (!capacity.ready && capacity.sparse_ready)
+        return build_virtual_sparse_plan(graph, model, quant);
     if (!capacity.ready)
         throw std::length_error("canonical GAT capacity is not supported by native zkGPT: " + capacity.reason);
 
@@ -1744,6 +2060,9 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
             link.lhs_offset = descriptor.lhs_offset;
             link.rhs_offset = descriptor.rhs_offset;
             link.output_offset = descriptor.output_offset;
+            link.rows = descriptor.rows;
+            link.inner = descriptor.inner;
+            link.cols = descriptor.cols;
             plan.fconn_claim_links.push_back(std::move(link));
             append_projection_layer(plan, descriptor);
         };
@@ -2296,6 +2615,121 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     // Every gate uses a canonical input-layer coordinate, so the official
     // subset preparation is safe and produces the real layered metadata.
     plan.circuit.initSubset();
+    plan.sparse_relation_schema = kSparseGkrRelationSchema;
+    plan.sparse_relation_version = kSparseGkrRelationVersion;
+    plan.sparse_chunk_size = kSparseGkrChunkEntries;
+    plan.virtual_sparse = false;
+    std::vector<SparseGkrRelationSpec> sparse_specs;
+    sparse_specs.reserve(plan.sparse_gkr.size() + plan.matmuls.size() + 3);
+    SparseGkrRelationSpec input_binding;
+    input_binding.relation_id = "binding/input_segments";
+    input_binding.family_id = "input";
+    input_binding.kind = SparseGkrRelationKind::InputBinding;
+    input_binding.item_count = 4;
+    input_binding.value_width = plan.input_layout.n_in;
+    input_binding.chunk_size = kSparseGkrChunkEntries;
+    input_binding.coordinate_rule =
+        "segment_selector_low_bits_then_local_u64_coordinate";
+    input_binding.group_rule = "00:X_pub,01:W,10:Aux,11:L_qry";
+    input_binding.equations = {
+        "logical segment values plus implicit zero padding",
+        "input oracle fold uses checked-u64 chunk offsets"};
+    sparse_specs.push_back(std::move(input_binding));
+    for (const MatMulDescriptor &matmul : plan.matmuls) {
+        SparseGkrRelationSpec fconn;
+        fconn.relation_id = "fconn/" + matmul.relation_id;
+        fconn.family_id = matmul.family_id;
+        fconn.kind = SparseGkrRelationKind::Fconn;
+        fconn.item_count = matmul.rows;
+        fconn.value_width = checked_mul(matmul.inner, matmul.cols,
+                                        "sparse FCONN relation width");
+        fconn.input_offset = matmul.lhs_offset;
+        fconn.source_offset = matmul.rhs_offset;
+        fconn.output_offset = matmul.output_offset;
+        fconn.chunk_size = kSparseGkrChunkEntries;
+        fconn.coordinate_rule = matmul.coordinate_rule;
+        fconn.group_rule = "descriptor_index_ordered_fconn_claims";
+        fconn.equations = {
+            "FCONN lhs/rhs/output MLE claims use descriptor offsets",
+            "FCONN terminal claim links to output binding"};
+        sparse_specs.push_back(std::move(fconn));
+    }
+    for (SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
+        descriptor.relation_kind = sparse_relation_kind_for_id(descriptor.relation_id);
+        descriptor.relation_schema = kSparseGkrRelationSchema;
+        descriptor.chunk_size = kSparseGkrChunkEntries;
+        descriptor.arithmetic_rule = kSparseGkrArithmeticRule;
+        descriptor.overflow_rule = kSparseGkrOverflowRule;
+        descriptor.terminal_rule =
+            "terminal-claim-chain/input-output-binding-v1";
+        SparseGkrRelationSpec spec;
+        spec.relation_id = descriptor.relation_id;
+        spec.family_id = descriptor.family_id;
+        spec.kind = descriptor.relation_kind;
+        spec.item_count = descriptor.edge_count;
+        spec.value_width = descriptor.value_width;
+        spec.input_offset = descriptor.input_offset;
+        spec.source_offset = descriptor.source_offset;
+        spec.destination_offset = descriptor.destination_offset;
+        spec.output_offset = descriptor.output_offset;
+        spec.chunk_size = descriptor.chunk_size;
+        spec.coordinate_rule = descriptor.coordinate_rule;
+        spec.group_rule = descriptor.group_rule;
+        spec.arithmetic_rule = descriptor.arithmetic_rule;
+        spec.overflow_rule = descriptor.overflow_rule;
+        spec.terminal_rule = descriptor.terminal_rule;
+        spec.equations = descriptor.constraints;
+        sparse_specs.push_back(std::move(spec));
+    }
+    SparseGkrRelationSpec rounding_spec;
+    rounding_spec.relation_id = "rounding/signed_round_div";
+    rounding_spec.family_id = "rounding";
+    rounding_spec.kind = SparseGkrRelationKind::SignedRoundDiv;
+    rounding_spec.item_count = graph.num_nodes;
+    rounding_spec.value_width = classes;
+    rounding_spec.chunk_size = kSparseGkrChunkEntries;
+    rounding_spec.coordinate_rule =
+        "node_gid_then_class_stable[node,class,witness_component]";
+    rounding_spec.group_rule = "node-local-fixed-width";
+    rounding_spec.equations = {
+        "sigma,z boolean", "zero-product and inverse",
+        "SignedRoundDiv nearest-ties-away equation",
+        "terminal claim binds Aux/output checkpoints"};
+    sparse_specs.push_back(std::move(rounding_spec));
+    SparseGkrPlan sparse_plan = build_sparse_gkr_plan(
+        graph, plan.graph_topology_digest, plan.static_tables_id, sparse_specs);
+    SparseGkrRelationSpec output_binding;
+    output_binding.relation_id = "binding/output_aux";
+    output_binding.family_id = "output";
+    output_binding.kind = SparseGkrRelationKind::OutputBinding;
+    output_binding.item_count = graph.num_nodes;
+    output_binding.value_width = classes;
+    output_binding.chunk_size = kSparseGkrChunkEntries;
+    output_binding.coordinate_rule =
+        "Aux/output[row_major_exact,node,class]";
+    output_binding.group_rule = "public-Y-prefix-plus-residual-tail";
+    output_binding.equations = {
+        "Aux terminal claims bind public output coordinates",
+        "residual terminal claims bind canonical zero tail"};
+    sparse_plan.relations.push_back(std::move(output_binding));
+    sparse_plan.claim_links.clear();
+    for (std::size_t index = 1; index < sparse_plan.relations.size(); ++index) {
+        SparseGkrClaimLink link;
+        link.from_relation = sparse_plan.relations[index - 1].relation_id;
+        link.to_relation = sparse_plan.relations[index].relation_id;
+        link.claim_name = "terminal->initial/" + link.from_relation;
+        sparse_plan.claim_links.push_back(std::move(link));
+    }
+    for (const FconnClaimLink &link : plan.fconn_claim_links) {
+        SparseGkrClaimLink binding;
+        binding.from_relation = "fconn/" + link.relation_id;
+        binding.to_relation = "binding/output_aux";
+        binding.claim_name = "FCONN:" + link.family_id + ":" +
+                             std::to_string(link.output_offset);
+        binding.from_terminal = static_cast<std::uint32_t>(link.descriptor_index);
+        sparse_plan.binding_links.push_back(std::move(binding));
+    }
+    plan.sparse_plan_digest = canonical_digest64(sparse_plan.encoding());
     // v4 keeps the native relation registry explicit in the compact recipe.
     // The materialised gate arrays remain derived; these descriptors carry
     // the relation domain/chunk/terminal binding consumed by the native
@@ -2323,17 +2757,18 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
         NativeRelationDescriptor native;
         native.relation_id = sparse.relation_id;
         native.family_id = sparse.family_id;
+        native.relation_schema = sparse.relation_schema;
         native.primitive = sparse.relation_id.find("softmax") != std::string::npos
                                ? "masked_sparse_attention_sumcheck"
                                : "masked_sparse_aggregation_sumcheck";
         native.domain_rule = "edge_gid_then_dst_stable_stream";
         native.selector_rule = sparse.group_rule;
         native.coordinate_rule = sparse.coordinate_rule;
-        native.arithmetic_rule = "descriptor equations are evaluated over streamed edge chunks";
-        native.terminal_rule = "Aux/output canonical coordinate binding";
+        native.arithmetic_rule = sparse.arithmetic_rule;
+        native.terminal_rule = sparse.terminal_rule;
         native.edge_count = sparse.edge_count;
         native.value_width = sparse.value_width;
-        native.chunk_size = 1ULL << 12;
+        native.chunk_size = sparse.chunk_size;
         native.input_offset = sparse.input_offset;
         native.output_offset = sparse.output_offset;
         native.equations = sparse.constraints;
@@ -2370,8 +2805,78 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *rea
         return false;
     };
     try {
+        if (plan.virtual_sparse) {
+            if (!plan.official_layered || plan.has_placeholder ||
+                plan.recipe_schema != "canonical_plan_recipe_v2" ||
+                plan.sparse_relation_schema != kSparseGkrRelationSchema ||
+                plan.sparse_relation_version != kSparseGkrRelationVersion ||
+                plan.sparse_chunk_size != kSparseGkrChunkEntries ||
+                !is_lower_hex_digest(plan.sparse_plan_digest) ||
+                plan.model_arch_id.empty() ||
+                plan.model_arch_id != plan.model_shape.model_arch_id ||
+                !canonical_model_shape_valid(plan.model_shape, reason) ||
+                plan.graph_num_nodes == 0 || plan.graph_num_features == 0 ||
+                plan.graph_count == 0 || plan.graph_num_classes == 0 ||
+                plan.graph_edge_count == 0 ||
+                !is_lower_hex_digest(plan.graph_topology_digest) ||
+                plan.quant_cfg_id.empty() || plan.quant_digest.empty() ||
+                plan.static_tables_id.empty() ||
+                plan.registry.descriptors.empty() ||
+                !plan.registry.covers_all_segments() ||
+                !canonical_layout_valid(plan.input_layout) ||
+                plan.opening_policy != "same_r_three_terminal_openings_v1" ||
+                plan.terminal_openings !=
+                    std::vector<std::string>{"W@r", "Aux@r", "L_qry@r"} ||
+                plan.public_output_coordinates == 0 ||
+                plan.residual_coordinates == 0 ||
+                !plan.circuit.circuit.empty())
+                return fail("virtual sparse plan identity/layout is invalid");
+            std::set<std::string> relation_ids;
+            bool has_score = false, has_softmax = false, has_aggregate = false;
+            bool has_round = false, has_input = false, has_output = false;
+            for (const SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
+                if (descriptor.relation_id.empty() ||
+                    !relation_ids.insert(descriptor.relation_id).second ||
+                    descriptor.edge_count == 0 || descriptor.value_width == 0 ||
+                    descriptor.relation_schema != kSparseGkrRelationSchema ||
+                    descriptor.chunk_size != kSparseGkrChunkEntries ||
+                    !sparse_gkr_relation_kind_valid(static_cast<std::uint8_t>(
+                        descriptor.relation_kind)) ||
+                    descriptor.arithmetic_rule != kSparseGkrArithmeticRule ||
+                    descriptor.overflow_rule != kSparseGkrOverflowRule ||
+                    descriptor.coordinate_rule.empty() ||
+                    descriptor.terminal_rule.empty() ||
+                    descriptor.constraints.empty())
+                    return fail("virtual sparse descriptor is not canonical");
+                has_score = has_score || descriptor.relation_kind ==
+                                           SparseGkrRelationKind::AttentionScore;
+                has_softmax = has_softmax || descriptor.relation_kind ==
+                                             SparseGkrRelationKind::MaskedSoftmax;
+                has_aggregate = has_aggregate || descriptor.relation_kind ==
+                                               SparseGkrRelationKind::Aggregation;
+                has_round = has_round || descriptor.relation_kind ==
+                                         SparseGkrRelationKind::SignedRoundDiv;
+                has_input = has_input || descriptor.relation_kind ==
+                                         SparseGkrRelationKind::InputBinding;
+                has_output = has_output || descriptor.relation_kind ==
+                                          SparseGkrRelationKind::OutputBinding;
+            }
+            if (plan.sparse_gkr.empty() || !has_score || !has_softmax ||
+                !has_aggregate || !has_round || !has_input || !has_output ||
+                plan.fconn_claim_links.empty() || plan.native_api.empty())
+                return fail("virtual sparse plan omits a required relation family or FCONN binding");
+            const std::string digest = canonical_digest64(plan_encoding(plan));
+            if (plan.plan_digest != digest ||
+                plan.circuit_id != "R_GAT-zkGPT/" + digest)
+                return fail("virtual sparse plan digest is not canonical");
+            return true;
+        }
         if (!plan.official_layered || plan.has_placeholder) return fail("plan is not an official layered circuit");
         if (plan.recipe_schema != "canonical_plan_recipe_v2" ||
+            plan.sparse_relation_schema != kSparseGkrRelationSchema ||
+            plan.sparse_relation_version != kSparseGkrRelationVersion ||
+            plan.sparse_chunk_size != kSparseGkrChunkEntries ||
+            !is_lower_hex_digest(plan.sparse_plan_digest) ||
             plan.model_arch_id.empty() || plan.model_arch_id != plan.model_shape.model_arch_id ||
             !canonical_model_shape_valid(plan.model_shape, reason) ||
             plan.graph_num_nodes == 0 || plan.graph_num_features == 0 ||
@@ -2479,6 +2984,12 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *rea
         if (plan.matmuls.empty()) return fail("canonical plan has no MatMul descriptors");
         for (const SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
             if (descriptor.relation_id.empty() || descriptor.edge_count == 0 || descriptor.value_width == 0 ||
+                descriptor.relation_schema != kSparseGkrRelationSchema ||
+                descriptor.chunk_size != kSparseGkrChunkEntries ||
+                !sparse_gkr_relation_kind_valid(static_cast<std::uint8_t>(descriptor.relation_kind)) ||
+                descriptor.arithmetic_rule != kSparseGkrArithmeticRule ||
+                descriptor.overflow_rule != kSparseGkrOverflowRule ||
+                descriptor.terminal_rule.empty() ||
                 !require_span(descriptor.input_offset, 1) || !require_span(descriptor.source_offset, 1) ||
                 !require_span(descriptor.destination_offset, 1) || !require_span(descriptor.output_offset, 1) ||
                 descriptor.coordinate_rule.find("edge_gid_then_dst_stable") == std::string::npos ||
@@ -4323,7 +4834,9 @@ bool materialize_compact_plan(const Graph &graph, const QuantConfig &quant,
         // public tensor shapes and zero-length-independent placeholders; no
         // checkpoint or private model values are read here.
         const Model shape_model = make_shape_only_model(recipe.model_shape);
-        GatCircuitPlan generated = build_plan_impl(graph, shape_model, quant, nullptr);
+        GatCircuitPlan generated = recipe.virtual_sparse
+            ? build_virtual_sparse_plan(graph, shape_model, quant)
+            : build_plan_impl(graph, shape_model, quant, nullptr);
         if (plan_encoding(generated) != plan_encoding(recipe)) {
             return fail("compact plan recipe is not canonical for the shared materializer");
         }
@@ -4351,10 +4864,19 @@ void append_context_plan(std::string &out, const GatCircuitPlan &plan) {
 }
 
 bool read_compact_plan_recipe(ContextReader &reader, GatCircuitPlan &plan) {
+    std::uint64_t sparse_version = 0;
     if (!reader.read_string(plan.recipe_schema, "plan recipe schema") ||
         plan.recipe_schema != "canonical_plan_recipe_v2" ||
         !reader.read_string(plan.relation_schema, "plan relation schema") ||
         plan.relation_schema != "zkgpt-gat-relation-v1" ||
+        !reader.read_string(plan.sparse_relation_schema, "sparse relation schema") ||
+        plan.sparse_relation_schema != kSparseGkrRelationSchema ||
+        !reader.read_u64(sparse_version) ||
+        sparse_version != kSparseGkrRelationVersion ||
+        !reader.read_size(plan.sparse_chunk_size, "sparse relation chunk size") ||
+        plan.sparse_chunk_size != kSparseGkrChunkEntries ||
+        !reader.read_string(plan.sparse_plan_digest, "sparse plan digest") ||
+        !reader.read_bool(plan.virtual_sparse) ||
         !reader.read_string(plan.model_arch_id, "plan model architecture") ||
         !reader.read_string(plan.model_shape.model_arch_id, "model shape architecture") ||
         !reader.read_size(plan.model_shape.tensor_count, "model shape tensor count") ||
@@ -4363,6 +4885,7 @@ bool read_compact_plan_recipe(ContextReader &reader, GatCircuitPlan &plan) {
         !reader.read_size(plan.model_shape.classes, "model shape class count") ||
         !reader.read_size(plan.model_shape.input_dim, "model shape input dimension") ||
         !reader.read_size(plan.model_shape.hidden_dim, "model shape hidden dimension")) return false;
+    plan.sparse_relation_version = static_cast<std::uint32_t>(sparse_version);
     std::size_t count = 0;
     if (!reader.read_count(count, "model shape tensor profile", kContextMaxShapeProfile)) return false;
     plan.model_shape.tensors.resize(count);
@@ -4447,6 +4970,9 @@ bool read_compact_plan_recipe(ContextReader &reader, GatCircuitPlan &plan) {
             !reader.read_size(link.lhs_offset, "FCONN lhs offset") ||
             !reader.read_size(link.rhs_offset, "FCONN rhs offset") ||
             !reader.read_size(link.output_offset, "FCONN output offset") ||
+            !reader.read_size(link.rows, "FCONN rows") ||
+            !reader.read_size(link.inner, "FCONN inner") ||
+            !reader.read_size(link.cols, "FCONN cols") ||
             !reader.read_string(link.lhs_point_rule, "FCONN lhs point rule") ||
             !reader.read_string(link.rhs_point_rule, "FCONN rhs point rule") ||
             !reader.read_string(link.output_point_rule, "FCONN output point rule") ||
@@ -4455,17 +4981,27 @@ bool read_compact_plan_recipe(ContextReader &reader, GatCircuitPlan &plan) {
     if (!reader.read_count(count, "sparse GKR descriptors", kContextMaxDescriptors)) return false;
     plan.sparse_gkr.resize(count);
     for (SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
+        std::uint8_t relation_kind = 0;
         if (!reader.read_string(descriptor.relation_id, "sparse relation") ||
             !reader.read_string(descriptor.family_id, "sparse family") ||
+            !reader.read_u8(relation_kind) ||
+            !sparse_gkr_relation_kind_valid(relation_kind) ||
+            !reader.read_string(descriptor.relation_schema, "sparse relation schema") ||
+            descriptor.relation_schema != kSparseGkrRelationSchema ||
             !reader.read_size(descriptor.edge_count, "sparse edge count") ||
             !reader.read_size(descriptor.value_width, "sparse value width") ||
+            !reader.read_size(descriptor.chunk_size, "sparse chunk size") ||
             !reader.read_size(descriptor.input_offset, "sparse input offset") ||
             !reader.read_size(descriptor.source_offset, "sparse source offset") ||
             !reader.read_size(descriptor.destination_offset, "sparse destination offset") ||
             !reader.read_size(descriptor.output_offset, "sparse output offset") ||
             !reader.read_string(descriptor.coordinate_rule, "sparse coordinate rule") ||
             !reader.read_string(descriptor.group_rule, "sparse group rule") ||
+            !reader.read_string(descriptor.arithmetic_rule, "sparse arithmetic rule") ||
+            !reader.read_string(descriptor.overflow_rule, "sparse overflow rule") ||
+            !reader.read_string(descriptor.terminal_rule, "sparse terminal rule") ||
             !reader.read_count(count, "sparse constraints", kContextMaxDescriptors)) return false;
+        descriptor.relation_kind = static_cast<SparseGkrRelationKind>(relation_kind);
         descriptor.constraints.resize(count);
         for (std::string &constraint : descriptor.constraints)
             if (!reader.read_string(constraint, "sparse constraint")) return false;
@@ -4634,6 +5170,10 @@ bool context_layer_metadata_valid(const GatCircuitPlan &plan, std::string *reaso
         if (reason != nullptr) *reason = message;
         return false;
     };
+    if (plan.virtual_sparse) {
+        if (!validate_gat_circuit_plan_impl(plan, reason)) return false;
+        return true;
+    }
     if (plan.circuit.circuit.size() != plan.circuit.size) return fail("layered circuit size field mismatch");
     std::size_t fconn_index = 0;
     for (std::size_t i = 0; i < plan.circuit.circuit.size(); ++i) {
@@ -4930,9 +5470,41 @@ GatCapacityReport inspect_gat_capacity(const Graph &graph, const Model &model,
                 mul(16, output_coordinates, "capacity context logits"),
                 "capacity context payload bound"),
             "capacity context payload bound");
+        report.scratch_chunk_entries =
+            static_cast<std::size_t>(kSparseGkrChunkEntries);
+        report.native_sparse_relation_count = 3 * (2 * 8 + 2) + 2;
+        std::uint64_t sparse_edge_domain = 0;
+        std::uint64_t sparse_node_domain = 0;
+        std::uint64_t sparse_input_domain = 0;
+        const std::uint64_t max_attention_width =
+            static_cast<std::uint64_t>(std::max({h0, h1, classes}));
+        if (!sparse_gkr_checked_mul(static_cast<std::uint64_t>(edges),
+                                    max_attention_width,
+                                    &sparse_edge_domain) ||
+            !sparse_gkr_checked_mul(static_cast<std::uint64_t>(nodes),
+                                    max_attention_width,
+                                    &sparse_node_domain) ||
+            !sparse_gkr_checked_mul(4,
+                                    static_cast<std::uint64_t>(report.input_layout.n_in),
+                                    &sparse_input_domain))
+            throw std::overflow_error("sparse GKR u64 domain overflow");
+        report.sparse_domain_entries = std::max(
+            sparse_input_domain, std::max(sparse_edge_domain, sparse_node_domain));
+        const std::uint64_t relation_count =
+            static_cast<std::uint64_t>(report.native_sparse_relation_count);
+        if (!sparse_gkr_checked_mul(
+                static_cast<std::uint64_t>(kSparseGkrChunkEntries),
+                std::max<std::uint64_t>(1, relation_count),
+                &report.sparse_working_set_entries) ||
+            !sparse_gkr_checked_mul(report.sparse_working_set_entries,
+                                    static_cast<std::uint64_t>(sizeof(Fr)),
+                                    &report.sparse_working_set_bytes))
+            throw std::overflow_error("sparse GKR working-set overflow");
         const bool physical_input_ok = report.max_materialized_vector <= kMaxMaterializedVectorEntries;
         const bool explicit_ok = report.max_materialized_gate <= kMaxExplicitGateEntries;
         const bool pointer_ok = report.ppi_node_ptr_boundary && report.ppi_edge_ptr_boundary;
+        report.sparse_ready = pointer_ok && report.sparse_domain_entries != 0 &&
+                              report.sparse_working_set_bytes <= (512ULL << 20);
         report.ready = physical_input_ok && explicit_ok && pointer_ok &&
                        report.input_layout.n_in <= std::numeric_limits<std::uint32_t>::max() / 4;
         if (!pointer_ok)
@@ -4940,7 +5512,9 @@ GatCapacityReport inspect_gat_capacity(const Graph &graph, const Model &model,
         else if (!physical_input_ok)
             report.reason = "canonical four-segment input materialization exceeds bounded native domain; segmented virtual input is not implemented by zkGPT native GKR";
         else if (!explicit_ok)
-            report.reason = "canonical sparse/rounding relations exceed bounded explicit layered-gate capacity; native SparseGKR materializer is not implemented by zkGPT";
+            report.reason = report.sparse_ready
+                ? "explicit layered-gate cap exceeded; virtual SparseGKR path is required"
+                : "canonical sparse/rounding relations exceed explicit and chunk working-set bounds";
         else if (report.input_layout.n_in > std::numeric_limits<std::uint32_t>::max() / 4)
             report.reason = "four-segment input layer exceeds the native u32 circuit coordinate domain";
         else
@@ -6190,6 +6764,12 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         if (!plan.official_layered || plan.has_placeholder) throw std::invalid_argument("official layered circuit plan is incomplete");
         if (!registration_matches_model(model, quant, plan.input_layout, registration)) throw std::invalid_argument("private model does not match the bound model registration");
         if (!validate_relation(graph, public_features, model, quant, forward)) throw std::invalid_argument("canonical GAT relation is invalid");
+        if (plan.virtual_sparse) {
+            result.status = ProveStatus::REJECTED;
+            result.diagnostic =
+                "virtual_sparse_plan requires chunked native Hyrax/Lasso openings and relation-bound masked transcript";
+            return result;
+        }
         if (privacy_profile != "masked_full") {
             result.status = ProveStatus::UNSUPPORTED_PRIVACY_PROFILE;
             result.diagnostic = "unsupported_privacy_profile: zkGPT formal adapter only exposes masked_full";
@@ -6471,6 +7051,11 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
     try {
         context.graph.validate();
         context.quant.validate();
+        if (context.plan.virtual_sparse) {
+            set_reason(reason,
+                       "virtual_sparse_plan requires chunked native Hyrax/Lasso verifier integration");
+            return false;
+        }
         if (!context.tables.authenticate()) { set_reason(reason, "static tables are not authenticated"); return false; }
         if (context.public_features.rows != context.graph.num_nodes || context.public_features.cols != context.graph.num_features || context.public_features.cols == 0 || context.public_features.values.size() != context.public_features.rows * context.public_features.cols) { set_reason(reason, "public feature dimensions are invalid"); return false; }
         if (context.public_logits.rows != context.graph.num_nodes || context.public_logits.cols != context.graph.num_classes || context.public_logits.cols == 0 || context.public_logits.values.size() != context.public_logits.rows * context.public_logits.cols) { set_reason(reason, "public logit dimensions are invalid"); return false; }
