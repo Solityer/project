@@ -33,8 +33,7 @@ struct AuthenticatedSrsResource {
         std::uint64_t degree = 0U;
         std::uint32_t point_size = 0U;
         std::string generator_id;
-        std::string ceremony_transcript_digest;
-        std::string ceremony_seed_digest;
+        std::string basis_digest;
         std::string g_path;
         std::string h_path;
         std::string u_path;
@@ -52,7 +51,7 @@ struct AuthenticatedSrsResource {
     };
     std::string chunking_rule;
     std::string generator_id;
-    std::string ceremony_transcript_digest;
+    std::string basis_digest;
     std::vector<Chunk> chunks;
     std::string selected_family_id;
     std::string selected_chunk_id;

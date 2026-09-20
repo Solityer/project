@@ -106,6 +106,17 @@ std::string resource_digest_hex(const Digest& digest) {
     return result;
 }
 
+std::string basis_digest_hex(const std::string& g_digest,
+                             const std::string& h_digest,
+                             const std::string& u_digest) {
+    const std::string canonical =
+        "{\"G\":\"" + g_digest + "\",\"H\":\"" + h_digest +
+        "\",\"U\":\"" + u_digest +
+        "\",\"schema\":\"zkDL_gat_basis_digest_v1\"}";
+    const std::vector<Byte> bytes(canonical.begin(), canonical.end());
+    return resource_digest_hex(zkdl::sha256(bytes));
+}
+
 void skip_space(const std::string& text, std::size_t& offset) {
     while (offset < text.size() && std::isspace(static_cast<unsigned char>(text[offset]))) ++offset;
 }
@@ -580,37 +591,16 @@ bool first_json_string(const std::string& text,
     return true;
 }
 
-bool transcript_field(const std::string& object, std::string& digest,
-                      bool& present) {
-    if (!first_json_string(object,
-                           {"ceremony_transcript_sha256", "ceremony_transcript_hash",
-                            "transcript_sha256", "transcript_hash"},
-                           digest, present)) return false;
-    if (present) return true;
-    std::string nested;
-    if (resource_field_string(object, "setup", "transcript_sha256", nested)) {
-        digest = std::move(nested);
-        present = true;
-        return true;
-    }
-    if (resource_field_string(object, "ceremony", "transcript_sha256", nested)) {
-        digest = std::move(nested);
-        present = true;
-        return true;
-    }
-    return true;
-}
-
-bool seed_field(const std::string& object, std::string& digest, bool& present) {
-    if (!first_json_string(object, {"ceremony_seed_sha256", "seed_sha256"},
-                           digest, present)) return false;
-    if (present) return true;
-    std::string nested;
-    if (resource_field_string(object, "setup", "seed_sha256", nested)) {
-        digest = std::move(nested);
-        present = true;
-    }
-    return true;
+bool first_string_occurrence(const std::string& text, const char* key,
+                             std::string& value) {
+    const std::string marker = std::string("\"") + key + "\"";
+    const std::size_t key_pos = text.find(marker);
+    if (key_pos == std::string::npos) return false;
+    std::size_t colon = key_pos + marker.size();
+    skip_space(text, colon);
+    if (colon >= text.size() || text[colon] != ':') return false;
+    ++colon;
+    return json_string_at(text, colon, value);
 }
 
 bool generator_id_field(const std::string& object, std::string& value,
@@ -641,8 +631,7 @@ bool parse_chunk_frame_ref(const std::string& object, const char* label,
 bool parse_srs_chunk(const std::string& object, const std::string& family_id,
                      std::uint64_t ordinal, const std::filesystem::path& root,
                      const std::string& manifest_generator,
-                     const std::string& manifest_transcript,
-                     const std::string& manifest_seed, bool legacy,
+                     const std::string& manifest_basis,
                      AuthenticatedSrsResource::Chunk& chunk,
                      std::string* error) {
     chunk = AuthenticatedSrsResource::Chunk{};
@@ -701,25 +690,11 @@ bool parse_srs_chunk(const std::string& object, const std::string& family_id,
         set_error(error, "BLOCKED: SRS chunk has no authenticated generator_id");
         return false;
     }
-    bool has_transcript = false;
-    if (!transcript_field(object, chunk.ceremony_transcript_digest, has_transcript)) {
-        set_error(error, "BLOCKED: SRS chunk ceremony transcript is malformed");
-        return false;
-    }
-    if (!has_transcript) chunk.ceremony_transcript_digest = manifest_transcript;
-    if (!canonical_digest_text(chunk.ceremony_transcript_digest)) {
-        set_error(error, "BLOCKED: SRS chunk ceremony transcript digest is not canonical");
-        return false;
-    }
-    bool has_seed = false;
-    if (!seed_field(object, chunk.ceremony_seed_digest, has_seed)) {
-        set_error(error, "BLOCKED: SRS chunk ceremony seed is malformed");
-        return false;
-    }
-    if (!has_seed) chunk.ceremony_seed_digest = manifest_seed;
-    if (!chunk.ceremony_seed_digest.empty() &&
-        !canonical_digest_text(chunk.ceremony_seed_digest)) {
-        set_error(error, "BLOCKED: SRS chunk ceremony seed digest is not canonical");
+    bool has_basis = false;
+    if (!first_json_string(object, {"basis_digest"}, chunk.basis_digest, has_basis) ||
+        !has_basis || !canonical_digest_text(chunk.basis_digest) ||
+        chunk.basis_digest != manifest_basis) {
+        set_error(error, "BLOCKED: SRS chunk basis_digest is not manifest-bound");
         return false;
     }
     std::uint64_t g_count = 0U, h_count = 0U, u_count = 0U;
@@ -745,7 +720,6 @@ bool parse_srs_chunk(const std::string& object, const std::string& family_id,
         }
     }
     chunk.generator_digest = chunk.g_digest;
-    (void)legacy;
     return true;
 }
 
@@ -773,6 +747,10 @@ bool materialize_srs_chunk(const std::filesystem::path& root,
     if (!check_digest(g_bytes, chunk.g_digest, "G") ||
         !check_digest(h_bytes, chunk.h_digest, "H") ||
         !check_digest(u_bytes, chunk.u_digest, "U")) return false;
+    if (basis_digest_hex(chunk.g_digest, chunk.h_digest, chunk.u_digest) != chunk.basis_digest) {
+        set_error(error, "BLOCKED: SRS chunk basis_digest does not bind G/H/U frames");
+        return false;
+    }
     PointFrame g_frame, h_frame, u_frame;
     if (!decode_frame(g_bytes, g_frame, error) ||
         !decode_frame(h_bytes, h_frame, error) ||
@@ -896,64 +874,58 @@ bool load_authenticated_srs(const Config& config,
         set_error(error, "BLOCKED: canonical SRS manifest identity/encoding mismatch");
         return false;
     }
-    std::string trust_status, provenance_id, authority, setup_transcript;
-    if (!resource_field_string(manifest, "setup", "trust_status", trust_status) ||
-        trust_status != "external_ceremony" ||
-        !resource_field_string(manifest, "setup", "provenance_id", provenance_id) ||
-        provenance_id.empty() ||
-        !resource_field_string(manifest, "setup", "authority", authority) ||
-        authority.empty() ||
-        !resource_field_string(manifest, "setup", "transcript_sha256", setup_transcript) ||
-        !canonical_digest_text(setup_transcript)) {
-        set_error(error, "BLOCKED: SRS manifest is not bound to an external ceremony provenance");
+    if (config.srs_type != "native_local_ephemeral_random") {
+        set_error(error, "BLOCKED: secure config srs_type is not native_local_ephemeral_random");
         return false;
     }
-    std::uint64_t manifest_version = 1U;
-    bool ignored_version_presence = false;
-    if (!optional_json_u64(manifest, "manifest_version", manifest_version, ignored_version_presence) ||
-        manifest_version == 0U) {
-        set_error(error, "BLOCKED: SRS manifest_version is malformed");
+    std::string setup_schema, setup_mode, trust_status, setup_algorithm, setup_spec;
+    std::string setup_curve, setup_config_binding, setup_basis;
+    const bool setup_ok =
+        resource_field_string(manifest, "setup", "schema", setup_schema) &&
+        setup_schema == "zkDL_gat_local_random_setup_v1" &&
+        resource_field_string(manifest, "setup", "mode", setup_mode) &&
+        setup_mode == "native_local_ephemeral_random" &&
+        resource_field_string(manifest, "setup", "trust_status", trust_status) &&
+        trust_status == "native_local_ephemeral_random" &&
+        resource_field_string(manifest, "setup", "algorithm", setup_algorithm) &&
+        setup_algorithm == "os_csprng_nonzero_scalar_mul_bls12_381_g1" &&
+        resource_field_string(manifest, "setup", "spec", setup_spec) &&
+        setup_spec == "zkDL_Hyrax_IPA_Pedersen_independent_g1_basis_v1" &&
+        resource_field_string(manifest, "setup", "curve_id", setup_curve) &&
+        setup_curve == "bls12_381" &&
+        resource_field_string(manifest, "setup", "config_binding_digest", setup_config_binding) &&
+        canonical_digest_text(setup_config_binding) &&
+        setup_config_binding == config.config_binding_digest &&
+        resource_field_string(manifest, "setup", "basis_digest", setup_basis) &&
+        canonical_digest_text(setup_basis);
+    std::string manifest_basis;
+    if (!setup_ok || !first_string_occurrence(manifest, "basis_digest", manifest_basis) ||
+        manifest_basis != setup_basis) {
+        set_error(error, "BLOCKED: SRS manifest local random setup metadata is invalid");
         return false;
     }
-    // Only read common metadata from the v1 setup object here.  A v2
-    // manifest intentionally repeats generator/transcript identities inside
-    // every family/chunk; searching the whole JSON object for one global key
-    // would incorrectly treat those legitimate repetitions as duplicates.
-    std::string manifest_generator, manifest_transcript, manifest_seed;
-    bool has_transcript = false;
-    bool top_level_transcript = false;
-    if (!first_json_string(manifest, {"ceremony_transcript_sha256"},
-                           manifest_transcript, top_level_transcript)) {
-        set_error(error, "BLOCKED: SRS manifest ceremony transcript metadata is malformed");
+    std::uint64_t setup_domain = 0U, setup_generator_count = 0U;
+    std::uint64_t setup_h_count = 0U, setup_u_count = 0U;
+    if (!resource_field_u64(manifest, "setup", "domain", setup_domain) ||
+        !resource_field_u64(manifest, "setup", "generator_count", setup_generator_count) ||
+        !resource_field_u64(manifest, "setup", "h_count", setup_h_count) ||
+        !resource_field_u64(manifest, "setup", "u_count", setup_u_count) ||
+        !power_of_two(setup_domain) || setup_generator_count != setup_domain ||
+        setup_h_count != 1U || setup_u_count != 1U) {
+        set_error(error, "BLOCKED: SRS local random setup domain/count metadata is invalid");
         return false;
     }
-    const bool legacy_layout = manifest.find("\"families\"") == std::string::npos &&
-                               manifest.find("\"chunks\"") == std::string::npos &&
-                               manifest.find("\"family_chunks\"") == std::string::npos;
-    if (legacy_layout) {
-        has_transcript = resource_field_string(manifest, "setup", "transcript_sha256",
-                                               manifest_transcript);
-        bool ignored_seed_presence = false;
-        if (!seed_field(manifest, manifest_seed, ignored_seed_presence)) {
-            set_error(error, "BLOCKED: SRS manifest ceremony seed metadata is malformed");
-            return false;
-        }
-        manifest_generator = "GATZKG1C";
-        if (!has_transcript) {
-            set_error(error, "BLOCKED: SRS manifest ceremony transcript is missing");
-            return false;
-        }
-    }
-    if (!manifest_transcript.empty() && !canonical_digest_text(manifest_transcript)) {
-        set_error(error, "BLOCKED: SRS manifest ceremony transcript digest is not canonical");
+    std::string manifest_generator;
+    if (!first_string_occurrence(manifest, "generator_id", manifest_generator) ||
+        manifest_generator != "zkDL_native_local_csprng_g1_v1") {
+        set_error(error, "BLOCKED: local random SRS generator_id is invalid");
         return false;
     }
-    if (setup_transcript != manifest_transcript) {
-        set_error(error, "BLOCKED: SRS manifest setup transcript differs from ceremony transcript");
-        return false;
-    }
-    if (!manifest_seed.empty() && !canonical_digest_text(manifest_seed)) {
-        set_error(error, "BLOCKED: SRS manifest ceremony seed digest is not canonical");
+    std::uint64_t manifest_version = 0U;
+    bool has_version = false;
+    if (!optional_json_u64(manifest, "manifest_version", manifest_version, has_version) ||
+        !has_version || manifest_version != 2U) {
+        set_error(error, "BLOCKED: local random SRS requires manifest_version=2");
         return false;
     }
     std::string chunking_rule;
@@ -966,10 +938,8 @@ bool load_authenticated_srs(const Config& config,
 
     std::vector<AuthenticatedSrsResource::Chunk> chunks;
     const bool has_families = manifest.find("\"families\"") != std::string::npos;
-    const bool has_chunks = manifest.find("\"chunks\"") != std::string::npos;
-    const bool has_family_chunks = manifest.find("\"family_chunks\"") != std::string::npos;
-    if ((has_families || has_chunks || has_family_chunks) && manifest_version < 2U) {
-        set_error(error, "BLOCKED: per-family SRS manifest requires manifest_version >= 2");
+    if (!has_families) {
+        set_error(error, "BLOCKED: local random SRS requires the canonical families layout");
         return false;
     }
     if (has_families) {
@@ -994,76 +964,10 @@ bool load_authenticated_srs(const Config& config,
             for (std::size_t index = 0U; index < family_chunks.size(); ++index) {
                 AuthenticatedSrsResource::Chunk chunk;
                 if (!parse_srs_chunk(family_chunks[index], family_id, index, root,
-                                     manifest_generator, manifest_transcript, manifest_seed,
-                                     false, chunk, error)) return false;
+                                     manifest_generator, manifest_basis, chunk, error)) return false;
                 chunks.push_back(std::move(chunk));
             }
         }
-    } else if (has_chunks || has_family_chunks) {
-        const char* key = has_chunks ? "chunks" : "family_chunks";
-        std::vector<std::string> chunk_objects;
-        if (!json_object_array(manifest, key, chunk_objects)) {
-            set_error(error, "BLOCKED: SRS chunk array is malformed");
-            return false;
-        }
-        for (std::size_t index = 0U; index < chunk_objects.size(); ++index) {
-            std::string family_id;
-            bool family_present = false;
-            if (!first_json_string(chunk_objects[index], {"family_id", "family"},
-                                   family_id, family_present) || !family_present || family_id.empty()) {
-                set_error(error, "BLOCKED: flat SRS chunk has no canonical family_id");
-                return false;
-            }
-            AuthenticatedSrsResource::Chunk chunk;
-            if (!parse_srs_chunk(chunk_objects[index], family_id, index, root,
-                                 manifest_generator, manifest_transcript, manifest_seed,
-                                 false, chunk, error)) return false;
-            chunks.push_back(std::move(chunk));
-        }
-    } else {
-        // Backward-compatible v1 parser for prepare_form_resources.py.  The
-        // old layout is one prefix chunk only; it is never expanded into a
-        // synthetic global domain and core admission checks its capacity.
-        if (manifest_version > 1U) {
-            set_error(error, "BLOCKED: chunked SRS manifest has no family/chunk entries");
-            return false;
-        }
-        std::uint64_t domain = 0U, degree = 0U, point_size = 0U;
-        if (!json_u64_field(manifest, "domain", domain) ||
-            !json_u64_field(manifest, "degree", degree) ||
-            !json_u64_field(manifest, "point_size", point_size) ||
-            !power_of_two(domain) || domain == 0U ||
-            degree < (domain == 1U ? 0U : domain - 1U) || point_size != kG1Size) {
-            set_error(error, "BLOCKED: canonical v1 SRS manifest domain/degree/point_size is invalid");
-            return false;
-        }
-        std::string gp, gd, hp, hd, up, ud;
-        std::uint64_t gc = 0U, hc = 0U, uc = 0U;
-        if (!manifest_resource_digest(manifest, "G", gp, gd, gc) ||
-            !manifest_resource_digest(manifest, "H", hp, hd, hc) ||
-            !manifest_resource_digest(manifest, "U", up, ud, uc)) {
-            set_error(error, "BLOCKED: canonical v1 SRS manifest point metadata is malformed");
-            return false;
-        }
-        if (manifest_transcript.empty()) {
-            set_error(error, "BLOCKED: canonical v1 SRS manifest lacks ceremony transcript digest");
-            return false;
-        }
-        std::ostringstream legacy;
-        legacy << "{\"chunk_id\":\"legacy-v1\",\"chunk_index\":0,"
-               << "\"point_offset\":0,\"point_count\":" << domain
-               << ",\"domain\":" << domain << ",\"degree\":" << degree
-               << ",\"point_size\":" << point_size
-               << ",\"G\":{\"path\":\"" << gp << "\",\"sha256\":\"" << gd
-               << "\",\"count\":" << gc << "},\"H\":{\"path\":\"" << hp
-               << "\",\"sha256\":\"" << hd << "\",\"count\":" << hc
-               << "},\"U\":{\"path\":\"" << up << "\",\"sha256\":\"" << ud
-               << "\",\"count\":" << uc << "}}";
-        AuthenticatedSrsResource::Chunk chunk;
-        if (!parse_srs_chunk(legacy.str(), "*", 0U, root, "GATZKG1C",
-                             manifest_transcript, manifest_seed, true, chunk, error)) return false;
-        chunks.push_back(std::move(chunk));
-        chunking_rule = "legacy_v1_prefix";
     }
     if (chunks.empty()) {
         set_error(error, "BLOCKED: authenticated SRS manifest has no chunks");
@@ -1089,13 +993,8 @@ bool load_authenticated_srs(const Config& config,
             set_error(error, "BLOCKED: SRS chunk generator_id differs from manifest");
             return false;
         }
-        if (!manifest_transcript.empty() &&
-            chunk.ceremony_transcript_digest != manifest_transcript) {
-            set_error(error, "BLOCKED: SRS chunk ceremony transcript differs from manifest");
-            return false;
-        }
-        if (!manifest_seed.empty() && chunk.ceremony_seed_digest != manifest_seed) {
-            set_error(error, "BLOCKED: SRS chunk ceremony seed differs from manifest");
+        if (chunk.basis_digest != manifest_basis) {
+            set_error(error, "BLOCKED: SRS chunk basis digest differs from manifest");
             return false;
         }
     }
@@ -1113,7 +1012,7 @@ bool load_authenticated_srs(const Config& config,
     resource->generator_digest = selected_generator_digest;
     resource->chunking_rule = chunking_rule;
     resource->generator_id = selected_chunk.generator_id;
-    resource->ceremony_transcript_digest = selected_chunk.ceremony_transcript_digest;
+    resource->basis_digest = selected_chunk.basis_digest;
     const std::string selected_family_id = selected_chunk.family_id;
     const std::string selected_chunk_id = selected_chunk.chunk_id;
     // Keep the actual vector position, not the manifest's logical

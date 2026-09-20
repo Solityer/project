@@ -112,6 +112,7 @@ struct Config {
     std::string task_type;
     std::string report_unit;
     std::string config_digest;
+    std::string config_binding_digest;
     std::string asset_manifest_digest;
     std::string chunking_rule;
     std::string degree_bound_id;

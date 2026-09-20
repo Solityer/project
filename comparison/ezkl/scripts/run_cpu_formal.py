@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Run the single baseline-local ezkl CPU formal chain.
+"""Run the baseline-local ezkl CPU formal chain for all five datasets.
 
-The operator supplies one authentic official Halo2 KZG SRS and its SHA-256
-per dataset.  This entry point stages those files, regenerates the exact
-canonical resources (including the large ogbn-arxiv table/ledger), builds the
-official CPU binary, runs all five setup/produce/final/witness/prove/verify
-cells, then collects and validates the CPU result matrix.
+The command owns the complete preparation order.  It regenerates and gates the
+five canonical resources, builds the current CPU binary, provisions one
+source-matched official SRS through native ``get-srs`` (the native loader
+downsizes it for each circuit), and then runs setup, independent production,
+final binding, witness, prove, independent verify, collection and validation.
+No SRS path, digest, or other ceremony input is accepted from the operator.
 """
 
 from __future__ import annotations
@@ -16,40 +17,22 @@ import subprocess
 import sys
 from pathlib import Path
 
-from formal_common import DATASETS, ROOT, ContractError, abort, local_path, print_error
+from formal_common import (
+    DATASETS,
+    ROOT,
+    ContractError,
+    abort,
+    local_path,
+    print_error,
+    validate_native_srs_manifest,
+)
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument(
-        "--srs-source",
-        action="append",
-        required=True,
-        metavar="DATASET=PATH",
-        help="operator-supplied official SRS source; repeat once per dataset",
-    )
-    result.add_argument(
-        "--srs-sha256",
-        action="append",
-        required=True,
-        metavar="DATASET=SHA256",
-        help="lowercase SHA-256 for the matching SRS source; repeat once per dataset",
-    )
     result.add_argument("--binary", default="target/release/ezkl")
     result.add_argument("--output-root", default="runs/formal")
     result.add_argument("--matrix", default="results/formal_matrix.json")
-    return result
-
-
-def keyed(values: list[str], label: str) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for value in values:
-        dataset, separator, payload = value.partition("=")
-        if not separator or dataset not in DATASETS or not payload or dataset in result:
-            abort(f"{label} must contain each dataset exactly once as DATASET=VALUE")
-        result[dataset] = payload
-    if set(result) != set(DATASETS):
-        abort(f"{label} must contain exactly {list(DATASETS)}")
     return result
 
 
@@ -60,20 +43,14 @@ def run(command: list[str], label: str) -> None:
         abort(f"{label} failed with exit code {completed.returncode}")
 
 
-def local_cli(path: Path) -> str:
+def local_cli(path: Path, label: str) -> str:
     try:
         return path.resolve().relative_to(ROOT.resolve()).as_posix()
     except ValueError:
-        abort(f"formal path is outside the ezkl baseline: {path}")
+        abort(f"{label} is outside the ezkl baseline: {path}")
 
 
 def main(args: argparse.Namespace) -> int:
-    sources = keyed(args.srs_source, "--srs-source")
-    digests = keyed(args.srs_sha256, "--srs-sha256")
-    for dataset, value in digests.items():
-        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-            abort(f"--srs-sha256 {dataset} must be a lowercase SHA-256 digest")
-
     binary = local_path(args.binary, "binary")
     output_root = local_path(args.output_root, "output-root")
     matrix = local_path(args.matrix, "matrix")
@@ -87,48 +64,50 @@ def main(args: argparse.Namespace) -> int:
     python = sys.executable
     provision = ROOT / "scripts" / "provision_srs.py"
     prepare = ROOT / "scripts" / "prepare_gat_resources.py"
+    resource_validator = ROOT / "scripts" / "validate_resources.py"
     build = ROOT / "scripts" / "build_ezkl.sh"
     single = ROOT / "scripts" / "run_single_dataset.py"
     collect = ROOT / "scripts" / "collect_results.py"
     validate = ROOT / "scripts" / "validate_final.py"
-    for path in (provision, prepare, build, single, collect, validate):
+    for path in (provision, prepare, resource_validator, build, single, collect, validate):
         if not path.is_file():
             abort(f"missing formal runner component: {path}")
 
-    # Authenticate and stage each external SRS before build/config validation.
-    for dataset in DATASETS:
-        source = Path(sources[dataset]).expanduser()
-        if not source.is_absolute():
-            source = (Path.cwd() / source).resolve()
-        run(
-            [
-                python,
-                local_cli(provision),
-                "--dataset",
-                dataset,
-                "--source",
-                str(source),
-                "--sha256",
-                digests[dataset],
-                "--replace",
-            ],
-            f"provision {dataset} official SRS",
-        )
+    # This prepares all five exact tables/ledgers, including the OGBN canonical
+    # table/ledger, and writes a fresh authenticated resource manifest.
+    run(
+        [python, local_cli(prepare, "resource preparer"), "--commit-manifest"],
+        "prepare five-dataset canonical resources",
+    )
+    run(
+        [python, local_cli(resource_validator, "resource validator"), "--require-complete"],
+        "require complete authenticated resources",
+    )
+    run([local_cli(build, "build script"), "--cpu"], "build official ezkl CPU binary")
 
-    # This is the only resource-preparation entry point.  It regenerates all
-    # five exact tables/ledgers and atomically refreshes the authenticated
-    # manifest; no OGBN generation is performed by the development checks.
-    run([python, local_cli(prepare), "--commit-manifest"], "prepare authenticated five-dataset resources")
-    run([build, "--cpu"], "build official ezkl CPU binary")
+    # The native binary is now source-matched to the code used by the build.
+    # provision_srs.py parses the native PUBLIC_SRS_SHA256_HASHES table, uses
+    # its maximum supported k, and updates all five secure configs atomically.
+    run(
+        [python, local_cli(provision, "SRS provisioner"), "--binary", local_cli(binary, "binary")],
+        "provision official SRS through native get-srs",
+    )
+    srs_manifest = validate_native_srs_manifest()
+    entries = srs_manifest["entries"]
+    shared_paths = {entry["path"] for entry in entries.values()}
+    if len(shared_paths) != 1:
+        abort("native SRS manifest does not expose one shared official cache")
+    srs = ROOT / next(iter(shared_paths))
+    if not srs.is_file() or srs.is_symlink():
+        abort(f"shared official SRS is missing or symlinked: {srs}")
 
     for dataset in DATASETS:
         output = output_root / dataset / "cpu"
-        srs = ROOT / "resources" / "native_srs" / f"{dataset}_formal_srs"
         if output.exists() or output.is_symlink():
             abort(f"formal output already exists; refusing to mix runs: {output}")
         output.mkdir(parents=True)
         setup = [
-            local_cli(binary),
+            local_cli(binary, "binary"),
             "gat-prepare",
             "--dataset",
             dataset,
@@ -137,28 +116,28 @@ def main(args: argparse.Namespace) -> int:
             "--resource-manifest",
             "resources/resource_manifest.json",
             "--output-dir",
-            local_cli(output),
+            local_cli(output, "output-dir"),
             "--srs-path",
-            local_cli(srs),
+            local_cli(srs, "SRS"),
         ]
         run(setup, f"{dataset} native setup")
         run(
             [
-                local_cli(binary),
+                local_cli(binary, "binary"),
                 "gat-produce",
                 "--dataset",
                 dataset,
                 "--resource-manifest",
                 "resources/resource_manifest.json",
                 "--output-dir",
-                local_cli(output),
+                local_cli(output, "output-dir"),
             ],
             f"{dataset} independent gat-produce",
         )
         run(
             [
                 python,
-                local_cli(single),
+                local_cli(single, "single formal runner"),
                 "--dataset",
                 dataset,
                 "--backend",
@@ -166,19 +145,15 @@ def main(args: argparse.Namespace) -> int:
                 "--execute-formal",
                 "--reuse-setup",
                 "--config",
-                local_cli(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg"),
+                local_cli(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg", "config"),
                 "--public-statement",
-                local_cli(output / "statement.json"),
+                local_cli(output / "statement.json", "public statement"),
                 "--public-output",
-                local_cli(output / "public_output.json"),
-                "--srs",
-                local_cli(srs),
-                "--srs-sha256",
-                digests[dataset],
+                local_cli(output / "public_output.json", "public output"),
                 "--binary",
-                local_cli(binary),
+                local_cli(binary, "binary"),
                 "--output-dir",
-                local_cli(output),
+                local_cli(output, "output-dir"),
             ],
             f"{dataset} final/witness/prove/independent verify",
         )
@@ -186,11 +161,11 @@ def main(args: argparse.Namespace) -> int:
     run(
         [
             python,
-            local_cli(collect),
+            local_cli(collect, "result collector"),
             "--runs-root",
-            local_cli(output_root),
+            local_cli(output_root, "output-root"),
             "--output",
-            local_cli(matrix),
+            local_cli(matrix, "matrix"),
             "--backends",
             "cpu",
         ],
@@ -199,9 +174,9 @@ def main(args: argparse.Namespace) -> int:
     run(
         [
             python,
-            local_cli(validate),
+            local_cli(validate, "result validator"),
             "--matrix",
-            local_cli(matrix),
+            local_cli(matrix, "matrix"),
             "--backends",
             "cpu",
         ],

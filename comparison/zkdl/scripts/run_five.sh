@@ -8,24 +8,13 @@ if [[ "$backend" != "cpu" && "$backend" != "gpu" ]]; then
   echo "usage: $0 cpu|gpu" >&2
   exit 2
 fi
-if [[ -z "${ZKDL_CEREMONY_BUNDLE:-}" ]]; then
-  echo "run-five: BLOCKED: set ZKDL_CEREMONY_BUNDLE to the external zkDL ceremony bundle" >&2
-  exit 3
-fi
-if [[ -z "${ZKDL_MODEL_BLINDER_SEED_FILE:-}" ]]; then
-  echo "run-five: BLOCKED: set ZKDL_MODEL_BLINDER_SEED_FILE to the owner-only model blinder seed" >&2
-  exit 3
-fi
 if [[ "${ZKDL_ALLOW_FULL_DATASET_RUN:-0}" != "1" ]]; then
   echo "run-five: refusing full-dataset proving; set ZKDL_ALLOW_FULL_DATASET_RUN=1 after review" >&2
   exit 3
 fi
 for config in cora citeseer pubmed ppi ogbn_arxiv; do
   run_dir="runs/${config}_${backend}"
-  "$script_dir/setup_register.sh" \
-    --bundle "$ZKDL_CEREMONY_BUNDLE" \
-    --model-blinder-seed "$ZKDL_MODEL_BLINDER_SEED_FILE" \
-    "$root/configs/${config}_secure.cfg"
+  "$script_dir/setup_register.sh" "$root/configs/${config}_secure.cfg"
   "$script_dir/run_single.sh" "$root/configs/${config}_secure.cfg" "$backend" "$run_dir"
   "$script_dir/verify_single.sh" "$root/configs/${config}_secure.cfg" "$run_dir"
 done

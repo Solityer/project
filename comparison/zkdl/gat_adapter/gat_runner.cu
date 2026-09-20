@@ -374,6 +374,20 @@ std::string config_identity_digest(const std::map<std::string, std::string>& val
     return sha256_text(canonical);
 }
 
+std::string config_binding_identity_digest(const std::map<std::string, std::string>& values) {
+    std::string canonical = "{";
+    bool first = true;
+    for (const auto& [key, value] : values) {
+        if (key == "srs_manifest_digest" || key == "verifier_registry_digest" ||
+            key == "model_blinder_sidecar_digest") continue;
+        if (!first) canonical.push_back(',');
+        first = false;
+        canonical += json_quote_config(key) + ":" + json_quote_config(value);
+    }
+    canonical.push_back('}');
+    return sha256_text(canonical);
+}
+
 std::string sha256_file(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) fail("cannot open for hashing " + path.string());
@@ -2231,6 +2245,7 @@ Config load_config(const std::filesystem::path& path) {
     // baseline-local resource admission scripts rather than a circular raw
     // file digest.
     config.config_digest = config_identity_digest(values);
+    config.config_binding_digest = config_binding_identity_digest(values);
     return config;
 }
 

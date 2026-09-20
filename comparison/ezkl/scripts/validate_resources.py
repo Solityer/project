@@ -369,6 +369,11 @@ def main() -> int:
         help="require authenticated exact resources for all five datasets",
     )
     parser.add_argument(
+        "--require-native-srs",
+        action="store_true",
+        help="also require the source-matched native get-srs manifest/config binding",
+    )
+    parser.add_argument(
         "--source-root",
         type=Path,
         default=Path(__file__).resolve().parents[3],
@@ -389,6 +394,13 @@ def main() -> int:
     validate_manifest(root, manifest, args.verify_source)
     if args.require_complete:
         require_complete_resource_set(root, manifest)
+    if args.require_native_srs:
+        try:
+            from formal_common import validate_native_srs_manifest
+
+            validate_native_srs_manifest()
+        except Exception as exc:
+            fail(f"native SRS provenance validation failed: {exc}")
     print(f"resource manifest valid: {len(manifest['files'])} files")
     return 0
 

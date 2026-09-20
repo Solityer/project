@@ -67,6 +67,34 @@ def read_kv(path: Path) -> dict[str, str]:
     return values
 
 
+def _config_binding_digest(path: Path) -> str:
+    values: dict[str, str] = {}
+    for number, raw in enumerate(_regular(path, "config").read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" not in line:
+            raise ArtifactError(f"malformed config line {number}: {path}")
+        key, value = (part.strip() for part in line.split("=", 1))
+        if not key or not value or key in values:
+            raise ArtifactError(f"invalid or duplicate config key at line {number}: {path}")
+        values[key] = value
+    for key in ("srs_manifest_digest", "verifier_registry_digest", "model_blinder_sidecar_digest"):
+        values.pop(key, None)
+    encoded = json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _basis_digest(g_digest: str, h_digest: str, u_digest: str) -> str:
+    encoded = json.dumps({
+        "G": g_digest,
+        "H": h_digest,
+        "U": u_digest,
+        "schema": "zkDL_gat_basis_digest_v1",
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _required(values: dict[str, str], key: str, path: Path) -> str:
     value = values.get(key)
     if value is None or value == "":
@@ -143,15 +171,30 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
     _digest(manifest["srs_manifest_digest"], "srs_manifest_digest")
     srs = _json(srs_manifest, "SRS manifest")
     setup = srs.get("setup")
-    if not isinstance(setup, dict) or setup.get("trust_status") != "external_ceremony":
-        raise ArtifactError("SRS manifest is not marked external_ceremony")
-    if not all(isinstance(setup.get(key), str) and setup[key]
-               for key in ("provenance_id", "authority", "transcript_sha256")):
-        raise ArtifactError("SRS manifest lacks external ceremony provenance")
-    if setup.get("transcript_sha256") != srs.get("ceremony_transcript_sha256"):
-        raise ArtifactError("SRS manifest provenance transcript mismatch")
+    expected_setup = {
+        "schema": "zkDL_gat_local_random_setup_v1",
+        "mode": "native_local_ephemeral_random",
+        "trust_status": "native_local_ephemeral_random",
+        "algorithm": "os_csprng_nonzero_scalar_mul_bls12_381_g1",
+        "spec": "zkDL_Hyrax_IPA_Pedersen_independent_g1_basis_v1",
+        "curve_id": "bls12_381",
+    }
+    if not isinstance(setup, dict) or any(setup.get(key) != value for key, value in expected_setup.items()):
+        raise ArtifactError("SRS manifest local random setup metadata mismatch")
+    basis = srs.get("basis_digest")
+    if not isinstance(basis, str) or not HEX64.fullmatch(basis) or setup.get("basis_digest") != basis:
+        raise ArtifactError("SRS manifest basis digest is not setup-bound")
+    config_raw = manifest.get("config")
+    if not isinstance(config_raw, str):
+        raise ArtifactError("asset manifest lacks config path")
+    config_path = _local(root, config_raw, "config path")
+    config_relative = config_path.relative_to(root).as_posix()
+    if digests.get(config_relative) != sha256_file(config_path):
+        raise ArtifactError("asset manifest does not authenticate config")
+    if setup.get("config_binding_digest") != _config_binding_digest(config_path):
+        raise ArtifactError("SRS setup config binding digest mismatch")
 
-    def check_frame(item: Any, label: str) -> None:
+    def check_frame(item: Any, label: str) -> str:
         if not isinstance(item, dict):
             raise ArtifactError(f"SRS manifest missing {label} frame")
         raw = item.get("path")
@@ -163,19 +206,30 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
         relative = frame.relative_to(root).as_posix()
         if relative not in digests or digests[relative] != declared:
             raise ArtifactError(f"asset manifest does not authenticate SRS {label} frame")
+        return declared
 
-    if isinstance(srs.get("families"), list):
-        for family in srs["families"]:
-            if not isinstance(family, dict) or not isinstance(family.get("chunks"), list) or not family["chunks"]:
-                raise ArtifactError("SRS manifest has malformed family/chunk entries")
-            for chunk in family["chunks"]:
-                if not isinstance(chunk, dict):
-                    raise ArtifactError("SRS manifest has malformed chunk entry")
-                for key in ("G", "H", "U"):
-                    check_frame(chunk.get(key), f"{family.get('family_id', '?')}/{key}")
-    else:
-        for key in ("G", "H", "U"):
-            check_frame(srs.get(key), key)
+    families = srs.get("families")
+    if not isinstance(families, list) or not families:
+        raise ArtifactError("SRS manifest lacks canonical families")
+    generator_id = srs.get("generator_id")
+    if not isinstance(generator_id, str) or not generator_id:
+        raise ArtifactError("SRS manifest lacks generator_id")
+    for family in families:
+        if not isinstance(family, dict) or not isinstance(family.get("chunks"), list) or not family["chunks"]:
+            raise ArtifactError("SRS manifest has malformed family/chunk entries")
+        for chunk in family["chunks"]:
+            if not isinstance(chunk, dict):
+                raise ArtifactError("SRS manifest has malformed chunk entry")
+            if (chunk.get("generator_id") != generator_id or
+                    chunk.get("basis_digest") != basis or
+                    chunk.get("family_id") != family.get("family_id")):
+                raise ArtifactError("SRS chunk generator/basis identity mismatch")
+            frame_digests = {key: check_frame(chunk.get(key), f"{family.get('family_id', '?')}/{key}")
+                             for key in ("G", "H", "U")}
+            if chunk.get("generator_digest") != frame_digests["G"]:
+                raise ArtifactError("SRS chunk generator digest mismatch")
+            if _basis_digest(frame_digests["G"], frame_digests["H"], frame_digests["U"]) != basis:
+                raise ArtifactError("SRS chunk basis digest does not bind frames")
 
     registry_path = _local(root, manifest["model_registry_path"], "model registry path")
     _regular(registry_path, "model registry")

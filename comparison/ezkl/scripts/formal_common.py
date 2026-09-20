@@ -32,6 +32,12 @@ NATIVE_SECURITY_PROFILE_ID = "halo2-kzg-shplonk"
 # Full GAT circuits require a materially larger native Halo2 KZG parameter
 # file; provision_srs.py enforces the same floor before staging it.
 MIN_FORMAL_SRS_BYTES = 4096
+SRS_MANIFEST = ROOT / "resources" / "native_srs" / "srs_manifest.json"
+NATIVE_SRS_SCHEMA_VERSION = 2
+NATIVE_SRS_SOURCE = "official_ezkl_ceremony"
+NATIVE_SRS_PROVISIONER = "native_get_srs"
+NATIVE_SRS_URL_ROW = re.compile(r'pub const PUBLIC_SRS_URL:\s*&str\s*=\s*"([^"]+)"\s*;')
+NATIVE_SRS_HASH_ROW = re.compile(r"\(\s*(\d+)\s*,\s*\"([0-9a-f]{64})\"\s*,")
 CANONICAL_CONTRACT_KEYS = {
     "schema_version",
     "baseline",
@@ -360,6 +366,114 @@ def require_digest(value: str, label: str) -> str:
     if not isinstance(value, str) or not HEX64.fullmatch(value):
         abort(f"{label} must be a lowercase SHA-256 digest")
     return value
+
+
+def native_srs_contract() -> tuple[str, int, dict[int, str]]:
+    """Read the official URL/hash contract from the current native ezkl source."""
+
+    source = ROOT / "src" / "pfsys" / "srs.rs"
+    hashes_source = ROOT / "src" / "srs_sha.rs"
+    require_file(source, "native SRS URL source")
+    require_file(hashes_source, "native SRS hash source")
+    url_match = NATIVE_SRS_URL_ROW.search(source.read_text())
+    if url_match is None or not url_match.group(1).startswith("https://"):
+        abort("native SRS source has no authenticated HTTPS PUBLIC_SRS_URL")
+    hashes = {int(key): value for key, value in NATIVE_SRS_HASH_ROW.findall(hashes_source.read_text())}
+    if not hashes or set(hashes) != set(range(1, max(hashes) + 1)):
+        abort("native SRS hash source has no contiguous public logrows range")
+    return url_match.group(1), max(hashes), hashes
+
+
+def validate_native_srs_manifest() -> dict[str, Any]:
+    """Validate native get-srs provenance and every config/path/digest binding."""
+
+    manifest = load_json(SRS_MANIFEST, "native SRS manifest")
+    expected_top = {
+        "schema_version",
+        "baseline",
+        "srs_type",
+        "shared",
+        "max_logrows",
+        "source",
+        "provisioner",
+        "source_url",
+        "hash_source",
+        "native_hash_verified",
+        "entries",
+    }
+    require_exact_keys(manifest, expected_top, "native SRS manifest")
+    if manifest["schema_version"] != NATIVE_SRS_SCHEMA_VERSION or manifest["baseline"] != "ezkl":
+        abort("native SRS manifest schema/baseline mismatch")
+    if manifest["srs_type"] != NATIVE_SECURITY_PROFILE_ID or manifest["shared"] is not True:
+        abort("native SRS manifest is not shared Halo2 KZG/SHPLONK material")
+    if manifest["source"] != NATIVE_SRS_SOURCE or manifest["provisioner"] != NATIVE_SRS_PROVISIONER:
+        abort("native SRS manifest is not produced by native get-srs")
+    if manifest["hash_source"] != "src/srs_sha.rs" or manifest["native_hash_verified"] is not True:
+        abort("native SRS manifest lacks the native embedded-hash attestation")
+    source_url, expected_k, hashes = native_srs_contract()
+    if manifest["max_logrows"] != expected_k or manifest["source_url"] != f"{source_url}{expected_k}.srs":
+        abort("native SRS manifest logrows/source URL is not source-matched")
+    entries = manifest["entries"]
+    if not isinstance(entries, dict) or set(entries) != set(DATASETS):
+        abort(f"native SRS manifest must contain exactly {list(DATASETS)} entries")
+    expected_entry_keys = {
+        "dataset",
+        "srs_id",
+        "srs_type",
+        "path",
+        "sha256",
+        "size",
+        "logrows",
+        "source",
+        "provisioner",
+        "source_url",
+        "hash_source",
+        "native_hash_verified",
+        "trusted",
+        "reduced",
+        "generated",
+    }
+    shared_path: str | None = None
+    shared_id: str | None = None
+    shared_digest: str | None = None
+    for dataset in DATASETS:
+        entry = entries[dataset]
+        require_exact_keys(entry, expected_entry_keys, f"native SRS entry {dataset}")
+        if entry["dataset"] != dataset or entry["srs_type"] != "trusted_srs":
+            abort(f"native SRS entry {dataset} identity/type mismatch")
+        if entry["source"] != NATIVE_SRS_SOURCE or entry["provisioner"] != NATIVE_SRS_PROVISIONER:
+            abort(f"native SRS entry {dataset} is not native get-srs provenance")
+        if entry["logrows"] != expected_k or entry["source_url"] != manifest["source_url"]:
+            abort(f"native SRS entry {dataset} logrows/source URL mismatch")
+        if entry["hash_source"] != "src/srs_sha.rs" or entry["native_hash_verified"] is not True:
+            abort(f"native SRS entry {dataset} lacks native hash verification")
+        if entry["trusted"] is not True or entry["reduced"] is not False or entry["generated"] is not False:
+            abort(f"native SRS entry {dataset} is not trusted full-size material")
+        require_digest(entry["sha256"], f"native SRS entry {dataset} sha256")
+        if entry["sha256"] != hashes[expected_k]:
+            abort(f"native SRS entry {dataset} digest is not the embedded public hash")
+        if not isinstance(entry["size"], int) or entry["size"] < MIN_FORMAL_SRS_BYTES:
+            abort(f"native SRS entry {dataset} has an invalid/minimal size")
+        path = local_path(entry["path"], f"native SRS entry {dataset} path")
+        reject_forbidden_path(path, f"native SRS entry {dataset} path")
+        require_formal_srs(path, f"native SRS entry {dataset} file")
+        if path.stat().st_size != entry["size"] or sha256(path) != entry["sha256"]:
+            abort(f"native SRS entry {dataset} file digest/size mismatch")
+        if shared_path is None:
+            shared_path = entry["path"]
+            shared_id = entry["srs_id"]
+            shared_digest = entry["sha256"]
+        elif (entry["path"], entry["srs_id"], entry["sha256"]) != (shared_path, shared_id, shared_digest):
+            abort("native SRS entries do not share one authenticated cache")
+        config = ROOT / "resources" / "canonical" / "configs" / f"{dataset}_secure.cfg"
+        values = parse_cfg(config)
+        if values.get("srs_type") != "trusted_srs":
+            abort(f"{config} is not a trusted_srs config")
+        if values.get("srs_id") != entry["srs_id"] or values.get("srs_path") != entry["path"]:
+            abort(f"{config} SRS id/path binding does not match native manifest")
+        if values.get("trusted_srs_sha256") != entry["sha256"]:
+            abort(f"{config} trusted_srs_sha256 does not match native manifest")
+    return manifest
 
 
 def load_json(path: Path, label: str) -> dict[str, Any]:

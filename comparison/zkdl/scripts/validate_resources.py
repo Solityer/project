@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate externally supplied zkDL resources without generating replacements.
+"""Validate baseline-local zkDL resources without generating replacements.
 
 The native CUDA bridge remains the authority for decoding BLS12-381 frames and
 model commitments.  This short admission tool only checks the baseline-local
@@ -108,6 +108,15 @@ def config_identity_digest(path: Path) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def config_binding_digest(path: Path) -> str:
+    values = config_values(path)
+    values.pop("srs_manifest_digest", None)
+    values.pop("verifier_registry_digest", None)
+    values.pop("model_blinder_sidecar_digest", None)
+    encoded = json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def frame_path(root: Path, frame: dict[str, Any], label: str,
                digest_cache: dict[Path, str] | None = None) -> Path:
     raw = required_string(frame, "path", label)
@@ -136,7 +145,9 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
     if not srs_raw or not manifest_digest or not srs_id:
         fail("secure config lacks srs_path, srs_id, or srs_manifest_digest")
     if manifest_digest == "UNAVAILABLE" or not HEX64.fullmatch(manifest_digest):
-        fail("srs_manifest_digest must be an externally supplied lowercase SHA-256")
+        fail("srs_manifest_digest must be a lowercase SHA-256")
+    if values.get("srs_type") != "native_local_ephemeral_random":
+        fail("secure config srs_type must be native_local_ephemeral_random")
     srs = local(root, srs_raw, "srs_path")
     if srs.is_symlink() or not srs.is_dir():
         fail(f"authenticated SRS directory is absent: {srs}")
@@ -152,109 +163,103 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
         fail("SRS encoding is not GATZKG1C")
     if required_string(manifest, "srs_id", "SRS manifest") != srs_id:
         fail("SRS id mismatch")
-    # A local seed-derived manifest is useful only for development and must
-    # never enter the formal authenticated path.  The external ceremony
-    # marker is intentionally checked independently of frame digests.
     setup = manifest.get("setup")
-    if not isinstance(setup, dict) or setup.get("trust_status") != "external_ceremony":
-        fail("SRS manifest is not marked external_ceremony")
-    for key in ("provenance_id", "authority", "transcript_sha256"):
-        if not isinstance(setup.get(key), str) or not setup[key]:
-            fail(f"SRS manifest setup lacks external provenance field {key}")
-    if not HEX64.fullmatch(setup["transcript_sha256"]):
-        fail("SRS manifest setup transcript_sha256 is not lowercase SHA-256")
-    if setup["transcript_sha256"] != manifest.get("ceremony_transcript_sha256"):
-        fail("SRS manifest setup transcript is not bound to ceremony_transcript_sha256")
-    version = manifest.get("manifest_version", 1)
-    if not isinstance(version, int) or version < 1:
-        fail("SRS manifest_version is invalid")
-    if version >= 2 or "families" in manifest:
-        if version < 2 or manifest.get("chunking_rule") != "per_family_prefix_v1":
-            fail("v2 SRS manifest requires per_family_prefix_v1 chunking_rule")
-        families = manifest.get("families")
-        if not isinstance(families, list) or not families:
-            fail("v2 SRS manifest has no families")
-        selected: tuple[int, str, dict[str, Any]] | None = None
-        default_family = manifest.get("default_family_id")
-        default_chunk = manifest.get("default_chunk_id")
-        seen: set[tuple[str, int]] = set()
-        generator_id = required_string(manifest, "generator_id", "SRS manifest")
-        transcript = required_digest(manifest, "ceremony_transcript_sha256", "SRS manifest")
-        seed = required_digest(manifest, "ceremony_seed_sha256", "SRS manifest")
-        frame_digest_cache: dict[Path, str] = {}
-        for family in families:
-            if not isinstance(family, dict) or not isinstance(family.get("family_id"), str) or not family["family_id"]:
-                fail("v2 SRS family has no family_id")
-            family_id = family["family_id"]
-            chunks = family.get("chunks")
-            if not isinstance(chunks, list) or not chunks:
-                fail(f"v2 SRS family has no chunks: {family_id}")
-            for ordinal, chunk in enumerate(chunks):
-                if not isinstance(chunk, dict):
-                    fail("v2 SRS chunk is not an object")
-                for key in ("chunk_id", "generator_id", "ceremony_transcript_sha256"):
-                    if not isinstance(chunk.get(key), str) or not chunk[key]:
-                        fail(f"v2 SRS chunk omits {key}")
-                if chunk["generator_id"] != generator_id or chunk["ceremony_transcript_sha256"] != transcript:
-                    fail("v2 SRS chunk generator/transcript identity mismatch")
-                if chunk.get("ceremony_seed_sha256") != seed:
-                    fail("v2 SRS chunk seed identity mismatch")
-                index = chunk.get("chunk_index")
-                domain = chunk.get("domain")
-                if not isinstance(index, int) or index < 0 or not isinstance(domain, int) or domain < 1 or domain & (domain - 1):
-                    fail("v2 SRS chunk index/domain is invalid")
-                if (family_id, index) in seen:
-                    fail("v2 SRS duplicate family/chunk_index")
-                seen.add((family_id, index))
-                required_domain = chunk.get("required_domain", domain)
-                if (not isinstance(required_domain, int) or required_domain < 1 or
-                        required_domain & (required_domain - 1) or required_domain > domain):
-                    fail("v2 SRS required_domain is not covered by the authenticated chunk")
-                if chunk.get("point_offset") != 0 or chunk.get("point_count") != domain or chunk.get("degree") != max(0, domain - 1) or chunk.get("point_size") != 48:
-                    fail("v2 SRS chunk domain/degree/point metadata mismatch")
-                frames: dict[str, Path] = {}
-                for label in ("G", "H", "U"):
-                    frame = chunk.get(label)
-                    if not isinstance(frame, dict):
-                        fail(f"v2 SRS chunk omits {label} frame")
-                    frames[label] = frame_path(srs, frame, f"{family_id}/{chunk['chunk_id']}/{label}", frame_digest_cache)
-                    expected = domain if label == "G" else 1
-                    if frame.get("count") != expected:
-                        fail(f"v2 SRS {label} count does not match chunk domain")
-                if frames["H"].read_bytes() == frames["U"].read_bytes():
-                    fail("v2 SRS H and U frames are byte-identical")
-                if required_digest(chunk, "generator_digest", "v2 SRS chunk") != chunk["G"]["sha256"]:
-                    fail("v2 SRS generator_digest does not bind G frame")
-                candidate = (domain, family_id, chunk)
-                if default_family is not None and default_chunk is not None:
-                    if family_id == default_family and chunk["chunk_id"] == default_chunk:
-                        selected = candidate
-                elif selected is None or candidate[:2] > selected[:2]:
+    if not isinstance(setup, dict):
+        fail("SRS manifest lacks local random setup metadata")
+    required_setup = {
+        "schema": "zkDL_gat_local_random_setup_v1",
+        "mode": "native_local_ephemeral_random",
+        "trust_status": "native_local_ephemeral_random",
+        "algorithm": "os_csprng_nonzero_scalar_mul_bls12_381_g1",
+        "spec": "zkDL_Hyrax_IPA_Pedersen_independent_g1_basis_v1",
+        "curve_id": "bls12_381",
+    }
+    for key, expected in required_setup.items():
+        if setup.get(key) != expected:
+            fail(f"SRS setup.{key} is not {expected}")
+    version = manifest.get("manifest_version")
+    if version != 2 or manifest.get("chunking_rule") != "per_family_prefix_v1":
+        fail("local random SRS requires manifest_version=2 and per_family_prefix_v1")
+    basis = required_digest(manifest, "basis_digest", "SRS manifest")
+    if required_digest(setup, "basis_digest", "SRS setup") != basis:
+        fail("SRS setup basis digest is not manifest-bound")
+    config_path = local(root, values["_config_path"], "config")
+    if required_digest(setup, "config_binding_digest", "SRS setup") != config_binding_digest(config_path):
+        fail("SRS setup config binding digest mismatch")
+    domain = setup.get("domain")
+    counts = (setup.get("generator_count"), setup.get("h_count"), setup.get("u_count"))
+    if (not isinstance(domain, int) or domain < 1 or domain & (domain - 1) or
+            counts != (domain, 1, 1)):
+        fail("SRS setup domain/count metadata is invalid")
+    families = manifest.get("families")
+    if not isinstance(families, list) or not families:
+        fail("local random SRS manifest has no families")
+    selected: tuple[int, str, dict[str, Any]] | None = None
+    default_family = manifest.get("default_family_id")
+    default_chunk = manifest.get("default_chunk_id")
+    seen: set[tuple[str, int]] = set()
+    generator_id = required_string(manifest, "generator_id", "SRS manifest")
+    frame_digest_cache: dict[Path, str] = {}
+    for family in families:
+        if not isinstance(family, dict) or not isinstance(family.get("family_id"), str) or not family["family_id"]:
+            fail("SRS family has no family_id")
+        family_id = family["family_id"]
+        chunks = family.get("chunks")
+        if not isinstance(chunks, list) or not chunks:
+            fail(f"SRS family has no chunks: {family_id}")
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                fail("SRS chunk is not an object")
+            for key in ("chunk_id", "generator_id", "basis_digest"):
+                if not isinstance(chunk.get(key), str) or not chunk[key]:
+                    fail(f"SRS chunk omits {key}")
+            if (chunk["generator_id"] != generator_id or chunk["basis_digest"] != basis or
+                    required_digest(chunk, "basis_digest", "SRS chunk") != basis):
+                fail("SRS chunk generator/basis identity mismatch")
+            index = chunk.get("chunk_index")
+            chunk_domain = chunk.get("domain")
+            if (not isinstance(index, int) or index < 0 or not isinstance(chunk_domain, int) or
+                    chunk_domain < 1 or chunk_domain & (chunk_domain - 1) or chunk_domain > domain):
+                fail("SRS chunk index/domain is invalid")
+            if (family_id, index) in seen:
+                fail("SRS duplicate family/chunk_index")
+            seen.add((family_id, index))
+            required_domain = chunk.get("required_domain", chunk_domain)
+            if (not isinstance(required_domain, int) or required_domain < 1 or
+                    required_domain & (required_domain - 1) or required_domain > chunk_domain):
+                fail("SRS required_domain is not covered by the local basis")
+            if (chunk.get("family_id") != family_id or chunk.get("point_offset") != 0 or
+                    chunk.get("point_count") != domain or chunk.get("domain") != domain or
+                    chunk.get("degree") != max(0, domain - 1) or chunk.get("point_size") != 48):
+                fail("SRS chunk domain/degree/point metadata mismatch")
+            frames: dict[str, Path] = {}
+            for label in ("G", "H", "U"):
+                frame = chunk.get(label)
+                if not isinstance(frame, dict):
+                    fail(f"SRS chunk omits {label} frame")
+                frames[label] = frame_path(srs, frame, f"{family_id}/{chunk['chunk_id']}/{label}", frame_digest_cache)
+                expected = domain if label == "G" else 1
+                if frame.get("count") != expected:
+                    fail(f"SRS {label} count does not match chunk domain")
+            if frames["H"].read_bytes() == frames["U"].read_bytes():
+                fail("SRS H and U frames are byte-identical")
+            if required_digest(chunk, "generator_digest", "SRS chunk") != chunk["G"]["sha256"]:
+                fail("SRS generator_digest does not bind G frame")
+            expected_basis = canonical_digest({
+                "G": chunk["G"]["sha256"], "H": chunk["H"]["sha256"],
+                "U": chunk["U"]["sha256"], "schema": "zkDL_gat_basis_digest_v1",
+            }, set())
+            if expected_basis != basis:
+                fail("SRS basis digest does not bind G/H/U frame digests")
+            candidate = (domain, family_id, chunk)
+            if default_family is not None or default_chunk is not None:
+                if family_id == default_family and chunk["chunk_id"] == default_chunk:
                     selected = candidate
-        if selected is None:
-            fail("v2 SRS has no selectable chunk")
-        return srs, manifest, selected[2]["generator_digest"]
-    domain = manifest.get("domain")
-    degree = manifest.get("degree")
-    point_size = manifest.get("point_size")
-    if not isinstance(domain, int) or domain < 1 or domain & (domain - 1):
-        fail("SRS domain is not a positive power of two")
-    if not isinstance(degree, int) or degree < (domain - 1 if domain > 1 else 0):
-        fail("SRS degree is smaller than its domain")
-    if point_size != 48:
-        fail("SRS point_size must be 48 for GATZKG1C")
-    frames = {}
-    for label in ("G", "H", "U"):
-        frame = manifest.get(label)
-        if not isinstance(frame, dict):
-            fail(f"SRS manifest omits {label} frame")
-        frames[label] = frame_path(srs, frame, label)
-        expected_count = domain if label == "G" else 1
-        if frame["count"] != expected_count:
-            fail(f"SRS {label} count does not match the authenticated domain")
-    if frames["H"].read_bytes() == frames["U"].read_bytes():
-        fail("SRS H and U frames are byte-identical")
-    return srs, manifest, digest(frames["G"])
+            elif selected is None or candidate[:2] > selected[:2]:
+                selected = candidate
+    if selected is None:
+        fail("local random SRS has no selectable chunk")
+    return srs, manifest, selected[2]["generator_digest"]
 
 
 def validate_registry(root: Path, values: dict[str, str], srs: Path,

@@ -238,7 +238,7 @@ bool resource_admission(const Config& config, const NativeRelationWitness& witne
         if (!selected || selected->generators.size() < requirement.second ||
             selected->domain > srs.domain || srs.generators.size() < selected->domain ||
             selected->generator_id != srs.generator_id ||
-            selected->ceremony_transcript_digest != srs.ceremony_transcript_digest ||
+            selected->basis_digest != srs.basis_digest ||
             selected->blinding_generator != srs.blinding_generator ||
             selected->u_generator != srs.u_generator) {
             if (error) *error = "BLOCKED: SRS family/chunk is not compatible with the common public chunk: " +

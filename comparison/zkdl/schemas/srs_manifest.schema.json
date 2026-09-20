@@ -4,7 +4,7 @@
   "title": "zkDL GATZKG1C family/chunk SRS manifest",
   "type": "object",
   "additionalProperties": true,
-  "required": ["manifest_format", "manifest_version", "curve_id", "encoding", "srs_id", "chunking_rule", "generator_id", "ceremony_transcript_sha256", "ceremony_seed_sha256", "setup", "families"],
+  "required": ["manifest_format", "manifest_version", "curve_id", "encoding", "srs_id", "chunking_rule", "generator_id", "basis_digest", "generator_digest", "setup", "families"],
   "properties": {
     "manifest_format": {"const": "zkgat_srs_manifest"},
     "manifest_version": {"type": "integer", "minimum": 2},
@@ -13,16 +13,24 @@
     "srs_id": {"type": "string", "minLength": 1},
     "chunking_rule": {"const": "per_family_prefix_v1"},
     "generator_id": {"type": "string", "minLength": 1},
-    "ceremony_transcript_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "ceremony_seed_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "basis_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "generator_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "setup": {
       "type": "object",
-      "required": ["trust_status", "provenance_id", "authority", "transcript_sha256"],
+      "required": ["schema", "mode", "trust_status", "algorithm", "spec", "curve_id", "config_binding_digest", "basis_digest", "domain", "generator_count", "h_count", "u_count"],
       "properties": {
-        "trust_status": {"const": "external_ceremony"},
-        "provenance_id": {"type": "string", "minLength": 1},
-        "authority": {"type": "string", "minLength": 1},
-        "transcript_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "schema": {"const": "zkDL_gat_local_random_setup_v1"},
+        "mode": {"const": "native_local_ephemeral_random"},
+        "trust_status": {"const": "native_local_ephemeral_random"},
+        "algorithm": {"const": "os_csprng_nonzero_scalar_mul_bls12_381_g1"},
+        "spec": {"const": "zkDL_Hyrax_IPA_Pedersen_independent_g1_basis_v1"},
+        "curve_id": {"const": "bls12_381"},
+        "config_binding_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "basis_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "domain": {"type": "integer", "minimum": 1},
+        "generator_count": {"type": "integer", "minimum": 1},
+        "h_count": {"const": 1},
+        "u_count": {"const": 1}
       }
     },
     "families": {
@@ -35,7 +43,7 @@
             "type": "array", "minItems": 1,
             "items": {
               "type": "object",
-              "required": ["family_id", "chunk_id", "chunk_index", "point_offset", "point_count", "domain", "degree", "point_size", "generator_id", "ceremony_transcript_sha256", "ceremony_seed_sha256", "G", "H", "U"],
+              "required": ["family_id", "chunk_id", "chunk_index", "point_offset", "point_count", "domain", "required_domain", "degree", "point_size", "generator_id", "basis_digest", "generator_digest", "G", "H", "U"],
               "properties": {
                 "family_id": {"type": "string", "minLength": 1},
                 "chunk_id": {"type": "string", "minLength": 1},
@@ -43,11 +51,12 @@
                 "point_offset": {"type": "integer", "minimum": 0},
                 "point_count": {"type": "integer", "minimum": 1},
                 "domain": {"type": "integer", "minimum": 1},
+                "required_domain": {"type": "integer", "minimum": 1},
                 "degree": {"type": "integer", "minimum": 0},
                 "point_size": {"const": 48},
                 "generator_id": {"type": "string", "minLength": 1},
-                "ceremony_transcript_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                "ceremony_seed_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "basis_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "generator_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                 "G": {"$ref": "#/$defs/frame"}, "H": {"$ref": "#/$defs/frame"}, "U": {"$ref": "#/$defs/frame"}
               }
             }

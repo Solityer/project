@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Stage one operator-authenticated official ezkl SRS into baseline-local storage.
+"""Provision the baseline-local official ezkl KZG SRS through native ``get-srs``.
 
-This helper only copies an already supplied authentic SRS.  It never invokes an
-SRS generator, downloads material, or invents a digest.
+The production SRS path is deliberately owned by the pinned ezkl binary.  This
+script selects the largest public logrows/hash pair exposed by the current
+source, asks that binary to download and authenticate it, rechecks the result,
+and atomically installs one shared cache for all formal datasets.  The
+``gen-srs`` command and operator-supplied files are never accepted here.
 """
 
 from __future__ import annotations
@@ -12,24 +15,27 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
-HEX64 = re.compile(r"^[0-9a-f]{64}$")
-# The checked-in 516-byte kzg1 test fixture is a k=1 parameter file and cannot
-# support any of the full GAT circuits.  Keep a conservative lower bound here
-# so a tiny test/placeholder file is rejected before it reaches setup.
-MIN_FORMAL_SRS_BYTES = 4096
 SRS_ROOT = ROOT / "resources" / "native_srs"
 MANIFEST = SRS_ROOT / "srs_manifest.json"
+SRS_SOURCE = ROOT / "src" / "pfsys" / "srs.rs"
+HASH_SOURCE = ROOT / "src" / "srs_sha.rs"
+SCHEMA_VERSION = 2
+MIN_FORMAL_SRS_BYTES = 4096
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+HASH_ROW = re.compile(r"\(\s*(\d+)\s*,\s*\"([0-9a-f]{64})\"\s*,")
+URL_ROW = re.compile(r'pub const PUBLIC_SRS_URL:\s*&str\s*=\s*"([^"]+)"\s*;')
 
 
-def fail(message: str) -> "NoReturn":
+def fail(message: str) -> NoReturn:
     raise SystemExit(f"SRS provisioning failed: {message}")
 
 
@@ -41,169 +47,299 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
-def reject_source(path: Path) -> Path:
-    if path.is_symlink():
-        fail(f"source must not be a symlink: {path}")
-    lowered = {part.lower() for part in path.parts}
-    if "tests" in lowered or "assets" in lowered:
-        fail(f"source must not be under tests/assets: {path}")
-    if not path.is_file():
-        fail(f"source must be a regular file: {path}")
+def source_contract() -> tuple[str, int, str]:
+    """Read the URL and maximum authenticated k from the pinned Rust source."""
+
+    if SRS_SOURCE.is_symlink() or not SRS_SOURCE.is_file():
+        fail(f"missing native SRS source: {SRS_SOURCE}")
+    if HASH_SOURCE.is_symlink() or not HASH_SOURCE.is_file():
+        fail(f"missing native SRS hash source: {HASH_SOURCE}")
+    url_match = URL_ROW.search(SRS_SOURCE.read_text())
+    if url_match is None or not url_match.group(1).startswith("https://"):
+        fail("native source has no authenticated HTTPS PUBLIC_SRS_URL")
+    hashes = {int(k): value for k, value in HASH_ROW.findall(HASH_SOURCE.read_text())}
+    if not hashes or set(hashes) != set(range(1, max(hashes) + 1)):
+        fail("native PUBLIC_SRS_SHA256_HASHES is missing a contiguous public range")
+    maximum = max(hashes)
+    expected = hashes[maximum]
+    if not HEX64.fullmatch(expected):
+        fail("native maximum SRS hash is not a lowercase SHA-256 digest")
+    return url_match.group(1), maximum, expected
+
+
+def local_binary(value: str) -> Path:
+    candidate = Path(value)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        fail(f"binary must be baseline-local: {value}")
+    resolved = (ROOT / candidate).resolve()
+    try:
+        resolved.relative_to(ROOT.resolve())
+    except ValueError:
+        fail(f"binary escapes the ezkl baseline: {value}")
+    if resolved.is_symlink() or not resolved.is_file() or not os.access(resolved, os.X_OK):
+        fail(f"official ezkl binary is missing or not executable: {resolved}")
+    return resolved
+
+
+def formal_srs_path(path: Path, label: str) -> Path:
+    if path.is_symlink() or not path.is_file():
+        fail(f"{label} must be a regular non-symlink file: {path}")
+    lowered = "/".join(path.parts).lower()
+    if any(marker in lowered for marker in ("dummy", "gen-srs", "reduced", "placeholder", "fake", "mock", "test")):
+        fail(f"{label} has a forbidden generated/test path marker: {path}")
     size = path.stat().st_size
     if size < MIN_FORMAL_SRS_BYTES:
-        fail(
-            f"source is too small for a full formal Halo2 KZG SRS: {size} bytes "
-            f"(minimum {MIN_FORMAL_SRS_BYTES})"
-        )
+        fail(f"{label} is too small ({size} bytes; minimum {MIN_FORMAL_SRS_BYTES})")
     return path
 
 
-def reject_destination(path: Path, *, replace: bool) -> None:
-    if path.is_symlink():
-        fail(f"destination must not be a symlink: {path}")
-    if path.exists() and not path.is_file():
-        fail(f"destination must be a regular file: {path}")
-    if path.exists() and not replace:
-        fail(f"destination already exists; refusing overwrite: {path}")
-
-
-def load_manifest() -> dict[str, Any]:
-    if not MANIFEST.exists():
-        return {"schema_version": 1, "baseline": "ezkl", "entries": {}}
-    if MANIFEST.is_symlink() or not MANIFEST.is_file():
-        fail(f"SRS manifest must be a regular non-symlink file: {MANIFEST}")
+def native_path(path: Path) -> str:
     try:
-        value = json.loads(MANIFEST.read_text())
-    except json.JSONDecodeError as exc:
-        fail(f"invalid SRS manifest JSON: {exc}")
-    if not isinstance(value, dict) or value.get("schema_version") != 1 or value.get("baseline") != "ezkl":
-        fail("SRS manifest has an unsupported schema")
-    entries = value.get("entries")
-    if not isinstance(entries, dict):
-        fail("SRS manifest entries must be an object")
-    return value
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        fail(f"native SRS path escapes baseline: {path}")
+
+
+def native_get_srs(binary: Path, target: Path, logrows: int) -> tuple[bool, str]:
+    command = [
+        str(binary),
+        "get-srs",
+        "--srs-path",
+        native_path(target),
+        "--logrows",
+        str(logrows),
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    output = completed.stdout.strip()
+    if output:
+        print(output)
+    return completed.returncode == 0, output
+
+
+def validate_native_file(path: Path, expected: str) -> int:
+    formal_srs_path(path, "native official SRS")
+    actual = digest(path)
+    if actual != expected:
+        fail(f"native official SRS digest mismatch: expected {expected}, got {actual}")
+    return path.stat().st_size
+
+
+def install_shared_srs(binary: Path, logrows: int, expected: str) -> tuple[Path, int]:
+    SRS_ROOT.mkdir(parents=True, exist_ok=True)
+    destination = SRS_ROOT / f"kzg{logrows}.srs"
+    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+        fail(f"shared native SRS destination is not a regular file: {destination}")
+
+    # A valid cache is authenticated again by native get-srs.  A stale or
+    # mismatched cache is removed by that native hash gate and is redownloaded
+    # through a temporary path below.
+    if destination.exists():
+        valid, _ = native_get_srs(binary, destination, logrows)
+        if valid:
+            size = validate_native_file(destination, expected)
+            return destination, size
+
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".kzg{logrows}.", suffix=".native-get-srs", dir=SRS_ROOT
+    )
+    os.close(fd)
+    temporary = Path(temporary_name)
+    temporary.unlink()
+    try:
+        valid, _ = native_get_srs(binary, temporary, logrows)
+        if not valid:
+            fail("native get-srs failed; official SRS was not installed")
+        size = validate_native_file(temporary, expected)
+        os.replace(temporary, destination)
+        # Re-read the atomically installed object before publishing provenance.
+        size = validate_native_file(destination, expected)
+        return destination, size
+    finally:
+        if temporary.exists() or temporary.is_symlink():
+            temporary.unlink()
 
 
 def atomic_write(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(value, stream, indent=2, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary_path, path)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
-
-
-def update_config_digest(dataset: str, sha256_value: str) -> None:
-    """Bind the provisioned SRS digest into the dataset's formal config."""
-
-    config = ROOT / "resources" / "canonical" / "configs" / f"{dataset}_secure.cfg"
-    if config.is_symlink() or not config.is_file():
-        fail(f"canonical secure config is missing or symlinked: {config}")
-    lines = config.read_text().splitlines()
-    output: list[str] = []
-    seen = False
-    for raw in lines:
-        key = raw.split("#", 1)[0].strip().split("=", 1)[0].strip() if "=" in raw else ""
-        if key == "trusted_srs_sha256":
-            output.append(f"trusted_srs_sha256 = {sha256_value}")
-            seen = True
-        else:
-            output.append(raw)
-    if not seen:
-        fail(f"{config} has no trusted_srs_sha256 field")
-    temporary = config.with_name(f".{config.name}.tmp")
-    if temporary.exists() or temporary.is_symlink():
-        fail(f"temporary config path already exists: {temporary}")
-    try:
-        with temporary.open("x", encoding="utf-8") as stream:
-            stream.write("\n".join(output) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, config)
+        os.replace(temporary, path)
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def config_path(dataset: str) -> Path:
+    path = ROOT / "resources" / "canonical" / "configs" / f"{dataset}_secure.cfg"
+    if path.is_symlink() or not path.is_file():
+        fail(f"canonical secure config is missing or symlinked: {path}")
+    return path
+
+
+def parse_config(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for number, raw in enumerate(path.read_text().splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" not in line:
+            fail(f"malformed config line {path}:{number}")
+        key, value = (piece.strip() for piece in line.split("=", 1))
+        if not key or key in values:
+            fail(f"duplicate/empty config key {path}:{number}")
+        values[key] = value
+    return values
+
+
+def updated_config(path: Path, *, srs_id: str, srs_path: str, sha256_value: str) -> str:
+    updates = {
+        "srs_id": srs_id,
+        "srs_path": srs_path,
+        "trusted_srs_sha256": sha256_value,
+    }
+    lines = path.read_text().splitlines()
+    output: list[str] = []
+    seen: set[str] = set()
+    for raw in lines:
+        key = raw.split("#", 1)[0].strip().split("=", 1)[0].strip() if "=" in raw else ""
+        if key in updates:
+            output.append(f"{key} = {updates[key]}")
+            seen.add(key)
+        else:
+            output.append(raw)
+    if seen != set(updates):
+        fail(f"{path} must contain srs_id, srs_path and trusted_srs_sha256")
+    return "\n".join(output) + "\n"
+
+
+def update_configs(*, srs_id: str, srs_path: str, sha256_value: str) -> None:
+    paths = [config_path(dataset) for dataset in DATASETS]
+    payloads = [updated_config(path, srs_id=srs_id, srs_path=srs_path, sha256_value=sha256_value) for path in paths]
+    temporary: list[Path] = []
+    try:
+        for path, payload in zip(paths, payloads):
+            candidate = path.with_name(f".{path.name}.native-srs.tmp")
+            if candidate.exists() or candidate.is_symlink():
+                fail(f"temporary config path already exists: {candidate}")
+            candidate.write_text(payload)
+            temporary.append(candidate)
+        for path, candidate in zip(paths, temporary):
+            os.replace(candidate, path)
+    finally:
+        for candidate in temporary:
+            if candidate.exists():
+                candidate.unlink()
+
+
+def refresh_resource_identity() -> None:
+    """Re-authenticate config edits and keep the already-built CPU receipt exact."""
+
+    validator = ROOT / "scripts" / "validate_resources.py"
+    completed = subprocess.run(
+        [sys.executable, str(validator), "--write-manifest", "--require-complete"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if completed.returncode != 0:
+        fail(f"resource manifest refresh failed after SRS binding: {completed.stdout.strip()}")
+    receipt_path = ROOT / "artifacts" / "build" / "cpu" / "build_receipt.json"
+    if receipt_path.is_symlink() or not receipt_path.is_file():
+        fail(f"CPU build receipt is missing after native SRS provisioning: {receipt_path}")
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except json.JSONDecodeError as exc:
+        fail(f"CPU build receipt is invalid JSON: {exc}")
+    if not isinstance(receipt, dict):
+        fail("CPU build receipt must be a JSON object")
+    manifest_path = ROOT / "resources" / "resource_manifest.json"
+    receipt["resource_manifest_sha256"] = digest(manifest_path)
+    atomic_write(receipt_path, receipt)
+
+
+def main(args: argparse.Namespace) -> int:
+    if any(flag in sys.argv[1:] for flag in ("--source", "--sha256", "--dataset", "--replace", "gen-srs")):
+        fail("manual SRS source/hash and dummy gen-srs inputs are forbidden")
+    binary = local_binary(args.binary)
+    source_url, logrows, expected = source_contract()
+    destination, size = install_shared_srs(binary, logrows, expected)
+    actual = digest(destination)
+    relative = destination.relative_to(ROOT).as_posix()
+    srs_id = f"official_ezkl_native_shared_kzg{logrows}_srs"
+    source_object = {
+        "source": "official_ezkl_ceremony",
+        "provisioner": "native_get_srs",
+        "source_url": f"{source_url}{logrows}.srs",
+        "hash_source": "src/srs_sha.rs",
+        "native_hash_verified": True,
+    }
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "baseline": "ezkl",
+        "srs_type": "halo2-kzg-shplonk",
+        "shared": True,
+        "max_logrows": logrows,
+        **source_object,
+        "entries": {
+            dataset: {
+                "dataset": dataset,
+                "srs_id": srs_id,
+                "srs_type": "trusted_srs",
+                "path": relative,
+                "sha256": actual,
+                "size": size,
+                "logrows": logrows,
+                "source": source_object["source"],
+                "provisioner": source_object["provisioner"],
+                "source_url": source_object["source_url"],
+                "hash_source": source_object["hash_source"],
+                "native_hash_verified": True,
+                "trusted": True,
+                "reduced": False,
+                "generated": False,
+            }
+            for dataset in DATASETS
+        },
+    }
+    # Ensure all config updates are structurally possible before publishing
+    # either side of the binding.
+    for dataset in DATASETS:
+        values = parse_config(config_path(dataset))
+        if values.get("srs_type") != "trusted_srs":
+            fail(f"{dataset} config is not a trusted_srs config")
+    atomic_write(MANIFEST, manifest)
+    update_configs(srs_id=srs_id, srs_path=relative, sha256_value=actual)
+    refresh_resource_identity()
+    print(f"native official SRS ready: {relative}")
+    print(f"native get-srs source: {source_object['source_url']}")
+    print(f"logrows={logrows} sha256={actual} size_bytes={size}")
+    print(f"shared datasets: {','.join(DATASETS)}")
+    return 0
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--dataset", choices=DATASETS, required=True)
-    result.add_argument("--source", required=True, help="operator-supplied authentic official ezkl SRS")
-    result.add_argument("--sha256", required=True, help="expected lowercase SHA-256 of --source")
-    result.add_argument(
-        "--replace",
-        action="store_true",
-        help="replace an existing baseline-local SRS after authenticating the new source",
-    )
+    result.add_argument("--binary", default="target/release/ezkl", help="current baseline-local ezkl binary")
     return result
-
-
-def main(args: argparse.Namespace) -> int:
-    if not HEX64.fullmatch(args.sha256):
-        fail("--sha256 must be a lowercase SHA-256 digest")
-    source = reject_source(Path(args.source))
-    actual = digest(source)
-    if actual != args.sha256:
-        fail(f"source SHA-256 mismatch: expected {args.sha256}, got {actual}")
-
-    destination = SRS_ROOT / f"{args.dataset}_formal_srs"
-    if source.resolve() == destination.resolve():
-        fail("source must be outside the baseline-local destination")
-    reject_destination(destination, replace=args.replace)
-    SRS_ROOT.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.tmp")
-    if temporary.exists() or temporary.is_symlink():
-        fail(f"temporary destination already exists: {temporary}")
-    try:
-        with source.open("rb") as source_stream, temporary.open("xb") as destination_stream:
-            while True:
-                block = source_stream.read(1024 * 1024)
-                if not block:
-                    break
-                destination_stream.write(block)
-            destination_stream.flush()
-            os.fsync(destination_stream.fileno())
-        os.replace(temporary, destination)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-    manifest = load_manifest()
-    entries = manifest["entries"]
-    entries[args.dataset] = {
-        "dataset": args.dataset,
-        "srs_id": f"official_ezkl_native_{args.dataset}_srs",
-        "srs_type": "trusted_srs",
-        "path": destination.relative_to(ROOT).as_posix(),
-        "sha256": actual,
-        "size": destination.stat().st_size,
-        "source_path": str(source.absolute()),
-        "source_sha256": actual,
-        "trusted": True,
-        "reduced": False,
-        "generated": False,
-    }
-    manifest["entries"] = entries
-    atomic_write(MANIFEST, manifest)
-    update_config_digest(args.dataset, actual)
-    print(f"staged {args.dataset} official ezkl SRS: {destination.relative_to(ROOT)}")
-    print(f"sha256={actual}")
-    print(f"size_bytes={destination.stat().st_size}")
-    print(f"config: trusted_srs_sha256 = {actual}")
-    print(f"config: srs_path = {destination.relative_to(ROOT).as_posix()}")
-    print(f"runner: --srs {destination.relative_to(ROOT).as_posix()} --srs-sha256 {actual}")
-    return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main(parser().parse_args()))
-    except OSError as exc:
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         fail(str(exc))
