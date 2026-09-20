@@ -521,12 +521,53 @@ struct ProofSection {
     std::vector<TranscriptMessage> messages;
 };
 
+// SparseGKR proof metadata is a first-class artifact section.  Native typed
+// messages carry the actual masked sumcheck openings; these records bind the
+// relation-local endpoints and every terminal/FCONN transition to the
+// canonical plan order so a verifier cannot silently skip a scope.
+struct SparseGkrRelationWire {
+    std::string relation_id;
+    std::string initial_claim;
+    std::string final_claim;
+    std::vector<std::string> terminal_values;
+    std::string initial_commitment;
+    std::vector<std::string> terminal_commitments;
+    std::uint64_t transcript_begin = 0;
+    std::uint64_t transcript_end = 0;
+};
+
+struct SparseGkrLinkWire {
+    std::string from_relation;
+    std::string to_relation;
+    std::string claim_name;
+    std::uint32_t from_terminal = 0;
+    std::uint32_t to_initial = 0;
+    std::string from_claim;
+    std::string to_claim;
+};
+
+struct SparseGkrProofWire {
+    std::string schema = "zkgpt-gat-sparse-proof-v1";
+    std::uint32_t version = 1;
+    std::string plan_digest;
+    std::string schedule_digest;
+    std::vector<SparseGkrRelationWire> relations;
+    std::vector<SparseGkrLinkWire> terminal_links;
+    std::vector<SparseGkrLinkWire> binding_links;
+    std::string input_binding;
+    std::string output_binding;
+    // This section intentionally records the next required gate.  It keeps a
+    // sparse relation artifact distinguishable from a complete masked_full
+    // artifact until segmented Hyrax/Lasso openings are available.
+    bool hyrax_lasso_complete = false;
+};
+
 // Verifier-facing wire.  Deliberately no Y, W, Aux, L, trace, model tensor,
 // or opening randomness is present: those belong to the public context or to
 // the prover and are never serialized.
 struct GatProofArtifact {
-    std::uint32_t version = 4;
-    std::string schema = "zkgpt-gat-proof-v4";
+    std::uint32_t version = 5;
+    std::string schema = "zkgpt-gat-proof-v5";
     std::string relation_id = "R_GAT-zkGPT";
     std::string privacy_profile;
     std::string statement_digest;
@@ -545,6 +586,7 @@ struct GatProofArtifact {
     NativeProofStatement native_statement;
     std::vector<NativeProofMessage> native_messages;
     std::string transcript_digest;
+    SparseGkrProofWire sparse_gkr;
 
     bool has_private_payload() const;
     bool valid_wire(std::string *reason = nullptr) const;

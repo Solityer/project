@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -122,9 +123,11 @@ bool validate_plan(const Graph &graph, const SparseGkrPlan &plan,
         return fail("sparse GKR graph identity does not match the public graph");
     if (plan.relations.empty()) return fail("sparse GKR plan contains no relations");
     std::uint64_t previous_domain = 0;
+    std::set<std::string> relation_ids;
     for (const SparseGkrRelationSpec &relation : plan.relations) {
         std::uint64_t domain = 0;
-        if (relation.relation_id.empty() || relation.family_id.empty() ||
+        if (relation.relation_id.empty() || !relation_ids.insert(relation.relation_id).second ||
+            relation.family_id.empty() ||
             !sparse_gkr_relation_kind_valid(static_cast<std::uint8_t>(relation.kind)) ||
             relation.chunk_size != plan.chunk_size ||
             relation.arithmetic_rule != kSparseGkrArithmeticRule ||
@@ -147,6 +150,27 @@ bool validate_plan(const Graph &graph, const SparseGkrPlan &plan,
         if (previous_domain > domain && relation.kind == SparseGkrRelationKind::InputBinding)
             return fail("sparse GKR relation order is not canonical");
         previous_domain = domain;
+    }
+    if (plan.claim_links.size() != plan.relations.size() - 1)
+        return fail("sparse GKR terminal chain does not cover every adjacent relation");
+    std::set<std::string> claim_link_ids;
+    for (std::size_t index = 0; index < plan.claim_links.size(); ++index) {
+        const SparseGkrClaimLink &link = plan.claim_links[index];
+        if (link.from_relation != plan.relations[index].relation_id ||
+            link.to_relation != plan.relations[index + 1].relation_id ||
+            link.claim_name.empty() ||
+            !claim_link_ids.insert(link.from_relation + "->" + link.to_relation +
+                                   "/" + link.claim_name).second)
+            return fail("sparse GKR terminal chain link is missing or duplicated");
+    }
+    std::set<std::string> binding_link_ids;
+    for (const SparseGkrClaimLink &link : plan.binding_links) {
+        if (relation_ids.find(link.from_relation) == relation_ids.end() ||
+            relation_ids.find(link.to_relation) == relation_ids.end() ||
+            link.claim_name.empty() ||
+            !binding_link_ids.insert(link.from_relation + "->" + link.to_relation +
+                                     "/" + link.claim_name).second)
+            return fail("sparse GKR binding link is missing or duplicated");
     }
     return true;
 }
@@ -435,8 +459,9 @@ bool prove_sparse_gkr_plan(
         if (!prover.finish(terminal_values, &result, reason)) return false;
         previous_terminal = result.terminal_values;
         previous_relation = relation.relation_id;
-        if (results != nullptr)
-            results->push_back({relation.relation_id, std::move(result)});
+        SparseGkrRelationResult finished{relation.relation_id, std::move(result)};
+        if (callbacks.relation_finished) callbacks.relation_finished(finished);
+        if (results != nullptr) results->push_back(finished);
     }
     return true;
 }
@@ -479,8 +504,9 @@ bool verify_sparse_gkr_plan(
             return false;
         previous_terminal = result.terminal_values;
         previous_relation = relation.relation_id;
-        if (results != nullptr)
-            results->push_back({relation.relation_id, std::move(result)});
+        SparseGkrRelationResult finished{relation.relation_id, std::move(result)};
+        if (callbacks.relation_finished) callbacks.relation_finished(finished);
+        if (results != nullptr) results->push_back(finished);
     }
     return true;
 }

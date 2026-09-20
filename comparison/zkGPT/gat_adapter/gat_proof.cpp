@@ -78,6 +78,7 @@ std::string plan_encoding(const GatCircuitPlan &plan);
 std::string canonical_graph_topology_digest(const Graph &graph);
 CanonicalModelShape canonical_model_shape(const Model &model);
 Model make_shape_only_model(const CanonicalModelShape &shape);
+std::vector<Fr> flatten_aux_values(const ForwardResult &forward);
 void append_int_vector(std::string &out, const std::vector<Int> &values);
 bool read_compact_plan_recipe(class ContextReader &reader,
                               GatCircuitPlan &plan);
@@ -1775,6 +1776,26 @@ GatCircuitPlan build_virtual_sparse_plan(const Graph &graph,
             "FCONN lhs/rhs/output segment-local MLE claims",
             "FCONN terminal claim consumed by output binding"};
         sparse_specs.push_back(std::move(spec));
+        SparseGkrDescriptor descriptor;
+        descriptor.relation_id = id;
+        descriptor.family_id = family;
+        descriptor.relation_kind = SparseGkrRelationKind::Fconn;
+        descriptor.relation_schema = kSparseGkrRelationSchema;
+        descriptor.edge_count = rows;
+        descriptor.value_width = checked_mul(inner, cols,
+                                             "virtual FCONN descriptor width");
+        descriptor.chunk_size = kSparseGkrChunkEntries;
+        descriptor.input_offset = lhs_offset;
+        descriptor.source_offset = rhs_offset;
+        descriptor.output_offset = output_offset;
+        descriptor.coordinate_rule = "row_major_exact[row,term,col]";
+        descriptor.group_rule = "descriptor_index_ordered_fconn_claims";
+        descriptor.arithmetic_rule = kSparseGkrArithmeticRule;
+        descriptor.overflow_rule = kSparseGkrOverflowRule;
+        descriptor.terminal_rule =
+            "terminal-claim-chain/input-output-binding-v1";
+        descriptor.constraints = sparse_specs.back().equations;
+        plan.sparse_gkr.push_back(std::move(descriptor));
         FconnClaimLink link;
         link.descriptor_index = plan.fconn_claim_links.size();
         link.relation_id = family;
@@ -1942,6 +1963,385 @@ GatCircuitPlan build_virtual_sparse_plan(const Graph &graph,
     if (!validate_gat_circuit_plan_impl(plan, &reason))
         throw std::invalid_argument("virtual sparse GAT plan validation failed: " + reason);
     return plan;
+}
+
+SparseGkrPlan sparse_plan_from_virtual_recipe(const Graph &graph,
+                                              const GatCircuitPlan &plan) {
+    if (!plan.virtual_sparse)
+        throw std::invalid_argument("sparse relation recipe is not virtual");
+    std::vector<SparseGkrRelationSpec> specs;
+    specs.reserve(plan.sparse_gkr.size());
+    for (const SparseGkrDescriptor &descriptor : plan.sparse_gkr) {
+        SparseGkrRelationSpec spec;
+        spec.relation_id = descriptor.relation_id;
+        spec.family_id = descriptor.family_id;
+        spec.kind = descriptor.relation_kind;
+        spec.item_count = descriptor.edge_count;
+        spec.value_width = descriptor.value_width;
+        spec.input_offset = descriptor.input_offset;
+        spec.source_offset = descriptor.source_offset;
+        spec.destination_offset = descriptor.destination_offset;
+        spec.output_offset = descriptor.output_offset;
+        spec.chunk_size = descriptor.chunk_size;
+        spec.coordinate_rule = descriptor.coordinate_rule;
+        spec.group_rule = descriptor.group_rule;
+        spec.arithmetic_rule = descriptor.arithmetic_rule;
+        spec.overflow_rule = descriptor.overflow_rule;
+        spec.terminal_rule = descriptor.terminal_rule;
+        spec.equations = descriptor.constraints;
+        specs.push_back(std::move(spec));
+    }
+    SparseGkrPlan sparse = build_sparse_gkr_plan(
+        graph, plan.graph_topology_digest, plan.static_tables_id, specs);
+    for (const FconnClaimLink &link : plan.fconn_claim_links) {
+        SparseGkrClaimLink binding;
+        binding.from_relation = "fconn/" + link.relation_id;
+        binding.to_relation = "binding/output_aux";
+        binding.claim_name = "FCONN:" + link.family_id + ":" +
+                             std::to_string(link.output_offset);
+        binding.from_terminal = static_cast<std::uint32_t>(link.descriptor_index);
+        sparse.binding_links.push_back(std::move(binding));
+    }
+    if (canonical_digest64(sparse.encoding()) != plan.sparse_plan_digest)
+        throw std::invalid_argument("virtual sparse recipe digest does not match relation schedule");
+    return sparse;
+}
+
+const AttentionTrace *sparse_find_attention(const ForwardResult &forward,
+                                            const std::string &family) {
+    for (const HiddenLayerTrace &layer : forward.trace.hidden_layers)
+        for (const AttentionTrace &trace : layer.heads)
+            if (trace.family_id == family) return &trace;
+    for (const OutputHeadTrace &head : forward.trace.output_heads)
+        if (head.attention.family_id == family) return &head.attention;
+    return nullptr;
+}
+
+struct SparseRelationValueProvider {
+    const Graph &graph;
+    const Model &model;
+    const QuantConfig &quant;
+    const ForwardResult &forward;
+    const GatCircuitPlan &plan;
+    SegmentedInputOracle input_oracle;
+
+    SparseRelationValueProvider(const Graph &graph_in, const Model &model_in,
+                                const QuantConfig &quant_in,
+                                const ForwardResult &forward_in,
+                                const GatCircuitPlan &plan_in)
+        : graph(graph_in), model(model_in), quant(quant_in), forward(forward_in),
+          plan(plan_in), input_oracle(make_input_oracle()) {}
+
+    SegmentedInputOracle make_input_oracle() const {
+        std::array<std::vector<Fr>, 4> segments;
+        for (Int value : forward.trace.input.values) segments[0].push_back(Fr(value));
+        for (Int value : flatten_model(model, quant)) segments[1].push_back(Fr(value));
+        segments[2] = flatten_aux_values(forward);
+        const InputSegment &l_segment = plan.input_layout.segments.at(3);
+        segments[3].assign(l_segment.logical_length, Fr(0));
+        return SegmentedInputOracle(plan.input_layout, std::move(segments));
+    }
+
+    const F &trace_field(const std::vector<F> &values, std::uint64_t index) const {
+        static const F zero = F_ZERO;
+        return index < values.size() ? values[static_cast<std::size_t>(index)] : zero;
+    }
+
+    F value(const SparseGkrRelationSpec &relation, std::uint64_t index) const {
+        const std::uint64_t width = std::max<std::uint64_t>(1, relation.value_width);
+        if (relation.kind == SparseGkrRelationKind::InputBinding) {
+            const std::size_t segment = static_cast<std::size_t>(index / plan.input_layout.n_in);
+            const std::size_t local = static_cast<std::size_t>(index % plan.input_layout.n_in);
+            return segment < 4 ? input_oracle.segment_value(segment, local) : F_ZERO;
+        }
+        const std::uint64_t item = index / width;
+        const std::uint64_t component = index % width;
+        if (relation.kind == SparseGkrRelationKind::Fconn) {
+            const std::size_t row = static_cast<std::size_t>(item);
+            const std::size_t col = static_cast<std::size_t>(component);
+            // The compact FCONN descriptor stores inner*cols as its width;
+            // recover the exact inner/cols pair from the public link.
+            for (const FconnClaimLink &link : plan.fconn_claim_links) {
+                if ("fconn/" + link.relation_id != relation.relation_id) continue;
+                const std::size_t term = col / link.cols;
+                const std::size_t out_col = col % link.cols;
+                const F lhs = input_oracle.value_at(
+                    relation.input_offset + row * link.inner + term);
+                return lhs * input_oracle.value_at(
+                    relation.source_offset + term * link.cols + out_col);
+            }
+            return F_ZERO;
+        }
+        const AttentionTrace *trace = sparse_find_attention(forward,
+                                                            relation.family_id);
+        if (trace != nullptr) {
+            switch (relation.kind) {
+            case SparseGkrRelationKind::AttentionScore:
+                return item * width + component < trace->raw_score.size()
+                    ? F(trace->raw_score[static_cast<std::size_t>(item * width + component)])
+                    : F_ZERO;
+            case SparseGkrRelationKind::MaskedSoftmax:
+                return trace_field(trace->alpha, item * width + component);
+            case SparseGkrRelationKind::Aggregation:
+                return trace_field(trace->field_aggregate, item * width + component);
+            default:
+                break;
+            }
+        }
+        if (relation.kind == SparseGkrRelationKind::SignedRoundDiv ||
+            relation.kind == SparseGkrRelationKind::OutputBinding) {
+            const std::size_t coordinate = static_cast<std::size_t>(item * width + component);
+            return coordinate < forward.trace.logits.values.size()
+                ? F(forward.trace.logits.values[coordinate]) : F_ZERO;
+        }
+        return F_ZERO;
+    }
+
+    F sum(const SparseGkrRelationSpec &relation) const {
+        std::uint64_t entries = 0;
+        if (!sparse_gkr_checked_mul(relation.item_count,
+                                    std::max<std::uint64_t>(1, relation.value_width),
+                                    &entries))
+            throw std::overflow_error("sparse relation sum domain overflows u64");
+        F total = F_ZERO;
+        for (std::uint64_t index = 0; index < entries; ++index)
+            total += value(relation, index);
+        return total;
+    }
+
+    F folded(const SparseGkrRelationSpec &relation,
+             const std::vector<F> &prefix, F correction) const {
+        std::uint64_t entries = 0;
+        if (!sparse_gkr_checked_mul(relation.item_count,
+                                    std::max<std::uint64_t>(1, relation.value_width),
+                                    &entries))
+            throw std::overflow_error("sparse relation fold domain overflows u64");
+        std::uint64_t domain = 0;
+        if (!sparse_gkr_next_power_of_two(entries, &domain))
+            throw std::overflow_error("sparse relation fold domain is not representable");
+        F total = F_ZERO;
+        for (std::uint64_t index = 0; index < domain; ++index) {
+            F weight = F_ONE;
+            for (std::size_t bit = 0; bit < prefix.size(); ++bit) {
+                const bool set = ((index >> bit) & 1U) != 0;
+                weight *= set ? prefix[bit] : (F_ONE - prefix[bit]);
+            }
+            F sample = index < entries ? value(relation, index) : F_ZERO;
+            if (index == 0) sample += correction;
+            total += sample * weight;
+        }
+        return total;
+    }
+};
+
+struct SparseRelationRuntime {
+    F initial_claim = F_ZERO;
+    F correction = F_ZERO;
+    std::vector<F> prefix;
+    zkgpt::native_pedersen::ScalarOpening initial_opening;
+    bool have_initial = false;
+};
+
+struct SparseProverRuntime {
+    const SparseRelationValueProvider &provider;
+    zkgpt::native_pedersen::PedersenBasis basis;
+    std::map<std::string, SparseRelationRuntime> relations;
+    F previous_terminal = F_ZERO;
+    bool have_previous = false;
+};
+
+SparseGkrProverCallbacks make_sparse_prover_callbacks(
+    SparseProverRuntime &runtime) {
+    SparseGkrProverCallbacks callbacks;
+    callbacks.initial_claim = [&runtime](const SparseGkrRelationSpec &relation,
+                                          F &initial, std::string *reason) {
+        try {
+            SparseRelationRuntime &state = runtime.relations[relation.relation_id];
+            const F raw = runtime.provider.sum(relation);
+            state.initial_claim = runtime.have_previous
+                ? runtime.previous_terminal : raw;
+            state.correction = state.initial_claim - raw;
+            state.initial_opening = zkgpt::native_pedersen::commit_fresh(
+                runtime.basis, state.initial_claim);
+            state.have_initial = true;
+            initial = state.initial_claim;
+            return true;
+        } catch (const std::exception &error) {
+            if (reason != nullptr) *reason = error.what();
+            return false;
+        }
+    };
+    callbacks.terminal_spec = [&runtime](const SparseGkrRelationSpec &relation,
+                                          NativeMaskedTerminalSpec &spec,
+                                          std::string *reason) {
+        const auto found = runtime.relations.find(relation.relation_id);
+        if (found == runtime.relations.end() || !found->second.have_initial) {
+            if (reason != nullptr) *reason = "sparse relation initial claim is missing";
+            return false;
+        }
+        spec = NativeMaskedTerminalSpec();
+        spec.kind = NativeMaskedTerminalKind::Scalar;
+        spec.has_external_binding = true;
+        spec.public_initial_claim = true;
+        spec.initial_opening = found->second.initial_opening;
+        spec.initial_commitment = found->second.initial_opening.commitment;
+        return true;
+    };
+    callbacks.round_polynomial = [&runtime](
+        const SparseGkrRelationSpec &relation, const SparseGkrChunk &chunk,
+        std::size_t round, const std::vector<F> &prefix,
+        std::vector<F> &polynomial, std::string *reason) {
+        try {
+            if (round >= 64) throw std::overflow_error("sparse relation round exceeds u64 domain");
+            SparseRelationRuntime &state = runtime.relations[relation.relation_id];
+            state.prefix = prefix;
+            F p0 = F_ZERO;
+            F p1 = F_ZERO;
+            for (std::uint64_t local = 0; local < chunk.length; ++local) {
+                const std::uint64_t index = chunk.offset + local;
+                F weight = F_ONE;
+                for (std::size_t bit = 0; bit < prefix.size(); ++bit) {
+                    const bool set = ((index >> bit) & 1U) != 0;
+                    weight *= set ? prefix[bit] : (F_ONE - prefix[bit]);
+                }
+                F sample = runtime.provider.value(relation, index);
+                if (index == 0) sample += state.correction;
+                if (((index >> round) & 1U) == 0)
+                    p0 += sample * weight;
+                else
+                    p1 += sample * weight;
+            }
+            polynomial = {p0, p1, (F(2) * p1) - p0};
+            return true;
+        } catch (const std::exception &error) {
+            if (reason != nullptr) *reason = error.what();
+            return false;
+        }
+    };
+    callbacks.terminal_values = [&runtime](const SparseGkrRelationSpec &relation,
+                                            std::vector<F> &terminal,
+                                            std::string *reason) {
+        try {
+            const auto found = runtime.relations.find(relation.relation_id);
+            if (found == runtime.relations.end() || !found->second.have_initial) {
+                if (reason != nullptr) *reason = "sparse relation runtime is missing";
+                return false;
+            }
+            terminal = {runtime.provider.folded(
+                relation, found->second.prefix, found->second.correction)};
+            return true;
+        } catch (const std::exception &error) {
+            if (reason != nullptr) *reason = error.what();
+            return false;
+        }
+    };
+    callbacks.relation_finished = [&runtime](const SparseGkrRelationResult &result) {
+        if (!result.sumcheck.terminal_values.empty()) {
+            runtime.previous_terminal = result.sumcheck.terminal_values.front();
+            runtime.have_previous = true;
+        }
+    };
+    return callbacks;
+}
+
+CommitmentWire sparse_wire_from_opening(
+    const zkgpt::native_pedersen::ScalarOpening &opening) {
+    CommitmentWire wire;
+    wire.scheme = "hyrax-pedersen-bn254";
+    wire.basis_id = fixed_digest(hash_hex(opening.commitment.domain));
+    wire.logical_size = 1;
+    wire.padded_size = 1;
+    wire.point_hex = point_hex(opening.commitment.point);
+    return wire;
+}
+
+bool sparse_wire_field(const std::string &encoded, F &value,
+                       std::string *reason) {
+    if (!core_decode_field(encoded, value)) {
+        if (reason != nullptr) {
+            *reason = "sparse GKR artifact field is not canonical";
+        }
+        return false;
+    }
+    return true;
+}
+
+SparseGkrProofWire make_sparse_proof_wire(
+    const GatCircuitPlan &plan, const SparseGkrPlan &sparse_plan,
+    const std::vector<SparseGkrRelationResult> &results,
+    const SparseProverRuntime &runtime, const NativeProofSession &session) {
+    if (results.size() != sparse_plan.relations.size())
+        throw std::invalid_argument("sparse GKR result count does not match relation plan");
+    SparseGkrProofWire wire;
+    wire.plan_digest = plan.sparse_plan_digest;
+    wire.schedule_digest = canonical_digest64(sparse_plan.encoding());
+    for (std::size_t index = 0; index < sparse_plan.relations.size(); ++index) {
+        const SparseGkrRelationSpec &relation = sparse_plan.relations[index];
+        const SparseGkrRelationResult &result = results[index];
+        const auto runtime_it = runtime.relations.find(relation.relation_id);
+        if (runtime_it == runtime.relations.end() || !runtime_it->second.have_initial)
+            throw std::invalid_argument("sparse GKR relation runtime endpoint is missing");
+        SparseGkrRelationWire encoded;
+        encoded.relation_id = relation.relation_id;
+        encoded.initial_claim = field_hex(runtime_it->second.initial_claim);
+        encoded.final_claim = field_hex(result.sumcheck.final_claim);
+        for (const F &value : result.sumcheck.terminal_values)
+            encoded.terminal_values.push_back(field_hex(value));
+        encoded.initial_commitment = point_hex(result.sumcheck.initial_commitment.point);
+        for (const auto &commitment : result.sumcheck.terminal_commitments)
+            encoded.terminal_commitments.push_back(point_hex(commitment.point));
+        const std::string prefix = "sparse/gkr/" + relation.relation_id + "/";
+        const std::string challenge_prefix = "challenge/" + prefix;
+        bool found = false;
+        for (std::size_t cursor = 0; cursor < session.messages().size(); ++cursor) {
+            const std::string &label = session.messages()[cursor].label;
+            if (label.compare(0, prefix.size(), prefix) == 0 ||
+                label.compare(0, challenge_prefix.size(), challenge_prefix) == 0) {
+                if (!found) {
+                    encoded.transcript_begin = cursor;
+                    found = true;
+                }
+                encoded.transcript_end = cursor + 1;
+            }
+        }
+        if (!found)
+            throw std::invalid_argument("sparse GKR relation transcript range is missing");
+        wire.relations.push_back(std::move(encoded));
+    }
+    const auto relation_wire = [&wire](const std::string &id)
+        -> const SparseGkrRelationWire & {
+        for (const SparseGkrRelationWire &relation : wire.relations)
+            if (relation.relation_id == id) return relation;
+        throw std::invalid_argument("sparse GKR relation wire lookup failed");
+    };
+    for (const SparseGkrClaimLink &link : sparse_plan.claim_links) {
+        SparseGkrLinkWire encoded;
+        encoded.from_relation = link.from_relation;
+        encoded.to_relation = link.to_relation;
+        encoded.claim_name = link.claim_name;
+        encoded.from_terminal = link.from_terminal;
+        encoded.to_initial = link.to_initial;
+        encoded.from_claim = relation_wire(link.from_relation).final_claim;
+        encoded.to_claim = relation_wire(link.to_relation).initial_claim;
+        wire.terminal_links.push_back(std::move(encoded));
+    }
+    for (const SparseGkrClaimLink &link : sparse_plan.binding_links) {
+        SparseGkrLinkWire encoded;
+        encoded.from_relation = link.from_relation;
+        encoded.to_relation = link.to_relation;
+        encoded.claim_name = link.claim_name;
+        encoded.from_terminal = link.from_terminal;
+        encoded.to_initial = link.to_initial;
+        encoded.from_claim = relation_wire(link.from_relation).final_claim;
+        encoded.to_claim = relation_wire(link.to_relation).initial_claim;
+        wire.binding_links.push_back(std::move(encoded));
+    }
+    wire.input_binding = canonical_digest64(
+        "sparse/input-binding-v1/" + wire.relations.front().initial_claim);
+    wire.output_binding = canonical_digest64(
+        "sparse/output-binding-v1/" + wire.relations.back().final_claim);
+    wire.hyrax_lasso_complete = false;
+    return wire;
 }
 
 GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
@@ -4030,20 +4430,38 @@ void write_native_statement(std::ofstream &out,
     write_string(out, statement.basis_digest);
     write_u64(out, statement.l_dimension);
     write_string(out, statement.statement_root_digest);
+    write_string(out, statement.relation_schema);
+    write_string(out, statement.relation_digest);
+    write_u64(out, static_cast<std::uint64_t>(statement.relation_order.size()));
+    for (const std::string &relation : statement.relation_order)
+        write_string(out, relation);
 }
 
 bool read_native_statement(std::ifstream &in, NativeProofStatement &statement) {
-    return read_string(in, statement.verifier_context_digest) &&
-           read_string(in, statement.field_id) &&
-           read_string(in, statement.plan_digest) &&
-           read_string(in, statement.resources_digest) &&
-           read_string(in, statement.tables_digest) &&
-           read_string(in, statement.com_w_digest) &&
-           read_string(in, statement.aux_digest) &&
-           read_string(in, statement.l_digest) &&
-           read_string(in, statement.basis_digest) &&
-           read_u64(in, statement.l_dimension) &&
-           read_string(in, statement.statement_root_digest);
+    std::uint64_t relation_count = 0;
+    if (!read_string(in, statement.verifier_context_digest) ||
+        !read_string(in, statement.field_id) ||
+        !read_string(in, statement.plan_digest) ||
+        !read_string(in, statement.resources_digest) ||
+        !read_string(in, statement.tables_digest) ||
+        !read_string(in, statement.com_w_digest) ||
+        !read_string(in, statement.aux_digest) ||
+        !read_string(in, statement.l_digest) ||
+        !read_string(in, statement.basis_digest) ||
+        !read_u64(in, statement.l_dimension) ||
+        !read_string(in, statement.statement_root_digest) ||
+        !read_string(in, statement.relation_schema) ||
+        !read_string(in, statement.relation_digest) ||
+        !read_u64(in, relation_count) || relation_count > kArtifactMaxMessages)
+        return false;
+    statement.relation_order.clear();
+    statement.relation_order.reserve(static_cast<std::size_t>(relation_count));
+    for (std::uint64_t index = 0; index < relation_count; ++index) {
+        std::string relation;
+        if (!read_string(in, relation)) return false;
+        statement.relation_order.push_back(std::move(relation));
+    }
+    return true;
 }
 
 void write_commitment(std::ofstream &out, const CommitmentWire &commitment) {
@@ -4094,6 +4512,110 @@ bool read_section(std::ifstream &in, ProofSection &section) {
         message.kind = kind;
         section.messages.push_back(std::move(message));
     }
+    return true;
+}
+
+void write_sparse_proof_wire(std::ofstream &out,
+                             const SparseGkrProofWire &wire) {
+    write_string(out, wire.schema);
+    write_u32(out, wire.version);
+    write_string(out, wire.plan_digest);
+    write_string(out, wire.schedule_digest);
+    write_u64(out, static_cast<std::uint64_t>(wire.relations.size()));
+    for (const SparseGkrRelationWire &relation : wire.relations) {
+        write_string(out, relation.relation_id);
+        write_string(out, relation.initial_claim);
+        write_string(out, relation.final_claim);
+        write_u64(out, static_cast<std::uint64_t>(relation.terminal_values.size()));
+        for (const std::string &value : relation.terminal_values)
+            write_string(out, value);
+        write_string(out, relation.initial_commitment);
+        write_u64(out, static_cast<std::uint64_t>(relation.terminal_commitments.size()));
+        for (const std::string &commitment : relation.terminal_commitments)
+            write_string(out, commitment);
+        write_u64(out, relation.transcript_begin);
+        write_u64(out, relation.transcript_end);
+    }
+    const auto write_links = [&out](const std::vector<SparseGkrLinkWire> &links) {
+        write_u64(out, static_cast<std::uint64_t>(links.size()));
+        for (const SparseGkrLinkWire &link : links) {
+            write_string(out, link.from_relation);
+            write_string(out, link.to_relation);
+            write_string(out, link.claim_name);
+            write_u32(out, link.from_terminal);
+            write_u32(out, link.to_initial);
+            write_string(out, link.from_claim);
+            write_string(out, link.to_claim);
+        }
+    };
+    write_links(wire.terminal_links);
+    write_links(wire.binding_links);
+    write_string(out, wire.input_binding);
+    write_string(out, wire.output_binding);
+    write_u8(out, wire.hyrax_lasso_complete ? 1 : 0);
+}
+
+bool read_sparse_proof_wire(std::ifstream &in, SparseGkrProofWire &wire) {
+    if (!read_string(in, wire.schema) || !read_u32(in, wire.version) ||
+        !read_string(in, wire.plan_digest) ||
+        !read_string(in, wire.schedule_digest)) return false;
+    std::uint64_t count = 0;
+    if (!read_u64(in, count) || count > kArtifactMaxMessages) return false;
+    wire.relations.clear();
+    wire.relations.reserve(static_cast<std::size_t>(count));
+    for (std::uint64_t i = 0; i < count; ++i) {
+        SparseGkrRelationWire relation;
+        std::uint64_t value_count = 0;
+        if (!read_string(in, relation.relation_id) ||
+            !read_string(in, relation.initial_claim) ||
+            !read_string(in, relation.final_claim) ||
+            !read_u64(in, value_count) || value_count > kArtifactMaxMessages)
+            return false;
+        relation.terminal_values.reserve(static_cast<std::size_t>(value_count));
+        for (std::uint64_t j = 0; j < value_count; ++j) {
+            std::string value;
+            if (!read_string(in, value)) return false;
+            relation.terminal_values.push_back(std::move(value));
+        }
+        std::uint64_t commitment_count = 0;
+        if (!read_string(in, relation.initial_commitment) ||
+            !read_u64(in, commitment_count) ||
+            commitment_count > kArtifactMaxMessages) return false;
+        relation.terminal_commitments.reserve(static_cast<std::size_t>(commitment_count));
+        for (std::uint64_t j = 0; j < commitment_count; ++j) {
+            std::string commitment;
+            if (!read_string(in, commitment)) return false;
+            relation.terminal_commitments.push_back(std::move(commitment));
+        }
+        if (!read_u64(in, relation.transcript_begin) ||
+            !read_u64(in, relation.transcript_end)) return false;
+        wire.relations.push_back(std::move(relation));
+    }
+    const auto read_links = [&in](std::vector<SparseGkrLinkWire> &links) {
+        std::uint64_t link_count = 0;
+        if (!read_u64(in, link_count) || link_count > kArtifactMaxMessages)
+            return false;
+        links.clear();
+        links.reserve(static_cast<std::size_t>(link_count));
+        for (std::uint64_t i = 0; i < link_count; ++i) {
+            SparseGkrLinkWire link;
+            if (!read_string(in, link.from_relation) ||
+                !read_string(in, link.to_relation) ||
+                !read_string(in, link.claim_name) ||
+                !read_u32(in, link.from_terminal) ||
+                !read_u32(in, link.to_initial) ||
+                !read_string(in, link.from_claim) ||
+                !read_string(in, link.to_claim)) return false;
+            links.push_back(std::move(link));
+        }
+        return true;
+    };
+    if (!read_links(wire.terminal_links) || !read_links(wire.binding_links) ||
+        !read_string(in, wire.input_binding) ||
+        !read_string(in, wire.output_binding)) return false;
+    std::uint8_t complete = 0;
+    if (!read_u8(in, complete) || complete > 1) return false;
+    wire.hyrax_lasso_complete = complete != 0;
     return true;
 }
 
@@ -5972,6 +6494,20 @@ bool GatProofArtifact::has_private_payload() const {
     for (const NativeProofMessage &message : native_messages) {
         if (forbidden_payload(message.label) || forbidden_payload(message.payload)) return true;
     }
+    if (forbidden_payload(sparse_gkr.plan_digest) ||
+        forbidden_payload(sparse_gkr.schedule_digest) ||
+        forbidden_payload(sparse_gkr.input_binding) ||
+        forbidden_payload(sparse_gkr.output_binding)) return true;
+    for (const SparseGkrRelationWire &relation : sparse_gkr.relations) {
+        if (forbidden_payload(relation.relation_id) ||
+            forbidden_payload(relation.initial_claim) ||
+            forbidden_payload(relation.final_claim) ||
+            forbidden_payload(relation.initial_commitment)) return true;
+        for (const std::string &value : relation.terminal_values)
+            if (forbidden_payload(value)) return true;
+        for (const std::string &commitment : relation.terminal_commitments)
+            if (forbidden_payload(commitment)) return true;
+    }
     return false;
 }
 
@@ -5985,9 +6521,80 @@ bool GatProofArtifact::native_session(NativeProofSession &out,
                                              native_messages, out, reason);
 }
 
+bool sparse_proof_wire_valid(const SparseGkrProofWire &wire,
+                             std::size_t native_message_count,
+                             std::string *reason) {
+    const auto fail = [reason](const std::string &message) {
+        set_reason(reason, message);
+        return false;
+    };
+    if (wire.schema != "zkgpt-gat-sparse-proof-v1" || wire.version != 1 ||
+        !is_lower_hex_digest(wire.plan_digest) ||
+        !is_lower_hex_digest(wire.schedule_digest) ||
+        wire.relations.empty() || wire.relations.size() > kArtifactMaxMessages ||
+        !is_lower_hex_digest(wire.input_binding) ||
+        !is_lower_hex_digest(wire.output_binding) ||
+        wire.hyrax_lasso_complete)
+        return fail("sparse GKR proof wire schema or completion gate is invalid");
+    std::set<std::string> ids;
+    std::uint64_t previous_end = 0;
+    for (const SparseGkrRelationWire &relation : wire.relations) {
+        Fr initial_claim;
+        Fr final_claim;
+        G1 initial_commitment;
+        if (relation.relation_id.empty() || !ids.insert(relation.relation_id).second ||
+            !core_decode_field(relation.initial_claim, initial_claim) ||
+            !core_decode_field(relation.final_claim, final_claim) ||
+            relation.terminal_values.empty() ||
+            relation.terminal_values.size() > 4 ||
+            relation.initial_commitment.empty() ||
+            relation.terminal_commitments.size() != relation.terminal_values.size() ||
+            relation.transcript_begin >= relation.transcript_end ||
+            relation.transcript_end > native_message_count ||
+            (!wire.relations.empty() && relation.transcript_begin < previous_end))
+            return fail("sparse GKR relation endpoint wire is not canonical");
+        Fr decoded;
+        for (const std::string &value : relation.terminal_values)
+            if (!core_decode_field(value, decoded))
+                return fail("sparse GKR terminal value is not canonical");
+        if (!core_decode_point(relation.initial_commitment, initial_commitment))
+            return fail("sparse GKR initial commitment is not canonical");
+        for (const std::string &commitment : relation.terminal_commitments) {
+            G1 point;
+            if (!core_decode_point(commitment, point))
+                return fail("sparse GKR terminal commitment is not canonical");
+        }
+        previous_end = relation.transcript_end;
+    }
+    if (wire.terminal_links.size() != wire.relations.size() - 1)
+        return fail("sparse GKR terminal link count is incomplete");
+    std::set<std::string> link_ids;
+    for (std::size_t index = 0; index < wire.terminal_links.size(); ++index) {
+        const SparseGkrLinkWire &link = wire.terminal_links[index];
+        if (link.from_relation != wire.relations[index].relation_id ||
+            link.to_relation != wire.relations[index + 1].relation_id ||
+            link.claim_name.empty() || link.from_claim != wire.relations[index].final_claim ||
+            link.to_claim != wire.relations[index + 1].initial_claim ||
+            link.from_claim != link.to_claim ||
+            !link_ids.insert(link.from_relation + "->" + link.to_relation +
+                             "/" + link.claim_name).second)
+            return fail("sparse GKR terminal link is missing or inconsistent");
+    }
+    for (const SparseGkrLinkWire &link : wire.binding_links) {
+        if (ids.find(link.from_relation) == ids.end() ||
+            ids.find(link.to_relation) == ids.end() || link.claim_name.empty() ||
+            !is_lower_hex_digest(link.from_claim) ||
+            !is_lower_hex_digest(link.to_claim) ||
+            !link_ids.insert(link.from_relation + "->" + link.to_relation +
+                             "/" + link.claim_name).second)
+            return fail("sparse GKR FCONN binding link is missing or duplicated");
+    }
+    return true;
+}
+
 bool GatProofArtifact::valid_wire(std::string *reason) const {
     try {
-        if (version != 4 || schema != "zkgpt-gat-proof-v4") {
+        if (version != 5 || schema != "zkgpt-gat-proof-v5") {
             set_reason(reason, "unsupported proof wire version");
             return false;
         }
@@ -5996,7 +6603,8 @@ bool GatProofArtifact::valid_wire(std::string *reason) const {
             return false;
         }
         const bool diagnostic_gkr = privacy_profile == "gkr_only_diagnostic";
-        if (privacy_profile != "masked_full" && !diagnostic_gkr) {
+        const bool sparse_partial = privacy_profile == "sparse_gkr_partial";
+        if (privacy_profile != "masked_full" && !diagnostic_gkr && !sparse_partial) {
             set_reason(reason, "proof does not declare a supported privacy profile");
             return false;
         }
@@ -6024,6 +6632,10 @@ bool GatProofArtifact::valid_wire(std::string *reason) const {
             return false;
         }
 
+        if (sparse_partial &&
+            !sparse_proof_wire_valid(sparse_gkr, native_messages.size(), reason))
+            return false;
+
         const ProofSection *sections[] = {
             &Pi_Lasso, &Pi_MatMul, &Pi_GKR, &Pi_combine, &Pi_open};
         const char *names[] = {
@@ -6031,7 +6643,8 @@ bool GatProofArtifact::valid_wire(std::string *reason) const {
         std::size_t section_message_count = 0;
         for (unsigned i = 0; i < 5; ++i) {
             if (sections[i]->protocol != names[i] ||
-                sections[i]->messages.empty()) {
+                (!sparse_partial && sections[i]->messages.empty()) ||
+                (sparse_partial && i == 2 && sections[i]->messages.empty())) {
                 set_reason(reason, std::string("missing ") + names[i] + " messages");
                 return false;
             }
@@ -6138,6 +6751,7 @@ bool GatProofArtifact::write(const std::string &path, std::string *reason) const
         write_string(out, message.payload);
     }
     write_string(out, transcript_digest);
+    write_sparse_proof_wire(out, sparse_gkr);
     if (!out.good()) { set_reason(reason, "proof artifact write failed"); return false; }
     return true;
 }
@@ -6194,6 +6808,10 @@ bool GatProofArtifact::read(const std::string &path, GatProofArtifact &out,
     }
     if (!read_string(in, parsed.transcript_digest)) {
         set_reason(reason, "truncated proof artifact transcript digest");
+        return false;
+    }
+    if (!read_sparse_proof_wire(in, parsed.sparse_gkr)) {
+        set_reason(reason, "truncated sparse GKR proof wire");
         return false;
     }
     char trailing = 0;
@@ -6765,9 +7383,70 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         if (!registration_matches_model(model, quant, plan.input_layout, registration)) throw std::invalid_argument("private model does not match the bound model registration");
         if (!validate_relation(graph, public_features, model, quant, forward)) throw std::invalid_argument("canonical GAT relation is invalid");
         if (plan.virtual_sparse) {
-            result.status = ProveStatus::REJECTED;
+            if (privacy_profile != "masked_full") {
+                result.status = ProveStatus::UNSUPPORTED_PRIVACY_PROFILE;
+                result.diagnostic = "virtual sparse path only accepts the masked_full public profile";
+                return result;
+            }
+            const StaticTables tables = StaticTables::build(quant);
+            if (!tables.authenticate())
+                throw std::invalid_argument("canonical static tables are not authenticated");
+            const VerifierContext context = make_verifier_context(
+                graph, public_features, quant, tables, forward.logits,
+                registration, plan, privacy_profile);
+            const SparseGkrPlan sparse_plan =
+                sparse_plan_from_virtual_recipe(graph, plan);
+            const std::string sparse_basis_label =
+                "zkgpt/gat-sparse-proof/v1/" + verifier_context_digest(context);
+            const zkgpt::native_pedersen::PedersenBasis wire_basis =
+                zkgpt::native_pedersen::derive_basis(sparse_basis_label);
+            const CommitmentWire com_aux = sparse_wire_from_opening(
+                zkgpt::native_pedersen::commit_fresh(wire_basis, F_ZERO));
+            const CommitmentWire com_L = sparse_wire_from_opening(
+                zkgpt::native_pedersen::commit_fresh(wire_basis, F_ZERO));
+            std::vector<G1> statement_generators{wire_basis.G};
+            NativeProofStatement statement = make_native_proof_statement(
+                context, com_aux, com_L, wire_basis.G, statement_generators,
+                std::vector<F>{F_ZERO}, 1);
+            statement.relation_schema = kSparseGkrRelationSchema;
+            statement.relation_digest = plan.sparse_plan_digest;
+            for (const SparseGkrRelationSpec &relation : sparse_plan.relations)
+                statement.relation_order.push_back(relation.relation_id);
+            std::string statement_reason;
+            if (!statement.valid(&statement_reason))
+                throw std::invalid_argument("sparse GKR native statement is invalid: " + statement_reason);
+            NativeProofSession session(kNativeArtifactDomain, statement);
+            SparseRelationValueProvider provider(graph, model, quant, forward, plan);
+            SparseProverRuntime runtime{
+                provider,
+                zkgpt::native_pedersen::derive_basis(
+                    "zkgpt/masked-sumcheck/v2/" + session.statement_digest())};
+            const SparseGkrProverCallbacks callbacks =
+                make_sparse_prover_callbacks(runtime);
+            std::vector<SparseGkrRelationResult> relation_results;
+            std::string sparse_reason;
+            if (!prove_sparse_gkr_plan(session, graph, sparse_plan, callbacks,
+                                       &relation_results, &sparse_reason))
+                throw std::runtime_error("sparse GKR proof failed: " + sparse_reason);
+            GatProofArtifact artifact;
+            artifact.privacy_profile = "sparse_gkr_partial";
+            artifact.statement_digest = verifier_context_digest(context);
+            artifact.com_aux = com_aux;
+            artifact.com_L = com_L;
+            artifact.native_domain = kNativeArtifactDomain;
+            artifact.native_statement = statement;
+            artifact.native_messages = session.messages();
+            artifact.transcript_digest = session.digest();
+            artifact.sparse_gkr = make_sparse_proof_wire(
+                plan, sparse_plan, relation_results, runtime, session);
+            core_copy_sections(session, artifact);
+            if (!artifact.valid_wire(&sparse_reason))
+                throw std::runtime_error("sparse GKR artifact is invalid: " + sparse_reason);
+            result.status = ProveStatus::GENERATED;
+            result.has_artifact = true;
+            result.artifact = std::move(artifact);
             result.diagnostic =
-                "virtual_sparse_plan requires chunked native Hyrax/Lasso openings and relation-bound masked transcript";
+                "sparse GKR artifact generated; segmented Hyrax/Lasso opening gate remains fail-closed";
             return result;
         }
         if (privacy_profile != "masked_full") {
@@ -7046,15 +7725,217 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
     }
 }
 
+struct SparseVerifierRuntime {
+    const SparseGkrProofWire &wire;
+    const NativeProofSession &session;
+    zkgpt::native_pedersen::PedersenBasis basis;
+    F previous_terminal = F_ZERO;
+    bool have_previous = false;
+    std::string error;
+
+    const SparseGkrRelationWire *find(const std::string &relation_id) const {
+        for (const SparseGkrRelationWire &relation : wire.relations)
+            if (relation.relation_id == relation_id) return &relation;
+        return nullptr;
+    }
+};
+
+bool sparse_commitment_from_wire(
+    const std::string &encoded,
+    const zkgpt::native_pedersen::PedersenBasis &basis,
+    zkgpt::native_pedersen::ScalarCommitment &commitment,
+    std::string *reason) {
+    G1 point;
+    if (!core_decode_point(encoded, point)) {
+        set_reason(reason, "sparse GKR commitment point is malformed");
+        return false;
+    }
+    commitment.domain = basis.domain;
+    commitment.point = point;
+    return commitment.valid(basis, reason);
+}
+
+bool sparse_verify_relation_range(const NativeProofSession &session,
+                                  const std::string &relation_id,
+                                  std::uint64_t &begin, std::uint64_t &end) {
+    const std::string prefix = "sparse/gkr/" + relation_id + "/";
+    const std::string challenge_prefix = "challenge/" + prefix;
+    bool found = false;
+    for (std::size_t index = 0; index < session.messages().size(); ++index) {
+        const std::string &label = session.messages()[index].label;
+        if (label.compare(0, prefix.size(), prefix) == 0 ||
+            label.compare(0, challenge_prefix.size(), challenge_prefix) == 0) {
+            if (!found) {
+                begin = index;
+                found = true;
+            }
+            end = index + 1;
+        }
+    }
+    return found;
+}
+
+bool verify_virtual_sparse_artifact(const VerifierContext &context,
+                                    const GatProofArtifact &artifact,
+                                    std::string *reason) {
+    try {
+        context.graph.validate();
+        context.quant.validate();
+        if (!context.plan.virtual_sparse || !context.tables.authenticate()) {
+            set_reason(reason, "virtual sparse verifier context is not canonical");
+            return false;
+        }
+        if (artifact.privacy_profile != "sparse_gkr_partial" ||
+            !artifact.valid_wire(reason)) return false;
+        if (artifact.statement_digest != verifier_context_digest(context)) {
+            set_reason(reason, "sparse GKR artifact statement digest mismatch");
+            return false;
+        }
+        const SparseGkrPlan sparse_plan =
+            sparse_plan_from_virtual_recipe(context.graph, context.plan);
+        if (artifact.sparse_gkr.plan_digest != context.plan.sparse_plan_digest ||
+            artifact.sparse_gkr.schedule_digest != canonical_digest64(sparse_plan.encoding())) {
+            set_reason(reason, "sparse GKR artifact plan digest mismatch");
+            return false;
+        }
+        const std::string sparse_basis_label =
+            "zkgpt/gat-sparse-proof/v1/" + verifier_context_digest(context);
+        const zkgpt::native_pedersen::PedersenBasis wire_basis =
+            zkgpt::native_pedersen::derive_basis(sparse_basis_label);
+        NativeProofStatement expected = make_native_proof_statement(
+            context, artifact.com_aux, artifact.com_L, wire_basis.G,
+            std::vector<G1>{wire_basis.G}, std::vector<F>{F_ZERO}, 1);
+        expected.relation_schema = kSparseGkrRelationSchema;
+        expected.relation_digest = context.plan.sparse_plan_digest;
+        for (const SparseGkrRelationSpec &relation : sparse_plan.relations)
+            expected.relation_order.push_back(relation.relation_id);
+        const NativeProofStatement &actual = artifact.native_statement;
+        if (actual.verifier_context_digest != expected.verifier_context_digest ||
+            actual.plan_digest != expected.plan_digest ||
+            actual.resources_digest != expected.resources_digest ||
+            actual.tables_digest != expected.tables_digest ||
+            actual.com_w_digest != expected.com_w_digest ||
+            actual.aux_digest != expected.aux_digest ||
+            actual.l_digest != expected.l_digest ||
+            actual.basis_digest != expected.basis_digest ||
+            actual.l_dimension != expected.l_dimension ||
+            actual.statement_root_digest != expected.statement_root_digest ||
+            actual.relation_schema != expected.relation_schema ||
+            actual.relation_digest != expected.relation_digest ||
+            actual.relation_order != expected.relation_order) {
+            set_reason(reason, "sparse GKR native statement relation binding mismatch");
+            return false;
+        }
+        NativeProofSession session;
+        if (!artifact.native_session(session, reason)) return false;
+        const zkgpt::native_pedersen::PedersenBasis scalar_basis =
+            zkgpt::native_pedersen::derive_basis(
+                "zkgpt/masked-sumcheck/v2/" + session.statement_digest());
+        SparseVerifierRuntime runtime{artifact.sparse_gkr, session,
+                                      scalar_basis};
+        SparseGkrVerifierCallbacks callbacks;
+        callbacks.initial_claim = [&runtime](const SparseGkrRelationSpec &relation,
+                                              F &initial, std::string *callback_reason) {
+            const SparseGkrRelationWire *wire = runtime.find(relation.relation_id);
+            if (wire == nullptr || !sparse_wire_field(wire->initial_claim,
+                                                       initial, callback_reason))
+                return false;
+            if (runtime.have_previous && initial != runtime.previous_terminal) {
+                if (callback_reason != nullptr)
+                    *callback_reason = "sparse GKR artifact terminal chain mismatch";
+                return false;
+            }
+            return true;
+        };
+        callbacks.terminal_spec = [&runtime](const SparseGkrRelationSpec &relation,
+                                              NativeMaskedTerminalSpec &spec,
+                                              std::string *callback_reason) {
+            const SparseGkrRelationWire *wire = runtime.find(relation.relation_id);
+            if (wire == nullptr) {
+                if (callback_reason != nullptr)
+                    *callback_reason = "sparse GKR relation endpoint is missing";
+                return false;
+            }
+            spec = NativeMaskedTerminalSpec();
+            spec.kind = NativeMaskedTerminalKind::Scalar;
+            spec.has_external_binding = true;
+            spec.public_initial_claim = true;
+            return sparse_commitment_from_wire(wire->initial_commitment,
+                                               runtime.basis,
+                                               spec.initial_commitment,
+                                               callback_reason);
+        };
+        callbacks.relation_finished = [&runtime](const SparseGkrRelationResult &result) {
+            const SparseGkrRelationWire *wire = runtime.find(result.relation_id);
+            if (wire == nullptr) {
+                runtime.error = "sparse GKR relation result is not serialized";
+                return;
+            }
+            F expected_final;
+            if (!core_decode_field(wire->final_claim, expected_final) ||
+                expected_final != result.sumcheck.final_claim ||
+                result.sumcheck.terminal_values.size() != wire->terminal_values.size()) {
+                runtime.error = "sparse GKR relation terminal endpoint mismatch";
+                return;
+            }
+            for (std::size_t index = 0; index < wire->terminal_values.size(); ++index) {
+                F expected_value;
+                if (!core_decode_field(wire->terminal_values[index], expected_value) ||
+                    expected_value != result.sumcheck.terminal_values[index] ||
+                    index >= result.sumcheck.terminal_commitments.size() ||
+                    point_hex(result.sumcheck.terminal_commitments[index].point) !=
+                        wire->terminal_commitments[index]) {
+                    runtime.error = "sparse GKR terminal commitment/value mismatch";
+                    return;
+                }
+            }
+            std::uint64_t begin = 0, end = 0;
+            if (!sparse_verify_relation_range(runtime.session, result.relation_id,
+                                              begin, end) ||
+                begin != wire->transcript_begin || end != wire->transcript_end) {
+                runtime.error = "sparse GKR transcript range mismatch";
+                return;
+            }
+            if (!result.sumcheck.terminal_values.empty()) {
+                runtime.previous_terminal = result.sumcheck.terminal_values.front();
+                runtime.have_previous = true;
+            }
+        };
+        std::vector<SparseGkrRelationResult> verified;
+        if (!verify_sparse_gkr_plan(session, context.graph, sparse_plan,
+                                    callbacks, &verified, reason)) return false;
+        if (!runtime.error.empty()) {
+            set_reason(reason, runtime.error);
+            return false;
+        }
+        for (std::size_t index = 0; index < sparse_plan.claim_links.size(); ++index) {
+            const SparseGkrClaimLink &expected_link = sparse_plan.claim_links[index];
+            const SparseGkrLinkWire &actual_link = artifact.sparse_gkr.terminal_links[index];
+            if (actual_link.from_relation != expected_link.from_relation ||
+                actual_link.to_relation != expected_link.to_relation ||
+                actual_link.claim_name != expected_link.claim_name ||
+                actual_link.from_terminal != expected_link.from_terminal ||
+                actual_link.to_initial != expected_link.to_initial) {
+                set_reason(reason, "sparse GKR terminal link order mismatch");
+                return false;
+            }
+        }
+        set_reason(reason,
+                   "SparseGKR relation proof verified; segmented Hyrax/Lasso opening gate remains unavailable");
+        return false;
+    } catch (const std::exception &error) {
+        set_reason(reason, error.what());
+        return false;
+    }
+}
+
 bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact,
                 std::string *reason) {
     try {
         context.graph.validate();
         context.quant.validate();
         if (context.plan.virtual_sparse) {
-            set_reason(reason,
-                       "virtual_sparse_plan requires chunked native Hyrax/Lasso verifier integration");
-            return false;
+            return verify_virtual_sparse_artifact(context, artifact, reason);
         }
         if (!context.tables.authenticate()) { set_reason(reason, "static tables are not authenticated"); return false; }
         if (context.public_features.rows != context.graph.num_nodes || context.public_features.cols != context.graph.num_features || context.public_features.cols == 0 || context.public_features.values.size() != context.public_features.rows * context.public_features.cols) { set_reason(reason, "public feature dimensions are invalid"); return false; }
@@ -7799,7 +8680,11 @@ void core_copy_sections(const NativeProofSession &session,
             section = &artifact.Pi_MatMul;
         else if (message.label.compare(0, sizeof("gkr/") - 1, "gkr/") == 0 ||
                  message.label.compare(0, sizeof("challenge/gkr/") - 1,
-                                       "challenge/gkr/") == 0)
+                                      "challenge/gkr/") == 0)
+            section = &artifact.Pi_GKR;
+        else if (message.label.compare(0, sizeof("sparse/") - 1, "sparse/") == 0 ||
+                 message.label.compare(0, sizeof("challenge/sparse/") - 1,
+                                      "challenge/sparse/") == 0)
             section = &artifact.Pi_GKR;
         else if (message.label.compare(0, sizeof("combine/") - 1,
                                        "combine/") == 0 ||

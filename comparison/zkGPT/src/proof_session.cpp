@@ -225,7 +225,8 @@ bool NativeProofStatement::valid(std::string *reason) const {
     if (!is_field_id(field_id)) return fail("native proof statement field id is invalid");
     if (l_dimension == 0 || l_dimension > (1ULL << 30))
         return fail("native proof statement L dimension is invalid");
-    if (relation_schema != "zkgpt-gat-relation-v1")
+    if (relation_schema != "zkgpt-gat-relation-v1" &&
+        relation_schema != "zkgpt-gat-sparse-gkr-v1")
         return fail("native proof statement relation schema is unsupported");
     if (!is_lower_hex_digest(relation_digest))
         return fail("native proof statement relation digest is not canonical");
