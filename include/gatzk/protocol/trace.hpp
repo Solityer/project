@@ -46,6 +46,11 @@ namespace gatzk::protocol
         const std::string &label,
         const std::shared_ptr<algebra::RootOfUnityDomain> &expected_domain);
 
+    const std::vector<algebra::FieldElement> &resolve_trace_zero_domain_blinder(
+        const TraceArtifacts &trace,
+        const std::string &label,
+        const std::shared_ptr<algebra::RootOfUnityDomain> &expected_domain);
+
     std::shared_ptr<const algebra::Polynomial> resolve_trace_coefficient_polynomial(
         const TraceArtifacts &trace,
         const std::string &label);

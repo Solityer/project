@@ -1062,15 +1062,8 @@ namespace gatzk::protocol
             {
                 return commitment.opening_polynomial;
             }
-            const auto spilled_it =
-                trace.spilled_polynomials.find(label);
-            if (spilled_it == trace.spilled_polynomials.end())
-            {
-                throw std::runtime_error(
-                    "missing polynomial dependency material: " + label);
-            }
-            return load_spilled_evaluation_polynomial(
-                spilled_it->second, label, domain);
+            return resolve_trace_opening_polynomial(
+                trace, label, domain);
         }
 
         crypto::Commitment trace_commitment_with_opening_material(
@@ -1096,23 +1089,41 @@ namespace gatzk::protocol
             const FieldElement &point,
             const std::shared_ptr<algebra::RootOfUnityDomain> &domain)
         {
+            if (trace.spilled_coefficient_polynomials.contains(name))
+            {
+                return resolve_trace_coefficient_polynomial(
+                           trace, name)
+                    ->evaluate(point);
+            }
+
             if (const auto polynomial_it =
                     trace.polynomials.find(name);
-                polynomial_it != trace.polynomials.end())
+                polynomial_it != trace.polynomials.end() &&
+                polynomial_it->second.basis ==
+                    algebra::PolynomialBasis::Coefficient)
             {
+                const auto registration =
+                    trace.polynomial_domains.find(name);
+                if (registration ==
+                    trace.polynomial_domains.end())
+                {
+                    throw std::runtime_error(
+                        "trace coefficient evaluation has no domain registration: " +
+                        name);
+                }
+                if (registration->second != "coef" &&
+                    (domain == nullptr ||
+                     registration->second != domain->name))
+                {
+                    throw std::runtime_error(
+                        "trace coefficient evaluation domain registration mismatch: " +
+                        name);
+                }
                 return polynomial_it->second.evaluate(point);
             }
-            if (trace.spilled_coefficient_polynomials.contains(name))
-                return resolve_trace_coefficient_polynomial(trace, name)->evaluate(point);
-            const auto spilled_it =
-                trace.spilled_polynomials.find(name);
-            if (spilled_it == trace.spilled_polynomials.end())
-            {
-                throw std::runtime_error(
-                    "trace evaluation is missing polynomial: " + name);
-            }
-            return load_spilled_evaluation_polynomial(
-                       spilled_it->second, name, domain)
+
+            return resolve_trace_opening_polynomial(
+                       trace, name, domain)
                 ->evaluate(point);
         }
 
@@ -8401,8 +8412,10 @@ namespace gatzk::protocol
                                                     const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
                                                     const std::vector<std::pair<std::string, FieldElement>> &proof_local_terms)
             {
-                const auto source_it = trace.polynomials.find(source_label);
-                if (source_it == trace.polynomials.end() || source_it->second.zero_domain_blinder.empty())
+                const auto source =
+                    resolve_trace_opening_polynomial(
+                        trace, source_label, domain);
+                if (source->zero_domain_blinder.empty())
                 {
                     throw std::runtime_error(
                         "model binding source is missing proof-local blinding: " + source_label);
@@ -8412,7 +8425,7 @@ namespace gatzk::protocol
                     throw std::runtime_error("model binding has no proof-local canonical source: " + source_label);
                 }
                 std::vector<FieldElement> relation_blinder =
-                    source_it->second.zero_domain_blinder;
+                    source->zero_domain_blinder;
                 auto subtract_blinder = [&](const std::vector<FieldElement> &other, const FieldElement &coefficient)
                 {
                     if (relation_blinder.size() < other.size())
@@ -8425,18 +8438,21 @@ namespace gatzk::protocol
                     auto expected = FieldElement::zero();
                     for (const auto &[anchor_label, coefficient] : proof_local_terms)
                     {
-                        const auto proof_label = model_proof_local_label(anchor_label);
-                        const auto proof_it = trace.polynomials.find(proof_label);
-                        if (proof_it == trace.polynomials.end() || proof_it->second.domain == nullptr || proof_it->second.domain->name != domain->name)
-                        {
-                            throw std::runtime_error(
-                                "model binding proof-local source domain mismatch: " + proof_label);
-                        }
-                        expected += coefficient * proof_it->second.value_at(row);
+                        const auto proof_label =
+                            model_proof_local_label(anchor_label);
+                        const auto proof =
+                            resolve_trace_opening_polynomial(
+                                trace, proof_label, domain);
+                        expected += coefficient *
+                                    proof->value_at(row);
                         if (row == 0)
-                            subtract_blinder(proof_it->second.zero_domain_blinder, coefficient);
+                        {
+                            subtract_blinder(
+                                proof->zero_domain_blinder,
+                                coefficient);
+                        }
                     }
-                    if (source_it->second.value_at(row) != expected)
+                    if (source->value_at(row) != expected)
                     {
                         throw std::runtime_error(
                             "model binding semantic view is not derived from proof-local canonical sources: " + source_label);
@@ -8456,14 +8472,18 @@ namespace gatzk::protocol
                                             const std::string &source_label,
                                             const std::string &mask_label)
             {
-                const auto source_it = trace.polynomials.find(source_label);
-                if (source_it == trace.polynomials.end() || source_it->second.domain == nullptr || source_it->second.domain->name != domains.n->name || source_it->second.zero_domain_blinder.empty())
+                const auto &source_blinder =
+                    resolve_trace_zero_domain_blinder(
+                        trace,
+                        source_label,
+                        domains.n);
+                if (source_blinder.empty())
                 {
                     throw std::runtime_error(
                         "external evaluation object is missing its registered N-domain mask: " + source_label);
                 }
                 auto mask = Polynomial::from_coefficients(
-                    mask_label, source_it->second.zero_domain_blinder);
+                    mask_label, source_blinder);
                 auto commitment = commit_proof_polynomial(
                     mask_label, mask, context.kzg, metrics);
                 trace.polynomials.emplace(mask_label, mask);
@@ -9944,22 +9964,22 @@ namespace gatzk::protocol
                     evaluate_trace_polynomial(
                         trace, prefix + "E_src",
                         trace.challenges.at(challenge("y_src_h")),
-                        domains.edge);
+                        domains.n);
                 trace.external_evaluations[hidden_score_mask_eval_name(layer_index, local_head_index, "src")] =
                     evaluate_trace_polynomial(
                         trace, hidden_score_mask_label(layer_index, local_head_index, "src"),
                         trace.challenges.at(challenge("y_src_h")),
-                        domains.edge);
+                        domains.n);
                 trace.external_evaluations[mu_prefix + "_dst"] =
                     evaluate_trace_polynomial(
                         trace, prefix + "E_dst",
                         trace.challenges.at(challenge("y_dst_h")),
-                        domains.edge);
+                        domains.n);
                 trace.external_evaluations[hidden_score_mask_eval_name(layer_index, local_head_index, "dst")] =
                     evaluate_trace_polynomial(
                         trace, hidden_score_mask_label(layer_index, local_head_index, "dst"),
                         trace.challenges.at(challenge("y_dst_h")),
-                        domains.edge);
+                        domains.n);
                 trace.external_evaluations[mu_prefix + "_star"] =
                     evaluate_trace_polynomial(
                         trace, prefix + "H_star",
@@ -11367,7 +11387,7 @@ namespace gatzk::protocol
                             output_challenge_name(
                                 "y_src_out",
                                 head_index)),
-                        domains.edge);
+                        domains.n);
 
                 trace.external_evaluations[output_score_mask_eval_name(
                     head_index,
@@ -11381,7 +11401,7 @@ namespace gatzk::protocol
                             output_challenge_name(
                                 "y_src_out",
                                 head_index)),
-                        domains.edge);
+                        domains.n);
 
                 trace.external_evaluations[output_external_eval_name(
                     "dst",
@@ -11393,7 +11413,7 @@ namespace gatzk::protocol
                             output_challenge_name(
                                 "y_dst_out",
                                 head_index)),
-                        domains.edge);
+                        domains.n);
 
                 trace.external_evaluations[output_score_mask_eval_name(
                     head_index,
@@ -11407,7 +11427,7 @@ namespace gatzk::protocol
                             output_challenge_name(
                                 "y_dst_out",
                                 head_index)),
-                        domains.edge);
+                        domains.n);
 
                 trace.external_evaluations[output_external_eval_name(
                     "star",
@@ -12676,11 +12696,14 @@ namespace gatzk::protocol
                     domains.c->size, FieldElement::zero());
                 std::vector<FieldElement> canonical_multiplicity(
                     domains.c->size, FieldElement::zero());
-                const auto &proof_local_bias = trace.polynomials.at(
-                    view_meta.canonical_object);
+                const auto proof_local_bias =
+                    resolve_trace_opening_polynomial(
+                        trace,
+                        view_meta.canonical_object,
+                        domains.c);
                 for (std::size_t column = 0; column < n_classes; ++column)
                 {
-                    canonical_tuples[column] = FieldElement(column) + eta_view * proof_local_bias.value_at(column);
+                    canonical_tuples[column] = FieldElement(column) + eta_view * proof_local_bias->value_at(column);
                     canonical_multiplicity[column] = FieldElement(n_nodes);
                 }
                 std::vector<FieldElement> query_tuples(
@@ -12983,10 +13006,13 @@ namespace gatzk::protocol
                         relation_degree = std::max(
                             relation_degree,
                             chunk.configured_shift_degree);
+                    const auto coefficient_material =
+                        resolve_trace_coefficient_polynomial(
+                            trace,
+                            basis_meta.coefficient_object);
                     auto relation_coefficients =
                         materialize_blinded_coefficients(
-                            trace.polynomials.at(
-                                basis_meta.coefficient_object),
+                            *coefficient_material,
                             relation_degree);
                     auto relation_point = trace.commitments.at(
                                                                basis_meta.coefficient_object)
@@ -13125,9 +13151,13 @@ namespace gatzk::protocol
                     const auto y_public = transcript.challenge(
                         shift_meta.challenge_label);
                     trace.challenges[shift_meta.challenge_label] = y_public;
-                    const auto public_m_value = trace.polynomials.at(
-                                                                     output_bias_view_label(head_index, "m_can"))
-                                                    .evaluate(y_public);
+                    const auto public_m_value =
+                        evaluate_trace_polynomial(
+                            trace,
+                            output_bias_view_label(
+                                head_index, "m_can"),
+                            y_public,
+                            domains.c);
                     binding_subproof.evaluations.push_back(BindingEvaluation{
                         .domain = "relation",
                         .object_id = output_bias_view_label(head_index, "m_can") + ":public_bind",
@@ -13287,9 +13317,13 @@ namespace gatzk::protocol
                             }),
                         .opening_polynomial = std::move(relation_polynomial),
                     });
-                const auto public_m_value = trace.polynomials.at(
-                                                                 output_bias_view_label(head_index, "m_can"))
-                                                .evaluate(y_rel);
+                const auto public_m_value =
+                    evaluate_trace_polynomial(
+                        trace,
+                        output_bias_view_label(
+                            head_index, "m_can"),
+                        y_rel,
+                        domains.c);
                 binding_subproof.evaluations.push_back(BindingEvaluation{
                     .domain = "relation",
                     .object_id = output_bias_view_label(head_index, "m_can") + ":public_bind",
@@ -13674,6 +13708,123 @@ namespace gatzk::protocol
                 "trace opening source polynomial/domain mismatch: " + label);
         }
         return material;
+    }
+
+    const std::vector<algebra::FieldElement> &
+    resolve_trace_zero_domain_blinder(
+        const TraceArtifacts &trace,
+        const std::string &label,
+        const std::shared_ptr<algebra::RootOfUnityDomain> &expected_domain)
+    {
+        if (expected_domain == nullptr)
+        {
+            throw std::runtime_error(
+                "trace blinder source has no expected domain: " +
+                label);
+        }
+
+        const auto domain_it =
+            trace.polynomial_domains.find(label);
+        if (domain_it == trace.polynomial_domains.end() ||
+            domain_it->second != expected_domain->name)
+        {
+            throw std::runtime_error(
+                "trace blinder source domain registration mismatch: " +
+                label);
+        }
+
+        const auto commitment_it =
+            trace.commitments.find(label);
+        if (commitment_it == trace.commitments.end())
+        {
+            throw std::runtime_error(
+                "trace blinder source commitment is missing: " +
+                label);
+        }
+
+        const auto validate_material =
+            [&](const algebra::Polynomial &material)
+            -> const std::vector<algebra::FieldElement> &
+        {
+            if (material.basis !=
+                    algebra::PolynomialBasis::Evaluation ||
+                material.domain == nullptr ||
+                material.domain->name != expected_domain->name ||
+                material.domain->size != expected_domain->size ||
+                !(material.domain->omega ==
+                  expected_domain->omega) ||
+                material.size() > expected_domain->size)
+            {
+                throw std::runtime_error(
+                    "trace blinder source polynomial/domain mismatch: " +
+                    label);
+            }
+            return material.zero_domain_blinder;
+        };
+
+        if (commitment_it->second.opening_polynomial != nullptr)
+        {
+            return validate_material(
+                *commitment_it->second.opening_polynomial);
+        }
+
+        if (const auto polynomial_it =
+                trace.polynomials.find(label);
+            polynomial_it != trace.polynomials.end())
+        {
+            return validate_material(
+                polynomial_it->second);
+        }
+
+        const auto spilled_it =
+            trace.spilled_polynomials.find(label);
+        if (spilled_it == trace.spilled_polynomials.end())
+        {
+            throw std::runtime_error(
+                "trace blinder source material is missing: " +
+                label);
+        }
+
+        const auto &spilled =
+            spilled_it->second;
+        if (spilled.domain_name != expected_domain->name ||
+            spilled.size > expected_domain->size)
+        {
+            throw std::runtime_error(
+                "trace spilled blinder source domain mismatch: " +
+                label);
+        }
+        if (!spilled.zero_tail_compacted &&
+            spilled.physical_size != 0 &&
+            spilled.physical_size != spilled.size)
+        {
+            throw std::runtime_error(
+                "trace spilled blinder source physical metadata mismatch: " +
+                label);
+        }
+        if (spilled.lease == nullptr)
+        {
+            throw std::runtime_error(
+                "trace spilled blinder source has no authenticated lease: " +
+                label);
+        }
+
+        const auto physical_size =
+            spilled_file_value_count(spilled);
+        const auto payload_name =
+            spilled.lease->payload_name(
+                spilled.path);
+        if (spilled.lease->payload_size(
+                payload_name) !=
+            algebra::field_elements_binary_size(
+                physical_size))
+        {
+            throw std::runtime_error(
+                "trace spilled blinder source length mismatch: " +
+                label);
+        }
+
+        return spilled.zero_domain_blinder;
     }
 
     // trace 总入口：当前正式路径只接受已校验的多层多头模型。

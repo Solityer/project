@@ -33,12 +33,13 @@ GX = int("17f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e8
 GY = int("08b3f481e3aaa0f1a09e30ed741d8ae4fcf5e095d5d00af600db18cb2c04b3edd03cc744a2888ae40caa232946c5e7e1", 16)
 G = (GX, GY)
 
-# These bounds mirror the native proof/resource wire contracts.  The former
-# preparation path used a 2^19 shortcut, which truncated valid relation
-# families for larger datasets.  Keep only representation and frame-size
-# guards here; the requested domain itself is still derived from the
-# authenticated relation shapes below.
+# Logical relation domains are not IPA basis domains.  The native CPU opening
+# implementation deliberately works on a bounded Hyrax basis; large relation
+# families are represented as ordered logical segments which reuse this
+# authenticated prefix.  Keep this limit in one place so setup, validators and
+# the native loader cannot silently drift.
 MAX_NATIVE_DOMAIN = 1 << 30
+NATIVE_BASIS_DOMAIN = 1 << 18
 SRS_FRAME_HEADER_BYTES = 8 + 4 + 4 + 8 + 8 + 8
 G1_POINT_BYTES = 48
 MAX_SRS_FRAME_BYTES = 1 << 32
@@ -561,9 +562,6 @@ def relation_family_domains(values: dict[str, str], nodes: int, edges: int,
         depth = table_depth(table_size)
         for bit in range(depth):
             view(operation + f"/view/bit/{bit}", *shape)
-        for level in range(depth + 1):
-            for index in range(1 << level):
-                view(operation + f"/view/chi/{level}/{index}", *shape)
 
     def append_stage_views(stage: str, width: int, output: bool) -> None:
         edge = edge_shape()
@@ -806,7 +804,10 @@ def load_srs_basis(root: Path, values: dict[str, str], required_domain: int) -> 
                 break
     if selected is None:
         die("installed local SRS manifest has no selectable default chunk")
-    generators = read_srs_frame_prefix(srs_dir, selected.get("G"), "G", required_domain)
+    basis_domain = selected.get("basis_domain")
+    if not isinstance(basis_domain, int) or basis_domain < 1 or basis_domain & (basis_domain - 1):
+        die("installed local SRS default chunk has no canonical basis_domain")
+    generators = read_srs_frame_prefix(srs_dir, selected.get("G"), "G", min(required_domain, basis_domain))
     h_points = read_srs_frame_prefix(srs_dir, selected.get("H"), "H", 1)
     generator_digest = selected.get("generator_digest")
     if not isinstance(generator_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", generator_digest):
@@ -839,6 +840,83 @@ def make_tables(values: dict[str, str], quant_digest: str) -> dict[str, Any]:
     table["exp"] = [max(1, round_away(math.exp(-x / 256.0) * 16.0)) for x in range(bound + 1)]
     table["digest"] = table_digest(table)
     return table
+
+
+def sorted_lookup_path(static_table_path: Path) -> Path:
+    """Return the sibling descriptor used by the native sorted-lookup plan."""
+    name = static_table_path.name
+    if name.endswith("_gat_static_tables.json"):
+        name = name[:-len("_gat_static_tables.json")] + "_gat_sorted_lookup.json"
+    else:
+        name = static_table_path.stem + "_sorted_lookup.json"
+    return static_table_path.with_name(name)
+
+
+def make_sorted_lookup_descriptor(values: dict[str, str], table: dict[str, Any],
+                                  static_table_digest: str, nodes: int,
+                                  profile: list[tuple[int, int]], edges: int) -> dict[str, Any]:
+    """Describe logical unique table rows and bounded Q/T/S layouts.
+
+    The descriptor intentionally contains no chi tree or padded row material.
+    Padding is a native provider rule, while table rows remain public, sorted,
+    and unique by their packed (input-offset, output-offset) key.
+    """
+    segment_size = NATIVE_BASIS_DOMAIN
+    table_specs = (
+        ("static_lrelu", table["lrelu"], int(table["lrelu_min"]), "leaky_relu"),
+        ("static_elu", table["elu"], int(table["elu_min"]), "elu"),
+        ("static_exp", table["exp"], 0, "exp_map"),
+    )
+    families: list[dict[str, Any]] = []
+    for table_ref, outputs, input_min, operation in table_specs:
+        if not outputs:
+            die(f"sorted lookup table is empty: {table_ref}")
+        input_max = input_min + len(outputs) - 1
+        output_min = min(int(value) for value in outputs)
+        output_max = max(int(value) for value in outputs)
+        x_bits = max(1, (len(outputs) - 1).bit_length())
+        y_bits = max(1, (output_max - output_min).bit_length())
+        if x_bits + y_bits > 127:
+            die(f"sorted lookup packed key exceeds u128 bound: {table_ref}")
+        key_max = ((len(outputs) - 1) << y_bits) | (output_max - output_min)
+        families.append({
+            "table_ref": table_ref,
+            "operation": operation,
+            "logical_rows": len(outputs),
+            "padded_domain": next_pow2(len(outputs)),
+            "sorted_unique": True,
+            "input_min": input_min,
+            "input_max": input_max,
+            "output_min": output_min,
+            "output_max": output_max,
+            "x_bits": x_bits,
+            "y_bits": y_bits,
+            "key_encoding": "packed_pair_u128",
+            "key_max_u128": str(key_max),
+            "padding_rule": "zero_after_logical_rows_v1",
+        })
+    max_width = max((width for _, width in profile), default=1)
+    descriptor: dict[str, Any] = {
+        "schema": "zkDL_gat_sorted_lookup_descriptor_v1",
+        "version": 1,
+        "static_table_id": values["static_table_id"],
+        "static_table_digest": static_table_digest,
+        "key_encoding": "packed_pair_u128",
+        "active_mask_rule": "prefix_one_then_zero_v1",
+        "sorted_delta_rule": "nonnegative_bounded_delta_v1",
+        "marker_rule": "group_first_v1",
+        "inverse_rule": "delta_inverse_or_zero_v1",
+        "segment_size": segment_size,
+        "table_families": families,
+        "query_families": [
+            {"operation": "leaky_relu", "query_rows": edges, "query_shape": [edges]},
+            {"operation": "exp_map", "query_rows": edges, "query_shape": [edges]},
+            {"operation": "elu", "query_rows": nodes * max_width, "query_shape": [nodes, max_width]},
+        ],
+        "source_root": "baseline-local",
+    }
+    descriptor["descriptor_digest"] = sha256_bytes(compact(descriptor))
+    return descriptor
 
 
 def make_ledger(root: Path, values: dict[str, str], tables: dict[str, Any], table_file_digest: str, quant_digest: str) -> dict[str, Any]:
@@ -885,9 +963,10 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
             die(f"SRS family {family_id} has an invalid native power-of-two domain: {chunk_domain}")
         if chunk_domain > MAX_SRS_FRAME_BYTES // G1_POINT_BYTES:
             die(f"SRS family {family_id} frame exceeds the native authenticated frame byte bound")
-    # Check aggregate output size before deriving points.  This is an
-    # operational disk-capacity guard, not a proof-domain restriction.
-    common_domain = max(family_domains.values())
+    # The logical relation may be much larger than the common IPA basis.  The
+    # latter is intentionally bounded and reused by ordered segments; setup
+    # must never materialize one G point per logical coordinate.
+    common_domain = NATIVE_BASIS_DOMAIN
     # All family chunks authenticate one common prefix basis.  The manifest
     # retains per-family required domains, but the large G frame and the H/U
     # frames are written once and referenced by every family.  Include a
@@ -961,15 +1040,25 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
         generator_id = "zkDL_native_local_csprng_g1_v1"
         families: list[dict[str, Any]] = []
         for family_id, required_domain in sorted(family_domains.items()):
+            segment_count = (required_domain + common_domain - 1) // common_domain
             chunk = {
                 "family_id": family_id, "chunk_id": f"{family_id}:chunk0",
                 "chunk_index": 0, "point_offset": 0, "point_count": domain,
-                "domain": domain, "required_domain": required_domain,
+                "domain": domain, "logical_domain": required_domain,
+                "basis_domain": common_domain, "segment_size": common_domain,
+                "segment_count": segment_count, "required_domain": required_domain,
                 "degree": domain - 1, "point_size": 48,
                 "generator_id": generator_id, "basis_digest": basis,
                 "generator_digest": g_meta["sha256"], "G": dict(g_meta),
                 "H": dict(h_meta), "U": dict(u_meta),
             }
+            chunk["segments"] = [
+                {"segment_index": index, "logical_offset": index * common_domain,
+                 "actual_length": min(common_domain, required_domain - index * common_domain),
+                 "padded_length": common_domain, "basis_offset": 0,
+                 "basis_count": common_domain}
+                for index in range(segment_count)
+            ]
             families.append({"family_id": family_id, "chunks": [chunk]})
         default = next(item for item in families if item["family_id"] == "*")["chunks"][0]
         manifest = {
@@ -988,7 +1077,12 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
                 "curve_id": "bls12_381",
                 "config_binding_digest": config_binding(values),
                 "basis_digest": basis, "domain": domain,
-                "generator_count": domain, "h_count": 1, "u_count": 1,
+                "basis_domain": common_domain,
+                "generator_count": common_domain, "h_count": 1, "u_count": 1,
+                "logical_domain": max(family_domains.values()),
+                "segment_size": common_domain,
+                "segment_count": max((int(v) + common_domain - 1) // common_domain
+                                      for v in family_domains.values()),
             },
             "families": families, "generator_digest": default["generator_digest"],
         }
@@ -1073,6 +1167,10 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool) ->
     table = make_tables(values, quant_digest)
     table_path = root / values["static_table_descriptor"]
     table_file_digest = write_json(table_path, table)
+    lookup_path = sorted_lookup_path(table_path)
+    lookup_descriptor = make_sorted_lookup_descriptor(
+        values, table, table_file_digest, nodes, parse_profile(values["hidden_profile"]), edges)
+    write_json(lookup_path, lookup_descriptor)
     ledger = make_ledger(root, values, table, table_file_digest, quant_digest)
     ledger_path = root / values["integer_bound_ledger"]
     ledger_file_digest = write_json(ledger_path, ledger)

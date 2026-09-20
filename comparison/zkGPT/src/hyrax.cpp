@@ -1537,4 +1537,330 @@ bool verify_masked_mle_opening_with_session(
         return false;
     }
 }
+
+namespace {
+
+std::string chunked_digest(const std::string &payload) {
+    Fr digest;
+    digest.setHashOf(payload.data(), payload.size());
+    std::string encoded = digest.getStr(16);
+    if (encoded.empty()) encoded = "0";
+    if (encoded.size() > 64)
+        throw std::runtime_error("chunked Hyrax digest overflow");
+    return std::string(64 - encoded.size(), '0') + encoded;
+}
+
+bool chunked_power_of_two(std::uint64_t value) {
+    return value != 0 && (value & (value - 1)) == 0;
+}
+
+std::size_t chunked_log2(std::uint64_t value) {
+    if (!chunked_power_of_two(value))
+        throw std::invalid_argument("chunked Hyrax domain is not a power of two");
+    std::size_t bits = 0;
+    while (value > 1) {
+        value >>= 1;
+        ++bits;
+    }
+    return bits;
+}
+
+std::vector<G1> chunked_generators(const std::string &basis_id,
+                                   std::uint64_t offset,
+                                   std::uint64_t count) {
+    if (count == 0 || count > (1ULL << 16))
+        throw std::invalid_argument("chunked Hyrax generator bound is invalid");
+    std::vector<G1> generators(static_cast<std::size_t>(count));
+    for (std::uint64_t index = 0; index < count; ++index) {
+        hashAndMapToG1(generators[static_cast<std::size_t>(index)],
+                       "zkGPT/hyrax/chunked/v1/" + basis_id + "/" +
+                           std::to_string(offset) + "/" +
+                           std::to_string(index));
+        if (!valid_point(generators[static_cast<std::size_t>(index)], true))
+            throw std::runtime_error("chunked Hyrax generator is invalid");
+    }
+    return generators;
+}
+
+std::string chunked_basis_id(const std::string &basis_id,
+                             std::uint64_t offset) {
+    const std::string result = chunked_digest(
+        "zkgpt-hyrax/chunked-basis/v1/" + basis_id + "/" +
+        std::to_string(offset));
+    return result;
+}
+
+std::string chunked_point_digest(const std::vector<Fr> &point) {
+    std::ostringstream payload;
+    payload << "zkgpt-hyrax/chunked-point/v1/" << point.size();
+    for (const Fr &value : point) payload << '/' << value.getStr(16);
+    return chunked_digest(payload.str());
+}
+
+std::string chunked_root_digest(const ChunkedMleWire &wire) {
+    std::ostringstream payload;
+    payload << wire.schema << '|' << wire.version << '|' << wire.label << '|'
+            << wire.basis_id << '|' << wire.scalar_domain << '|'
+            << wire.logical_length << '|' << wire.padded_length << '|'
+            << wire.chunk_size << '|' << wire.point_digest;
+    for (const ChunkedMleChunkWire &chunk : wire.chunks) {
+        payload << '|' << chunk.offset << '|' << chunk.actual_length << '|'
+                << chunk.padded_length << '|' << chunk.label << '|'
+                << chunk.basis_id << '|' << chunk.commitment_hex << '|'
+                << chunk.evaluation_mask_commitment_hex << '|'
+                << chunk.masked_evaluation << '|'
+                << chunk.raw_evaluation_commitment_hex << '|'
+                << chunk.masked_evaluation_commitment_hex;
+    }
+    return chunked_digest(payload.str());
+}
+
+bool chunked_shape(std::uint64_t logical_length,
+                   std::uint64_t padded_length,
+                   std::uint64_t chunk_size,
+                   const std::vector<Fr> &point,
+                   std::string *reason) {
+    if (logical_length == 0 || padded_length == 0 ||
+        logical_length > padded_length || !chunked_power_of_two(padded_length) ||
+        !chunked_power_of_two(chunk_size) || chunk_size < 2 ||
+        chunk_size > (1ULL << 16) || padded_length % chunk_size != 0 ||
+        point.size() != chunked_log2(padded_length) ||
+        point.size() >= sizeof(std::size_t) * 8) {
+        if (reason != nullptr) *reason = "chunked Hyrax shape is invalid";
+        return false;
+    }
+    return true;
+}
+
+bool chunked_scalar_commitment(
+    const std::string &encoded, const zkgpt::native_pedersen::PedersenBasis &basis,
+    zkgpt::native_pedersen::ScalarCommitment &result, std::string *reason) {
+    G1 point;
+    if (!decode_open_point(encoded, point)) {
+        if (reason != nullptr) *reason = "chunked scalar commitment is malformed";
+        return false;
+    }
+    result.domain = basis.domain;
+    result.point = point;
+    return result.valid(basis, reason);
+}
+
+} // namespace
+
+bool prove_chunked_mle_opening(
+    NativeProofSession &session, const std::string &label,
+    std::uint64_t logical_length, std::uint64_t padded_length,
+    std::uint64_t chunk_size, const std::vector<Fr> &point,
+    const ChunkedMleValueProvider &provider,
+    const zkgpt::native_pedersen::PedersenBasis &scalar_basis,
+    ChunkedMleProverResult &result, std::string *reason) {
+    const std::size_t checkpoint = session.checkpoint();
+    try {
+        if (label.empty() || !provider || !scalar_basis.valid(reason) ||
+            !chunked_shape(logical_length, padded_length, chunk_size, point,
+                           reason))
+            throw std::invalid_argument(reason != nullptr && !reason->empty()
+                                            ? *reason
+                                            : "invalid chunked Hyrax opening");
+        const std::size_t local_bits = chunked_log2(chunk_size);
+        const std::vector<Fr> local_point(point.begin(),
+                                          point.begin() + local_bits);
+        result = ChunkedMleProverResult{};
+        result.wire.label = label;
+        result.wire.basis_id = chunked_digest(
+            "zkgpt-hyrax/chunked-root-basis/v1/" + label + "/" +
+            scalar_basis.domain);
+        result.wire.scalar_domain = scalar_basis.domain;
+        result.wire.logical_length = logical_length;
+        result.wire.padded_length = padded_length;
+        result.wire.chunk_size = chunk_size;
+        result.wire.point_digest = chunked_point_digest(point);
+        session.absorb(label + "/schedule",
+                       result.wire.basis_id + "|" + scalar_basis.domain + "|" +
+                           std::to_string(logical_length) + "|" +
+                           std::to_string(padded_length) + "|" +
+                           std::to_string(chunk_size) + "|" +
+                           result.wire.point_digest);
+
+        const std::uint64_t chunk_count = padded_length / chunk_size;
+        result.wire.chunks.reserve(static_cast<std::size_t>(chunk_count));
+        std::vector<zkgpt::native_pedersen::ScalarOpening> raw_openings;
+        std::vector<Fr> aggregate_coefficients;
+        raw_openings.reserve(static_cast<std::size_t>(chunk_count));
+        aggregate_coefficients.reserve(static_cast<std::size_t>(chunk_count) + 1);
+        Fr aggregate = F_ZERO;
+        for (std::uint64_t chunk_index = 0; chunk_index < chunk_count;
+             ++chunk_index) {
+            const std::uint64_t offset = chunk_index * chunk_size;
+            const std::uint64_t actual =
+                offset < logical_length
+                    ? std::min<std::uint64_t>(chunk_size,
+                                               logical_length - offset)
+                    : 0;
+            if (actual == 0 && offset >= logical_length && chunk_index + 1 != chunk_count)
+                throw std::invalid_argument("chunked Hyrax has an interior empty chunk");
+            std::vector<Fr> values(static_cast<std::size_t>(chunk_size), F_ZERO);
+            for (std::uint64_t index = 0; index < actual; ++index)
+                values[static_cast<std::size_t>(index)] = provider(offset + index);
+            const std::vector<G1> generators =
+                chunked_generators(result.wire.basis_id, offset, chunk_size);
+            const std::string basis_id = chunked_basis_id(result.wire.basis_id, offset);
+            const hyrax::PedersenMleCommitment commitment = pedersen_commit_mle(
+                generators, values, basis_id);
+            const Fr local_eval = [&]() {
+                const std::vector<Fr> basis = mle_basis_from_point(local_point);
+                Fr value = F_ZERO;
+                for (std::size_t index = 0; index < values.size(); ++index)
+                    value += basis[index] * values[index];
+                return value;
+            }();
+            const std::size_t high_bits = point.size() - local_bits;
+            Fr high_weight = F_ONE;
+            for (std::size_t bit = 0; bit < high_bits; ++bit) {
+                const bool set = ((chunk_index >> bit) & 1U) != 0;
+                high_weight *= set ? point[local_bits + bit]
+                                   : (F_ONE - point[local_bits + bit]);
+            }
+            aggregate += high_weight * local_eval;
+            const std::string chunk_label =
+                label + "/chunk/" + std::to_string(chunk_index);
+            MaskedMleOpening opening;
+            if (!open_masked_mle_with_claim(
+                    commitment, generators, local_point, values, local_eval,
+                    session, chunk_label, opening, reason, false, "",
+                    &scalar_basis))
+                throw std::runtime_error(reason != nullptr ? *reason
+                                                             : "chunked Hyrax chunk opening failed");
+            ChunkedMleChunkWire wire;
+            wire.offset = offset;
+            wire.actual_length = actual;
+            wire.padded_length = chunk_size;
+            wire.label = chunk_label;
+            wire.basis_id = basis_id;
+            wire.commitment_hex = point_encoding(commitment.commitment);
+            wire.evaluation_mask_commitment_hex =
+                point_encoding(opening.evaluation_mask_commitment);
+            wire.masked_evaluation = opening.masked_evaluation.getStr(16);
+            wire.raw_evaluation_commitment_hex =
+                point_encoding(opening.raw_evaluation_opening.commitment.point);
+            wire.masked_evaluation_commitment_hex =
+                point_encoding(opening.masked_evaluation_opening.commitment.point);
+            result.wire.chunks.push_back(std::move(wire));
+            raw_openings.push_back(opening.raw_evaluation_opening);
+            aggregate_coefficients.push_back(high_weight);
+        }
+        result.wire.root_digest = chunked_root_digest(result.wire);
+        session.absorb(label + "/root", result.wire.root_digest);
+        result.aggregate_opening =
+            zkgpt::native_pedersen::commit_fresh(scalar_basis, aggregate);
+        result.wire.aggregate_commitment_hex =
+            point_encoding(result.aggregate_opening.commitment.point);
+        raw_openings.push_back(result.aggregate_opening);
+        aggregate_coefficients.push_back(-F_ONE);
+        if (!zkgpt::native_pedersen::prove_hidden_linear(
+                session, scalar_basis, label + "/aggregate-link", raw_openings,
+                aggregate_coefficients, F_ZERO, nullptr, reason))
+            throw std::runtime_error(reason != nullptr ? *reason
+                                                         : "chunked Hyrax aggregate link failed");
+        return true;
+    } catch (const std::exception &error) {
+        session.rollback(checkpoint);
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
+}
+
+bool verify_chunked_mle_opening(
+    const NativeProofSession &session, const ChunkedMleWire &wire,
+    const std::string &label, std::uint64_t logical_length,
+    std::uint64_t padded_length, std::uint64_t chunk_size,
+    const std::vector<Fr> &point,
+    const zkgpt::native_pedersen::PedersenBasis &scalar_basis,
+    std::string *reason) {
+    try {
+        if (wire.schema != kChunkedMleSchema ||
+            wire.version != kChunkedMleVersion || wire.label != label ||
+            wire.basis_id.empty() || wire.scalar_domain != scalar_basis.domain ||
+            wire.logical_length != logical_length ||
+            wire.padded_length != padded_length || wire.chunk_size != chunk_size ||
+            !scalar_basis.valid(reason) ||
+            !chunked_shape(logical_length, padded_length, chunk_size, point,
+                           reason))
+            throw std::invalid_argument(reason != nullptr && !reason->empty()
+                                            ? *reason
+                                            : "chunked Hyrax wire shape is invalid");
+        if (wire.point_digest != chunked_point_digest(point) ||
+            wire.root_digest != chunked_root_digest(wire))
+            throw std::invalid_argument("chunked Hyrax canonical root mismatch");
+        const std::size_t local_bits = chunked_log2(chunk_size);
+        const std::vector<Fr> local_point(point.begin(),
+                                          point.begin() + local_bits);
+        const std::uint64_t chunk_count = padded_length / chunk_size;
+        if (wire.chunks.size() != static_cast<std::size_t>(chunk_count))
+            throw std::invalid_argument("chunked Hyrax chunk count mismatch");
+        std::vector<zkgpt::native_pedersen::ScalarCommitment> raw_commitments;
+        std::vector<Fr> aggregate_coefficients;
+        raw_commitments.reserve(wire.chunks.size() + 1);
+        aggregate_coefficients.reserve(wire.chunks.size() + 1);
+        for (std::size_t index = 0; index < wire.chunks.size(); ++index) {
+            const ChunkedMleChunkWire &chunk = wire.chunks[index];
+            const std::uint64_t expected_offset =
+                static_cast<std::uint64_t>(index) * chunk_size;
+            const std::uint64_t expected_actual =
+                expected_offset < logical_length
+                    ? std::min<std::uint64_t>(chunk_size,
+                                               logical_length - expected_offset)
+                    : 0;
+            if (chunk.offset != expected_offset ||
+                chunk.actual_length != expected_actual ||
+                chunk.padded_length != chunk_size ||
+                chunk.label != label + "/chunk/" + std::to_string(index) ||
+                chunk.basis_id != chunked_basis_id(wire.basis_id, chunk.offset))
+                throw std::invalid_argument("chunked Hyrax descriptor order mismatch");
+            G1 commitment_point, mask_point;
+            if (!decode_open_point(chunk.commitment_hex, commitment_point) ||
+                !decode_open_point(chunk.evaluation_mask_commitment_hex, mask_point))
+                throw std::invalid_argument("chunked Hyrax group commitment is malformed");
+            Fr masked_evaluation;
+            if (!decode_open_field(chunk.masked_evaluation, masked_evaluation))
+                throw std::invalid_argument("chunked Hyrax masked evaluation is malformed");
+            zkgpt::native_pedersen::ScalarCommitment raw_commitment;
+            zkgpt::native_pedersen::ScalarCommitment masked_commitment;
+            if (!chunked_scalar_commitment(chunk.raw_evaluation_commitment_hex,
+                                           scalar_basis, raw_commitment, reason) ||
+                !chunked_scalar_commitment(chunk.masked_evaluation_commitment_hex,
+                                           scalar_basis, masked_commitment, reason))
+                return false;
+            const std::vector<G1> generators = chunked_generators(
+                wire.basis_id, chunk.offset, chunk_size);
+            if (!verify_masked_mle_opening_with_session(
+                    commitment_point, mask_point, masked_evaluation,
+                    chunk.basis_id, generators, local_point, session,
+                    chunk.label, reason, false, true, "", &scalar_basis,
+                    &raw_commitment, &masked_commitment))
+                return false;
+            raw_commitments.push_back(raw_commitment);
+            Fr high_weight = F_ONE;
+            const std::size_t high_bits = point.size() - local_bits;
+            for (std::size_t bit = 0; bit < high_bits; ++bit) {
+                const bool set = ((static_cast<std::uint64_t>(index) >> bit) & 1U) != 0;
+                high_weight *= set ? point[local_bits + bit]
+                                   : (F_ONE - point[local_bits + bit]);
+            }
+            aggregate_coefficients.push_back(high_weight);
+        }
+        zkgpt::native_pedersen::ScalarCommitment aggregate_commitment;
+        if (!chunked_scalar_commitment(wire.aggregate_commitment_hex,
+                                       scalar_basis, aggregate_commitment, reason))
+            return false;
+        raw_commitments.push_back(aggregate_commitment);
+        aggregate_coefficients.push_back(-F_ONE);
+        return zkgpt::native_pedersen::verify_hidden_linear(
+            session, scalar_basis, label + "/aggregate-link", raw_commitments,
+            aggregate_coefficients, F_ZERO, reason);
+    } catch (const std::exception &error) {
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
+}
 }

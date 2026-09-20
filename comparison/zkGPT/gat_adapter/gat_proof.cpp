@@ -1947,6 +1947,45 @@ GatCircuitPlan build_virtual_sparse_plan(const Graph &graph,
         binding.from_terminal = static_cast<std::uint32_t>(link.descriptor_index);
         sparse_plan.binding_links.push_back(std::move(binding));
     }
+    // The sparse recipe carries the Lasso registry as public metadata as
+    // well.  Only family counts/offsets are recorded here; query values and
+    // incidence entries are supplied later by the chunk provider.
+    const QueryCounts virtual_query_counts = canonical_query_counts(graph, model);
+    const QueryCoordinates virtual_query_coordinates =
+        make_query_coordinates(graph, model, plan.input_layout);
+    const StaticTables virtual_tables = StaticTables::build(quant);
+    const auto add_virtual_lasso = [&plan](const std::string &family,
+                                            const std::string &table,
+                                            std::size_t real,
+                                            std::size_t offset,
+                                            std::size_t table_domain,
+                                            Int padding) {
+        LassoFamilyDescriptor descriptor;
+        descriptor.relation_id = "lasso/" + family;
+        descriptor.family_id = family;
+        descriptor.table_id = table;
+        descriptor.real_queries = real;
+        descriptor.padded_queries = next_power_of_two(real);
+        descriptor.table_domain = next_power_of_two(table_domain);
+        descriptor.padding_value = padding;
+        descriptor.query_offset = offset;
+        descriptor.incidence_rule =
+            "L_qry/" + family + "/canonical_operation_index_row_major";
+        descriptor.challenge_policy = "LC_before_challenge";
+        descriptor.query_encoding = "lookup_tuple_encoding_id:packed_signed_pair_v1";
+        plan.lasso.push_back(std::move(descriptor));
+    };
+    add_virtual_lasso("function/lrelu", "T_LReLU", virtual_query_counts.lrelu,
+                      virtual_query_coordinates.lrelu, virtual_tables.lrelu.size(),
+                      virtual_tables.lrelu.front().x);
+    add_virtual_lasso("function/exp", "T_exp", virtual_query_counts.exp,
+                      virtual_query_coordinates.exp, virtual_tables.exp.size(),
+                      virtual_tables.exp.front().x);
+    add_virtual_lasso("function/elu", "T_ELU", virtual_query_counts.elu,
+                      virtual_query_coordinates.elu, virtual_tables.elu.size(),
+                      virtual_tables.elu.front().x);
+    add_virtual_lasso("range/all", "T_range", virtual_query_counts.range,
+                      virtual_query_coordinates.range, 2, 0);
     plan.sparse_plan_digest = canonical_digest64(sparse_plan.encoding());
     plan.public_output_coordinates = checked_mul(graph.num_nodes, classes,
                                                  "virtual public output coordinates");
@@ -2340,7 +2379,11 @@ SparseGkrProofWire make_sparse_proof_wire(
         "sparse/input-binding-v1/" + wire.relations.front().initial_claim);
     wire.output_binding = canonical_digest64(
         "sparse/output-binding-v1/" + wire.relations.back().final_claim);
-    wire.hyrax_lasso_complete = false;
+    // Sparse artifacts are emitted only after the chunked Hyrax/Lasso bundle
+    // has been attached by the virtual path.  Keep the wire default aligned
+    // with the versioned schema; an incomplete bundle is rejected by
+    // sparse_proof_wire_valid rather than advertised through this flag.
+    wire.hyrax_lasso_complete = true;
     return wire;
 }
 
@@ -2358,7 +2401,14 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
     // deterministically with a methodology-level reason instead of drifting
     // into OOM or a metadata-only pseudo-proof.
     const GatCapacityReport capacity = inspect_gat_capacity(graph, model, quant);
-    if (!capacity.ready && capacity.sparse_ready)
+    const bool explicit_input_ok =
+        capacity.max_materialized_vector <= kMaxMaterializedVectorEntries;
+    const bool explicit_coordinate_ok =
+        capacity.input_layout.n_in <= std::numeric_limits<std::uint32_t>::max() / 4;
+    const bool explicit_path_ready =
+        explicit_input_ok && capacity.max_materialized_gate <= kMaxExplicitGateEntries &&
+        explicit_coordinate_ok;
+    if (capacity.sparse_ready && !explicit_path_ready)
         return build_virtual_sparse_plan(graph, model, quant);
     if (!capacity.ready)
         throw std::length_error("canonical GAT capacity is not supported by native zkGPT: " + capacity.reason);
@@ -3910,6 +3960,196 @@ LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan &plan,
     return result;
 }
 
+// Build only the canonical query streams for the virtual Lasso path.  The
+// old build_lasso_bundle() remains the bounded legacy path; this helper does
+// not allocate L_qry, an incidence matrix, or a full generator family.
+std::vector<NativeLassoChunkFamilyProver> build_lasso_chunk_families(
+    const GatCircuitPlan &plan, const ForwardResult &forward,
+    const StaticTables &tables) {
+    std::map<std::string, std::vector<std::pair<Int, Int>>> function_queries;
+    std::map<std::string, std::vector<Fr>> range_queries;
+    const auto append_attention = [&](const AttentionTrace &trace, bool hidden) {
+        auto &lrelu = function_queries["function/lrelu"];
+        auto &exp = function_queries["function/exp"];
+        for (std::size_t index = 0; index < trace.raw_score.size(); ++index)
+            lrelu.emplace_back(trace.raw_score[index], trace.leaky_score[index]);
+        for (std::size_t index = 0; index < trace.delta.size(); ++index)
+            exp.emplace_back(trace.delta[index], trace.exp[index]);
+        if (hidden) {
+            auto &elu = function_queries["function/elu"];
+            for (std::size_t index = 0; index < trace.recovered.size(); ++index)
+                elu.emplace_back(trace.recovered[index], trace.activated[index]);
+        }
+        append_range_attention_queries(range_queries["range/all"], trace);
+    };
+    for (const HiddenLayerTrace &layer : forward.trace.hidden_layers)
+        for (const AttentionTrace &head : layer.heads) append_attention(head, true);
+    for (const OutputHeadTrace &head : forward.trace.output_heads) {
+        append_attention(head.attention, false);
+        for (const DivisionWitness &division : head.alignment_divisions)
+            append_four_bits(range_queries["range/all"], division.q);
+    }
+    for (const DivisionWitness &division : forward.trace.final_average_divisions)
+        append_four_bits(range_queries["range/all"], division.q);
+
+    const auto table_for = [&](const std::string &family) -> const std::vector<TablePoint> & {
+        if (family == "function/lrelu") return tables.lrelu;
+        if (family == "function/exp") return tables.exp;
+        if (family == "function/elu") return tables.elu;
+        throw std::invalid_argument("unknown virtual Lasso table family");
+    };
+    std::vector<NativeLassoChunkFamilyProver> result;
+    result.reserve(plan.lasso.size());
+    for (const LassoFamilyDescriptor &descriptor : plan.lasso) {
+        NativeLassoChunkFamilyProver family;
+        family.family_id = native_family_id(descriptor.family_id);
+        family.table_id = descriptor.table_id;
+        family.resource_id = "resource_" + family.family_id;
+        family.registration_id = "registration_" + family.family_id;
+        family.segment_offset = descriptor.query_offset -
+                                plan.input_layout.segments.at(3).offset;
+        family.logical_queries = descriptor.real_queries;
+        family.padded_queries = descriptor.padded_queries;
+        family.padding_index = 0;
+        family.chunk_size = std::min<std::uint64_t>(
+            kNativeLassoChunkEntries,
+            static_cast<std::uint64_t>(std::max<std::size_t>(2,
+                next_power_of_two(std::max<std::size_t>(2,
+                                   descriptor.padded_queries)))));
+        if (family.padded_queries >= kNativeLassoChunkEntries)
+            family.chunk_size = kNativeLassoChunkEntries;
+        if (family.padded_queries % family.chunk_size != 0)
+            family.chunk_size = family.padded_queries;
+        std::vector<Fr> table_values;
+        if (descriptor.family_id == "range/all") {
+            table_values = {F(0), F(1)};
+            family.padding_value = F(0);
+        } else {
+            const auto &points = table_for(descriptor.family_id);
+            Int bx = 0, by = 0;
+            for (const TablePoint &point : points) {
+                bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x)));
+                by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y)));
+            }
+            table_values.reserve(descriptor.table_domain);
+            for (const TablePoint &point : points)
+                table_values.push_back(packed_table_value(point.x, point.y, bx, by));
+            while (table_values.size() < descriptor.table_domain)
+                table_values.push_back(table_values.front());
+            family.padding_value = table_values.front();
+        }
+        family.table = table_values;
+        std::vector<Fr> query_values;
+        if (descriptor.family_id == "range/all") {
+            query_values = range_queries[descriptor.family_id];
+        } else {
+            const auto &pairs = function_queries[descriptor.family_id];
+            const auto &points = table_for(descriptor.family_id);
+            Int bx = 0, by = 0;
+            for (const TablePoint &point : points) {
+                bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x)));
+                by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y)));
+            }
+            for (const auto &pair : pairs)
+                query_values.push_back(packed_table_value(pair.first, pair.second,
+                                                          bx, by));
+        }
+        if (query_values.size() != family.logical_queries)
+            throw std::invalid_argument("virtual Lasso query count mismatch");
+        auto values = std::make_shared<std::vector<Fr>>(std::move(query_values));
+        family.query_value = [values](std::uint64_t index) {
+            return index < values->size() ? (*values)[static_cast<std::size_t>(index)]
+                                          : F(0);
+        };
+        result.push_back(std::move(family));
+    }
+    std::sort(result.begin(), result.end(),
+              [](const NativeLassoChunkFamilyProver &left,
+                 const NativeLassoChunkFamilyProver &right) {
+                  return left.family_id < right.family_id;
+              });
+    const auto legacy_public = [](const NativeLassoChunkFamilyPublic &family) {
+        NativeLassoFamilyPublic legacy;
+        legacy.family_id = family.family_id;
+        legacy.table_id = family.table_id;
+        legacy.resource_id = family.resource_id;
+        legacy.registration_id = family.registration_id;
+        legacy.table = family.table;
+        legacy.segment_offset = family.segment_offset;
+        legacy.logical_queries = family.logical_queries;
+        legacy.padded_queries = family.padded_queries;
+        legacy.padding_index = family.padding_index;
+        legacy.padding_value = family.padding_value;
+        return legacy;
+    };
+    std::vector<NativeLassoFamilyPublic> public_families;
+    public_families.reserve(result.size());
+    for (const NativeLassoChunkFamilyPublic &family : result)
+        public_families.push_back(legacy_public(family));
+    const std::string tables_digest = native_lasso_tables_digest(
+        public_families);
+    const std::string resources_digest = native_lasso_resources_digest(
+        public_families);
+    for (NativeLassoChunkFamilyProver &family : result) {
+        family.statement_tables_digest = tables_digest;
+        family.statement_resources_digest = resources_digest;
+    }
+    return result;
+}
+
+std::vector<NativeLassoChunkFamilyPublic> build_lasso_chunk_public_families(
+    const GatCircuitPlan &plan, const StaticTables &tables) {
+    // Reuse the exact public metadata construction without touching query
+    // values.  The helper above is intentionally not called here because it
+    // requires a prover-side trace.
+    std::vector<NativeLassoChunkFamilyPublic> result;
+    result.reserve(plan.lasso.size());
+    for (const LassoFamilyDescriptor &descriptor : plan.lasso) {
+        NativeLassoChunkFamilyPublic family;
+        family.family_id = native_family_id(descriptor.family_id);
+        family.table_id = descriptor.table_id;
+        family.resource_id = "resource_" + family.family_id;
+        family.registration_id = "registration_" + family.family_id;
+        family.segment_offset = descriptor.query_offset -
+                                plan.input_layout.segments.at(3).offset;
+        family.logical_queries = descriptor.real_queries;
+        family.padded_queries = descriptor.padded_queries;
+        family.padding_index = 0;
+        family.chunk_size = family.padded_queries >= kNativeLassoChunkEntries
+                                ? kNativeLassoChunkEntries
+                                : family.padded_queries;
+        if (family.chunk_size < 2) family.chunk_size = 2;
+        if (descriptor.family_id == "range/all") {
+            family.table = {F(0), F(1)};
+            family.padding_value = F(0);
+        } else {
+            const std::vector<TablePoint> *points = nullptr;
+            if (descriptor.family_id == "function/lrelu") points = &tables.lrelu;
+            else if (descriptor.family_id == "function/exp") points = &tables.exp;
+            else if (descriptor.family_id == "function/elu") points = &tables.elu;
+            if (points == nullptr || points->empty())
+                throw std::invalid_argument("public virtual Lasso table is empty");
+            Int bx = 0, by = 0;
+            for (const TablePoint &point : *points) {
+                bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x)));
+                by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y)));
+            }
+            for (const TablePoint &point : *points)
+                family.table.push_back(packed_table_value(point.x, point.y, bx, by));
+            while (family.table.size() < descriptor.table_domain)
+                family.table.push_back(family.table.front());
+            family.padding_value = family.table.front();
+        }
+        result.push_back(std::move(family));
+    }
+    std::sort(result.begin(), result.end(),
+              [](const NativeLassoChunkFamilyPublic &left,
+                 const NativeLassoChunkFamilyPublic &right) {
+                  return left.family_id < right.family_id;
+              });
+    return result;
+}
+
 // Rebuild only the public side of the canonical Lasso registry.  The
 // independent verifier must be able to reconstruct tables, resource IDs and
 // matrix generator domains without seeing the private query/matrix arrays.
@@ -4515,6 +4755,144 @@ bool read_section(std::ifstream &in, ProofSection &section) {
     return true;
 }
 
+void write_chunked_mle_wire(std::ofstream &out,
+                            const hyrax::ChunkedMleWire &wire) {
+    write_string(out, wire.schema);
+    write_u32(out, wire.version);
+    write_string(out, wire.label);
+    write_string(out, wire.basis_id);
+    write_string(out, wire.scalar_domain);
+    write_u64(out, wire.logical_length);
+    write_u64(out, wire.padded_length);
+    write_u64(out, wire.chunk_size);
+    write_string(out, wire.point_digest);
+    write_string(out, wire.root_digest);
+    write_string(out, wire.aggregate_commitment_hex);
+    write_u64(out, static_cast<std::uint64_t>(wire.chunks.size()));
+    for (const hyrax::ChunkedMleChunkWire &chunk : wire.chunks) {
+        write_u64(out, chunk.offset);
+        write_u64(out, chunk.actual_length);
+        write_u64(out, chunk.padded_length);
+        write_string(out, chunk.label);
+        write_string(out, chunk.basis_id);
+        write_string(out, chunk.commitment_hex);
+        write_string(out, chunk.evaluation_mask_commitment_hex);
+        write_string(out, chunk.masked_evaluation);
+        write_string(out, chunk.raw_evaluation_commitment_hex);
+        write_string(out, chunk.masked_evaluation_commitment_hex);
+    }
+}
+
+bool read_chunked_mle_wire(std::ifstream &in, hyrax::ChunkedMleWire &wire) {
+    if (!read_string(in, wire.schema) || !read_u32(in, wire.version) ||
+        !read_string(in, wire.label) || !read_string(in, wire.basis_id) ||
+        !read_string(in, wire.scalar_domain) ||
+        !read_u64(in, wire.logical_length) || !read_u64(in, wire.padded_length) ||
+        !read_u64(in, wire.chunk_size) || !read_string(in, wire.point_digest) ||
+        !read_string(in, wire.root_digest) ||
+        !read_string(in, wire.aggregate_commitment_hex)) return false;
+    std::uint64_t count = 0;
+    if (!read_u64(in, count) || count > kArtifactMaxMessages) return false;
+    wire.chunks.clear();
+    wire.chunks.reserve(static_cast<std::size_t>(count));
+    for (std::uint64_t index = 0; index < count; ++index) {
+        hyrax::ChunkedMleChunkWire chunk;
+        if (!read_u64(in, chunk.offset) || !read_u64(in, chunk.actual_length) ||
+            !read_u64(in, chunk.padded_length) ||
+            !read_string(in, chunk.label) || !read_string(in, chunk.basis_id) ||
+            !read_string(in, chunk.commitment_hex) ||
+            !read_string(in, chunk.evaluation_mask_commitment_hex) ||
+            !read_string(in, chunk.masked_evaluation) ||
+            !read_string(in, chunk.raw_evaluation_commitment_hex) ||
+            !read_string(in, chunk.masked_evaluation_commitment_hex)) return false;
+        wire.chunks.push_back(std::move(chunk));
+    }
+    return true;
+}
+
+void write_chunk_lasso_public(std::ofstream &out,
+                              const NativeLassoChunkFamilyPublic &family) {
+    write_string(out, family.family_id);
+    write_string(out, family.table_id);
+    write_string(out, family.resource_id);
+    write_string(out, family.registration_id);
+    write_u64(out, family.segment_offset);
+    write_u64(out, family.logical_queries);
+    write_u64(out, family.padded_queries);
+    write_u64(out, family.padding_index);
+    write_string(out, family.padding_value.getStr(16));
+    write_u64(out, family.chunk_size);
+    write_string(out, family.statement_tables_digest);
+    write_string(out, family.statement_resources_digest);
+    write_u64(out, static_cast<std::uint64_t>(family.table.size()));
+    for (const F &value : family.table) write_string(out, value.getStr(16));
+}
+
+bool read_chunk_lasso_public(std::ifstream &in,
+                             NativeLassoChunkFamilyPublic &family) {
+    std::uint64_t segment = 0, logical = 0, padded = 0, padding = 0,
+                  chunk = 0, table_count = 0;
+    std::string padding_value;
+    if (!read_string(in, family.family_id) || !read_string(in, family.table_id) ||
+        !read_string(in, family.resource_id) ||
+        !read_string(in, family.registration_id) || !read_u64(in, segment) ||
+        !read_u64(in, logical) || !read_u64(in, padded) ||
+        !read_u64(in, padding) || !read_string(in, padding_value) ||
+        !read_u64(in, chunk) ||
+        !read_string(in, family.statement_tables_digest) ||
+        !read_string(in, family.statement_resources_digest) ||
+        !read_u64(in, table_count) || table_count > (1ULL << 16)) return false;
+    if (segment > std::numeric_limits<std::size_t>::max() ||
+        logical > std::numeric_limits<std::size_t>::max() ||
+        padded > std::numeric_limits<std::size_t>::max() ||
+        padding > std::numeric_limits<std::size_t>::max()) return false;
+    family.segment_offset = static_cast<std::size_t>(segment);
+    family.logical_queries = static_cast<std::size_t>(logical);
+    family.padded_queries = static_cast<std::size_t>(padded);
+    family.padding_index = static_cast<std::size_t>(padding);
+    family.chunk_size = chunk;
+    if (!core_decode_field(padding_value, family.padding_value)) return false;
+    family.table.clear();
+    family.table.reserve(static_cast<std::size_t>(table_count));
+    for (std::uint64_t index = 0; index < table_count; ++index) {
+        std::string encoded;
+        F value;
+        if (!read_string(in, encoded) || !core_decode_field(encoded, value)) return false;
+        family.table.push_back(value);
+    }
+    return true;
+}
+
+void write_chunk_lasso_wire(std::ofstream &out,
+                            const NativeLassoChunkFamilyWire &family) {
+    write_chunk_lasso_public(out, family.public_metadata);
+    write_string(out, family.row_point_digest);
+    write_chunked_mle_wire(out, family.query);
+    write_u64(out, static_cast<std::uint64_t>(family.matrix_columns.size()));
+    for (const hyrax::ChunkedMleWire &column : family.matrix_columns)
+        write_chunked_mle_wire(out, column);
+    write_string(out, family.lookup_terminal_commitment_hex);
+    write_string(out, family.onehot_terminal_commitment_hex);
+}
+
+bool read_chunk_lasso_wire(std::ifstream &in,
+                           NativeLassoChunkFamilyWire &family) {
+    if (!read_chunk_lasso_public(in, family.public_metadata) ||
+        !read_string(in, family.row_point_digest) ||
+        !read_chunked_mle_wire(in, family.query)) return false;
+    std::uint64_t count = 0;
+    if (!read_u64(in, count) || count > kArtifactMaxMessages) return false;
+    family.matrix_columns.clear();
+    family.matrix_columns.reserve(static_cast<std::size_t>(count));
+    for (std::uint64_t index = 0; index < count; ++index) {
+        hyrax::ChunkedMleWire column;
+        if (!read_chunked_mle_wire(in, column)) return false;
+        family.matrix_columns.push_back(std::move(column));
+    }
+    return read_string(in, family.lookup_terminal_commitment_hex) &&
+           read_string(in, family.onehot_terminal_commitment_hex);
+}
+
 void write_sparse_proof_wire(std::ofstream &out,
                              const SparseGkrProofWire &wire) {
     write_string(out, wire.schema);
@@ -4552,6 +4930,21 @@ void write_sparse_proof_wire(std::ofstream &out,
     write_links(wire.binding_links);
     write_string(out, wire.input_binding);
     write_string(out, wire.output_binding);
+    write_string(out, wire.lasso_chunks.schema);
+    write_u32(out, wire.lasso_chunks.version);
+    write_string(out, wire.lasso_chunks.tables_digest);
+    write_string(out, wire.lasso_chunks.resources_digest);
+    write_string(out, wire.lasso_chunks.root_digest);
+    write_u64(out, static_cast<std::uint64_t>(wire.lasso_chunks.families.size()));
+    for (const NativeLassoChunkFamilyWire &family : wire.lasso_chunks.families)
+        write_chunk_lasso_wire(out, family);
+    write_string(out, wire.lasso_chunks.final_commitment_hex);
+    write_u64(out, static_cast<std::uint64_t>(wire.input_segment_openings.size()));
+    for (const hyrax::ChunkedMleWire &opening : wire.input_segment_openings)
+        write_chunked_mle_wire(out, opening);
+    write_chunked_mle_wire(out, wire.output_opening);
+    write_string(out, wire.input_terminal_commitment);
+    write_string(out, wire.output_terminal_commitment);
     write_u8(out, wire.hyrax_lasso_complete ? 1 : 0);
 }
 
@@ -4612,7 +5005,34 @@ bool read_sparse_proof_wire(std::ifstream &in, SparseGkrProofWire &wire) {
     };
     if (!read_links(wire.terminal_links) || !read_links(wire.binding_links) ||
         !read_string(in, wire.input_binding) ||
-        !read_string(in, wire.output_binding)) return false;
+        !read_string(in, wire.output_binding) ||
+        !read_string(in, wire.lasso_chunks.schema) ||
+        !read_u32(in, wire.lasso_chunks.version) ||
+        !read_string(in, wire.lasso_chunks.tables_digest) ||
+        !read_string(in, wire.lasso_chunks.resources_digest) ||
+        !read_string(in, wire.lasso_chunks.root_digest)) return false;
+    std::uint64_t family_count = 0;
+    if (!read_u64(in, family_count) || family_count > kArtifactMaxMessages) return false;
+    wire.lasso_chunks.families.clear();
+    wire.lasso_chunks.families.reserve(static_cast<std::size_t>(family_count));
+    for (std::uint64_t index = 0; index < family_count; ++index) {
+        NativeLassoChunkFamilyWire family;
+        if (!read_chunk_lasso_wire(in, family)) return false;
+        wire.lasso_chunks.families.push_back(std::move(family));
+    }
+    if (!read_string(in, wire.lasso_chunks.final_commitment_hex)) return false;
+    std::uint64_t opening_count = 0;
+    if (!read_u64(in, opening_count) || opening_count > 4) return false;
+    wire.input_segment_openings.clear();
+    wire.input_segment_openings.reserve(static_cast<std::size_t>(opening_count));
+    for (std::uint64_t index = 0; index < opening_count; ++index) {
+        hyrax::ChunkedMleWire opening;
+        if (!read_chunked_mle_wire(in, opening)) return false;
+        wire.input_segment_openings.push_back(std::move(opening));
+    }
+    if (!read_chunked_mle_wire(in, wire.output_opening) ||
+        !read_string(in, wire.input_terminal_commitment) ||
+        !read_string(in, wire.output_terminal_commitment)) return false;
     std::uint8_t complete = 0;
     if (!read_u8(in, complete) || complete > 1) return false;
     wire.hyrax_lasso_complete = complete != 0;
@@ -6022,23 +6442,35 @@ GatCapacityReport inspect_gat_capacity(const Graph &graph, const Model &model,
                                     static_cast<std::uint64_t>(sizeof(Fr)),
                                     &report.sparse_working_set_bytes))
             throw std::overflow_error("sparse GKR working-set overflow");
-        const bool physical_input_ok = report.max_materialized_vector <= kMaxMaterializedVectorEntries;
+        // The dense four-segment vector is only an admission check for the
+        // legacy layered path.  The virtual path consumes SegmentedInputOracle
+        // chunks, so its readiness is determined by the checked-u64 sparse
+        // working-set calculation below rather than by 4*n_in allocation.
+        const bool physical_input_ok =
+            report.max_materialized_vector <= kMaxMaterializedVectorEntries;
+        const bool coordinate_domain_ok =
+            report.input_layout.n_in <= std::numeric_limits<std::uint32_t>::max() / 4;
         const bool explicit_ok = report.max_materialized_gate <= kMaxExplicitGateEntries;
         const bool pointer_ok = report.ppi_node_ptr_boundary && report.ppi_edge_ptr_boundary;
         report.sparse_ready = pointer_ok && report.sparse_domain_entries != 0 &&
                               report.sparse_working_set_bytes <= (512ULL << 20);
-        report.ready = physical_input_ok && explicit_ok && pointer_ok &&
-                       report.input_layout.n_in <= std::numeric_limits<std::uint32_t>::max() / 4;
+        const bool layered_ready = physical_input_ok && explicit_ok &&
+                                   coordinate_domain_ok && pointer_ok;
+        // A READY capacity report means that at least one native proof path is
+        // admitted.  build_plan_impl selects the virtual recipe whenever the
+        // explicit layered path is not admitted, while formal preflight can
+        // still treat the chunked path as a runnable CPU backend.
+        report.ready = layered_ready || report.sparse_ready;
         if (!pointer_ok)
             report.reason = "graph batch node_ptr/edge_ptr boundary is not canonical";
+        else if (report.sparse_ready && !layered_ready)
+            report.reason = "chunked virtual SparseGKR path is admitted; explicit layered materialization is bypassed";
         else if (!physical_input_ok)
-            report.reason = "canonical four-segment input materialization exceeds bounded native domain; segmented virtual input is not implemented by zkGPT native GKR";
+            report.reason = "explicit layered four-segment materialization exceeds its bounded native domain";
         else if (!explicit_ok)
-            report.reason = report.sparse_ready
-                ? "explicit layered-gate cap exceeded; virtual SparseGKR path is required"
-                : "canonical sparse/rounding relations exceed explicit and chunk working-set bounds";
-        else if (report.input_layout.n_in > std::numeric_limits<std::uint32_t>::max() / 4)
-            report.reason = "four-segment input layer exceeds the native u32 circuit coordinate domain";
+            report.reason = "explicit layered-gate cap exceeded";
+        else if (!coordinate_domain_ok)
+            report.reason = "explicit layered input exceeds the native u32 circuit coordinate domain";
         else
             report.reason = "bounded native CPU materialization is available";
     } catch (const std::exception &error) {
@@ -6497,7 +6929,11 @@ bool GatProofArtifact::has_private_payload() const {
     if (forbidden_payload(sparse_gkr.plan_digest) ||
         forbidden_payload(sparse_gkr.schedule_digest) ||
         forbidden_payload(sparse_gkr.input_binding) ||
-        forbidden_payload(sparse_gkr.output_binding)) return true;
+        forbidden_payload(sparse_gkr.output_binding) ||
+        forbidden_payload(sparse_gkr.lasso_chunks.root_digest) ||
+        forbidden_payload(sparse_gkr.lasso_chunks.final_commitment_hex) ||
+        forbidden_payload(sparse_gkr.input_terminal_commitment) ||
+        forbidden_payload(sparse_gkr.output_terminal_commitment)) return true;
     for (const SparseGkrRelationWire &relation : sparse_gkr.relations) {
         if (forbidden_payload(relation.relation_id) ||
             forbidden_payload(relation.initial_claim) ||
@@ -6507,6 +6943,11 @@ bool GatProofArtifact::has_private_payload() const {
             if (forbidden_payload(value)) return true;
         for (const std::string &commitment : relation.terminal_commitments)
             if (forbidden_payload(commitment)) return true;
+    }
+    for (const NativeLassoChunkFamilyWire &family : sparse_gkr.lasso_chunks.families) {
+        if (forbidden_payload(family.row_point_digest) ||
+            forbidden_payload(family.lookup_terminal_commitment_hex) ||
+            forbidden_payload(family.onehot_terminal_commitment_hex)) return true;
     }
     return false;
 }
@@ -6528,14 +6969,30 @@ bool sparse_proof_wire_valid(const SparseGkrProofWire &wire,
         set_reason(reason, message);
         return false;
     };
-    if (wire.schema != "zkgpt-gat-sparse-proof-v1" || wire.version != 1 ||
+    if (wire.schema != "zkgpt-gat-sparse-proof-v2" || wire.version != 2 ||
         !is_lower_hex_digest(wire.plan_digest) ||
         !is_lower_hex_digest(wire.schedule_digest) ||
         wire.relations.empty() || wire.relations.size() > kArtifactMaxMessages ||
         !is_lower_hex_digest(wire.input_binding) ||
         !is_lower_hex_digest(wire.output_binding) ||
-        wire.hyrax_lasso_complete)
-        return fail("sparse GKR proof wire schema or completion gate is invalid");
+        !wire.hyrax_lasso_complete ||
+        wire.lasso_chunks.schema != "zkgpt-native-lasso-chunked-v1" ||
+        wire.lasso_chunks.version != kNativeLassoChunkVersion ||
+        !is_lower_hex_digest(wire.lasso_chunks.tables_digest) ||
+        !is_lower_hex_digest(wire.lasso_chunks.resources_digest) ||
+        !is_lower_hex_digest(wire.lasso_chunks.root_digest) ||
+        wire.lasso_chunks.families.empty() ||
+        wire.input_segment_openings.size() != 4 ||
+        wire.output_opening.schema != hyrax::kChunkedMleSchema ||
+        wire.output_opening.version != hyrax::kChunkedMleVersion ||
+        wire.input_terminal_commitment.empty() ||
+        wire.output_terminal_commitment.empty())
+        return fail("sparse GKR proof wire schema or chunk completion binding is invalid");
+    G1 input_terminal_point;
+    G1 output_terminal_point;
+    if (!core_decode_point(wire.input_terminal_commitment, input_terminal_point) ||
+        !core_decode_point(wire.output_terminal_commitment, output_terminal_point))
+        return fail("sparse GKR chunk terminal commitments are not canonical points");
     std::set<std::string> ids;
     std::uint64_t previous_end = 0;
     for (const SparseGkrRelationWire &relation : wire.relations) {
@@ -6594,7 +7051,7 @@ bool sparse_proof_wire_valid(const SparseGkrProofWire &wire,
 
 bool GatProofArtifact::valid_wire(std::string *reason) const {
     try {
-        if (version != 5 || schema != "zkgpt-gat-proof-v5") {
+        if (version != 6 || schema != "zkgpt-gat-proof-v6") {
             set_reason(reason, "unsupported proof wire version");
             return false;
         }
@@ -6603,8 +7060,8 @@ bool GatProofArtifact::valid_wire(std::string *reason) const {
             return false;
         }
         const bool diagnostic_gkr = privacy_profile == "gkr_only_diagnostic";
-        const bool sparse_partial = privacy_profile == "sparse_gkr_partial";
-        if (privacy_profile != "masked_full" && !diagnostic_gkr && !sparse_partial) {
+        const bool sparse_complete = !sparse_gkr.plan_digest.empty();
+        if (privacy_profile != "masked_full" && !diagnostic_gkr) {
             set_reason(reason, "proof does not declare a supported privacy profile");
             return false;
         }
@@ -6632,7 +7089,7 @@ bool GatProofArtifact::valid_wire(std::string *reason) const {
             return false;
         }
 
-        if (sparse_partial &&
+        if (sparse_complete &&
             !sparse_proof_wire_valid(sparse_gkr, native_messages.size(), reason))
             return false;
 
@@ -6643,8 +7100,8 @@ bool GatProofArtifact::valid_wire(std::string *reason) const {
         std::size_t section_message_count = 0;
         for (unsigned i = 0; i < 5; ++i) {
             if (sections[i]->protocol != names[i] ||
-                (!sparse_partial && sections[i]->messages.empty()) ||
-                (sparse_partial && i == 2 && sections[i]->messages.empty())) {
+                (!diagnostic_gkr && !sparse_complete && sections[i]->messages.empty()) ||
+                (sparse_complete && i == 2 && sections[i]->messages.empty())) {
                 set_reason(reason, std::string("missing ") + names[i] + " messages");
                 return false;
             }
@@ -7428,17 +7885,149 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
             if (!prove_sparse_gkr_plan(session, graph, sparse_plan, callbacks,
                                        &relation_results, &sparse_reason))
                 throw std::runtime_error("sparse GKR proof failed: " + sparse_reason);
+            if (relation_results.size() != sparse_plan.relations.size() ||
+                relation_results.empty() ||
+                relation_results.front().sumcheck.terminal_openings.empty() ||
+                relation_results.back().sumcheck.terminal_openings.empty())
+                throw std::runtime_error("sparse GKR terminal opening chain is incomplete");
+
+            // Bind every canonical input segment to the first SparseGKR
+            // InputBinding terminal at the same low-bit MLE point.  Each
+            // opening is streamed in bounded chunks; no 4*n_in vector or
+            // full generator family is constructed.
+            const SparseRelationRuntime &input_runtime =
+                runtime.relations.at("binding/input_segments");
+            const std::size_t input_bits = 0 < plan.input_layout.n_in
+                ? static_cast<std::size_t>(std::log2(plan.input_layout.n_in)) : 0;
+            if (input_runtime.prefix.size() < input_bits + 2)
+                throw std::runtime_error("sparse InputBinding point is incomplete");
+            const std::vector<F> input_point(input_runtime.prefix.begin(),
+                                             input_runtime.prefix.begin() + input_bits);
+            const F selector_s2 = input_runtime.prefix[input_bits];
+            const F selector_s1 = input_runtime.prefix[input_bits + 1];
+            const std::array<F, 4> segment_coefficients = {
+                (F_ONE - selector_s1) * (F_ONE - selector_s2),
+                (F_ONE - selector_s1) * selector_s2,
+                selector_s1 * (F_ONE - selector_s2),
+                selector_s1 * selector_s2};
+            const std::uint64_t input_chunk_size =
+                plan.input_layout.n_in >= kChunkedMleEntries
+                    ? kChunkedMleEntries
+                    : std::max<std::uint64_t>(2, plan.input_layout.n_in);
+            std::vector<hyrax::ChunkedMleWire> input_segment_wires;
+            std::vector<zkgpt::native_pedersen::ScalarOpening> input_segment_openings;
+            input_segment_wires.reserve(4);
+            input_segment_openings.reserve(4);
+            for (std::size_t segment = 0; segment < 4; ++segment) {
+                const InputSegment &metadata = plan.input_layout.segments.at(segment);
+                hyrax::ChunkedMleProverResult opening;
+                if (!hyrax::prove_chunked_mle_opening(
+                        session, "input/chunked/" + metadata.name,
+                        metadata.logical_length, metadata.padded_length,
+                        input_chunk_size, input_point,
+                        [&](std::uint64_t index) {
+                            return provider.input_oracle.segment_value(
+                                segment, static_cast<std::size_t>(index));
+                        },
+                        runtime.basis, opening, &sparse_reason))
+                    throw std::runtime_error("chunked input opening failed: " +
+                                             sparse_reason);
+                input_segment_wires.push_back(opening.wire);
+                input_segment_openings.push_back(opening.aggregate_opening);
+            }
+            std::vector<zkgpt::native_pedersen::ScalarOpening> input_link_operands =
+                input_segment_openings;
+            std::vector<F> input_link_coefficients(segment_coefficients.begin(),
+                                                   segment_coefficients.end());
+            input_link_operands.push_back(
+                relation_results.front().sumcheck.terminal_openings.front());
+            input_link_coefficients.push_back(-F_ONE);
+            if (!zkgpt::native_pedersen::prove_hidden_linear(
+                    session, runtime.basis, "input/chunked/terminal-link",
+                    input_link_operands, input_link_coefficients, F_ZERO,
+                    nullptr, &sparse_reason))
+                throw std::runtime_error("chunked input terminal link failed: " +
+                                         sparse_reason);
+
+            // The output relation terminal is the canonical logits MLE at its
+            // own SparseGKR point.  Open the streamed output witness at that
+            // exact point and link the aggregate scalar commitment.
+            const SparseGkrRelationSpec &output_relation =
+                sparse_plan.relations.back();
+            const SparseRelationRuntime &output_runtime =
+                runtime.relations.at(output_relation.relation_id);
+            std::uint64_t output_entries = 0;
+            if (!sparse_gkr_checked_mul(output_relation.item_count,
+                                        std::max<std::uint64_t>(1,
+                                            output_relation.value_width),
+                                        &output_entries))
+                throw std::runtime_error("output chunk domain overflows u64");
+            std::uint64_t output_padded = 0;
+            if (!sparse_gkr_next_power_of_two(output_entries, &output_padded))
+                throw std::runtime_error("output chunk domain is not representable");
+            const std::uint64_t output_chunk_size =
+                output_padded >= kChunkedMleEntries
+                    ? kChunkedMleEntries
+                    : std::max<std::uint64_t>(2, output_padded);
+            hyrax::ChunkedMleProverResult output_opening;
+            if (!hyrax::prove_chunked_mle_opening(
+                    session, "output/chunked/logits", output_entries,
+                    output_padded, output_chunk_size, output_runtime.prefix,
+                    [&](std::uint64_t index) {
+                        return provider.value(output_relation, index);
+                    },
+                    runtime.basis, output_opening, &sparse_reason))
+                throw std::runtime_error("chunked output opening failed: " +
+                                         sparse_reason);
+            std::vector<zkgpt::native_pedersen::ScalarOpening> output_link_operands = {
+                output_opening.aggregate_opening,
+                relation_results.back().sumcheck.terminal_openings.front()};
+            if (!zkgpt::native_pedersen::prove_hidden_linear(
+                    session, runtime.basis, "output/chunked/terminal-link",
+                    output_link_operands, {F_ONE, -F_ONE}, F_ZERO, nullptr,
+                    &sparse_reason))
+                throw std::runtime_error("chunked output terminal link failed: " +
+                                         sparse_reason);
+
+            std::vector<NativeLassoChunkFamilyProver> lasso_families =
+                build_lasso_chunk_families(plan, forward, tables);
+            NativeLassoChunkBundleProverResult lasso_chunks;
+            if (!native_lasso_prove_chunked_bundle(
+                    session, lasso_families, runtime.basis, &input_point,
+                    &lasso_chunks, &sparse_reason))
+                throw std::runtime_error("chunked Lasso proof failed: " +
+                                         sparse_reason);
+            // The Lasso family aggregate is the canonical L_qry segment at
+            // the same local point as the fourth input segment.  Consume that
+            // terminal explicitly so the chunked Lasso wire cannot float
+            // independently of the SparseGKR input binding.
+            if (!zkgpt::native_pedersen::prove_hidden_linear(
+                    session, runtime.basis, "lasso/chunked/input-link",
+                    {lasso_chunks.final_opening, input_segment_openings[3]},
+                    {F_ONE, -F_ONE}, F_ZERO, nullptr, &sparse_reason))
+                throw std::runtime_error("chunked Lasso input terminal link failed: " +
+                                         sparse_reason);
             GatProofArtifact artifact;
-            artifact.privacy_profile = "sparse_gkr_partial";
+            artifact.privacy_profile = "masked_full";
             artifact.statement_digest = verifier_context_digest(context);
             artifact.com_aux = com_aux;
             artifact.com_L = com_L;
             artifact.native_domain = kNativeArtifactDomain;
             artifact.native_statement = statement;
-            artifact.native_messages = session.messages();
-            artifact.transcript_digest = session.digest();
             artifact.sparse_gkr = make_sparse_proof_wire(
                 plan, sparse_plan, relation_results, runtime, session);
+            artifact.sparse_gkr.hyrax_lasso_complete = true;
+            artifact.sparse_gkr.lasso_chunks = std::move(lasso_chunks.wire);
+            artifact.sparse_gkr.input_segment_openings = std::move(input_segment_wires);
+            artifact.sparse_gkr.output_opening = std::move(output_opening.wire);
+            artifact.sparse_gkr.input_terminal_commitment =
+                point_hex(relation_results.front().sumcheck.terminal_openings.front()
+                              .commitment.point);
+            artifact.sparse_gkr.output_terminal_commitment =
+                point_hex(relation_results.back().sumcheck.terminal_openings.front()
+                              .commitment.point);
+            artifact.native_messages = session.messages();
+            artifact.transcript_digest = session.digest();
             core_copy_sections(session, artifact);
             if (!artifact.valid_wire(&sparse_reason))
                 throw std::runtime_error("sparse GKR artifact is invalid: " + sparse_reason);
@@ -7446,7 +8035,7 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
             result.has_artifact = true;
             result.artifact = std::move(artifact);
             result.diagnostic =
-                "sparse GKR artifact generated; segmented Hyrax/Lasso opening gate remains fail-closed";
+                "sparse GKR plus chunked Hyrax/Lasso artifact generated and independently consumable";
             return result;
         }
         if (privacy_profile != "masked_full") {
@@ -7785,7 +8374,7 @@ bool verify_virtual_sparse_artifact(const VerifierContext &context,
             set_reason(reason, "virtual sparse verifier context is not canonical");
             return false;
         }
-        if (artifact.privacy_profile != "sparse_gkr_partial" ||
+        if (artifact.privacy_profile != "masked_full" ||
             !artifact.valid_wire(reason)) return false;
         if (artifact.statement_digest != verifier_context_digest(context)) {
             set_reason(reason, "sparse GKR artifact statement digest mismatch");
@@ -7920,9 +8509,156 @@ bool verify_virtual_sparse_artifact(const VerifierContext &context,
                 return false;
             }
         }
-        set_reason(reason,
-                   "SparseGKR relation proof verified; segmented Hyrax/Lasso opening gate remains unavailable");
-        return false;
+        if (artifact.sparse_gkr.binding_links.size() !=
+            sparse_plan.binding_links.size()) {
+            set_reason(reason, "sparse GKR FCONN binding link count mismatch");
+            return false;
+        }
+        for (std::size_t index = 0; index < sparse_plan.binding_links.size();
+             ++index) {
+            const SparseGkrClaimLink &expected_link =
+                sparse_plan.binding_links[index];
+            const SparseGkrLinkWire &actual_link =
+                artifact.sparse_gkr.binding_links[index];
+            if (actual_link.from_relation != expected_link.from_relation ||
+                actual_link.to_relation != expected_link.to_relation ||
+                actual_link.claim_name != expected_link.claim_name ||
+                actual_link.from_terminal != expected_link.from_terminal ||
+                actual_link.to_initial != expected_link.to_initial) {
+                set_reason(reason, "sparse GKR FCONN binding link order mismatch");
+                return false;
+            }
+        }
+
+        const auto find_verified = [&verified](const std::string &relation_id)
+            -> const SparseGkrRelationResult * {
+            for (const SparseGkrRelationResult &entry : verified)
+                if (entry.relation_id == relation_id) return &entry;
+            return nullptr;
+        };
+        const SparseGkrRelationResult *input_result =
+            find_verified("binding/input_segments");
+        const SparseGkrRelationResult *output_result =
+            find_verified("binding/output_aux");
+        if (input_result == nullptr || output_result == nullptr ||
+            input_result->sumcheck.challenges.empty() ||
+            output_result->sumcheck.challenges.empty() ||
+            input_result->sumcheck.terminal_commitments.empty() ||
+            output_result->sumcheck.terminal_commitments.empty()) {
+            set_reason(reason, "sparse GKR input/output verifier terminals are incomplete");
+            return false;
+        }
+        const std::size_t input_bits = core_log2(context.plan.input_layout.n_in);
+        if (input_result->sumcheck.challenges.size() < input_bits + 2) {
+            set_reason(reason, "sparse GKR input binding point has the wrong dimension");
+            return false;
+        }
+        const std::vector<F> input_point(
+            input_result->sumcheck.challenges.begin(),
+            input_result->sumcheck.challenges.begin() + input_bits);
+        const F selector_s2 = input_result->sumcheck.challenges[input_bits];
+        const F selector_s1 = input_result->sumcheck.challenges[input_bits + 1];
+        const std::array<F, 4> segment_coefficients = {
+            (F_ONE - selector_s1) * (F_ONE - selector_s2),
+            (F_ONE - selector_s1) * selector_s2,
+            selector_s1 * (F_ONE - selector_s2),
+            selector_s1 * selector_s2};
+        const std::uint64_t input_chunk_size =
+            context.plan.input_layout.n_in >= kChunkedMleEntries
+                ? kChunkedMleEntries
+                : std::max<std::uint64_t>(2, context.plan.input_layout.n_in);
+        std::vector<zkgpt::native_pedersen::ScalarCommitment>
+            input_commitments;
+        input_commitments.reserve(4);
+        for (std::size_t segment = 0; segment < 4; ++segment) {
+            const InputSegment &metadata =
+                context.plan.input_layout.segments.at(segment);
+            const hyrax::ChunkedMleWire &opening =
+                artifact.sparse_gkr.input_segment_openings[segment];
+            if (!hyrax::verify_chunked_mle_opening(
+                    session, opening, "input/chunked/" + metadata.name,
+                    metadata.logical_length, metadata.padded_length,
+                    input_chunk_size, input_point, runtime.basis, reason))
+                return false;
+            zkgpt::native_pedersen::ScalarCommitment commitment;
+            if (!sparse_commitment_from_wire(opening.aggregate_commitment_hex,
+                                             runtime.basis, commitment, reason))
+                return false;
+            input_commitments.push_back(commitment);
+        }
+        if (point_hex(input_result->sumcheck.terminal_commitments.front().point) !=
+            artifact.sparse_gkr.input_terminal_commitment) {
+            set_reason(reason, "sparse GKR input terminal commitment binding mismatch");
+            return false;
+        }
+        input_commitments.push_back(
+            input_result->sumcheck.terminal_commitments.front());
+        if (!zkgpt::native_pedersen::verify_hidden_linear(
+                session, runtime.basis, "input/chunked/terminal-link",
+                input_commitments,
+                {segment_coefficients[0], segment_coefficients[1],
+                 segment_coefficients[2], segment_coefficients[3], -F_ONE},
+                F_ZERO, reason))
+            return false;
+
+        const SparseGkrRelationSpec &output_relation = sparse_plan.relations.back();
+        std::uint64_t output_entries = 0;
+        if (!sparse_gkr_checked_mul(
+                output_relation.item_count,
+                std::max<std::uint64_t>(1, output_relation.value_width),
+                &output_entries)) {
+            set_reason(reason, "output chunk domain overflows u64");
+            return false;
+        }
+        std::uint64_t output_padded = 0;
+        if (!sparse_gkr_next_power_of_two(output_entries, &output_padded)) {
+            set_reason(reason, "output chunk domain is not representable");
+            return false;
+        }
+        const std::uint64_t output_chunk_size =
+            output_padded >= kChunkedMleEntries
+                ? kChunkedMleEntries
+                : std::max<std::uint64_t>(2, output_padded);
+        if (!hyrax::verify_chunked_mle_opening(
+                session, artifact.sparse_gkr.output_opening,
+                "output/chunked/logits", output_entries, output_padded,
+                output_chunk_size, output_result->sumcheck.challenges,
+                runtime.basis, reason))
+            return false;
+        zkgpt::native_pedersen::ScalarCommitment output_commitment;
+        if (!sparse_commitment_from_wire(
+                artifact.sparse_gkr.output_opening.aggregate_commitment_hex,
+                runtime.basis, output_commitment, reason))
+            return false;
+        if (point_hex(output_result->sumcheck.terminal_commitments.front().point) !=
+            artifact.sparse_gkr.output_terminal_commitment) {
+            set_reason(reason, "sparse GKR output terminal commitment binding mismatch");
+            return false;
+        }
+        if (!zkgpt::native_pedersen::verify_hidden_linear(
+                session, runtime.basis, "output/chunked/terminal-link",
+                {output_commitment,
+                 output_result->sumcheck.terminal_commitments.front()},
+                {F_ONE, -F_ONE}, F_ZERO, reason))
+            return false;
+
+        const std::vector<NativeLassoChunkFamilyPublic> lasso_families =
+            build_lasso_chunk_public_families(context.plan, context.tables);
+        if (!native_lasso_verify_chunked_bundle(
+                session, lasso_families, artifact.sparse_gkr.lasso_chunks,
+                runtime.basis, &input_point, reason))
+            return false;
+        zkgpt::native_pedersen::ScalarCommitment lasso_commitment;
+        if (!sparse_commitment_from_wire(
+                artifact.sparse_gkr.lasso_chunks.final_commitment_hex,
+                runtime.basis, lasso_commitment, reason))
+            return false;
+        if (!zkgpt::native_pedersen::verify_hidden_linear(
+                session, runtime.basis, "lasso/chunked/input-link",
+                {lasso_commitment, input_commitments[3]}, {F_ONE, -F_ONE},
+                F_ZERO, reason))
+            return false;
+        return true;
     } catch (const std::exception &error) {
         set_reason(reason, error.what());
         return false;

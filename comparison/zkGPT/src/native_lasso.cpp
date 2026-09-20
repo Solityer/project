@@ -859,6 +859,501 @@ bool native_lasso_prove_bundle(
 
 namespace {
 
+bool chunk_lasso_family_valid(const NativeLassoChunkFamilyPublic &family,
+                              std::string *reason) {
+    if (!valid_identifier(family.family_id) ||
+        !valid_identifier(family.table_id) ||
+        !valid_identifier(family.resource_id) ||
+        !valid_identifier(family.registration_id) ||
+        !power_of_two(family.table.size()) || family.table.size() > (1ULL << 16) ||
+        !power_of_two(family.padded_queries) || family.padded_queries == 0 ||
+        family.logical_queries > family.padded_queries ||
+        family.padding_index >= family.table.size() ||
+        family.padding_value != family.table[family.padding_index] ||
+        !power_of_two(family.chunk_size) || family.chunk_size < 2 ||
+        family.chunk_size > (1ULL << 16) ||
+        family.padded_queries % family.chunk_size != 0) {
+        set_reason(reason, "native Lasso chunk family shape is invalid");
+        return false;
+    }
+    return true;
+}
+
+NativeLassoFamilyPublic chunk_legacy_public(
+    const NativeLassoChunkFamilyPublic &family) {
+    NativeLassoFamilyPublic result;
+    result.family_id = family.family_id;
+    result.table_id = family.table_id;
+    result.resource_id = family.resource_id;
+    result.registration_id = family.registration_id;
+    result.table = family.table;
+    result.segment_offset = family.segment_offset;
+    result.logical_queries = family.logical_queries;
+    result.padded_queries = family.padded_queries;
+    result.padding_index = family.padding_index;
+    result.padding_value = family.padding_value;
+    result.statement_tables_digest = family.statement_tables_digest;
+    result.statement_resources_digest = family.statement_resources_digest;
+    return result;
+}
+
+std::string chunk_lasso_table_digest(
+    const NativeLassoChunkFamilyPublic &family) {
+    return native_lasso_table_digest(chunk_legacy_public(family));
+}
+
+std::string chunk_lasso_tables_digest(
+    const std::vector<NativeLassoChunkFamilyPublic> &families) {
+    std::string encoded;
+    append_string(encoded, "zkgpt-native-lasso-chunk-tables-v1");
+    for (const NativeLassoChunkFamilyPublic &family : families)
+        append_string(encoded, chunk_lasso_table_digest(family));
+    return hash_fixed(encoded);
+}
+
+std::string chunk_lasso_resources_digest(
+    const std::vector<NativeLassoChunkFamilyPublic> &families) {
+    std::string encoded;
+    append_string(encoded, "zkgpt-native-lasso-chunk-resources-v1");
+    for (const NativeLassoChunkFamilyPublic &family : families) {
+        append_string(encoded, family.family_id);
+        append_string(encoded, family.table_id);
+        append_string(encoded, family.resource_id);
+        append_string(encoded, family.registration_id);
+        append_u64(encoded, family.segment_offset);
+        append_u64(encoded, family.logical_queries);
+        append_u64(encoded, family.padded_queries);
+        append_u64(encoded, family.padding_index);
+        append_string(encoded, family.padding_value.getStr(16));
+        // Statement fields are wire annotations populated by the producer;
+        // including them here would make the resource digest recursive and
+        // would prevent an independent verifier from reconstructing it from
+        // public metadata alone.
+        append_string(encoded, chunk_lasso_table_digest(family));
+    }
+    return hash_fixed(encoded);
+}
+
+std::string chunk_lasso_root(const NativeLassoChunkBundleWire &wire) {
+    std::string encoded;
+    append_string(encoded, wire.schema);
+    append_u64(encoded, wire.version);
+    append_string(encoded, wire.tables_digest);
+    append_string(encoded, wire.resources_digest);
+    for (const NativeLassoChunkFamilyWire &family : wire.families) {
+        const NativeLassoChunkFamilyPublic &meta = family.public_metadata;
+        append_string(encoded, meta.family_id);
+        append_string(encoded, meta.table_id);
+        append_string(encoded, meta.resource_id);
+        append_string(encoded, meta.registration_id);
+        append_u64(encoded, meta.segment_offset);
+        append_u64(encoded, meta.logical_queries);
+        append_u64(encoded, meta.padded_queries);
+        append_u64(encoded, meta.table.size());
+        append_u64(encoded, meta.chunk_size);
+        append_string(encoded, meta.padding_value.getStr(16));
+        append_string(encoded, family.row_point_digest);
+        append_string(encoded, family.query.root_digest);
+        for (const hyrax::ChunkedMleWire &column : family.matrix_columns)
+            append_string(encoded, column.root_digest);
+        append_string(encoded, family.lookup_terminal_commitment_hex);
+        append_string(encoded, family.onehot_terminal_commitment_hex);
+    }
+    return hash_fixed(encoded);
+}
+
+bool scalar_commitment_from_hex(
+    const std::string &encoded,
+    const zkgpt::native_pedersen::PedersenBasis &basis,
+    zkgpt::native_pedersen::ScalarCommitment &result,
+    std::string *reason) {
+    G1 point;
+    if (!decode_point(encoded, point)) {
+        set_reason(reason, "native Lasso chunk scalar commitment is malformed");
+        return false;
+    }
+    result.domain = basis.domain;
+    result.point = point;
+    return result.valid(basis, reason);
+}
+
+bool challenge_point(const NativeProofSession &session, const std::string &label,
+                     std::size_t rounds, std::vector<F> &point,
+                     std::string *reason) {
+    point.clear();
+    point.reserve(rounds);
+    for (std::size_t index = 0; index < rounds; ++index) {
+        const std::string challenge_label =
+            "challenge/" + label + "/" + std::to_string(index);
+        const std::size_t position = find_message(
+            session, challenge_label, NativeProofMessageKind::Challenge, reason);
+        F challenge;
+        if (position == session.messages().size() ||
+            !decode_field(session.messages()[position].payload, challenge)) {
+            set_reason(reason, "native Lasso chunk point challenge is malformed");
+            return false;
+        }
+        point.push_back(challenge);
+    }
+    return true;
+}
+
+} // namespace
+
+bool native_lasso_prove_chunked_bundle(
+    NativeProofSession &session,
+    std::vector<NativeLassoChunkFamilyProver> &families,
+    const zkgpt::native_pedersen::PedersenBasis &scalar_basis,
+    const std::vector<F> *global_point,
+    NativeLassoChunkBundleProverResult *result,
+    std::string *reason) {
+    const std::size_t checkpoint = session.checkpoint();
+    try {
+        if (families.empty() || !scalar_basis.valid(reason))
+            throw std::invalid_argument("native Lasso chunk bundle is empty or unbound");
+        std::sort(families.begin(), families.end(),
+                  [](const NativeLassoChunkFamilyProver &left,
+                     const NativeLassoChunkFamilyProver &right) {
+                      return left.family_id < right.family_id;
+                  });
+        std::vector<NativeLassoChunkFamilyPublic> public_families;
+        public_families.reserve(families.size());
+        for (NativeLassoChunkFamilyProver &family : families) {
+            if (!chunk_lasso_family_valid(family, reason) || !family.query_value)
+                throw std::invalid_argument(reason != nullptr && !reason->empty()
+                                                ? *reason
+                                                : "native Lasso chunk query provider is empty");
+            public_families.push_back(family);
+        }
+        const std::string tables_digest = chunk_lasso_tables_digest(public_families);
+        const std::string resources_digest = chunk_lasso_resources_digest(public_families);
+        NativeLassoChunkBundleProverResult local;
+        local.wire.tables_digest = tables_digest;
+        local.wire.resources_digest = resources_digest;
+        std::vector<zkgpt::native_pedersen::ScalarOpening> final_operands;
+        std::vector<Fr> final_coefficients;
+        for (std::size_t family_index = 0; family_index < families.size();
+             ++family_index) {
+            NativeLassoChunkFamilyProver &family = families[family_index];
+            NativeLassoChunkFamilyWire family_wire;
+            family_wire.public_metadata = family;
+            family_wire.public_metadata.statement_tables_digest = tables_digest;
+            family_wire.public_metadata.statement_resources_digest = resources_digest;
+            const std::string prefix = "lasso/chunked/" + family.family_id;
+            session.absorb(prefix + "/schedule",
+                           family.family_id + "|" + family.table_id + "|" +
+                               family.resource_id + "|" + family.registration_id +
+                               "|" + std::to_string(family.segment_offset) +
+                               "|" + std::to_string(family.logical_queries) +
+                               "|" + std::to_string(family.padded_queries) +
+                               "|" + std::to_string(family.chunk_size) +
+                               "|" + tables_digest + "|" + resources_digest);
+            const std::size_t row_rounds = log2_power(family.padded_queries);
+            std::vector<F> row_point;
+            row_point.reserve(row_rounds);
+            if (global_point != nullptr) {
+                if (global_point->size() < row_rounds)
+                    throw std::invalid_argument("native Lasso global point is too short");
+                row_point.assign(global_point->begin(),
+                                global_point->begin() + row_rounds);
+                session.absorb_fields(prefix + "/row-point", row_point);
+            } else {
+                for (std::size_t round = 0; round < row_rounds; ++round)
+                    row_point.push_back(session.challenge(
+                        prefix + "/row-point/" + std::to_string(round)));
+            }
+            family_wire.row_point_digest = hash_fixed(encode_tokens({
+                "zkgpt-native-lasso-row-point-v1", family.family_id,
+                [&]() { std::string value; for (const F &x : row_point) append_string(value, x.getStr(16)); return value; }()}));
+            hyrax::ChunkedMleProverResult query_result;
+            if (!hyrax::prove_chunked_mle_opening(
+                    session, prefix + "/query", family.padded_queries,
+                    family.padded_queries, family.chunk_size, row_point,
+                    [&](std::uint64_t index) {
+                        return index < family.logical_queries
+                                   ? family.query_value(index)
+                                   : family.padding_value;
+                    },
+                    scalar_basis, query_result, reason))
+                throw std::runtime_error(reason != nullptr ? *reason
+                                                             : "native Lasso query chunk opening failed");
+            family_wire.query = query_result.wire;
+            final_operands.push_back(query_result.aggregate_opening);
+            Fr final_weight = F_ONE;
+            if (global_point != nullptr) {
+                const std::size_t row_bits = log2_power(family.padded_queries);
+                const std::size_t block = family.segment_offset / family.padded_queries;
+                for (std::size_t bit = row_bits; bit < global_point->size(); ++bit) {
+                    const bool set = ((block >> (bit - row_bits)) & 1U) != 0;
+                    final_weight *= set ? (*global_point)[bit]
+                                        : (F_ONE - (*global_point)[bit]);
+                }
+            }
+            final_coefficients.push_back(final_weight);
+
+            std::vector<zkgpt::native_pedersen::ScalarOpening> matrix_operands;
+            std::vector<Fr> matrix_coefficients;
+            family_wire.matrix_columns.reserve(family.table.size());
+            for (std::size_t column = 0; column < family.table.size(); ++column) {
+                hyrax::ChunkedMleProverResult column_result;
+                const std::string column_label = prefix + "/matrix/" +
+                                                  std::to_string(column);
+                if (!hyrax::prove_chunked_mle_opening(
+                        session, column_label, family.padded_queries,
+                        family.padded_queries, family.chunk_size, row_point,
+                        [&](std::uint64_t row) {
+                            if (row >= family.logical_queries)
+                                return family.table[column] == family.padding_value
+                                           ? F_ONE : F_ZERO;
+                            return family.query_value(row) == family.table[column]
+                                       ? F_ONE : F_ZERO;
+                        },
+                        scalar_basis, column_result, reason))
+                    throw std::runtime_error(reason != nullptr ? *reason
+                                                                 : "native Lasso matrix chunk opening failed");
+                family_wire.matrix_columns.push_back(column_result.wire);
+                matrix_operands.push_back(column_result.aggregate_opening);
+                matrix_coefficients.push_back(family.table[column]);
+            }
+            // Lookup terminal: sum_col table[col] * M_col(r) = L_qry(r).
+            matrix_operands.push_back(query_result.aggregate_opening);
+            matrix_coefficients.push_back(-F_ONE);
+            if (!zkgpt::native_pedersen::prove_hidden_linear(
+                    session, scalar_basis, prefix + "/lookup-link",
+                    matrix_operands, matrix_coefficients, F_ZERO, nullptr,
+                    reason))
+                return false;
+            family_wire.lookup_terminal_commitment_hex =
+                query_result.aggregate_opening.commitment.point.serializeToHexStr();
+
+            // One-hot terminal: sum_col M_col(r) = 1.  The matrix itself is
+            // generated from the canonical table/query provider, while the
+            // relation is still checked by an independent Pedersen link.
+            const zkgpt::native_pedersen::ScalarOpening onehot_opening =
+                zkgpt::native_pedersen::commit_fresh(scalar_basis, F_ONE);
+            std::vector<zkgpt::native_pedersen::ScalarOpening> onehot_operands;
+            std::vector<Fr> onehot_coefficients;
+            for (std::size_t column = 0; column < family_wire.matrix_columns.size();
+                 ++column) {
+                zkgpt::native_pedersen::ScalarCommitment commitment;
+                if (!scalar_commitment_from_hex(
+                        family_wire.matrix_columns[column].aggregate_commitment_hex,
+                        scalar_basis, commitment, reason))
+                    return false;
+                // The prover retains the matching opening in matrix_operands;
+                // it is kept in the same canonical column order.
+                onehot_operands.push_back(matrix_operands[column]);
+                onehot_coefficients.push_back(F_ONE);
+            }
+            onehot_operands.push_back(onehot_opening);
+            onehot_coefficients.push_back(-F_ONE);
+            if (!zkgpt::native_pedersen::prove_hidden_linear(
+                    session, scalar_basis, prefix + "/onehot-link",
+                    onehot_operands, onehot_coefficients, F_ZERO, nullptr,
+                    reason))
+                return false;
+            family_wire.onehot_terminal_commitment_hex =
+                onehot_opening.commitment.point.serializeToHexStr();
+            local.wire.families.push_back(std::move(family_wire));
+        }
+        local.final_l_evaluation = F_ZERO;
+        if (global_point != nullptr) {
+            const std::size_t global_bits = global_point->size();
+            for (std::size_t family_index = 0; family_index < families.size();
+                 ++family_index) {
+                const NativeLassoChunkFamilyProver &family = families[family_index];
+                const std::size_t row_bits = log2_power(family.padded_queries);
+                const std::size_t block = family.segment_offset / family.padded_queries;
+                Fr weight = F_ONE;
+                for (std::size_t bit = row_bits; bit < global_bits; ++bit) {
+                    const bool set = ((block >> (bit - row_bits)) & 1U) != 0;
+                    weight *= set ? (*global_point)[bit]
+                                 : (F_ONE - (*global_point)[bit]);
+                }
+                local.final_l_evaluation +=
+                    weight * final_operands[family_index].value;
+            }
+        } else {
+            for (const zkgpt::native_pedersen::ScalarOpening &opening : final_operands)
+                local.final_l_evaluation += opening.value;
+        }
+        local.final_opening = zkgpt::native_pedersen::commit_fresh(
+            scalar_basis, local.final_l_evaluation);
+        final_operands.push_back(local.final_opening);
+        final_coefficients.push_back(-F_ONE);
+        if (!zkgpt::native_pedersen::prove_hidden_linear(
+                session, scalar_basis, "lasso/chunked/final-link", final_operands,
+                final_coefficients, F_ZERO, nullptr, reason))
+            return false;
+        local.wire.final_commitment_hex =
+            local.final_opening.commitment.point.serializeToHexStr();
+        local.wire.root_digest = chunk_lasso_root(local.wire);
+        session.absorb("lasso/chunked/root", local.wire.root_digest);
+        if (result != nullptr) *result = std::move(local);
+        return true;
+    } catch (const std::exception &error) {
+        session.rollback(checkpoint);
+        set_reason(reason, error.what());
+        return false;
+    }
+}
+
+bool native_lasso_verify_chunked_bundle(
+    const NativeProofSession &session,
+    const std::vector<NativeLassoChunkFamilyPublic> &families,
+    const NativeLassoChunkBundleWire &wire,
+    const zkgpt::native_pedersen::PedersenBasis &scalar_basis,
+    const std::vector<F> *global_point,
+    std::string *reason) {
+    try {
+        if (wire.schema != "zkgpt-native-lasso-chunked-v1" ||
+            wire.version != kNativeLassoChunkVersion ||
+            families.empty() || wire.families.size() != families.size() ||
+            !scalar_basis.valid(reason)) {
+            set_reason(reason, "native Lasso chunk wire schema is invalid");
+            return false;
+        }
+        std::vector<NativeLassoChunkFamilyPublic> expected = families;
+        std::sort(expected.begin(), expected.end(),
+                  [](const NativeLassoChunkFamilyPublic &left,
+                     const NativeLassoChunkFamilyPublic &right) {
+                      return left.family_id < right.family_id;
+                  });
+        const std::string tables_digest = chunk_lasso_tables_digest(expected);
+        const std::string resources_digest = chunk_lasso_resources_digest(expected);
+        if (wire.tables_digest != tables_digest ||
+            wire.resources_digest != resources_digest ||
+            wire.root_digest != chunk_lasso_root(wire)) {
+            set_reason(reason, "native Lasso chunk root or table digest mismatch");
+            return false;
+        }
+        std::vector<zkgpt::native_pedersen::ScalarCommitment> final_operands;
+        std::vector<Fr> final_coefficients;
+        for (std::size_t family_index = 0; family_index < expected.size();
+             ++family_index) {
+            const NativeLassoChunkFamilyPublic &family = expected[family_index];
+            const NativeLassoChunkFamilyWire &family_wire = wire.families[family_index];
+            if (!chunk_lasso_family_valid(family, reason) ||
+                family_wire.public_metadata.family_id != family.family_id ||
+                family_wire.public_metadata.table_id != family.table_id ||
+                family_wire.public_metadata.segment_offset != family.segment_offset ||
+                family_wire.public_metadata.logical_queries != family.logical_queries ||
+                family_wire.public_metadata.padded_queries != family.padded_queries ||
+                family_wire.public_metadata.chunk_size != family.chunk_size ||
+                family_wire.matrix_columns.size() != family.table.size()) {
+                set_reason(reason, "native Lasso chunk family metadata mismatch");
+                return false;
+            }
+            const std::string prefix = "lasso/chunked/" + family.family_id;
+            std::vector<F> row_point;
+            const std::size_t row_rounds = log2_power(family.padded_queries);
+            if (global_point != nullptr) {
+                if (global_point->size() < row_rounds) {
+                    set_reason(reason, "native Lasso global verifier point is too short");
+                    return false;
+                }
+                row_point.assign(global_point->begin(),
+                                 global_point->begin() + row_rounds);
+                const std::size_t position = find_message(
+                    session, prefix + "/row-point",
+                    NativeProofMessageKind::FieldVector, reason);
+                if (position == session.messages().size()) return false;
+                std::vector<F> encoded;
+                if (!decode_vector(&session.messages()[position], row_rounds,
+                                   encoded) || encoded != row_point) {
+                    set_reason(reason, "native Lasso global row point binding mismatch");
+                    return false;
+                }
+            } else if (!challenge_point(session, prefix + "/row-point",
+                                        row_rounds, row_point, reason)) {
+                return false;
+            }
+            const std::string expected_row_digest = hash_fixed(encode_tokens({
+                "zkgpt-native-lasso-row-point-v1", family.family_id,
+                [&]() { std::string value; for (const F &x : row_point) append_string(value, x.getStr(16)); return value; }()}));
+            if (family_wire.row_point_digest != expected_row_digest)
+                return false;
+            if (!hyrax::verify_chunked_mle_opening(
+                    session, family_wire.query, prefix + "/query",
+                    family.padded_queries, family.padded_queries,
+                    family.chunk_size, row_point, scalar_basis, reason))
+                return false;
+            zkgpt::native_pedersen::ScalarCommitment query_commitment;
+            if (!scalar_commitment_from_hex(
+                    family_wire.query.aggregate_commitment_hex, scalar_basis,
+                    query_commitment, reason))
+                return false;
+            final_operands.push_back(query_commitment);
+            Fr final_weight = F_ONE;
+            if (global_point != nullptr) {
+                const std::size_t row_bits = log2_power(family.padded_queries);
+                const std::size_t block = family.segment_offset / family.padded_queries;
+                for (std::size_t bit = row_bits; bit < global_point->size(); ++bit) {
+                    const bool set = ((block >> (bit - row_bits)) & 1U) != 0;
+                    final_weight *= set ? (*global_point)[bit]
+                                        : (F_ONE - (*global_point)[bit]);
+                }
+            }
+            final_coefficients.push_back(final_weight);
+            std::vector<zkgpt::native_pedersen::ScalarCommitment> matrix_commitments;
+            matrix_commitments.reserve(family_wire.matrix_columns.size());
+            for (std::size_t column = 0; column < family_wire.matrix_columns.size();
+                 ++column) {
+                const std::string column_label = prefix + "/matrix/" +
+                                                  std::to_string(column);
+                if (!hyrax::verify_chunked_mle_opening(
+                        session, family_wire.matrix_columns[column], column_label,
+                        family.padded_queries, family.padded_queries,
+                        family.chunk_size, row_point, scalar_basis, reason))
+                    return false;
+                zkgpt::native_pedersen::ScalarCommitment commitment;
+                if (!scalar_commitment_from_hex(
+                        family_wire.matrix_columns[column].aggregate_commitment_hex,
+                        scalar_basis, commitment, reason))
+                    return false;
+                matrix_commitments.push_back(commitment);
+            }
+            std::vector<zkgpt::native_pedersen::ScalarCommitment> lookup_operands =
+                matrix_commitments;
+            std::vector<Fr> lookup_coefficients = family.table;
+            lookup_operands.push_back(query_commitment);
+            lookup_coefficients.push_back(-F_ONE);
+            if (!zkgpt::native_pedersen::verify_hidden_linear(
+                    session, scalar_basis, prefix + "/lookup-link",
+                    lookup_operands, lookup_coefficients, F_ZERO, reason))
+                return false;
+            zkgpt::native_pedersen::ScalarCommitment onehot_commitment;
+            if (!scalar_commitment_from_hex(
+                    family_wire.onehot_terminal_commitment_hex, scalar_basis,
+                    onehot_commitment, reason))
+                return false;
+            std::vector<zkgpt::native_pedersen::ScalarCommitment> onehot_operands =
+                matrix_commitments;
+            std::vector<Fr> onehot_coefficients(matrix_commitments.size(), F_ONE);
+            onehot_operands.push_back(onehot_commitment);
+            onehot_coefficients.push_back(-F_ONE);
+            if (!zkgpt::native_pedersen::verify_hidden_linear(
+                    session, scalar_basis, prefix + "/onehot-link",
+                    onehot_operands, onehot_coefficients, F_ZERO, reason))
+                return false;
+        }
+        zkgpt::native_pedersen::ScalarCommitment final_commitment;
+        if (!scalar_commitment_from_hex(wire.final_commitment_hex, scalar_basis,
+                                        final_commitment, reason))
+            return false;
+        final_operands.push_back(final_commitment);
+        final_coefficients.push_back(-F_ONE);
+        return zkgpt::native_pedersen::verify_hidden_linear(
+            session, scalar_basis, "lasso/chunked/final-link", final_operands,
+            final_coefficients, F_ZERO, reason);
+    } catch (const std::exception &error) {
+        set_reason(reason, error.what());
+        return false;
+    }
+}
+
+namespace {
+
 struct MaskedFamilyState {
     hyrax::PedersenMleCommitment commitment;
     std::string basis_id;

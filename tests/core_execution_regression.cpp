@@ -227,6 +227,162 @@ namespace
         // This test checks the source resolver, not a KZG verification claim.
     }
 
+    void test_evaluation_spill_registry()
+    {
+        const std::filesystem::path root(
+            GATZK_EXECUTION_TEST_ROOT);
+        auto lease =
+            util::TraceSpillLease::create(root);
+        const std::string payload_name =
+            "evaluation.bin";
+        {
+            auto output =
+                lease->create_payload_stream(
+                    payload_name);
+            output->flush();
+            require(
+                static_cast<bool>(*output),
+                "evaluation spill flush");
+        }
+
+        const auto domain =
+            algebra::RootOfUnityDomain::create(
+                "N", 1024);
+        const std::string name =
+            "test_spilled_evaluation";
+        const std::vector<F> blinder{
+            F(7), F(11)};
+
+        protocol::TraceArtifacts trace;
+        trace.commitments.emplace(
+            name,
+            gatzk::crypto::Commitment{
+                .name = name,
+                .point =
+                    gatzk::crypto::g1_zero(),
+            });
+        trace.polynomial_domains[name] =
+            domain->name;
+        trace.spilled_polynomials.emplace(
+            name,
+            protocol::TraceArtifacts::
+                SpilledEvaluationPolynomial{
+                    .path =
+                        (lease->path() /
+                         payload_name)
+                            .string(),
+                    .domain_name =
+                        domain->name,
+                    .size =
+                        domain->size,
+                    .physical_size = 0,
+                    .zero_tail_compacted = true,
+                    .semantic_source_id = 1,
+                    .compact_semantic_source_all_zero = true,
+                    .zero_domain_blinder =
+                        blinder,
+                    .lease =
+                        lease,
+                });
+
+        const auto &resolved_blinder =
+            protocol::
+                resolve_trace_zero_domain_blinder(
+                    trace,
+                    name,
+                    domain);
+        require(
+            resolved_blinder == blinder,
+            "spilled evaluation blinder resolution");
+
+        const auto restored =
+            protocol::
+                resolve_trace_opening_polynomial(
+                    trace,
+                    name,
+                    domain);
+        require(
+            restored->size() ==
+                domain->size,
+            "spilled evaluation logical length");
+        require(
+            restored->zero_domain_blinder ==
+                blinder,
+            "spilled evaluation blinder round trip");
+        require(
+            std::all_of(
+                restored->values().begin(),
+                restored->values().end(),
+                [](const F &value)
+                {
+                    return value.is_zero();
+                }),
+            "spilled evaluation zero-tail reconstruction");
+
+        auto &descriptor =
+            trace.spilled_polynomials.at(name);
+        const auto real_path =
+            descriptor.path;
+        descriptor.path =
+            (root /
+             "outside_evaluation.bin")
+                .string();
+        reject(
+            [&]
+            {
+                (void)protocol::
+                    resolve_trace_zero_domain_blinder(
+                        trace,
+                        name,
+                        domain);
+            },
+            "evaluation spill path escape");
+        descriptor.path =
+            real_path;
+
+        descriptor.lease.reset();
+        reject(
+            [&]
+            {
+                (void)protocol::
+                    resolve_trace_zero_domain_blinder(
+                        trace,
+                        name,
+                        domain);
+            },
+            "evaluation spill missing lease");
+        descriptor.lease =
+            lease;
+
+        ++descriptor.size;
+        reject(
+            [&]
+            {
+                (void)protocol::
+                    resolve_trace_zero_domain_blinder(
+                        trace,
+                        name,
+                        domain);
+            },
+            "evaluation spill domain bound");
+        --descriptor.size;
+
+        trace.polynomial_domains[name] =
+            "edge";
+        reject(
+            [&]
+            {
+                (void)protocol::
+                    resolve_trace_zero_domain_blinder(
+                        trace,
+                        name,
+                        domain);
+            },
+            "evaluation spill domain registration");
+        trace.polynomial_domains[name] =
+            domain->name;
+    }
+
     void test_coefficient_publication()
     {
         protocol::TraceArtifacts trace;
@@ -341,6 +497,7 @@ int main(int argc, char **argv)
         test_evaluation_and_blinder();
         test_taylor();
         test_coefficient_reader();
+        test_evaluation_spill_registry();
         test_coefficient_publication();
         if (gpu)
             test_cuda();

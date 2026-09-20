@@ -20,6 +20,7 @@ from typing import Any
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 BACKENDS = ("cpu", "gpu")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+NATIVE_BASIS_DOMAIN = 1 << 18
 
 
 class ArtifactError(ValueError):
@@ -184,6 +185,16 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
     basis = srs.get("basis_digest")
     if not isinstance(basis, str) or not HEX64.fullmatch(basis) or setup.get("basis_digest") != basis:
         raise ArtifactError("SRS manifest basis digest is not setup-bound")
+    basis_domain = setup.get("basis_domain")
+    logical_domain = setup.get("logical_domain")
+    segment_size = setup.get("segment_size")
+    segment_count = setup.get("segment_count")
+    if (basis_domain != NATIVE_BASIS_DOMAIN or not isinstance(logical_domain, int) or
+            logical_domain < basis_domain or segment_size != basis_domain or
+            not isinstance(segment_count, int) or segment_count < 1 or
+            segment_count != (logical_domain + basis_domain - 1) // basis_domain or
+            setup.get("generator_count") != basis_domain):
+        raise ArtifactError("SRS manifest logical/basis segment setup is invalid")
     config_raw = manifest.get("config")
     if not isinstance(config_raw, str):
         raise ArtifactError("asset manifest lacks config path")
@@ -224,6 +235,30 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
                     chunk.get("basis_digest") != basis or
                     chunk.get("family_id") != family.get("family_id")):
                 raise ArtifactError("SRS chunk generator/basis identity mismatch")
+            chunk_logical = chunk.get("logical_domain")
+            if (chunk.get("basis_domain") != basis_domain or
+                    chunk.get("segment_size") != basis_domain or
+                    not isinstance(chunk_logical, int) or chunk_logical < 1 or
+                    chunk.get("segment_count") !=
+                    (chunk_logical + basis_domain - 1) // basis_domain or
+                    chunk.get("required_domain") != chunk_logical):
+                raise ArtifactError("SRS chunk logical/basis segment metadata mismatch")
+            segments = chunk.get("segments")
+            if not isinstance(segments, list) or len(segments) != chunk.get("segment_count"):
+                raise ArtifactError("SRS chunk segment descriptor count mismatch")
+            offset = 0
+            for index, segment in enumerate(segments):
+                if (not isinstance(segment, dict) or segment.get("segment_index") != index or
+                        segment.get("logical_offset") != offset or
+                        not isinstance(segment.get("actual_length"), int) or
+                        segment["actual_length"] < 1 or segment["actual_length"] > basis_domain or
+                        segment.get("padded_length") != basis_domain or
+                        segment.get("basis_offset") != 0 or
+                        segment.get("basis_count") != basis_domain):
+                    raise ArtifactError("SRS segment descriptor is not ordered/full coverage")
+                offset += segment["actual_length"]
+            if offset != chunk_logical:
+                raise ArtifactError("SRS segments do not cover logical domain")
             frame_digests = {key: check_frame(chunk.get(key), f"{family.get('family_id', '?')}/{key}")
                              for key in ("G", "H", "U")}
             if chunk.get("generator_digest") != frame_digests["G"]:
@@ -244,6 +279,27 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
     if sidecar_path.stat().st_mode & 0o077:
         raise ArtifactError("model blinder sidecar is not owner-only")
 
+    lookup_raw = manifest.get("sorted_lookup_descriptor")
+    lookup_digest = manifest.get("sorted_lookup_descriptor_digest")
+    if (not isinstance(lookup_raw, str) or not lookup_raw or
+            not isinstance(lookup_digest, str) or not HEX64.fullmatch(lookup_digest)):
+        raise ArtifactError("asset manifest lacks authenticated sorted-lookup descriptor")
+    lookup_path = _local(root, lookup_raw, "sorted lookup descriptor")
+    _regular(lookup_path, "sorted lookup descriptor")
+    if digests.get(lookup_path.relative_to(root).as_posix()) != lookup_digest:
+        raise ArtifactError("asset manifest does not authenticate sorted-lookup descriptor")
+    lookup = _json(lookup_path, "sorted lookup descriptor")
+    if lookup.get("schema") != "zkDL_gat_sorted_lookup_descriptor_v1" or lookup.get("version") != 1:
+        raise ArtifactError("sorted-lookup descriptor schema/version mismatch")
+    if lookup.get("static_table_digest") != manifest.get("static_table_descriptor_digest"):
+        raise ArtifactError("sorted-lookup descriptor table binding mismatch")
+    if any("chi" in str(item) for item in lookup.get("table_families", []) + lookup.get("query_families", [])):
+        raise ArtifactError("formal sorted-lookup descriptor retains legacy chi dependency")
+    if lookup.get("descriptor_digest") != hashlib.sha256(
+            json.dumps({key: value for key, value in lookup.items() if key != "descriptor_digest"},
+                       sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest():
+        raise ArtifactError("sorted-lookup descriptor self-digest mismatch")
+
 
 def _audit_assets(root: Path, run_dir: Path, statement: dict[str, str]) -> tuple[dict[str, Any], str]:
     manifest_path = _regular(run_dir / "asset_manifest.json", "asset manifest")
@@ -262,14 +318,17 @@ def _audit_assets(root: Path, run_dir: Path, statement: dict[str, str]) -> tuple
     # in the manifest.  No formal result may downgrade them to UNAVAILABLE.
     for field in (
         "scale_chain_digest", "static_table_descriptor_digest",
-        "integer_bound_ledger_descriptor_digest",
+        "integer_bound_ledger_descriptor_digest", "sorted_lookup_descriptor_digest",
     ):
         value = manifest.get(field)
         _digest(value, field)
         if field == "scale_chain_digest":
             relative = "configs/quantization_scale_chain.cfg"
         else:
-            descriptor_key = "static_table_descriptor" if field.startswith("static") else "integer_bound_ledger"
+            descriptor_key = (
+                "static_table_descriptor" if field.startswith("static") else
+                "integer_bound_ledger" if field.startswith("integer") else
+                "sorted_lookup_descriptor")
             raw = manifest.get(descriptor_key)
             if not isinstance(raw, str):
                 raise ArtifactError(f"asset manifest lacks {descriptor_key}")
@@ -341,6 +400,13 @@ def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
 
     if statement.get("schema") != "zkDL_gat_statement_v1":
         raise ArtifactError(f"public statement schema mismatch: {statement_path}")
+    _digest(statement.get("sorted_lookup_descriptor_digest", ""), "sorted_lookup_descriptor_digest")
+    _digest(statement.get("sorted_lookup_plan_digest", ""), "sorted_lookup_plan_digest")
+    try:
+        if int(statement.get("sorted_lookup_query_count", "0")) < 1:
+            raise ArtifactError("public statement has no sorted-lookup query families")
+    except ValueError as exc:
+        raise ArtifactError("public statement sorted_lookup_query_count is not an integer") from exc
     if statement.get("statement_id") != record.get("statement_id"):
         raise ArtifactError("record/statement identity mismatch")
     if statement.get("dataset") != dataset:
@@ -436,3 +502,34 @@ def require_exact_matrix(rows: list[dict[str, str]]) -> None:
                       "integer_bound_ledger_descriptor_digest"):
             if cpu.get(field) != gpu.get(field):
                 raise ArtifactError(f"CPU/GPU public identity mismatch for {dataset}: {field}")
+
+
+def require_selected_backend(rows: list[dict[str, str]], backend: str = "cpu") -> None:
+    """Require exactly one fully audited result for each canonical dataset."""
+    if backend not in BACKENDS:
+        raise ArtifactError(f"unsupported selected backend: {backend}")
+    if len(rows) != len(DATASETS):
+        raise ArtifactError(
+            f"selected backend {backend} requires exactly {len(DATASETS)} result cells; got {len(rows)}"
+        )
+    seen: set[str] = set()
+    for row in rows:
+        dataset = row.get("dataset", "")
+        if dataset not in DATASETS:
+            raise ArtifactError(f"selected backend result has non-canonical dataset: {dataset}")
+        if row.get("backend") != backend:
+            raise ArtifactError(
+                f"selected backend {backend} found unexpected cell: {dataset}/{row.get('backend', '')}"
+            )
+        if dataset in seen:
+            raise ArtifactError(f"duplicate selected backend result cell: {dataset}/{backend}")
+        seen.add(dataset)
+        if row.get("independent_verification") != "1":
+            raise ArtifactError(f"selected backend result lacks independent verification: {dataset}")
+        if row.get("silent_fallback") != "0":
+            raise ArtifactError(f"selected backend result claims silent fallback: {dataset}")
+        if row.get("gpu_kernel_executed") != "0":
+            raise ArtifactError(f"selected CPU result claims GPU kernel execution: {dataset}")
+    if seen != set(DATASETS):
+        missing = sorted(set(DATASETS) - seen)
+        raise ArtifactError(f"selected backend result set is incomplete; missing={missing}")

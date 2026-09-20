@@ -14,7 +14,7 @@ import csv
 import json
 from pathlib import Path
 
-from result_artifacts import ArtifactError, audit_run, require_exact_matrix
+from result_artifacts import ArtifactError, audit_run, require_exact_matrix, require_selected_backend
 
 
 def main() -> int:
@@ -25,6 +25,11 @@ def main() -> int:
         "--require-matrix",
         action="store_true",
         help="require exactly the five canonical datasets on both CPU and GPU",
+    )
+    parser.add_argument(
+        "--require-selected-backend",
+        choices=("cpu", "gpu"),
+        help="require exactly one fully audited cell for each canonical dataset on this backend",
     )
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
@@ -47,9 +52,16 @@ def main() -> int:
             failures.append(str(exc))
     if failures:
         raise SystemExit("collect-results: " + "; ".join(failures))
+    if args.require_matrix and args.require_selected_backend:
+        raise SystemExit("collect-results: --require-matrix and --require-selected-backend are mutually exclusive")
     if args.require_matrix:
         try:
             require_exact_matrix(rows)
+        except ArtifactError as exc:
+            raise SystemExit(f"collect-results: {exc}") from exc
+    elif args.require_selected_backend:
+        try:
+            require_selected_backend(rows, args.require_selected_backend)
         except ArtifactError as exc:
             raise SystemExit(f"collect-results: {exc}") from exc
     order = {"cora": 0, "citeseer": 1, "pubmed": 2, "ppi": 3, "ogbn_arxiv": 4}
@@ -62,7 +74,12 @@ def main() -> int:
         raise SystemExit("collect-results: output escapes baseline root")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
-        json.dumps({"schema": "zkDL_gat_result_collection_v2", "rows": rows}, indent=2, sort_keys=True) + "\n",
+        json.dumps({
+            "schema": "zkDL_gat_result_collection_v2",
+            "mode": "matrix" if args.require_matrix else "selected_backend" if args.require_selected_backend else "unconstrained",
+            "selected_backend": args.require_selected_backend,
+            "rows": rows,
+        }, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     csv_path = output.with_suffix(".csv")

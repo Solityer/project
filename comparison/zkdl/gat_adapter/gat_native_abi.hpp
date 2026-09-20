@@ -71,6 +71,34 @@ struct NativeModelBlinderInput {
     std::array<std::uint8_t, 32U> registry_digest{};
 };
 
+// Prover-side descriptor for a sorted lookup witness.  The payload is a
+// baseline-local, owner-only scratch stream; it is not a proof and is never
+// accepted as a verifier claim.  The next native-core integration consumes
+// the role map and streams each column by segment from this file.
+struct NativeSortedLookupProviderInput {
+    std::string operation_id;
+    std::string table_ref;
+    std::string query_ref;
+    std::string merge_ref;
+    std::string scratch_path;
+    std::string scratch_digest;
+    std::string layout_digest;
+    std::vector<std::string> commitment_roles;
+    std::uint64_t table_logical_rows = 0U;
+    std::uint64_t table_domain = 0U;
+    std::uint64_t query_logical_rows = 0U;
+    std::uint64_t query_domain = 0U;
+    std::uint64_t merge_logical_rows = 0U;
+    std::uint64_t merge_domain = 0U;
+    std::uint64_t segment_size = 0U;
+    std::uint32_t x_bits = 0U;
+    std::uint32_t y_bits = 0U;
+    std::string key_max_u128;
+    bool owner_only = true;
+    bool active_prefix = true;
+    bool canonical_padding = true;
+};
+
 struct NativeRelationWitnessInput {
     // Prove requests carry all canonical field-MLE tensors.  Verify requests
     // may carry only public tensors (currently public_Y); the core rejects
@@ -85,6 +113,9 @@ struct NativeRelationWitnessInput {
     std::vector<NativeCommitmentInput> registered_model_commitments;
     std::vector<NativeHidingRecordInput> hiding_commitment_records;
     std::vector<NativeModelBlinderInput> model_blinders;
+    // One bounded, scratch-backed Q/T/S provider per indexed table operation.
+    // This replaces the retired exponential chi tensor family.
+    std::vector<NativeSortedLookupProviderInput> sorted_lookup_providers;
     // Each entry is exactly one canonical zkdl::append_g1 payload and is the
     // authenticated IPA G vector used by the relation proof.
     std::vector<std::vector<std::uint8_t>> generators;

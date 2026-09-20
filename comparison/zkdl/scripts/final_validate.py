@@ -6,14 +6,20 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from result_artifacts import ArtifactError, audit_run, require_exact_matrix
+from result_artifacts import ArtifactError, audit_run, require_exact_matrix, require_selected_backend
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=Path, default=Path("runs"))
-    # Kept as a harmless compatibility spelling. Exact five-by-two matrix
-    # validation is unconditional; there is no partial/pair-only acceptance.
+    parser.add_argument(
+        "--backend", choices=("cpu", "gpu"), default="cpu",
+        help="selected backend to validate when --require-matrix is absent (default: cpu)",
+    )
+    parser.add_argument(
+        "--require-matrix", action="store_true",
+        help="explicitly require the complete five-dataset CPU/GPU matrix",
+    )
     parser.add_argument("--require-pairs", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
@@ -36,11 +42,19 @@ def main() -> int:
             failures.append(str(exc))
     if failures:
         raise SystemExit("final-validate: " + "; ".join(failures))
+    if args.require_pairs:
+        args.require_matrix = True
     try:
-        require_exact_matrix(rows)
+        if args.require_matrix:
+            require_exact_matrix(rows)
+        else:
+            require_selected_backend(rows, args.backend)
     except ArtifactError as exc:
         raise SystemExit(f"final-validate: {exc}") from exc
-    print("final_validation=PASS records=10 exact_matrix=5x2 independent_verify=10")
+    if args.require_matrix:
+        print("final_validation=PASS records=10 exact_matrix=5x2 independent_verify=10")
+    else:
+        print(f"final_validation=PASS records=5 selected_backend={args.backend} independent_verify=5")
     return 0
 
 

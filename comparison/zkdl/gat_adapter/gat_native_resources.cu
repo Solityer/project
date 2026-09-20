@@ -660,22 +660,36 @@ bool parse_srs_chunk(const std::string& object, const std::string& family_id,
         return false;
     }
     std::uint64_t point_size = 0U;
+    std::uint64_t logical_domain = 0U, basis_domain = 0U;
+    std::uint64_t segment_size = 0U, segment_count = 0U;
     if (!json_u64_field(object, "point_count", chunk.point_count) ||
         !json_u64_field(object, "domain", chunk.domain) ||
+        !json_u64_field(object, "logical_domain", logical_domain) ||
+        !json_u64_field(object, "basis_domain", basis_domain) ||
+        !json_u64_field(object, "segment_size", segment_size) ||
+        !json_u64_field(object, "segment_count", segment_count) ||
         !json_u64_field(object, "degree", chunk.degree) ||
         !json_u64_field(object, "point_size", point_size) ||
-        chunk.point_count == 0U || chunk.domain == 0U ||
-        chunk.point_count != chunk.domain || point_size != kG1Size ||
-        !power_of_two(chunk.domain) || chunk.domain > kMaxSrsFramePoints ||
+        chunk.point_count == 0U || chunk.domain == 0U || logical_domain == 0U ||
+        basis_domain == 0U || segment_size == 0U || segment_count == 0U ||
+        chunk.point_count != chunk.domain || chunk.domain != basis_domain ||
+        segment_size != basis_domain || point_size != kG1Size ||
+        !power_of_two(chunk.domain) || !power_of_two(logical_domain) ||
+        logical_domain < basis_domain || chunk.domain > kMaxSrsFramePoints ||
+        segment_count != (logical_domain + segment_size - 1U) / segment_size ||
         chunk.degree < (chunk.domain == 1U ? 0U : chunk.domain - 1U) ||
         chunk.point_offset > std::numeric_limits<std::uint64_t>::max() - chunk.point_count) {
-        set_error(error, "BLOCKED: SRS chunk point_count/domain/degree/point_size is invalid");
+        set_error(error, "BLOCKED: SRS chunk logical/basis segment metadata is invalid");
         return false;
     }
+    chunk.logical_domain = logical_domain;
+    chunk.basis_domain = basis_domain;
+    chunk.segment_size = segment_size;
+    chunk.segment_count = segment_count;
     chunk.point_size = static_cast<std::uint32_t>(point_size);
-    // The native zkDL proof consumes a prefix basis.  A nonzero offset is
-    // still parsed and authenticated as metadata, but cannot be silently
-    // reinterpreted as the first generator of a different basis.
+    // A frame describes the bounded common basis.  Logical segment offsets
+    // are separately authenticated below and never interpreted as generator
+    // offsets in this frame.
     if (chunk.point_offset != 0U) {
         set_error(error, "BLOCKED: native zkDL SRS chunk point_offset must be zero for prefix basis");
         return false;
@@ -718,6 +732,38 @@ bool parse_srs_chunk(const std::string& object, const std::string& family_id,
             set_error(error, "BLOCKED: SRS chunk generator_digest does not bind G frame");
             return false;
         }
+    }
+    std::vector<std::string> segment_objects;
+    if (!json_object_array(object, "segments", segment_objects) ||
+        segment_objects.size() != static_cast<std::size_t>(segment_count)) {
+        set_error(error, "BLOCKED: SRS chunk has no canonical ordered segments");
+        return false;
+    }
+    std::uint64_t expected_offset = 0U;
+    chunk.segments.reserve(segment_objects.size());
+    for (std::size_t index = 0U; index < segment_objects.size(); ++index) {
+        const auto& segment_object = segment_objects[index];
+        AuthenticatedSrsResource::Chunk::Segment segment;
+        if (!json_u64_field(segment_object, "segment_index", segment.segment_index) ||
+            !json_u64_field(segment_object, "logical_offset", segment.logical_offset) ||
+            !json_u64_field(segment_object, "actual_length", segment.actual_length) ||
+            !json_u64_field(segment_object, "padded_length", segment.padded_length) ||
+            !json_u64_field(segment_object, "basis_offset", segment.basis_offset) ||
+            !json_u64_field(segment_object, "basis_count", segment.basis_count) ||
+            segment.segment_index != index || segment.logical_offset != expected_offset ||
+            segment.actual_length == 0U || segment.actual_length > segment_size ||
+            segment.padded_length != segment_size || segment.basis_offset != 0U ||
+            segment.basis_count != basis_domain ||
+            expected_offset > logical_domain - segment.actual_length) {
+            set_error(error, "BLOCKED: SRS chunk segment offset/length/basis coverage is invalid");
+            return false;
+        }
+        expected_offset += segment.actual_length;
+        chunk.segments.push_back(segment);
+    }
+    if (expected_offset != logical_domain) {
+        set_error(error, "BLOCKED: SRS chunk segments do not cover logical domain");
+        return false;
     }
     chunk.generator_digest = chunk.g_digest;
     return true;
@@ -906,13 +952,22 @@ bool load_authenticated_srs(const Config& config,
     }
     std::uint64_t setup_domain = 0U, setup_generator_count = 0U;
     std::uint64_t setup_h_count = 0U, setup_u_count = 0U;
+    std::uint64_t setup_basis_domain = 0U, setup_logical_domain = 0U;
+    std::uint64_t setup_segment_size = 0U, setup_segment_count = 0U;
     if (!resource_field_u64(manifest, "setup", "domain", setup_domain) ||
+        !resource_field_u64(manifest, "setup", "basis_domain", setup_basis_domain) ||
+        !resource_field_u64(manifest, "setup", "logical_domain", setup_logical_domain) ||
+        !resource_field_u64(manifest, "setup", "segment_size", setup_segment_size) ||
+        !resource_field_u64(manifest, "setup", "segment_count", setup_segment_count) ||
         !resource_field_u64(manifest, "setup", "generator_count", setup_generator_count) ||
         !resource_field_u64(manifest, "setup", "h_count", setup_h_count) ||
         !resource_field_u64(manifest, "setup", "u_count", setup_u_count) ||
-        !power_of_two(setup_domain) || setup_generator_count != setup_domain ||
-        setup_h_count != 1U || setup_u_count != 1U) {
-        set_error(error, "BLOCKED: SRS local random setup domain/count metadata is invalid");
+        !power_of_two(setup_domain) || setup_basis_domain != setup_domain ||
+        !power_of_two(setup_basis_domain) || setup_logical_domain < setup_basis_domain ||
+        setup_segment_size != setup_basis_domain || setup_segment_count == 0U ||
+        setup_segment_count != (setup_logical_domain + setup_segment_size - 1U) / setup_segment_size ||
+        setup_generator_count != setup_basis_domain || setup_h_count != 1U || setup_u_count != 1U) {
+        set_error(error, "BLOCKED: SRS local random logical/basis segment metadata is invalid");
         return false;
     }
     std::string manifest_generator;
@@ -1030,6 +1085,10 @@ bool load_authenticated_srs(const Config& config,
     resource->selected_chunk_index = selected_chunk_vector_index;
     resource->count = selected_count;
     resource->domain = selected_domain;
+    resource->logical_domain = selected_chunk.logical_domain;
+    resource->basis_domain = selected_chunk.basis_domain;
+    resource->segment_size = selected_chunk.segment_size;
+    resource->segment_count = selected_chunk.segment_count;
     resource->degree = selected_degree;
     resource->point_size = selected_point_size;
     resource->generators = resource->chunks[selected].generators;
@@ -1058,7 +1117,8 @@ bool select_authenticated_srs_chunk(AuthenticatedSrsResource* resource,
     for (std::size_t i = 0U; i < resource->chunks.size(); ++i) {
         const auto& candidate = resource->chunks[i];
         if (candidate.family_id != family_id && candidate.family_id != "*") continue;
-        if (candidate.point_count < required_domain || candidate.domain < required_domain) continue;
+        if (candidate.logical_domain < required_domain ||
+            candidate.basis_domain == 0U || candidate.basis_domain != resource->basis_domain) continue;
         if (selected == resource->chunks.size() ||
             std::tie(candidate.domain, candidate.chunk_index, candidate.chunk_id) <
                 std::tie(resource->chunks[selected].domain,
@@ -1089,7 +1149,8 @@ bool select_authenticated_srs_chunk(AuthenticatedSrsResource* resource,
         candidate.u_path == common.u_path && candidate.g_digest == common.g_digest &&
         candidate.h_digest == common.h_digest && candidate.u_digest == common.u_digest;
     if (same_authenticated_frames) {
-        if (common.domain < required_domain || common.generators.size() < required_domain ||
+        if (common.logical_domain < required_domain || common.basis_domain != resource->basis_domain ||
+            common.generators.size() < common.basis_domain ||
             common.blinding_generator.empty() || common.u_generator.empty()) {
             set_error(error, "BLOCKED: authenticated common SRS frame does not cover relation domain");
             return false;
@@ -1099,8 +1160,9 @@ bool select_authenticated_srs_chunk(AuthenticatedSrsResource* resource,
     }
     if (!materialize_srs_chunk(root, resource->chunks[selected], error)) return false;
     const auto& selected_chunk = resource->chunks[selected];
-    if (selected_chunk.domain < required_domain ||
-        selected_chunk.generators.size() < required_domain ||
+    if (selected_chunk.logical_domain < required_domain ||
+        selected_chunk.basis_domain != resource->basis_domain ||
+        selected_chunk.generators.size() < selected_chunk.basis_domain ||
         selected_chunk.blinding_generator.empty() || selected_chunk.u_generator.empty()) {
         set_error(error, "BLOCKED: authenticated SRS selected chunk does not cover relation domain");
         return false;

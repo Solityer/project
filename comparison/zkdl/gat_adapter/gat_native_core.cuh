@@ -39,6 +39,7 @@ struct NativeRelationWitness {
     // adapter.  The core never invents a selector/reindex mapping when this
     // vector is present.
     std::vector<relation::OperationDescriptor> operations;
+    std::vector<NativeSortedLookupProviderInput> sorted_lookup_providers;
     // Commitments for visibility=2 model tensors, parsed from the
     // authenticated registry/VK map by the adapter.  The core compares these
     // points with the generated canonical commitments; it never invents a

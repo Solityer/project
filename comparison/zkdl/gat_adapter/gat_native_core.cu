@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <initializer_list>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -135,6 +136,29 @@ bool file_digest(const std::filesystem::path& path,
     return true;
 }
 
+bool streaming_file_digest(const std::filesystem::path& path,
+                           std::array<zkdl::byte, 32>& digest, std::string* error) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error) *error = "cannot open authenticated scratch for hashing: " + path.string();
+        return false;
+    }
+    zkdl::Sha256 hash;
+    std::array<zkdl::byte, 1U << 16U> buffer{};
+    while (input) {
+        input.read(reinterpret_cast<char*>(buffer.data()),
+                   static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize count = input.gcount();
+        if (count > 0) hash.update(buffer.data(), static_cast<std::size_t>(count));
+    }
+    if (!input.eof()) {
+        if (error) *error = "cannot read authenticated scratch for hashing: " + path.string();
+        return false;
+    }
+    digest = hash.final();
+    return true;
+}
+
 bool contains(const std::vector<zkdl::byte>& bytes, const std::string& needle) {
     if (needle.empty() || bytes.size() < needle.size()) return false;
     return std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end()) != bytes.end();
@@ -235,8 +259,10 @@ bool resource_admission(const Config& config, const NativeRelationWitness& witne
         const AuthenticatedSrsResource::Chunk* selected = nullptr;
         if (!select_authenticated_srs_chunk(&srs, requirement.first,
                                             requirement.second, &selected, error)) return false;
-        if (!selected || selected->generators.size() < requirement.second ||
-            selected->domain > srs.domain || srs.generators.size() < selected->domain ||
+        if (!selected || selected->logical_domain < requirement.second ||
+            selected->basis_domain != srs.basis_domain ||
+            selected->generators.size() < selected->basis_domain ||
+            selected->domain != srs.domain || srs.generators.size() < selected->basis_domain ||
             selected->generator_id != srs.generator_id ||
             selected->basis_digest != srs.basis_digest ||
             selected->blinding_generator != srs.blinding_generator ||
@@ -245,7 +271,7 @@ bool resource_admission(const Config& config, const NativeRelationWitness& witne
                                  requirement.first;
             return false;
         }
-        for (std::uint64_t index = 0U; index < selected->domain; ++index) {
+        for (std::uint64_t index = 0U; index < selected->basis_domain; ++index) {
             if (selected->generators[static_cast<std::size_t>(index)] !=
                 srs.generators[static_cast<std::size_t>(index)]) {
                 if (error) *error = "BLOCKED: SRS family/chunk generator prefix differs from common public chunk: " +
@@ -284,16 +310,26 @@ bool resource_admission(const Config& config, const NativeRelationWitness& witne
         return false;
     }
     for (const auto& tensor : witness.tensors) {
-        if (tensor.domain_size == 0U || tensor.domain_size > srs.domain ||
+        const auto selected = std::find_if(srs.chunks.begin(), srs.chunks.end(),
+                                           [&](const AuthenticatedSrsResource::Chunk& chunk) {
+                                               return chunk.family_id == tensor.id || chunk.family_id == "*";
+                                           });
+        if (tensor.domain_size == 0U || selected == srs.chunks.end() ||
+            selected->logical_domain < tensor.domain_size ||
             (tensor.domain_size & (tensor.domain_size - 1U)) != 0U) {
-            if (error) *error = "BLOCKED: native tensor domain exceeds authenticated SRS domain: " + tensor.id;
+            if (error) *error = "BLOCKED: native tensor domain exceeds authenticated logical SRS domain: " + tensor.id;
             return false;
         }
     }
     for (const auto& shape : witness.tensor_shapes) {
-        if (shape.domain_size == 0U || shape.domain_size > srs.domain ||
+        const auto selected = std::find_if(srs.chunks.begin(), srs.chunks.end(),
+                                           [&](const AuthenticatedSrsResource::Chunk& chunk) {
+                                               return chunk.family_id == shape.id || chunk.family_id == "*";
+                                           });
+        if (shape.domain_size == 0U || selected == srs.chunks.end() ||
+            selected->logical_domain < shape.domain_size ||
             (shape.domain_size & (shape.domain_size - 1U)) != 0U) {
-            if (error) *error = "BLOCKED: native tensor shape domain exceeds authenticated SRS domain: " + shape.id;
+            if (error) *error = "BLOCKED: native tensor shape domain exceeds authenticated logical SRS domain: " + shape.id;
             return false;
         }
     }
@@ -761,182 +797,62 @@ const TensorFamily* tensor_family(
     const std::map<std::string, const TensorFamily*>& families,
     const std::string& id);
 
-relation::OperationDescriptor table_operation(
+relation::OperationDescriptor sorted_lookup_operation(
     const Config& config, const StaticTables& tables,
     const OperationFamily& plan_operation,
     const std::map<std::string, std::uint32_t>& domains,
     const std::map<std::string, const TensorFamily*>& families,
     std::string* error) {
+    (void)config;
+    (void)tables;
     relation::OperationDescriptor operation;
     operation.id = plan_operation.id;
-    operation.kind = plan_operation.id.find("/leaky_relu") != std::string::npos
-        ? relation::RelationKind::LeakyRelu
-        : (plan_operation.id.find("/exp_map") != std::string::npos
-           ? relation::RelationKind::Exp : relation::RelationKind::Elu);
+    operation.kind = relation::RelationKind::TableLookup;
     operation.degree = 2U;
     operation.mapping = plan_operation.mapping;
     operation.terminal_claim = plan_operation.terminal_claim;
     operation.terminal_point = plan_operation.terminal_point;
-    operation.padding = "all-padding-values-zero;masked-from-relation";
+    operation.padding = "fixed-zero-padding;authenticated-sorted-lookup-v1";
     operation.public_route = plan_operation.public_route;
     operation.requires_reindex = plan_operation.requires_reindex;
-    operation.batch_family = "indexed_public_table";
-    if (plan_operation.inputs.size() < 2U || plan_operation.outputs.size() != 1U) {
-        if (error) *error = "BLOCKED: indexed table relation lacks query/table inputs and one output";
-        return relation::OperationDescriptor{};
+    operation.batch_family = "authenticated_sorted_lookup";
+    if (plan_operation.inputs.size() < 3U || plan_operation.outputs.size() != 1U) {
+        if (error) *error = "BLOCKED: sorted lookup relation lacks query/index/table inputs and one output";
+        return {};
     }
-    operation.public_table_ref = plan_operation.inputs.size() > 1U
-        ? plan_operation.inputs[1] : std::string();
+    operation.public_table_ref = plan_operation.inputs[1];
     for (const auto& input : plan_operation.inputs) append_unique(operation.source_refs, input);
     for (const auto& output : plan_operation.outputs) append_unique(operation.source_refs, output);
-    std::int64_t minimum = 0;
-    const std::vector<std::int64_t>& selected = lookup_table(tables, plan_operation, minimum, error);
-    if (selected.empty()) return relation::OperationDescriptor{};
-    const TensorFamily* table_family = tensor_family(families, operation.public_table_ref);
-    if (table_family == nullptr || table_family->logical_shape.size() != 1U ||
-        table_family->logical_shape.front() != selected.size() ||
-        table_family->padded_shape.size() != 1U ||
-        table_family->padded_shape.front() == 0U ||
-        table_family->padded_shape.front() < selected.size() ||
-        (table_family->padded_shape.front() & (table_family->padded_shape.front() - 1U)) != 0U) {
-        if (error) *error = "BLOCKED: authenticated table logical/padded shape is inconsistent for " + operation.id;
-        return relation::OperationDescriptor{};
-    }
-    const std::uint64_t table_domain = table_family->padded_shape.front();
-    if (domains.at(operation.public_table_ref) != table_domain ||
-        table_domain > std::numeric_limits<std::uint32_t>::max()) {
-        if (error) *error = "BLOCKED: authenticated table domain is not a native power-of-two domain for " + operation.id;
-        return relation::OperationDescriptor{};
-    }
-    // The fixed multiplication-tree family is intentionally bounded by the
-    // relation wire cap.  Reject a table whose tree would exceed that cap;
-    // do not fall back to a row-by-row or metadata-only lookup proof.
-    if (selected.size() > relation::kMaxRelationConstraints / 4U) {
-        if (error) *error = "BLOCKED: authenticated table domain exceeds native lookup-family cap for " + operation.id;
-        return relation::OperationDescriptor{};
-    }
-    const std::uint32_t depth = ceil_log2(static_cast<std::size_t>(table_domain));
-    operation.public_table_selector.assign(static_cast<std::size_t>(table_domain),
-                                           zkdl::fr_from_u32(0U));
-    for (std::size_t index = 0U; index < selected.size(); ++index)
-        operation.public_table_selector[index] = zkdl::fr_from_u32(1U);
-    const std::string query = view_or_ref(plan_operation, domains, "query", plan_operation.inputs.front());
-    const std::string index = view_or_ref(plan_operation, domains, "index", plan_operation.inputs.size() > 2U ? plan_operation.inputs[2] : plan_operation.inputs.front());
+    const std::string query = view_or_ref(
+        plan_operation, domains, "query", plan_operation.inputs.front());
+    const std::string index = view_or_ref(
+        plan_operation, domains, "index", plan_operation.inputs[2]);
     const std::string output = aligned_output(plan_operation, domains);
-    std::vector<std::string> bits;
-    bits.reserve(depth);
-    for (std::uint32_t bit = 0U; bit < depth; ++bit) {
-        const std::string ref = view_or_ref(plan_operation, domains, "bit/" + std::to_string(bit),
-                                            plan_operation.id + "/view/bit/" + std::to_string(bit));
-        if (!domains.count(ref)) {
-            if (error) *error = "BLOCKED: table lookup is missing canonical bit view " + ref;
-            return relation::OperationDescriptor{};
-        }
-        bits.push_back(ref);
+    if (query.empty() || index.empty() || output.empty() ||
+        !domains.count(query) || !domains.count(index) || !domains.count(output) ||
+        domains.at(query) != domains.at(index) || domains.at(query) != domains.at(output)) {
+        if (error) *error = "BLOCKED: sorted lookup Q/index/output domains are not aligned";
+        return {};
     }
-    add_ref(operation, query);
-    add_ref(operation, index);
-    for (const auto& bit : bits) add_ref(operation, bit);
-    std::vector<std::vector<std::string>> chi(depth + 1U);
-    for (std::uint32_t level = 0U; level <= depth; ++level) {
-        const std::uint32_t width = 1U << level;
-        chi[level].reserve(width);
-        for (std::uint32_t node = 0U; node < width; ++node) {
-            const std::string ref = plan_operation.id + "/view/chi/" + std::to_string(level) + "/" + std::to_string(node);
-            if (!domains.count(ref)) {
-                if (error) *error = "BLOCKED: table lookup is missing canonical chi-tree view " + ref;
-                return relation::OperationDescriptor{};
-            }
-            chi[level].push_back(ref);
-            add_ref(operation, ref);
-        }
-    }
-    add_ref(operation, output);
-    if (!add_fac_identity_from_families(operation, query,
-                                        plan_operation.inputs.empty() ? std::string() : plan_operation.inputs[0],
+    operation.tensor_refs = {query, index, output};
+    // The authenticated table is a public source descriptor, while Q/I/O are
+    // the same-domain witness views bound by the dedicated lookup proof.
+    if (!add_fac_identity_from_families(operation, query, plan_operation.inputs[0],
                                         domains, families, error) ||
-        (plan_operation.inputs.size() > 2U &&
-         !add_fac_identity_from_families(operation, index, plan_operation.inputs[2],
-                                         domains, families, error)) ||
+        !add_fac_identity_from_families(operation, index, plan_operation.inputs[2],
+                                        domains, families, error) ||
         !add_fac_identity_from_families(operation, output, plan_operation.outputs[0],
-                                        domains, families, error))
-        return relation::OperationDescriptor{};
-    if (plan_operation.inputs.size() > 3U) {
-        for (std::uint32_t bit = 0U; bit < depth; ++bit)
-            if (!add_fac_feature_column(operation, bits[bit], plan_operation.inputs[3],
-                                        domains, families, bit, error))
-                return relation::OperationDescriptor{};
+                                        domains, families, error)) {
+        return {};
     }
     sort_fac_bindings(operation);
-    // The index is not an adapter-side hint: it is the field representation
-    // of the operation query and must be bound before the bit decomposition
-    // selects a static-table row.
-    operation.constraints.push_back(linear_constraint(
-        operation.id + "/query-index", operation, {query}, index));
-    // Binary index reconstruction and bit booleanity.
-    relation::ConstraintDescriptor index_constraint = reconstruction_constraint(
-        operation.id + "/index", operation, index, bits, depth, minimum);
-    operation.constraints.push_back(std::move(index_constraint));
-    for (std::uint32_t bit = 0U; bit < depth; ++bit)
-        operation.constraints.push_back(boolean_constraint(operation.id + "/bit/" + std::to_string(bit), operation, bits[bit]));
-    relation::ConstraintDescriptor root;
-    root.id = operation.id + "/chi-root";
-    root.degree = 1U;
-    root.constant = zkdl::fr_neg(zkdl::fr_from_u32(1U));
-    root.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, chi[0][0])}));
-    operation.constraints.push_back(std::move(root));
-    for (std::uint32_t level = 0U; level < depth; ++level) {
-        for (std::uint32_t node = 0U; node < (1U << level); ++node) {
-            const std::string& parent = chi[level][node];
-            const std::string& zero = chi[level + 1U][2U * node];
-            const std::string& one = chi[level + 1U][2U * node + 1U];
-            const std::string& bit = bits[level];
-            relation::ConstraintDescriptor zero_constraint;
-            zero_constraint.id = operation.id + "/chi/" + std::to_string(level) + "/" + std::to_string(node) + "/zero";
-            zero_constraint.degree = 2U;
-            zero_constraint.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, zero)}));
-            zero_constraint.terms.push_back(monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)), {local_ref(operation, parent)}));
-            zero_constraint.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, parent), local_ref(operation, bit)}));
-            operation.constraints.push_back(std::move(zero_constraint));
-            relation::ConstraintDescriptor one_constraint;
-            one_constraint.id = operation.id + "/chi/" + std::to_string(level) + "/" + std::to_string(node) + "/one";
-            one_constraint.degree = 2U;
-            one_constraint.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, one)}));
-            one_constraint.terms.push_back(monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)), {local_ref(operation, parent), local_ref(operation, bit)}));
-            operation.constraints.push_back(std::move(one_constraint));
-        }
-    }
-    // Q_table is the authenticated legal-row selector.  This relation is
-    // separate from the output map so a padded table index cannot simply
-    // select a canonical zero row and satisfy the function equation.
-    relation::ConstraintDescriptor table_membership;
-    table_membership.id = operation.id + "/table-membership";
-    table_membership.degree = 1U;
-    table_membership.constant = zkdl::fr_neg(zkdl::fr_from_u32(1U));
-    for (std::uint32_t index = 0U; index < table_domain; ++index) {
-        if (operation.public_table_selector[index] == zkdl::fr_from_u32(1U))
-            table_membership.terms.push_back(monomial(
-                zkdl::fr_from_u32(1U), {local_ref(operation, chi[depth][index])}));
-    }
-    operation.constraints.push_back(std::move(table_membership));
-
-    relation::ConstraintDescriptor output_constraint;
-    output_constraint.id = operation.id + "/table-output";
-    output_constraint.degree = 1U;
-    output_constraint.terms.push_back(monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)), {local_ref(operation, output)}));
-    for (std::uint32_t i = 0U; i < selected.size(); ++i)
-        output_constraint.terms.push_back(monomial(relation::fr_from_signed_i64(selected[i]),
-                                                   {local_ref(operation, chi[depth][i])}));
-    operation.constraints.push_back(std::move(output_constraint));
     std::string validation_error;
     if (!operation.valid(&validation_error)) {
-        if (error) *error = "BLOCKED: table relation descriptor rejected: " + validation_error;
-        return relation::OperationDescriptor{};
+        if (error) *error = "BLOCKED: sorted lookup descriptor rejected: " + validation_error;
+        return {};
     }
-    (void)config;
     return operation;
 }
-
 const TensorFamily* tensor_family(
     const std::map<std::string, const TensorFamily*>& families,
     const std::string& id) {
@@ -2131,7 +2047,7 @@ relation::OperationDescriptor canonical_operation(
                 plan_operation.inputs.front() != plan_operation.outputs.front())
                 return unsupported("a single public_Y tensor");
         } else if (plan_operation.kind == "indexed_public_table_sumcheck") {
-            return table_operation(config, tables, plan_operation, domains, families, error);
+            return sorted_lookup_operation(config, tables, plan_operation, domains, families, error);
         } else if (plan_operation.kind == "segmented_max_range_sumcheck") {
             return max_range_operation(config, plan_operation, domains, families, graph, error);
         } else if (plan_operation.kind == "segmented_sumcheck") {
@@ -2605,6 +2521,606 @@ bool bind_authenticated_public_material(const StaticTables& tables,
     return true;
 }
 
+struct SortedLookupScratchLayout {
+    std::filesystem::path path;
+    std::string roles;
+    std::string key_max_u128;
+    std::uint64_t table_offset = 0U;
+    std::uint64_t query_offset = 0U;
+    std::uint64_t merge_offset = 0U;
+    std::uint32_t table_domain = 0U;
+    std::uint32_t query_domain = 0U;
+    std::uint32_t merge_domain = 0U;
+    std::uint32_t segment_size = 0U;
+    std::uint32_t table_logical = 0U;
+    std::uint32_t query_logical = 0U;
+    std::uint32_t merge_logical = 0U;
+    std::uint32_t x_bits = 0U;
+    std::uint32_t y_bits = 0U;
+    static constexpr std::uint64_t kRecordBytes = 107U;
+};
+
+bool sorted_scratch_u64(std::ifstream& input, std::uint64_t& value) {
+    std::array<std::uint8_t, 8U> bytes{};
+    if (!input.read(reinterpret_cast<char*>(bytes.data()), bytes.size())) return false;
+    value = 0U;
+    for (unsigned index = 0U; index < bytes.size(); ++index)
+        value |= static_cast<std::uint64_t>(bytes[index]) << (8U * index);
+    return true;
+}
+
+bool sorted_scratch_u32(std::ifstream& input, std::uint32_t& value) {
+    std::array<std::uint8_t, 4U> bytes{};
+    if (!input.read(reinterpret_cast<char*>(bytes.data()), bytes.size())) return false;
+    value = 0U;
+    for (unsigned index = 0U; index < bytes.size(); ++index)
+        value |= static_cast<std::uint32_t>(bytes[index]) << (8U * index);
+    return true;
+}
+
+bool sorted_scratch_string(std::ifstream& input, std::string& value) {
+    std::uint64_t length = 0U;
+    if (!sorted_scratch_u64(input, length) || length > (1ULL << 20U)) return false;
+    value.assign(static_cast<std::size_t>(length), '\0');
+    return length == 0U || static_cast<bool>(input.read(value.data(),
+                                                        static_cast<std::streamsize>(length)));
+}
+
+bool sorted_lookup_parse_u128(const std::string& text, unsigned __int128& value,
+                              std::string* error) {
+    if (text.empty()) {
+        if (error) *error = "BLOCKED: sorted-lookup u128 decimal is empty";
+        return false;
+    }
+    value = 0U;
+    const unsigned __int128 maximum = ~static_cast<unsigned __int128>(0U);
+    for (const char digit : text) {
+        if (digit < '0' || digit > '9' ||
+            value > (maximum - static_cast<unsigned __int128>(digit - '0')) / 10U) {
+            if (error) *error = "BLOCKED: sorted-lookup u128 decimal is not canonical";
+            return false;
+        }
+        value = value * 10U + static_cast<unsigned __int128>(digit - '0');
+    }
+    return true;
+}
+
+bool sorted_scratch_layout(const Config& config,
+                           const NativeSortedLookupProviderInput& input,
+                           SortedLookupScratchLayout& layout,
+                           std::string* error) {
+    layout = SortedLookupScratchLayout{};
+    layout.path = std::filesystem::path(input.scratch_path);
+    if (layout.path.is_relative()) layout.path = config.baseline_root / layout.path;
+    std::ifstream stream(layout.path, std::ios::binary);
+    if (!stream) {
+        if (error) *error = "BLOCKED: sorted-lookup scratch is missing: " + layout.path.string();
+        return false;
+    }
+    std::array<char, 8U> magic{};
+    if (!stream.read(magic.data(), magic.size()) || std::string(magic.data(), magic.size()) != "ZKDLQTS1") {
+        if (error) *error = "BLOCKED: sorted-lookup scratch magic mismatch";
+        return false;
+    }
+    std::uint32_t version = 0U;
+    std::string operation, roles, key_max;
+    std::uint64_t table_domain = 0U, query_domain = 0U, merge_domain = 0U,
+                  segment_size = 0U, table_logical = 0U, query_logical = 0U,
+                  merge_logical = 0U, active_length = 0U;
+    if (!sorted_scratch_u32(stream, version) || version != 1U ||
+        !sorted_scratch_string(stream, operation) || !sorted_scratch_string(stream, roles) ||
+        !sorted_scratch_u64(stream, table_domain) || !sorted_scratch_u64(stream, query_domain) ||
+        !sorted_scratch_u64(stream, merge_domain) || !sorted_scratch_u64(stream, segment_size) ||
+        !sorted_scratch_u64(stream, table_logical) || !sorted_scratch_u64(stream, query_logical) ||
+        !sorted_scratch_u64(stream, merge_logical)) {
+        if (error) *error = "BLOCKED: sorted-lookup scratch header is truncated";
+        return false;
+    }
+    if (!sorted_scratch_u32(stream, layout.x_bits) || !sorted_scratch_u32(stream, layout.y_bits) ||
+        !sorted_scratch_string(stream, key_max) || !sorted_scratch_u64(stream, active_length)) {
+        if (error) *error = "BLOCKED: sorted-lookup scratch key header is truncated";
+        return false;
+    }
+    layout.roles = roles;
+    layout.key_max_u128 = key_max;
+    const auto fits_u32 = [](std::uint64_t value) {
+        return value != 0U && value <= std::numeric_limits<std::uint32_t>::max();
+    };
+    if (!fits_u32(table_domain) || !fits_u32(query_domain) || !fits_u32(merge_domain) ||
+        !fits_u32(segment_size) || !fits_u32(table_logical) || !fits_u32(query_logical) ||
+        !fits_u32(merge_logical) || table_domain % segment_size != 0U ||
+        query_domain % segment_size != 0U || merge_domain % segment_size != 0U ||
+        operation != input.operation_id || roles.empty() || active_length != table_logical ||
+        input.table_domain != table_domain || input.query_domain != query_domain ||
+        input.merge_domain != merge_domain || input.segment_size != segment_size ||
+        input.table_logical_rows != table_logical || input.query_logical_rows != query_logical ||
+        input.merge_logical_rows != merge_logical || input.x_bits != layout.x_bits ||
+        input.y_bits != layout.y_bits) {
+        if (error) *error = "BLOCKED: sorted-lookup scratch metadata does not match provider descriptor";
+        return false;
+    }
+    layout.table_domain = static_cast<std::uint32_t>(table_domain);
+    layout.query_domain = static_cast<std::uint32_t>(query_domain);
+    layout.merge_domain = static_cast<std::uint32_t>(merge_domain);
+    layout.segment_size = static_cast<std::uint32_t>(segment_size);
+    layout.table_logical = static_cast<std::uint32_t>(table_logical);
+    layout.query_logical = static_cast<std::uint32_t>(query_logical);
+    layout.merge_logical = static_cast<std::uint32_t>(merge_logical);
+    const auto checked_section = [&](std::uint64_t count, std::uint64_t& offset) {
+        const auto position = stream.tellg();
+        if (position < 0 || count > std::numeric_limits<std::uint64_t>::max() /
+                                      SortedLookupScratchLayout::kRecordBytes)
+            return false;
+        offset = static_cast<std::uint64_t>(position);
+        const std::uint64_t bytes = count * SortedLookupScratchLayout::kRecordBytes;
+        stream.seekg(static_cast<std::streamoff>(bytes), std::ios::cur);
+        return static_cast<bool>(stream);
+    };
+    if (!checked_section(table_domain, layout.table_offset) ||
+        !sorted_scratch_u64(stream, active_length) || active_length != query_logical ||
+        !checked_section(query_domain, layout.query_offset) ||
+        !sorted_scratch_u64(stream, active_length) || active_length != merge_logical ||
+        !checked_section(merge_domain, layout.merge_offset)) {
+        if (error) *error = "BLOCKED: sorted-lookup scratch record sections are truncated";
+        return false;
+    }
+    std::error_code size_error;
+    const auto file_size = std::filesystem::file_size(layout.path, size_error);
+    if (size_error || layout.merge_offset > file_size ||
+        merge_domain > (file_size - layout.merge_offset) /
+                            SortedLookupScratchLayout::kRecordBytes) {
+        if (error) *error = "BLOCKED: sorted-lookup scratch record coverage is invalid";
+        return false;
+    }
+    return true;
+}
+
+bool sorted_scratch_provider(const SortedLookupScratchLayout& layout,
+                             std::uint64_t section_offset, std::uint32_t domain,
+                             std::uint32_t field, relation::SegmentedTensorProvider& provider,
+                             std::string* error) {
+    const auto path = layout.path;
+    provider = relation::SegmentedTensorProvider(
+        domain, layout.segment_size,
+        [path, section_offset, field](std::uint64_t offset, std::uint32_t count,
+                                      std::vector<FrWire>& output, std::string* read_error) {
+            if (offset > std::numeric_limits<std::uint64_t>::max() /
+                              SortedLookupScratchLayout::kRecordBytes ||
+                count > (std::numeric_limits<std::uint64_t>::max() /
+                         SortedLookupScratchLayout::kRecordBytes) - offset) {
+                if (read_error) *read_error = "sorted-lookup scratch range overflow";
+                return false;
+            }
+            std::ifstream stream(path, std::ios::binary);
+            if (!stream) { if (read_error) *read_error = "cannot open sorted-lookup scratch"; return false; }
+            const std::uint64_t byte_offset = section_offset +
+                offset * SortedLookupScratchLayout::kRecordBytes;
+            const std::uint64_t byte_count = static_cast<std::uint64_t>(count) *
+                SortedLookupScratchLayout::kRecordBytes;
+            stream.seekg(static_cast<std::streamoff>(byte_offset), std::ios::beg);
+            std::vector<std::uint8_t> bytes(static_cast<std::size_t>(byte_count));
+            if (!bytes.empty() && !stream.read(reinterpret_cast<char*>(bytes.data()),
+                                               static_cast<std::streamsize>(bytes.size()))) {
+                if (read_error) *read_error = "cannot read sorted-lookup scratch range";
+                return false;
+            }
+            const auto read_u128 = [&](std::size_t base) {
+                unsigned __int128 value = 0U;
+                for (unsigned index = 0U; index < 16U; ++index)
+                    value |= static_cast<unsigned __int128>(bytes[base + index]) << (8U * index);
+                return relation::sorted_lookup_field_from_u128(value);
+            };
+            const auto read_field = [&](std::size_t base) {
+                FrWire value{};
+                for (unsigned index = 0U; index < value.size(); ++index)
+                    value[index] = static_cast<std::uint32_t>(bytes[base + 4U * index]) |
+                                   (static_cast<std::uint32_t>(bytes[base + 4U * index + 1U]) << 8U) |
+                                   (static_cast<std::uint32_t>(bytes[base + 4U * index + 2U]) << 16U) |
+                                   (static_cast<std::uint32_t>(bytes[base + 4U * index + 3U]) << 24U);
+                return value;
+            };
+            const auto read_u64 = [&](std::size_t base) {
+                std::uint64_t value = 0U;
+                for (unsigned index = 0U; index < 8U; ++index)
+                    value |= static_cast<std::uint64_t>(bytes[base + index]) << (8U * index);
+                return relation::sorted_lookup_field_from_u128(value);
+            };
+            output.resize(count);
+            for (std::uint32_t index = 0U; index < count; ++index) {
+                const std::size_t base = static_cast<std::size_t>(index) *
+                                         SortedLookupScratchLayout::kRecordBytes;
+                switch (field) {
+                    case 0U: output[index] = read_u128(base); break;          // key
+                    case 1U: output[index] = read_u128(base + 16U); break;    // delta
+                    case 2U: output[index] = read_field(base + 32U); break;   // inverse
+                    case 3U: output[index] = read_u128(base + 64U); break;    // x
+                    case 4U: output[index] = read_u128(base + 80U); break;    // y
+                    case 5U: output[index] = read_u64(base + 96U); break;     // prefix
+                    case 6U: output[index] = zkdl::fr_from_u32(bytes[base + 104U]); break;
+                    case 7U: output[index] = zkdl::fr_from_u32(bytes[base + 105U]); break;
+                    default: output[index] = zkdl::fr_from_u32(bytes[base + 106U]); break;
+                }
+            }
+            return true;
+        });
+    return provider.valid(error);
+}
+
+const OperationFamily* sorted_lookup_plan_operation(const RelationPlan& relation,
+                                                    const std::string& operation_id) {
+    const auto found = std::find_if(
+        relation.operation_families.begin(), relation.operation_families.end(),
+        [&](const OperationFamily& operation) { return operation.id == operation_id; });
+    return found == relation.operation_families.end() ? nullptr : &*found;
+}
+
+bool sorted_lookup_descriptor_from_plan(
+    const RelationPlan& relation, const PublicStatement& statement,
+    const relation::OperationDescriptor& operation,
+    const SortedLookupQueryPlan& query,
+    zkdl::AuthenticatedSortedLookupDescriptor& descriptor, std::string* error) {
+    if (statement.sorted_lookup_descriptor_digest != relation.sorted_lookup.descriptor_digest ||
+        statement.sorted_lookup_plan_digest != relation.sorted_lookup.plan_digest ||
+        statement.sorted_lookup_query_count != relation.sorted_lookup.queries.size() ||
+        relation.sorted_lookup.table_digest != statement.static_table_descriptor_digest ||
+        operation.id != query.operation_id ||
+        operation.batch_family != "authenticated_sorted_lookup" ||
+        operation.public_table_ref != query.table_ref) {
+        if (error) *error = "BLOCKED: sorted-lookup descriptor is not bound to RelationPlan/statement";
+        return false;
+    }
+    if (query.table_domain > std::numeric_limits<std::uint32_t>::max() ||
+        query.query_domain > std::numeric_limits<std::uint32_t>::max() ||
+        query.merge_domain > std::numeric_limits<std::uint32_t>::max() ||
+        query.table_logical_rows > std::numeric_limits<std::uint32_t>::max() ||
+        query.query_logical_rows > std::numeric_limits<std::uint32_t>::max() ||
+        query.merge_logical_rows > std::numeric_limits<std::uint32_t>::max() ||
+        query.segment_size > std::numeric_limits<std::uint32_t>::max() ||
+        query.x_bits + query.y_bits > 127U) {
+        if (error) *error = "BLOCKED: sorted-lookup descriptor exceeds native wire bounds";
+        return false;
+    }
+    std::array<zkdl::byte, 32U> table_digest{}, descriptor_digest{};
+    unsigned __int128 key_max = 0U;
+    if (!parse_digest(statement.static_table_digest, table_digest) ||
+        !parse_digest(query.layout_digest, descriptor_digest) ||
+        !sorted_lookup_parse_u128(query.key_max_u128, key_max, error)) {
+        if (error && error->empty()) *error = "BLOCKED: sorted-lookup descriptor digest/key bound is not canonical";
+        return false;
+    }
+    descriptor = zkdl::AuthenticatedSortedLookupDescriptor{};
+    descriptor.operation_id = query.operation_id;
+    descriptor.table_ref = query.table_ref;
+    descriptor.query_ref = query.query_ref;
+    descriptor.merge_ref = query.merge_ref;
+    descriptor.table_digest = table_digest;
+    descriptor.descriptor_digest = descriptor_digest;
+    descriptor.table_domain = static_cast<std::uint32_t>(query.table_domain);
+    descriptor.query_domain = static_cast<std::uint32_t>(query.query_domain);
+    descriptor.merge_domain = static_cast<std::uint32_t>(query.merge_domain);
+    descriptor.table_active_length = static_cast<std::uint32_t>(query.table_logical_rows);
+    descriptor.query_active_length = static_cast<std::uint32_t>(query.query_logical_rows);
+    descriptor.merge_active_length = static_cast<std::uint32_t>(query.merge_logical_rows);
+    descriptor.segment_size = static_cast<std::uint32_t>(query.segment_size);
+    descriptor.table_segment_count = static_cast<std::uint32_t>(query.table_segment_count);
+    descriptor.query_segment_count = static_cast<std::uint32_t>(query.query_segment_count);
+    descriptor.merge_segment_count = static_cast<std::uint32_t>(query.merge_segment_count);
+    descriptor.x_bits = query.x_bits;
+    descriptor.y_bits = query.y_bits;
+    descriptor.key_max = relation::sorted_lookup_field_from_u128(key_max);
+    descriptor.table_unique_rows = descriptor.table_active_length;
+    return descriptor.valid(error);
+}
+
+bool sorted_lookup_public_table_providers(
+    const StaticTables& tables, const OperationFamily& plan_operation,
+    const SortedLookupQueryPlan& query,
+    relation::SegmentedTensorProvider& table_keys,
+    relation::SegmentedTensorProvider& table_active, std::string* error) {
+    std::int64_t ignored_minimum = 0;
+    const auto& table = lookup_table(tables, plan_operation, ignored_minimum, error);
+    if (table.empty() || table.size() != query.table_logical_rows ||
+        query.table_domain == 0U || query.segment_size == 0U ||
+        query.table_domain % query.segment_size != 0U ||
+        query.segment_size > (1ULL << 18U)) {
+        if (error && error->empty()) *error = "BLOCKED: authenticated sorted-lookup table shape mismatch";
+        return false;
+    }
+    unsigned __int128 key_max = 0U;
+    if (!sorted_lookup_parse_u128(query.key_max_u128, key_max, error)) return false;
+    const std::int64_t output_min = *std::min_element(table.begin(), table.end());
+    const std::uint32_t key_bits = query.x_bits + query.y_bits;
+    std::vector<FrWire> keys(static_cast<std::size_t>(query.table_domain));
+    std::vector<FrWire> active(static_cast<std::size_t>(query.table_domain));
+    for (std::size_t row = 0U; row < table.size(); ++row) {
+        const __int128 difference = static_cast<__int128>(table[row]) -
+                                    static_cast<__int128>(output_min);
+        if (difference < 0 || query.x_bits == 0U || query.y_bits == 0U) {
+            if (error) *error = "BLOCKED: authenticated sorted-lookup table key is negative";
+            return false;
+        }
+        const unsigned __int128 y = static_cast<unsigned __int128>(difference);
+        const unsigned __int128 key =
+            (static_cast<unsigned __int128>(row) << query.y_bits) | y;
+        if (key > key_max || (key_bits < 128U && (key >> key_bits) != 0U)) {
+            if (error) *error = "BLOCKED: authenticated sorted-lookup table key exceeds descriptor bound";
+            return false;
+        }
+        keys[row] = relation::sorted_lookup_field_from_u128(key);
+        active[row] = zkdl::fr_from_u32(1U);
+        if (row != 0U && keys[row] <= keys[row - 1U]) {
+            if (error) *error = "BLOCKED: authenticated sorted-lookup table keys are not unique/sorted";
+            return false;
+        }
+    }
+    const auto owned_provider = [&](std::vector<FrWire> values,
+                                    relation::SegmentedTensorProvider& result) {
+        auto storage = std::make_shared<std::vector<FrWire>>(std::move(values));
+        result = relation::SegmentedTensorProvider(
+            static_cast<std::uint32_t>(storage->size()),
+            static_cast<std::uint32_t>(query.segment_size),
+            [storage](std::uint64_t offset, std::uint32_t count,
+                      std::vector<FrWire>& output, std::string* read_error) {
+                if (offset > storage->size() || count > storage->size() - offset) {
+                    if (read_error) *read_error = "sorted-lookup public table range is out of bounds";
+                    return false;
+                }
+                output.assign(storage->begin() + static_cast<std::ptrdiff_t>(offset),
+                              storage->begin() + static_cast<std::ptrdiff_t>(offset + count));
+                return true;
+            });
+        return result.valid(error);
+    };
+    return owned_provider(std::move(keys), table_keys) &&
+           owned_provider(std::move(active), table_active);
+}
+
+bool sorted_lookup_prover_providers(
+    const zkdl::AuthenticatedSortedLookupDescriptor& descriptor,
+    const SortedLookupScratchLayout& layout,
+    const relation::SegmentedTensorProvider& table_keys,
+    const relation::SegmentedTensorProvider& table_active,
+    relation::AuthenticatedSortedLookupProviderSet& providers, std::string* error) {
+    providers = relation::AuthenticatedSortedLookupProviderSet{};
+    providers.table_keys = table_keys;
+    providers.table_active = table_active;
+    const auto scratch = [&](std::uint64_t offset, std::uint32_t domain,
+                             std::uint32_t field, relation::SegmentedTensorProvider& result) {
+        return sorted_scratch_provider(layout, offset, domain, field, result, error);
+    };
+    if (!scratch(layout.query_offset, descriptor.query_domain, 0U, providers.query_keys) ||
+        !scratch(layout.query_offset, descriptor.query_domain, 3U, providers.query_x) ||
+        !scratch(layout.query_offset, descriptor.query_domain, 4U, providers.query_y) ||
+        !scratch(layout.query_offset, descriptor.query_domain, 5U, providers.query_prefix) ||
+        !scratch(layout.query_offset, descriptor.query_domain, 6U, providers.query_active) ||
+        !scratch(layout.merge_offset, descriptor.merge_domain, 0U, providers.merge_keys) ||
+        !scratch(layout.merge_offset, descriptor.merge_domain, 1U, providers.merge_delta) ||
+        !scratch(layout.merge_offset, descriptor.merge_domain, 2U, providers.merge_inverse) ||
+        !scratch(layout.merge_offset, descriptor.merge_domain, 5U, providers.merge_prefix) ||
+        !scratch(layout.merge_offset, descriptor.merge_domain, 6U, providers.merge_active) ||
+        !scratch(layout.merge_offset, descriptor.merge_domain, 7U, providers.merge_marker) ||
+        !relation::make_authenticated_sorted_lookup_shifted_key_provider(
+            providers.merge_keys, providers.merge_previous_key, error) ||
+        !relation::make_authenticated_sorted_lookup_nonzero_provider(
+            providers.merge_delta, providers.merge_nonzero, error) ||
+        !relation::make_authenticated_sorted_lookup_selector_provider(
+            descriptor.merge_domain, descriptor.segment_size, 0U, providers.merge_first, error) ||
+        !relation::make_authenticated_sorted_lookup_selector_provider(
+            descriptor.merge_domain, descriptor.segment_size,
+            descriptor.merge_active_length - 1U, providers.merge_last, error) ||
+        !relation::make_authenticated_sorted_lookup_selector_provider(
+            descriptor.query_domain, descriptor.segment_size, 0U, providers.query_first, error) ||
+        !relation::make_authenticated_sorted_lookup_selector_provider(
+            descriptor.query_domain, descriptor.segment_size,
+            descriptor.query_active_length - 1U, providers.query_last, error) ||
+        !relation::make_authenticated_sorted_lookup_constant_provider(
+            descriptor.query_domain, descriptor.segment_size, FrWire{},
+            providers.query_prefix_next, error) ||
+        !relation::make_authenticated_sorted_lookup_constant_provider(
+            descriptor.merge_domain, descriptor.segment_size, FrWire{},
+            providers.merge_prefix_next, error)) return false;
+    for (std::uint32_t bit = 0U; bit < descriptor.x_bits + descriptor.y_bits; ++bit) {
+        relation::SegmentedTensorProvider query_bit, merge_bit, delta_bit;
+        if (!relation::make_authenticated_sorted_lookup_bit_provider(
+                providers.query_keys, descriptor.x_bits + descriptor.y_bits, bit,
+                query_bit, error) ||
+            !relation::make_authenticated_sorted_lookup_bit_provider(
+                providers.merge_keys, descriptor.x_bits + descriptor.y_bits, bit,
+                merge_bit, error) ||
+            !relation::make_authenticated_sorted_lookup_bit_provider(
+                providers.merge_delta, descriptor.x_bits + descriptor.y_bits, bit,
+                delta_bit, error)) return false;
+        providers.query_bits.push_back(std::move(query_bit));
+        providers.merge_bits.push_back(std::move(merge_bit));
+        providers.merge_delta_bits.push_back(std::move(delta_bit));
+    }
+    return providers.valid(descriptor, error);
+}
+
+std::string sorted_lookup_join_roles(const std::vector<std::string>& roles) {
+    std::ostringstream joined;
+    for (std::size_t index = 0U; index < roles.size(); ++index) {
+        if (index != 0U) joined << ',';
+        joined << roles[index];
+    }
+    return joined.str();
+}
+
+bool sorted_lookup_build_prover_context(
+    const Config& config, const StaticTables& tables, const RelationPlan& plan,
+    const PublicStatement& statement, const NativeRelationWitness& witness,
+    relation::ProverContext& context, std::string* error) {
+    std::map<std::string, const relation::OperationDescriptor*> operations;
+    for (const auto& operation : context.operations)
+        if (operation.batch_family == "authenticated_sorted_lookup" &&
+            !operations.emplace(operation.id, &operation).second) {
+            if (error) *error = "BLOCKED: duplicate sorted-lookup operation in RelationPlan";
+            return false;
+        }
+    if (operations.size() != plan.sorted_lookup.queries.size() ||
+        witness.sorted_lookup_providers.size() != plan.sorted_lookup.queries.size()) {
+        if (error) *error = "BLOCKED: sorted-lookup operation/provider count does not match RelationPlan";
+        return false;
+    }
+    std::map<std::string, const NativeSortedLookupProviderInput*> supplied;
+    for (const auto& provider : witness.sorted_lookup_providers)
+        if (!supplied.emplace(provider.operation_id, &provider).second) {
+            if (error) *error = "BLOCKED: duplicate sorted-lookup provider operation id";
+            return false;
+        }
+    if (supplied.size() != plan.sorted_lookup.queries.size()) {
+        if (error) *error = "BLOCKED: sorted-lookup provider set contains an extra operation";
+        return false;
+    }
+    context.sorted_lookup_descriptors.clear();
+    context.sorted_lookup_providers.clear();
+    context.sorted_lookup_commitment_refs.clear();
+    context.sorted_lookup_outer_commitments.clear();
+    context.sorted_lookup_outer_blinders.clear();
+    context.sorted_lookup_commitment_ids.clear();
+    for (const auto& query : plan.sorted_lookup.queries) {
+        const auto operation_it = operations.find(query.operation_id);
+        const auto provider_it = supplied.find(query.operation_id);
+        if (operation_it == operations.end() || provider_it == supplied.end()) {
+            if (error) *error = "BLOCKED: sorted-lookup operation/provider is missing: " + query.operation_id;
+            return false;
+        }
+        const auto& input = *provider_it->second;
+        if (input.table_ref != query.table_ref || input.query_ref != query.query_ref ||
+            input.merge_ref != query.merge_ref || input.key_max_u128 != query.key_max_u128 ||
+            sorted_lookup_join_roles(input.commitment_roles) != query.commitment_role_map) {
+            if (error) *error = "BLOCKED: sorted-lookup provider metadata differs from RelationPlan: " + query.operation_id;
+            return false;
+        }
+        zkdl::AuthenticatedSortedLookupDescriptor descriptor;
+        if (!sorted_lookup_descriptor_from_plan(
+                plan, statement, *operation_it->second, query, descriptor, error)) return false;
+        SortedLookupScratchLayout layout;
+        if (!sorted_scratch_layout(config, input, layout, error) ||
+            layout.roles != query.commitment_role_map ||
+            layout.key_max_u128 != query.key_max_u128 ||
+            input.layout_digest != query.layout_digest) {
+            if (error && error->empty()) *error = "BLOCKED: sorted-lookup scratch layout is not plan-bound";
+            return false;
+        }
+        std::array<zkdl::byte, 32U> expected_scratch{}, actual_scratch{};
+        if (!parse_digest(input.scratch_digest, expected_scratch) ||
+            !streaming_file_digest(layout.path, actual_scratch, error) ||
+            expected_scratch != actual_scratch) {
+            if (error && error->empty()) *error = "BLOCKED: sorted-lookup scratch digest mismatch";
+            return false;
+        }
+        relation::SegmentedTensorProvider table_keys, table_active;
+        const auto plan_operation = sorted_lookup_plan_operation(plan, query.operation_id);
+        if (plan_operation == nullptr ||
+            !sorted_lookup_public_table_providers(
+                tables, *plan_operation, query, table_keys, table_active, error)) return false;
+        relation::AuthenticatedSortedLookupProviderSet providers;
+        if (!sorted_lookup_prover_providers(
+                descriptor, layout, table_keys, table_active, providers, error)) return false;
+
+        std::vector<zkdl::AuthenticatedSortedLookupCommitmentRef> refs;
+        std::vector<zkdl::CpuG1Point> outer;
+        std::vector<FrWire> blinders;
+        const auto add_outer = [&](std::uint32_t role, std::uint32_t column,
+                                   const std::string& name,
+                                   const relation::SegmentedTensorProvider& provider) {
+            FrWire blinder = zkdl::cpu_fresh_csprng_scalar();
+            while (blinder == FrWire{}) blinder = zkdl::cpu_fresh_csprng_scalar();
+            const zkdl::CpuG1Point commitment = relation::zktr_segmented_commitment(
+                provider, context.ipa_generators, context.ipa_blinding_generator,
+                blinder, error);
+            if (commitment.is_zero()) return false;
+            zkdl::AuthenticatedSortedLookupCommitmentRef ref;
+            ref.role = role;
+            ref.column_index = column;
+            ref.logical_domain = provider.logical_domain();
+            ref.segment_size = provider.segment_size();
+            ref.segment_count = provider.segment_count();
+            refs.push_back(ref);
+            outer.push_back(commitment);
+            blinders.push_back(blinder);
+            context.sorted_lookup_commitment_ids.push_back(
+                "sorted_lookup/" + query.operation_id + "/" + name);
+            return true;
+        };
+        if (!add_outer(zkdl::kSortedLookupCommitmentQueryX, 0U, "query_x", providers.query_x) ||
+            !add_outer(zkdl::kSortedLookupCommitmentQueryY, 0U, "query_y", providers.query_y) ||
+            !add_outer(zkdl::kSortedLookupCommitmentQueryKey, 0U, "query_key", providers.query_keys) ||
+            !add_outer(zkdl::kSortedLookupCommitmentQueryPrefix, 0U, "query_prefix", providers.query_prefix) ||
+            !add_outer(zkdl::kSortedLookupCommitmentMergeKey, 0U, "merge_key", providers.merge_keys) ||
+            !add_outer(zkdl::kSortedLookupCommitmentMergeDelta, 0U, "merge_delta", providers.merge_delta) ||
+            !add_outer(zkdl::kSortedLookupCommitmentMergeMarker, 0U, "merge_marker", providers.merge_marker) ||
+            !add_outer(zkdl::kSortedLookupCommitmentMergeInverse, 0U, "merge_inverse", providers.merge_inverse) ||
+            !add_outer(zkdl::kSortedLookupCommitmentMergePrefix, 0U, "merge_prefix", providers.merge_prefix)) {
+            if (error && error->empty()) *error = "BLOCKED: sorted-lookup outer commitment construction failed";
+            return false;
+        }
+        for (std::uint32_t bit = 0U; bit < descriptor.x_bits + descriptor.y_bits; ++bit)
+            if (!add_outer(zkdl::kSortedLookupCommitmentMergeBit, bit,
+                           "merge_bit_" + std::to_string(bit), providers.merge_bits[bit])) {
+                if (error && error->empty()) *error = "BLOCKED: sorted-lookup merge-bit commitment construction failed";
+                return false;
+            }
+        context.sorted_lookup_descriptors.push_back(descriptor);
+        context.sorted_lookup_providers.push_back(std::move(providers));
+        context.sorted_lookup_commitment_refs.push_back(std::move(refs));
+        context.sorted_lookup_outer_commitments.push_back(std::move(outer));
+        context.sorted_lookup_outer_blinders.push_back(std::move(blinders));
+    }
+    return true;
+}
+
+bool sorted_lookup_build_verifier_context(
+    const StaticTables& tables, const RelationPlan& plan,
+    const PublicStatement& statement, const std::vector<relation::OperationDescriptor>& operations,
+    relation::VerifierContext& context, std::string* error) {
+    std::map<std::string, const relation::OperationDescriptor*> sorted_operations;
+    for (const auto& operation : operations)
+        if (operation.batch_family == "authenticated_sorted_lookup" &&
+            !sorted_operations.emplace(operation.id, &operation).second) {
+            if (error) *error = "BLOCKED: duplicate sorted-lookup operation in verifier plan";
+            return false;
+        }
+    if (sorted_operations.size() != plan.sorted_lookup.queries.size()) {
+        if (error) *error = "BLOCKED: verifier sorted-lookup operation count does not match RelationPlan";
+        return false;
+    }
+    context.sorted_lookup_descriptors.clear();
+    context.sorted_lookup_table_keys.clear();
+    context.sorted_lookup_table_active.clear();
+    context.sorted_lookup_commitment_refs.clear();
+    context.sorted_lookup_outer_commitments.clear();
+    context.sorted_lookup_commitment_ids.clear();
+    for (const auto& query : plan.sorted_lookup.queries) {
+        const auto operation_it = sorted_operations.find(query.operation_id);
+        const auto plan_operation = sorted_lookup_plan_operation(plan, query.operation_id);
+        if (operation_it == sorted_operations.end() || plan_operation == nullptr) {
+            if (error) *error = "BLOCKED: verifier sorted-lookup operation is missing: " + query.operation_id;
+            return false;
+        }
+        zkdl::AuthenticatedSortedLookupDescriptor descriptor;
+        if (!sorted_lookup_descriptor_from_plan(
+                plan, statement, *operation_it->second, query, descriptor, error)) return false;
+        relation::SegmentedTensorProvider table_keys, table_active;
+        if (!sorted_lookup_public_table_providers(
+                tables, *plan_operation, query, table_keys, table_active, error)) return false;
+        context.sorted_lookup_descriptors.push_back(std::move(descriptor));
+        context.sorted_lookup_table_keys.push_back(std::move(table_keys));
+        context.sorted_lookup_table_active.push_back(std::move(table_active));
+        const auto add_id = [&](const std::string& name) {
+            context.sorted_lookup_commitment_ids.push_back(
+                "sorted_lookup/" + query.operation_id + "/" + name);
+        };
+        add_id("query_x"); add_id("query_y"); add_id("query_key"); add_id("query_prefix");
+        add_id("merge_key"); add_id("merge_delta"); add_id("merge_marker");
+        add_id("merge_inverse"); add_id("merge_prefix");
+        for (std::uint32_t bit = 0U; bit < query.x_bits + query.y_bits; ++bit)
+            add_id("merge_bit_" + std::to_string(bit));
+    }
+    return true;
+}
+
 // Decode the proof-stack-independent bridge payload exactly once at the
 // native-core boundary.  The runner and bridge never carry C++ proof objects;
 // all operation, commitment, hiding-record, generator, and field payloads are
@@ -2660,6 +3176,18 @@ bool decode_native_witness(const NativeRelationWitnessInput& input,
             return false;
         }
         output.operations.push_back(std::move(operation));
+    }
+    output.sorted_lookup_providers = input.sorted_lookup_providers;
+    for (const auto& provider : output.sorted_lookup_providers) {
+        if (provider.operation_id.empty() || provider.scratch_path.empty() ||
+            provider.scratch_digest.empty() || provider.layout_digest.empty() ||
+            provider.segment_size == 0U || provider.table_domain == 0U ||
+            provider.query_domain == 0U || provider.merge_domain == 0U ||
+            provider.commitment_roles.empty() || !provider.owner_only ||
+            !provider.active_prefix || !provider.canonical_padding) {
+            if (error) *error = "BLOCKED: native sorted-lookup provider metadata is incomplete";
+            return false;
+        }
     }
     output.registered_model_commitments.reserve(input.registered_model_commitments.size());
     for (const auto& supplied : input.registered_model_commitments) {
@@ -2801,6 +3329,9 @@ bool context_from_request(const NativeProveRequest& request,
     context.ipa_generators = witness.ipa_generators;
     context.ipa_blinding_generator = witness.ipa_blinding_generator;
     context.ipa_u_generator = witness.ipa_u_generator;
+    if (!sorted_lookup_build_prover_context(
+            *request.config, *request.tables, *request.relation, *request.statement,
+            witness, context, error)) return false;
     context.registered_model_commitments = witness.registered_model_commitments;
     context.hiding_commitment_records = witness.hiding_commitment_records;
     context.blinding_scalars = witness.blinding_scalars;
@@ -2980,6 +3511,13 @@ bool context_from_verify(const NativeVerifyRequest& request,
     context.ipa_generators = supplied.ipa_generators;
     context.ipa_blinding_generator = supplied.ipa_blinding_generator;
     context.ipa_u_generator = supplied.ipa_u_generator;
+    if (!supplied.sorted_lookup_providers.empty()) {
+        if (error) *error = "BLOCKED: independent verifier context carries private sorted-lookup scratch";
+        return false;
+    }
+    if (!sorted_lookup_build_verifier_context(
+            *request.tables, *request.relation, *request.statement,
+            context.operations, context, error)) return false;
     context.registered_model_commitments = supplied.registered_model_commitments;
     context.hiding_commitment_records = supplied.hiding_commitment_records;
     for (const auto& tensor : supplied.tensors)

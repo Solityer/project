@@ -1567,6 +1567,26 @@ StaticTables load_static_table_descriptor(const Config& config) {
     tables.elu = json_i64_array(text, "elu");
     tables.exp = json_i64_array(text, "exp");
     tables.descriptor_digest = authenticated_asset_digest(config, config.static_table_descriptor_path);
+    require_authentication_file(config, config.sorted_lookup_descriptor_path,
+                                "sorted lookup descriptor");
+    const auto lookup_text = file_text(config.sorted_lookup_descriptor_path);
+    if (json_scalar(lookup_text, "schema") != "zkDL_gat_sorted_lookup_descriptor_v1" ||
+        json_u64_value(lookup_text, "version") != 1U ||
+        json_scalar(lookup_text, "key_encoding") != "packed_pair_u128" ||
+        json_scalar(lookup_text, "source_root") != "baseline-local") {
+        fail("sorted lookup descriptor schema/encoding identity mismatch");
+    }
+    if (lookup_text.find("/chi/") != std::string::npos ||
+        lookup_text.find("expanded-chi") != std::string::npos) {
+        fail("BLOCKED: sorted lookup descriptor retains a legacy expanded-chi dependency");
+    }
+    if (json_scalar(lookup_text, "static_table_digest") != tables.descriptor_digest) {
+        fail("sorted lookup descriptor is not bound to the authenticated static table file");
+    }
+    tables.sorted_lookup_descriptor = std::filesystem::relative(
+        config.sorted_lookup_descriptor_path, config.baseline_root).generic_string();
+    tables.sorted_lookup_descriptor_digest = authenticated_asset_digest(
+        config, config.sorted_lookup_descriptor_path);
     tables.authenticated = true;
     validate_static_tables(config, &tables);
     return tables;
@@ -1932,6 +1952,8 @@ AssetManifest load_asset_manifest(const Config& config) {
     result.scale_chain_digest = json_string_field(manifest, "scale_chain_digest");
     result.static_table_descriptor = json_string_field(manifest, "static_table_descriptor");
     result.static_table_descriptor_digest = json_string_field(manifest, "static_table_descriptor_digest");
+    result.sorted_lookup_descriptor = json_string_field(manifest, "sorted_lookup_descriptor");
+    result.sorted_lookup_descriptor_digest = json_string_field(manifest, "sorted_lookup_descriptor_digest");
     result.integer_bound_ledger = json_string_field(manifest, "integer_bound_ledger");
     result.integer_bound_ledger_descriptor_digest = json_string_field(manifest, "integer_bound_ledger_descriptor_digest");
     result.srs_path = json_string_field_or(manifest, "srs_path", "UNAVAILABLE");
@@ -1943,10 +1965,13 @@ AssetManifest load_asset_manifest(const Config& config) {
     result.model_blinder_sidecar_digest = json_string_field_or(
         manifest, "model_blinder_sidecar_digest", "UNAVAILABLE");
     if (!is_digest(result.scale_chain_digest) || !is_digest(result.static_table_descriptor_digest) ||
+        !is_digest(result.sorted_lookup_descriptor_digest) ||
         !is_digest(result.integer_bound_ledger_descriptor_digest) ||
         result.scale_chain_digest != config.scale_chain_digest ||
         result.static_table_descriptor != std::filesystem::relative(
             config.static_table_descriptor_path, config.baseline_root).generic_string() ||
+        result.sorted_lookup_descriptor != std::filesystem::relative(
+            config.sorted_lookup_descriptor_path, config.baseline_root).generic_string() ||
         result.integer_bound_ledger != std::filesystem::relative(
             config.integer_bound_ledger_path, config.baseline_root).generic_string()) {
         fail("asset manifest relation-resource identity mismatch");
@@ -2016,12 +2041,14 @@ AssetManifest load_asset_manifest(const Config& config) {
     require_entry((std::filesystem::relative(config.checkpoint_bundle, config.baseline_root) / "tensors.npz").generic_string());
     require_entry((std::filesystem::relative(config.cache_root / config.dataset, config.baseline_root) / "meta.cfg").generic_string());
     require_entry(std::filesystem::relative(config.static_table_descriptor_path, config.baseline_root).generic_string());
+    require_entry(std::filesystem::relative(config.sorted_lookup_descriptor_path, config.baseline_root).generic_string());
     require_entry(std::filesystem::relative(config.integer_bound_ledger_path, config.baseline_root).generic_string());
     const auto manifest_digest_for = [&](const std::string& relative) -> const std::string& {
         for (const auto& file : result.files) if (file.path == relative) return file.sha256;
         fail("asset manifest relation resource entry is missing: " + relative);
     };
     if (manifest_digest_for(result.static_table_descriptor) != result.static_table_descriptor_digest ||
+        manifest_digest_for(result.sorted_lookup_descriptor) != result.sorted_lookup_descriptor_digest ||
         manifest_digest_for(result.integer_bound_ledger) != result.integer_bound_ledger_descriptor_digest ||
         manifest_digest_for("configs/quantization_scale_chain.cfg") != result.scale_chain_digest) {
         fail("asset manifest relation-resource digest mismatch");
@@ -2053,7 +2080,7 @@ Config load_config(const std::filesystem::path& path) {
         "model_registry_path", "model_blinder_sidecar_path", "model_blinder_sidecar_digest",
         "privacy_policy", "input_privacy",
         "output_mode", "opening_mode", "binding_mode", "proof_task", "security_profile_id", "verifier_registry_digest",
-        "static_table_descriptor", "integer_bound_ledger"
+        "static_table_descriptor", "sorted_lookup_descriptor", "integer_bound_ledger"
     };
     for (const auto& item : values) {
         if (!canonical_keys.count(item.first)) fail("unknown non-canonical configuration key: " + item.first);
@@ -2073,6 +2100,8 @@ Config load_config(const std::filesystem::path& path) {
     config.asset_manifest_path = config.run_root / "asset_manifest.json";
     config.static_table_descriptor_path = local_path(
         config.baseline_root, required("static_table_descriptor"), "static_table_descriptor");
+    config.sorted_lookup_descriptor_path = local_path(
+        config.baseline_root, required("sorted_lookup_descriptor"), "sorted_lookup_descriptor");
     config.integer_bound_ledger_path = local_path(
         config.baseline_root, required("integer_bound_ledger"), "integer_bound_ledger");
     config.model_arch_id = required("model_arch_id"); config.model_param_id = required("model_param_id");
@@ -2540,6 +2569,111 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
         }
         return padded;
     };
+    plan.sorted_lookup.schema = "authenticated_sorted_lookup_plan_v1";
+    plan.sorted_lookup.version = 1U;
+    plan.sorted_lookup.descriptor_path = tables.sorted_lookup_descriptor;
+    plan.sorted_lookup.descriptor_digest = tables.sorted_lookup_descriptor_digest;
+    plan.sorted_lookup.table_digest = tables.descriptor_digest;
+    plan.sorted_lookup.segment_size = 1ULL << 18U;
+    const auto u128_decimal = [](unsigned __int128 value) {
+        if (value == 0U) return std::string("0");
+        std::string result;
+        while (value != 0U) {
+            result.push_back(static_cast<char>('0' + static_cast<unsigned>(value % 10U)));
+            value /= 10U;
+        }
+        std::reverse(result.begin(), result.end());
+        return result;
+    };
+    const auto bit_width = [](u64 value) -> std::uint32_t {
+        std::uint32_t width = 0U;
+        do { ++width; value >>= 1U; } while (value != 0U);
+        return width;
+    };
+    const auto shape_product = [](const std::vector<u64>& shape, const std::string& label) {
+        u64 product = 1U;
+        for (const auto dimension : shape) {
+            if (dimension == 0U || product > std::numeric_limits<u64>::max() / dimension)
+                fail("sorted lookup query shape overflow: " + label);
+            product *= dimension;
+        }
+        return product;
+    };
+    const auto add_sorted_lookup_query = [&](const std::string& operation,
+                                              const std::string& table_ref,
+                                              const std::vector<i64>& table_values,
+                                              i64 table_input_min,
+                                              u64 query_rows) {
+        if (table_values.empty() || query_rows == 0U) fail("sorted lookup has empty logical domain: " + operation);
+        const auto table_min = *std::min_element(table_values.begin(), table_values.end());
+        const auto table_max = *std::max_element(table_values.begin(), table_values.end());
+        const u64 x_range = static_cast<u64>(table_values.size() - 1U);
+        const u64 y_range = static_cast<u64>(table_max - table_min);
+        const std::uint32_t x_bits = bit_width(x_range);
+        const std::uint32_t y_bits = bit_width(y_range);
+        if (x_bits + y_bits > 127U) fail("sorted lookup packed key exceeds u128 bound: " + operation);
+        const unsigned __int128 key_max =
+            (static_cast<unsigned __int128>(x_range) << y_bits) | y_range;
+        SortedLookupQueryPlan query;
+        query.operation_id = operation;
+        query.table_ref = table_ref;
+        query.query_ref = operation + "/query";
+        query.query_x_ref = operation + "/query/x";
+        query.query_y_ref = operation + "/query/y";
+        query.query_key_ref = operation + "/query/key";
+        query.merge_ref = operation + "/merge";
+        query.merge_key_ref = operation + "/merge/key";
+        query.merge_delta_ref = operation + "/merge/delta";
+        query.merge_marker_ref = operation + "/merge/marker";
+        query.merge_inverse_ref = operation + "/merge/inverse";
+        query.merge_prefix_ref = operation + "/merge/prefix";
+        query.query_prefix_ref = operation + "/query/prefix";
+        query.commitment_role_map =
+            "table_key,query_x,query_y,query_key,query_prefix,merge_key,merge_delta,"
+            "merge_marker,merge_inverse,merge_prefix,merge_bits,merge_delta_bits,query_bits";
+        query.table_logical_rows = table_values.size();
+        query.table_domain = power_of_two(query.table_logical_rows);
+        query.query_logical_rows = query_rows;
+        query.query_domain = power_of_two(query_rows);
+        query.merge_logical_rows = query.table_logical_rows + query.query_logical_rows;
+        if (query.merge_logical_rows < query.table_logical_rows)
+            fail("sorted lookup merge logical domain overflow: " + operation);
+        query.merge_domain = power_of_two(query.merge_logical_rows);
+        query.segment_size = std::min<u64>(1ULL << 18U,
+            std::min({query.table_domain, query.query_domain, query.merge_domain}));
+        if (query.segment_size == 0U || query.table_domain % query.segment_size != 0U ||
+            query.query_domain % query.segment_size != 0U || query.merge_domain % query.segment_size != 0U)
+            fail("sorted lookup segment layout is not power-of-two aligned: " + operation);
+        query.table_segment_count = query.table_domain / query.segment_size;
+        query.query_segment_count = query.query_domain / query.segment_size;
+        query.merge_segment_count = query.merge_domain / query.segment_size;
+        if (query.table_domain > std::numeric_limits<u64>::max() - query.query_domain)
+            fail("sorted lookup domain capacity overflow: " + operation);
+        const u64 total_domains = query.table_domain + query.query_domain;
+        if (total_domains > std::numeric_limits<u64>::max() - query.merge_domain)
+            fail("sorted lookup domain capacity overflow: " + operation);
+        const u64 all_domains = total_domains + query.merge_domain;
+        // The relation uses fixed-size scratch records (key, delta, inverse,
+        // coordinates, prefix, and active/marker/source flags).  Check the
+        // complete bounded working set before a provider is admitted rather
+        // than multiplying the logical table domain by a host-side chi tree.
+        constexpr u64 kScratchRecordBytes = 107U;
+        if (all_domains >
+            std::numeric_limits<u64>::max() / kScratchRecordBytes)
+            fail("sorted lookup scratch capacity overflow: " + operation);
+        query.x_bits = x_bits;
+        query.y_bits = y_bits;
+        query.key_max_u128 = u128_decimal(key_max);
+        std::ostringstream layout;
+        layout << operation << '|' << table_ref << '|' << table_input_min << '|'
+               << query.table_logical_rows << '|' << query.table_domain << '|'
+               << query.query_logical_rows << '|' << query.query_domain << '|'
+               << query.merge_logical_rows << '|' << query.merge_domain << '|'
+               << query.segment_size << '|' << query.x_bits << '|' << query.y_bits << '|'
+               << query.key_max_u128 << '|' << query.commitment_role_map;
+        query.layout_digest = sha256_text(layout.str());
+        plan.sorted_lookup.queries.push_back(std::move(query));
+    };
     std::set<std::string> tensor_ids;
     std::set<std::string> operation_ids;
     const auto stage_order = [](u64 layer, u64 head) {
@@ -2794,22 +2928,21 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
                 append_view(operation + "/view/range/" + std::string(value) + "/" + std::to_string(bit),
                             shape, "signed_round_div:range:" + std::string(value), "node");
     };
-    const auto append_table_views = [&](const std::string& operation, bool edge_domain,
-                                        u64 feature_width, std::size_t table_size) {
+    const auto append_table_views = [&](const std::string& operation,
+                                        const std::string& table_ref,
+                                        bool edge_domain, u64 feature_width,
+                                        const std::vector<i64>& table_values,
+                                        i64 table_input_min) {
         const auto shape = edge_domain ? edge_shape(feature_width) : node_shape(feature_width);
+        add_sorted_lookup_query(operation, table_ref, table_values, table_input_min,
+                                shape_product(shape, operation + ".query"));
         append_view(operation + "/view/query", shape, "indexed_public_table:query", "lookup");
         append_view(operation + "/view/index", shape, "indexed_public_table:index", "lookup");
         append_view(operation + "/view/output0", shape, "indexed_public_table:output", "lookup");
-        const u64 depth = table_depth(table_size);
+        const u64 depth = table_depth(table_values.size());
         for (u64 bit = 0U; bit < depth; ++bit)
             append_view(operation + "/view/bit/" + std::to_string(bit), shape,
                         "indexed_public_table:bit", "lookup");
-        for (u64 level = 0U; level <= depth; ++level) {
-            const u64 level_width = 1ULL << level;
-            for (u64 node = 0U; node < level_width; ++node)
-                append_view(operation + "/view/chi/" + std::to_string(level) + "/" + std::to_string(node),
-                            shape, "indexed_public_table:chi", "lookup");
-        }
     };
     const auto append_stage_views = [&](const std::string& stage, u64 width, bool output) {
         const auto edge = edge_shape();
@@ -2860,10 +2993,10 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
 
         append_round_views(stage + "/signed_round_div", width);
         const std::string table_lrelu = stage + "/leaky_relu";
-        append_table_views(table_lrelu, true, 1U, tables.lrelu.size());
+        append_table_views(table_lrelu, "static_lrelu", true, 1U, tables.lrelu, tables.lrelu_min);
         const std::string table_exp = stage + "/exp_map";
-        append_table_views(table_exp, true, 1U, tables.exp.size());
-        if (!output) append_table_views(stage + "/elu", false, width, tables.elu.size());
+        append_table_views(table_exp, "static_exp", true, 1U, tables.exp, 0);
+        if (!output) append_table_views(stage + "/elu", "static_elu", false, width, tables.elu, tables.elu_min);
         if (output) {
             append_round_views(stage + "/output_scale_alignment", width);
             const std::string bias = stage + "/output_bias";
@@ -2891,12 +3024,44 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
         stream << values.size() << ':';
         for (const auto& value : values) stream << value.size() << ':' << value << ';';
     };
+    std::ostringstream sorted_lookup;
+    sorted_lookup << "schema=" << plan.sorted_lookup.schema << "\nversion="
+                  << plan.sorted_lookup.version << "\ndescriptor_path="
+                  << plan.sorted_lookup.descriptor_path << "\ndescriptor_digest="
+                  << plan.sorted_lookup.descriptor_digest << "\ntable_digest="
+                  << plan.sorted_lookup.table_digest << "\nkey_encoding="
+                  << plan.sorted_lookup.key_encoding << "\nactive_mask_rule="
+                  << plan.sorted_lookup.active_mask_rule << "\nsorted_delta_rule="
+                  << plan.sorted_lookup.sorted_delta_rule << "\nmarker_rule="
+                  << plan.sorted_lookup.marker_rule << "\ninverse_rule="
+                  << plan.sorted_lookup.inverse_rule << "\nsegment_size="
+                  << plan.sorted_lookup.segment_size << "\n";
+    for (const auto& query : plan.sorted_lookup.queries) {
+        sorted_lookup << "Q|" << query.operation_id << '|' << query.table_ref << '|'
+                      << query.query_ref << '|' << query.query_x_ref << '|' << query.query_y_ref
+                      << '|' << query.query_key_ref << '|' << query.merge_ref << '|'
+                      << query.merge_key_ref << '|' << query.merge_delta_ref << '|'
+                      << query.merge_marker_ref << '|' << query.merge_inverse_ref << '|'
+                      << query.merge_prefix_ref << '|' << query.query_prefix_ref << '|'
+                      << query.commitment_role_map << '|' << query.table_logical_rows << '|'
+                      << query.table_domain << '|' << query.query_logical_rows << '|'
+                      << query.query_domain << '|' << query.merge_logical_rows << '|'
+                      << query.merge_domain << '|' << query.segment_size << '|'
+                      << query.table_segment_count << '|' << query.query_segment_count << '|'
+                      << query.merge_segment_count << '|' << query.x_bits << '|'
+                      << query.y_bits << '|' << query.key_max_u128 << '|'
+                      << query.layout_digest << '\n';
+    }
+    sorted_lookup << "config_digest=" << config.config_digest << "\nconfig_binding_digest="
+                  << config.config_binding_digest << "\n";
+    plan.sorted_lookup.plan_digest = sha256_text(sorted_lookup.str());
     std::ostringstream registry;
     registry << "schema=" << plan.schema_id << "\nproof_scope=" << plan.proof_scope << "\nbinding=" << plan.binding_rule << "\n"
              << "static_table_descriptor_digest=" << plan.static_table_descriptor_digest << "\n"
              << "scale_chain_digest=" << plan.scale_chain_digest << "\n"
              << "integer_bound_ledger_digest=" << plan.integer_bound_ledger_digest << "\n"
-             << "integer_bound_ledger_descriptor_digest=" << plan.integer_bound_ledger_descriptor_digest << "\n";
+             << "integer_bound_ledger_descriptor_digest=" << plan.integer_bound_ledger_descriptor_digest << "\n"
+             << "sorted_lookup_plan_digest=" << plan.sorted_lookup.plan_digest << "\n";
     for (const auto& family : plan.tensor_families) {
         registry << "T|" << family.id << '|' << family.visibility << '|' << family.mle_order << '|' << family.stack_axis << '|';
         append_list(registry, family.instances);
@@ -2934,7 +3099,19 @@ RelationPlan build_relation_plan(const Config& config, const Graph& graph, const
     plan.mapping_digest = sha256_text(mappings.str());
     plan.selector_digest = sha256_text(selectors.str());
     plan.degree_digest = sha256_text(degrees.str());
-    plan.schema_digest = sha256_text(plan.schema_id + "\n" + plan.proof_scope + "\n" + plan.binding_rule + "\n");
+    claims << "sorted_lookup=" << plan.sorted_lookup.plan_digest << '\n';
+    mappings << "sorted_lookup=" << plan.sorted_lookup.descriptor_digest << '|' << plan.sorted_lookup.table_digest << '\n';
+    selectors << "sorted_lookup=" << plan.sorted_lookup.key_encoding << '|' << plan.sorted_lookup.active_mask_rule
+              << '|' << plan.sorted_lookup.sorted_delta_rule << '|' << plan.sorted_lookup.marker_rule
+              << '|' << plan.sorted_lookup.inverse_rule << '|' << plan.sorted_lookup.plan_digest << '\n';
+    degrees << "sorted_lookup=" << plan.sorted_lookup.segment_size << '\n';
+    plan.terminal_claims_digest = sha256_text(claims.str());
+    plan.mapping_digest = sha256_text(mappings.str());
+    plan.selector_digest = sha256_text(selectors.str());
+    plan.degree_digest = sha256_text(degrees.str());
+    plan.schema_digest = sha256_text(plan.schema_id + "\n" + plan.proof_scope + "\n" + plan.binding_rule + "\n" +
+                                    plan.sorted_lookup.plan_digest + "\n" + config.config_digest + "\n" +
+                                    config.config_binding_digest + "\n");
     return plan;
 }
 
@@ -2953,14 +3130,48 @@ bool relation_plan_complete(const RelationPlan& relation, std::string* error) {
                                relation.static_table_descriptor_digest,
                                relation.scale_chain_digest,
                                relation.integer_bound_ledger_digest,
-                               relation.integer_bound_ledger_descriptor_digest}) {
+                               relation.integer_bound_ledger_descriptor_digest,
+                               relation.sorted_lookup.descriptor_digest,
+                               relation.sorted_lookup.table_digest,
+                               relation.sorted_lookup.plan_digest}) {
         if (!is_digest(digest)) return reject("relation plan digest is not a canonical SHA-256");
+    }
+    if (relation.sorted_lookup.schema != "authenticated_sorted_lookup_plan_v1" ||
+        relation.sorted_lookup.version != 1U || relation.sorted_lookup.descriptor_path.empty() ||
+        relation.sorted_lookup.key_encoding != "packed_pair_u128" ||
+        relation.sorted_lookup.active_mask_rule != "prefix_one_then_zero_v1" ||
+        relation.sorted_lookup.sorted_delta_rule != "nonnegative_bounded_delta_v1" ||
+        relation.sorted_lookup.marker_rule != "group_first_v1" ||
+        relation.sorted_lookup.inverse_rule != "delta_inverse_or_zero_v1" ||
+        relation.sorted_lookup.segment_size == 0U ||
+        relation.sorted_lookup.segment_size > (1ULL << 18U) ||
+        relation.sorted_lookup.queries.empty()) {
+        return reject("relation plan sorted-lookup descriptor/layout is not canonical");
+    }
+    for (const auto& query : relation.sorted_lookup.queries) {
+        if (query.operation_id.empty() || query.table_ref.empty() || query.query_ref.empty() ||
+            query.merge_ref.empty() || query.commitment_role_map.empty() ||
+            query.table_logical_rows == 0U || query.query_logical_rows == 0U ||
+            query.merge_logical_rows != query.table_logical_rows + query.query_logical_rows ||
+            query.table_domain == 0U || query.query_domain == 0U || query.merge_domain == 0U ||
+            query.segment_size == 0U || query.segment_size > relation.sorted_lookup.segment_size ||
+            query.table_domain % query.segment_size != 0U ||
+            query.query_domain % query.segment_size != 0U ||
+            query.merge_domain % query.segment_size != 0U ||
+            query.table_segment_count != query.table_domain / query.segment_size ||
+            query.query_segment_count != query.query_domain / query.segment_size ||
+            query.merge_segment_count != query.merge_domain / query.segment_size ||
+            query.x_bits == 0U || query.y_bits == 0U || query.x_bits + query.y_bits > 127U ||
+            query.key_max_u128.empty() || !is_digest(query.layout_digest)) {
+            return reject("relation plan sorted-lookup query layout is invalid: " + query.operation_id);
+        }
     }
     if (!relation.integer_bound_ledger.authenticated ||
         relation.integer_bound_ledger.digest != relation.integer_bound_ledger_digest ||
         relation.integer_bound_ledger.descriptor_digest != relation.integer_bound_ledger_descriptor_digest ||
         relation.integer_bound_ledger.static_table_descriptor_digest != relation.static_table_descriptor_digest ||
-        relation.scale_chain_digest != relation.integer_bound_ledger.scale_chain_digest) {
+        relation.scale_chain_digest != relation.integer_bound_ledger.scale_chain_digest ||
+        relation.sorted_lookup.table_digest != relation.static_table_descriptor_digest) {
         return reject("relation plan integer-bound ledger identity is not authenticated");
     }
     std::set<std::string> tensor_ids;
@@ -3441,6 +3652,7 @@ NativeRelationWitnessInput build_native_relation_witness(
             fail("duplicate canonical witness family: " + family.id);
     }
     std::map<std::string, std::vector<NativeFrWire>> logical;
+    std::vector<NativeSortedLookupProviderInput> sorted_lookup_providers;
     const auto family_for = [&](const std::string& id) -> const TensorFamily& {
         const auto found = families.find(id);
         if (found == families.end()) fail("canonical witness family is not in RelationPlan: " + id);
@@ -3560,6 +3772,213 @@ NativeRelationWitnessInput build_native_relation_witness(
             offsets.push_back(checked_i128(static_cast<__int128>(value) - minimum, label + ".offset"));
         }
         return bits_for(offsets, width, label + ".bits");
+    };
+
+    // Build one bounded, owner-only Q/T/S scratch stream per lookup operation.
+    // The map is keyed by the packed u128 key and is used only while emitting
+    // the sorted merge; no chi tree or logical-domain chi vector is created.
+    const auto write_sorted_lookup_provider = [&](const std::string& operation,
+                                                   const std::vector<i64>& query,
+                                                   i64 input_min,
+                                                   const std::vector<i64>& output_values,
+                                                   const std::vector<i64>& table) {
+        const auto plan_query = std::find_if(
+            plan.sorted_lookup.queries.begin(), plan.sorted_lookup.queries.end(),
+            [&](const SortedLookupQueryPlan& item) { return item.operation_id == operation; });
+        if (plan_query == plan.sorted_lookup.queries.end())
+            fail("sorted lookup operation is absent from RelationPlan: " + operation);
+        if (query.size() != output_values.size() || table.empty())
+            fail("sorted lookup Q/T row shape mismatch: " + operation);
+        const i64 output_min = *std::min_element(table.begin(), table.end());
+        const i64 output_max = *std::max_element(table.begin(), table.end());
+        using U128 = unsigned __int128;
+        struct LookupRow { U128 key = 0U; U128 x = 0U; U128 y = 0U; std::uint8_t source = 0U; };
+        std::map<U128, std::vector<LookupRow>> ordered;
+        const U128 y_base = static_cast<U128>(1U) << plan_query->y_bits;
+        const U128 key_limit = (static_cast<U128>(1U) << (plan_query->x_bits + plan_query->y_bits));
+        const auto add_row = [&](i64 raw_x, i64 raw_y, std::uint8_t source) {
+            if (raw_x < 0 || raw_y < 0) fail("sorted lookup packed coordinates are negative: " + operation);
+            const U128 x = static_cast<U128>(raw_x);
+            const U128 y = static_cast<U128>(raw_y);
+            if ((x >= (static_cast<U128>(1U) << plan_query->x_bits)) ||
+                (y >= y_base) || ((x << plan_query->y_bits) | y) >= key_limit)
+                fail("sorted lookup packed coordinate exceeds descriptor bounds: " + operation);
+            const U128 key = (x << plan_query->y_bits) | y;
+            ordered[key].push_back(LookupRow{key, x, y, source});
+        };
+        std::set<U128> table_keys;
+        for (std::size_t index = 0; index < table.size(); ++index) {
+            const i64 y = checked_i128(static_cast<__int128>(table[index]) - output_min,
+                                       operation + ".table_y");
+            const U128 x = static_cast<U128>(index);
+            const U128 key = (x << plan_query->y_bits) | static_cast<U128>(y);
+            if (!table_keys.insert(key).second)
+                fail("authenticated sorted lookup table keys are not unique: " + operation);
+            add_row(static_cast<i64>(index), y, 1U);
+        }
+        for (std::size_t index = 0; index < query.size(); ++index) {
+            if (query[index] < input_min ||
+                static_cast<__int128>(query[index]) > static_cast<__int128>(input_min) +
+                    static_cast<__int128>(table.size()) - 1) {
+                fail("sorted lookup query is outside authenticated table: " + operation);
+            }
+            const i64 x = checked_i128(static_cast<__int128>(query[index]) - input_min,
+                                       operation + ".query_x");
+            const i64 expected = table.at(static_cast<std::size_t>(x));
+            if (output_values[index] != expected)
+                fail("sorted lookup query/output is not table-bound: " + operation);
+            const i64 y = checked_i128(static_cast<__int128>(output_values[index]) - output_min,
+                                       operation + ".query_y");
+            add_row(x, y, 2U);
+        }
+        if (ordered.empty() || plan_query->table_logical_rows != table.size() ||
+            plan_query->query_logical_rows != query.size())
+            fail("sorted lookup provider logical lengths do not match RelationPlan: " + operation);
+
+        const auto u128_decimal_local = [](U128 value) {
+            if (value == 0U) return std::string("0");
+            std::string result;
+            while (value != 0U) {
+                result.push_back(static_cast<char>('0' + static_cast<unsigned>(value % 10U)));
+                value /= 10U;
+            }
+            std::reverse(result.begin(), result.end());
+            return result;
+        };
+        const auto write_u64 = [](std::ofstream& stream, u64 value) {
+            for (unsigned bit = 0U; bit < 8U; ++bit)
+                stream.put(static_cast<char>(value >> (8U * bit)));
+        };
+        const auto write_u32 = [](std::ofstream& stream, std::uint32_t value) {
+            for (unsigned bit = 0U; bit < 4U; ++bit)
+                stream.put(static_cast<char>(value >> (8U * bit)));
+        };
+        const auto write_u128 = [&](std::ofstream& stream, U128 value) {
+            for (unsigned bit = 0U; bit < 16U; ++bit)
+                stream.put(static_cast<char>(value >> (8U * bit)));
+        };
+        const auto write_string = [&](std::ofstream& stream, const std::string& value) {
+            write_u64(stream, value.size());
+            stream.write(value.data(), static_cast<std::streamsize>(value.size()));
+        };
+        const auto write_field = [&](std::ofstream& stream, const FieldValue& value) {
+            stream.write(reinterpret_cast<const char*>(value.bytes.data()),
+                         static_cast<std::streamsize>(value.bytes.size()));
+        };
+        const auto inverse_for = [&](U128 delta, BN_CTX* context) {
+            if (delta == 0U) return FieldValue{};
+            if (delta <= static_cast<U128>(std::numeric_limits<i64>::max()))
+                return field_encode(field_inverse(static_cast<i64>(delta), context).get());
+            fail("sorted lookup delta exceeds native inverse input bound: " + operation);
+        };
+        const auto write_record = [&](std::ofstream& stream, U128 key, U128 delta,
+                                      U128 x, U128 y, u64 prefix, std::uint8_t active,
+                                      std::uint8_t marker, std::uint8_t source,
+                                      BN_CTX* context) {
+            write_u128(stream, key); write_u128(stream, delta);
+            write_field(stream, inverse_for(delta, context));
+            write_u128(stream, x); write_u128(stream, y); write_u64(stream, prefix);
+            stream.put(static_cast<char>(active)); stream.put(static_cast<char>(marker));
+            stream.put(static_cast<char>(source));
+        };
+        const auto write_zero = [&](std::ofstream& stream, BN_CTX* context) {
+            write_record(stream, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, context);
+        };
+        const auto scratch_dir = config.run_root / "scratch" / "sorted_lookup";
+        std::filesystem::create_directories(scratch_dir);
+        const auto basename = "lookup_" + sha256_text(operation) + ".bin";
+        const auto final_path = scratch_dir / basename;
+        const auto temp_path = scratch_dir / ("." + basename + ".tmp-" + std::to_string(
+            static_cast<unsigned long long>(std::chrono::high_resolution_clock::now().time_since_epoch().count())));
+        std::ofstream stream(temp_path, std::ios::binary | std::ios::trunc);
+        if (!stream) fail("cannot create sorted lookup scratch: " + operation);
+        BN_CTX* context = BN_CTX_new();
+        if (!context) fail("BN_CTX_new failed for sorted lookup scratch");
+        try {
+            stream.write("ZKDLQTS1", 8);
+            write_u32(stream, 1U);
+            write_string(stream, operation);
+            write_string(stream, plan_query->commitment_role_map);
+            write_u64(stream, plan_query->table_domain);
+            write_u64(stream, plan_query->query_domain);
+            write_u64(stream, plan_query->merge_domain);
+            write_u64(stream, plan_query->segment_size);
+            write_u64(stream, plan_query->table_logical_rows);
+            write_u64(stream, plan_query->query_logical_rows);
+            write_u64(stream, plan_query->merge_logical_rows);
+            write_u32(stream, plan_query->x_bits); write_u32(stream, plan_query->y_bits);
+            write_string(stream, plan_query->key_max_u128);
+            write_u64(stream, table.size());
+            for (std::size_t index = 0; index < table.size(); ++index) {
+                const U128 x = static_cast<U128>(index);
+                const U128 y = static_cast<U128>(table[index] - output_min);
+                write_record(stream, (x << plan_query->y_bits) | y, 0U, x, y,
+                             static_cast<u64>(index + 1U), 1U, 1U, 1U, context);
+            }
+            for (u64 index = table.size(); index < plan_query->table_domain; ++index) write_zero(stream, context);
+            write_u64(stream, query.size());
+            for (std::size_t index = 0; index < query.size(); ++index) {
+                const U128 x = static_cast<U128>(query[index] - input_min);
+                const U128 y = static_cast<U128>(output_values[index] - output_min);
+                write_record(stream, (x << plan_query->y_bits) | y, 0U, x, y,
+                             static_cast<u64>(index + 1U), 1U, 1U, 2U, context);
+            }
+            for (u64 index = query.size(); index < plan_query->query_domain; ++index) write_zero(stream, context);
+            write_u64(stream, plan_query->merge_logical_rows);
+            bool previous = false;
+            U128 previous_key = 0U;
+            u64 prefix = 0U;
+            u64 emitted = 0U;
+            for (const auto& [key, rows] : ordered) {
+                for (const auto& row : rows) {
+                    const U128 delta = previous ? key - previous_key : 0U;
+                    const std::uint8_t marker = (!previous || key != previous_key) ? 1U : 0U;
+                    if (marker) ++prefix;
+                    write_record(stream, key, delta, row.x, row.y, prefix, 1U, marker,
+                                 row.source, context);
+                    previous = true; previous_key = key; ++emitted;
+                }
+            }
+            if (emitted != plan_query->merge_logical_rows)
+                fail("sorted lookup merge stream length mismatch: " + operation);
+            for (u64 index = emitted; index < plan_query->merge_domain; ++index) write_zero(stream, context);
+            stream.flush();
+            if (!stream) fail("sorted lookup scratch write failed: " + operation);
+            stream.close();
+            BN_CTX_free(context); context = nullptr;
+            std::error_code remove_error;
+            std::filesystem::remove(final_path, remove_error);
+            std::filesystem::rename(temp_path, final_path);
+            std::filesystem::permissions(final_path,
+                std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                std::filesystem::perm_options::replace);
+        } catch (...) {
+            if (context) BN_CTX_free(context);
+            stream.close();
+            std::error_code cleanup_error;
+            std::filesystem::remove(temp_path, cleanup_error);
+            throw;
+        }
+        NativeSortedLookupProviderInput provider;
+        provider.operation_id = operation;
+        provider.table_ref = plan_query->table_ref;
+        provider.query_ref = plan_query->query_ref;
+        provider.merge_ref = plan_query->merge_ref;
+        provider.scratch_path = std::filesystem::relative(final_path, config.baseline_root).generic_string();
+        provider.scratch_digest = sha256_file(final_path);
+        provider.layout_digest = plan_query->layout_digest;
+        std::stringstream role_stream(plan_query->commitment_role_map);
+        for (std::string role; std::getline(role_stream, role, ',');) provider.commitment_roles.push_back(role);
+        provider.table_logical_rows = plan_query->table_logical_rows;
+        provider.table_domain = plan_query->table_domain;
+        provider.query_logical_rows = plan_query->query_logical_rows;
+        provider.query_domain = plan_query->query_domain;
+        provider.merge_logical_rows = plan_query->merge_logical_rows;
+        provider.merge_domain = plan_query->merge_domain;
+        provider.segment_size = plan_query->segment_size;
+        provider.x_bits = plan_query->x_bits; provider.y_bits = plan_query->y_bits;
+        provider.key_max_u128 = plan_query->key_max_u128;
+        sorted_lookup_providers.push_back(std::move(provider));
     };
 
     const auto put_stage_base = [&](const std::string& stage, u64 layer, u64 head, bool output) {
@@ -3838,6 +4257,7 @@ NativeRelationWitnessInput build_native_relation_witness(
             put_i64(operation + "/view/query", query);
             put_i64(operation + "/view/index", query);
             put_i64(operation + "/view/output0", output_values);
+            write_sorted_lookup_provider(operation, query, minimum, output_values, table);
             u64 depth = 0U;
             std::size_t table_width = 1U;
             while (table_width < table.size()) { table_width <<= 1U; ++depth; }
@@ -3852,18 +4272,6 @@ NativeRelationWitnessInput build_native_relation_witness(
             for (u64 bit = 0U; bit < depth; ++bit)
                 put(operation + "/view/bit/" + std::to_string(bit),
                     native_bit_column(offsets, bit, operation + ".bit"));
-            for (u64 level = 0U; level <= depth; ++level) {
-                const u64 level_width = 1ULL << level;
-                for (u64 node = 0U; node < level_width; ++node) {
-                    std::vector<NativeFrWire> chi;
-                    chi.reserve(offsets.size());
-                    const u64 mask = level == 0U ? 0U : ((1ULL << level) - 1U);
-                    for (const auto offset : offsets)
-                        chi.push_back(native_wire(level == 0U || (static_cast<u64>(offset) & mask) == node ? 1 : 0));
-                    put(operation + "/view/chi/" + std::to_string(level) + "/" + std::to_string(node),
-                        std::move(chi));
-                }
-            }
         };
         put_table(stage + "/leaky_relu", head_trace.score, tables.lrelu_min, tables.lrelu_max,
                   head_trace.leaky_relu, tables.lrelu);
@@ -3975,6 +4383,10 @@ NativeRelationWitnessInput build_native_relation_witness(
         result.tensor_shapes.push_back(std::move(shape));
     }
 
+    if (sorted_lookup_providers.size() != plan.sorted_lookup.queries.size())
+        fail("native witness sorted-lookup provider count does not match RelationPlan");
+    result.sorted_lookup_providers = std::move(sorted_lookup_providers);
+
     populate_authenticated_resource_wire(config, result, true);
     return result;
 }
@@ -4046,6 +4458,9 @@ std::string statement_canonical_payload(const PublicStatement& statement) {
               << "relation_mapping_digest=" << statement.relation_mapping_digest << "\n"
               << "relation_selector_digest=" << statement.relation_selector_digest << "\n"
               << "relation_degree_digest=" << statement.relation_degree_digest << "\n"
+              << "sorted_lookup_descriptor_digest=" << statement.sorted_lookup_descriptor_digest << "\n"
+              << "sorted_lookup_plan_digest=" << statement.sorted_lookup_plan_digest << "\n"
+              << "sorted_lookup_query_count=" << statement.sorted_lookup_query_count << "\n"
               << "static_table_generator_id=" << statement.static_table_generator_id << "\n"
               << "static_table_version=" << statement.static_table_version << "\n"
               << "static_table_scale_id=" << statement.static_table_scale_id << "\n"
@@ -4116,6 +4531,9 @@ PublicStatement make_statement(const Config& config, const Graph& graph, const M
     statement.relation_mapping_digest = relation.mapping_digest;
     statement.relation_selector_digest = relation.selector_digest;
     statement.relation_degree_digest = relation.degree_digest;
+    statement.sorted_lookup_descriptor_digest = relation.sorted_lookup.descriptor_digest;
+    statement.sorted_lookup_plan_digest = relation.sorted_lookup.plan_digest;
+    statement.sorted_lookup_query_count = relation.sorted_lookup.queries.size();
     statement.static_table_generator_id = tables.generator_id;
     statement.static_table_version = tables.version;
     statement.static_table_scale_id = tables.scale_id;
@@ -4160,6 +4578,9 @@ void write_statement(const std::filesystem::path& path, const PublicStatement& s
            << "relation_mapping_digest=" << statement.relation_mapping_digest << "\n"
            << "relation_selector_digest=" << statement.relation_selector_digest << "\n"
            << "relation_degree_digest=" << statement.relation_degree_digest << "\n"
+           << "sorted_lookup_descriptor_digest=" << statement.sorted_lookup_descriptor_digest << "\n"
+           << "sorted_lookup_plan_digest=" << statement.sorted_lookup_plan_digest << "\n"
+           << "sorted_lookup_query_count=" << statement.sorted_lookup_query_count << "\n"
            << "static_table_generator_id=" << statement.static_table_generator_id << "\nstatic_table_version=" << statement.static_table_version << "\n"
            << "static_table_scale_id=" << statement.static_table_scale_id << "\nstatic_table_domain_id=" << statement.static_table_domain_id << "\n"
            << "static_table_row_order=" << statement.static_table_row_order << "\nstatic_table_spec_hash=" << statement.static_table_spec_hash << "\n"
@@ -4197,6 +4618,9 @@ bool read_statement(const std::filesystem::path& path, PublicStatement* statemen
         statement->relation_mapping_digest = get("relation_mapping_digest");
         statement->relation_selector_digest = get("relation_selector_digest");
         statement->relation_degree_digest = get("relation_degree_digest");
+        statement->sorted_lookup_descriptor_digest = get("sorted_lookup_descriptor_digest");
+        statement->sorted_lookup_plan_digest = get("sorted_lookup_plan_digest");
+        statement->sorted_lookup_query_count = parse_u64(get("sorted_lookup_query_count"), "statement sorted_lookup_query_count");
         statement->static_table_generator_id = get("static_table_generator_id");
         statement->static_table_version = get("static_table_version");
         statement->static_table_scale_id = get("static_table_scale_id");
@@ -4377,7 +4801,29 @@ void write_plan(const std::filesystem::path& path, const RelationPlan& plan, con
            << "integer_bound_ledger_descriptor_digest=" << plan.integer_bound_ledger_descriptor_digest << "\n"
            << "integer_bound_ledger_id=" << plan.integer_bound_ledger.ledger_id << "\n"
            << "table_generator_id=" << tables.generator_id << "\ntable_spec_hash=" << tables.spec_hash << "\ntable_digest=" << tables.digest << "\n"
-           << "table_domain_id=" << tables.domain_id << "\ntable_row_order=" << tables.row_order << "\n";
+           << "table_domain_id=" << tables.domain_id << "\ntable_row_order=" << tables.row_order << "\n"
+           << "sorted_lookup_descriptor=" << plan.sorted_lookup.descriptor_path << "\n"
+           << "sorted_lookup_descriptor_digest=" << plan.sorted_lookup.descriptor_digest << "\n"
+           << "sorted_lookup_table_digest=" << plan.sorted_lookup.table_digest << "\n"
+           << "sorted_lookup_plan_digest=" << plan.sorted_lookup.plan_digest << "\n"
+           << "sorted_lookup_query_count=" << plan.sorted_lookup.queries.size() << "\n"
+           << "sorted_lookup_segment_size=" << plan.sorted_lookup.segment_size << "\n";
+    for (const auto& query : plan.sorted_lookup.queries) {
+        output << "sorted_lookup_query=" << query.operation_id << '|'
+               << query.table_ref << '|' << query.query_ref << '|' << query.query_x_ref << '|'
+               << query.query_y_ref << '|' << query.query_key_ref << '|' << query.merge_ref << '|'
+               << query.merge_key_ref << '|' << query.merge_delta_ref << '|'
+               << query.merge_marker_ref << '|' << query.merge_inverse_ref << '|'
+               << query.merge_prefix_ref << '|' << query.query_prefix_ref << '|'
+               << query.commitment_role_map << '|' << query.table_logical_rows << '|'
+               << query.table_domain << '|' << query.query_logical_rows << '|'
+               << query.query_domain << '|' << query.merge_logical_rows << '|'
+               << query.merge_domain << '|' << query.segment_size << '|'
+               << query.table_segment_count << '|' << query.query_segment_count << '|'
+               << query.merge_segment_count << '|' << query.x_bits << '|'
+               << query.y_bits << '|' << query.key_max_u128 << '|'
+               << query.layout_digest << '\n';
+    }
     for (const auto& family : plan.tensor_families) {
         output << "tensor=" << family.id << "|" << family.visibility << "|" << family.mle_order << "|" << family.stack_axis << "|";
         for (std::size_t i = 0; i < family.logical_shape.size(); ++i) { if (i) output << ','; output << family.logical_shape[i]; }
@@ -4675,9 +5121,19 @@ void validate_statement_binding(const Config& config, const Graph& graph, const 
     require_equal(statement.integer_bound_ledger_descriptor_digest,
                   relation.integer_bound_ledger.descriptor_digest,
                   "integer-bound ledger descriptor digest");
+    require_equal(statement.sorted_lookup_descriptor_digest,
+                  relation.sorted_lookup.descriptor_digest,
+                  "sorted-lookup descriptor digest");
+    require_equal(statement.sorted_lookup_plan_digest,
+                  relation.sorted_lookup.plan_digest,
+                  "sorted-lookup plan digest");
+    if (statement.sorted_lookup_query_count != relation.sorted_lookup.queries.size())
+        fail("public statement sorted-lookup query count mismatch");
     if (!is_digest(statement.static_table_descriptor_digest) || !is_digest(statement.scale_chain_digest) ||
         !is_digest(statement.integer_bound_ledger_digest) ||
-        !is_digest(statement.integer_bound_ledger_descriptor_digest)) {
+        !is_digest(statement.integer_bound_ledger_descriptor_digest) ||
+        !is_digest(statement.sorted_lookup_descriptor_digest) ||
+        !is_digest(statement.sorted_lookup_plan_digest)) {
         fail("public statement relation identities are not canonical SHA-256 digests");
     }
     if (statement.verifier_reads_witness || statement.proof_scope != "full_gat_forward") {

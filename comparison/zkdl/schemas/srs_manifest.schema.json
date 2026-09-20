@@ -17,7 +17,7 @@
     "generator_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "setup": {
       "type": "object",
-      "required": ["schema", "mode", "trust_status", "algorithm", "spec", "curve_id", "config_binding_digest", "basis_digest", "domain", "generator_count", "h_count", "u_count"],
+      "required": ["schema", "mode", "trust_status", "algorithm", "spec", "curve_id", "config_binding_digest", "basis_digest", "basis_domain", "generator_count", "h_count", "u_count", "logical_domain", "segment_size", "segment_count"],
       "properties": {
         "schema": {"const": "zkDL_gat_local_random_setup_v1"},
         "mode": {"const": "native_local_ephemeral_random"},
@@ -28,9 +28,13 @@
         "config_binding_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "basis_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "domain": {"type": "integer", "minimum": 1},
+        "basis_domain": {"type": "integer", "minimum": 1},
         "generator_count": {"type": "integer", "minimum": 1},
         "h_count": {"const": 1},
-        "u_count": {"const": 1}
+        "u_count": {"const": 1},
+        "logical_domain": {"type": "integer", "minimum": 1},
+        "segment_size": {"type": "integer", "minimum": 1},
+        "segment_count": {"type": "integer", "minimum": 1}
       }
     },
     "families": {
@@ -43,7 +47,7 @@
             "type": "array", "minItems": 1,
             "items": {
               "type": "object",
-              "required": ["family_id", "chunk_id", "chunk_index", "point_offset", "point_count", "domain", "required_domain", "degree", "point_size", "generator_id", "basis_digest", "generator_digest", "G", "H", "U"],
+              "required": ["family_id", "chunk_id", "chunk_index", "point_offset", "point_count", "domain", "logical_domain", "basis_domain", "segment_size", "segment_count", "segments", "required_domain", "degree", "point_size", "generator_id", "basis_digest", "generator_digest", "G", "H", "U"],
               "properties": {
                 "family_id": {"type": "string", "minLength": 1},
                 "chunk_id": {"type": "string", "minLength": 1},
@@ -51,6 +55,25 @@
                 "point_offset": {"type": "integer", "minimum": 0},
                 "point_count": {"type": "integer", "minimum": 1},
                 "domain": {"type": "integer", "minimum": 1},
+                "logical_domain": {"type": "integer", "minimum": 1},
+                "basis_domain": {"type": "integer", "minimum": 1},
+                "segment_size": {"type": "integer", "minimum": 1},
+                "segment_count": {"type": "integer", "minimum": 1},
+                "segments": {
+                  "type": "array", "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["segment_index", "logical_offset", "actual_length", "padded_length", "basis_offset", "basis_count"],
+                    "properties": {
+                      "segment_index": {"type": "integer", "minimum": 0},
+                      "logical_offset": {"type": "integer", "minimum": 0},
+                      "actual_length": {"type": "integer", "minimum": 1},
+                      "padded_length": {"type": "integer", "minimum": 1},
+                      "basis_offset": {"type": "integer", "minimum": 0},
+                      "basis_count": {"type": "integer", "minimum": 1}
+                    }
+                  }
+                },
                 "required_domain": {"type": "integer", "minimum": 1},
                 "degree": {"type": "integer", "minimum": 0},
                 "point_size": {"const": 48},

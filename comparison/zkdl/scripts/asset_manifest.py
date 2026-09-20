@@ -108,7 +108,7 @@ def main() -> int:
     for key in ("dataset", "cache_root", "checkpoint_bundle", "export_dir", "quant_cfg_id"):
         if key not in values:
             fail(f"config key missing: {key}")
-    relation_keys = ("static_table_descriptor", "integer_bound_ledger")
+    relation_keys = ("static_table_descriptor", "sorted_lookup_descriptor", "integer_bound_ledger")
     if values["dataset"] in {"cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"}:
         for key in relation_keys:
             if key not in values:
@@ -209,6 +209,9 @@ def main() -> int:
     if relation_keys[0] in relation_digests:
         payload["static_table_descriptor"] = values[relation_keys[0]]
         payload["static_table_descriptor_digest"] = relation_digests[relation_keys[0]]
+    if relation_keys[1] in relation_digests:
+        payload["sorted_lookup_descriptor"] = values[relation_keys[1]]
+        payload["sorted_lookup_descriptor_digest"] = relation_digests[relation_keys[1]]
     if relation_keys[1] in relation_digests:
         payload["integer_bound_ledger"] = values[relation_keys[1]]
         payload["integer_bound_ledger_descriptor_digest"] = relation_digests[relation_keys[1]]

@@ -24,12 +24,27 @@ struct AuthenticatedSrsResource {
     // execution chunk selected for the current request; chunks are never
     // concatenated into an unbounded global SRS domain.
     struct Chunk {
+        struct Segment {
+            std::uint64_t segment_index = 0U;
+            std::uint64_t logical_offset = 0U;
+            std::uint64_t actual_length = 0U;
+            std::uint64_t padded_length = 0U;
+            std::uint64_t basis_offset = 0U;
+            std::uint64_t basis_count = 0U;
+        };
         std::string family_id;
         std::string chunk_id;
         std::uint64_t chunk_index = 0U;
         std::uint64_t point_offset = 0U;
         std::uint64_t point_count = 0U;
         std::uint64_t domain = 0U;
+        // domain/point_count are the bounded IPA basis domain.  The logical
+        // relation domain is separate and is never expanded into G points.
+        std::uint64_t logical_domain = 0U;
+        std::uint64_t basis_domain = 0U;
+        std::uint64_t segment_size = 0U;
+        std::uint64_t segment_count = 0U;
+        std::vector<Segment> segments;
         std::uint64_t degree = 0U;
         std::uint32_t point_size = 0U;
         std::string generator_id;
@@ -58,6 +73,10 @@ struct AuthenticatedSrsResource {
     std::uint64_t selected_chunk_index = 0U;
     std::uint64_t count = 0U;
     std::uint64_t domain = 0U;
+    std::uint64_t logical_domain = 0U;
+    std::uint64_t basis_domain = 0U;
+    std::uint64_t segment_size = 0U;
+    std::uint64_t segment_count = 0U;
     std::uint64_t degree = 0U;
     std::uint32_t point_size = 0U;
     std::vector<std::vector<std::uint8_t>> generators;

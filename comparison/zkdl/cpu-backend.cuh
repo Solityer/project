@@ -30,6 +30,13 @@ struct CpuIpaOpeningMetadata {
     std::array<byte, 32U> descriptor_digest{};
     std::array<byte, 32U> registry_digest{};
     std::array<byte, 32U> srs_digest{};
+    // Optional segmented-Hyrax binding.  Zero logical_domain denotes the
+    // legacy/single-domain opening used by small tensors and non-GAT helpers.
+    std::uint64_t logical_domain = 0U;
+    std::uint32_t segment_index = 0U;
+    std::uint64_t logical_offset = 0U;
+    std::uint32_t actual_length = 0U;
+    std::uint32_t padded_length = 0U;
 };
 
 inline bool cpu_ipa_metadata_valid(const CpuIpaOpeningMetadata& metadata) {
@@ -1109,6 +1116,11 @@ inline void cpu_hyrax_v3_absorb_header(Transcript& transcript,
     append_u32(header, opening.evaluation_commitment_index);
     append_u32(header, opening.generator_size);
     append_u32(header, opening.padded_generator_size);
+    append_u64(header, opening.logical_domain);
+    append_u32(header, opening.segment_index);
+    append_u64(header, opening.logical_offset);
+    append_u32(header, opening.actual_length);
+    append_u32(header, opening.padded_length);
     append_u64(header, static_cast<std::uint64_t>(opening.inner_point.size()));
     for (const auto& coordinate : opening.inner_point) append_fr(header, coordinate);
     append_u64(header, static_cast<std::uint64_t>(opening.outer_point.size()));
@@ -1191,6 +1203,11 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     opening.evaluation_commitment_index = metadata.evaluation_commitment_index;
     opening.generator_size = generator_size;
     opening.padded_generator_size = padded_size;
+    opening.logical_domain = metadata.logical_domain;
+    opening.segment_index = metadata.segment_index;
+    opening.logical_offset = metadata.logical_offset;
+    opening.actual_length = metadata.actual_length;
+    opening.padded_length = metadata.padded_length;
     for (const auto& coordinate : point) opening.inner_point.push_back(fr_value(coordinate));
     for (const auto& coordinate : metadata.outer_point) opening.outer_point.push_back(fr_value(coordinate));
     opening.blinding_generator = cpu_g1_to_native(blinding_generator);
@@ -1415,7 +1432,12 @@ inline bool cpu_verify_hyrax_v3_impl(
         opening.outer_point.size() != expected_metadata.outer_point.size() ||
         opening.descriptor_digest != expected_metadata.descriptor_digest ||
         opening.registry_digest != expected_metadata.registry_digest ||
-        opening.srs_digest != expected_metadata.srs_digest) {
+        opening.srs_digest != expected_metadata.srs_digest ||
+        opening.logical_domain != expected_metadata.logical_domain ||
+        opening.segment_index != expected_metadata.segment_index ||
+        opening.logical_offset != expected_metadata.logical_offset ||
+        opening.actual_length != expected_metadata.actual_length ||
+        opening.padded_length != expected_metadata.padded_length) {
         if (error) *error = "Hyrax v3 statement/basis metadata mismatch";
         return false;
     }

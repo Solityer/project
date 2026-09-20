@@ -20,6 +20,7 @@ from typing import Any
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 DATASETS = {"cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"}
+NATIVE_BASIS_DOMAIN = 1 << 18
 
 
 def fail(message: str) -> None:
@@ -187,10 +188,19 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
     if required_digest(setup, "config_binding_digest", "SRS setup") != config_binding_digest(config_path):
         fail("SRS setup config binding digest mismatch")
     domain = setup.get("domain")
+    basis_domain = setup.get("basis_domain")
+    logical_domain = setup.get("logical_domain")
+    segment_size = setup.get("segment_size")
+    segment_count = setup.get("segment_count")
     counts = (setup.get("generator_count"), setup.get("h_count"), setup.get("u_count"))
     if (not isinstance(domain, int) or domain < 1 or domain & (domain - 1) or
-            counts != (domain, 1, 1)):
-        fail("SRS setup domain/count metadata is invalid")
+            not isinstance(basis_domain, int) or basis_domain != NATIVE_BASIS_DOMAIN or
+            not isinstance(logical_domain, int) or logical_domain < basis_domain or
+            not isinstance(segment_size, int) or segment_size != basis_domain or
+            not isinstance(segment_count, int) or segment_count < 1 or
+            segment_count != (logical_domain + basis_domain - 1) // basis_domain or
+            counts != (basis_domain, 1, 1)):
+        fail("SRS setup logical/basis segment metadata is invalid")
     families = manifest.get("families")
     if not isinstance(families, list) or not families:
         fail("local random SRS manifest has no families")
@@ -218,27 +228,50 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
                 fail("SRS chunk generator/basis identity mismatch")
             index = chunk.get("chunk_index")
             chunk_domain = chunk.get("domain")
+            chunk_logical = chunk.get("logical_domain")
+            chunk_basis = chunk.get("basis_domain")
+            chunk_size = chunk.get("segment_size")
+            chunk_count = chunk.get("segment_count")
             if (not isinstance(index, int) or index < 0 or not isinstance(chunk_domain, int) or
-                    chunk_domain < 1 or chunk_domain & (chunk_domain - 1) or chunk_domain > domain):
+                    chunk_domain != basis_domain or not isinstance(chunk_logical, int) or
+                    chunk_logical < 1 or chunk_logical & (chunk_logical - 1) or
+                    not isinstance(chunk_basis, int) or chunk_basis != basis_domain or
+                    not isinstance(chunk_size, int) or chunk_size != basis_domain or
+                    not isinstance(chunk_count, int) or chunk_count != (chunk_logical + basis_domain - 1) // basis_domain):
                 fail("SRS chunk index/domain is invalid")
             if (family_id, index) in seen:
                 fail("SRS duplicate family/chunk_index")
             seen.add((family_id, index))
             required_domain = chunk.get("required_domain", chunk_domain)
-            if (not isinstance(required_domain, int) or required_domain < 1 or
-                    required_domain & (required_domain - 1) or required_domain > chunk_domain):
-                fail("SRS required_domain is not covered by the local basis")
+            if (not isinstance(required_domain, int) or required_domain != chunk_logical):
+                fail("SRS required_domain is not bound to logical_domain")
             if (chunk.get("family_id") != family_id or chunk.get("point_offset") != 0 or
-                    chunk.get("point_count") != domain or chunk.get("domain") != domain or
-                    chunk.get("degree") != max(0, domain - 1) or chunk.get("point_size") != 48):
+                    chunk.get("point_count") != basis_domain or chunk.get("domain") != basis_domain or
+                    chunk.get("degree") != max(0, basis_domain - 1) or chunk.get("point_size") != 48):
                 fail("SRS chunk domain/degree/point metadata mismatch")
+            segments = chunk.get("segments")
+            if not isinstance(segments, list) or len(segments) != chunk_count:
+                fail("SRS chunk segment descriptor count mismatch")
+            expected_offset = 0
+            for segment_index, segment in enumerate(segments):
+                if not isinstance(segment, dict) or segment.get("segment_index") != segment_index:
+                    fail("SRS segment ordering is not canonical")
+                actual = segment.get("actual_length")
+                if (segment.get("logical_offset") != expected_offset or
+                        not isinstance(actual, int) or actual < 1 or actual > basis_domain or
+                        segment.get("padded_length") != basis_domain or
+                        segment.get("basis_offset") != 0 or segment.get("basis_count") != basis_domain):
+                    fail("SRS segment offset/length/basis metadata is invalid")
+                expected_offset += actual
+            if expected_offset != chunk_logical:
+                fail("SRS segments do not cover the logical domain exactly")
             frames: dict[str, Path] = {}
             for label in ("G", "H", "U"):
                 frame = chunk.get(label)
                 if not isinstance(frame, dict):
                     fail(f"SRS chunk omits {label} frame")
                 frames[label] = frame_path(srs, frame, f"{family_id}/{chunk['chunk_id']}/{label}", frame_digest_cache)
-                expected = domain if label == "G" else 1
+                expected = basis_domain if label == "G" else 1
                 if frame.get("count") != expected:
                     fail(f"SRS {label} count does not match chunk domain")
             if frames["H"].read_bytes() == frames["U"].read_bytes():
@@ -365,6 +398,68 @@ def validate_blinders(root: Path, values: dict[str, str], registry: dict[str, An
     return path, actual
 
 
+def validate_sorted_lookup_descriptor(root: Path, values: dict[str, str],
+                                      static_table_path: Path) -> tuple[Path, str]:
+    raw_path = values.get("sorted_lookup_descriptor")
+    if not raw_path:
+        fail("config lacks sorted_lookup_descriptor")
+    path = local(root, raw_path, "sorted_lookup_descriptor")
+    descriptor = json_object(path, "sorted lookup descriptor")
+    if descriptor.get("schema") != "zkDL_gat_sorted_lookup_descriptor_v1" or descriptor.get("version") != 1:
+        fail("sorted lookup descriptor schema/version mismatch")
+    if descriptor.get("source_root") != "baseline-local":
+        fail("sorted lookup descriptor source_root is not baseline-local")
+    if descriptor.get("static_table_digest") != digest(static_table_path):
+        fail("sorted lookup descriptor is not bound to the authenticated static table")
+    if descriptor.get("key_encoding") != "packed_pair_u128":
+        fail("sorted lookup descriptor key encoding is not packed_pair_u128")
+    if descriptor.get("active_mask_rule") != "prefix_one_then_zero_v1":
+        fail("sorted lookup descriptor active-mask rule mismatch")
+    if descriptor.get("sorted_delta_rule") != "nonnegative_bounded_delta_v1":
+        fail("sorted lookup descriptor delta rule mismatch")
+    if descriptor.get("marker_rule") != "group_first_v1" or descriptor.get("inverse_rule") != "delta_inverse_or_zero_v1":
+        fail("sorted lookup descriptor marker/inverse rule mismatch")
+    segment_size = descriptor.get("segment_size")
+    if not isinstance(segment_size, int) or segment_size != NATIVE_BASIS_DOMAIN:
+        fail("sorted lookup descriptor segment_size is not the bounded native basis")
+    families = descriptor.get("table_families")
+    if not isinstance(families, list) or len(families) != 3:
+        fail("sorted lookup descriptor must contain exactly three canonical table families")
+    seen: set[str] = set()
+    for family in families:
+        if not isinstance(family, dict):
+            fail("sorted lookup table family is not an object")
+        table_ref = family.get("table_ref")
+        if not isinstance(table_ref, str) or table_ref in seen or table_ref not in {"static_lrelu", "static_elu", "static_exp"}:
+            fail("sorted lookup table family is not canonical")
+        seen.add(table_ref)
+        logical_rows = family.get("logical_rows")
+        padded_domain = family.get("padded_domain")
+        if (not isinstance(logical_rows, int) or logical_rows < 1 or
+                not isinstance(padded_domain, int) or padded_domain < logical_rows or
+                padded_domain & (padded_domain - 1) or family.get("sorted_unique") is not True or
+                family.get("padding_rule") != "zero_after_logical_rows_v1"):
+            fail(f"sorted lookup family has invalid logical-domain metadata: {table_ref}")
+        x_bits, y_bits = family.get("x_bits"), family.get("y_bits")
+        if (not isinstance(x_bits, int) or not isinstance(y_bits, int) or
+                x_bits < 1 or y_bits < 1 or x_bits + y_bits > 127 or
+                family.get("key_encoding") != "packed_pair_u128"):
+            fail(f"sorted lookup family has invalid u128 bounds: {table_ref}")
+    if set(seen) != {"static_lrelu", "static_elu", "static_exp"}:
+        fail("sorted lookup descriptor does not cover every canonical table")
+    queries = descriptor.get("query_families")
+    if not isinstance(queries, list) or not queries or any(
+            not isinstance(item, dict) or not isinstance(item.get("query_rows"), int) or item["query_rows"] < 1
+            for item in queries):
+        fail("sorted lookup descriptor query families are incomplete")
+    declared = descriptor.get("descriptor_digest")
+    if not isinstance(declared, str) or not HEX64.fullmatch(declared):
+        fail("sorted lookup descriptor digest is not canonical")
+    if declared != canonical_digest(descriptor, {"descriptor_digest"}):
+        fail("sorted lookup descriptor self-digest mismatch")
+    return path, digest(path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
@@ -381,6 +476,9 @@ def main() -> int:
         if key not in values:
             fail(f"config key missing: {key}")
     quant = regular(root / "configs" / "quantization_scale_chain.cfg", "scale chain")
+    static_table_path = local(root, values["static_table_descriptor"], "static_table_descriptor")
+    sorted_lookup_path, sorted_lookup_digest = validate_sorted_lookup_descriptor(
+        root, values, static_table_path)
     srs, srs_manifest, generator_digest = validate_srs(root, values)
     registry_path, registry, registry_digest = validate_registry(root, values, srs, srs_manifest, generator_digest)
     sidecar_path, sidecar_digest = validate_blinders(root, values, registry, registry_digest)
@@ -396,6 +494,8 @@ def main() -> int:
         "model_registry_digest": registry_digest,
         "model_blinder_sidecar_path": sidecar_path.relative_to(root).as_posix(),
         "model_blinder_sidecar_digest": sidecar_digest,
+        "sorted_lookup_descriptor_path": sorted_lookup_path.relative_to(root).as_posix(),
+        "sorted_lookup_descriptor_digest": sorted_lookup_digest,
         "status": "AUTHENTICATED",
     }, sort_keys=True))
     return 0

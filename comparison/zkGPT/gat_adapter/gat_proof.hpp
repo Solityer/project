@@ -547,8 +547,8 @@ struct SparseGkrLinkWire {
 };
 
 struct SparseGkrProofWire {
-    std::string schema = "zkgpt-gat-sparse-proof-v1";
-    std::uint32_t version = 1;
+    std::string schema = "zkgpt-gat-sparse-proof-v2";
+    std::uint32_t version = 2;
     std::string plan_digest;
     std::string schedule_digest;
     std::vector<SparseGkrRelationWire> relations;
@@ -556,18 +556,20 @@ struct SparseGkrProofWire {
     std::vector<SparseGkrLinkWire> binding_links;
     std::string input_binding;
     std::string output_binding;
-    // This section intentionally records the next required gate.  It keeps a
-    // sparse relation artifact distinguishable from a complete masked_full
-    // artifact until segmented Hyrax/Lasso openings are available.
-    bool hyrax_lasso_complete = false;
+    NativeLassoChunkBundleWire lasso_chunks;
+    std::vector<hyrax::ChunkedMleWire> input_segment_openings;
+    hyrax::ChunkedMleWire output_opening;
+    std::string input_terminal_commitment;
+    std::string output_terminal_commitment;
+    bool hyrax_lasso_complete = true;
 };
 
 // Verifier-facing wire.  Deliberately no Y, W, Aux, L, trace, model tensor,
 // or opening randomness is present: those belong to the public context or to
 // the prover and are never serialized.
 struct GatProofArtifact {
-    std::uint32_t version = 5;
-    std::string schema = "zkgpt-gat-proof-v5";
+    std::uint32_t version = 6;
+    std::string schema = "zkgpt-gat-proof-v6";
     std::string relation_id = "R_GAT-zkGPT";
     std::string privacy_profile;
     std::string statement_digest;

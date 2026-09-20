@@ -19,7 +19,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = ROOT.parents[1]
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 
 
@@ -29,12 +28,6 @@ def parser() -> argparse.ArgumentParser:
         "--commit-manifest",
         action="store_true",
         help="generate all five resources and atomically refresh resource_manifest.json",
-    )
-    result.add_argument(
-        "--source-root",
-        type=Path,
-        default=PROJECT_ROOT,
-        help="read-only provenance root used for manifest source metadata",
     )
     return result
 
@@ -57,15 +50,12 @@ def main(args: argparse.Namespace) -> int:
     for dataset in DATASETS:
         run([sys.executable, str(generator), "--root", str(ROOT), "--dataset", dataset])
 
-    source_root = args.source_root.resolve()
     run(
         [
             sys.executable,
             str(validator),
             "--write-manifest",
             "--require-complete",
-            "--source-root",
-            str(source_root),
         ]
     )
     print("authenticated five-dataset ezkl GAT tables/ledgers and resource manifest")

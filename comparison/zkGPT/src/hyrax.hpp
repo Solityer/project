@@ -7,6 +7,8 @@
 #include <condition_variable>
 #include <thread>         // std::thread
 #include <string>
+#include <cstdint>
+#include <functional>
 #include <mcl/bn256.hpp>
 #include "typedef.hpp"
 #include "timer.hpp"
@@ -52,6 +54,72 @@ G1* prover_commit(int* w, G1* g, int l,int thread=1);
 Fr prover_evaluate(Fr*w ,Fr*r,G1& G,G1* g, Fr*L,Fr*R,int l);  // nlogn brute force 
 namespace hyrax
 {
+// Bounded segmented MLE opening wire.  A chunk is a real Hyrax/Pedersen
+// commitment and opening; the root below only authenticates descriptor order
+// and lengths and is never accepted as a replacement for the group opening.
+static constexpr const char *kChunkedMleSchema =
+    "zkgpt-hyrax-chunked-mle-v1";
+static constexpr std::uint32_t kChunkedMleVersion = 1;
+static constexpr std::uint64_t kChunkedMleEntries = 1ULL << 12;
+
+struct ChunkedMleChunkWire {
+    std::uint64_t offset = 0;
+    std::uint64_t actual_length = 0;
+    std::uint64_t padded_length = 0;
+    std::string label;
+    std::string basis_id;
+    std::string commitment_hex;
+    std::string evaluation_mask_commitment_hex;
+    std::string masked_evaluation;
+    std::string raw_evaluation_commitment_hex;
+    std::string masked_evaluation_commitment_hex;
+};
+
+struct ChunkedMleWire {
+    std::string schema = kChunkedMleSchema;
+    std::uint32_t version = kChunkedMleVersion;
+    std::string label;
+    std::string basis_id;
+    std::string scalar_domain;
+    std::uint64_t logical_length = 0;
+    std::uint64_t padded_length = 0;
+    std::uint64_t chunk_size = kChunkedMleEntries;
+    std::string point_digest;
+    std::string root_digest;
+    std::string aggregate_commitment_hex;
+    std::vector<ChunkedMleChunkWire> chunks;
+};
+
+struct ChunkedMleProverResult {
+    ChunkedMleWire wire;
+    zkgpt::native_pedersen::ScalarOpening aggregate_opening;
+};
+
+using ChunkedMleValueProvider = std::function<Fr(std::uint64_t)>;
+
+// Commits and opens a segmented MLE using at most chunk_size generators and
+// values at a time.  The per-chunk openings are bound to an aggregate scalar
+// commitment by a native Pedersen linear relation, so the canonical root is
+// only an ordering digest and never the proof of an opening.
+bool prove_chunked_mle_opening(
+    NativeProofSession &session, const std::string &label,
+    std::uint64_t logical_length, std::uint64_t padded_length,
+    std::uint64_t chunk_size, const std::vector<Fr> &point,
+    const ChunkedMleValueProvider &provider,
+    const zkgpt::native_pedersen::PedersenBasis &scalar_basis,
+    ChunkedMleProverResult &result, std::string *reason = nullptr);
+
+// Independent verifier for the preceding wire.  It reconstructs the
+// chunk-local generator bases and checks every Hyrax masked opening followed
+// by the aggregate Pedersen relation; no witness/value callback is accepted.
+bool verify_chunked_mle_opening(
+    const NativeProofSession &session, const ChunkedMleWire &wire,
+    const std::string &label, std::uint64_t logical_length,
+    std::uint64_t padded_length, std::uint64_t chunk_size,
+    const std::vector<Fr> &point,
+    const zkgpt::native_pedersen::PedersenBasis &scalar_basis,
+    std::string *reason = nullptr);
+
 pair<double,double> open(Fr*w,Fr*r,Fr eval,G1&G,G1*g,Fr*L,Fr*R,G1*tk,int l);
 pair<double,double> open_with_session(Fr*w,Fr*r,Fr eval,G1&G,G1*g,
                                       Fr*L,Fr*R,G1*tk,int l,

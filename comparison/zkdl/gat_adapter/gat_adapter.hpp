@@ -92,6 +92,7 @@ struct Config {
     std::filesystem::path run_root;
     std::filesystem::path asset_manifest_path;
     std::filesystem::path static_table_descriptor_path;
+    std::filesystem::path sorted_lookup_descriptor_path;
     std::filesystem::path integer_bound_ledger_path;
     std::filesystem::path proof_path;
     std::filesystem::path statement_path;
@@ -209,6 +210,11 @@ struct StaticTables {
     std::string spec_hash;
     std::string digest;
     std::string descriptor_digest;
+    // Canonical sorted-lookup table metadata is a separate authenticated
+    // resource.  It contains logical rows only; native padding is described
+    // by the RelationPlan and never turns into an expanded chi family.
+    std::string sorted_lookup_descriptor;
+    std::string sorted_lookup_descriptor_digest;
     std::string quant_cfg_id;
     bool authenticated = false;
 };
@@ -374,6 +380,57 @@ struct OperationFamily {
     std::uint64_t degree = 0;
 };
 
+// Host-side, proof-stack-independent descriptor for the native sorted lookup
+// bridge.  The native proof wire has its own versioned descriptor; this object
+// binds the runner's public resource, query families, and bounded segmented
+// layouts before the bridge is called.
+struct SortedLookupQueryPlan {
+    std::string operation_id;
+    std::string table_ref;
+    std::string query_ref;
+    std::string query_x_ref;
+    std::string query_y_ref;
+    std::string query_key_ref;
+    std::string merge_ref;
+    std::string merge_key_ref;
+    std::string merge_delta_ref;
+    std::string merge_marker_ref;
+    std::string merge_inverse_ref;
+    std::string merge_prefix_ref;
+    std::string query_prefix_ref;
+    std::string commitment_role_map;
+    std::uint64_t table_logical_rows = 0;
+    std::uint64_t table_domain = 0;
+    std::uint64_t query_logical_rows = 0;
+    std::uint64_t query_domain = 0;
+    std::uint64_t merge_logical_rows = 0;
+    std::uint64_t merge_domain = 0;
+    std::uint64_t segment_size = 0;
+    std::uint64_t table_segment_count = 0;
+    std::uint64_t query_segment_count = 0;
+    std::uint64_t merge_segment_count = 0;
+    std::uint32_t x_bits = 0;
+    std::uint32_t y_bits = 0;
+    std::string key_max_u128;
+    std::string layout_digest;
+};
+
+struct SortedLookupPlan {
+    std::string schema = "authenticated_sorted_lookup_plan_v1";
+    std::uint32_t version = 1;
+    std::string descriptor_path;
+    std::string descriptor_digest;
+    std::string table_digest;
+    std::string key_encoding = "packed_pair_u128";
+    std::string active_mask_rule = "prefix_one_then_zero_v1";
+    std::string sorted_delta_rule = "nonnegative_bounded_delta_v1";
+    std::string marker_rule = "group_first_v1";
+    std::string inverse_rule = "delta_inverse_or_zero_v1";
+    std::uint64_t segment_size = 0;
+    std::vector<SortedLookupQueryPlan> queries;
+    std::string plan_digest;
+};
+
 struct RelationPlan {
     std::string schema_id = "zkDL_gat_inference_v1";
     std::string proof_scope = "full_gat_forward";
@@ -388,6 +445,7 @@ struct RelationPlan {
     std::string scale_chain_digest;
     std::string integer_bound_ledger_digest;
     std::string integer_bound_ledger_descriptor_digest;
+    SortedLookupPlan sorted_lookup;
     IntegerBoundLedger integer_bound_ledger;
     std::vector<TensorFamily> tensor_families;
     std::vector<OperationFamily> operation_families;
@@ -411,6 +469,9 @@ struct PublicStatement {
     std::string relation_mapping_digest;
     std::string relation_selector_digest;
     std::string relation_degree_digest;
+    std::string sorted_lookup_descriptor_digest;
+    std::string sorted_lookup_plan_digest;
+    std::uint64_t sorted_lookup_query_count = 0;
     std::string static_table_generator_id;
     std::string static_table_version;
     std::string static_table_scale_id;
@@ -507,6 +568,8 @@ struct AssetManifest {
     std::string scale_chain_digest;
     std::string static_table_descriptor;
     std::string static_table_descriptor_digest;
+    std::string sorted_lookup_descriptor;
+    std::string sorted_lookup_descriptor_digest;
     std::string integer_bound_ledger;
     std::string integer_bound_ledger_descriptor_digest;
     std::string srs_path;
