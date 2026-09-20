@@ -12824,7 +12824,7 @@ namespace gatzk::protocol
                     for (std::size_t column = 0;
                          column < low_coefficients.size(); ++column)
                         low_coefficients[column] =
-                            proof_local_bias.value_at(column);
+                            proof_local_bias->value_at(column);
                     const auto tail_randomness = sample_trace_blinder(
                         *trace.compiler_artifact,
                         basis_meta.coefficient_object);

@@ -12,13 +12,14 @@ use crate::gat_adapter::manifest::{
 use crate::gat_adapter::schema::{
     canonical_tensor_archive_key, multiplier_to_scale_exponent, sha256_digest, CanonicalGat,
     CanonicalGraph, CanonicalModel, DigestIdentity, HeadWeights, HiddenLayerSpec,
-    IntegerBoundLedger, ModelBinding, ScaleChain, StaticTables, GAT_SCHEMA_VERSION,
+    ExactTable, IntegerBoundLedger, ModelBinding, ScaleChain, StaticTables, GAT_SCHEMA_VERSION,
 };
 use crate::graph::modules::native_poseidon_hash_string;
 use halo2curves::bn256::Fr;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 /// A parsed canonical dataset/checkpoint bundle.
@@ -118,11 +119,52 @@ struct DatasetMeta {
     num_classes: usize,
     graph_count: usize,
     input_preprocess_id: String,
+    feature_format: Option<String>,
+    feature_dtype: Option<String>,
+    feature_shape: Option<Vec<usize>>,
+    feature_order: Option<String>,
+    feature_length: Option<usize>,
+    feature_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StaticTableRegistryMeta {
+    format: String,
+    version: u32,
+    static_tables_id: String,
+    backend_aux_tables_id: String,
+    static_tables_digest: String,
+    table_order: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StaticTableArchiveMeta {
+    table_id: String,
+    input_scale: i32,
+    output_scale: i32,
+    function_id: String,
+    domain_id: String,
+    generator_id: String,
+    input_min: i128,
+    input_max: i128,
+    row_count: u64,
+    digest: String,
+    canonical_len: u64,
 }
 
 #[derive(Clone, Debug)]
 struct ParsedTensor {
     shape: Vec<usize>,
+    values: Vec<f64>,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedNpy {
+    shape: Vec<usize>,
+    dtype: String,
+    order: String,
     values: Vec<f64>,
 }
 
@@ -387,6 +429,36 @@ fn parse_dataset_meta(path: &Path) -> Result<DatasetMeta, String> {
             .cloned()
             .ok_or_else(|| format!("missing dataset meta key {}", key))
     };
+    let feature_format = cfg.get("feature_format").cloned();
+    let feature_dtype = cfg.get("feature_dtype").cloned();
+    let feature_shape = cfg
+        .get("feature_shape")
+        .map(|value| {
+            value
+                .split(',')
+                .map(|x| parse_usize(x.trim(), "feature_shape"))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let feature_order = cfg.get("feature_order").cloned();
+    let feature_length = cfg
+        .get("feature_length")
+        .map(|x| parse_usize(x, "feature_length"))
+        .transpose()?;
+    let feature_sha256 = cfg.get("feature_sha256").cloned();
+    let feature_fields = [
+        feature_format.is_some(),
+        feature_dtype.is_some(),
+        feature_shape.is_some(),
+        feature_order.is_some(),
+        feature_length.is_some(),
+        feature_sha256.is_some(),
+    ];
+    if feature_fields.iter().any(|present| *present)
+        && !feature_fields.iter().all(|present| *present)
+    {
+        return Err("NumPy feature metadata must provide format/dtype/shape/order/length/sha256 together".into());
+    }
     Ok(DatasetMeta {
         name: get("name")?,
         num_nodes: parse_usize(&get("num_nodes")?, "num_nodes")?,
@@ -398,6 +470,12 @@ fn parse_dataset_meta(path: &Path) -> Result<DatasetMeta, String> {
             .transpose()?
             .unwrap_or(1),
         input_preprocess_id: get("input_preprocess_id")?,
+        feature_format,
+        feature_dtype,
+        feature_shape,
+        feature_order,
+        feature_length,
+        feature_sha256,
     })
 }
 
@@ -551,14 +629,29 @@ fn parse_features(
     scales: &ScaleChain,
 ) -> Result<Vec<i128>, String> {
     if path.extension().and_then(|x| x.to_str()) == Some("npy") {
-        let (shape, values) = parse_npy(path)?;
-        if shape != vec![meta.num_nodes, meta.num_features] {
+        let parsed = parse_npy(path)?;
+        let expected_shape = vec![meta.num_nodes, meta.num_features];
+        if parsed.shape != expected_shape {
             return Err(format!(
                 "feature npy shape {:?} disagrees with metadata",
-                shape
+                parsed.shape
             ));
         }
-        return values
+        if meta.feature_format.as_deref() != Some("npy")
+            || meta.feature_dtype.as_deref() != Some(parsed.dtype.as_str())
+            || meta.feature_shape.as_ref() != Some(&parsed.shape)
+            || meta.feature_order.as_deref() != Some(parsed.order.as_str())
+            || meta.feature_length != Some(parsed.values.len())
+        {
+            return Err("feature npy contract does not match authenticated metadata".into());
+        }
+        let digest = sha256::digest_file(path)
+            .map_err(|e| format!("digest {}: {}", path.display(), e))?;
+        if meta.feature_sha256.as_deref() != Some(digest.as_str()) {
+            return Err("feature npy SHA-256 does not match authenticated metadata".into());
+        }
+        return parsed
+            .values
             .into_iter()
             .map(|x| quantize(x, scales.s_input))
             .collect();
@@ -900,29 +993,41 @@ fn parse_tensor_archive(
     Ok(result)
 }
 
-fn parse_npy(path: &Path) -> Result<(Vec<usize>, Vec<f64>), String> {
-    let bytes = fs::read(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-    if bytes.len() < 12 || &bytes[..6] != b"\x93NUMPY" {
+fn parse_npy(path: &Path) -> Result<ParsedNpy, String> {
+    let file = fs::File::open(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let mut reader = BufReader::new(file);
+    let mut prefix = [0_u8; 8];
+    reader
+        .read_exact(&mut prefix)
+        .map_err(|e| format!("read NumPy header {}: {}", path.display(), e))?;
+    if &prefix[..6] != b"\x93NUMPY" {
         return Err("invalid NumPy magic".into());
     }
-    let major = bytes[6];
-    let (header_len, data_start): (usize, usize) = if major == 1 {
-        (u16::from_le_bytes([bytes[8], bytes[9]]) as usize, 10)
+    let major = prefix[6];
+    let (header_len_u64, data_start_u64): (u64, u64) = if major == 1 {
+        let mut length = [0_u8; 2];
+        reader
+            .read_exact(&mut length)
+            .map_err(|e| format!("read NumPy header length: {}", e))?;
+        (u64::from(u16::from_le_bytes(length)), 10)
     } else if major == 2 {
-        (
-            u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize,
-            12,
-        )
+        let mut length = [0_u8; 4];
+        reader
+            .read_exact(&mut length)
+            .map_err(|e| format!("read NumPy header length: {}", e))?;
+        (u64::from(u32::from_le_bytes(length)), 12)
     } else {
         return Err(format!("unsupported NumPy version {}", major));
     };
-    let end = data_start
-        .checked_add(header_len)
-        .ok_or("NumPy header overflow")?;
-    if end > bytes.len() {
-        return Err("truncated NumPy header".into());
+    if header_len_u64 > 16 * 1024 * 1024 {
+        return Err("NumPy header is unreasonably large".into());
     }
-    let header = std::str::from_utf8(&bytes[data_start..end])
+    let header_len = usize::try_from(header_len_u64).map_err(|_| "NumPy header does not fit usize")?;
+    let mut header_bytes = vec![0_u8; header_len];
+    reader
+        .read_exact(&mut header_bytes)
+        .map_err(|e| format!("read NumPy header body: {}", e))?;
+    let header = std::str::from_utf8(&header_bytes)
         .map_err(|e| format!("NumPy header utf8: {}", e))?;
     if !header.contains("'fortran_order': False") && !header.contains("\"fortran_order\": False") {
         return Err("Fortran-order NumPy arrays are unsupported".into());
@@ -932,10 +1037,10 @@ fn parse_npy(path: &Path) -> Result<(Vec<usize>, Vec<f64>), String> {
         .nth(1)
         .or_else(|| header.split("\"descr\":").nth(1))
         .ok_or("NumPy descr missing")?;
-    let item_size = if descr.contains("f4") {
-        4
+    let (item_size, dtype) = if descr.contains("f4") {
+        (4, "float32")
     } else if descr.contains("f8") {
-        8
+        (8, "float64")
     } else {
         return Err("NumPy dtype must be float32/float64".into());
     };
@@ -962,20 +1067,46 @@ fn parse_npy(path: &Path) -> Result<(Vec<usize>, Vec<f64>), String> {
     let expected_bytes = count
         .checked_mul(item_size)
         .ok_or("NumPy data size overflow")?;
-    if bytes.len() - end != expected_bytes {
+    let expected_file_size = data_start_u64
+        .checked_add(header_len_u64)
+        .and_then(|x| u64::try_from(expected_bytes).ok().and_then(|size| x.checked_add(size)))
+        .ok_or("NumPy file size overflow")?;
+    let actual_file_size = path
+        .metadata()
+        .map_err(|e| format!("stat {}: {}", path.display(), e))?
+        .len();
+    if actual_file_size != expected_file_size {
         return Err("NumPy data length mismatch".into());
     }
     let mut values = Vec::with_capacity(count);
-    for chunk in bytes[end..].chunks_exact(item_size) {
-        values.push(if item_size == 4 {
-            let bytes: [u8; 4] = chunk.try_into().unwrap();
+    let mut remaining = expected_bytes;
+    let mut chunk = vec![0_u8; 1024 * 1024];
+    while remaining > 0 {
+        let take = remaining.min(chunk.len());
+        reader
+            .read_exact(&mut chunk[..take])
+            .map_err(|e| format!("read NumPy payload {}: {}", path.display(), e))?;
+        for value_bytes in chunk[..take].chunks_exact(item_size) {
+            values.push(if item_size == 4 {
+            let bytes: [u8; 4] = value_bytes.try_into().unwrap();
             f32::from_le_bytes(bytes) as f64
         } else {
-            let bytes: [u8; 8] = chunk.try_into().unwrap();
+            let bytes: [u8; 8] = value_bytes.try_into().unwrap();
             f64::from_le_bytes(bytes)
-        });
+            });
+        }
+        remaining -= take;
     }
-    Ok((shape, values))
+    let mut trailing = [0_u8; 1];
+    if reader.read(&mut trailing).map_err(|e| e.to_string())? != 0 {
+        return Err("NumPy data has trailing bytes".into());
+    }
+    Ok(ParsedNpy {
+        shape,
+        dtype: dtype.to_string(),
+        order: "C".into(),
+        values,
+    })
 }
 
 fn build_model(
@@ -1072,7 +1203,7 @@ fn load_exact_relation_resources(
     // protocol inputs.  They must be authenticated files, never generated
     // from host floating point values or inferred from model weights.
     let table_path = format!(
-        "resources/canonical/tables/{}/gat_static_tables.json",
+        "resources/canonical/tables/{}/gat_static_tables.bin",
         dataset
     );
     let ledger_path = format!(
@@ -1098,7 +1229,7 @@ fn load_exact_relation_resources(
             missing.join(", ")
         ));
     }
-    let tables: StaticTables = parse_json(&table.unwrap().path)?;
+    let tables = parse_binary_tables(&table.unwrap().path)?;
     let ledger: IntegerBoundLedger = parse_json(&ledger.unwrap().path)?;
     tables.validate()?;
     ledger.validate()?;
@@ -1135,17 +1266,228 @@ fn load_exact_relation_resources(
     Ok((tables, ledger))
 }
 
+const TABLE_MAGIC: &[u8] = b"EZKL-GAT-TABLES\x00";
+const TABLE_FORMAT_VERSION: u32 = 1;
+const TABLE_METADATA_LIMIT: u64 = 16 * 1024 * 1024;
+
+fn read_u32(reader: &mut BufReader<fs::File>, label: &str) -> Result<u32, String> {
+    let mut bytes = [0_u8; 4];
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|e| format!("read {}: {}", label, e))?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_u64(reader: &mut BufReader<fs::File>, label: &str) -> Result<u64, String> {
+    let mut bytes = [0_u8; 8];
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|e| format!("read {}: {}", label, e))?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_bounded_bytes(
+    reader: &mut BufReader<fs::File>,
+    length: u64,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    if length > TABLE_METADATA_LIMIT {
+        return Err(format!("{} exceeds metadata limit", label));
+    }
+    let length = usize::try_from(length).map_err(|_| format!("{} does not fit usize", label))?;
+    let mut bytes = vec![0_u8; length];
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|e| format!("read {}: {}", label, e))?;
+    Ok(bytes)
+}
+
+fn archive_canonical_length(metadata: &StaticTableArchiveMeta) -> Result<u64, String> {
+    let string_bytes = [
+        metadata.table_id.len(),
+        metadata.function_id.len(),
+        metadata.domain_id.len(),
+        metadata.generator_id.len(),
+    ]
+    .into_iter()
+    .try_fold(0_u64, |total, length| {
+        total
+            .checked_add(8)
+            .and_then(|value| value.checked_add(u64::try_from(length).ok()?))
+    })
+    .ok_or_else(|| format!("{} canonical length overflow", metadata.table_id))?;
+    let rows = metadata
+        .row_count
+        .checked_mul(32)
+        .ok_or_else(|| format!("{} canonical row length overflow", metadata.table_id))?;
+    u64::try_from(b"ezkl-gat-exact-table-v1".len())
+        .ok()
+        .and_then(|prefix| prefix.checked_add(string_bytes))
+        .and_then(|value| value.checked_add(4 + 4 + 16 + 16))
+        .and_then(|value| value.checked_add(rows))
+        .ok_or_else(|| format!("{} canonical length overflow", metadata.table_id))
+}
+
+fn parse_binary_tables(path: &Path) -> Result<StaticTables, String> {
+    let file = fs::File::open(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let mut reader = BufReader::new(file);
+    let mut magic = [0_u8; 16];
+    reader
+        .read_exact(&mut magic)
+        .map_err(|e| format!("read table archive magic: {}", e))?;
+    if magic.as_slice() != TABLE_MAGIC {
+        return Err("unsupported static-table archive magic".into());
+    }
+    let version = read_u32(&mut reader, "table archive version")?;
+    if version != TABLE_FORMAT_VERSION {
+        return Err(format!("unsupported static-table archive version {}", version));
+    }
+    let table_count = read_u32(&mut reader, "table archive count")?;
+    if table_count != 4 {
+        return Err(format!("static-table archive must contain four tables, got {}", table_count));
+    }
+    let registry_length = read_u64(&mut reader, "registry metadata length")?;
+    let registry: StaticTableRegistryMeta = serde_json::from_slice(&read_bounded_bytes(
+        &mut reader,
+        registry_length,
+        "registry metadata",
+    )?)
+    .map_err(|e| format!("parse registry metadata: {}", e))?;
+    if registry.format != "ezkl-gat-static-tables-bin"
+        || registry.version != TABLE_FORMAT_VERSION
+        || registry.table_order
+            != vec![
+                "lrelu".to_string(),
+                "exp".to_string(),
+                "elu".to_string(),
+                "max_relu".to_string()
+            ]
+    {
+        return Err("static-table registry metadata identity mismatch".into());
+    }
+    let mut tables = Vec::new();
+    for expected_function in ["lrelu", "exp_neg", "elu", "max_relu"] {
+        let metadata_length = read_u64(&mut reader, "table metadata length")?;
+        let metadata: StaticTableArchiveMeta = serde_json::from_slice(&read_bounded_bytes(
+            &mut reader,
+            metadata_length,
+            "table metadata",
+        )?)
+        .map_err(|e| format!("parse table metadata: {}", e))?;
+        let row_count = read_u64(&mut reader, "table row count")?;
+        if row_count != metadata.row_count {
+            return Err(format!("{} row count metadata mismatch", metadata.table_id));
+        }
+        let expected_count = metadata
+            .input_max
+            .checked_sub(metadata.input_min)
+            .and_then(|x| x.checked_add(1))
+            .ok_or_else(|| format!("{} input domain overflow", metadata.table_id))?;
+        if u64::try_from(expected_count).ok() != Some(row_count) {
+            return Err(format!("{} row count does not cover its domain", metadata.table_id));
+        }
+        // The binary archive itself is consumed with bounded reads.  The
+        // native ezkl dynamic-lookup API requires one indexed fixed-table
+        // tensor and ExactTable::lookup uses binary_search, so this single
+        // Vec is the circuit's unavoidable fixed lookup representation; no
+        // JSON/archive copy is retained alongside it.
+        let capacity = usize::try_from(row_count)
+            .map_err(|_| format!("{} row count does not fit usize", metadata.table_id))?;
+        let mut rows = Vec::with_capacity(capacity);
+        for _ in 0..row_count {
+            let mut input_bytes = [0_u8; 16];
+            let mut output_bytes = [0_u8; 16];
+            reader
+                .read_exact(&mut input_bytes)
+                .map_err(|e| format!("read {} input row: {}", metadata.table_id, e))?;
+            reader
+                .read_exact(&mut output_bytes)
+                .map_err(|e| format!("read {} output row: {}", metadata.table_id, e))?;
+            rows.push((
+                i128::from_le_bytes(input_bytes),
+                i128::from_le_bytes(output_bytes),
+            ));
+        }
+        if metadata.function_id != expected_function {
+            return Err(format!(
+                "{} function identity mismatch: {} != {}",
+                metadata.table_id, metadata.function_id, expected_function
+            ));
+        }
+        let canonical_len = metadata.canonical_len;
+        if archive_canonical_length(&metadata)? != canonical_len {
+            return Err(format!("{} canonical length mismatch", metadata.table_id));
+        }
+        let table = ExactTable {
+            table_id: metadata.table_id,
+            input_scale: metadata.input_scale,
+            output_scale: metadata.output_scale,
+            function_id: metadata.function_id,
+            domain_id: metadata.domain_id,
+            generator_id: metadata.generator_id,
+            rows,
+            input_min: metadata.input_min,
+            input_max: metadata.input_max,
+            digest: metadata.digest,
+        };
+        tables.push(table);
+    }
+    let [lrelu, exp, elu, max_relu] = tables.try_into().map_err(|_| "table count mismatch")?;
+    let registry = StaticTables {
+        lrelu,
+        exp,
+        elu,
+        max_relu,
+        static_tables_id: registry.static_tables_id,
+        backend_aux_tables_id: registry.backend_aux_tables_id,
+        static_tables_digest: registry.static_tables_digest,
+    };
+    registry.validate()?;
+    let mut trailing = [0_u8; 1];
+    if reader.read(&mut trailing).map_err(|e| e.to_string())? != 0 {
+        return Err("static-table archive has trailing bytes".into());
+    }
+    Ok(registry)
+}
+
 /// Write Rust-generated static-table and integer-ledger metadata beside a run.
 pub fn write_generated_metadata(spec: &CanonicalGat, output_dir: &Path) -> Result<(), String> {
     fs::create_dir_all(output_dir)
         .map_err(|e| format!("create {}: {}", output_dir.display(), e))?;
-    let tables =
-        serde_json::to_vec_pretty(&spec.tables).map_err(|e| format!("serialize tables: {}", e))?;
+    let tables = serde_json::json!({
+        "format": "ezkl-gat-static-tables-metadata-v1",
+        "source_format": "gat_static_tables.bin",
+        "static_tables_id": spec.tables.static_tables_id,
+        "backend_aux_tables_id": spec.tables.backend_aux_tables_id,
+        "static_tables_digest": spec.tables.static_tables_digest,
+        "tables": [
+            {"table_id": spec.tables.lrelu.table_id, "digest": spec.tables.lrelu.digest, "input_min": spec.tables.lrelu.input_min, "input_max": spec.tables.lrelu.input_max},
+            {"table_id": spec.tables.exp.table_id, "digest": spec.tables.exp.digest, "input_min": spec.tables.exp.input_min, "input_max": spec.tables.exp.input_max},
+            {"table_id": spec.tables.elu.table_id, "digest": spec.tables.elu.digest, "input_min": spec.tables.elu.input_min, "input_max": spec.tables.elu.input_max},
+            {"table_id": spec.tables.max_relu.table_id, "digest": spec.tables.max_relu.digest, "input_min": spec.tables.max_relu.input_min, "input_max": spec.tables.max_relu.input_max}
+        ]
+    });
+    let tables = serde_json::to_vec_pretty(&tables).map_err(|e| format!("serialize tables: {}", e))?;
     let ledger =
         serde_json::to_vec_pretty(&spec.ledger).map_err(|e| format!("serialize ledger: {}", e))?;
-    fs::write(output_dir.join("gat_static_tables.json"), tables)
-        .map_err(|e| format!("write table metadata: {}", e))?;
-    fs::write(output_dir.join("gat_integer_ledger.json"), ledger)
-        .map_err(|e| format!("write ledger metadata: {}", e))?;
+    write_atomic_metadata(&output_dir.join("gat_static_tables.json"), &tables)?;
+    write_atomic_metadata(&output_dir.join("gat_integer_ledger.json"), &ledger)?;
+    Ok(())
+}
+
+fn write_atomic_metadata(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| format!("create temporary metadata {}: {}", path.display(), e))?;
+    temporary
+        .write_all(bytes)
+        .map_err(|e| format!("write temporary metadata {}: {}", path.display(), e))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("sync temporary metadata {}: {}", path.display(), e))?;
+    temporary
+        .persist(path)
+        .map_err(|e| format!("install metadata {}: {}", path.display(), e))?;
     Ok(())
 }

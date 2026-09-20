@@ -319,7 +319,6 @@ fn ensure_no_symlink(path: &Path, root: &Path) -> Result<(), String> {
 
 fn hash_file(path: &Path) -> Result<(u64, String), String> {
     let mut file = File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
-    let mut bytes = Vec::new();
     let mut size = 0_u64;
     let mut chunk = [0_u8; 1024 * 1024];
     loop {
@@ -332,9 +331,9 @@ fn hash_file(path: &Path) -> Result<(u64, String), String> {
         size = size
             .checked_add(read as u64)
             .ok_or_else(|| format!("size overflow while reading {}", path.display()))?;
-        bytes.extend_from_slice(&chunk[..read]);
     }
-    let digest = sha256_digest(&bytes)?;
+    let digest = sha256::digest_file(path)
+        .map_err(|e| format!("digest {}: {}", path.display(), e))?;
     Ok((size, digest))
 }
 
@@ -406,9 +405,32 @@ impl ResourceManifest {
             return Err("resource manifest contains no files".into());
         }
         let mut out = Vec::with_capacity(self.files.len());
+        let canonical_root = baseline_root
+            .canonicalize()
+            .map_err(|e| format!("canonicalize baseline root: {}", e))?;
         for record in &self.files {
             valid_digest("resource sha256", &record.sha256)?;
             valid_digest("source sha256", &record.source_sha256)?;
+            let source = Path::new(&record.source_path);
+            if !source.is_absolute() {
+                return Err(format!("source path is not absolute: {}", record.source_path));
+            }
+            ensure_no_symlink(source, baseline_root)?;
+            let canonical_source = source
+                .canonicalize()
+                .map_err(|e| format!("canonicalize source {}: {}", source.display(), e))?;
+            if !canonical_source.starts_with(&canonical_root) {
+                return Err(format!(
+                    "source path escapes baseline root: {}",
+                    record.source_path
+                ));
+            }
+            if !fs::metadata(source)
+                .map_err(|e| format!("stat source {}: {}", source.display(), e))?
+                .is_file()
+            {
+                return Err(format!("source path is not a regular file: {}", source.display()));
+            }
             let path_rel = safe_relative(&record.path)?;
             let path = baseline_root.join(&path_rel);
             ensure_no_symlink(&path, baseline_root)?;

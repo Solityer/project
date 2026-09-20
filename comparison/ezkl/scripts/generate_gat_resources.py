@@ -11,10 +11,13 @@ output is subsequently authenticated by validate_resources.py.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import math
+import os
 import struct
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +27,10 @@ BN254_MODULUS = (
     "21888242871839275222246405745257275088548364400416034343698204186575808495617"
 )
 U64_MAX = (1 << 64) - 1
+TABLE_MAGIC = b"EZKL-GAT-TABLES\x00"
+TABLE_FORMAT_VERSION = 1
+TABLE_ORDER = ("lrelu", "exp", "elu", "max_relu")
+NPY_MAGIC = b"\x93NUMPY"
 
 
 def sha256(data: bytes) -> str:
@@ -42,6 +49,20 @@ def append_i128(out: bytearray, value: int) -> None:
 
 def append_usize(out: bytearray, value: int) -> None:
     out.extend(struct.pack("<Q", int(value) & U64_MAX))
+
+
+def hash_string(hasher: Any, value: str) -> None:
+    encoded = value.encode()
+    hasher.update(struct.pack("<Q", len(encoded)))
+    hasher.update(encoded)
+
+
+def hash_i128(hasher: Any, value: int) -> None:
+    hasher.update(int(value).to_bytes(16, "little", signed=True))
+
+
+def hash_u64(hasher: Any, value: int) -> None:
+    hasher.update(struct.pack("<Q", int(value) & U64_MAX))
 
 
 def round_away(value: float) -> int:
@@ -85,12 +106,29 @@ def write_cfg(path: Path, updates: dict[str, str]) -> None:
     for key in updates:
         if key not in seen:
             output.append(f"{key} = {updates[key]}")
-    path.write_text("\n".join(output) + "\n")
+    atomic_write(path, ("\n".join(output) + "\n").encode())
 
 
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=False) + "\n")
+    atomic_write(path, (json.dumps(value, indent=2, sort_keys=False) + "\n").encode())
+
+
+def atomic_write(path: Path, payload: bytes) -> None:
+    """Install a small generated artifact without exposing a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def load_tensors(path: Path) -> dict[str, tuple[list[int], list[float]]]:
@@ -180,39 +218,96 @@ def graph_info(root: Path, dataset: str, meta: dict[str, str]) -> tuple[int, int
     return nodes, len(raw), max(1, degree)
 
 
-def npy_values(path: Path) -> list[float]:
-    data = path.read_bytes()
-    if data[:6] != b"\x93NUMPY":
-        raise ValueError(f"invalid npy file {path}")
-    major = data[6]
-    if major == 1:
-        header_len = int.from_bytes(data[8:10], "little")
-        start = 10
-    elif major == 2:
-        header_len = int.from_bytes(data[8:12], "little")
-        start = 12
+def npy_contract(path: Path) -> dict[str, Any]:
+    """Read only the bounded NPY header and stream its authenticated payload."""
+    with path.open("rb") as stream:
+        prefix = stream.read(12)
+        if len(prefix) < 10 or prefix[:6] != NPY_MAGIC:
+            raise ValueError(f"invalid npy file {path}")
+        major = prefix[6]
+        if major == 1:
+            header_len = int.from_bytes(prefix[8:10], "little")
+            start = 10
+        elif major == 2:
+            if len(prefix) < 12:
+                raise ValueError(f"truncated npy header {path}")
+            header_len = int.from_bytes(prefix[8:12], "little")
+            start = 12
+        else:
+            raise ValueError(f"unsupported npy version {major}")
+        if header_len > 16 * 1024 * 1024:
+            raise ValueError(f"npy header is unreasonably large: {path}")
+        header_bytes = stream.read(header_len)
+        if len(header_bytes) != header_len:
+            raise ValueError(f"truncated npy header {path}")
+    try:
+        header = ast.literal_eval(header_bytes.decode("latin1").strip())
+    except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
+        raise ValueError(f"invalid npy header {path}: {exc}") from exc
+    if not isinstance(header, dict) or set(header) != {"descr", "fortran_order", "shape"}:
+        raise ValueError(f"unsupported npy header schema {path}")
+    descr = header["descr"]
+    if descr == "<f4":
+        item_size, fmt, dtype = 4, "<f", "float32"
+    elif descr == "<f8":
+        item_size, fmt, dtype = 8, "<d", "float64"
     else:
-        raise ValueError(f"unsupported npy version {major}")
-    header = data[start : start + header_len].decode()
-    item_size = 4 if "f4" in header else 8 if "f8" in header else 0
-    if not item_size:
-        raise ValueError(f"unsupported npy dtype in {path}")
-    payload = data[start + header_len :]
-    return [
-        (
-            struct.unpack("<f", payload[i : i + 4])[0]
-            if item_size == 4
-            else struct.unpack("<d", payload[i : i + 8])[0]
-        )
-        for i in range(0, len(payload), item_size)
-    ]
+        raise ValueError(f"unsupported npy dtype {descr!r} in {path}")
+    if header["fortran_order"] is not False:
+        raise ValueError(f"Fortran-order npy arrays are unsupported: {path}")
+    shape = header["shape"]
+    if not isinstance(shape, tuple) or not shape or any(not isinstance(x, int) or x <= 0 for x in shape):
+        raise ValueError(f"invalid npy shape in {path}")
+    length = math.prod(shape)
+    payload_size = length * item_size
+    actual_size = path.stat().st_size
+    data_offset = start + header_len
+    if actual_size != data_offset + payload_size:
+        raise ValueError(f"npy data length mismatch in {path}")
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(block)
+    return {
+        "dtype": dtype,
+        "descr": descr,
+        "shape": list(shape),
+        "order": "C",
+        "length": length,
+        "item_size": item_size,
+        "format": fmt,
+        "data_offset": data_offset,
+        "sha256": hasher.hexdigest(),
+    }
+
+
+def iter_npy_values(path: Path, contract: dict[str, Any]):
+    """Yield NPY values in bounded chunks, never materializing the tensor."""
+    item_size = int(contract["item_size"])
+    fmt = str(contract["format"])
+    carry = b""
+    with path.open("rb") as stream:
+        stream.seek(int(contract["data_offset"]))
+        while True:
+            block = stream.read(1024 * 1024)
+            if not block:
+                break
+            data = carry + block
+            usable = len(data) - (len(data) % item_size)
+            for (value,) in struct.iter_unpack(fmt, data[:usable]):
+                yield float(value)
+            carry = data[usable:]
+    if carry:
+        raise ValueError(f"truncated npy value payload: {path}")
 
 
 def feature_bound(root: Path, dataset: str, meta: dict[str, str]) -> int:
     path = root / "resources/canonical/cache" / dataset
     scale = 16
     if dataset in {"ppi", "ogbn_arxiv"}:
-        return max((abs(round_away(x * scale)) for x in npy_values(path / "features.npy")), default=1)
+        feature_path = path / "features.npy"
+        contract = npy_contract(feature_path)
+        return max((abs(round_away(x * scale)) for x in iter_npy_values(feature_path, contract)), default=1)
     maximum = 0
     lines = (path / "features.txt").read_text().splitlines()
     preprocess = meta.get("input_preprocess_id", "")
@@ -230,44 +325,77 @@ def feature_bound(root: Path, dataset: str, meta: dict[str, str]) -> int:
     return max(1, maximum)
 
 
+def table_value(table: dict[str, Any], input_value: int) -> int:
+    function_id = table["function_id"]
+    if function_id == "lrelu":
+        return input_value if input_value >= 0 else round_ratio_away(input_value, 5)
+    if function_id == "exp_neg":
+        return max(1, round_away(math.exp(-input_value / 256.0) * 16.0))
+    if function_id == "elu":
+        return input_value if input_value >= 0 else round_away((math.exp(input_value / 16.0) - 1.0) * 16.0)
+    if function_id == "max_relu":
+        return max(0, input_value)
+    raise ValueError(f"unsupported exact table function: {function_id}")
+
+
+def iter_table_rows(table: dict[str, Any]):
+    for input_value in range(int(table["input_min"]), int(table["input_max"]) + 1):
+        yield input_value, table_value(table, input_value)
+
+
+def table_canonical_length(table: dict[str, Any]) -> int:
+    """Length of ExactTable::canonical_bytes without constructing it."""
+    string_fields = ("table_id", "function_id", "domain_id", "generator_id")
+    return (
+        len(b"ezkl-gat-exact-table-v1")
+        + sum(8 + len(str(table[field]).encode()) for field in string_fields)
+        + 4
+        + 4
+        + 16
+        + 16
+        + int(table["row_count"]) * 32
+    )
+
+
 def table_digest(table: dict[str, Any]) -> str:
-    out = bytearray(b"ezkl-gat-exact-table-v1")
-    append_string(out, table["table_id"])
-    out.extend(struct.pack("<i", table["input_scale"]))
-    out.extend(struct.pack("<i", table["output_scale"]))
-    append_string(out, table["function_id"])
-    append_string(out, table["domain_id"])
-    append_string(out, table["generator_id"])
-    append_i128(out, table["input_min"])
-    append_i128(out, table["input_max"])
-    for input_value, output_value in table["rows"]:
-        append_i128(out, input_value)
-        append_i128(out, output_value)
-    return sha256(bytes(out))
+    hasher = hashlib.sha256()
+    hasher.update(b"ezkl-gat-exact-table-v1")
+    hash_string(hasher, table["table_id"])
+    hasher.update(struct.pack("<i", table["input_scale"]))
+    hasher.update(struct.pack("<i", table["output_scale"]))
+    hash_string(hasher, table["function_id"])
+    hash_string(hasher, table["domain_id"])
+    hash_string(hasher, table["generator_id"])
+    hash_i128(hasher, table["input_min"])
+    hash_i128(hasher, table["input_max"])
+    for input_value, output_value in iter_table_rows(table):
+        hash_i128(hasher, input_value)
+        hash_i128(hasher, output_value)
+    return hasher.hexdigest()
 
 
 def static_tables_digest(tables: dict[str, Any]) -> str:
-    out = bytearray(b"ezkl-gat-static-tables-v1")
-    append_string(out, tables["static_tables_id"])
-    append_string(out, tables["backend_aux_tables_id"])
-    for key in ("lrelu", "exp", "elu", "max_relu"):
-        encoded = bytearray(b"ezkl-gat-exact-table-v1")
+    hasher = hashlib.sha256()
+    hasher.update(b"ezkl-gat-static-tables-v1")
+    hash_string(hasher, tables["static_tables_id"])
+    hash_string(hasher, tables["backend_aux_tables_id"])
+    for key in TABLE_ORDER:
         table = tables[key]
-        append_string(encoded, table["table_id"])
-        encoded.extend(struct.pack("<i", table["input_scale"]))
-        encoded.extend(struct.pack("<i", table["output_scale"]))
-        append_string(encoded, table["function_id"])
-        append_string(encoded, table["domain_id"])
-        append_string(encoded, table["generator_id"])
-        append_i128(encoded, table["input_min"])
-        append_i128(encoded, table["input_max"])
-        for input_value, output_value in table["rows"]:
-            append_i128(encoded, input_value)
-            append_i128(encoded, output_value)
-        append_usize(out, len(encoded))
-        out.extend(encoded)
-        append_string(out, table["digest"])
-    return sha256(bytes(out))
+        hash_u64(hasher, table_canonical_length(table))
+        hasher.update(b"ezkl-gat-exact-table-v1")
+        hash_string(hasher, table["table_id"])
+        hasher.update(struct.pack("<i", table["input_scale"]))
+        hasher.update(struct.pack("<i", table["output_scale"]))
+        hash_string(hasher, table["function_id"])
+        hash_string(hasher, table["domain_id"])
+        hash_string(hasher, table["generator_id"])
+        hash_i128(hasher, table["input_min"])
+        hash_i128(hasher, table["input_max"])
+        for input_value, output_value in iter_table_rows(table):
+            hash_i128(hasher, input_value)
+            hash_i128(hasher, output_value)
+        hash_string(hasher, table["digest"])
+    return hasher.hexdigest()
 
 
 def ledger_digest(ledger: dict[str, Any]) -> str:
@@ -317,7 +445,6 @@ def make_table(
     output_scale: int,
     low: int,
     high: int,
-    rows: list[tuple[int, int]],
 ) -> dict[str, Any]:
     table = {
         "table_id": table_id,
@@ -326,9 +453,9 @@ def make_table(
         "function_id": function_id,
         "domain_id": domain_id,
         "generator_id": generator_id,
-        "rows": rows,
         "input_min": low,
         "input_max": high,
+        "row_count": high - low + 1,
         "digest": "",
     }
     table["digest"] = table_digest(table)
@@ -358,22 +485,24 @@ def build_tables(
         lrelu_low = -configured
         lrelu_high = configured
         elu_bound = configured
-    lrelu_rows = [
-        (x, x if x >= 0 else round_ratio_away(x, 5))
-        for x in range(lrelu_low, lrelu_high + 1)
-    ]
-    lrelu_output_bound = max(abs(y) for _, y in lrelu_rows)
+    lrelu_probe = {
+        "function_id": "lrelu",
+        "input_min": lrelu_low,
+        "input_max": lrelu_high,
+    }
+    lrelu_output_bound = max(
+        abs(table_value(lrelu_probe, lrelu_low)),
+        abs(table_value(lrelu_probe, lrelu_high)),
+    )
     exp_bound = 2 * lrelu_output_bound
-    exp_rows = [
-        (x, max(1, round_away(math.exp(-x / 256.0) * 16.0)))
-        for x in range(exp_bound + 1)
-    ]
-    elu_rows = [
-        (x, x if x >= 0 else round_away((math.exp(x / 16.0) - 1.0) * 16.0))
-        for x in range(-elu_bound, elu_bound + 1)
-    ]
+    exp_probe = {"function_id": "exp_neg", "input_min": 0, "input_max": exp_bound}
+    exp_output_bound = table_value(exp_probe, 0)
+    elu_probe = {"function_id": "elu", "input_min": -elu_bound, "input_max": elu_bound}
+    elu_output_bound = max(
+        abs(table_value(elu_probe, -elu_bound)),
+        abs(table_value(elu_probe, elu_bound)),
+    )
     max_relu_bound = max(2 * lrelu_output_bound, degree)
-    max_relu_rows = [(x, max(0, x)) for x in range(-max_relu_bound, max_relu_bound + 1)]
     domain_id = (
         f"dataset:{dataset}:range_bits:{range_bits}:large:{str(large).lower()}"
     )
@@ -389,7 +518,6 @@ def build_tables(
             8,
             lrelu_low,
             lrelu_high,
-            lrelu_rows,
         ),
         "exp": make_table(
             f"{prefix}:exp",
@@ -400,7 +528,6 @@ def build_tables(
             4,
             0,
             exp_bound,
-            exp_rows,
         ),
         "elu": make_table(
             f"{prefix}:elu",
@@ -411,7 +538,6 @@ def build_tables(
             4,
             -elu_bound,
             elu_bound,
-            elu_rows,
         ),
         "max_relu": make_table(
             f"{prefix}:max_relu",
@@ -422,7 +548,6 @@ def build_tables(
             8,
             -max_relu_bound,
             max_relu_bound,
-            max_relu_rows,
         ),
         "static_tables_id": prefix,
         "backend_aux_tables_id": f"tables:gat:{dataset}:max_relu:v1",
@@ -441,11 +566,17 @@ def build_ledger(
     degree: int,
 ) -> dict[str, Any]:
     lrelu_input = max(abs(tables["lrelu"]["input_min"]), abs(tables["lrelu"]["input_max"]))
-    lrelu_output = max(abs(y) for _x, y in tables["lrelu"]["rows"])
+    lrelu_output = max(
+        abs(table_value(tables["lrelu"], tables["lrelu"]["input_min"])),
+        abs(table_value(tables["lrelu"], tables["lrelu"]["input_max"])),
+    )
     exp_input = tables["exp"]["input_max"]
-    exp_output = max(y for _x, y in tables["exp"]["rows"])
+    exp_output = table_value(tables["exp"], tables["exp"]["input_min"])
     elu_input = max(abs(tables["elu"]["input_min"]), abs(tables["elu"]["input_max"]))
-    elu_output = max(abs(y) for _x, y in tables["elu"]["rows"])
+    elu_output = max(
+        abs(table_value(tables["elu"], tables["elu"]["input_min"])),
+        abs(table_value(tables["elu"], tables["elu"]["input_max"])),
+    )
     max_relu_input = max(
         abs(tables["max_relu"]["input_min"]), abs(tables["max_relu"]["input_max"])
     )
@@ -566,6 +697,68 @@ def build_ledger(
     return ledger
 
 
+def table_metadata(table: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "table_id": table["table_id"],
+        "input_scale": table["input_scale"],
+        "output_scale": table["output_scale"],
+        "function_id": table["function_id"],
+        "domain_id": table["domain_id"],
+        "generator_id": table["generator_id"],
+        "input_min": table["input_min"],
+        "input_max": table["input_max"],
+        "row_count": table["row_count"],
+        "digest": table["digest"],
+        "canonical_len": table_canonical_length(table),
+    }
+
+
+def write_table_archive(path: Path, tables: dict[str, Any]) -> None:
+    """Write the authenticated lookup registry as a bounded-header stream.
+
+    Rows are generated directly into the temporary file.  The archive uses
+    u64 lengths/counts and signed i128 row values, matching the Rust loader's
+    checked parser and the existing canonical table digest.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(TABLE_MAGIC)
+            stream.write(struct.pack("<I", TABLE_FORMAT_VERSION))
+            stream.write(struct.pack("<I", len(TABLE_ORDER)))
+            registry = {
+                "format": "ezkl-gat-static-tables-bin",
+                "version": TABLE_FORMAT_VERSION,
+                "static_tables_id": tables["static_tables_id"],
+                "backend_aux_tables_id": tables["backend_aux_tables_id"],
+                "static_tables_digest": tables["static_tables_digest"],
+                "table_order": list(TABLE_ORDER),
+            }
+            registry_bytes = json.dumps(registry, separators=(",", ":"), sort_keys=True).encode()
+            stream.write(struct.pack("<Q", len(registry_bytes)))
+            stream.write(registry_bytes)
+            for key in TABLE_ORDER:
+                table = tables[key]
+                metadata = json.dumps(
+                    table_metadata(table), separators=(",", ":"), sort_keys=True
+                ).encode()
+                stream.write(struct.pack("<Q", len(metadata)))
+                stream.write(metadata)
+                stream.write(struct.pack("<Q", table["row_count"]))
+                for input_value, output_value in iter_table_rows(table):
+                    stream.write(int(input_value).to_bytes(16, "little", signed=True))
+                    stream.write(int(output_value).to_bytes(16, "little", signed=True))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
 def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
     if dataset not in DATASETS:
         raise SystemExit(f"generate_gat_resources: unsupported dataset {dataset}")
@@ -584,10 +777,26 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
         config.get("batching_rule") == "whole_graph_single",
     )
     ledger = build_ledger(dataset, tables, meta, maxima, feature_max, degree)
-    table_path = root / "resources/canonical/tables" / dataset / "gat_static_tables.json"
+    table_path = root / "resources/canonical/tables" / dataset / "gat_static_tables.bin"
     ledger_path = root / "resources/canonical/ledgers" / dataset / "gat_integer_ledger.json"
-    write_json(table_path, tables)
+    write_table_archive(table_path, tables)
+    old_table_path = table_path.with_suffix(".json")
+    if old_table_path.exists() and not old_table_path.is_symlink():
+        old_table_path.unlink()
     write_json(ledger_path, ledger)
+    feature_updates: dict[str, str] = {}
+    if dataset in {"ppi", "ogbn_arxiv"}:
+        contract = npy_contract(
+            root / "resources/canonical/cache" / dataset / "features.npy"
+        )
+        feature_updates = {
+            "feature_format": "npy",
+            "feature_dtype": contract["dtype"],
+            "feature_shape": ",".join(str(x) for x in contract["shape"]),
+            "feature_order": contract["order"],
+            "feature_length": str(contract["length"]),
+            "feature_sha256": contract["sha256"],
+        }
     write_cfg(
         root / "resources/canonical/configs" / f"{dataset}_secure.cfg",
         {
@@ -597,6 +806,11 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
             "degree_bound_digest": ledger["ledger_digest"],
         },
     )
+    if feature_updates:
+        write_cfg(
+            root / "resources/canonical/cache" / dataset / "meta.cfg",
+            feature_updates,
+        )
     manifest_path = root / "resources/canonical/checkpoints" / f"{dataset}_gat/manifest.json"
     checkpoint = json.loads(manifest_path.read_text())
     checkpoint["static_table_id"] = tables["static_tables_id"]
