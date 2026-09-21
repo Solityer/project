@@ -4506,79 +4506,125 @@ namespace gatzk::algebra
         std::size_t element_count)
     {
         if (element_count == 0)
-        {
             return true;
-        }
-
         if (!cuda_backend_unified_addressing_available())
-        {
             return false;
-        }
 
         gpu::GpuFr gpu_claim{};
+        std::memcpy(gpu_claim.d, &scaled_claim_sum, sizeof(gpu_claim.d));
+        constexpr unsigned block_size = 256;
+        const auto blocks = static_cast<unsigned>((element_count + block_size - 1U) / block_size);
+        auto &workspace = persistent_scan_workspace();
+        const auto stream = workspace.stream();
 
-        std::memcpy(
-            gpu_claim.d,
-            &scaled_claim_sum,
-            sizeof(gpu_claim.d));
-
-        constexpr unsigned block_size =
-            256;
-
-        const auto blocks =
-            static_cast<unsigned>(
-                (element_count +
-                 block_size - 1U) /
-                block_size);
-
-        auto &workspace =
-            persistent_scan_workspace();
-
-        const auto stream =
-            workspace.stream();
-
-        opening_quotient_assembly_kernel<<<
-            blocks,
-            block_size,
-            0,
-            stream>>>(
-            reinterpret_cast<
-                const gpu::GpuFr *>(
-                folded_values),
-            reinterpret_cast<
-                gpu::GpuFr *>(
-                quotient_values),
+        opening_quotient_assembly_kernel<<<blocks, block_size, 0, stream>>>(
+            reinterpret_cast<const gpu::GpuFr *>(folded_values),
+            reinterpret_cast<gpu::GpuFr *>(quotient_values),
             gpu_claim,
             element_count);
 
-        auto status =
-            cudaGetLastError();
-
+        auto status = cudaGetLastError();
         if (status != cudaSuccess)
-        {
-            throw_scan_cuda_error(
-                "opening quotient assembly launch",
-                status);
-        }
-
-        status =
-            cudaStreamSynchronize(
-                stream);
-
+            throw_scan_cuda_error("opening quotient assembly launch", status);
+        status = cudaStreamSynchronize(stream);
         if (status != cudaSuccess)
-        {
-            throw_scan_cuda_error(
-                "opening quotient assembly synchronization",
-                status);
-        }
-
-        record_cuda_kernel_invocations(
-            1);
-
+            throw_scan_cuda_error("opening quotient assembly synchronization", status);
+        record_cuda_kernel_invocations(1);
         record_cuda_stream_sync();
-
         return true;
     }
+
+    bool opening_inverse_and_quotient_cuda(
+        const mcl::Fr *folded_values,
+        mcl::Fr *quotient_values,
+        const mcl::Fr &scaled_claim_sum,
+        std::size_t domain_size,
+        const mcl::Fr &omega,
+        const mcl::Fr &point)
+    {
+        if (domain_size == 0)
+            return true;
+        if (!cuda_backend_unified_addressing_available())
+            return false;
+
+        gpu::GpuFr gpu_omega{};
+        gpu::GpuFr gpu_point{};
+        gpu::GpuFr gpu_claim{};
+        std::memcpy(gpu_omega.d, &omega, sizeof(gpu_omega.d));
+        std::memcpy(gpu_point.d, &point, sizeof(gpu_point.d));
+        std::memcpy(gpu_claim.d, &scaled_claim_sum, sizeof(gpu_claim.d));
+
+        auto &workspace = persistent_scan_workspace();
+        if (!workspace.ensure_product(domain_size))
+            throw std::runtime_error("CUDA fused opening workspace allocation failed");
+
+        const auto stream = workspace.stream();
+        auto *prefixes = workspace.prefixes();
+        auto *suffixes = workspace.suffixes();
+        auto *global_inverse = workspace.global_inverse();
+        auto *error = workspace.error();
+        auto &scan_levels = workspace.scan_levels();
+        auto *denominators = reinterpret_cast<gpu::GpuFr *>(quotient_values);
+
+        auto status = cudaMemsetAsync(error, 0, sizeof(unsigned int), stream);
+        if (status != cudaSuccess)
+            throw_scan_cuda_error("fused opening error reset", status);
+
+        constexpr unsigned block_size = kBarycentricScanBlockSize;
+        const auto blocks = static_cast<unsigned>((domain_size + block_size - 1U) / block_size);
+
+        barycentric_prepare_parallel_kernel<<<blocks, block_size, 0, stream>>>(gpu_omega, gpu_point, denominators, domain_size);
+        status = cudaGetLastError();
+        if (status != cudaSuccess)
+            throw_scan_cuda_error("fused opening denominator launch", status);
+
+        validate_nonzero_kernel<<<blocks, block_size, 0, stream>>>(denominators, error, domain_size);
+        status = cudaGetLastError();
+        if (status != cudaSuccess)
+            throw_scan_cuda_error("fused opening denominator validation", status);
+
+        std::size_t kernel_count = 2;
+        if (!launch_exclusive_product_scan(denominators, prefixes, domain_size, false, scan_levels, 0, &kernel_count, stream) ||
+            !launch_exclusive_product_scan(denominators, suffixes, domain_size, true, scan_levels, 0, &kernel_count, stream))
+            throw std::runtime_error("CUDA fused opening product scan failed");
+
+        barycentric_invert_product_kernel<<<1, 1, 0, stream>>>(denominators, prefixes, global_inverse, domain_size);
+        status = cudaGetLastError();
+        if (status != cudaSuccess)
+            throw_scan_cuda_error("fused opening product inversion", status);
+        ++kernel_count;
+
+        inverse_finalize_kernel<<<blocks, block_size, 0, stream>>>(prefixes, suffixes, global_inverse, denominators, domain_size, true);
+        status = cudaGetLastError();
+        if (status != cudaSuccess)
+            throw_scan_cuda_error("fused opening inverse finalize", status);
+        ++kernel_count;
+
+        opening_quotient_assembly_kernel<<<blocks, block_size, 0, stream>>>(
+            reinterpret_cast<const gpu::GpuFr *>(folded_values),
+            reinterpret_cast<gpu::GpuFr *>(quotient_values),
+            gpu_claim,
+            domain_size);
+        status = cudaGetLastError();
+        if (status != cudaSuccess)
+            throw_scan_cuda_error("fused opening quotient assembly", status);
+        ++kernel_count;
+
+        unsigned int host_error = 0;
+        status = cudaMemcpyAsync(&host_error, error, sizeof(host_error), cudaMemcpyDeviceToHost, stream);
+        if (status != cudaSuccess)
+            throw_scan_cuda_error("fused opening error download", status);
+        status = cudaStreamSynchronize(stream);
+        if (status != cudaSuccess)
+            throw_scan_cuda_error("fused opening synchronization", status);
+
+        record_cuda_kernel_invocations(kernel_count);
+        record_cuda_stream_sync();
+        if (host_error != 0)
+            throw std::runtime_error("opening point overlaps evaluation domain");
+        return true;
+    }
+
     bool logup_inverse_columns_cuda(
         const mcl::Fr *table,
         const mcl::Fr *query,

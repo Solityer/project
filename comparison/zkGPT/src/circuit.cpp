@@ -12,6 +12,7 @@ void layeredCircuit::initSubset()
         auto &cur = circuit[i], &lst = circuit[i - 1];
         bool has_pre_layer_u = circuit[i].ty == layerType::FFT || circuit[i].ty == layerType::IFFT;
         bool has_pre_layer_v = false;
+        bool has_v_operand = false;
         for (auto &gate: cur.uni_gates) 
         {
             if (!gate.lu) 
@@ -29,6 +30,7 @@ void layeredCircuit::initSubset()
         }
         for (auto &gate: cur.bin_gates) 
         {
+            has_v_operand = true;
             if (!gate.getLayerIdU(i)) 
             {
                 if (visited_uidx[gate.u] != i) {
@@ -87,6 +89,14 @@ void layeredCircuit::initSubset()
             cur.size_v[1] = 0;
             cur.bit_length_v[1] = -1;
         }
+        // Phase 2 is the native sumcheck over every real binary V operand.
+        // Its source may be the input layer (layer id 0) or a preceding
+        // layer; both are part of the unmasked predicate and must not be
+        // silently converted to the fixed-zero-V relation.  Unary-only
+        // layers have no V operand.  Compact native FCONN layers retain
+        // their special metadata path and are validated/proved separately.
+        if (cur.ty != layerType::FCONN)
+            cur.need_phase2 = has_v_operand;
         cur.updateSize();
     }
 }

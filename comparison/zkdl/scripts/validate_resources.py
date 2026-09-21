@@ -105,6 +105,42 @@ def canonical_digest(obj: dict[str, Any], omit: set[str]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def append_u32(value: int) -> bytes:
+    return value.to_bytes(4, "little", signed=False)
+
+
+def append_u64(value: int) -> bytes:
+    return value.to_bytes(8, "little", signed=False)
+
+
+def append_string(value: str) -> bytes:
+    encoded = value.encode()
+    return append_u64(len(encoded)) + encoded
+
+
+def segment_vector_digest(tensor_id: str, visibility: int, domain: int,
+                          version: int, segment_size: int, segment_count: int,
+                          srs_manifest_digest: str, basis_digest: str,
+                          segments: list[dict[str, Any]]) -> str:
+    encoded = append_string("zkdl.segment-commitment-vector.v1")
+    encoded += append_string(tensor_id)
+    encoded += append_u32(visibility) + append_u32(domain)
+    encoded += append_u32(version) + append_u32(segment_size)
+    encoded += append_u32(segment_count)
+    encoded += bytes.fromhex(srs_manifest_digest)
+    encoded += bytes.fromhex(basis_digest)
+    encoded += append_u64(len(segments))
+    for segment in segments:
+        encoded += append_u32(segment["segment_index"])
+        encoded += append_u64(segment["logical_offset"])
+        encoded += append_u32(segment["actual_length"])
+        encoded += append_u32(segment["padded_length"])
+        encoded += append_u32(segment["padding_length"])
+        encoded += bytes.fromhex(segment["frame_digest"])
+        encoded += bytes.fromhex(segment["commitment"])
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def config_identity_digest(path: Path) -> str:
     values = config_values(path)
     values.pop("verifier_registry_digest", None)
@@ -321,8 +357,8 @@ def validate_registry(root: Path, values: dict[str, str], srs: Path,
     if actual != expected_digest:
         fail("model registry digest does not match verifier_registry_digest")
     registry = json_object(path, "model registry")
-    if required_string(registry, "schema", "model registry") != "zkDL_gat_model_registry_v2":
-        fail("model registry schema is not zkDL_gat_model_registry_v2")
+    if required_string(registry, "schema", "model registry") != "zkDL_gat_model_registry_v3":
+        fail("model registry schema is not zkDL_gat_model_registry_v3")
     for key in ("dataset", "model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id", "srs_id"):
         if registry.get(key) != values.get(key):
             fail(f"model registry identity mismatch for {key}")
@@ -370,6 +406,39 @@ def validate_registry(root: Path, values: dict[str, str], srs: Path,
         commitment = required_string(tensor, "commitment", "model tensor")
         if not re.fullmatch(r"[0-9a-f]{96}", commitment):
             fail(f"model tensor commitment is not canonical G1 wire: {tensor_id}")
+        version = tensor.get("segment_binding_version")
+        segment_size = tensor.get("segment_size")
+        segment_count = tensor.get("segment_count")
+        if (version != 1 or not isinstance(segment_size, int) or segment_size < 1 or
+                segment_size & (segment_size - 1) or not isinstance(segment_count, int) or
+                segment_count < 1 or segment_size * segment_count != domain):
+            fail(f"model tensor segment layout is not canonical: {tensor_id}")
+        srs_manifest_digest = required_digest(tensor, "srs_manifest_digest", "model tensor")
+        basis_digest = required_digest(tensor, "basis_digest", "model tensor")
+        vector_digest = required_digest(tensor, "segment_commitment_digest", "model tensor")
+        if srs_manifest_digest != required_digest(registry, "srs_manifest_digest", "model registry"):
+            fail(f"model tensor SRS manifest binding mismatch: {tensor_id}")
+        segments = tensor.get("segment_commitments")
+        if not isinstance(segments, list) or len(segments) != segment_count:
+            fail(f"model tensor ordered segment vector is incomplete: {tensor_id}")
+        for index, segment in enumerate(segments):
+            if not isinstance(segment, dict):
+                fail(f"model tensor segment is not an object: {tensor_id}/{index}")
+            if (segment.get("segment_index") != index or
+                    segment.get("logical_offset") != index * segment_size or
+                    not isinstance(segment.get("actual_length"), int) or
+                    segment["actual_length"] < 1 or segment["actual_length"] > segment_size or
+                    segment.get("padded_length") != segment_size or
+                    segment.get("padding_length") != segment_size - segment["actual_length"] or
+                    not isinstance(segment.get("frame_digest"), str) or
+                    not HEX64.fullmatch(segment["frame_digest"]) or
+                    not isinstance(segment.get("commitment"), str) or
+                    not re.fullmatch(r"[0-9a-f]{96}", segment["commitment"])):
+                fail(f"model tensor segment layout/point is not canonical: {tensor_id}/{index}")
+        if segment_vector_digest(
+                tensor_id, 2, domain, version, segment_size, segment_count,
+                srs_manifest_digest, basis_digest, segments) != vector_digest:
+            fail(f"model tensor segment commitment digest mismatch: {tensor_id}")
     return path, registry, actual
 
 

@@ -431,8 +431,15 @@ struct NativeMaskedSumcheckProverState {
     ScalarOpening previous_mask_eval;
     bool finished = false;
     PedersenBasis basis;
+    std::shared_ptr<const zkgpt::native_pedersen::ProverFastPath> fast_path;
     NativeMaskedSumcheckResult result;
 };
+
+ScalarOpening state_commit_fresh(NativeMaskedSumcheckProverState &state,
+                                 const F &value) {
+    return zkgpt::native_pedersen::commit_fresh(state.basis, value,
+                                                state.fast_path);
+}
 
 bool initialize_external(NativeMaskedSumcheckProverState &, const F *,
                          std::string *);
@@ -440,8 +447,10 @@ bool prove_round(NativeMaskedSumcheckProverState &, const std::vector<F> &, F *,
                  std::string *);
 bool finish_state(NativeMaskedSumcheckProverState &, const std::vector<F> &,
                   NativeMaskedSumcheckResult *, std::string *);
-bool make_terminal_opening(const PedersenBasis &, const ScalarOpening *, const F &,
-                           ScalarOpening &, const std::string &, std::string *);
+bool make_terminal_opening(
+    const PedersenBasis &, const ScalarOpening *, const F &, ScalarOpening &,
+    const std::string &, std::string *,
+    std::shared_ptr<const zkgpt::native_pedersen::ProverFastPath>);
 bool relation_opening(const ScalarOpening &, const PedersenBasis &, const F &,
                       std::string *);
 bool prove_terminal_relation(NativeMaskedSumcheckProverState &,
@@ -476,7 +485,9 @@ struct NativeMaskedSumcheckProver::Impl : NativeMaskedSumcheckProverState {};
 NativeMaskedSumcheckProver::NativeMaskedSumcheckProver(
     NativeProofSession &session, const std::string &label, std::size_t degree,
     const F &initial_claim, const NativeMaskedTerminalSpec &terminal_spec,
-    const F *unmasked_initial_claim)
+    const F *unmasked_initial_claim,
+    const PedersenBasis *basis,
+    std::shared_ptr<const zkgpt::native_pedersen::ProverFastPath> fast_path)
     : impl_(new Impl) {
     impl_->session = &session;
     impl_->label = label;
@@ -508,7 +519,27 @@ NativeMaskedSumcheckProver::NativeMaskedSumcheckProver(
         } else if (unmasked_initial_claim == nullptr) {
             throw std::invalid_argument("private masked Sumcheck scope requires an unmasked initial claim");
         }
-        impl_->basis = derive_basis(session);
+        if (basis != nullptr) {
+            const std::string expected_domain = basis_domain(session);
+            if (basis->domain != expected_domain)
+                throw std::invalid_argument(
+                    "masked streaming Pedersen basis domain mismatch");
+            if (fast_path != nullptr) {
+                if (!fast_path->matches(session, *basis))
+                    throw std::invalid_argument(
+                        "masked streaming prover fast-path provenance mismatch");
+                impl_->fast_path = std::move(fast_path);
+            } else {
+                impl_->fast_path =
+                    zkgpt::native_pedersen::make_prover_fast_path(session, *basis);
+            }
+            // The caller owns the session-bound basis.  Copying the already
+            // derived points avoids another hash-to-G1 while keeping this
+            // prover scope independent of the caller's storage lifetime.
+            impl_->basis = *basis;
+        } else {
+            impl_->basis = derive_basis(session);
+        }
         if (!initialize_external(*impl_, unmasked_initial_claim, nullptr))
             throw std::invalid_argument("masked streaming external binding is missing");
         impl_->result.basis = impl_->basis;
@@ -837,7 +868,8 @@ bool finish_state(NativeMaskedSumcheckProverState &state,
         ScalarOpening opening;
         if (!make_terminal_opening(state.basis, provided,
                                    state.result.terminal_values[i], opening,
-                                   "masked terminal", reason)) return false;
+                                   "masked terminal", reason,
+                                   state.fast_path)) return false;
         terminal_openings.push_back(opening);
     }
     std::vector<ScalarOpening> unmasked_terminal_openings =
@@ -855,7 +887,8 @@ bool finish_state(NativeMaskedSumcheckProverState &state,
             ScalarOpening opening;
             if (!make_terminal_opening(state.basis, provided,
                                        state.terminal_spec.fixed_values[i], opening,
-                                       "masked fixed", reason)) return false;
+                                       "masked fixed", reason,
+                                       state.fast_path)) return false;
             fixed_openings.push_back(opening);
         }
     }
@@ -870,8 +903,7 @@ bool finish_state(NativeMaskedSumcheckProverState &state,
     // is emitted; callers use this returned commitment as the next scope's
     // external initial binding.
     state.result.unmasked_claim_opening =
-        zkgpt::native_pedersen::commit_fresh(state.basis,
-                                              state.unmasked_running);
+        state_commit_fresh(state, state.unmasked_running);
     std::vector<ScalarOpening> operands;
     if (!prove_terminal_relation(state, state.result.terminal_values,
                                  terminal_openings, fixed_openings,
@@ -1167,6 +1199,8 @@ bool verify_unmasked_terminal_relation(
                                    F_ZERO, reason);
     case NativeMaskedTerminalKind::Claims:
         {
+            if (spec.defer_terminal_relation)
+                return true;
             std::vector<ScalarCommitment> relation_operands = values;
             relation_operands.push_back(claim);
             std::vector<F> coefficients = spec.terminal_linear_coefficients;
@@ -1421,10 +1455,11 @@ bool verify_terminal_relation(const NativeProofSession &session,
         ScalarCommitment anchor;
         if (!verify_opening_block(session, basis, cursor, label + "/terminal/anchor",
                                   anchor, reason) ||
-            !verify_linear_block(session, basis, cursor, label + "/terminal/claims",
-                                 terminal_commitments,
-                                 spec.terminal_linear_coefficients,
-                                 running - spec.terminal_linear_offset, reason) ||
+            (!spec.defer_terminal_relation &&
+             !verify_linear_block(session, basis, cursor, label + "/terminal/claims",
+                                  terminal_commitments,
+                                  spec.terminal_linear_coefficients,
+                                  running - spec.terminal_linear_offset, reason)) ||
             !verify_linear_block(session, basis, cursor,
                                  label + "/terminal/anchor-bind", {anchor}, {F_ONE},
                                  running, reason) ||
@@ -1903,6 +1938,11 @@ bool sample_terminal(const NativeMaskedTerminalSpec &spec, const F &running,
         }
     }
     (void)arity;
+    if (spec.kind == NativeMaskedTerminalKind::Claims &&
+        spec.defer_terminal_relation) {
+        terminal = {random_field(), random_field()};
+        return true;
+    }
     switch (spec.kind) {
     case NativeMaskedTerminalKind::Scalar:
         terminal = {running};
@@ -2077,6 +2117,9 @@ bool check_terminal(const NativeMaskedTerminalSpec &spec, const F &running,
         set_reason(reason, "masked terminal relation arity mismatch");
         return false;
     }
+    if (spec.kind == NativeMaskedTerminalKind::Claims &&
+        spec.defer_terminal_relation)
+        return true;
     switch (spec.kind) {
     case NativeMaskedTerminalKind::Scalar:
         if (terminal[0] != running) {
@@ -2232,8 +2275,8 @@ bool initialize_external(NativeMaskedSumcheckProverState &state,
                            state.masked_running, reason);
     }
     const ScalarOpening &masked = state.terminal_spec.masked_initial_opening;
-    const ScalarOpening mask = zkgpt::native_pedersen::commit_fresh(
-        state.basis, state.masked_running - *unmasked_initial_claim);
+    const ScalarOpening mask =
+        state_commit_fresh(state, state.masked_running - *unmasked_initial_claim);
     if (!emit_opening(*state.session, state.basis,
                       state.label + "/initial/masked", masked, reason) ||
         !emit_opening(*state.session, state.basis,
@@ -2276,18 +2319,16 @@ bool prove_round(NativeMaskedSumcheckProverState &state,
 
     std::vector<ScalarOpening> p, h, q_open;
     p.reserve(q.size()); h.reserve(q.size()); q_open.reserve(q.size());
-    for (const F &value : unmasked_poly) p.push_back(
-        zkgpt::native_pedersen::commit_fresh(state.basis, value));
-    for (const F &value : mask) h.push_back(
-        zkgpt::native_pedersen::commit_fresh(state.basis, value));
-    for (const F &value : q) q_open.push_back(
-        zkgpt::native_pedersen::commit_fresh(state.basis, value));
-    const ScalarOpening p_claim = zkgpt::native_pedersen::commit_fresh(
-        state.basis, unmasked_poly[0] + unmasked_poly[1]);
-    const ScalarOpening h_claim = zkgpt::native_pedersen::commit_fresh(
-        state.basis, mask[0] + mask[1]);
-    const ScalarOpening q_claim = zkgpt::native_pedersen::commit_fresh(
-        state.basis, q[0] + q[1]);
+    for (const F &value : unmasked_poly)
+        p.push_back(state_commit_fresh(state, value));
+    for (const F &value : mask)
+        h.push_back(state_commit_fresh(state, value));
+    for (const F &value : q)
+        q_open.push_back(state_commit_fresh(state, value));
+    const ScalarOpening p_claim =
+        state_commit_fresh(state, unmasked_poly[0] + unmasked_poly[1]);
+    const ScalarOpening h_claim = state_commit_fresh(state, mask[0] + mask[1]);
+    const ScalarOpening q_claim = state_commit_fresh(state, q[0] + q[1]);
 
     for (std::size_t i = 0; i < q.size(); ++i)
         if (!emit_opening(*state.session, state.basis,
@@ -2349,8 +2390,7 @@ bool prove_round(NativeMaskedSumcheckProverState &state,
     const F next_unmasked = interpolate_at(unmasked_poly, r);
     const F next_masked = interpolate_at(q, r);
     const F next_mask = interpolate_at(mask, r);
-    const ScalarOpening h_eval = zkgpt::native_pedersen::commit_fresh(
-        state.basis, next_mask);
+    const ScalarOpening h_eval = state_commit_fresh(state, next_mask);
     if (!emit_opening(*state.session, state.basis, base + "/h-eval", h_eval,
                       reason)) return false;
     const std::vector<F> lambdas = lagrange_coefficients(state.degree, r);
@@ -2382,9 +2422,10 @@ bool prove_round(NativeMaskedSumcheckProverState &state,
     return true;
 }
 
-bool make_terminal_opening(const PedersenBasis &basis, const ScalarOpening *provided,
-                          const F &value, ScalarOpening &out,
-                          const std::string &what, std::string *reason) {
+bool make_terminal_opening(
+    const PedersenBasis &basis, const ScalarOpening *provided, const F &value,
+    ScalarOpening &out, const std::string &what, std::string *reason,
+    std::shared_ptr<const zkgpt::native_pedersen::ProverFastPath> fast_path) {
     if (provided != nullptr) {
         if (!relation_opening(*provided, basis, value, reason)) {
             set_reason(reason, what + " opening is not the masked terminal value");
@@ -2392,7 +2433,7 @@ bool make_terminal_opening(const PedersenBasis &basis, const ScalarOpening *prov
         }
         out = *provided;
     } else {
-        out = zkgpt::native_pedersen::commit_fresh(basis, value);
+        out = zkgpt::native_pedersen::commit_fresh(basis, value, fast_path);
     }
     return true;
 }
@@ -2404,8 +2445,7 @@ bool prove_unmasked_terminal_relation(
     ScalarOpening &claim_opening, std::string *reason) {
     const NativeMaskedTerminalSpec &spec = state.terminal_spec;
     const std::string &label = state.label;
-    claim_opening = zkgpt::native_pedersen::commit_fresh(
-        state.basis, state.unmasked_running);
+    claim_opening = state_commit_fresh(state, state.unmasked_running);
     if (!emit_opening(*state.session, state.basis,
                       label + "/terminal/unmasked/claim", claim_opening, reason))
         return false;
@@ -2426,6 +2466,8 @@ bool prove_unmasked_terminal_relation(
                            {F_ONE, -F_ONE}, F_ZERO, reason);
     case NativeMaskedTerminalKind::Claims:
         {
+            if (spec.defer_terminal_relation)
+                return true;
             std::vector<ScalarOpening> relation_operands = terminal_openings;
             relation_operands.push_back(claim_opening);
             std::vector<F> coefficients = spec.terminal_linear_coefficients;
@@ -2461,8 +2503,8 @@ bool prove_unmasked_terminal_relation(
                                       const ScalarOpening &b,
                                       const std::string &a_label,
                                       const std::string &b_label) -> bool {
-            const ScalarOpening product = zkgpt::native_pedersen::commit_fresh(
-                state.basis, a.value * b.value);
+            const ScalarOpening product =
+                state_commit_fresh(state, a.value * b.value);
             if (!emit_opening(*state.session, state.basis,
                               product_prefix + std::to_string(index), product,
                               reason)) return false;
@@ -2531,8 +2573,8 @@ bool bind_masked_claim(NativeMaskedSumcheckProverState &state,
                        const ScalarOpening &masked_claim,
                        std::vector<ScalarOpening> &operands,
                        std::string *reason) {
-    const ScalarOpening mask = zkgpt::native_pedersen::commit_fresh(
-        state.basis, state.masked_running - state.unmasked_running);
+    const ScalarOpening mask =
+        state_commit_fresh(state, state.masked_running - state.unmasked_running);
     if (!emit_opening(*state.session, state.basis,
                       state.label + "/terminal/claim-mask", mask, reason) ||
         !emit_linear(*state.session, state.basis,
@@ -2596,8 +2638,8 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
                          reason))
             return false;
     for (std::size_t i = 0; i < terminal_openings.size(); ++i) {
-        const ScalarOpening mask = zkgpt::native_pedersen::commit_fresh(
-            state.basis, terminal_openings[i].value - unmasked_terminal_openings[i].value);
+        const ScalarOpening mask = state_commit_fresh(
+            state, terminal_openings[i].value - unmasked_terminal_openings[i].value);
         if (!emit_opening(*state.session, state.basis,
                           label + "/terminal/mask/" + std::to_string(i), mask,
                           reason) ||
@@ -2607,8 +2649,8 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
                          {F_ONE, -F_ONE, -F_ONE}, F_ZERO, reason)) return false;
     }
     for (std::size_t i = 0; i < fixed_openings.size(); ++i) {
-        const ScalarOpening mask = zkgpt::native_pedersen::commit_fresh(
-            state.basis, fixed_openings[i].value - unmasked_fixed_openings[i].value);
+        const ScalarOpening mask = state_commit_fresh(
+            state, fixed_openings[i].value - unmasked_fixed_openings[i].value);
         if (!emit_opening(*state.session, state.basis,
                           label + "/terminal/fixed-mask/" + std::to_string(i),
                           mask, reason) ||
@@ -2621,8 +2663,7 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
     const std::size_t arity = terminal_openings.size();
     switch (spec.kind) {
     case NativeMaskedTerminalKind::Scalar: {
-        const ScalarOpening anchor = zkgpt::native_pedersen::commit_fresh(
-            state.basis, state.masked_running);
+        const ScalarOpening anchor = state_commit_fresh(state, state.masked_running);
         if (!emit_opening(*state.session, state.basis, label + "/terminal/anchor",
                           anchor, reason) ||
             !emit_linear(*state.session, state.basis, label + "/terminal/scalar",
@@ -2634,13 +2675,13 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
                                  anchor, operands, reason);
     }
     case NativeMaskedTerminalKind::Claims: {
-        const ScalarOpening anchor = zkgpt::native_pedersen::commit_fresh(
-            state.basis, state.masked_running);
+        const ScalarOpening anchor = state_commit_fresh(state, state.masked_running);
         if (!emit_opening(*state.session, state.basis, label + "/terminal/anchor",
                           anchor, reason) ||
-            !emit_linear(*state.session, state.basis, label + "/terminal/claims",
-                         terminal_openings, spec.terminal_linear_coefficients,
-                         state.masked_running - spec.terminal_linear_offset, reason) ||
+            ( !spec.defer_terminal_relation &&
+              !emit_linear(*state.session, state.basis, label + "/terminal/claims",
+                           terminal_openings, spec.terminal_linear_coefficients,
+                           state.masked_running - spec.terminal_linear_offset, reason)) ||
             !emit_linear(*state.session, state.basis,
                          label + "/terminal/anchor-bind", {anchor}, {F_ONE},
                          state.masked_running, reason)) return false;
@@ -2648,8 +2689,7 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
                                  anchor, operands, reason);
     }
     case NativeMaskedTerminalKind::Product2: {
-        const ScalarOpening anchor = zkgpt::native_pedersen::commit_fresh(
-            state.basis, state.masked_running);
+        const ScalarOpening anchor = state_commit_fresh(state, state.masked_running);
         if (!emit_opening(*state.session, state.basis, label + "/terminal/anchor",
                           anchor, reason)) return false;
         operands.push_back(anchor);
@@ -2666,10 +2706,9 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
                                  anchor, operands, reason);
     }
     case NativeMaskedTerminalKind::Product3: {
-        const ScalarOpening intermediate = zkgpt::native_pedersen::commit_fresh(
-            state.basis, masked_terminal[0] * masked_terminal[1]);
-        const ScalarOpening anchor = zkgpt::native_pedersen::commit_fresh(
-            state.basis, state.masked_running);
+        const ScalarOpening intermediate = state_commit_fresh(
+            state, masked_terminal[0] * masked_terminal[1]);
+        const ScalarOpening anchor = state_commit_fresh(state, state.masked_running);
         if (!emit_opening(*state.session, state.basis,
                           label + "/terminal/intermediate", intermediate, reason) ||
             !emit_opening(*state.session, state.basis, label + "/terminal/anchor",
@@ -2691,8 +2730,7 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
                                  anchor, operands, reason);
     }
     case NativeMaskedTerminalKind::Product2Public: {
-        const ScalarOpening anchor = zkgpt::native_pedersen::commit_fresh(
-            state.basis, state.masked_running);
+        const ScalarOpening anchor = state_commit_fresh(state, state.masked_running);
         if (!emit_opening(*state.session, state.basis, label + "/terminal/anchor",
                           anchor, reason)) return false;
         operands.push_back(anchor);
@@ -2717,8 +2755,8 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
                                       const ScalarOpening &b,
                                       const std::string &a_label,
                                       const std::string &b_label) -> bool {
-            const ScalarOpening product = zkgpt::native_pedersen::commit_fresh(
-                state.basis, a.value * b.value);
+            const ScalarOpening product =
+                state_commit_fresh(state, a.value * b.value);
             if (!emit_opening(*state.session, state.basis,
                               product_prefix + std::to_string(index), product,
                               reason)) return false;
@@ -2753,8 +2791,7 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
                 !make_product(2, left[1], left[2], label + "/terminal/value/1",
                               label + "/terminal/value/2")) return false;
         }
-        const ScalarOpening anchor = zkgpt::native_pedersen::commit_fresh(
-            state.basis, state.masked_running);
+        const ScalarOpening anchor = state_commit_fresh(state, state.masked_running);
         if (!emit_opening(*state.session, state.basis, label + "/terminal/anchor",
                           anchor, reason)) return false;
         operands.push_back(anchor);

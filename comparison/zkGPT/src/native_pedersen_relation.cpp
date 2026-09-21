@@ -2,6 +2,7 @@
 
 #include <mcl/bn256.hpp>
 
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <limits>
@@ -20,6 +21,11 @@ const std::size_t kMaxDomain = 256;
 const std::size_t kMaxLabel = 512;
 const std::size_t kMaxPoint = 4096;
 const std::size_t kMaxOperands = 1U << 20;
+// Generator derivation is deterministic but expensive.  Keep only the
+// fixed native Pedersen namespace and a small bounded number of complete
+// domain/label keys; no caller-controlled key can grow this cache without
+// bound.  Cache entries contain copies of immutable curve points only.
+constexpr std::size_t kGeneratorCacheCapacity = 64;
 
 std::once_flag field_once;
 
@@ -128,8 +134,42 @@ bool valid_generator(const G1 &generator) {
 }
 
 G1 expected_generator(const std::string &domain, const char *name) {
+    const std::string label = name == nullptr ? std::string() : name;
+    const std::string cache_key =
+        std::string(kBasisPrefix) + domain + "/" + label;
+    const bool cacheable = name != nullptr &&
+                           (label == "G" || label == "H") &&
+                           valid_domain(domain);
+    struct CacheEntry {
+        std::string key;
+        G1 point;
+    };
+    static std::mutex cache_mutex;
+    static std::array<CacheEntry, kGeneratorCacheCapacity> cache;
+    static std::size_t cache_size = 0;
+    static std::size_t cache_next = 0;
+
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        for (std::size_t index = 0; index < cache_size; ++index)
+            if (cache[index].key == cache_key)
+                return cache[index].point;
+    }
+
     G1 result;
-    hashAndMapToG1(result, std::string(kBasisPrefix) + domain + "/" + name);
+    hashAndMapToG1(result, cache_key);
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        // Recheck after derivation so concurrent callers do not create
+        // duplicate entries or change which immutable point is returned.
+        for (std::size_t index = 0; index < cache_size; ++index)
+            if (cache[index].key == cache_key)
+                return cache[index].point;
+        const std::size_t slot = cache_size < kGeneratorCacheCapacity
+            ? cache_size++ : cache_next++ % kGeneratorCacheCapacity;
+        cache[slot].key = cache_key;
+        cache[slot].point = result;
+    }
     return result;
 }
 
@@ -671,6 +711,67 @@ bool locate_product3_children(const NativeProofSession &session,
 
 } // namespace
 
+ProverFastPath::ProverFastPath(NativeProofSession &session,
+                               const PedersenBasis &basis)
+    : session_(&session), domain_(basis.domain), G_(basis.G), H_(basis.H) {}
+
+bool ProverFastPath::matches_basis(const PedersenBasis &basis) const {
+    return domain_ == basis.domain && point_equal(G_, basis.G) &&
+           point_equal(H_, basis.H);
+}
+
+bool ProverFastPath::matches(const NativeProofSession &session,
+                             const PedersenBasis &basis) const {
+    return session_ == &session && matches_basis(basis);
+}
+
+std::shared_ptr<const ProverFastPath> make_prover_fast_path(
+    NativeProofSession &session, const PedersenBasis &basis) {
+    std::string reason;
+    if (!basis.valid(&reason))
+        throw std::invalid_argument(reason_or(
+            &reason, "invalid Pedersen basis for prover fast path"));
+    return std::shared_ptr<const ProverFastPath>(
+        new ProverFastPath(session, basis));
+}
+
+namespace {
+
+using FastPath = std::shared_ptr<const ProverFastPath>;
+
+bool fast_commitment_matches(const FastPath &fast_path,
+                             const PedersenBasis &basis,
+                             const ScalarCommitment &commitment) {
+    return fast_path != nullptr && fast_path->matches_basis(basis) &&
+           commitment.prover_fast_path == fast_path &&
+           commitment.domain == basis.domain;
+}
+
+bool fast_opening_matches(const FastPath &fast_path,
+                          const NativeProofSession &session,
+                          const PedersenBasis &basis,
+                          const ScalarOpening &opening) {
+    return fast_path != nullptr && fast_path->matches(session, basis) &&
+           opening.prover_fast_path == fast_path &&
+           fast_commitment_matches(fast_path, basis, opening.commitment);
+}
+
+FastPath common_opening_fast_path(
+    const NativeProofSession &session, const PedersenBasis &basis,
+    const std::vector<ScalarOpening> &openings) {
+    if (openings.empty()) return nullptr;
+    const FastPath candidate = openings.front().prover_fast_path;
+    if (candidate == nullptr ||
+        !candidate->matches(session, basis))
+        return nullptr;
+    for (const ScalarOpening &opening : openings)
+        if (!fast_opening_matches(candidate, session, basis, opening))
+            return nullptr;
+    return candidate;
+}
+
+} // namespace
+
 bool PedersenBasis::valid(std::string *reason) const {
     ensure_field();
     if (!valid_domain(domain)) {
@@ -727,30 +828,46 @@ bool ScalarOpening::valid(const PedersenBasis &basis,
 }
 
 ScalarCommitment commit(const PedersenBasis &basis, const Fr &value,
-                        const Fr &blinding) {
+                        const Fr &blinding, FastPath fast_path) {
     ensure_field();
-    if (!basis.valid()) throw std::invalid_argument("invalid Pedersen basis");
+    if (fast_path != nullptr) {
+        if (!fast_path->matches_basis(basis))
+            throw std::invalid_argument("Pedersen prover fast-path basis mismatch");
+    } else if (!basis.valid()) {
+        throw std::invalid_argument("invalid Pedersen basis");
+    }
     ScalarCommitment result;
     result.domain = basis.domain;
     result.point = basis.G * value + basis.H * blinding;
+    result.prover_fast_path = fast_path;
     return result;
 }
 
-ScalarOpening commit_fresh(const PedersenBasis &basis, const Fr &value) {
+ScalarOpening commit_fresh(const PedersenBasis &basis, const Fr &value,
+                           FastPath fast_path) {
     ensure_field();
     Fr blinding = random_nonzero_field();
-    ScalarOpening result{commit(basis, value, blinding), value, blinding};
+    ScalarOpening result{commit(basis, value, blinding, fast_path), value,
+                         blinding, fast_path};
     return result;
 }
 
 bool prove_opening(NativeProofSession &session, const PedersenBasis &basis,
                    const std::string &label, const ScalarOpening &opening,
-                   OpeningProof *proof, std::string *reason) {
+                   OpeningProof *proof, std::string *reason,
+                   FastPath fast_path) {
     const std::size_t checkpoint = session.checkpoint();
     try {
         ensure_field();
-        if (!valid_label(label) || !basis.valid(reason) ||
-            !opening.valid(basis, reason) ||
+        const bool explicit_fast_path = fast_path != nullptr;
+        if (fast_path == nullptr) fast_path = opening.prover_fast_path;
+        const bool use_fast_path =
+            fast_opening_matches(fast_path, session, basis, opening);
+        if (explicit_fast_path && !use_fast_path)
+            throw std::invalid_argument("Pedersen prover fast-path provenance mismatch");
+        if (!valid_label(label) ||
+            ((!use_fast_path) &&
+             (!basis.valid(reason) || !opening.valid(basis, reason))) ||
             !label_free(session,
                         {label + "/meta", label + "/T",
                          "challenge/" + label + "/challenge",
@@ -796,15 +913,23 @@ bool verify_opening(const NativeProofSession &session,
 
 G1 linear_residual_commitment(
     const PedersenBasis &basis, const std::vector<ScalarCommitment> &operands,
-    const std::vector<Fr> &coefficients, const Fr &public_value) {
+    const std::vector<Fr> &coefficients, const Fr &public_value,
+    FastPath fast_path) {
     ensure_field();
     std::string reason;
-    if (!basis.valid(&reason) || operands.empty() || operands.size() != coefficients.size() ||
+    const bool use_fast_path = fast_path != nullptr;
+    if ((use_fast_path && !fast_path->matches_basis(basis)) ||
+        ((!use_fast_path) && !basis.valid(&reason)) || operands.empty() ||
+        operands.size() != coefficients.size() ||
         operands.size() > kMaxOperands)
         throw std::invalid_argument(reason.empty() ? "invalid linear relation" : reason);
     G1 result = basis.G * (-public_value);
     for (std::size_t i = 0; i < operands.size(); ++i) {
-        if (!operands[i].valid(basis, &reason)) throw std::invalid_argument(reason);
+        if (use_fast_path &&
+            !fast_commitment_matches(fast_path, basis, operands[i]))
+            throw std::invalid_argument("Pedersen linear fast-path provenance mismatch");
+        if (!use_fast_path && !operands[i].valid(basis, &reason))
+            throw std::invalid_argument(reason);
         result += operands[i].point * coefficients[i];
     }
     return result;
@@ -814,12 +939,21 @@ bool prove_hidden_linear(
     NativeProofSession &session, const PedersenBasis &basis,
     const std::string &label, const std::vector<ScalarOpening> &operands,
     const std::vector<Fr> &coefficients, const Fr &public_value,
-    LinearRelationProof *proof, std::string *reason) {
+    LinearRelationProof *proof, std::string *reason, FastPath fast_path) {
     const std::size_t checkpoint = session.checkpoint();
     try {
         ensure_field();
-        if (!valid_label(label) || !basis.valid(reason) || operands.empty() ||
-            operands.size() != coefficients.size() || operands.size() > kMaxOperands)
+        const bool explicit_fast_path = fast_path != nullptr;
+        if (fast_path == nullptr)
+            fast_path = common_opening_fast_path(session, basis, operands);
+        const bool use_fast_path = fast_path != nullptr;
+        if (explicit_fast_path &&
+            (!fast_path->matches(session, basis) ||
+             common_opening_fast_path(session, basis, operands) != fast_path))
+            throw std::invalid_argument("Pedersen linear fast-path provenance mismatch");
+        if (!valid_label(label) || operands.empty() ||
+            operands.size() != coefficients.size() || operands.size() > kMaxOperands ||
+            ((!use_fast_path) && !basis.valid(reason)))
             throw std::invalid_argument("invalid Pedersen linear relation shape");
         G1 operand_residual;
         Fr value_residual = -public_value;
@@ -827,7 +961,7 @@ bool prove_hidden_linear(
         std::vector<ScalarCommitment> public_operands;
         public_operands.reserve(operands.size());
         for (std::size_t i = 0; i < operands.size(); ++i) {
-            if (!operands[i].valid(basis, reason))
+            if (!use_fast_path && !operands[i].valid(basis, reason))
                 throw std::invalid_argument(reason_or(reason, "invalid opening witness"));
             public_operands.push_back(operands[i].commitment);
             value_residual += coefficients[i] * operands[i].value;
@@ -836,7 +970,7 @@ bool prove_hidden_linear(
         if (!value_residual.isZero())
             throw std::invalid_argument("Pedersen linear relation witness is false");
         operand_residual = linear_residual_commitment(
-            basis, public_operands, coefficients, public_value);
+            basis, public_operands, coefficients, public_value, fast_path);
         if (operand_residual != basis.H * blinding_residual)
             throw std::invalid_argument("Pedersen linear residual blinding mismatch");
         if (!label_free(session,
@@ -963,13 +1097,23 @@ bool prove_multiplication(
     const std::string &label, const ScalarOpening &a,
     const ScalarOpening &b, const ScalarOpening &c,
     const MultiplicationLinks &links, MultiplicationProof *proof,
-    std::string *reason) {
+    std::string *reason, FastPath fast_path) {
     const std::size_t checkpoint = session.checkpoint();
     try {
         ensure_field();
-        if (!valid_label(label) || !basis.valid(reason) || !links.valid(reason) ||
-            !a.valid(basis, reason) || !b.valid(basis, reason) ||
-            !c.valid(basis, reason) || c.value != a.value * b.value)
+        const bool explicit_fast_path = fast_path != nullptr;
+        if (fast_path == nullptr)
+            fast_path = common_opening_fast_path(session, basis, {a, b, c});
+        const bool use_fast_path = fast_path != nullptr;
+        if (explicit_fast_path &&
+            (!fast_path->matches(session, basis) ||
+             common_opening_fast_path(session, basis, {a, b, c}) != fast_path))
+            throw std::invalid_argument("Pedersen multiplication fast-path provenance mismatch");
+        if (!valid_label(label) || !links.valid(reason) ||
+            ((!use_fast_path) &&
+             (!basis.valid(reason) || !a.valid(basis, reason) ||
+              !b.valid(basis, reason) || !c.valid(basis, reason))) ||
+            c.value != a.value * b.value)
             throw std::invalid_argument("invalid Pedersen multiplication witness");
         if (!label_free(session,
                         {label + "/meta", label + "/T1", label + "/T2",
@@ -1054,14 +1198,26 @@ bool prove_product3(
     const std::string &label, const ScalarOpening &a,
     const ScalarOpening &b, const ScalarOpening &c,
     const ScalarOpening &intermediate, const ScalarOpening &output,
-    const Product3Links &links, Product3Proof *proof, std::string *reason) {
+    const Product3Links &links, Product3Proof *proof, std::string *reason,
+    FastPath fast_path) {
     const std::size_t checkpoint = session.checkpoint();
     try {
         ensure_field();
-        if (!valid_label(label) || !basis.valid(reason) || !links.valid(reason) ||
-            !a.valid(basis, reason) || !b.valid(basis, reason) ||
-            !c.valid(basis, reason) || !intermediate.valid(basis, reason) ||
-            !output.valid(basis, reason) ||
+        const bool explicit_fast_path = fast_path != nullptr;
+        if (fast_path == nullptr)
+            fast_path = common_opening_fast_path(
+                session, basis, {a, b, c, intermediate, output});
+        const bool use_fast_path = fast_path != nullptr;
+        if (explicit_fast_path &&
+            (!fast_path->matches(session, basis) ||
+             common_opening_fast_path(
+                 session, basis, {a, b, c, intermediate, output}) != fast_path))
+            throw std::invalid_argument("Pedersen product3 fast-path provenance mismatch");
+        if (!valid_label(label) || !links.valid(reason) ||
+            ((!use_fast_path) &&
+             (!basis.valid(reason) || !a.valid(basis, reason) ||
+              !b.valid(basis, reason) || !c.valid(basis, reason) ||
+              !intermediate.valid(basis, reason) || !output.valid(basis, reason))) ||
             intermediate.value != a.value * b.value ||
             output.value != intermediate.value * c.value)
             throw std::invalid_argument("invalid Pedersen product3 witness");
@@ -1108,12 +1264,12 @@ bool prove_product3(
         MultiplicationProof first_proof;
         if (!prove_multiplication(session, basis, label + "/mul1", a, b,
                                   intermediate, links.first, &first_proof,
-                                  reason))
+                                  reason, fast_path))
             throw std::invalid_argument(reason_or(reason, "invalid product3 first multiplication"));
         MultiplicationProof second_proof;
         if (!prove_multiplication(session, basis, label + "/mul2", intermediate,
                                   c, output, links.second, &second_proof,
-                                  reason))
+                                  reason, fast_path))
             throw std::invalid_argument(reason_or(reason, "invalid product3 second multiplication"));
         if (proof != nullptr) {
             proof->intermediate_commitment = intermediate.commitment.point;

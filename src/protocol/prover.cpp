@@ -69,6 +69,7 @@
 #include "gatzk/util/route2.hpp"
 #include "gatzk/protocol/verifier.hpp"
 #include "gatzk/protocol/cuda_t_edge.hpp"
+#include "gatzk/protocol/cuda_t_fh.hpp"
 #include "gatzk/protocol/t_edge_program.hpp"
 #include "protocol/internal/t_edge_descriptor.hpp"
 #include "gatzk/util/effective_memory.hpp"
@@ -225,6 +226,14 @@ namespace gatzk::protocol
                 try
                 {
                     release_cuda_t_edge_executor_cache();
+                }
+                catch (...)
+                {
+                }
+
+                try
+                {
+                    release_cuda_t_fh_executor_cache();
                 }
                 catch (...)
                 {
@@ -6309,6 +6318,14 @@ namespace gatzk::protocol
                            ? static_cast<const FieldElement *>(mapping_)
                            : memory_.data();
             }
+
+            const FieldElement *logical_contiguous_data_if_available() const noexcept
+            {
+                if (pure_zero_semantic_ || semantic_values_ != nullptr || !linear_terms_.empty() || split_lane_size_ != 0)
+                    return nullptr;
+                return mapping_ != nullptr ? static_cast<const FieldElement *>(mapping_) : memory_.data();
+            }
+
             FieldElement operator[](
                 std::size_t index) const
             {
@@ -7053,6 +7070,16 @@ namespace gatzk::protocol
                               ":full_resident=" + std::to_string(cuda_t_edge_selected_cache_slots_ == cache_bounds.desired ? 1 : 0));
                 return true;
             }
+
+            bool should_use_cuda_t_fh_engine() const
+            {
+                if (label_ != "t_FH" || !util::route2_options().cuda_field_hotspots || !cuda_t_fh_executor_available())
+                    return false;
+                if (target_size_ < (std::size_t{1} << 20))
+                    return false;
+                return cuda_t_fh_executor_can_admit(domain_->size, target_size_, std::size_t{1} << 20);
+            }
+
             void reset_cuda_t_edge_transient_leaf_state()
             {
                 fast_coset_lookup_.clear();
@@ -8552,21 +8579,147 @@ namespace gatzk::protocol
                                 cuda_stats_after.h2d_operations,
                                 cuda_stats_before.h2d_operations)));
 
-                    cuda_t_edge_transient_leaf_mode_ =
-                        false;
-
+                    cuda_t_edge_transient_leaf_mode_ = false;
                     reset_cuda_t_edge_transient_leaf_state();
                     return output;
                 }
                 catch (...)
                 {
-                    cuda_t_edge_transient_leaf_mode_ =
-                        false;
-
+                    cuda_t_edge_transient_leaf_mode_ = false;
                     reset_cuda_t_edge_transient_leaf_state();
-
                     throw;
                 }
+            }
+
+            const mcl::Fr *fh_tile_source(
+                const QuotientCosetValues *values,
+                std::size_t begin,
+                std::size_t count,
+                std::vector<FieldElement> *staging) const
+            {
+                if (values == nullptr || staging == nullptr || begin > target_size_ || count > target_size_ - begin)
+                    throw std::runtime_error("invalid FH tile source request");
+
+                if (const auto *contiguous = values->logical_contiguous_data_if_available(); contiguous != nullptr)
+                    return FieldElement::native_array_data(contiguous + begin);
+
+                staging->resize(count);
+                values->copy_logical_range(begin, count, staging->data());
+                return FieldElement::native_array_data(staging->data());
+            }
+
+            const mcl::Fr *fh_rotated_tile_source(
+                const QuotientCosetValues *values,
+                std::size_t begin,
+                std::size_t count,
+                std::vector<FieldElement> *staging) const
+            {
+                if (values == nullptr || staging == nullptr || begin > target_size_ || count > target_size_ - begin)
+                    throw std::runtime_error("invalid rotated FH tile source request");
+
+                const auto rotated_begin = (begin + rotation_step_) & (target_size_ - 1U);
+                if (const auto *contiguous = values->logical_contiguous_data_if_available(); contiguous != nullptr && rotated_begin + count <= target_size_)
+                    return FieldElement::native_array_data(contiguous + rotated_begin);
+
+                staging->resize(count);
+                const auto first_count = std::min(count, target_size_ - rotated_begin);
+                values->copy_logical_range(rotated_begin, first_count, staging->data());
+                if (first_count < count)
+                    values->copy_logical_range(0, count - first_count, staging->data() + first_count);
+                return FieldElement::native_array_data(staging->data());
+            }
+
+            std::vector<FieldElement> materialize_cuda_t_fh_coefficients()
+            {
+                if (label_ != "t_FH" || fh_parameters_ == std::nullopt)
+                    throw std::runtime_error("CUDA t_FH materializer called for an invalid quotient");
+
+                const auto dependency_labels = quotient_materialization_dependency_labels(context_, label_);
+                for (const auto &dependency_label : dependency_labels)
+                    (void)coset_values_ptr(dependency_label);
+                seed_fast_coset_lookup(dependency_labels);
+                bind_fh_coset_slots();
+                if (!fh_coset_slots_.ready())
+                    throw std::runtime_error("CUDA t_FH dependency binding is incomplete");
+
+                algebra::release_cuda_ntt_execution_workspace();
+                crypto::release_cuda_g1_msm_execution_workspace();
+
+                constexpr std::size_t kRequestedTile = std::size_t{1} << 20;
+                const CudaTFHParameters parameters{
+                    .alpha_quot = fh_parameters_->alpha_quot,
+                    .beta_feat = fh_parameters_->beta_feat,
+                    .eta_feat = fh_parameters_->eta_feat,
+                    .feature_encoding_terms_enabled = !fh_feature_encoding_terms_are_identically_zero_,
+                };
+
+                auto executor = create_cuda_t_fh_executor(domain_->size, target_size_, shift_, domain_->omega, parameters, kRequestedTile);
+                if (executor == nullptr)
+                    throw std::runtime_error("CUDA t_FH route was selected but executor creation failed");
+                const auto tile_capacity = executor->tile_capacity();
+                if (tile_capacity == 0)
+                    throw std::runtime_error("CUDA t_FH executor returned zero tile capacity");
+
+                FHTileStaging staging;
+                auto discard_set = file_backed_coset_discard_set();
+
+                for (std::size_t begin = 0; begin < target_size_; begin += tile_capacity)
+                {
+                    const auto count = std::min(tile_capacity, target_size_ - begin);
+                    CudaTFHTile tile;
+                    tile.logical_begin = begin;
+                    tile.count = count;
+                    tile.q_table = fh_tile_source(fh_coset_slots_.q_table, begin, count, &staging.q_table);
+                    tile.q_query = fh_tile_source(fh_coset_slots_.q_query, begin, count, &staging.q_query);
+                    tile.table = fh_tile_source(fh_coset_slots_.table, begin, count, &staging.table);
+                    tile.query = fh_tile_source(fh_coset_slots_.query, begin, count, &staging.query);
+                    tile.multiplicity = fh_tile_source(fh_coset_slots_.multiplicity, begin, count, &staging.multiplicity);
+                    tile.j_table = fh_tile_source(fh_coset_slots_.j_table, begin, count, &staging.j_table);
+                    tile.j_query = fh_tile_source(fh_coset_slots_.j_query, begin, count, &staging.j_query);
+                    tile.accumulator = fh_tile_source(fh_coset_slots_.accumulator, begin, count, &staging.accumulator);
+                    tile.accumulator_next = fh_rotated_tile_source(fh_coset_slots_.accumulator, begin, count, &staging.accumulator_next);
+
+                    if (!fh_feature_encoding_terms_are_identically_zero_)
+                    {
+                        tile.table_row = fh_tile_source(fh_coset_slots_.table_row, begin, count, &staging.table_row);
+                        tile.table_column = fh_tile_source(fh_coset_slots_.table_column, begin, count, &staging.table_column);
+                        tile.table_feature = fh_tile_source(fh_coset_slots_.table_feature, begin, count, &staging.table_feature);
+                        tile.query_row = fh_tile_source(fh_coset_slots_.query_row, begin, count, &staging.query_row);
+                        tile.query_column = fh_tile_source(fh_coset_slots_.query_column, begin, count, &staging.query_column);
+                        tile.query_feature = fh_tile_source(fh_coset_slots_.query_feature, begin, count, &staging.query_feature);
+                    }
+
+                    executor->evaluate_tile(tile);
+                    for (const auto &values : discard_set)
+                    {
+                        if (values != nullptr)
+                            values->discard_prefix(begin + count);
+                    }
+                }
+
+                discard_set.clear();
+                staging = FHTileStaging{};
+                fh_coset_slots_ = {};
+                fast_coset_lookup_.clear();
+                {
+                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+                    coset_cache_.clear();
+                    coset_aliases_.clear();
+                }
+                semantic_coset_group_by_label_.clear();
+                semantic_coset_groups_.clear();
+                semantic_coset_points_.reset();
+                std::vector<FieldElement>().swap(semantic_coset_zero_cycle_);
+                spill_arena_.reset();
+                in_memory_coset_bytes_.store(0, std::memory_order_relaxed);
+
+                std::vector<FieldElement> coefficients(target_size_, FieldElement::zero());
+                cuda_t_fh_resident_coefficients_ = executor->finalize_coefficients(coefficients.data(), coefficients.size());
+                if (cuda_t_fh_resident_coefficients_ == nullptr)
+                    throw std::runtime_error("CUDA t_FH coefficient finalization did not produce resident material");
+                algebra::record_cuda_quotient_call();
+                algebra::record_cuda_t_fh_call();
+                return coefficients;
             }
 
             algebra::Polynomial materialize(const crypto::KZGKeyPair &key)
@@ -8987,20 +9140,23 @@ namespace gatzk::protocol
                     }
                 };
 
-                const bool cuda_t_edge_route =
-                    should_use_cuda_t_edge_engine();
+                const bool cuda_t_edge_route = should_use_cuda_t_edge_engine();
+                const bool cuda_t_fh_route = should_use_cuda_t_fh_engine();
 
-                std::vector<FieldElement>
-                    quotient_values;
-
-                std::vector<FieldElement>
-                    cuda_t_edge_coefficients;
+                std::vector<FieldElement> quotient_values;
+                std::vector<FieldElement> cuda_special_coefficients;
 
                 if (cuda_t_edge_route)
                 {
                     progress_note("prove:quotient:t_edge:cuda_device_resident:start");
-                    cuda_t_edge_coefficients = materialize_cuda_t_edge_coefficients();
+                    cuda_special_coefficients = materialize_cuda_t_edge_coefficients();
                     progress_note("prove:quotient:t_edge:cuda_device_resident:done");
+                }
+                else if (cuda_t_fh_route)
+                {
+                    progress_note("prove:quotient:t_FH:cuda_device_resident:start");
+                    cuda_special_coefficients = materialize_cuda_t_fh_coefficients();
+                    progress_note("prove:quotient:t_FH:cuda_device_resident:done");
                 }
                 else if (label_ != "t_edge")
                 {
@@ -9008,30 +9164,16 @@ namespace gatzk::protocol
                 }
                 // Warm the dependency cache before parallel point evaluation; after this the worker
                 // threads only read the cached coset vectors.
-                if (label_ == "t_FH")
+                if (label_ == "t_FH" && !cuda_t_fh_route)
                 {
-                    // The point evaluator runs up to 32 workers.  Letting those
-                    // workers discover a cold FH dependency independently causes
-                    // a cache-miss stampede: every worker can start the same
-                    // full-domain NTT before the first result reaches
-                    // coset_cache_.  Materialize the small canonical dependency
-                    // registry in order first.  Individual NTTs retain their
-                    // internal parallelism, while the evaluation workers become
-                    // read-only cache consumers.
                     const auto prewarm_start = Clock::now();
-                    const auto dependency_labels =
-                        quotient_materialization_dependency_labels(
-                            context_, label_);
+                    const auto dependency_labels = quotient_materialization_dependency_labels(context_, label_);
                     progress_note("prove:quotient:t_FH:coset_prewarm:start");
                     for (const auto &dependency_label : dependency_labels)
-                    {
                         (void)coset_values_ptr(dependency_label);
-                    }
                     seed_fast_coset_lookup(dependency_labels);
                     bind_fh_coset_slots();
-                    progress_note(
-                        "prove:quotient:t_FH:coset_prewarm:done:ms=" + std::to_string(
-                                                                           elapsed_ms(prewarm_start, Clock::now())));
+                    progress_note("prove:quotient:t_FH:coset_prewarm:done:ms=" + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
                 }
                 else if (label_ != "t_edge")
                 {
@@ -9090,7 +9232,7 @@ namespace gatzk::protocol
                 {
                     quotient_values = materialize_cpu_t_edge_quotient_values();
                 }
-                else if (!cuda_t_edge_route)
+                else if (!cuda_t_edge_route && !cuda_t_fh_route)
                 {
                     std::vector<FieldElement> quotient_zero_inverses;
 
@@ -9664,87 +9806,39 @@ namespace gatzk::protocol
                 in_memory_coset_bytes_.store(0, std::memory_order_relaxed);
 
                 std::vector<FieldElement> coefficients;
-                std::shared_ptr<const algebra::CudaResidentCoefficientBuffer>
-                    cuda_generic_resident_coefficients;
+                std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> cuda_generic_resident_coefficients;
 
-                if (cuda_t_edge_route)
+                if (cuda_t_edge_route || cuda_t_fh_route)
                 {
-                    coefficients =
-                        std::move(
-                            cuda_t_edge_coefficients);
-
-                    algebra::
-                        record_cuda_quotient_call();
-
-                    algebra::
-                        record_cuda_t_edge_call();
+                    coefficients = std::move(cuda_special_coefficients);
                 }
-                else if (
-                    target_size_ >= 2 &&
-                    algebra::
-                        should_use_cuda_coset_transform(
-                            target_size_))
+                else if (target_size_ >= 2 && algebra::should_use_cuda_coset_transform(target_size_))
                 {
-                    coefficients.assign(
-                        target_size_,
-                        FieldElement::zero());
+                    coefficients.assign(target_size_, FieldElement::zero());
+                    constexpr std::size_t kResidentCoefficientThreshold = std::size_t{1} << 18;
+                    const bool keep_coefficients_resident = target_size_ >= kResidentCoefficientThreshold;
+                    const bool cuda_materialized = keep_coefficients_resident
+                                                       ? algebra::cuda_coset_host_to_resident_coefficients_exact(
+                                                             FieldElement::native_array_data(quotient_values.data()),
+                                                             target_size_,
+                                                             shift_,
+                                                             FieldElement::mutable_native_array_data(coefficients.data()),
+                                                             &cuda_generic_resident_coefficients)
+                                                       : algebra::cuda_coset_host_to_coefficients_exact(
+                                                             FieldElement::native_array_data(quotient_values.data()),
+                                                             target_size_,
+                                                             shift_,
+                                                             FieldElement::mutable_native_array_data(coefficients.data()));
 
-                    constexpr std::size_t
-                        kResidentCoefficientThreshold =
-                            std::size_t{1} << 18;
-
-                    const bool
-                        keep_coefficients_resident =
-                            target_size_ >=
-                            kResidentCoefficientThreshold;
-
-                    const bool cuda_materialized =
-                        keep_coefficients_resident
-                            ? algebra::
-                                  cuda_coset_host_to_resident_coefficients_exact(
-                                      FieldElement::
-                                          native_array_data(
-                                              quotient_values.data()),
-                                      target_size_,
-                                      shift_,
-                                      FieldElement::
-                                          mutable_native_array_data(
-                                              coefficients.data()),
-                                      &cuda_generic_resident_coefficients)
-                            : algebra::
-                                  cuda_coset_host_to_coefficients_exact(
-                                      FieldElement::
-                                          native_array_data(
-                                              quotient_values.data()),
-                                      target_size_,
-                                      shift_,
-                                      FieldElement::
-                                          mutable_native_array_data(
-                                              coefficients.data()));
-
-                    if (cuda_materialized)
-                    {
-                        algebra::
-                            record_cuda_quotient_call();
-
-                        quotient_values.clear();
-                        quotient_values.shrink_to_fit();
-                    }
-                    else
-                    {
-                        throw std::runtime_error(
-                            "selected CUDA coset-to-coefficient execution was not admitted: target_size=" +
-                            std::to_string(target_size_) + " domain=" +
-                            (domain_ == nullptr ? std::string("unknown") : domain_->name));
-                    }
+                    if (!cuda_materialized)
+                        throw std::runtime_error("selected CUDA coset-to-coefficient execution was not admitted: target_size=" + std::to_string(target_size_) + " domain=" + (domain_ == nullptr ? std::string("unknown") : domain_->name));
+                    algebra::record_cuda_quotient_call();
+                    quotient_values.clear();
+                    quotient_values.shrink_to_fit();
                 }
                 else
                 {
-                    coefficients =
-                        coefficients_from_coset_evaluations_in_place(
-                            std::move(
-                                quotient_values),
-                            shift_);
+                    coefficients = coefficients_from_coset_evaluations_in_place(std::move(quotient_values), shift_);
                 }
                 if (label_ == "t_edge")
                 {
@@ -9779,60 +9873,20 @@ namespace gatzk::protocol
                             std::move(
                                 coefficients));
 
-                if (label_ == "t_edge" &&
-                    cuda_t_edge_resident_coefficients_ !=
-                        nullptr)
+                std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> selected_resident;
+                if (cuda_t_edge_route)
+                    selected_resident = std::move(cuda_t_edge_resident_coefficients_);
+                else if (cuda_t_fh_route)
+                    selected_resident = std::move(cuda_t_fh_resident_coefficients_);
+                else
+                    selected_resident = std::move(cuda_generic_resident_coefficients);
+
+                if (selected_resident != nullptr)
                 {
-                    const auto &resident =
-                        *cuda_t_edge_resident_coefficients_;
-
-                    if (resident.device_montgomery_limbs ==
-                            nullptr ||
-                        resident.device < 0 ||
-                        resident.logical_count == 0 ||
-                        resident.logical_count >
-                            polynomial.size() ||
-                        resident.logical_count >
-                            resident.capacity ||
-                        resident.nonzero_count >
-                            resident.logical_count)
-                    {
-                        throw std::runtime_error(
-                            "CUDA t_edge resident coefficient metadata is invalid");
-                    }
-
-                    polynomial
-                        .cuda_resident_coefficients =
-                        std::move(
-                            cuda_t_edge_resident_coefficients_);
-                }
-                else if (
-                    cuda_generic_resident_coefficients !=
-                    nullptr)
-                {
-                    const auto &resident =
-                        *cuda_generic_resident_coefficients;
-
-                    if (resident.device_montgomery_limbs ==
-                            nullptr ||
-                        resident.device < 0 ||
-                        resident.logical_count == 0 ||
-                        resident.logical_count >
-                            polynomial.size() ||
-                        resident.logical_count >
-                            resident.capacity ||
-                        resident.nonzero_count >
-                            resident.logical_count)
-                    {
-                        throw std::runtime_error(
-                            "CUDA generic quotient resident coefficient metadata is invalid: " +
-                            label_);
-                    }
-
-                    polynomial
-                        .cuda_resident_coefficients =
-                        std::move(
-                            cuda_generic_resident_coefficients);
+                    const auto &resident = *selected_resident;
+                    if (resident.device_montgomery_limbs == nullptr || resident.device < 0 || resident.logical_count == 0 || resident.logical_count > polynomial.size() || resident.logical_count > resident.capacity || resident.nonzero_count > resident.logical_count)
+                        throw std::runtime_error("CUDA resident quotient coefficient metadata is invalid: " + label_);
+                    polynomial.cuda_resident_coefficients = std::move(selected_resident);
                 }
 
                 return polynomial;
@@ -9860,6 +9914,25 @@ namespace gatzk::protocol
                 {
                     return q_table != nullptr && q_query != nullptr && table != nullptr && query != nullptr && multiplicity != nullptr && j_table != nullptr && j_query != nullptr && accumulator != nullptr;
                 }
+            };
+
+            struct FHTileStaging
+            {
+                std::vector<FieldElement> q_table;
+                std::vector<FieldElement> q_query;
+                std::vector<FieldElement> table;
+                std::vector<FieldElement> query;
+                std::vector<FieldElement> multiplicity;
+                std::vector<FieldElement> j_table;
+                std::vector<FieldElement> j_query;
+                std::vector<FieldElement> accumulator;
+                std::vector<FieldElement> accumulator_next;
+                std::vector<FieldElement> table_row;
+                std::vector<FieldElement> table_column;
+                std::vector<FieldElement> table_feature;
+                std::vector<FieldElement> query_row;
+                std::vector<FieldElement> query_column;
+                std::vector<FieldElement> query_feature;
             };
 
             struct TEdgeCosetAccess
@@ -12445,13 +12518,10 @@ namespace gatzk::protocol
             internal::TEdgeDescriptorShape t_edge_descriptor_shape_;
             std::shared_ptr<algebra::RootOfUnityDomain> domain_;
 
-            std::shared_ptr<
-                const algebra::
-                    CudaResidentCoefficientBuffer>
-                cuda_t_edge_resident_coefficients_;
+            std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> cuda_t_edge_resident_coefficients_;
+            std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> cuda_t_fh_resident_coefficients_;
 
-            std::size_t
-                cuda_t_edge_selected_cache_slots_ = 0;
+            std::size_t cuda_t_edge_selected_cache_slots_ = 0;
             std::size_t target_size_ = 0;
             std::size_t rotation_step_ = 0;
             FieldElement shift_;
@@ -13251,8 +13321,7 @@ namespace gatzk::protocol
                         ->wait();
                 }
 
-                if (quotient.data.size() <
-                    required_size)
+                if (quotient.data.size() < required_size)
                 {
                     quotient.data.resize(
                         required_size,
@@ -13440,7 +13509,7 @@ namespace gatzk::protocol
                     }
 
 #if GATZK_ENABLE_CUDA_BACKEND
-                    if (!cuda_t_edge_update_resident_coefficient_ranges(
+                    if (!algebra::cuda_update_resident_coefficient_ranges(
                             *resident,
                             quotient.data.data(),
                             quotient.data.size(),
@@ -13502,6 +13571,19 @@ namespace gatzk::protocol
             }
 
             return out;
+        }
+
+        std::array<std::pair<std::string, algebra::Polynomial>, 2> blind_one_quotient_polynomial(
+            const ProtocolContext &context,
+            std::string label,
+            algebra::Polynomial quotient)
+        {
+            std::vector<std::pair<std::string, algebra::Polynomial>> single;
+            single.emplace_back(std::move(label), std::move(quotient));
+            auto masked = blind_quotient_polynomials(context, std::move(single));
+            if (masked.size() != 2)
+                throw std::runtime_error("single quotient masking did not produce quotient+mask");
+            return {std::move(masked[0]), std::move(masked[1])};
         }
 
         std::unordered_map<std::string, Commitment> batch_quotient_commitments(
@@ -15258,62 +15340,77 @@ namespace gatzk::protocol
                     retained_cuda_msm_base_bytes));
         }
 
-        auto named_quotient_polynomials = materialize_quotient_polynomials(
-            context,
-            trace,
-            pre_quotient_challenges,
-            quotient_labels,
-            metrics);
-        named_quotient_polynomials = blind_quotient_polynomials(
-            context,
-            std::move(named_quotient_polynomials));
+        std::unordered_map<std::string, Commitment> quotient_commitments;
+        quotient_commitments.reserve(quotient_labels.size() * 2);
+
+        const auto commit_named_polynomials = [&](std::vector<std::pair<std::string, algebra::Polynomial>> named)
+        {
+            crypto::CommitBatchProfile profile;
+            timing::ScopedCommitment commitment_scope(metrics);
+            auto committed = batch_quotient_commitments(std::move(named), context.kzg, metrics != nullptr ? &profile : nullptr);
+            if (metrics != nullptr)
+                metrics->quotient_commitment_ms += profile.msm_ms;
+            for (auto &[name, commitment] : committed)
+            {
+                const auto [_, inserted] = quotient_commitments.emplace(name, std::move(commitment));
+                if (!inserted)
+                    throw std::runtime_error("duplicate quotient commitment: " + name);
+            }
+        };
+
+        std::vector<std::string> deferred_quotient_labels;
+        deferred_quotient_labels.reserve(quotient_labels.size());
+
+        for (const auto &label : quotient_labels)
+        {
+            const auto domain = quotient_domain(context, label);
+            const auto multiplier = quotient_coset_multiplier(label);
+            if (domain == nullptr || multiplier == 0 || domain->size > std::numeric_limits<std::size_t>::max() / multiplier)
+                throw std::runtime_error("invalid heavy quotient scheduling domain: " + label);
+            const auto target_size = domain->size * multiplier;
+            const bool heavy = route2.cuda_field_hotspots && (label == "t_FH" || label == "t_edge" || target_size >= (std::size_t{1} << 24));
+            if (!heavy)
+            {
+                deferred_quotient_labels.push_back(label);
+                continue;
+            }
+
+            auto materialized = materialize_quotient_polynomials(context, trace, pre_quotient_challenges, {label}, metrics);
+            if (materialized.size() != 1 || materialized.front().first != label)
+                throw std::runtime_error("heavy quotient materialization returned an invalid result: " + label);
+
+            auto masked = blind_one_quotient_polynomial(context, std::move(materialized.front().first), std::move(materialized.front().second));
+            std::vector<std::pair<std::string, algebra::Polynomial>> pair;
+            pair.reserve(2);
+            pair.push_back(std::move(masked[0]));
+            pair.push_back(std::move(masked[1]));
+            commit_named_polynomials(std::move(pair));
+
+            release_cuda_t_edge_executor_cache();
+            release_cuda_t_fh_executor_cache();
+            algebra::release_cuda_ntt_execution_workspace();
+            crypto::release_cuda_g1_msm_execution_workspace();
+        }
+
+        if (!deferred_quotient_labels.empty())
+        {
+            auto deferred = materialize_quotient_polynomials(context, trace, pre_quotient_challenges, deferred_quotient_labels, metrics);
+            deferred = blind_quotient_polynomials(context, std::move(deferred));
+            commit_named_polynomials(std::move(deferred));
+        }
+
+        for (const auto &label : quotient_labels)
+        {
+            if (!quotient_commitments.contains(label) || !quotient_commitments.contains(quotient_mask_label(label)))
+                throw std::runtime_error("missing quotient commitment pair after heavy/light scheduling: " + label);
+        }
 
         if (route2.cuda_field_hotspots)
         {
-            progress_note(
-                "prove:quotient:"
-                "release_cuda_transform_transients:start");
-
-            // Quotient coefficients are now canonical host-side prover
-            // material. t_edge execution state and CUDA NTT workspace are
-            // dead, so release them before coefficient-SRS KZG waves.
             release_cuda_t_edge_executor_cache();
-
+            release_cuda_t_fh_executor_cache();
             algebra::release_cuda_ntt_workspace();
-
-            // Scalar/stream MSM staging is also phase-local.  Preserve
-            // resident immutable SRS bases: they are useful again for
-            // quotient commitments and, later, folded openings.
-            crypto::
-                release_cuda_g1_msm_execution_workspace();
-
-            progress_note(
-                "prove:quotient:"
-                "release_cuda_transform_transients:done");
-        }
-
-        progress_note("prove:quotient:commit_batch:start");
-        const auto quotient_commit_batch_start = Clock::now();
-        crypto::CommitBatchProfile quotient_commit_profile;
-        auto quotient_commitments = [&]()
-        {
-            // The owned batch may use CUDA waves or CPU worker
-            // dispatch. Measure the synchronously joined call as one
-            // wall-clock commitment span; never sum per-worker MSM
-            // profiles into the formal total.
-            timing::ScopedCommitment commitment_scope(metrics);
-            return batch_quotient_commitments(
-                std::move(named_quotient_polynomials),
-                context.kzg,
-                metrics != nullptr ? &quotient_commit_profile : nullptr);
-        }();
-        progress_note(
-            "prove:quotient:commit_batch:done:ms=" + std::to_string(elapsed_ms(
-                                                         quotient_commit_batch_start, Clock::now())));
-        if (metrics != nullptr)
-        {
-            metrics->quotient_commitment_ms +=
-                quotient_commit_profile.msm_ms;
+            crypto::release_cuda_g1_msm_execution_workspace();
         }
         // Quotient polynomials and commitments are proof-specific and must not be
         // reused by a later fresh-proof measurement.

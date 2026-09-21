@@ -123,20 +123,31 @@ void append_statement_fields(std::string &out,
         append_string(out, relation);
 }
 
+void append_message_encoding(std::string &out,
+                             const NativeProofMessage &message) {
+    append_u8(out, static_cast<std::uint8_t>(message.kind));
+    append_u64(out, message.sequence);
+    append_string(out, message.label);
+    append_string(out, message.payload);
+}
+
+void append_transcript_prefix(std::string &out,
+                              const std::string &domain,
+                              const NativeProofStatement &statement,
+                              std::size_t message_count) {
+    append_string(out, "zkgpt-native-fs-v4");
+    append_string(out, domain);
+    append_statement_encoding(out, statement);
+    append_u64(out, static_cast<std::uint64_t>(message_count));
+}
+
 void append_transcript_encoding(std::string &out,
                                 const std::string &domain,
                                 const NativeProofStatement &statement,
                                 const std::vector<NativeProofMessage> &messages) {
-    append_string(out, "zkgpt-native-fs-v4");
-    append_string(out, domain);
-    append_statement_encoding(out, statement);
-    append_u64(out, static_cast<std::uint64_t>(messages.size()));
-    for (const NativeProofMessage &message : messages) {
-        append_u8(out, static_cast<std::uint8_t>(message.kind));
-        append_u64(out, message.sequence);
-        append_string(out, message.label);
-        append_string(out, message.payload);
-    }
+    append_transcript_prefix(out, domain, statement, messages.size());
+    for (const NativeProofMessage &message : messages)
+        append_message_encoding(out, message);
 }
 
 bool is_challenge_label(const std::string &label) {
@@ -302,6 +313,7 @@ void NativeProofSession::absorb(const std::string &label,
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Data, label,
                                            payload,
                                            static_cast<std::uint64_t>(messages_.size())});
+    append_message_encoding(message_body_cache_, messages_.back());
 }
 
 void NativeProofSession::absorb_field(const std::string &label, const F &value) {
@@ -310,6 +322,7 @@ void NativeProofSession::absorb_field(const std::string &label, const F &value) 
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Field, label,
                                            field_encoding(value),
                                            static_cast<std::uint64_t>(messages_.size())});
+    append_message_encoding(message_body_cache_, messages_.back());
 }
 
 void NativeProofSession::absorb_fields(const std::string &label,
@@ -323,12 +336,14 @@ void NativeProofSession::absorb_fields(const std::string &label,
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::FieldVector, label,
                                            std::move(payload),
                                            static_cast<std::uint64_t>(messages_.size())});
+    append_message_encoding(message_body_cache_, messages_.back());
 }
 
 F NativeProofSession::derive(const std::string &label) const {
     if (label.empty()) throw std::invalid_argument("native proof challenge label is empty");
     std::string encoded;
-    append_transcript_encoding(encoded, domain_, statement_, messages_);
+    append_transcript_prefix(encoded, domain_, statement_, messages_.size());
+    encoded.append(message_body_cache_);
     append_string(encoded, label);
     F result;
     result.setHashOf(encoded.data(), encoded.size());
@@ -347,6 +362,7 @@ F NativeProofSession::challenge(const std::string &label) {
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Challenge,
                                            challenge_label, field_encoding(result),
                                            static_cast<std::uint64_t>(messages_.size())});
+    append_message_encoding(message_body_cache_, messages_.back());
     return result;
 }
 
@@ -356,7 +372,14 @@ bool NativeProofSession::rollback(std::size_t checkpoint, std::string *reason) {
         return false;
     }
     messages_.resize(checkpoint);
+    rebuild_message_body_cache();
     return true;
+}
+
+void NativeProofSession::rebuild_message_body_cache() {
+    message_body_cache_.clear();
+    for (const NativeProofMessage &message : messages_)
+        append_message_encoding(message_body_cache_, message);
 }
 
 bool NativeProofSession::replay(std::string *reason) const {
@@ -377,8 +400,12 @@ bool NativeProofSession::replay(std::string *reason) const {
                     return false;
                 }
                 prefix.messages_.push_back(message);
+                append_message_encoding(prefix.message_body_cache_,
+                                        prefix.messages_.back());
             } else {
                 prefix.messages_.push_back(message);
+                append_message_encoding(prefix.message_body_cache_,
+                                        prefix.messages_.back());
             }
         }
         return true;
@@ -614,6 +641,7 @@ bool NativeProofSession::read(const std::string &path, NativeProofSession &out,
             static_cast<std::uint8_t>(kind));
         parsed.messages_.push_back(std::move(message));
     }
+    parsed.rebuild_message_body_cache();
     std::string wire_digest;
     if (!read_string(in, wire_digest)) {
         set_reason(reason, "truncated native proof session digest");
@@ -643,6 +671,7 @@ bool NativeProofSession::from_messages(
             return false;
         }
         parsed.messages_ = messages;
+        parsed.rebuild_message_body_cache();
         if (!parsed.valid(reason) || !parsed.replay(reason)) return false;
         out = std::move(parsed);
         return true;

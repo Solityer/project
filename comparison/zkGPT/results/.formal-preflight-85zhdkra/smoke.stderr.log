@@ -1,0 +1,13 @@
+gat_adapter_formal_stage: graph
+gat_adapter_formal_stage: probe-forward
+gat_adapter_formal_stage: formal-forward
+gat_adapter_formal_stage: plan
+gat_adapter_formal_stage: registration
+gat_adapter_formal_stage: context
+gat_adapter_formal_stage: masked-full-prove
+gat_adapter_prover_stage: begin
+gat_adapter_prover_stage: witness
+gat_adapter_prover_stage: generators
+gat_adapter_prover_stage: lasso-build
+gat_adapter_prover_stage: lasso-prove
+gat_adapter_prover_stage: gkr-prove

@@ -62,6 +62,13 @@ struct NativeMaskedTerminalSpec {
     // Claims relation: final masked claim = c0*t0 + c1*t1 + offset.
     std::vector<F> terminal_linear_coefficients;
     F terminal_linear_offset = F_ZERO;
+    // GKR phase 1 exposes the two U-side evaluations before phase 2 closes
+    // the full U/V predicate.  In that composed scope the U evaluations are
+    // authenticated terminal operands, but there is no standalone linear
+    // identity between them and the phase-1 running claim.  The following
+    // internal flag keeps that deferred relation explicit; phase 2 consumes
+    // these exact bindings through GkrPredicateFixedU.
+    bool defer_terminal_relation = false;
 
     // External binding is mandatory for the sound masked path.  Prover
     // callers fill terminal_openings and initial_opening; verifier callers
@@ -148,7 +155,10 @@ public:
         NativeProofSession &session, const std::string &label,
         std::size_t degree, const F &initial_claim,
         const NativeMaskedTerminalSpec &terminal_spec,
-        const F *unmasked_initial_claim = nullptr);
+        const F *unmasked_initial_claim = nullptr,
+        const zkgpt::native_pedersen::PedersenBasis *basis = nullptr,
+        std::shared_ptr<const zkgpt::native_pedersen::ProverFastPath>
+            fast_path = nullptr);
     ~NativeMaskedSumcheckProver();
     NativeMaskedSumcheckProver(const NativeMaskedSumcheckProver &) = delete;
     NativeMaskedSumcheckProver &operator=(const NativeMaskedSumcheckProver &) = delete;

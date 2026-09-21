@@ -622,6 +622,7 @@ namespace gatzk::protocol
             {"gpu_intt_calls", std::to_string(metrics.gpu_intt_calls)},
             {"gpu_quotient_calls", std::to_string(metrics.gpu_quotient_calls)},
             {"gpu_t_edge_calls", std::to_string(metrics.gpu_t_edge_calls)},
+            {"gpu_t_fh_calls", std::to_string(metrics.gpu_t_fh_calls)},
             {"gpu_opening_fold_calls", std::to_string(metrics.gpu_opening_fold_calls)},
             {"gpu_msm_single_calls", std::to_string(metrics.gpu_msm_single_calls)},
             {"gpu_msm_batch_calls", std::to_string(metrics.gpu_msm_batch_calls)},

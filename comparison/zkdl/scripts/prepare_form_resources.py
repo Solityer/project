@@ -664,8 +664,9 @@ def load_tensors(path: Path) -> list[tuple[str, list[int], list[float]]]:
 
 
 def model_entries(root: Path, values: dict[str, str],
-                  h_point: tuple[int, int], blinders: dict[str, int],
-                  generators: list[tuple[int, int]]) -> list[dict[str, Any]]:
+                  h_point: tuple[int, int], u_point: tuple[int, int],
+                  blinders: dict[str, int], generators: list[tuple[int, int]],
+                  srs_manifest_digest: str) -> list[dict[str, Any]]:
     tensors_path = root / values["checkpoint_bundle"] / "tensors.txt"
     entries: list[dict[str, Any]] = []
     power = 1
@@ -682,17 +683,69 @@ def model_entries(root: Path, values: dict[str, str],
         logical = shape[1:] if len(shape) == 3 and shape[0] == 1 else shape
         padded = [next_pow2(int(axis)) for axis in logical]
         domain = math.prod(padded)
+        quantized = [round_away(value * scale) % R for value in floats]
+        if len(quantized) > domain:
+            die(f"model tensor logical values exceed padded domain: {mapped}")
+        quantized.extend([0] * (domain - len(quantized)))
+        segment_size = min(domain, len(generators))
+        if segment_size < 1 or domain % segment_size != 0 or segment_size & (segment_size - 1):
+            die(f"model tensor domain is not covered by authenticated IPA segments: {mapped}")
+        segment_count = domain // segment_size
+        frame_digest = ipa_basis_digest(
+            generators[:segment_size], h_point, u_point,
+            1 << (segment_size.bit_length()))
+        basis_digest_text = ipa_basis_digest(
+            generators, h_point, u_point, 1 << (len(generators).bit_length()))
+        segments: list[dict[str, Any]] = []
+        for segment_index in range(segment_count):
+            offset = segment_index * segment_size
+            values_segment = quantized[offset:offset + segment_size]
+            segment_point: tuple[int, int] | None = None
+            for index, quantized_value in enumerate(values_segment):
+                segment_point = point_add(
+                    segment_point,
+                    point_mul(generators[index], quantized_value))
+            # Model segment shares are deterministic: the authenticated
+            # sidecar blinder is assigned to segment zero and the remaining
+            # shares are canonical zero.  This is exactly the native
+            # SegmentCommitmentMaterial setup path for visibility=2.
+            if segment_index == 0:
+                segment_point = point_add(segment_point,
+                                          point_mul(h_point, blinders[mapped]))
+            if segment_point is None:
+                die(f"model tensor segment commitment is the identity: {mapped}/{segment_index}")
+            actual_length = min(segment_size, domain - offset)
+            segments.append({
+                "segment_index": segment_index,
+                "logical_offset": offset,
+                "actual_length": actual_length,
+                "padded_length": segment_size,
+                "padding_length": segment_size - actual_length,
+                "frame_digest": frame_digest,
+                "commitment": encode_g1(segment_point).hex(),
+            })
         commitment: tuple[int, int] | None = None
-        for index, value in enumerate(floats):
-            quantized = round_away(value * scale)
-            if index >= len(generators):
-                die(f"local SRS G frame is too short for model tensor: {mapped}")
-            commitment = point_add(commitment, point_mul(generators[index], quantized))
-        blind = blinders[mapped]
-        commitment = point_add(commitment, point_mul(h_point, blind))
+        for segment in segments:
+            commitment = point_add(commitment, decode_g1(bytes.fromhex(segment["commitment"]), mapped))
         if commitment is None:
-            commitment = G
-        entries.append({"tensor_id": mapped, "domain_size": domain, "logical_shape": logical, "padded_shape": padded, "commitment": encode_g1(commitment).hex()})
+            die(f"model tensor commitment is the identity: {mapped}")
+        vector_digest = segment_vector_digest(
+            mapped, 2, domain, 1, segment_size, segment_count,
+            srs_manifest_digest, basis_digest_text, segments)
+        entries.append({
+            "tensor_id": mapped,
+            "domain_size": domain,
+            "logical_shape": logical,
+            "padded_shape": padded,
+            "commitment": encode_g1(commitment).hex(),
+            "segment_binding_version": 1,
+            "segment_size": segment_size,
+            "segment_count": segment_count,
+            "srs_manifest_digest": srs_manifest_digest,
+            "basis_digest": basis_digest_text,
+            "segment_commitment_digest": vector_digest,
+            "segment_commitments": segments,
+        })
         power = max(power, domain)
     if not entries:
         die(f"checkpoint has no canonical GAT model tensors: {tensors_path}")
@@ -780,7 +833,52 @@ def basis_digest(g_meta: dict[str, Any], h_meta: dict[str, Any], u_meta: dict[st
     }))
 
 
-def load_srs_basis(root: Path, values: dict[str, str], required_domain: int) -> tuple[list[tuple[int, int]], tuple[int, int], str]:
+def append_u32(value: int) -> bytes:
+    return struct.pack("<I", value)
+
+
+def append_u64(value: int) -> bytes:
+    return struct.pack("<Q", value)
+
+
+def append_string(value: str) -> bytes:
+    encoded = value.encode()
+    return append_u64(len(encoded)) + encoded
+
+
+def ipa_basis_digest(generators: list[tuple[int, int]], h_point: tuple[int, int],
+                     u_point: tuple[int, int], padded_size: int) -> str:
+    encoded = append_u32(len(generators)) + append_u32(padded_size)
+    encoded += b"".join(encode_g1(point) for point in generators)
+    encoded += encode_g1(h_point) + encode_g1(u_point)
+    return sha256_bytes(encoded)
+
+
+def segment_vector_digest(tensor_id: str, visibility: int, domain: int,
+                          version: int, segment_size: int, segment_count: int,
+                          srs_manifest_digest: str, basis_digest_text: str,
+                          segments: list[dict[str, Any]]) -> str:
+    encoded = append_string("zkdl.segment-commitment-vector.v1")
+    encoded += append_string(tensor_id)
+    encoded += append_u32(visibility) + append_u32(domain)
+    encoded += append_u32(version) + append_u32(segment_size)
+    encoded += append_u32(segment_count)
+    encoded += bytes.fromhex(srs_manifest_digest)
+    encoded += bytes.fromhex(basis_digest_text)
+    encoded += append_u64(len(segments))
+    for segment in segments:
+        encoded += append_u32(segment["segment_index"])
+        encoded += append_u64(segment["logical_offset"])
+        encoded += append_u32(segment["actual_length"])
+        encoded += append_u32(segment["padded_length"])
+        encoded += append_u32(segment["padding_length"])
+        encoded += bytes.fromhex(segment["frame_digest"])
+        encoded += bytes.fromhex(segment["commitment"])
+    return sha256_bytes(encoded)
+
+
+def load_srs_basis(root: Path, values: dict[str, str], required_domain: int) -> tuple[
+        list[tuple[int, int]], tuple[int, int], tuple[int, int], str, str]:
     srs_dir = root / values["srs_path"]
     manifest_path = srs_dir / "srs_manifest.json"
     try:
@@ -822,12 +920,16 @@ def load_srs_basis(root: Path, values: dict[str, str], required_domain: int) -> 
         die("installed local SRS default chunk has no canonical basis_domain")
     generators = read_srs_frame_prefix(srs_dir, selected.get("G"), "G", min(required_domain, basis_domain))
     h_points = read_srs_frame_prefix(srs_dir, selected.get("H"), "H", 1)
+    u_points = read_srs_frame_prefix(srs_dir, selected.get("U"), "U", 1)
     generator_digest = selected.get("generator_digest")
     if not isinstance(generator_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", generator_digest):
         die("installed local SRS default chunk has no canonical generator digest")
     if generator_digest != selected["G"].get("sha256"):
         die("installed local SRS generator digest is not bound to G")
-    return generators, h_points[0], generator_digest
+    selected_basis_digest = selected.get("basis_digest")
+    if not isinstance(selected_basis_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", selected_basis_digest):
+        die("installed local SRS default chunk has no canonical basis digest")
+    return generators, h_points[0], u_points[0], generator_digest, selected_basis_digest
 
 
 def plan_srs_segments(family_domains: dict[str, int],
@@ -1246,13 +1348,15 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool) ->
             tensor_ids.add(mapped)
     old_blinders = existing_blinders(root, values, tensor_ids)
     blinders = old_blinders or {tensor_id: fresh_scalar() for tensor_id in tensor_ids}
-    generators, h_point, generator_digest = load_srs_basis(root, values, max(model_domains, default=1))
+    generators, h_point, u_point, generator_digest, _srs_basis_digest = load_srs_basis(
+        root, values, max(model_domains, default=1))
     manifest_path = root / values["checkpoint_bundle"] / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["degree_bound_id"] = ledger["degree_bound_id"]
     write_json(manifest_path, manifest)
-    registry_entries = model_entries(root, values, h_point, blinders, generators)
-    registry = {"schema": "zkDL_gat_model_registry_v2", "dataset": dataset, "model_arch_id": values["model_arch_id"], "model_param_id": values["model_param_id"], "quant_cfg_id": values["quant_cfg_id"], "static_table_id": values["static_table_id"], "srs_id": values["srs_id"], "srs_manifest_digest": srs_digest, "generator_digest": generator_digest, "config_digest": config_identity(config_path), "scale_chain_digest": quant_digest, "static_table_digest": table_file_digest, "integer_bound_ledger_digest": ledger_file_digest, "model_manifest_digest": sha256_file(root / values["checkpoint_bundle"] / "manifest.json"), "model_tensors": registry_entries, "source_root": "baseline-local"}
+    registry_entries = model_entries(
+        root, values, h_point, u_point, blinders, generators, srs_digest)
+    registry = {"schema": "zkDL_gat_model_registry_v3", "dataset": dataset, "model_arch_id": values["model_arch_id"], "model_param_id": values["model_param_id"], "quant_cfg_id": values["quant_cfg_id"], "static_table_id": values["static_table_id"], "srs_id": values["srs_id"], "srs_manifest_digest": srs_digest, "generator_digest": generator_digest, "config_digest": config_identity(config_path), "scale_chain_digest": quant_digest, "static_table_digest": table_file_digest, "integer_bound_ledger_digest": ledger_file_digest, "model_manifest_digest": sha256_file(root / values["checkpoint_bundle"] / "manifest.json"), "model_tensors": registry_entries, "source_root": "baseline-local"}
     registry["registry_identity_digest"] = sha256_bytes(compact(registry))
     registry["verifier_registry_digest"] = registry["registry_identity_digest"]
     registry_path = root / values["model_registry_path"]

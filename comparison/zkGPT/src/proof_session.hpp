@@ -121,8 +121,15 @@ private:
     std::string domain_;
     NativeProofStatement statement_;
     std::vector<NativeProofMessage> messages_;
+    // Canonical wire encoding of the message sequence only.  The transcript
+    // header and message count remain assembled by derive() in their
+    // historical order; caching this body avoids re-encoding every prior
+    // message for each Fiat-Shamir challenge without changing transcript
+    // bytes or the proof-session wire schema.
+    std::string message_body_cache_;
 
     F derive(const std::string &label) const;
+    void rebuild_message_body_cache();
     static std::string field_encoding(const F &value);
     static bool decode_field(const std::string &payload, F &value);
     static bool decode_fields(const std::string &payload, std::vector<F> &values);

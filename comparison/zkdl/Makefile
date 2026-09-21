@@ -22,7 +22,7 @@ TARGETS := $(SRCS:.cu=)
 GAT_TARGET := gat_runner
 GAT_SRC := gat_adapter/gat_runner.cu gat_adapter/gat_native_bridge.cu gat_adapter/gat_native_core.cu
 
-.PHONY: all baseline-local-build test-short clean
+.PHONY: all baseline-local-build test-short segmented-fixture-check clean
 
 all: $(TARGETS) $(GAT_TARGET)
 
@@ -32,6 +32,12 @@ all: $(TARGETS) $(GAT_TARGET)
 baseline-local-build: $(GAT_TARGET)
 
 test-short: tests/core_smoke
+
+segmented-fixture-check: tests/segmented_lookup_fixture
+	 timeout 180s ./tests/segmented_lookup_fixture
+
+tests/segmented_lookup_fixture: tests/segmented_lookup_fixture.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp
+	 timeout 180s $(NVCC) $(NVCC_FLAGS) -std=c++17 $(INCLUDES) $(LIBS) -I. -Igat_adapter $< -o $@
 
 tests/core_smoke: tests/core_smoke.cu proof.cuh commitment.cuh fr-tensor.cuh g1-tensor.cuh
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@

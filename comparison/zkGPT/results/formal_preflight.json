@@ -1,7 +1,7 @@
 {
   "backends": {
     "cpu": {
-      "blocker": "formal adapter smoke timed out after 45s; partial diagnostics: /home/pzh/project/comparison/zkGPT/results/.formal-preflight-18n466a3",
+      "blocker": "formal adapter smoke timed out after 45s; partial diagnostics: /home/pzh/project/comparison/zkGPT/results/.formal-preflight-ii4dfrff",
       "capabilities": {
         "independent": true,
         "masked_full": true,
@@ -27,7 +27,7 @@
     }
   },
   "blockers": [
-    "formal adapter smoke timed out after 45s; partial diagnostics: /home/pzh/project/comparison/zkGPT/results/.formal-preflight-18n466a3"
+    "formal adapter smoke timed out after 45s; partial diagnostics: /home/pzh/project/comparison/zkGPT/results/.formal-preflight-ii4dfrff"
   ],
   "capacity": {},
   "formal_datasets_started": false,

@@ -32,7 +32,7 @@
       "additionalProperties": false,
       "required": ["schema", "dataset", "model_arch_id", "model_param_id", "quant_cfg_id", "static_table_id", "srs_id", "srs_manifest_digest", "generator_digest", "config_digest", "registry_identity_digest", "verifier_registry_digest", "scale_chain_digest", "static_table_digest", "integer_bound_ledger_digest", "model_manifest_digest", "model_tensors", "source_root"],
       "properties": {
-        "schema": {"const": "zkDL_gat_model_registry_v2"},
+      "schema": {"const": "zkDL_gat_model_registry_v3"},
         "dataset": {"type": "string", "enum": ["cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"]},
         "model_arch_id": {"type": "string", "minLength": 1},
         "model_param_id": {"type": "string", "minLength": 1},
@@ -54,13 +54,37 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["tensor_id", "domain_size", "logical_shape", "padded_shape", "commitment"],
+            "required": ["tensor_id", "domain_size", "logical_shape", "padded_shape", "commitment", "segment_binding_version", "segment_size", "segment_count", "srs_manifest_digest", "basis_digest", "segment_commitment_digest", "segment_commitments"],
             "properties": {
               "tensor_id": {"type": "string", "minLength": 1},
               "domain_size": {"type": "integer", "minimum": 1},
               "logical_shape": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}},
               "padded_shape": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}},
-              "commitment": {"type": "string", "pattern": "^[0-9a-f]{96}$"}
+              "commitment": {"type": "string", "pattern": "^[0-9a-f]{96}$"},
+              "segment_binding_version": {"const": 1},
+              "segment_size": {"type": "integer", "minimum": 1},
+              "segment_count": {"type": "integer", "minimum": 1},
+              "srs_manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "basis_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "segment_commitment_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "segment_commitments": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["segment_index", "logical_offset", "actual_length", "padded_length", "padding_length", "frame_digest", "commitment"],
+                  "properties": {
+                    "segment_index": {"type": "integer", "minimum": 0},
+                    "logical_offset": {"type": "integer", "minimum": 0},
+                    "actual_length": {"type": "integer", "minimum": 1},
+                    "padded_length": {"type": "integer", "minimum": 1},
+                    "padding_length": {"type": "integer", "minimum": 0},
+                    "frame_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "commitment": {"type": "string", "pattern": "^[0-9a-f]{96}$"}
+                  }
+                }
+              }
             }
           }
         },

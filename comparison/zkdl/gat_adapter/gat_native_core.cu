@@ -1,7 +1,3 @@
-#include "gat_native_core.cuh"
-#include "gat_native_resources.hpp"
-#include "gat_native_resources.cu"
-
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -14,6 +10,10 @@
 #include <sstream>
 #include <stdexcept>
 #include <tuple>
+
+#include "gat_native_resources.hpp"
+#include "gat_native_core.cuh"
+#include "gat_native_resources.cu"
 
 namespace zkdl_gat {
 namespace {
@@ -59,6 +59,53 @@ bool parse_digest(const std::string& text, std::array<zkdl::byte, 32>& digest) {
         const int lo = nibble(text[2U * i + 1U]);
         if (hi < 0 || lo < 0) return false;
         digest[i] = static_cast<zkdl::byte>((hi << 4) | lo);
+    }
+    return true;
+}
+
+bool native_commitment_to_relation(
+    const NativeCommitmentInput& supplied,
+    relation::CommitmentWire& commitment, std::string* error) {
+    commitment = relation::CommitmentWire{};
+    commitment.tensor_id = supplied.tensor_id;
+    commitment.visibility = supplied.visibility;
+    commitment.domain_size = supplied.domain_size;
+    commitment.segment_binding_version = supplied.segment_binding_version;
+    commitment.segment_size = supplied.segment_size;
+    commitment.segment_count = supplied.segment_count;
+    commitment.srs_manifest_digest = supplied.srs_manifest_digest;
+    commitment.basis_digest = supplied.basis_digest;
+    commitment.segment_commitment_digest = supplied.segment_commitment_digest;
+    std::size_t offset = 0U;
+    if (!zkdl::read_g1(supplied.commitment, offset, commitment.commitment) ||
+        offset != supplied.commitment.size()) {
+        if (error) *error = "BLOCKED: native model commitment payload is not canonical";
+        return false;
+    }
+    commitment.segment_commitments.reserve(supplied.segment_commitments.size());
+    for (const auto& supplied_segment : supplied.segment_commitments) {
+        relation::SegmentCommitmentWire segment;
+        segment.segment_index = supplied_segment.segment_index;
+        segment.logical_offset = supplied_segment.logical_offset;
+        segment.actual_length = supplied_segment.actual_length;
+        segment.padded_length = supplied_segment.padded_length;
+        segment.padding_length = supplied_segment.padding_length;
+        segment.frame_digest = supplied_segment.frame_digest;
+        std::size_t segment_offset = 0U;
+        if (!zkdl::read_g1(supplied_segment.commitment, segment_offset,
+                           segment.commitment) ||
+            segment_offset != supplied_segment.commitment.size()) {
+            if (error) *error = "BLOCKED: native model segment commitment payload is not canonical";
+            return false;
+        }
+        commitment.segment_commitments.push_back(std::move(segment));
+    }
+    if (!relation::segment_commitment_wire_shape_valid(commitment, error) ||
+        relation::segment_commitment_digest(commitment) !=
+            commitment.segment_commitment_digest) {
+        if (error && error->empty())
+            *error = "BLOCKED: native model segment commitment vector is not canonical";
+        return false;
     }
     return true;
 }
@@ -351,6 +398,10 @@ bool resource_admission(const Config& config, const NativeRelationWitness& witne
         return false;
     }
     std::set<std::string> supplied_ids;
+    const auto authenticated_basis_digest = zkdl::cpu_ipa_basis_digest(
+        witness.ipa_generators, witness.ipa_blinding_generator,
+        witness.ipa_u_generator,
+        zkdl::cpu_ipa_padded_size(static_cast<std::uint32_t>(witness.ipa_generators.size())));
     for (const auto& expected : registry.model_commitments) {
         const auto found = std::find_if(
             witness.registered_model_commitments.begin(), witness.registered_model_commitments.end(),
@@ -361,11 +412,49 @@ bool resource_admission(const Config& config, const NativeRelationWitness& witne
             if (error) *error = "BLOCKED: native model registry commitment set is incomplete";
             return false;
         }
-        std::vector<zkdl::byte> actual;
-        if (!encode_point(zkdl::cpu_g1_from_native(found->commitment), actual) ||
-            actual != expected.commitment) {
-            if (error) *error = "BLOCKED: native model commitment differs from authenticated registry";
+        relation::CommitmentWire expected_wire;
+        if (!native_commitment_to_relation(expected, expected_wire, error) ||
+            !relation::commitment_equal(*found, expected_wire)) {
+            if (error && error->empty())
+                *error = "BLOCKED: native model commitment differs from authenticated registry";
             return false;
+        }
+        if (expected.srs_manifest_digest != srs.manifest_digest ||
+            expected.basis_digest != authenticated_basis_digest) {
+            if (error) *error = "BLOCKED: model registry segment basis is not bound to authenticated SRS";
+            return false;
+        }
+        const AuthenticatedSrsResource::Chunk* selected = nullptr;
+        if (!select_authenticated_srs_chunk(
+                &srs, expected.tensor_id, expected.domain_size, &selected, error) ||
+            selected == nullptr || selected->segment_size != expected.segment_size ||
+            selected->segment_count != expected.segment_count ||
+            selected->basis_digest != srs.basis_digest ||
+            selected->generator_digest != digest_hex(srs.generator_digest) ||
+            selected->segments.size() != expected.segment_commitments.size()) {
+            if (error && error->empty())
+                *error = "BLOCKED: model registry segment layout is not covered by authenticated SRS";
+            return false;
+        }
+        const std::vector<zkdl::CpuG1Point> frame_generators(
+            witness.ipa_generators.begin(),
+            witness.ipa_generators.begin() + expected.segment_size);
+        const auto authenticated_frame_digest = zkdl::cpu_ipa_basis_digest(
+            frame_generators, witness.ipa_blinding_generator,
+            witness.ipa_u_generator,
+            zkdl::cpu_ipa_padded_size(expected.segment_size));
+        for (std::size_t segment_index = 0U;
+             segment_index < expected.segment_commitments.size(); ++segment_index) {
+            const auto& declared = expected.segment_commitments[segment_index];
+            const auto& authenticated = selected->segments[segment_index];
+            if (authenticated.segment_index != declared.segment_index ||
+                authenticated.logical_offset != declared.logical_offset ||
+                authenticated.actual_length != declared.actual_length ||
+                authenticated.padded_length != declared.padded_length ||
+                declared.frame_digest != authenticated_frame_digest) {
+                if (error) *error = "BLOCKED: model registry segment metadata/frame is not SRS-bound";
+                return false;
+            }
         }
     }
     if (require_model_blinders) {
@@ -2830,49 +2919,81 @@ bool sorted_lookup_public_table_providers(
     if (!sorted_lookup_parse_u128(query.key_max_u128, key_max, error)) return false;
     const std::int64_t output_min = *std::min_element(table.begin(), table.end());
     const std::uint32_t key_bits = query.x_bits + query.y_bits;
-    std::vector<FrWire> keys(static_cast<std::size_t>(query.table_domain));
-    std::vector<FrWire> active(static_cast<std::size_t>(query.table_domain));
-    for (std::size_t row = 0U; row < table.size(); ++row) {
-        const __int128 difference = static_cast<__int128>(table[row]) -
+    const auto* source = &table;
+    const auto key_at = [source, output_min, key_max, key_bits,
+                         x_bits = query.x_bits, y_bits = query.y_bits](
+                            std::uint64_t row, FrWire& key, std::string* range_error) {
+        if (row >= source->size()) {
+            if (range_error) *range_error = "sorted-lookup public table row is out of bounds";
+            return false;
+        }
+        const __int128 difference = static_cast<__int128>((*source)[static_cast<std::size_t>(row)]) -
                                     static_cast<__int128>(output_min);
-        if (difference < 0 || query.x_bits == 0U || query.y_bits == 0U) {
-            if (error) *error = "BLOCKED: authenticated sorted-lookup table key is negative";
+        if (difference < 0 || x_bits == 0U || y_bits == 0U) {
+            if (range_error) *range_error = "BLOCKED: authenticated sorted-lookup table key is negative";
             return false;
         }
         const unsigned __int128 y = static_cast<unsigned __int128>(difference);
-        const unsigned __int128 key =
-            (static_cast<unsigned __int128>(row) << query.y_bits) | y;
-        if (key > key_max || (key_bits < 128U && (key >> key_bits) != 0U)) {
-            if (error) *error = "BLOCKED: authenticated sorted-lookup table key exceeds descriptor bound";
+        const unsigned __int128 candidate =
+            (static_cast<unsigned __int128>(row) << y_bits) | y;
+        if (candidate > key_max || (key_bits < 128U && (candidate >> key_bits) != 0U)) {
+            if (range_error) *range_error =
+                "BLOCKED: authenticated sorted-lookup table key exceeds descriptor bound";
             return false;
         }
-        keys[row] = relation::sorted_lookup_field_from_u128(key);
-        active[row] = zkdl::fr_from_u32(1U);
-        if (row != 0U && keys[row] <= keys[row - 1U]) {
+        key = relation::sorted_lookup_field_from_u128(candidate);
+        return true;
+    };
+    // Validate the authenticated source once, but retain no table-domain-sized
+    // key or active vectors.  Readers below derive only the requested bounded
+    // basis segment, so logical table domains do not consume a single-frame
+    // allocation at this boundary.
+    FrWire previous_key{};
+    for (std::size_t row = 0U; row < table.size(); ++row) {
+        FrWire key{};
+        if (!key_at(row, key, error)) return false;
+        if (row != 0U && key <= previous_key) {
             if (error) *error = "BLOCKED: authenticated sorted-lookup table keys are not unique/sorted";
             return false;
         }
+        previous_key = key;
     }
-    const auto owned_provider = [&](std::vector<FrWire> values,
+    const auto range_provider = [&](std::uint32_t field,
                                     relation::SegmentedTensorProvider& result) {
-        auto storage = std::make_shared<std::vector<FrWire>>(std::move(values));
         result = relation::SegmentedTensorProvider(
-            static_cast<std::uint32_t>(storage->size()),
+            static_cast<std::uint32_t>(query.table_domain),
             static_cast<std::uint32_t>(query.segment_size),
-            [storage](std::uint64_t offset, std::uint32_t count,
-                      std::vector<FrWire>& output, std::string* read_error) {
-                if (offset > storage->size() || count > storage->size() - offset) {
-                    if (read_error) *read_error = "sorted-lookup public table range is out of bounds";
+            [source, key_at, field, table_domain = query.table_domain,
+             segment_size = query.segment_size](std::uint64_t offset, std::uint32_t count,
+                                                std::vector<FrWire>& output,
+                                                std::string* range_error) {
+                if (count > segment_size || offset > table_domain ||
+                    count > table_domain - offset) {
+                    if (range_error) *range_error =
+                        "sorted-lookup public table range exceeds authenticated segment";
                     return false;
                 }
-                output.assign(storage->begin() + static_cast<std::ptrdiff_t>(offset),
-                              storage->begin() + static_cast<std::ptrdiff_t>(offset + count));
+                output.assign(count, FrWire{});
+                for (std::uint32_t index = 0U; index < count; ++index) {
+                    const std::uint64_t row = offset + index;
+                    if (row < source->size()) {
+                        if (field == 1U) {
+                            output[index] = zkdl::fr_from_u32(1U);
+                        } else if (!key_at(row, output[index], range_error)) {
+                            return false;
+                        }
+                    } else if (field != 1U) {
+                        // SegmentedTensorProvider pads the final segment, but
+                        // an authenticated table provider must itself return
+                        // canonical zeroes for its logical padding.
+                        output[index] = FrWire{};
+                    }
+                }
                 return true;
             });
         return result.valid(error);
     };
-    return owned_provider(std::move(keys), table_keys) &&
-           owned_provider(std::move(active), table_active);
+    return range_provider(0U, table_keys) && range_provider(1U, table_active);
 }
 
 bool sorted_lookup_prover_providers(
@@ -2948,7 +3069,8 @@ std::string sorted_lookup_join_roles(const std::vector<std::string>& roles) {
 
 bool sorted_lookup_build_prover_context(
     const Config& config, const StaticTables& tables, const RelationPlan& plan,
-    const PublicStatement& statement, const NativeRelationWitness& witness,
+    const PublicStatement& statement, const relation::RelationStatement& relation_statement,
+    const NativeRelationWitness& witness,
     relation::ProverContext& context, std::string* error) {
     std::map<std::string, const relation::OperationDescriptor*> operations;
     for (const auto& operation : context.operations)
@@ -2977,6 +3099,8 @@ bool sorted_lookup_build_prover_context(
     context.sorted_lookup_commitment_refs.clear();
     context.sorted_lookup_outer_commitments.clear();
     context.sorted_lookup_outer_blinders.clear();
+    context.sorted_lookup_outer_segment_blinders.clear();
+    context.sorted_lookup_outer_segment_commitments.clear();
     context.sorted_lookup_commitment_ids.clear();
     for (const auto& query : plan.sorted_lookup.queries) {
         const auto operation_it = operations.find(query.operation_id);
@@ -3022,14 +3146,23 @@ bool sorted_lookup_build_prover_context(
         std::vector<zkdl::AuthenticatedSortedLookupCommitmentRef> refs;
         std::vector<zkdl::CpuG1Point> outer;
         std::vector<FrWire> blinders;
+        std::vector<std::vector<FrWire>> segment_blinders;
+        std::vector<std::vector<zkdl::CpuG1Point>> segment_commitments;
         const auto add_outer = [&](std::uint32_t role, std::uint32_t column,
                                    const std::string& name,
                                    const relation::SegmentedTensorProvider& provider) {
             FrWire blinder = zkdl::cpu_fresh_csprng_scalar();
             while (blinder == FrWire{}) blinder = zkdl::cpu_fresh_csprng_scalar();
-            const zkdl::CpuG1Point commitment = relation::zktr_segmented_commitment(
-                provider, context.ipa_generators, context.ipa_blinding_generator,
-                blinder, error);
+            relation::CommitmentWire wire;
+            relation::SegmentCommitmentMaterial material;
+            const std::string tensor_id =
+                "sorted_lookup/" + query.operation_id + "/" + name;
+            if (!relation::zktr_build_segment_commitment_material(
+                    tensor_id, 3U, provider, context.ipa_generators,
+                    context.ipa_blinding_generator, context.ipa_u_generator,
+                    blinder, relation_statement, wire, material, error)) return false;
+            const zkdl::CpuG1Point commitment =
+                zkdl::cpu_g1_from_native(wire.commitment);
             if (commitment.is_zero()) return false;
             zkdl::AuthenticatedSortedLookupCommitmentRef ref;
             ref.role = role;
@@ -3040,8 +3173,9 @@ bool sorted_lookup_build_prover_context(
             refs.push_back(ref);
             outer.push_back(commitment);
             blinders.push_back(blinder);
-            context.sorted_lookup_commitment_ids.push_back(
-                "sorted_lookup/" + query.operation_id + "/" + name);
+            segment_blinders.push_back(std::move(material.blinders));
+            segment_commitments.push_back(std::move(material.commitments));
+            context.sorted_lookup_commitment_ids.push_back(tensor_id);
             return true;
         };
         if (!add_outer(zkdl::kSortedLookupCommitmentQueryX, 0U, "query_x", providers.query_x) ||
@@ -3067,6 +3201,8 @@ bool sorted_lookup_build_prover_context(
         context.sorted_lookup_commitment_refs.push_back(std::move(refs));
         context.sorted_lookup_outer_commitments.push_back(std::move(outer));
         context.sorted_lookup_outer_blinders.push_back(std::move(blinders));
+        context.sorted_lookup_outer_segment_blinders.push_back(std::move(segment_blinders));
+        context.sorted_lookup_outer_segment_commitments.push_back(std::move(segment_commitments));
     }
     return true;
 }
@@ -3192,15 +3328,7 @@ bool decode_native_witness(const NativeRelationWitnessInput& input,
     output.registered_model_commitments.reserve(input.registered_model_commitments.size());
     for (const auto& supplied : input.registered_model_commitments) {
         relation::CommitmentWire commitment;
-        commitment.tensor_id = supplied.tensor_id;
-        commitment.visibility = supplied.visibility;
-        commitment.domain_size = supplied.domain_size;
-        std::size_t offset = 0U;
-        if (!zkdl::read_g1(supplied.commitment, offset, commitment.commitment) ||
-            offset != supplied.commitment.size()) {
-            if (error) *error = "BLOCKED: native model commitment payload is not canonical";
-            return false;
-        }
+        if (!native_commitment_to_relation(supplied, commitment, error)) return false;
         output.registered_model_commitments.push_back(std::move(commitment));
     }
     output.blinding_scalars.clear();
@@ -3331,7 +3459,7 @@ bool context_from_request(const NativeProveRequest& request,
     context.ipa_u_generator = witness.ipa_u_generator;
     if (!sorted_lookup_build_prover_context(
             *request.config, *request.tables, *request.relation, *request.statement,
-            witness, context, error)) return false;
+            context.statement, witness, context, error)) return false;
     context.registered_model_commitments = witness.registered_model_commitments;
     context.hiding_commitment_records = witness.hiding_commitment_records;
     context.blinding_scalars = witness.blinding_scalars;

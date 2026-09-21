@@ -1894,6 +1894,9 @@ bool masked_matmul_witness_vectors(const NativeGkrMatmulWitness &witness,
 }
 
 bool masked_product_prove(NativeProofSession &session, const std::string &label,
+                          const PedersenBasis &basis,
+                          const std::shared_ptr<const
+                              zkgpt::native_pedersen::ProverFastPath> &fast_path,
                           const std::vector<F> &left,
                           const std::vector<F> &right,
                           std::size_t inner_bits,
@@ -1917,7 +1920,8 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
     spec.masked_initial_opening = masked_initial_opening;
     spec.masked_initial_commitment = masked_initial_opening.commitment;
     NativeMaskedSumcheckProver sumcheck(
-        session, label, 2, masked_initial, spec, &unmasked_initial);
+        session, label, 2, masked_initial, spec, &unmasked_initial, &basis,
+        fast_path);
     std::vector<F> f = left;
     std::vector<F> g = right;
     F previous_random = F_ZERO;
@@ -1956,8 +1960,10 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
     }
     (void)previous_random;
     spec.unmasked_terminal_openings = {
-        zkgpt::native_pedersen::commit_fresh(sumcheck.result().basis, f[0]),
-        zkgpt::native_pedersen::commit_fresh(sumcheck.result().basis, g[0])};
+        zkgpt::native_pedersen::commit_fresh(sumcheck.result().basis, f[0],
+                                             fast_path),
+        zkgpt::native_pedersen::commit_fresh(sumcheck.result().basis, g[0],
+                                             fast_path)};
     if (!sumcheck.set_terminal_spec(spec, reason)) return false;
     return sumcheck.finish({f[0], g[0]}, &result, reason);
 }
@@ -2034,6 +2040,12 @@ bool masked_validate_circuit(const layeredCircuit &circuit,
     return true;
 }
 
+void masked_gkr_progress(const std::string &message) {
+    // Diagnostics only: do not absorb progress labels into the proof
+    // transcript or alter the independent verifier's wire.
+    std::cerr << "[zkGPT][gkr] " << message << std::endl;
+}
+
 } // namespace
 
 bool prove_masked_gkr_transcript(
@@ -2068,6 +2080,8 @@ bool prove_masked_gkr_transcript(
             masked_set_reason(reason, "masked GKR FCONN descriptor count mismatch");
             return false;
         }
+        masked_gkr_progress("begin layers=" + std::to_string(circuit.size) +
+                            " fconn=" + std::to_string(fconn_count));
 
         session.absorb_fields("gkr/public-output", public_output);
         std::vector<std::vector<F>> r_u(circuit.size + 1);
@@ -2081,6 +2095,8 @@ bool prove_masked_gkr_transcript(
                                                    r_u[circuit.size]);
         F previous_masked = previous_unmasked;
         const PedersenBasis basis = masked_basis(session);
+        const auto fast_path =
+            zkgpt::native_pedersen::make_prover_fast_path(session, basis);
         const ScalarOpening public_base{
             zkgpt::native_pedersen::commit(basis, F_ZERO, F_ZERO),
             F_ZERO, F_ZERO};
@@ -2117,12 +2133,22 @@ bool prove_masked_gkr_transcript(
             native_prover.sumcheckInit(alpha, beta);
             F relu_rou = F_ONE;
             const std::string prefix = "gkr/layer/" + std::to_string(layer_id);
+            masked_gkr_progress(
+                "layer=" + std::to_string(layer_id) + " begin ty=" +
+                std::to_string(static_cast<int>(current.ty)) +
+                " size=" + std::to_string(current.size) +
+                " bits=" + std::to_string(current.bit_length) +
+                " u=" + std::to_string(current.max_bl_u) +
+                " v=" + std::to_string(current.max_bl_v) +
+                " phase2=" + (current.need_phase2 ? "1" : "0"));
             session.absorb(prefix + "/begin", "masked-layer-v1");
             if (current.zero_start_id < current.size)
                 relu_rou = session.challenge("gkr/layer/" +
                                              std::to_string(layer_id) + "/relu");
 
             if (current.ty == layerType::FCONN) {
+                masked_gkr_progress("layer=" + std::to_string(layer_id) +
+                                    " fconn begin");
                 if (next_matmul == 0) {
                     masked_set_reason(reason, "masked GKR FCONN descriptor underflow");
                     throw std::runtime_error(*reason);
@@ -2164,8 +2190,9 @@ bool prove_masked_gkr_transcript(
                 const F initial_masked = have_previous_u1
                     ? previous_u1_masked : previous_masked;
                 NativeMaskedSumcheckResult product_result;
-                if (!masked_product_prove(session, prefix + "/matmul", left_mle,
-                                           right_mle, m, initial_masked,
+                if (!masked_product_prove(session, prefix + "/matmul", basis,
+                                           fast_path,
+                                           left_mle, right_mle, m, initial_masked,
                                            initial_unmasked,
                                            have_previous_u1
                                                ? previous_u1_unmasked_opening
@@ -2204,6 +2231,8 @@ bool prove_masked_gkr_transcript(
                 previous_u1_unmasked_opening = ScalarOpening{};
                 previous_u1_masked_opening = ScalarOpening{};
                 have_previous_u1 = false;
+                masked_gkr_progress("layer=" + std::to_string(layer_id) +
+                                    " fconn end rounds=" + std::to_string(m));
                 continue;
             }
 
@@ -2220,7 +2249,10 @@ bool prove_masked_gkr_transcript(
             phase1_placeholder.masked_initial_commitment = previous_masked_opening.commitment;
             NativeMaskedSumcheckProver phase1(
                 session, prefix + "/phase1", 2, previous_masked,
-                phase1_placeholder, &previous_unmasked);
+                phase1_placeholder, &previous_unmasked, &basis, fast_path);
+            masked_gkr_progress("layer=" + std::to_string(layer_id) +
+                                " phase1 begin rounds=" +
+                                std::to_string(current.max_bl_u));
             native_prover.sumcheckInitPhase1(relu_rou);
             F previous_random = F_ZERO;
             F phase1_unmasked = previous_unmasked;
@@ -2238,6 +2270,8 @@ bool prove_masked_gkr_transcript(
             }
             F claim_u0 = F_ZERO, claim_u1 = F_ZERO;
             native_prover.sumcheckFinalize1(previous_random, claim_u0, claim_u1);
+            masked_gkr_progress("layer=" + std::to_string(layer_id) +
+                                " phase1 rounds done");
             r_u[layer_id] = phase1.result().challenges;
             std::vector<F> r0 = r_u[layer_id + 1];
             std::vector<F> r1 = r_v[layer_id + 1];
@@ -2253,17 +2287,16 @@ bool prove_masked_gkr_transcript(
             F phase2_unmasked = phase1_unmasked;
             NativeMaskedSumcheckResult phase2_result;
             if (current.need_phase2) {
-                if (current.max_bl_v == 0)
-                    throw std::runtime_error("masked GKR ordinary phase2 has zero rounds");
                 NativeMaskedTerminalSpec phase1_spec;
                 phase1_spec.kind = NativeMaskedTerminalKind::Claims;
                 phase1_spec.terminal_linear_coefficients = {F_ONE, F_ONE};
                 phase1_spec.terminal_linear_offset = F_ZERO;
+                phase1_spec.defer_terminal_relation = true;
                 phase1_spec.unmasked_terminal_openings = {
                     zkgpt::native_pedersen::commit_fresh(
-                        phase1.result().basis, claim_u0),
+                        phase1.result().basis, claim_u0, fast_path),
                     zkgpt::native_pedersen::commit_fresh(
-                        phase1.result().basis, claim_u1)};
+                        phase1.result().basis, claim_u1, fast_path)};
                 if (!phase1.set_terminal_spec(phase1_spec, reason) ||
                     !phase1.finish({claim_u0, claim_u1}, &phase1_result, reason))
                     throw std::runtime_error(*reason);
@@ -2287,7 +2320,10 @@ bool prove_masked_gkr_transcript(
                     phase1_result.claim_commitment;
                 NativeMaskedSumcheckProver phase2(
                     session, prefix + "/phase2", 2, phase1_result.final_claim,
-                    phase2_placeholder, &phase1_unmasked);
+                    phase2_placeholder, &phase1_unmasked, &basis, fast_path);
+                masked_gkr_progress("layer=" + std::to_string(layer_id) +
+                                    " phase2 begin rounds=" +
+                                    std::to_string(current.max_bl_v));
                 native_prover.sumcheckInitPhase2();
                 previous_random = F_ZERO;
                 for (int bit = 0; bit < current.max_bl_v; ++bit) {
@@ -2332,6 +2368,8 @@ bool prove_masked_gkr_transcript(
                     !phase2.finish({claim_v0, claim_v1}, &phase2_result, reason))
                     throw std::runtime_error(*reason);
                 masked_v = phase2_result.terminal_values;
+                masked_gkr_progress("layer=" + std::to_string(layer_id) +
+                                    " phase2 end");
             } else {
                 NativeMaskedTerminalSpec phase1_spec;
                 phase1_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedV;
@@ -2355,6 +2393,8 @@ bool prove_masked_gkr_transcript(
                     throw std::runtime_error(*reason);
                 masked_u = phase1_result.terminal_values;
                 phase1_result.final_claim = phase1_result.final_claim;
+                masked_gkr_progress("layer=" + std::to_string(layer_id) +
+                                    " phase1 terminal end");
             }
             if (masked_u.size() != 2 || masked_v.size() != 2)
                 throw std::runtime_error("masked GKR terminal claim arity mismatch");
@@ -2395,6 +2435,8 @@ bool prove_masked_gkr_transcript(
                 throw std::runtime_error(*reason);
             previous_unmasked_opening = next_unmasked_opening;
             previous_masked_opening = next_masked_opening;
+            masked_gkr_progress("layer=" + std::to_string(layer_id) +
+                                " end");
         }
         if (next_matmul != 0)
             throw std::runtime_error("masked GKR FCONN descriptor was not consumed");
@@ -2610,6 +2652,7 @@ bool verify_masked_gkr_transcript(
             if (current.need_phase2) {
                 phase1_spec.kind = NativeMaskedTerminalKind::Claims;
                 phase1_spec.terminal_linear_coefficients = {F_ONE, F_ONE};
+                phase1_spec.defer_terminal_relation = true;
             } else {
                 phase1_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedV;
                 phase1_spec.fixed_values = {F_ZERO, F_ZERO};
@@ -2658,7 +2701,6 @@ bool verify_masked_gkr_transcript(
             std::vector<F> masked_v{F_ZERO, F_ZERO};
             NativeMaskedSumcheckResult phase2_result;
             if (current.need_phase2) {
-                if (current.max_bl_v == 0) return false;
                 r_v[layer_id].resize(current.max_bl_v);
                 const std::string phase2_label = prefix + "/phase2";
                 for (int bit = 0; bit < current.max_bl_v; ++bit)

@@ -44,7 +44,6 @@ inline bool sparse_route_public_inputs_valid(
     if (source_domain == 0U || output_domain == 0U ||
         source_domain > (std::uint64_t(1U) << kMaxRelationPointBits) ||
         output_domain > (std::uint64_t(1U) << kMaxRelationPointBits) ||
-        generators.size() < std::max<std::uint64_t>(3U, std::max(source_domain, output_domain)) ||
         commitments[source_index].domain_size != source_domain ||
         commitments[output_index].domain_size != output_domain ||
         source_index >= kZkTerminalEvaluationIndexBase ||
@@ -52,6 +51,10 @@ inline bool sparse_route_public_inputs_valid(
         if (error) *error = "sparse route canonical commitment/domain mismatch";
         return false;
     }
+    ZkRelationSegmentLayout source_layout, output_layout;
+    if (!zktr_segment_layout(source_domain, generators.size(), source_layout, error) ||
+        !zktr_segment_layout(output_domain, generators.size(), output_layout, error))
+        return false;
     return true;
 }
 
@@ -134,6 +137,96 @@ inline void sparse_route_absorb_terminal(zkdl::Transcript& transcript,
     transcript.absorb("gat.route.hidden.terminal", encoded);
 }
 
+// A sparse route may address a logical domain larger than the authenticated
+// IPA frame.  Open the high-point weighted virtual frame: its value vector,
+// blinder, and Xi are all the same linear combination of the already
+// statement-authenticated segment material.  The serialized route remains a
+// single Hyrax opening, but it is no longer an unweighted legacy-handle
+// opening for a multi-segment tensor.
+inline bool sparse_route_aggregate_opening_inputs(
+    const TensorWitness& tensor, const std::vector<FrWire>& point,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& ipa_blinding_generator,
+    const std::vector<CommitmentWire>& commitments, std::uint32_t commitment_index,
+    const std::map<std::string, FrWire>& blinders,
+    const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars,
+    std::vector<FrWire>& aggregate_values, FrWire& aggregate_blinder,
+    FrWire& aggregate_value, zkdl::CpuG1Point& aggregate_xi,
+    std::string* error) {
+    if (commitment_index >= commitments.size() ||
+        commitments[commitment_index].tensor_id != tensor.id) {
+        if (error) *error = "sparse route aggregate commitment index is not canonical";
+        return false;
+    }
+    SegmentedTensorProvider provider;
+    if (!SegmentedTensorProvider::from_values(tensor.values, generators.size(), provider, error))
+        return false;
+    ZkRelationSegmentLayout layout;
+    if (!zktr_segment_layout(provider.logical_domain(), generators.size(), layout, error) ||
+        point.size() != log2_exact(layout.logical_domain)) return false;
+    SegmentCommitmentMaterial material;
+    if (segment_blinding_scalars != nullptr) {
+        if (!zktr_material_from_wire(
+                commitments[commitment_index], *segment_blinding_scalars,
+                material, error)) return false;
+    } else if (layout.segment_count == 1U) {
+        material.blinders = {relation_blinding_scalar(tensor, blinders)};
+        material.commitments = {
+            zkdl::cpu_g1_from_native(commitments[commitment_index].commitment)};
+    } else {
+        if (error) *error = "sparse route lacks authenticated multi-segment material";
+        return false;
+    }
+    if (material.blinders.size() != layout.segment_count ||
+        material.commitments.size() != layout.segment_count) {
+        if (error) *error = "sparse route segment material count mismatch";
+        return false;
+    }
+    const std::vector<FrWire> low_point = zktr_segment_point(point, layout.segment_size);
+    const std::vector<FrWire> high_point = zktr_segment_prefix_point(point, layout.segment_size);
+    const std::vector<FrWire> high_weights = zkdl::cpu_ipa_mle_weights(high_point);
+    if (high_weights.size() != layout.segment_count) {
+        if (error) *error = "sparse route high-point segment weight shape mismatch";
+        return false;
+    }
+    for (const auto& weight : high_weights) {
+        if (zkdl::fr_compare(weight, FrWire{}) == 0) {
+            if (error) *error = "sparse route high-point segment weight is zero";
+            return false;
+        }
+    }
+    const std::vector<zkdl::CpuG1Point> segment_generators(
+        generators.begin(), generators.begin() + layout.segment_size);
+    aggregate_values.assign(layout.segment_size, FrWire{});
+    aggregate_blinder = FrWire{};
+    aggregate_xi = zkdl::CpuG1Point::zero();
+    for (std::uint32_t segment = 0U; segment < layout.segment_count; ++segment) {
+        std::vector<FrWire> values;
+        if (!provider.read_segment(segment, values, error) ||
+            values.size() != layout.segment_size) return false;
+        for (std::size_t index = 0U; index < values.size(); ++index)
+            aggregate_values[index] = zkdl::fr_add(
+                aggregate_values[index],
+                zkdl::fr_mul(high_weights[segment], values[index]));
+        aggregate_blinder = zkdl::fr_add(
+            aggregate_blinder,
+            zkdl::fr_mul(high_weights[segment], material.blinders[segment]));
+        aggregate_xi = zkdl::cpu_g1_add(
+            aggregate_xi,
+            zkdl::cpu_g1_mul(material.commitments[segment], high_weights[segment]));
+    }
+    const zkdl::CpuG1Point recomputed_xi = zkdl::cpu_g1_add(
+        zkdl::cpu_g1_sum(segment_generators, aggregate_values),
+        zkdl::cpu_g1_mul(ipa_blinding_generator, aggregate_blinder));
+    if (!zkdl::cpu_g1_equal(recomputed_xi, aggregate_xi)) {
+        if (error) *error = "sparse route aggregate material does not match witness values";
+        return false;
+    }
+    aggregate_value = zkdl::cpu_ipa_inner_product(
+        aggregate_values, zkdl::cpu_ipa_mle_weights(low_point));
+    return true;
+}
+
 inline bool prove_sparse_route(
     const OperationDescriptor& descriptor,
     const std::map<std::string, const TensorWitness*>& tensor_map,
@@ -142,7 +235,8 @@ inline bool prove_sparse_route(
     const zkdl::CpuG1Point& ipa_blinding_generator, const zkdl::CpuG1Point& ipa_u_generator,
     const std::vector<CommitmentWire>& commitments, const RelationStatement& statement,
     zkdl::Transcript& transcript, SparseRouteProof& route, std::string* error,
-    SparseRouteProverSecrets* secrets) {
+    SparseRouteProverSecrets* secrets,
+    const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars) {
     try {
         const TensorWitness* source = nullptr;
         const TensorWitness* output = nullptr;
@@ -150,7 +244,8 @@ inline bool prove_sparse_route(
         if (!route_tensor_shapes_valid(descriptor, tensor_map, source, output, error) ||
             !source->valid(error) || !output->valid(error) ||
             !sparse_route_public_inputs_valid(descriptor, commitments, generators, statement,
-                route.source_commitment_index, route.output_commitment_index, error)) return false;
+                route.source_commitment_index, route.output_commitment_index, error) ||
+            !relation_segment_commitments_valid(statement, commitments, error)) return false;
         route.edge_domain = descriptor.selector_edge_domain;
         route.node_domain = descriptor.selector_node_domain;
         route.feature_domain = descriptor.selector_feature_domain;
@@ -170,8 +265,14 @@ inline bool prove_sparse_route(
         output_fold_point.insert(output_fold_point.end(), edge_point.begin(), edge_point.end());
         const std::vector<FrWire> output_point =
             sparse_route_hyrax_point(output_fold_point);
-        const FrWire output_value = zkdl::cpu_ipa_inner_product(
-            output->values, zkdl::cpu_ipa_mle_weights(output_point));
+        std::vector<FrWire> output_values;
+        FrWire output_aggregate_blinder{}, output_value{};
+        zkdl::CpuG1Point output_xi;
+        if (!sparse_route_aggregate_opening_inputs(
+                *output, output_point, generators, ipa_blinding_generator, commitments,
+                route.output_commitment_index, blinders, segment_blinding_scalars,
+                output_values, output_aggregate_blinder, output_value, output_xi, error))
+            return false;
         const std::uint32_t domain = std::max(2U, source->domain_size);
         std::vector<FrWire> source_values = source->values;
         // A scalar source has a constant extension along one neutral dummy
@@ -198,33 +299,65 @@ inline bool prove_sparse_route(
         source_fold_point.insert(source_fold_point.end(), node_point.begin(), node_point.end());
         const std::vector<FrWire> source_point =
             sparse_route_hyrax_point(source_fold_point);
+        std::vector<FrWire> source_values_aggregate;
+        FrWire source_aggregate_blinder{}, source_value_aggregate{};
+        zkdl::CpuG1Point source_xi;
+        if (!sparse_route_aggregate_opening_inputs(
+                *source, source_point, generators, ipa_blinding_generator, commitments,
+                route.source_commitment_index, blinders, segment_blinding_scalars,
+                source_values_aggregate, source_aggregate_blinder,
+                source_value_aggregate, source_xi, error)) return false;
         const auto terminal_digest = sparse_route_terminal_digest(header_digest, route);
         const auto source_metadata = zktr_make_opening_metadata(terminal_digest, statement,
             source_point, route.source_commitment_index, zktr_terminal_evaluation_index(0U));
         const auto output_metadata = zktr_make_opening_metadata(terminal_digest, statement,
             output_point, route.output_commitment_index, zktr_terminal_evaluation_index(1U));
+        ZkRelationSegmentLayout source_layout, output_layout;
+        if (!zktr_segment_layout(source->domain_size, generators.size(), source_layout, error) ||
+            !zktr_segment_layout(output->domain_size, generators.size(), output_layout, error))
+            return false;
+        const std::vector<zkdl::CpuG1Point> source_generators(
+            generators.begin(), generators.begin() + source_layout.segment_size);
+        const std::vector<zkdl::CpuG1Point> output_generators(
+            generators.begin(), generators.begin() + output_layout.segment_size);
+        auto source_segment_metadata = source_metadata;
+        source_segment_metadata.logical_domain = source_layout.logical_domain;
+        source_segment_metadata.segment_index = 0U;
+        source_segment_metadata.logical_offset = 0U;
+        source_segment_metadata.actual_length = source_layout.segment_size;
+        source_segment_metadata.padded_length = source_layout.segment_size;
+        auto output_segment_metadata = output_metadata;
+        output_segment_metadata.logical_domain = output_layout.logical_domain;
+        output_segment_metadata.segment_index = 0U;
+        output_segment_metadata.logical_offset = 0U;
+        output_segment_metadata.actual_length = output_layout.segment_size;
+        output_segment_metadata.padded_length = output_layout.segment_size;
         const FrWire source_blinder = zkdl::cpu_fresh_csprng_scalar();
         const FrWire output_blinder = zkdl::cpu_fresh_csprng_scalar();
         const FrWire source_value = sumcheck_result.folded_terminal_values[1U];
+        if (source_value != source_value_aggregate) {
+            if (error) *error = "sparse route source terminal value disagrees with segment aggregate";
+            return false;
+        }
         const auto source_tau = zkdl::cpu_pedersen_scalar_commit(
-            source_value, source_blinder, ipa_blinding_generator, ipa_u_generator);
+            source_value_aggregate, source_blinder, ipa_blinding_generator, ipa_u_generator);
         const auto output_tau = zkdl::cpu_pedersen_scalar_commit(
             output_value, output_blinder, ipa_blinding_generator, ipa_u_generator);
         route.source_opening = zkdl::cpu_open_hyrax_v3(
-            std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + source->domain_size),
-            source->values, source_point, ipa_blinding_generator, ipa_u_generator,
-            relation_blinding_scalar(*source, blinders), source_blinder, source_tau,
-            source_metadata).proof;
+            source_generators, source_values_aggregate,
+            zktr_segment_point(source_point, source_layout.segment_size),
+            ipa_blinding_generator, ipa_u_generator, source_aggregate_blinder,
+            source_blinder, source_tau, source_segment_metadata).proof;
         route.output_opening = zkdl::cpu_open_hyrax_v3(
-            std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + output->domain_size),
-            output->values, output_point, ipa_blinding_generator, ipa_u_generator,
-            relation_blinding_scalar(*output, blinders), output_blinder, output_tau,
-            output_metadata).proof;
+            output_generators, output_values,
+            zktr_segment_point(output_point, output_layout.segment_size),
+            ipa_blinding_generator, ipa_u_generator, output_aggregate_blinder,
+            output_blinder, output_tau, output_segment_metadata).proof;
         if (!zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(route.source_opening.xi),
-                zkdl::cpu_g1_from_native(commitments[route.source_commitment_index].commitment)) ||
+                source_xi) ||
             !zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(route.output_opening.xi),
-                zkdl::cpu_g1_from_native(commitments[route.output_commitment_index].commitment))) {
-            if (error) *error = "sparse route witness is not the canonical committed tensor";
+                output_xi)) {
+            if (error) *error = "sparse route witness is not the weighted canonical segment commitment";
             return false;
         }
         const FrWire p = sumcheck_result.folded_terminal_values[0U];
@@ -264,7 +397,8 @@ inline bool verify_sparse_route(
     try {
         std::uint32_t source_index = 0U, output_index = 0U;
         if (!sparse_route_public_inputs_valid(descriptor, commitments, generators, statement,
-                                              source_index, output_index, error)) return false;
+                                              source_index, output_index, error) ||
+            !relation_segment_commitments_valid(statement, commitments, error)) return false;
         const std::uint32_t source_domain = commitments[source_index].domain_size;
         const std::uint32_t output_domain = commitments[output_index].domain_size;
         const std::uint32_t source_feature_bits = log2_exact(descriptor.selector_source_feature_domain);
@@ -318,21 +452,75 @@ inline bool verify_sparse_route(
         output_fold_point.insert(output_fold_point.end(), edge_point.begin(), edge_point.end());
         const std::vector<FrWire> output_point =
             sparse_route_hyrax_point(output_fold_point);
+        ZkRelationSegmentLayout source_layout, output_layout;
+        if (!zktr_segment_layout(source_domain, generators.size(), source_layout, error) ||
+            !zktr_segment_layout(output_domain, generators.size(), output_layout, error))
+            return false;
+        const auto weighted_commitment = [&](std::uint32_t commitment_index,
+                                             const std::vector<FrWire>& point,
+                                             const ZkRelationSegmentLayout& layout,
+                                             zkdl::CpuG1Point& weighted) {
+            const auto& wire = commitments[commitment_index];
+            if (wire.segment_count != layout.segment_count ||
+                wire.segment_size != layout.segment_size ||
+                wire.segment_commitments.size() != layout.segment_count) {
+                if (error) *error = "sparse route statement segment layout mismatch";
+                return false;
+            }
+            const std::vector<FrWire> high_point =
+                zktr_segment_prefix_point(point, layout.segment_size);
+            const std::vector<FrWire> weights = zkdl::cpu_ipa_mle_weights(high_point);
+            if (weights.size() != layout.segment_count) {
+                if (error) *error = "sparse route statement segment weight shape mismatch";
+                return false;
+            }
+            weighted = zkdl::CpuG1Point::zero();
+            for (std::size_t index = 0U; index < weights.size(); ++index) {
+                if (zkdl::fr_compare(weights[index], FrWire{}) == 0) {
+                    if (error) *error = "sparse route statement segment weight is zero";
+                    return false;
+                }
+                weighted = zkdl::cpu_g1_add(
+                    weighted,
+                    zkdl::cpu_g1_mul(
+                        zkdl::cpu_g1_from_native(wire.segment_commitments[index].commitment),
+                        weights[index]));
+            }
+            return true;
+        };
+        zkdl::CpuG1Point source_xi, output_xi;
+        if (!weighted_commitment(source_index, source_point, source_layout, source_xi) ||
+            !weighted_commitment(output_index, output_point, output_layout, output_xi))
+            return false;
         const auto terminal_digest = sparse_route_terminal_digest(header_digest, route);
         const auto source_tau = zkdl::cpu_g1_from_native(route.source_opening.tau);
         const auto output_tau = zkdl::cpu_g1_from_native(route.output_opening.tau);
+        auto source_metadata = zktr_make_opening_metadata(terminal_digest, statement, source_point,
+            source_index, zktr_terminal_evaluation_index(0U));
+        source_metadata.logical_domain = source_layout.logical_domain;
+        source_metadata.segment_index = 0U;
+        source_metadata.logical_offset = 0U;
+        source_metadata.actual_length = source_layout.segment_size;
+        source_metadata.padded_length = source_layout.segment_size;
+        auto output_metadata = zktr_make_opening_metadata(terminal_digest, statement, output_point,
+            output_index, zktr_terminal_evaluation_index(1U));
+        output_metadata.logical_domain = output_layout.logical_domain;
+        output_metadata.segment_index = 0U;
+        output_metadata.logical_offset = 0U;
+        output_metadata.actual_length = output_layout.segment_size;
+        output_metadata.padded_length = output_layout.segment_size;
         if (!zkdl::cpu_verify_hyrax_v3(route.source_opening,
-                zkdl::cpu_g1_from_native(commitments[source_index].commitment), source_tau,
-                std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + source_domain),
-                source_point, ipa_blinding_generator, ipa_u_generator,
-                zktr_make_opening_metadata(terminal_digest, statement, source_point,
-                    source_index, zktr_terminal_evaluation_index(0U)), error) ||
+                source_xi, source_tau,
+                std::vector<zkdl::CpuG1Point>(
+                    generators.begin(), generators.begin() + source_layout.segment_size),
+                zktr_segment_point(source_point, source_layout.segment_size),
+                ipa_blinding_generator, ipa_u_generator, source_metadata, error) ||
             !zkdl::cpu_verify_hyrax_v3(route.output_opening,
-                zkdl::cpu_g1_from_native(commitments[output_index].commitment), output_tau,
-                std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + output_domain),
-                output_point, ipa_blinding_generator, ipa_u_generator,
-                zktr_make_opening_metadata(terminal_digest, statement, output_point,
-                    output_index, zktr_terminal_evaluation_index(1U)), error)) return false;
+                output_xi, output_tau,
+                std::vector<zkdl::CpuG1Point>(
+                    generators.begin(), generators.begin() + output_layout.segment_size),
+                zktr_segment_point(output_point, output_layout.segment_size),
+                ipa_blinding_generator, ipa_u_generator, output_metadata, error)) return false;
         auto selector = sparse_route_public_selector(descriptor, edge_point, feature_point);
         FrWire q0 = zkdl::fr_from_u32(1U);
         for (const auto& challenge : sumcheck_result.challenges) {

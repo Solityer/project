@@ -112,4 +112,13 @@ namespace gatzk::algebra
         std::shared_ptr<
             const CudaResidentCoefficientBuffer>
             *resident_coefficients);
+
+    bool cuda_update_resident_coefficient_ranges(
+        const CudaResidentCoefficientBuffer &resident,
+        const FieldElement *host_coefficients,
+        std::size_t host_coefficient_count,
+        std::size_t first_offset,
+        std::size_t first_count,
+        std::size_t second_offset,
+        std::size_t second_count);
 }

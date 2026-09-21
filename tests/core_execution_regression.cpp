@@ -10,13 +10,20 @@
 #include <string>
 #include <vector>
 
+#include "gatzk/algebra/cuda_ntt_device.hpp"
 #include "gatzk/algebra/field_io.hpp"
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
+#include "gatzk/protocol/cuda_t_fh.hpp"
+#include "gatzk/protocol/quotients.hpp"
 #include "gatzk/protocol/trace.hpp"
 #include "gatzk/util/route2.hpp"
 #include "gatzk/util/trace_spill.hpp"
+
+#if GATZK_ENABLE_CUDA_BACKEND
+#include <cuda_runtime_api.h>
+#endif
 
 namespace
 {
@@ -474,8 +481,187 @@ namespace
             algebra::release_cuda_scaled_accumulate_workspace();
         }
     }
-}
 
+    void test_cuda_t_fh_equivalence()
+    {
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!algebra::cuda_backend_available() || !algebra::cuda_backend_unified_addressing_available())
+            return;
+
+        const auto previous_route = util::route2_options();
+        auto route = previous_route;
+        route.cuda_field_hotspots = true;
+        route.cuda_trace_hotspots = true;
+        util::set_route2_options(route);
+
+        constexpr std::size_t domain_size = 1ULL << 16;
+        constexpr std::size_t target_size = domain_size * 4;
+        const auto domain = algebra::RootOfUnityDomain::create("FH_test", domain_size);
+        const auto shift = F(7);
+        const auto alpha = F(11);
+        const auto beta = F(13);
+        const auto eta = F::zero();
+        const auto root = F::root_of_unity(target_size);
+        const auto last_point = domain->point_at(domain_size - 1);
+        const auto inv_domain_size = F(domain_size).inv();
+
+        std::vector<F> q_table = sample(target_size);
+        std::vector<F> q_query = sample(target_size);
+        std::vector<F> table = sample(target_size);
+        std::vector<F> query = sample(target_size);
+        std::vector<F> multiplicity = sample(target_size);
+        std::vector<F> j_table = sample(target_size);
+        std::vector<F> j_query = sample(target_size);
+        std::vector<F> accumulator = sample(target_size);
+        std::vector<F> accumulator_next(target_size);
+        const auto rotation = target_size / domain_size;
+        for (std::size_t i = 0; i < target_size; ++i)
+            accumulator_next[i] = accumulator[(i + rotation) & (target_size - 1U)];
+
+        std::vector<F> cpu_quotient(target_size, F::zero());
+        auto z = shift;
+        for (std::size_t i = 0; i < target_size; ++i)
+        {
+            const auto zero = domain->zero_polynomial_eval(z);
+            require(!zero.is_zero(), "FH test coset must not overlap domain");
+            const auto first_denominator = z - F::one();
+            const auto last_denominator = z - last_point;
+            const auto denominator_product_inverse = (first_denominator * last_denominator).inv();
+            const auto zero_scaled = zero * inv_domain_size;
+            const protocol::QuotientBoundaryValues boundary{
+                .first = zero_scaled * last_denominator * denominator_product_inverse,
+                .last = zero_scaled * last_point * first_denominator * denominator_product_inverse,
+                .zero = zero,
+                .zero_inverse = zero.inv(),
+            };
+            const protocol::FHQuotientParameters parameters{.alpha_quot = alpha, .beta_feat = beta, .eta_feat = eta};
+            const protocol::FHQuotientValues values{
+                .q_table = q_table[i],
+                .q_query = q_query[i],
+                .table = table[i],
+                .query = query[i],
+                .multiplicity = multiplicity[i],
+                .j_table = j_table[i],
+                .j_query = j_query[i],
+                .accumulator = accumulator[i],
+                .accumulator_next = accumulator_next[i],
+            };
+            cpu_quotient[i] = protocol::evaluate_t_fh_from_values(parameters, values, boundary, nullptr);
+            z *= root;
+        }
+
+        std::vector<F> cpu_coefficients(target_size, F::zero());
+        require(algebra::cuda_coset_host_to_coefficients_exact(
+                    F::native_array_data(cpu_quotient.data()), target_size, shift,
+                    F::mutable_native_array_data(cpu_coefficients.data())),
+                "CPU-reference FH coset-to-coefficient CUDA transform");
+
+        protocol::CudaTFHParameters parameters{.alpha_quot = alpha, .beta_feat = beta, .eta_feat = eta, .feature_encoding_terms_enabled = false};
+        auto executor = protocol::create_cuda_t_fh_executor(domain_size, target_size, shift, domain->omega, parameters, target_size);
+        protocol::CudaTFHTile tile;
+        tile.logical_begin = 0;
+        tile.count = target_size;
+        tile.q_table = F::native_array_data(q_table.data());
+        tile.q_query = F::native_array_data(q_query.data());
+        tile.table = F::native_array_data(table.data());
+        tile.query = F::native_array_data(query.data());
+        tile.multiplicity = F::native_array_data(multiplicity.data());
+        tile.j_table = F::native_array_data(j_table.data());
+        tile.j_query = F::native_array_data(j_query.data());
+        tile.accumulator = F::native_array_data(accumulator.data());
+        tile.accumulator_next = F::native_array_data(accumulator_next.data());
+        executor->evaluate_tile(tile);
+
+        std::vector<F> gpu_coefficients(target_size, F::zero());
+        const auto resident = executor->finalize_coefficients(gpu_coefficients.data(), gpu_coefficients.size());
+        require(resident != nullptr, "CUDA t_FH resident coefficients");
+        if (resident->host_transfer != nullptr)
+            resident->host_transfer->wait();
+        require(gpu_coefficients == cpu_coefficients, "CUDA t_FH full coefficient equivalence");
+        util::set_route2_options(previous_route);
+#endif
+    }
+
+    void test_generic_resident_coefficient_update()
+    {
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!algebra::cuda_backend_available())
+            return;
+
+        constexpr std::size_t n = 1ULL << 18;
+        const auto shift = F(7);
+        auto evaluations = sample(n);
+        std::vector<F> host_coefficients(n, F::zero());
+        std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> resident;
+
+        require(algebra::cuda_coset_host_to_resident_coefficients_exact(
+                    F::native_array_data(evaluations.data()), n, shift,
+                    F::mutable_native_array_data(host_coefficients.data()), &resident),
+                "resident coefficient construction");
+        require(resident != nullptr, "resident coefficient descriptor");
+        if (resident->host_transfer != nullptr)
+            resident->host_transfer->wait();
+
+        constexpr std::size_t first_offset = 0;
+        constexpr std::size_t first_count = 64;
+        constexpr std::size_t second_offset = 4096;
+        constexpr std::size_t second_count = 64;
+        for (std::size_t i = 0; i < first_count; ++i)
+            host_coefficients[first_offset + i] += F(31 + i);
+        for (std::size_t i = 0; i < second_count; ++i)
+            host_coefficients[second_offset + i] -= F(47 + i);
+
+        require(algebra::cuda_update_resident_coefficient_ranges(
+                    *resident, host_coefficients.data(), host_coefficients.size(),
+                    first_offset, first_count, second_offset, second_count),
+                "resident coefficient range update");
+
+        std::vector<mcl::Fr> downloaded(n);
+        const auto status = cudaMemcpy(downloaded.data(), reinterpret_cast<const void *>(resident->device_montgomery_limbs), n * sizeof(mcl::Fr), cudaMemcpyDeviceToHost);
+        require(status == cudaSuccess, "resident coefficient download");
+        const auto *expected = F::native_array_data(host_coefficients.data());
+        for (std::size_t i = 0; i < n; ++i)
+            require(downloaded[i] == expected[i], "resident coefficient device/host equality");
+#endif
+    }
+
+    void test_fused_opening_inverse_and_quotient()
+    {
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!algebra::cuda_backend_available() || !algebra::cuda_backend_unified_addressing_available())
+            return;
+
+        const auto previous_route = util::route2_options();
+        auto route = previous_route;
+        route.cuda_field_hotspots = true;
+        util::set_route2_options(route);
+
+        constexpr std::size_t n = 1ULL << 18;
+        const auto domain = algebra::RootOfUnityDomain::create("opening_fused", n);
+        const auto point = F(19);
+        const auto claim = F(23);
+        auto folded = sample(n);
+        std::vector<F> fused(n, F::zero());
+        std::vector<F> reference(n, F::zero());
+
+        auto domain_point = F::one();
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            const auto denominator = domain_point - point;
+            require(!denominator.is_zero(), "opening test point must be outside domain");
+            reference[i] = (folded[i] - claim) / denominator;
+            domain_point *= domain->omega;
+        }
+
+        require(algebra::try_cuda_opening_inverse_and_quotient_native(
+                    F::native_array_data(folded.data()), F::mutable_native_array_data(fused.data()),
+                    claim.native(), n, domain->omega, point),
+                "fused opening CUDA route");
+        require(fused == reference, "fused opening quotient equivalence");
+        util::set_route2_options(previous_route);
+#endif
+    }
+}
 int main(int argc, char **argv)
 {
     try
@@ -500,7 +686,12 @@ int main(int argc, char **argv)
         test_evaluation_spill_registry();
         test_coefficient_publication();
         if (gpu)
+        {
             test_cuda();
+            test_cuda_t_fh_equivalence();
+            test_generic_resident_coefficient_update();
+            test_fused_opening_inverse_and_quotient();
+        }
         std::cout << "CORE_EXECUTION_REGRESSION_OK\n";
         return 0;
     }

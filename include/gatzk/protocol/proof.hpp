@@ -1086,6 +1086,7 @@ namespace gatzk::protocol
         std::uint64_t gpu_intt_calls = 0;
         std::uint64_t gpu_quotient_calls = 0;
         std::uint64_t gpu_t_edge_calls = 0;
+        std::uint64_t gpu_t_fh_calls = 0;
         std::uint64_t gpu_opening_fold_calls = 0;
         std::uint64_t gpu_msm_single_calls = 0;
         std::uint64_t gpu_msm_batch_calls = 0;

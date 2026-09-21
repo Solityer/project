@@ -60,6 +60,14 @@ namespace gatzk::algebra
         const mcl::Fr &scaled_claim_sum,
         std::size_t element_count);
 
+    bool opening_inverse_and_quotient_cuda(
+        const mcl::Fr *folded_values,
+        mcl::Fr *quotient_values,
+        const mcl::Fr &scaled_claim_sum,
+        std::size_t domain_size,
+        const mcl::Fr &omega,
+        const mcl::Fr &point);
+
     bool logup_inverse_columns_cuda(
         const mcl::Fr *table,
         const mcl::Fr *query,
@@ -125,6 +133,7 @@ namespace gatzk::algebra
             std::atomic<std::uint64_t> intt_calls{0};
             std::atomic<std::uint64_t> quotient_calls{0};
             std::atomic<std::uint64_t> t_edge_calls{0};
+            std::atomic<std::uint64_t> t_fh_calls{0};
             std::atomic<std::uint64_t> opening_fold_calls{0};
             std::atomic<std::uint64_t> msm_single_calls{0};
             std::atomic<std::uint64_t> msm_batch_calls{0};
@@ -1284,6 +1293,9 @@ namespace gatzk::algebra
             .t_edge_calls =
                 counters.t_edge_calls.load(
                     std::memory_order_relaxed),
+            .t_fh_calls =
+                counters.t_fh_calls.load(
+                    std::memory_order_relaxed),
             .opening_fold_calls =
                 counters.opening_fold_calls.load(
                     std::memory_order_relaxed),
@@ -1372,6 +1384,15 @@ namespace gatzk::algebra
     {
         cuda_execution_counters()
             .t_edge_calls
+            .fetch_add(
+                1,
+                std::memory_order_relaxed);
+    }
+
+    void record_cuda_t_fh_call()
+    {
+        cuda_execution_counters()
+            .t_fh_calls
             .fetch_add(
                 1,
                 std::memory_order_relaxed);
@@ -1913,32 +1934,34 @@ namespace gatzk::algebra
         const mcl::Fr &scaled_claim_sum,
         std::size_t element_count)
     {
-        if (!cuda_field_route_enabled() ||
-            !cuda_backend_unified_addressing_available() ||
-            element_count <
-                (std::size_t{1} << 18))
-        {
+        if (!cuda_field_route_enabled() || !cuda_backend_unified_addressing_available() || element_count < (std::size_t{1} << 18))
             return false;
-        }
-
-        if (folded_values == nullptr ||
-            quotient_values == nullptr)
-        {
-            throw std::runtime_error(
-                "CUDA opening quotient assembly received a null buffer");
-        }
-
+        if (folded_values == nullptr || quotient_values == nullptr)
+            throw std::runtime_error("CUDA opening quotient assembly received a null buffer");
 #if GATZK_ENABLE_CUDA_BACKEND
-        if (!opening_quotient_assembly_cuda(
-                folded_values,
-                quotient_values,
-                scaled_claim_sum,
-                element_count))
-        {
-            throw std::runtime_error(
-                "selected CUDA opening quotient assembly was unavailable");
-        }
+        if (!opening_quotient_assembly_cuda(folded_values, quotient_values, scaled_claim_sum, element_count))
+            throw std::runtime_error("selected CUDA opening quotient assembly was unavailable");
+        return true;
+#else
+        return false;
+#endif
+    }
 
+    bool try_cuda_opening_inverse_and_quotient_native(
+        const mcl::Fr *folded_values,
+        mcl::Fr *quotient_values,
+        const mcl::Fr &scaled_claim_sum,
+        std::size_t domain_size,
+        const FieldElement &omega,
+        const FieldElement &point)
+    {
+        if (!cuda_field_route_enabled() || !cuda_backend_unified_addressing_available() || domain_size < (std::size_t{1} << 18))
+            return false;
+        if (folded_values == nullptr || quotient_values == nullptr)
+            throw std::runtime_error("CUDA fused opening received a null buffer");
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!opening_inverse_and_quotient_cuda(folded_values, quotient_values, scaled_claim_sum, domain_size, omega.native(), point.native()))
+            throw std::runtime_error("selected CUDA fused opening route was unavailable");
         return true;
 #else
         return false;

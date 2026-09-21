@@ -5111,6 +5111,76 @@ namespace gatzk::algebra
         return true;
     }
 
+    bool cuda_update_resident_coefficient_ranges(
+        const CudaResidentCoefficientBuffer &resident,
+        const FieldElement *host_coefficients,
+        std::size_t host_coefficient_count,
+        std::size_t first_offset,
+        std::size_t first_count,
+        std::size_t second_offset,
+        std::size_t second_count)
+    {
+        if (resident.allocation == nullptr || resident.device_montgomery_limbs == nullptr || resident.device < 0 || host_coefficients == nullptr)
+            throw std::runtime_error("CUDA resident coefficient update received invalid storage");
+
+        const auto valid_range = [&](std::size_t offset, std::size_t count)
+        {
+            return offset <= host_coefficient_count && count <= host_coefficient_count - offset && offset <= resident.capacity && count <= resident.capacity - offset && count <= std::numeric_limits<std::size_t>::max() / sizeof(mcl::Fr);
+        };
+
+        if (!valid_range(first_offset, first_count) || !valid_range(second_offset, second_count))
+            throw std::runtime_error("CUDA resident coefficient update range exceeds storage");
+        if (first_count == 0 && second_count == 0)
+            return true;
+
+        int previous_device = -1;
+        auto status = cudaGetDevice(&previous_device);
+        if (status != cudaSuccess)
+            throw_cuda_ntt_error("resident coefficient device lookup", status);
+
+        const bool switched = previous_device != resident.device;
+        if (switched)
+        {
+            status = cudaSetDevice(resident.device);
+            if (status != cudaSuccess)
+                throw_cuda_ntt_error("resident coefficient device selection", status);
+        }
+
+        auto *device_coefficients = reinterpret_cast<mcl::Fr *>(const_cast<std::uint64_t *>(resident.device_montgomery_limbs));
+        const auto *host_native = FieldElement::native_array_data(host_coefficients);
+
+        const auto copy_range = [&](std::size_t offset, std::size_t count)
+        {
+            if (count == 0)
+                return;
+            const auto bytes = count * sizeof(mcl::Fr);
+            const auto copy_status = cudaMemcpy(device_coefficients + offset, host_native + offset, bytes, cudaMemcpyHostToDevice);
+            if (copy_status != cudaSuccess)
+                throw_cuda_ntt_error("resident coefficient range upload", copy_status);
+            record_cuda_h2d(bytes);
+        };
+
+        try
+        {
+            copy_range(first_offset, first_count);
+            copy_range(second_offset, second_count);
+        }
+        catch (...)
+        {
+            if (switched)
+                (void)cudaSetDevice(previous_device);
+            throw;
+        }
+
+        if (switched)
+        {
+            status = cudaSetDevice(previous_device);
+            if (status != cudaSuccess)
+                throw_cuda_ntt_error("resident coefficient device restore", status);
+        }
+        return true;
+    }
+
     bool cuda_ntt_in_place_exact(
         mcl::Fr *values,
         std::size_t size)

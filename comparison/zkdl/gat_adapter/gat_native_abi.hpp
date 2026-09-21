@@ -47,12 +47,33 @@ struct NativeTensorShapeInput {
     std::string registry_id;
 };
 
+// Versioned authenticated segment entry for one model/tensor commitment.
+// The ABI keeps the G1 point opaque, while retaining every layout field that
+// is covered by the native relation commitment-vector digest.
+struct NativeSegmentCommitmentInput {
+    std::uint32_t segment_index = 0U;
+    std::uint64_t logical_offset = 0U;
+    std::uint32_t actual_length = 0U;
+    std::uint32_t padded_length = 0U;
+    std::uint32_t padding_length = 0U;
+    std::array<std::uint8_t, 32U> frame_digest{};
+    std::vector<std::uint8_t> commitment;
+};
+
 struct NativeCommitmentInput {
     std::string tensor_id;
     std::uint32_t visibility = 0U;
     std::uint32_t domain_size = 0U;
-    // Exactly one canonical zkdl::append_g1 payload.
+    // Exactly one canonical zkdl::append_g1 payload.  It is retained as the
+    // legacy/unweighted handle; v5 authenticates the ordered vector below.
     std::vector<std::uint8_t> commitment;
+    std::uint32_t segment_binding_version = 1U;
+    std::uint32_t segment_size = 0U;
+    std::uint32_t segment_count = 0U;
+    std::array<std::uint8_t, 32U> srs_manifest_digest{};
+    std::array<std::uint8_t, 32U> basis_digest{};
+    std::array<std::uint8_t, 32U> segment_commitment_digest{};
+    std::vector<NativeSegmentCommitmentInput> segment_commitments;
 };
 
 struct NativeHidingRecordInput {

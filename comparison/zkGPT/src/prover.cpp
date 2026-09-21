@@ -601,9 +601,11 @@ void prover::sumcheckFinalize1(const F &previous_random, F &claim_0, F &claim_1)
 
 void prover::sumcheckFinalize2(const F &previous_random, F &claim_0, F &claim_1) {
     prove_timer.start();
-    r_v[sumcheck_id].at(round - 1) = previous_random;
-    claim_0 = total[0] ? V_mult[0][0].eval(previous_random) : (~C.circuit[sumcheck_id].bit_length_v[0]) ? V_mult[0][0].b : F_ZERO;
-    claim_1 = total[1] ? V_mult[1][0].eval(previous_random) : (~C.circuit[sumcheck_id].bit_length_v[1]) ? V_mult[1][0].b : F_ZERO;
+    if (round > 0)
+        r_v[sumcheck_id].at(round - 1) = previous_random;
+    const bool has_round = round > 0;
+    claim_0 = total[0] ? (has_round ? V_mult[0][0].eval(previous_random) : V_mult[0][0].b) : (~C.circuit[sumcheck_id].bit_length_v[0]) ? V_mult[0][0].b : F_ZERO;
+    claim_1 = total[1] ? (has_round ? V_mult[1][0].eval(previous_random) : V_mult[1][0].b) : (~C.circuit[sumcheck_id].bit_length_v[1]) ? V_mult[1][0].b : F_ZERO;
     prove_timer.stop();
 
     mult_array[0].clear();

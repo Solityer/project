@@ -8,6 +8,7 @@
 #include "proof_session.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -27,9 +28,34 @@ struct PedersenBasis {
 
 PedersenBasis derive_basis(const std::string &domain);
 
+// Non-serialized provenance for the native prover fast path.  A token is
+// created only after a complete basis validation and is bound to one live
+// NativeProofSession plus the exact domain and G/H points.  Artifact readers
+// never construct or receive this object, so they always use full checks.
+class ProverFastPath {
+public:
+    bool matches(const NativeProofSession &session,
+                 const PedersenBasis &basis) const;
+    bool matches_basis(const PedersenBasis &basis) const;
+
+private:
+    friend std::shared_ptr<const ProverFastPath> make_prover_fast_path(
+        NativeProofSession &, const PedersenBasis &);
+    ProverFastPath(NativeProofSession &session, const PedersenBasis &basis);
+
+    NativeProofSession *session_ = nullptr;
+    std::string domain_;
+    G1 G_;
+    G1 H_;
+};
+
+std::shared_ptr<const ProverFastPath> make_prover_fast_path(
+    NativeProofSession &session, const PedersenBasis &basis);
+
 struct ScalarCommitment {
     std::string domain;
     G1 point;
+    std::shared_ptr<const ProverFastPath> prover_fast_path;
 
     bool valid(const PedersenBasis &basis, std::string *reason = nullptr) const;
 };
@@ -40,13 +66,17 @@ struct ScalarOpening {
     ScalarCommitment commitment;
     Fr value;
     Fr blinding;
+    std::shared_ptr<const ProverFastPath> prover_fast_path;
 
     bool valid(const PedersenBasis &basis, std::string *reason = nullptr) const;
 };
 
 ScalarCommitment commit(const PedersenBasis &basis, const Fr &value,
-                        const Fr &blinding);
-ScalarOpening commit_fresh(const PedersenBasis &basis, const Fr &value);
+                        const Fr &blinding,
+                        std::shared_ptr<const ProverFastPath> fast_path = nullptr);
+ScalarOpening commit_fresh(
+    const PedersenBasis &basis, const Fr &value,
+    std::shared_ptr<const ProverFastPath> fast_path = nullptr);
 
 // Public proof objects contain only the first Sigma message, the FS challenge
 // and responses.  They do not contain value/blinding witnesses; the session
@@ -61,7 +91,8 @@ struct OpeningProof {
 bool prove_opening(NativeProofSession &session, const PedersenBasis &basis,
                    const std::string &label, const ScalarOpening &opening,
                    OpeningProof *proof = nullptr,
-                   std::string *reason = nullptr);
+                   std::string *reason = nullptr,
+                   std::shared_ptr<const ProverFastPath> fast_path = nullptr);
 
 bool verify_opening(const NativeProofSession &session,
                     const PedersenBasis &basis, const std::string &label,
@@ -82,13 +113,15 @@ struct LinearRelationProof {
 G1 linear_residual_commitment(const PedersenBasis &basis,
                               const std::vector<ScalarCommitment> &operands,
                               const std::vector<Fr> &coefficients,
-                              const Fr &public_value);
+                              const Fr &public_value,
+                              std::shared_ptr<const ProverFastPath> fast_path = nullptr);
 
 bool prove_hidden_linear(
     NativeProofSession &session, const PedersenBasis &basis,
     const std::string &label, const std::vector<ScalarOpening> &operands,
     const std::vector<Fr> &coefficients, const Fr &public_value,
-    LinearRelationProof *proof = nullptr, std::string *reason = nullptr);
+    LinearRelationProof *proof = nullptr, std::string *reason = nullptr,
+    std::shared_ptr<const ProverFastPath> fast_path = nullptr);
 
 bool verify_hidden_linear(
     const NativeProofSession &session, const PedersenBasis &basis,
@@ -122,7 +155,8 @@ bool prove_multiplication(
     const std::string &label, const ScalarOpening &a,
     const ScalarOpening &b, const ScalarOpening &c,
     const MultiplicationLinks &links, MultiplicationProof *proof = nullptr,
-    std::string *reason = nullptr);
+    std::string *reason = nullptr,
+    std::shared_ptr<const ProverFastPath> fast_path = nullptr);
 
 bool verify_multiplication(
     const NativeProofSession &session, const PedersenBasis &basis,
@@ -150,7 +184,8 @@ bool prove_product3(
     const ScalarOpening &b, const ScalarOpening &c,
     const ScalarOpening &intermediate, const ScalarOpening &output,
     const Product3Links &links, Product3Proof *proof = nullptr,
-    std::string *reason = nullptr);
+    std::string *reason = nullptr,
+    std::shared_ptr<const ProverFastPath> fast_path = nullptr);
 
 bool verify_product3(
     const NativeProofSession &session, const PedersenBasis &basis,

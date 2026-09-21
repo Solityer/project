@@ -2,6 +2,7 @@
 
 #include "../proof.cuh"
 #include "../g1-wire.cuh"
+#include "../zkrelation-proof.cuh"
 
 #include <algorithm>
 #include <cctype>
@@ -511,6 +512,47 @@ bool model_commitment_valid(const std::vector<Byte>& encoded) {
     std::array<Byte, kG1Size> roundtrip{};
     return zkdl_g1_wire::encode(native, roundtrip, nullptr) &&
            std::equal(roundtrip.begin(), roundtrip.end(), encoded.begin(), encoded.end());
+}
+
+bool native_segment_commitment_digest(
+    const NativeCommitmentInput& supplied, Digest& digest, std::string* error) {
+    relation::CommitmentWire commitment;
+    commitment.tensor_id = supplied.tensor_id;
+    commitment.visibility = supplied.visibility;
+    commitment.domain_size = supplied.domain_size;
+    commitment.segment_binding_version = supplied.segment_binding_version;
+    commitment.segment_size = supplied.segment_size;
+    commitment.segment_count = supplied.segment_count;
+    commitment.srs_manifest_digest = supplied.srs_manifest_digest;
+    commitment.basis_digest = supplied.basis_digest;
+    commitment.segment_commitment_digest = supplied.segment_commitment_digest;
+    std::size_t offset = 0U;
+    if (!zkdl::read_g1(supplied.commitment, offset, commitment.commitment) ||
+        offset != supplied.commitment.size()) {
+        set_error(error, "BLOCKED: model registry commitment point is not canonical");
+        return false;
+    }
+    commitment.segment_commitments.reserve(supplied.segment_commitments.size());
+    for (const auto& supplied_segment : supplied.segment_commitments) {
+        relation::SegmentCommitmentWire segment;
+        segment.segment_index = supplied_segment.segment_index;
+        segment.logical_offset = supplied_segment.logical_offset;
+        segment.actual_length = supplied_segment.actual_length;
+        segment.padded_length = supplied_segment.padded_length;
+        segment.padding_length = supplied_segment.padding_length;
+        segment.frame_digest = supplied_segment.frame_digest;
+        std::size_t segment_offset = 0U;
+        if (!zkdl::read_g1(supplied_segment.commitment, segment_offset,
+                           segment.commitment) ||
+            segment_offset != supplied_segment.commitment.size()) {
+            set_error(error, "BLOCKED: model registry segment point is not canonical");
+            return false;
+        }
+        commitment.segment_commitments.push_back(std::move(segment));
+    }
+    if (!relation::segment_commitment_wire_shape_valid(commitment, error)) return false;
+    digest = relation::segment_commitment_digest(commitment);
+    return true;
 }
 
 bool permissions_owner_only(const std::filesystem::path& path) {
@@ -1222,8 +1264,8 @@ bool load_authenticated_model_registry(const Config& config,
     }
     const std::string text(bytes.begin(), bytes.end());
     std::string value;
-    if (!required_registry_string(text, "schema", value, error) || value != "zkDL_gat_model_registry_v2") {
-        set_error(error, "BLOCKED: model registry schema is not canonical v2");
+    if (!required_registry_string(text, "schema", value, error) || value != "zkDL_gat_model_registry_v3") {
+        set_error(error, "BLOCKED: model registry schema is not canonical v3");
         return false;
     }
     auto require_match = [&](const char* key, const std::string& expected) {
@@ -1283,12 +1325,34 @@ bool load_authenticated_model_registry(const Config& config,
     for (const auto& object : tensor_objects) {
         NativeCommitmentInput commitment;
         std::string commitment_text;
+        std::string srs_manifest_text;
+        std::string basis_text;
+        std::string vector_digest_text;
         std::uint64_t domain = 0U;
+        std::uint64_t segment_binding_version = 0U;
+        std::uint64_t segment_size = 0U;
+        std::uint64_t segment_count = 0U;
         std::vector<std::uint64_t> logical_shape, padded_shape;
         if (!required_registry_string(object, "tensor_id", commitment.tensor_id, error) ||
             !ids.insert(commitment.tensor_id).second ||
             !json_u64_field(object, "domain_size", domain) || domain == 0U ||
             domain > std::numeric_limits<std::uint32_t>::max() || !power_of_two(domain) ||
+            !json_u64_field(object, "segment_binding_version", segment_binding_version) ||
+            segment_binding_version != 1U ||
+            !json_u64_field(object, "segment_size", segment_size) ||
+            !json_u64_field(object, "segment_count", segment_count) ||
+            segment_size == 0U || segment_size > std::numeric_limits<std::uint32_t>::max() ||
+            !power_of_two(segment_size) || segment_count == 0U ||
+            segment_count > std::numeric_limits<std::uint32_t>::max() ||
+            segment_size > std::numeric_limits<std::uint32_t>::max() / segment_count ||
+            segment_size * segment_count != domain ||
+            !json_string_field(object, "srs_manifest_digest", srs_manifest_text) ||
+            !json_string_field(object, "basis_digest", basis_text) ||
+            !json_string_field(object, "segment_commitment_digest", vector_digest_text) ||
+            !canonical_digest_text(srs_manifest_text) ||
+            !canonical_digest_text(basis_text) ||
+            !canonical_digest_text(vector_digest_text) ||
+            srs_manifest_text != resource_digest_hex(srs.manifest_digest) ||
             !json_u64_array(object, "logical_shape", logical_shape) ||
             !json_u64_array(object, "padded_shape", padded_shape) ||
             !product_equals(padded_shape, domain) ||
@@ -1296,26 +1360,99 @@ bool load_authenticated_model_registry(const Config& config,
               resource_field_string(object, "commitment", "hex", commitment_text)) ||
             !parse_hex_bytes(commitment_text, kG1Size, commitment.commitment) ||
             !model_commitment_valid(commitment.commitment)) {
-            set_error(error, "BLOCKED: model registry tensor entry is malformed: " + commitment.tensor_id);
+            set_error(error, "BLOCKED: model registry v3 tensor entry is malformed: " + commitment.tensor_id);
             return false;
         }
         bool shape_valid = logical_shape.size() == padded_shape.size();
         for (std::size_t index = 0U; shape_valid && index < logical_shape.size(); ++index)
             shape_valid = logical_shape[index] != 0U && logical_shape[index] <= padded_shape[index];
-        if (!shape_valid || domain > srs.domain || commitment_text.size() != kG1Size * 2U ||
+        if (!shape_valid || domain > srs.logical_domain || commitment_text.size() != kG1Size * 2U ||
             !std::all_of(commitment_text.begin(), commitment_text.end(), [](char c) {
                 return std::isdigit(static_cast<unsigned char>(c)) || (c >= 'a' && c <= 'f');
             })) {
             set_error(error, "BLOCKED: model registry tensor commitment is not lowercase canonical hex");
             return false;
         }
+        std::vector<std::string> segment_objects;
+        if (!json_object_array(object, "segment_commitments", segment_objects) ||
+            segment_objects.size() != static_cast<std::size_t>(segment_count)) {
+            set_error(error, "BLOCKED: model registry tensor lacks the complete ordered segment vector: " +
+                      commitment.tensor_id);
+            return false;
+        }
+        commitment.segment_binding_version = static_cast<std::uint32_t>(segment_binding_version);
+        commitment.segment_size = static_cast<std::uint32_t>(segment_size);
+        commitment.segment_count = static_cast<std::uint32_t>(segment_count);
         commitment.visibility = 2U;
         commitment.domain_size = static_cast<std::uint32_t>(domain);
+        commitment.srs_manifest_digest = srs.manifest_digest;
+        if (!resource_parse_digest(basis_text, commitment.basis_digest) ||
+            !resource_parse_digest(vector_digest_text, commitment.segment_commitment_digest)) {
+            set_error(error, "BLOCKED: model registry tensor segment digest is not canonical: " +
+                      commitment.tensor_id);
+            return false;
+        }
+        commitment.segment_commitments.reserve(segment_objects.size());
+        for (std::size_t index = 0U; index < segment_objects.size(); ++index) {
+            const auto& segment_object = segment_objects[index];
+            NativeSegmentCommitmentInput segment;
+            std::uint64_t segment_index = 0U;
+            std::uint64_t logical_offset = 0U;
+            std::uint64_t actual_length = 0U;
+            std::uint64_t padded_length = 0U;
+            std::uint64_t padding_length = 0U;
+            std::string frame_digest_text;
+            std::string segment_commitment_text;
+            std::vector<Byte> frame_digest;
+            if (!json_u64_field(segment_object, "segment_index", segment_index) ||
+                !json_u64_field(segment_object, "logical_offset", logical_offset) ||
+                !json_u64_field(segment_object, "actual_length", actual_length) ||
+                !json_u64_field(segment_object, "padded_length", padded_length) ||
+                !json_u64_field(segment_object, "padding_length", padding_length) ||
+                !json_string_field(segment_object, "frame_digest", frame_digest_text) ||
+                !canonical_digest_text(frame_digest_text) ||
+                !parse_hex_bytes(frame_digest_text, 32U, frame_digest) ||
+                !(json_string_field(segment_object, "commitment", segment_commitment_text) ||
+                  resource_field_string(segment_object, "commitment", "hex", segment_commitment_text)) ||
+                !parse_hex_bytes(segment_commitment_text, kG1Size, segment.commitment) ||
+                !model_commitment_valid(segment.commitment) ||
+                segment_index != index || logical_offset != index * segment_size ||
+                actual_length == 0U || actual_length > segment_size ||
+                padded_length != segment_size ||
+                padding_length != segment_size - actual_length ||
+                actual_length > std::numeric_limits<std::uint32_t>::max() ||
+                padded_length > std::numeric_limits<std::uint32_t>::max() ||
+                padding_length > std::numeric_limits<std::uint32_t>::max() ||
+                logical_offset > std::numeric_limits<std::uint64_t>::max() - actual_length ||
+                segment_commitment_text.size() != kG1Size * 2U ||
+                !std::all_of(segment_commitment_text.begin(), segment_commitment_text.end(), [](char c) {
+                    return std::isdigit(static_cast<unsigned char>(c)) || (c >= 'a' && c <= 'f');
+                })) {
+                set_error(error, "BLOCKED: model registry tensor segment entry is malformed: " +
+                          commitment.tensor_id);
+                return false;
+            }
+            std::copy(frame_digest.begin(), frame_digest.end(), segment.frame_digest.begin());
+            segment.segment_index = static_cast<std::uint32_t>(segment_index);
+            segment.logical_offset = logical_offset;
+            segment.actual_length = static_cast<std::uint32_t>(actual_length);
+            segment.padded_length = static_cast<std::uint32_t>(padded_length);
+            segment.padding_length = static_cast<std::uint32_t>(padding_length);
+            commitment.segment_commitments.push_back(std::move(segment));
+        }
+        Digest expected_vector_digest{};
+        if (!native_segment_commitment_digest(commitment, expected_vector_digest, error))
+            return false;
+        if (expected_vector_digest != commitment.segment_commitment_digest) {
+            set_error(error, "BLOCKED: model registry tensor segment digest mismatch: " +
+                      commitment.tensor_id);
+            return false;
+        }
         resource->model_commitments.push_back(std::move(commitment));
     }
     resource->path = path.string();
     resource->digest = actual_digest;
-    resource->schema = "zkDL_gat_model_registry_v2";
+    resource->schema = "zkDL_gat_model_registry_v3";
     resource->dataset = config.dataset;
     resource->model_arch_id = config.model_arch_id;
     resource->model_param_id = config.model_param_id;

@@ -4787,43 +4787,41 @@ namespace gatzk::protocol
         std::string trace_cache_prefix(const ProtocolContext &context);
 
         HiddenQuantizedWitness quantize_hidden_witness_cpu(
-            const model::HeadForwardTrace &fp,
+            std::size_t node_count,
+            std::size_t d_h,
+            const RawMatrix &h_prime_raw,
+            const std::vector<std::int64_t> &e_src_raw,
+            const std::vector<std::int64_t> &e_dst_raw,
             const util::QuantizationScaleChain &scales,
             std::size_t layer_index,
             std::size_t local_head_index,
             const std::vector<std::size_t> &edge_src_indices,
             const std::vector<std::size_t> &edge_dst_indices,
-            const std::vector<std::pair<std::size_t, std::size_t>>
-                &destination_groups,
+            const std::vector<std::pair<std::size_t, std::size_t>> &destination_groups,
             std::size_t edge_domain_size,
             std::size_t range_bits,
-            const std::unordered_map<std::string, FieldElement> &elu_output_by_input,
-            const RawMatrix *h_prime_raw_override = nullptr,
-            const std::vector<std::int64_t> *e_src_raw_override = nullptr,
-            const std::vector<std::int64_t> *e_dst_raw_override = nullptr)
+            const std::unordered_map<std::string, FieldElement> &elu_output_by_input)
         {
             HiddenQuantizedWitness out;
-            const auto node_count = fp.H_prime.size();
-            const auto d_h = node_count == 0 ? 0 : fp.H_prime.front().size();
             const auto h_prime_scale = scales.s_h_prime.at(layer_index).at(local_head_index);
             const auto aggregate_input_scale = scales.s_agg_pre.at(layer_index);
             const auto aggregate_output_scale = scales.s_agg.at(layer_index);
             const auto edge_count = edge_src_indices.size();
             if (edge_count != edge_dst_indices.size() || edge_count > edge_domain_size)
-            {
-                throw std::runtime_error(
-                    "hidden compact edge witness exceeds its registered domain");
-            }
+                throw std::runtime_error("hidden compact edge witness exceeds its registered domain");
+            if (h_prime_raw.size() != node_count || e_src_raw.size() != node_count || e_dst_raw.size() != node_count)
+                throw std::runtime_error("hidden integer witness input shape mismatch");
+
             out.h_prime.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
             out.h_agg_pre.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
             out.h_agg_pre_lookup.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
             out.h_agg.assign(node_count, std::vector<FieldElement>(d_h, FieldElement::zero()));
             out.h_agg_raw.assign(node_count, std::vector<std::int64_t>(d_h, 0));
-            out.e_src.assign(fp.E_src.size(), FieldElement::zero());
-            out.e_dst.assign(fp.E_dst.size(), FieldElement::zero());
-            out.m.assign(fp.M.size(), FieldElement::zero());
-            out.sum.assign(fp.Sum.size(), FieldElement::zero());
-            out.inv.assign(fp.inv.size(), FieldElement::zero());
+            out.e_src.assign(node_count, FieldElement::zero());
+            out.e_dst.assign(node_count, FieldElement::zero());
+            out.m.assign(node_count, FieldElement::zero());
+            out.sum.assign(node_count, FieldElement::zero());
+            out.inv.assign(node_count, FieldElement::zero());
             out.s.assign(edge_count, FieldElement::zero());
             out.z.assign(edge_count, FieldElement::zero());
             out.delta.assign(edge_count, FieldElement::zero());
@@ -4835,39 +4833,22 @@ namespace gatzk::protocol
             out.sum_edge.assign(edge_count, FieldElement::zero());
             out.inv_edge.assign(edge_count, FieldElement::zero());
 
-            std::vector<std::int64_t> e_src_raw(out.e_src.size(), 0);
-            std::vector<std::int64_t> e_dst_raw(out.e_dst.size(), 0);
-            std::vector<std::int64_t> m_raw(out.m.size(), std::numeric_limits<std::int64_t>::min());
-            std::vector<std::uint8_t> m_seen(out.m.size(), 0);
+            std::vector<std::int64_t> m_raw(node_count, std::numeric_limits<std::int64_t>::min());
+            std::vector<std::uint8_t> m_seen(node_count, 0);
             std::vector<std::int64_t> s_raw(edge_count, 0);
             std::vector<std::int64_t> z_raw(edge_count, 0);
             std::vector<std::int64_t> u_raw(edge_count, 0);
             std::vector<std::int64_t> sum_raw(node_count, 0);
-            RawMatrix h_prime_raw(node_count, std::vector<std::int64_t>(d_h, 0));
 
-            parallel_for_ranges(
-                node_count,
-                32,
-                [&](std::size_t begin, std::size_t end)
+            parallel_for_ranges(node_count, 32, [&](std::size_t begin, std::size_t end)
+                                {
+                for (std::size_t row = begin; row < end; ++row)
                 {
-                    for (std::size_t row = begin; row < end; ++row)
-                    {
-                        e_src_raw[row] = e_src_raw_override != nullptr ? e_src_raw_override->at(row) : quantize_raw_at_scale(fp.E_src[row], scales.s_delta);
-                        e_dst_raw[row] = e_dst_raw_override != nullptr ? e_dst_raw_override->at(row) : quantize_raw_at_scale(fp.E_dst[row], scales.s_delta);
-                        out.e_src[row] = FieldElement::from_signed(e_src_raw[row]);
-                        out.e_dst[row] = FieldElement::from_signed(e_dst_raw[row]);
-                        for (std::size_t column = 0; column < d_h; ++column)
-                        {
-                            h_prime_raw[row][column] = h_prime_raw_override != nullptr
-                                                           ? h_prime_raw_override->at(row).at(column)
-                                                           : quantize_raw_at_scale(fp.H_prime[row][column], h_prime_scale);
-                            out.h_prime[row][column] = FieldElement::from_signed(h_prime_raw[row][column]);
-                            out.h_agg_pre[row][column] = quantize_field_at_scale(fp.H_agg_pre_bias[row][column], aggregate_input_scale);
-                            out.h_agg_pre_lookup[row][column] = out.h_agg_pre[row][column];
-                            out.h_agg[row][column] = quantize_field_at_scale(fp.H_agg[row][column], aggregate_output_scale);
-                        }
-                    }
-                });
+                    if (h_prime_raw[row].size() != d_h) throw std::runtime_error("hidden projected row width mismatch");
+                    out.e_src[row] = FieldElement::from_signed(e_src_raw[row]);
+                    out.e_dst[row] = FieldElement::from_signed(e_dst_raw[row]);
+                    for (std::size_t column = 0; column < d_h; ++column) out.h_prime[row][column] = FieldElement::from_signed(h_prime_raw[row][column]);
+                } });
 
             for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index)
             {
@@ -5005,42 +4986,40 @@ namespace gatzk::protocol
         }
 
         OutputQuantizedWitness quantize_output_witness_cpu(
-            const model::HeadForwardTrace &fp,
+            std::size_t node_count,
+            std::size_t output_dim,
+            const RawMatrix &y_prime_raw,
+            const std::vector<std::int64_t> &e_src_raw,
+            const std::vector<std::int64_t> &e_dst_raw,
             const std::vector<double> &output_bias_fp,
             const util::QuantizationScaleChain &scales,
             std::size_t head_index,
             const std::vector<std::size_t> &edge_src_indices,
             const std::vector<std::size_t> &edge_dst_indices,
-            const std::vector<std::pair<std::size_t, std::size_t>>
-                &destination_groups,
+            const std::vector<std::pair<std::size_t, std::size_t>> &destination_groups,
             std::size_t edge_domain_size,
-            std::size_t range_bits,
-            const RawMatrix *y_prime_raw_override = nullptr,
-            const std::vector<std::int64_t> *e_src_raw_override = nullptr,
-            const std::vector<std::int64_t> *e_dst_raw_override = nullptr)
+            std::size_t range_bits)
         {
             OutputQuantizedWitness out;
-            const auto node_count = fp.H_prime.size();
-            const auto output_dim = node_count == 0 ? 0 : fp.H_prime.front().size();
             const auto y_prime_scale = scales.s_y_prime.at(head_index);
             const auto aggregate_input_scale = scales.s_out_pre;
             const auto bias_scale = scales.s_b_output.at(head_index);
             const auto edge_count = edge_src_indices.size();
             if (edge_count != edge_dst_indices.size() || edge_count > edge_domain_size)
-            {
-                throw std::runtime_error(
-                    "output compact edge witness exceeds its registered domain");
-            }
+                throw std::runtime_error("output compact edge witness exceeds its registered domain");
+            if (y_prime_raw.size() != node_count || e_src_raw.size() != node_count || e_dst_raw.size() != node_count)
+                throw std::runtime_error("output integer witness input shape mismatch");
+
             out.y_prime.assign(node_count, std::vector<FieldElement>(output_dim, FieldElement::zero()));
             out.y_lin.assign(node_count, std::vector<FieldElement>(output_dim, FieldElement::zero()));
             out.y.assign(node_count, std::vector<FieldElement>(output_dim, FieldElement::zero()));
             out.y_quant.assign(node_count, std::vector<FieldElement>(output_dim, FieldElement::zero()));
             out.y_quant_raw.assign(node_count, std::vector<std::int64_t>(output_dim, 0));
-            out.e_src.assign(fp.E_src.size(), FieldElement::zero());
-            out.e_dst.assign(fp.E_dst.size(), FieldElement::zero());
-            out.m.assign(fp.M.size(), FieldElement::zero());
-            out.sum.assign(fp.Sum.size(), FieldElement::zero());
-            out.inv.assign(fp.inv.size(), FieldElement::zero());
+            out.e_src.assign(node_count, FieldElement::zero());
+            out.e_dst.assign(node_count, FieldElement::zero());
+            out.m.assign(node_count, FieldElement::zero());
+            out.sum.assign(node_count, FieldElement::zero());
+            out.inv.assign(node_count, FieldElement::zero());
             out.s.assign(edge_count, FieldElement::zero());
             out.z.assign(edge_count, FieldElement::zero());
             out.delta.assign(edge_count, FieldElement::zero());
@@ -5052,42 +5031,23 @@ namespace gatzk::protocol
             out.sum_edge.assign(edge_count, FieldElement::zero());
             out.inv_edge.assign(edge_count, FieldElement::zero());
 
-            std::vector<std::int64_t> e_src_raw(out.e_src.size(), 0);
-            std::vector<std::int64_t> e_dst_raw(out.e_dst.size(), 0);
-            std::vector<std::int64_t> m_raw(out.m.size(), std::numeric_limits<std::int64_t>::min());
-            std::vector<std::uint8_t> m_seen(out.m.size(), 0);
+            std::vector<std::int64_t> m_raw(node_count, std::numeric_limits<std::int64_t>::min());
+            std::vector<std::uint8_t> m_seen(node_count, 0);
             std::vector<std::int64_t> s_raw(edge_count, 0);
             std::vector<std::int64_t> z_raw(edge_count, 0);
             std::vector<std::int64_t> u_raw(edge_count, 0);
             std::vector<std::int64_t> sum_raw(node_count, 0);
 
             const auto quantized_bias = quantize_vector_at_scale(output_bias_fp, bias_scale);
-            parallel_for_ranges(
-                node_count,
-                32,
-                [&](std::size_t begin, std::size_t end)
+            parallel_for_ranges(node_count, 32, [&](std::size_t begin, std::size_t end)
+                                {
+                for (std::size_t row = begin; row < end; ++row)
                 {
-                    for (std::size_t row = begin; row < end; ++row)
-                    {
-                        e_src_raw[row] = e_src_raw_override != nullptr ? e_src_raw_override->at(row) : quantize_raw_at_scale(fp.E_src[row], scales.s_delta);
-                        e_dst_raw[row] = e_dst_raw_override != nullptr ? e_dst_raw_override->at(row) : quantize_raw_at_scale(fp.E_dst[row], scales.s_delta);
-                        out.e_src[row] = FieldElement::from_signed(e_src_raw[row]);
-                        out.e_dst[row] = FieldElement::from_signed(e_dst_raw[row]);
-                        for (std::size_t column = 0; column < output_dim; ++column)
-                        {
-                            const auto y_prime_value =
-                                y_prime_raw_override != nullptr
-                                    ? FieldElement::from_signed(y_prime_raw_override->at(row).at(column))
-                                    : FieldElement::from_signed(
-                                          quantize_raw_at_scale(fp.H_prime[row][column], y_prime_scale));
-                            const auto y_lin_value = quantize_field_at_scale(fp.H_agg_pre_bias[row][column], aggregate_input_scale);
-                            out.y_prime[row][column] = y_prime_value;
-                            out.y_lin[row][column] = y_lin_value;
-                            out.y[row][column] =
-                                y_lin_value + (column < quantized_bias.size() ? quantized_bias[column] : FieldElement::zero());
-                        }
-                    }
-                });
+                    if (y_prime_raw[row].size() != output_dim) throw std::runtime_error("output projected row width mismatch");
+                    out.e_src[row] = FieldElement::from_signed(e_src_raw[row]);
+                    out.e_dst[row] = FieldElement::from_signed(e_dst_raw[row]);
+                    for (std::size_t column = 0; column < output_dim; ++column) out.y_prime[row][column] = FieldElement::from_signed(y_prime_raw[row][column]);
+                } });
 
             for (std::size_t edge_index = 0; edge_index < edge_src_indices.size(); ++edge_index)
             {
@@ -5170,15 +5130,10 @@ namespace gatzk::protocol
                     out.y_lin[dst][column] += out.alpha[edge_index] * out.y_prime[src][column];
                 }
             }
-            if (y_prime_raw_override == nullptr)
-            {
-                throw std::runtime_error(
-                    "output integer aggregation is missing projected rows");
-            }
             const auto aggregate_numerators =
                 weighted_edge_aggregate_raw_by_destination(
                     u_raw,
-                    *y_prime_raw_override,
+                    y_prime_raw,
                     edge_src_indices,
                     edge_dst_indices,
                     destination_groups,
@@ -5554,68 +5509,52 @@ namespace gatzk::protocol
             std::size_t edge_domain_size, RunMetrics *metrics)
         {
             auto artifacts = std::make_shared<CachedForwardArtifacts>();
-            auto forward = model::forward_note_style(context.local.features_fp, edges, context.model, &artifacts->profile);
-            artifacts->reference_logits_fp32 = std::move(forward.Y);
-            artifacts->hidden_layer_inputs_quantized.reserve(forward.hidden_layer_traces.size());
-            artifacts->hidden_layer_concat_quantized.reserve(forward.hidden_layer_traces.size());
-            artifacts->hidden_head_quantized.resize(
-                forward.hidden_layer_traces.size());
+            artifacts->hidden_layer_inputs_quantized.reserve(context.model.hidden_layers.size());
+            artifacts->hidden_layer_concat_quantized.reserve(context.model.hidden_layers.size());
+            artifacts->hidden_head_quantized.resize(context.model.hidden_layers.size());
+
             std::unordered_map<std::string, FieldElement> elu_output_by_input;
             elu_output_by_input.reserve(context.tables.elu.size());
             for (const auto &[input, output] : context.tables.elu)
             {
                 const auto [_, inserted] = elu_output_by_input.emplace(input.to_string(), output);
                 if (!inserted)
-                {
                     throw std::runtime_error("ELU table contains a duplicate input");
-                }
             }
+
             std::vector<RawMatrix> hidden_layer_concat_raw;
-            hidden_layer_concat_raw.reserve(forward.hidden_layer_traces.size());
-            for (std::size_t layer_index = 0; layer_index < forward.hidden_layer_traces.size(); ++layer_index)
+            hidden_layer_concat_raw.reserve(context.model.hidden_layers.size());
+
+            for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
             {
-                const auto &layer_trace = forward.hidden_layer_traces[layer_index];
+                const auto &layer = context.model.hidden_layers[layer_index];
                 RawMatrix first_input_raw;
                 if (layer_index == 0)
-                    first_input_raw = quantize_matrix_raw_at_scale(
-                        context.local.features_fp, context.config.quantization.s_input);
+                    first_input_raw = quantize_matrix_raw_at_scale(context.local.features_fp, context.config.quantization.s_input);
                 const RawMatrix &input_raw = layer_index == 0 ? first_input_raw : hidden_layer_concat_raw.back();
                 artifacts->hidden_layer_inputs_quantized.push_back(field_matrix_from_raw(input_raw));
 
                 std::vector<RawMatrix> layer_head_outputs_raw;
-                layer_head_outputs_raw.reserve(layer_trace.head_traces.size());
-                auto &layer_quantized_heads =
-                    artifacts->hidden_head_quantized.at(layer_index);
-                layer_quantized_heads.reserve(layer_trace.head_traces.size());
-                for (std::size_t local_head_index = 0;
-                     local_head_index < layer_trace.head_traces.size();
-                     ++local_head_index)
+                layer_head_outputs_raw.reserve(layer.heads.size());
+                auto &layer_quantized_heads = artifacts->hidden_head_quantized.at(layer_index);
+                layer_quantized_heads.reserve(layer.heads.size());
+
+                for (std::size_t local_head_index = 0; local_head_index < layer.heads.size(); ++local_head_index)
                 {
-                    const auto &head_trace = layer_trace.head_traces[local_head_index];
-                    const auto &head = context.model.hidden_layers.at(layer_index).heads.at(local_head_index);
-                    const auto seq_kernel_raw = quantize_matrix_raw_at_scale(
-                        head.seq_kernel_fp,
-                        context.config.quantization.s_w_hidden.at(layer_index).at(local_head_index));
-                    const auto attn_src_raw = quantize_vector_raw_at_scale(
-                        head.attn_src_kernel_fp,
-                        context.config.quantization.s_a_src_hidden.at(layer_index).at(local_head_index));
-                    const auto attn_dst_raw = quantize_vector_raw_at_scale(
-                        head.attn_dst_kernel_fp,
-                        context.config.quantization.s_a_dst_hidden.at(layer_index).at(local_head_index));
-                    auto h_prime_raw = project_raw_matrix(
-                        input_raw,
-                        seq_kernel_raw,
-                        "hidden head projection l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index));
-                    auto e_src_raw = raw_matvec_no_bias(
-                        h_prime_raw,
-                        attn_src_raw,
-                        "hidden source attention l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index));
-                    auto e_dst_raw = raw_matvec_no_bias(
-                        h_prime_raw,
-                        attn_dst_raw,
-                        "hidden destination attention l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index));
+                    const auto &head = layer.heads[local_head_index];
+                    const auto seq_kernel_raw = quantize_matrix_raw_at_scale(head.seq_kernel_fp, context.config.quantization.s_w_hidden.at(layer_index).at(local_head_index));
+                    const auto attn_src_raw = quantize_vector_raw_at_scale(head.attn_src_kernel_fp, context.config.quantization.s_a_src_hidden.at(layer_index).at(local_head_index));
+                    const auto attn_dst_raw = quantize_vector_raw_at_scale(head.attn_dst_kernel_fp, context.config.quantization.s_a_dst_hidden.at(layer_index).at(local_head_index));
+                    auto h_prime_raw = project_raw_matrix(input_raw, seq_kernel_raw, "hidden head projection l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index));
+                    auto e_src_raw = raw_matvec_no_bias(h_prime_raw, attn_src_raw, "hidden source attention l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index));
+                    auto e_dst_raw = raw_matvec_no_bias(h_prime_raw, attn_dst_raw, "hidden destination attention l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index));
+
                     auto quantized_head = quantize_hidden_witness_cpu(
-                        head_trace,
+                        h_prime_raw.size(),
+                        h_prime_raw.empty() ? 0 : h_prime_raw.front().size(),
+                        h_prime_raw,
+                        e_src_raw,
+                        e_dst_raw,
                         context.config.quantization,
                         layer_index,
                         local_head_index,
@@ -5624,92 +5563,56 @@ namespace gatzk::protocol
                         destination_groups,
                         edge_domain_size,
                         context.config.range_bits,
-                        elu_output_by_input,
-                        &h_prime_raw,
-                        &e_src_raw,
-                        &e_dst_raw);
+                        elu_output_by_input);
+
                     layer_head_outputs_raw.push_back(std::move(quantized_head.h_agg_raw));
                     layer_quantized_heads.push_back(std::move(quantized_head));
                 }
-                hidden_layer_concat_raw.push_back(concat_raw_columns(
-                    layer_head_outputs_raw,
-                    "hidden layer concat " + std::to_string(layer_index)));
+
+                hidden_layer_concat_raw.push_back(concat_raw_columns(layer_head_outputs_raw, "hidden layer concat " + std::to_string(layer_index)));
                 artifacts->hidden_layer_concat_quantized.push_back(field_matrix_from_raw(hidden_layer_concat_raw.back()));
                 for (auto &head : layer_quantized_heads)
-                {
                     head.release_concat_raw();
-                }
-                artifacts->report_live_bytes(
-                    "hidden-layer-" + std::to_string(layer_index) +
-                    "-concat-built");
+                artifacts->report_live_bytes("hidden-layer-" + std::to_string(layer_index) + "-concat-built");
             }
-            artifacts->output_head_quantized.reserve(
-                forward.output_head_traces.size());
 
-            std::vector<const Matrix *>
-                per_head_y_lin_matrices;
+            artifacts->output_head_quantized.reserve(context.model.output_layer.heads.size());
+            std::vector<const Matrix *> per_head_y_lin_matrices;
+            std::vector<const RawMatrix *> per_head_y_raw_matrices;
+            per_head_y_lin_matrices.reserve(context.model.output_layer.heads.size());
+            per_head_y_raw_matrices.reserve(context.model.output_layer.heads.size());
 
-            std::vector<const RawMatrix *>
-                per_head_y_raw_matrices;
-
-            per_head_y_lin_matrices.reserve(
-                forward.output_head_traces.size());
-
-            per_head_y_raw_matrices.reserve(
-                forward.output_head_traces.size());
             if (hidden_layer_concat_raw.empty())
                 throw std::runtime_error("output witness has no hidden-layer input");
             const RawMatrix &output_input_raw = hidden_layer_concat_raw.back();
-            for (std::size_t head_index = 0; head_index < forward.output_head_traces.size(); ++head_index)
+            for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                const auto &head = context.model.output_layer.heads.at(head_index);
-                const auto seq_kernel_raw = quantize_matrix_raw_at_scale(
-                    head.seq_kernel_fp,
-                    context.config.quantization.s_w_output.at(head_index));
-                const auto attn_src_raw = quantize_vector_raw_at_scale(
-                    head.attn_src_kernel_fp,
-                    context.config.quantization.s_a_src_output.at(head_index));
-                const auto attn_dst_raw = quantize_vector_raw_at_scale(
-                    head.attn_dst_kernel_fp,
-                    context.config.quantization.s_a_dst_output.at(head_index));
-                auto y_prime_raw = project_raw_matrix(
-                    output_input_raw,
-                    seq_kernel_raw,
-                    "output head projection " + std::to_string(head_index));
-                auto e_src_raw = raw_matvec_no_bias(
+                const auto &head = context.model.output_layer.heads[head_index];
+                const auto seq_kernel_raw = quantize_matrix_raw_at_scale(head.seq_kernel_fp, context.config.quantization.s_w_output.at(head_index));
+                const auto attn_src_raw = quantize_vector_raw_at_scale(head.attn_src_kernel_fp, context.config.quantization.s_a_src_output.at(head_index));
+                const auto attn_dst_raw = quantize_vector_raw_at_scale(head.attn_dst_kernel_fp, context.config.quantization.s_a_dst_output.at(head_index));
+                auto y_prime_raw = project_raw_matrix(output_input_raw, seq_kernel_raw, "output head projection " + std::to_string(head_index));
+                auto e_src_raw = raw_matvec_no_bias(y_prime_raw, attn_src_raw, "output source attention " + std::to_string(head_index));
+                auto e_dst_raw = raw_matvec_no_bias(y_prime_raw, attn_dst_raw, "output destination attention " + std::to_string(head_index));
+
+                artifacts->output_head_quantized.push_back(quantize_output_witness_cpu(
+                    y_prime_raw.size(),
+                    y_prime_raw.empty() ? 0 : y_prime_raw.front().size(),
                     y_prime_raw,
-                    attn_src_raw,
-                    "output source attention " + std::to_string(head_index));
-                auto e_dst_raw = raw_matvec_no_bias(
-                    y_prime_raw,
-                    attn_dst_raw,
-                    "output destination attention " + std::to_string(head_index));
-                auto quantized = quantize_output_witness_cpu(
-                    forward.output_head_traces[head_index],
-                    context.model.output_layer.heads[head_index].output_bias_fp,
+                    e_src_raw,
+                    e_dst_raw,
+                    head.output_bias_fp,
                     context.config.quantization,
                     head_index,
                     edge_src_indices,
                     edge_dst_indices,
                     destination_groups,
                     edge_domain_size,
-                    context.config.range_bits,
-                    &y_prime_raw,
-                    &e_src_raw,
-                    &e_dst_raw);
-                artifacts->output_head_quantized.push_back(
-                    std::move(quantized));
+                    context.config.range_bits));
 
-                const auto &stored_quantized =
-                    artifacts
-                        ->output_head_quantized
-                        .back();
-
-                per_head_y_lin_matrices.push_back(
-                    &stored_quantized.y_lin);
-
-                per_head_y_raw_matrices.push_back(
-                    &stored_quantized.y_quant_raw);
+                const auto &stored_quantized = artifacts->output_head_quantized.back();
+                per_head_y_lin_matrices.push_back(&stored_quantized.y_lin);
+                per_head_y_raw_matrices.push_back(&stored_quantized.y_quant_raw);
             }
             if (!per_head_y_lin_matrices.empty())
             {
@@ -5774,12 +5677,12 @@ namespace gatzk::protocol
                 }
                 artifacts->report_live_bytes("output-average-built");
             }
-            forward = {};
             std::vector<RawMatrix>().swap(hidden_layer_concat_raw);
             {
                 timing::ScopedReferenceAudit reference_scope(metrics);
-                artifacts->reference_quantized_logits = independent_quantized_reference_forward(
-                    context, edge_src_indices, edge_dst_indices, destination_groups);
+                auto reference_forward = model::forward_note_style(context.local.features_fp, edges, context.model, nullptr);
+                artifacts->reference_logits_fp32 = std::move(reference_forward.Y);
+                artifacts->reference_quantized_logits = independent_quantized_reference_forward(context, edge_src_indices, edge_dst_indices, destination_groups);
             }
             artifacts->report_live_bytes("forward-built");
             return artifacts;

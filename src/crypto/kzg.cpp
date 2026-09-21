@@ -6321,116 +6321,50 @@ namespace gatzk::crypto
                 opening_evaluation_scratch;
             for (const auto &group : plan.evaluation_groups)
             {
-                const auto inverse_start =
-                    Clock::now();
+                opening_evaluation_scratch.resize(group.domain->size);
+                auto *quotient_values_native = FieldElement::mutable_native_array_data(opening_evaluation_scratch.data());
+                const auto *folded_values_native = FieldElement::native_array_data(group.folded_values.data());
 
-                opening_evaluation_scratch.resize(
-                    group.domain->size);
+                const auto fused_start = Clock::now();
+                const bool cuda_fused = algebra::try_cuda_opening_inverse_and_quotient_native(
+                    folded_values_native,
+                    quotient_values_native,
+                    group.scaled_claim_sums[point_index].native(),
+                    group.domain->size,
+                    group.domain->omega,
+                    point);
 
-                const bool
-                    cuda_inverse_denominators =
-                        algebra::
-                            try_cuda_opening_inverse_denominators_native(
-                                FieldElement::
-                                    mutable_native_array_data(
-                                        opening_evaluation_scratch
-                                            .data()),
-                                group.domain->size,
-                                group.domain->omega,
-                                point);
-
-                if (!cuda_inverse_denominators)
+                if (!cuda_fused)
                 {
-                    build_opening_inverse_denominators(
-                        &opening_evaluation_scratch,
-                        group.domain,
-                        point,
-                        worker_cap);
-                }
+                    const auto inverse_start = Clock::now();
+                    build_opening_inverse_denominators(&opening_evaluation_scratch, group.domain, point, worker_cap);
+                    if (profile != nullptr)
+                    {
+                        profile->denominator_inverse_ms += elapsed_ms(inverse_start, Clock::now());
+                        profile->denominator_inverse_cache_misses += 1;
+                    }
 
-                if (profile != nullptr)
-                {
-                    profile->denominator_inverse_ms +=
-                        elapsed_ms(
-                            inverse_start,
-                            Clock::now());
-
-                    profile
-                        ->denominator_inverse_cache_misses +=
-                        1;
-                }
-
-                const auto quotient_assembly_start =
-                    Clock::now();
-
-                auto *quotient_values_native =
-                    FieldElement::mutable_native_array_data(
-                        opening_evaluation_scratch.data());
-
-                const auto *folded_values_native =
-                    FieldElement::native_array_data(
-                        group.folded_values.data());
-
-                const bool
-                    cuda_quotient_assembly =
-                        algebra::
-                            try_cuda_opening_quotient_assembly_native(
-                                folded_values_native,
-                                quotient_values_native,
-                                group
-                                    .scaled_claim_sums[point_index]
-                                    .native(),
-                                group.domain->size);
-
-                if (!cuda_quotient_assembly)
-                {
+                    const auto assembly_start = Clock::now();
                     mcl::Fr zero;
                     zero.clear();
-
                     mcl::Fr base_numerator;
-
-                    mcl::Fr::sub(
-                        base_numerator,
-                        zero,
-                        group
-                            .scaled_claim_sums[point_index]
-                            .native());
-
-                    parallel_for_chunks_capped(
-                        group.domain->size,
-                        1ULL << 15,
-                        worker_cap,
-                        [&](std::size_t begin,
-                            std::size_t end)
+                    mcl::Fr::sub(base_numerator, zero, group.scaled_claim_sums[point_index].native());
+                    parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end)
+                                               {
+                        for (std::size_t row = begin; row < end; ++row)
                         {
-                            for (std::size_t row =
-                                     begin;
-                                 row < end;
-                                 ++row)
-                            {
-                                mcl::Fr
-                                    native_numerator =
-                                        base_numerator;
-
-                                mcl::Fr::add(
-                                    native_numerator,
-                                    native_numerator,
-                                    folded_values_native[row]);
-
-                                mcl::Fr::mul(
-                                    quotient_values_native[row],
-                                    native_numerator,
-                                    quotient_values_native[row]);
-                            }
-                        });
+                            mcl::Fr numerator = base_numerator;
+                            mcl::Fr::add(numerator, numerator, folded_values_native[row]);
+                            mcl::Fr::mul(quotient_values_native[row], numerator, quotient_values_native[row]);
+                        } });
+                    if (profile != nullptr)
+                        profile->quotient_assembly_ms += elapsed_ms(assembly_start, Clock::now());
                 }
-
-                if (profile != nullptr)
+                else if (profile != nullptr)
                 {
-                    profile->quotient_assembly_ms +=
-                        elapsed_ms(
-                            quotient_assembly_start,
-                            Clock::now());
+                    const auto fused_ms = elapsed_ms(fused_start, Clock::now());
+                    profile->denominator_inverse_ms += fused_ms;
+                    profile->denominator_inverse_cache_misses += 1;
                 }
 
                 const auto witness_msm_start =

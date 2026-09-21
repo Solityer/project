@@ -209,10 +209,17 @@ std::uint32_t as_u32(std::size_t value, const char *what) {
 }
 
 char bit_length(std::size_t value) {
+    // Layer domains are Boolean-hypercube MLEs.  Their bit length must be
+    // ceil(log2(size)), not floor(log2(size)); otherwise a non-power-of-two
+    // output (for example the formal residual layer) is larger than the MLE
+    // domain consumed by the native masked GKR walk.
     std::size_t n = std::max<std::size_t>(1, value);
     char bits = 0;
-    while (n > 1) {
-        n >>= 1;
+    std::size_t domain = 1;
+    while (domain < n) {
+        if (domain > (std::numeric_limits<std::size_t>::max() >> 1))
+            throw std::overflow_error("zkGPT layer MLE domain overflow");
+        domain <<= 1;
         ++bits;
     }
     return bits;
@@ -4185,7 +4192,8 @@ std::vector<NativeLassoChunkFamilyPublic> build_lasso_chunk_public_families(
 // matrix generator domains without seeing the private query/matrix arrays.
 std::vector<NativeLassoFamilyPublic> build_lasso_public_families(
     const GatCircuitPlan &plan, const StaticTables &tables,
-    const std::string &basis_label) {
+    const std::string &basis_label,
+    const std::vector<NativeLassoFamilyProver> *cached_families = nullptr) {
     if (plan.input_layout.segments.size() != 4)
         throw std::invalid_argument("public Lasso registry requires four segments");
     const InputSegment &l_segment = plan.input_layout.segments.at(3);
@@ -4225,11 +4233,43 @@ std::vector<NativeLassoFamilyPublic> build_lasso_public_families(
             family.table.empty() ||
             (family.padded_queries & (family.padded_queries - 1)) != 0)
             throw std::invalid_argument("public Lasso family exceeds canonical domain");
-        family.matrix_generators.resize(family.padded_queries * family.table.size());
-        for (std::size_t index = 0; index < family.matrix_generators.size(); ++index)
-            hashAndMapToG1(family.matrix_generators[index],
-                           basis_label + "/lasso/" + family.family_id +
-                               "/matrix/" + std::to_string(index));
+        const std::size_t matrix_domain =
+            family.padded_queries * family.table.size();
+        if (cached_families == nullptr) {
+            family.matrix_generators.resize(matrix_domain);
+            for (std::size_t index = 0; index < family.matrix_generators.size(); ++index)
+                hashAndMapToG1(family.matrix_generators[index],
+                               basis_label + "/lasso/" + family.family_id +
+                                   "/matrix/" + std::to_string(index));
+        } else {
+            const NativeLassoFamilyProver *cached = nullptr;
+            for (const NativeLassoFamilyProver &candidate : *cached_families) {
+                if (candidate.family_id == family.family_id) {
+                    cached = &candidate;
+                    break;
+                }
+            }
+            if (cached == nullptr || cached->table != family.table ||
+                cached->table_id != family.table_id ||
+                cached->resource_id != family.resource_id ||
+                cached->registration_id != family.registration_id ||
+                cached->segment_offset != family.segment_offset ||
+                cached->logical_queries != family.logical_queries ||
+                cached->padded_queries != family.padded_queries ||
+                cached->padding_index != family.padding_index ||
+                cached->padding_value != family.padding_value ||
+                cached->matrix_generators.size() != matrix_domain) {
+                throw std::invalid_argument(
+                    "cached Lasso matrix-generator domain or identity mismatch");
+            }
+            // build_lasso_bundle and this public reconstruction use the same
+            // canonical family-id sort and the same
+            // basis_label/lasso/<family>/matrix/<index> namespace.  Reuse
+            // the already mapped points only after all public shape and
+            // identity fields above match; no digest or transcript field is
+            // changed by this cache.
+            family.matrix_generators = cached->matrix_generators;
+        }
         result.push_back(std::move(family));
     }
     std::sort(result.begin(), result.end(),
@@ -4248,15 +4288,31 @@ std::vector<NativeLassoFamilyPublic> build_lasso_public_families(
 
 NativeLassoQueryPublic build_lasso_public_query(
     const GatCircuitPlan &plan, const CommitmentWire &com_L,
-    const std::string &basis_label) {
+    const std::string &basis_label,
+    const NativeLassoQueryProver *cached_query = nullptr) {
     if (!com_L.valid() || com_L.padded_size != plan.input_layout.n_in)
         throw std::invalid_argument("public Lasso query commitment is invalid");
     NativeLassoQueryPublic query;
-    hashAndMapToG1(query.G, basis_label + "/G");
-    query.generators.resize(plan.input_layout.n_in);
-    for (std::size_t index = 0; index < query.generators.size(); ++index)
-        hashAndMapToG1(query.generators[index],
-                       basis_label + "/coordinate/" + std::to_string(index));
+    if (cached_query == nullptr) {
+        hashAndMapToG1(query.G, basis_label + "/G");
+        query.generators.resize(plan.input_layout.n_in);
+        for (std::size_t index = 0; index < query.generators.size(); ++index)
+            hashAndMapToG1(query.generators[index],
+                           basis_label + "/coordinate/" + std::to_string(index));
+    } else {
+        if (cached_query->generators.size() != plan.input_layout.n_in ||
+            cached_query->basis_id != com_L.basis_id ||
+            !cached_query->commitment.isValid() ||
+            cached_query->commitment.serializeToHexStr() != com_L.point_hex) {
+            throw std::invalid_argument(
+                "cached Lasso query-generator domain or commitment mismatch");
+        }
+        // The prover bundle created these points from the same canonical
+        // basis_label/G and basis_label/coordinate/<index> labels.  Reuse
+        // them for the public view instead of hashing the same points again.
+        query.G = cached_query->G;
+        query.generators = cached_query->generators;
+    }
     query.commitment.deserializeHexStr(com_L.point_hex);
     query.basis_id = com_L.basis_id;
     query.statement_l_digest = fixed_digest(hash_hex(commitment_encoding(com_L)));
@@ -8122,9 +8178,10 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         LassoAdapterBundle lasso = build_lasso_bundle(
             plan, forward, tables, basis_label);
         const std::vector<NativeLassoFamilyPublic> lasso_public =
-            build_lasso_public_families(plan, tables, basis_label);
+            build_lasso_public_families(plan, tables, basis_label,
+                                        &lasso.families);
         NativeLassoQueryPublic lasso_query_public = build_lasso_public_query(
-            plan, lasso.com_L, basis_label);
+            plan, lasso.com_L, basis_label, &lasso.query);
         const std::string lasso_tables_digest =
             native_lasso_tables_digest(lasso_public);
         const std::string lasso_resources_digest =
