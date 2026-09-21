@@ -495,8 +495,6 @@ def build_tables(
         abs(table_value(lrelu_probe, lrelu_high)),
     )
     exp_bound = 2 * lrelu_output_bound
-    exp_probe = {"function_id": "exp_neg", "input_min": 0, "input_max": exp_bound}
-    exp_output_bound = table_value(exp_probe, 0)
     elu_probe = {"function_id": "elu", "input_min": -elu_bound, "input_max": elu_bound}
     elu_output_bound = max(
         abs(table_value(elu_probe, -elu_bound)),
@@ -832,9 +830,15 @@ def main() -> int:
         action="append",
     )
     args = parser.parse_args()
+    baseline_root = Path(__file__).resolve().parents[1]
+    root = args.root.resolve()
+    if root != baseline_root:
+        raise SystemExit(
+            f"generate_gat_resources: --root must be this ezkl baseline ({baseline_root})"
+        )
     datasets = args.dataset or list(DATASETS)
     for dataset in datasets:
-        table_digest_value, ledger_digest_value = generate_dataset(args.root, dataset)
+        table_digest_value, ledger_digest_value = generate_dataset(root, dataset)
         print(
             f"{dataset}: static_tables={table_digest_value} ledger={ledger_digest_value}"
         )

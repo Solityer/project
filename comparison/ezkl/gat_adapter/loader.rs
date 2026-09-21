@@ -11,8 +11,8 @@ use crate::gat_adapter::manifest::{
 };
 use crate::gat_adapter::schema::{
     canonical_tensor_archive_key, multiplier_to_scale_exponent, sha256_digest, CanonicalGat,
-    CanonicalGraph, CanonicalModel, DigestIdentity, HeadWeights, HiddenLayerSpec,
-    ExactTable, IntegerBoundLedger, ModelBinding, ScaleChain, StaticTables, GAT_SCHEMA_VERSION,
+    CanonicalGraph, CanonicalModel, DigestIdentity, ExactTable, HeadWeights, HiddenLayerSpec,
+    IntegerBoundLedger, ModelBinding, ScaleChain, StaticTables, GAT_SCHEMA_VERSION,
 };
 use crate::graph::modules::native_poseidon_hash_string;
 use halo2curves::bn256::Fr;
@@ -457,7 +457,10 @@ fn parse_dataset_meta(path: &Path) -> Result<DatasetMeta, String> {
     if feature_fields.iter().any(|present| *present)
         && !feature_fields.iter().all(|present| *present)
     {
-        return Err("NumPy feature metadata must provide format/dtype/shape/order/length/sha256 together".into());
+        return Err(
+            "NumPy feature metadata must provide format/dtype/shape/order/length/sha256 together"
+                .into(),
+        );
     }
     Ok(DatasetMeta {
         name: get("name")?,
@@ -645,8 +648,8 @@ fn parse_features(
         {
             return Err("feature npy contract does not match authenticated metadata".into());
         }
-        let digest = sha256::digest_file(path)
-            .map_err(|e| format!("digest {}: {}", path.display(), e))?;
+        let digest =
+            sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
         if meta.feature_sha256.as_deref() != Some(digest.as_str()) {
             return Err("feature npy SHA-256 does not match authenticated metadata".into());
         }
@@ -1022,13 +1025,14 @@ fn parse_npy(path: &Path) -> Result<ParsedNpy, String> {
     if header_len_u64 > 16 * 1024 * 1024 {
         return Err("NumPy header is unreasonably large".into());
     }
-    let header_len = usize::try_from(header_len_u64).map_err(|_| "NumPy header does not fit usize")?;
+    let header_len =
+        usize::try_from(header_len_u64).map_err(|_| "NumPy header does not fit usize")?;
     let mut header_bytes = vec![0_u8; header_len];
     reader
         .read_exact(&mut header_bytes)
         .map_err(|e| format!("read NumPy header body: {}", e))?;
-    let header = std::str::from_utf8(&header_bytes)
-        .map_err(|e| format!("NumPy header utf8: {}", e))?;
+    let header =
+        std::str::from_utf8(&header_bytes).map_err(|e| format!("NumPy header utf8: {}", e))?;
     if !header.contains("'fortran_order': False") && !header.contains("\"fortran_order\": False") {
         return Err("Fortran-order NumPy arrays are unsupported".into());
     }
@@ -1069,7 +1073,11 @@ fn parse_npy(path: &Path) -> Result<ParsedNpy, String> {
         .ok_or("NumPy data size overflow")?;
     let expected_file_size = data_start_u64
         .checked_add(header_len_u64)
-        .and_then(|x| u64::try_from(expected_bytes).ok().and_then(|size| x.checked_add(size)))
+        .and_then(|x| {
+            u64::try_from(expected_bytes)
+                .ok()
+                .and_then(|size| x.checked_add(size))
+        })
         .ok_or("NumPy file size overflow")?;
     let actual_file_size = path
         .metadata()
@@ -1088,11 +1096,11 @@ fn parse_npy(path: &Path) -> Result<ParsedNpy, String> {
             .map_err(|e| format!("read NumPy payload {}: {}", path.display(), e))?;
         for value_bytes in chunk[..take].chunks_exact(item_size) {
             values.push(if item_size == 4 {
-            let bytes: [u8; 4] = value_bytes.try_into().unwrap();
-            f32::from_le_bytes(bytes) as f64
-        } else {
-            let bytes: [u8; 8] = value_bytes.try_into().unwrap();
-            f64::from_le_bytes(bytes)
+                let bytes: [u8; 4] = value_bytes.try_into().unwrap();
+                f32::from_le_bytes(bytes) as f64
+            } else {
+                let bytes: [u8; 8] = value_bytes.try_into().unwrap();
+                f64::from_le_bytes(bytes)
             });
         }
         remaining -= take;
@@ -1340,11 +1348,17 @@ fn parse_binary_tables(path: &Path) -> Result<StaticTables, String> {
     }
     let version = read_u32(&mut reader, "table archive version")?;
     if version != TABLE_FORMAT_VERSION {
-        return Err(format!("unsupported static-table archive version {}", version));
+        return Err(format!(
+            "unsupported static-table archive version {}",
+            version
+        ));
     }
     let table_count = read_u32(&mut reader, "table archive count")?;
     if table_count != 4 {
-        return Err(format!("static-table archive must contain four tables, got {}", table_count));
+        return Err(format!(
+            "static-table archive must contain four tables, got {}",
+            table_count
+        ));
     }
     let registry_length = read_u64(&mut reader, "registry metadata length")?;
     let registry: StaticTableRegistryMeta = serde_json::from_slice(&read_bounded_bytes(
@@ -1360,7 +1374,7 @@ fn parse_binary_tables(path: &Path) -> Result<StaticTables, String> {
                 "lrelu".to_string(),
                 "exp".to_string(),
                 "elu".to_string(),
-                "max_relu".to_string()
+                "max_relu".to_string(),
             ]
     {
         return Err("static-table registry metadata identity mismatch".into());
@@ -1384,7 +1398,10 @@ fn parse_binary_tables(path: &Path) -> Result<StaticTables, String> {
             .and_then(|x| x.checked_add(1))
             .ok_or_else(|| format!("{} input domain overflow", metadata.table_id))?;
         if u64::try_from(expected_count).ok() != Some(row_count) {
-            return Err(format!("{} row count does not cover its domain", metadata.table_id));
+            return Err(format!(
+                "{} row count does not cover its domain",
+                metadata.table_id
+            ));
         }
         // The binary archive itself is consumed with bounded reads.  The
         // native ezkl dynamic-lookup API requires one indexed fixed-table
@@ -1467,7 +1484,8 @@ pub fn write_generated_metadata(spec: &CanonicalGat, output_dir: &Path) -> Resul
             {"table_id": spec.tables.max_relu.table_id, "digest": spec.tables.max_relu.digest, "input_min": spec.tables.max_relu.input_min, "input_max": spec.tables.max_relu.input_max}
         ]
     });
-    let tables = serde_json::to_vec_pretty(&tables).map_err(|e| format!("serialize tables: {}", e))?;
+    let tables =
+        serde_json::to_vec_pretty(&tables).map_err(|e| format!("serialize tables: {}", e))?;
     let ledger =
         serde_json::to_vec_pretty(&spec.ledger).map_err(|e| format!("serialize ledger: {}", e))?;
     write_atomic_metadata(&output_dir.join("gat_static_tables.json"), &tables)?;

@@ -572,6 +572,8 @@ def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool)
             fail(f"source_path does not match baseline provenance for {path_text}")
         if entry["dataset"] != expected_dataset or entry["role"] != expected_role:
             fail(f"manifest dataset/role provenance mismatch for {path_text}")
+        if digest(source) != entry["source_sha256"]:
+            fail(f"source SHA-256 mismatch for {path_text}: {source}")
         if not isinstance(entry["dataset"], str) or not entry["dataset"]:
             fail(f"dataset metadata missing for {path_text}")
         if not isinstance(entry["role"], str) or not entry["role"]:
@@ -595,8 +597,9 @@ def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool)
         if path_text.endswith("/gat_static_tables.bin"):
             validate_table_archive(local)
         if verify_source:
-            if digest(source) != entry["source_sha256"]:
-                fail(f"source SHA-256 mismatch for {path_text}: {source}")
+            # The source is baseline-local and was already authenticated above;
+            # retain the flag for CLI compatibility with the staging workflow.
+            pass
     expected = {p.relative_to(root).as_posix() for p in regular_files(root)}
     if seen != expected:
         missing = sorted(expected - seen)

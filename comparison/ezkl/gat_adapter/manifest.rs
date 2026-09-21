@@ -332,8 +332,8 @@ fn hash_file(path: &Path) -> Result<(u64, String), String> {
             .checked_add(read as u64)
             .ok_or_else(|| format!("size overflow while reading {}", path.display()))?;
     }
-    let digest = sha256::digest_file(path)
-        .map_err(|e| format!("digest {}: {}", path.display(), e))?;
+    let digest =
+        sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
     Ok((size, digest))
 }
 
@@ -413,7 +413,10 @@ impl ResourceManifest {
             valid_digest("source sha256", &record.source_sha256)?;
             let source = Path::new(&record.source_path);
             if !source.is_absolute() {
-                return Err(format!("source path is not absolute: {}", record.source_path));
+                return Err(format!(
+                    "source path is not absolute: {}",
+                    record.source_path
+                ));
             }
             ensure_no_symlink(source, baseline_root)?;
             let canonical_source = source
@@ -429,7 +432,14 @@ impl ResourceManifest {
                 .map_err(|e| format!("stat source {}: {}", source.display(), e))?
                 .is_file()
             {
-                return Err(format!("source path is not a regular file: {}", source.display()));
+                return Err(format!(
+                    "source path is not a regular file: {}",
+                    source.display()
+                ));
+            }
+            let (_, source_digest) = hash_file(source)?;
+            if source_digest != record.source_sha256 {
+                return Err(format!("source digest mismatch: {}", source.display()));
             }
             let path_rel = safe_relative(&record.path)?;
             let path = baseline_root.join(&path_rel);
