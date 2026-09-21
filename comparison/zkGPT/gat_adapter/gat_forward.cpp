@@ -872,8 +872,9 @@ ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
         HiddenLayerTrace hidden;
         hidden.layer = layer;
         const std::size_t output_dim = model.tensor(hidden_family(layer, 0) + "/seq/kernel").shape.dims.at(2);
-        hidden.heads.reserve(8);
-        for (std::size_t head = 0; head < 8; ++head) {
+        const std::size_t hidden_heads = model.hidden_heads();
+        hidden.heads.reserve(hidden_heads);
+        for (std::size_t head = 0; head < hidden_heads; ++head) {
             AttentionScales scales;
             scales.projection = quant.s_hprime_hidden[layer][head];
             scales.attention_src = quant.s_a_src_hidden[layer][head];
@@ -885,9 +886,9 @@ ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
             if (trace.output_dim != output_dim || !trace.relation_ok) throw std::runtime_error("hidden GAT relation failed");
             hidden.heads.push_back(std::move(trace));
         }
-        hidden.concatenated = Tensor2D(graph.num_nodes, output_dim * 8);
+        hidden.concatenated = Tensor2D(graph.num_nodes, output_dim * hidden_heads);
         for (std::size_t node = 0; node < graph.num_nodes; ++node) {
-            for (std::size_t head = 0; head < 8; ++head) {
+            for (std::size_t head = 0; head < hidden_heads; ++head) {
                 for (std::size_t col = 0; col < output_dim; ++col) {
                     hidden.concatenated.at(node, head * output_dim + col) =
                         hidden.heads[head].activated[node * output_dim + col];
@@ -898,9 +899,9 @@ ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
         result.trace.hidden_layers.push_back(std::move(hidden));
     }
 
-    result.trace.output_heads.reserve(2);
+    result.trace.output_heads.reserve(model.manifest.output_heads);
     const std::size_t classes = model.classes();
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         OutputHeadTrace output;
         output.head = head;
         AttentionScales scales;
@@ -941,7 +942,8 @@ ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
     result.trace.logits = Tensor2D(graph.num_nodes, classes);
     result.trace.final_average_divisions.reserve(result.trace.head_sum.size());
     for (std::size_t i = 0; i < result.trace.head_sum.size(); ++i) {
-        const DivisionResult average = signed_round_div(result.trace.head_sum[i], 2);
+        const DivisionResult average = signed_round_div(result.trace.head_sum[i],
+                                                        static_cast<Int>(model.manifest.output_heads));
         result.trace.final_average_divisions.push_back(average.witness);
         result.trace.logits.values[i] = average.value;
     }
@@ -992,8 +994,9 @@ bool validate_relation(const Graph &graph, const Tensor2D &features,
             HiddenLayerTrace hidden;
             hidden.layer = layer;
             const std::size_t output_dim = model.tensor(hidden_family(layer, 0) + "/seq/kernel").shape.dims.at(2);
-            hidden.heads.reserve(8);
-            for (std::size_t head = 0; head < 8; ++head) {
+            const std::size_t hidden_heads = model.hidden_heads();
+            hidden.heads.reserve(hidden_heads);
+            for (std::size_t head = 0; head < hidden_heads; ++head) {
                 const AttentionScales scales{
                     quant.s_hprime_hidden[layer][head], quant.s_a_src_hidden[layer][head],
                     quant.s_a_dst_hidden[layer][head], quant.s_agg_pre[layer], quant.s_agg[layer]};
@@ -1002,9 +1005,9 @@ bool validate_relation(const Graph &graph, const Tensor2D &features,
                 if (trace.output_dim != output_dim) return false;
                 hidden.heads.push_back(std::move(trace));
             }
-            hidden.concatenated = Tensor2D(graph.num_nodes, output_dim * 8);
+            hidden.concatenated = Tensor2D(graph.num_nodes, output_dim * hidden_heads);
             for (std::size_t node = 0; node < graph.num_nodes; ++node) {
-                for (std::size_t head = 0; head < 8; ++head) {
+                for (std::size_t head = 0; head < hidden_heads; ++head) {
                     for (std::size_t col = 0; col < output_dim; ++col) {
                         hidden.concatenated.at(node, head * output_dim + col) =
                             hidden.heads[head].activated[node * output_dim + col];
@@ -1016,8 +1019,8 @@ bool validate_relation(const Graph &graph, const Tensor2D &features,
         }
 
         const std::size_t classes = model.classes();
-        expected.trace.output_heads.reserve(2);
-        for (std::size_t head = 0; head < 2; ++head) {
+        expected.trace.output_heads.reserve(model.manifest.output_heads);
+        for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
             OutputHeadTrace output;
             output.head = head;
             const AttentionScales scales{
@@ -1054,7 +1057,8 @@ bool validate_relation(const Graph &graph, const Tensor2D &features,
         expected.trace.final_average_divisions.reserve(expected.trace.head_sum.size());
         expected.trace.logits = Tensor2D(graph.num_nodes, classes);
         for (std::size_t i = 0; i < expected.trace.head_sum.size(); ++i) {
-            const DivisionResult average = signed_round_div(expected.trace.head_sum[i], 2);
+            const DivisionResult average = signed_round_div(expected.trace.head_sum[i],
+                                                            static_cast<Int>(model.manifest.output_heads));
             expected.trace.final_average_divisions.push_back(average.witness);
             expected.trace.logits.values[i] = average.value;
         }

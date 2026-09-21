@@ -10,13 +10,16 @@ their native capacity-only path is checked for every canonical dataset.
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from common import (
     BACKENDS,
@@ -119,6 +122,70 @@ def _fixture_identity(fixture: Mapping[str, Any], where: Path) -> Dict[str, Any]
     return identity
 
 
+def _run_streaming(command: Sequence[str], cwd: Path, label: str,
+                   diagnostic_dir: Path, timeout: float) -> subprocess.CompletedProcess:
+    """Run one native stage while teeing both streams and retaining them.
+
+    ``subprocess.run(capture_output=True)`` hid the useful native progress when
+    the old tiny proof timed out.  This bounded runner forwards each line to
+    the caller's terminal and writes an independent copy into the fresh
+    preflight directory, including output produced before a timeout.
+    """
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = diagnostic_dir / f"{label}.stdout.log"
+    stderr_path = diagnostic_dir / f"{label}.stderr.log"
+    process = subprocess.Popen(
+        list(command), cwd=str(cwd), text=True, bufsize=1,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    chunks = {"stdout": [], "stderr": []}
+
+    def pump(stream_name: str, stream: Any, path: Path) -> None:
+        target = sys.stdout if stream_name == "stdout" else sys.stderr
+        with path.open("w", encoding="utf-8") as output:
+            for line in iter(stream.readline, ""):
+                chunks[stream_name].append(line)
+                output.write(line)
+                output.flush()
+                print(f"[{label}/{stream_name}] {line}", end="", file=target, flush=True)
+        stream.close()
+
+    assert process.stdout is not None and process.stderr is not None
+    threads = [
+        threading.Thread(target=pump, args=("stdout", process.stdout, stdout_path), daemon=True),
+        threading.Thread(target=pump, args=("stderr", process.stderr, stderr_path), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    timed_out = False
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+    for thread in threads:
+        thread.join(timeout=5)
+    result = subprocess.CompletedProcess(
+        list(command), process.returncode,
+        "".join(chunks["stdout"]), "".join(chunks["stderr"]),
+    )
+    result.timed_out = timed_out  # type: ignore[attr-defined]
+    result.diagnostic_dir = diagnostic_dir  # type: ignore[attr-defined]
+    return result
+
+
 def run_tiny_formal(root: Path, backend: str) -> Dict[str, Any]:
     if backend != "cpu":
         raise ChainError("tiny formal preflight is CPU-only")
@@ -128,15 +195,31 @@ def run_tiny_formal(root: Path, backend: str) -> Dict[str, Any]:
     verifier_fp = binary_fingerprint(verifier, "CPU verifier executable")
     results_dir = root / "results"
     results_dir.mkdir(exist_ok=True)
+    try:
+        timeout = float(os.environ.get("ZKGPT_PREFLIGHT_TINY_TIMEOUT_SECONDS", "300"))
+    except ValueError as exc:
+        raise ChainError("ZKGPT_PREFLIGHT_TINY_TIMEOUT_SECONDS must be numeric") from exc
+    if timeout <= 0:
+        raise ChainError("ZKGPT_PREFLIGHT_TINY_TIMEOUT_SECONDS must be positive")
     fresh = Path(tempfile.mkdtemp(prefix=".formal-preflight-", dir=str(results_dir)))
     started_ns = time.time_ns()
+    keep_fresh = False
+    stage = "smoke"
     try:
-        completed = subprocess.run(
+        completed = _run_streaming(
             [str(smoke), "--formal", "--standalone-dir", str(fresh)],
-            cwd=str(root), text=True, capture_output=True, check=False, timeout=300,
+            root, "smoke", fresh, timeout,
         )
+        if getattr(completed, "timed_out", False):
+            keep_fresh = True
+            raise ChainError(
+                f"formal adapter smoke timed out after {timeout:g}s; partial diagnostics: {fresh}"
+            )
         if completed.returncode != 0:
-            raise ChainError(f"formal adapter smoke failed with {completed.returncode}: {completed.stderr[-1000:]}")
+            keep_fresh = True
+            raise ChainError(
+                f"formal adapter smoke failed with {completed.returncode}; partial diagnostics: {fresh}"
+            )
         fixture_path = fresh / "fixture.json"
         fixture = load_json(fixture_path, "formal fixture")
         if not isinstance(fixture, dict) or fixture.get("schema") not in ("zkgpt-gat-formal-fixture-v1", "zkgpt-gat-formal-fixture-v2"):
@@ -152,13 +235,22 @@ def run_tiny_formal(root: Path, backend: str) -> Dict[str, Any]:
         logits_rel = relative_path(root, logits, "formal fixture logits")
         artifact_rel = relative_path(root, artifact, "formal fixture artifact")
         report_rel = relative_path(root, report, "formal fixture report")
-        verified = subprocess.run(
+        stage = "verifier"
+        verified = _run_streaming(
             [str(verifier), "--baseline-root", str(root), "--verifier-context", context_rel,
              "--public-logits", logits_rel, "--artifact", artifact_rel, "--report", report_rel],
-            cwd=str(root), text=True, capture_output=True, check=False, timeout=300,
+            root, "verifier", fresh, timeout,
         )
+        if getattr(verified, "timed_out", False):
+            keep_fresh = True
+            raise ChainError(
+                f"standalone independent verifier timed out after {timeout:g}s; partial diagnostics: {fresh}"
+            )
         if verified.returncode != 0:
-            raise ChainError(f"standalone independent verifier rejected tiny fixture ({verified.returncode})")
+            keep_fresh = True
+            raise ChainError(
+                f"standalone independent verifier rejected tiny fixture ({verified.returncode}); partial diagnostics: {fresh}"
+            )
         report_payload = load_json(report, "tiny independent verifier report")
         if not isinstance(report_payload, dict) or report_payload.get("schema") != REPORT_SCHEMA:
             raise ChainError(f"tiny verifier report is not schema v3: {report}")
@@ -196,10 +288,16 @@ def run_tiny_formal(root: Path, backend: str) -> Dict[str, Any]:
             "smoke_binary": {"path": relative_path(root, smoke, "smoke executable"), **smoke_fp},
             "verifier_binary": {"path": relative_path(root, verifier, "verifier executable"), **verifier_fp},
         }
+    except Exception:
+        keep_fresh = True
+        raise
     finally:
-        # This directory is disposable by construction.  A future preflight
-        # can never accidentally consume an old fixture path.
-        shutil.rmtree(fresh, ignore_errors=False)
+        if keep_fresh:
+            print(f"PREFLIGHT_PARTIAL_DIAGNOSTICS stage={stage} directory={fresh}", file=sys.stderr)
+        else:
+            # This directory is disposable by construction.  A future
+            # preflight can never accidentally consume an old fixture path.
+            shutil.rmtree(fresh, ignore_errors=False)
 
 
 def run_capacity(root: Path, dataset: str, backend: str) -> Dict[str, Any]:

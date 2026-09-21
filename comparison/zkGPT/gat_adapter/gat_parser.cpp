@@ -985,11 +985,29 @@ const Tensor &Model::tensor(const std::string &name) const {
 
 std::size_t Model::input_dim() const { return tensor(hidden_name(0, 0, "seq/kernel")).shape.dims.at(1); }
 std::size_t Model::hidden_dim() const { return tensor(hidden_name(0, 0, "seq/kernel")).shape.dims.at(2); }
+std::size_t Model::hidden_heads() const {
+    if (manifest.layers < 2 || manifest.output_heads == 0 ||
+        manifest.tensor_count < manifest.output_heads * 4) {
+        return 0;
+    }
+    const std::size_t hidden_tensors = manifest.tensor_count - manifest.output_heads * 4;
+    const std::size_t hidden_layers = manifest.layers - 1;
+    const std::size_t tensors_per_head = hidden_layers * 3;
+    if (tensors_per_head == 0 || hidden_tensors % tensors_per_head != 0) return 0;
+    return hidden_tensors / tensors_per_head;
+}
 std::size_t Model::classes() const { return tensor(output_name(0, "output_bias")).shape.dims.at(0); }
 
 void Model::validate_schema() const {
-    if (tensors.size() != 56 || manifest.tensor_count != 56) throw std::runtime_error("canonical model must contain exactly 56 tensors");
-    if (manifest.layers != 3 || manifest.output_heads != 2 || manifest.classes == 0 ||
+    const std::size_t hidden_layers = manifest.layers > 0 ? manifest.layers - 1 : 0;
+    const std::size_t hidden_heads_count = hidden_heads();
+    const std::size_t expected_tensors = hidden_layers * hidden_heads_count * 3 + manifest.output_heads * 4;
+    if (hidden_layers != 2 || hidden_heads_count == 0 || manifest.output_heads == 0 ||
+        manifest.output_heads > 2 ||
+        tensors.size() != expected_tensors || manifest.tensor_count != expected_tensors) {
+        throw std::runtime_error("canonical model tensor/head profile is invalid");
+    }
+    if (manifest.layers != 3 || manifest.classes == 0 ||
         manifest.dataset.empty() || manifest.model_arch_id.empty() || manifest.quant_cfg_id.empty() ||
         manifest.model_param_id.empty() || manifest.static_table_id.empty() ||
         manifest.input_preprocess_id.empty() || manifest.batching_rule.empty() ||
@@ -1004,20 +1022,20 @@ void Model::validate_schema() const {
         manifest.output_average_rule != "per_head_bias_then_arithmetic_mean") {
         throw std::runtime_error("canonical model manifest policy is not supported");
     }
-    for (std::size_t l = 0; l < 2; ++l) for (std::size_t h = 0; h < 8; ++h) {
+    for (std::size_t l = 0; l < hidden_layers; ++l) for (std::size_t h = 0; h < hidden_heads_count; ++h) {
         const Tensor &seq = tensor(hidden_name(l, h, "seq/kernel"));
         const Tensor &as = tensor(hidden_name(l, h, "attn_src/kernel"));
         const Tensor &ad = tensor(hidden_name(l, h, "attn_dst/kernel"));
         if (seq.shape.dims.size() != 3 || seq.shape.dims[0] != 1 || as.shape.dims.size() != 3 || ad.shape.dims.size() != 3 || as.shape.dims[0] != 1 || ad.shape.dims[0] != 1 || as.shape.dims[2] != 1 || ad.shape.dims[2] != 1 || seq.shape.dims[2] != as.shape.dims[1] || seq.shape.dims[2] != ad.shape.dims[1]) throw std::runtime_error("hidden tensor shape mismatch");
         if (l == 0 && seq.shape.dims[1] != input_dim()) throw std::runtime_error("hidden input shape mismatch");
-        if (l == 1 && seq.shape.dims[1] != 8 * hidden_dim()) throw std::runtime_error("hidden concat shape mismatch");
+        if (l == 1 && seq.shape.dims[1] != hidden_heads_count * hidden_dim()) throw std::runtime_error("hidden concat shape mismatch");
     }
-    for (std::size_t h = 0; h < 2; ++h) {
+    for (std::size_t h = 0; h < manifest.output_heads; ++h) {
         const Tensor &seq = tensor(output_name(h, "seq/kernel"));
         const Tensor &as = tensor(output_name(h, "attn_src/kernel"));
         const Tensor &ad = tensor(output_name(h, "attn_dst/kernel"));
         const Tensor &bias = tensor(output_name(h, "output_bias"));
-        if (seq.shape.dims.size() != 3 || seq.shape.dims[0] != 1 || seq.shape.dims[1] != 8 * hidden_dim() || as.shape.dims.size() != 3 || ad.shape.dims.size() != 3 || as.shape.dims[1] != classes() || ad.shape.dims[1] != classes() || bias.shape.dims.size() != 1 || bias.shape.dims[0] != classes()) throw std::runtime_error("output tensor shape mismatch");
+        if (seq.shape.dims.size() != 3 || seq.shape.dims[0] != 1 || seq.shape.dims[1] != hidden_heads_count * hidden_dim() || as.shape.dims.size() != 3 || ad.shape.dims.size() != 3 || as.shape.dims[1] != classes() || ad.shape.dims[1] != classes() || bias.shape.dims.size() != 1 || bias.shape.dims[0] != classes()) throw std::runtime_error("output tensor shape mismatch");
     }
     if (manifest.classes != 0 && manifest.classes != classes()) throw std::runtime_error("manifest class count mismatch");
 }

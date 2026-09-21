@@ -2157,6 +2157,7 @@ bool native_lasso_prove_bundle(
         local.final_l_evaluation = final_claim;
         local.final_l_commitment = final_opening.masked_evaluation_opening.commitment;
         local.has_final_l_commitment = true;
+        if (!session.replay(reason)) return false;
         if (result != nullptr) *result = std::move(local);
         return true;
     } catch (const std::exception &error) {

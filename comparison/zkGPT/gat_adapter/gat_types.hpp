@@ -161,6 +161,11 @@ struct Model {
     void validate_identity(const CanonicalConfig &config) const;
     std::size_t input_dim() const;
     std::size_t hidden_dim() const;
+    // The canonical L3 schema keeps two hidden layers, while the number of
+    // heads is encoded by the authenticated tensor count.  Production
+    // checkpoints therefore retain the historical 8-head shape, and bounded
+    // protocol fixtures can use a smaller, fully-covered head set.
+    std::size_t hidden_heads() const;
     std::size_t classes() const;
 };
 

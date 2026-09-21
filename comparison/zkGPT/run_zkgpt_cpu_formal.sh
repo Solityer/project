@@ -20,9 +20,11 @@ mkdir -p "$ROOT/logs"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 LOG="$ROOT/logs/zkgpt_cpu_formal_${STAMP}.log"
 
-echo "MAIN_LOG=$LOG"
+# Keep the complete stage stream visible to the caller while retaining the
+# exact same bytes in the per-run log for postmortem/debugging.
+exec > >(tee -a "$LOG") 2>&1
 
-exec >> "$LOG" 2>&1
+echo "MAIN_LOG=$LOG"
 
 echo "============================================================"
 echo "zkGPT CPU formal run"

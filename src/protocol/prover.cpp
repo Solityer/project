@@ -4929,7 +4929,10 @@ namespace gatzk::protocol
             ScopedQuotientWorkingSet(std::size_t target_size, bool cuda_enabled, const std::string &label)
             {
                 plan_.target_size = target_size;
-                if (target_size < (std::size_t{1} << 17))
+                // t_edge has its own bounded CPU term scheduler and CUDA executor admission.
+                // Running the generic full-coset admission first double-counts the same memory
+                // and rejected valid Pubmed/OGBN routes before their real executor was selected.
+                if (label == "t_edge" || target_size < (std::size_t{1} << 17))
                     return;
                 if (thread_owns_working_set())
                     throw std::runtime_error("nested quotient working-set admission is not supported: " + label);
@@ -4952,59 +4955,41 @@ namespace gatzk::protocol
                 const auto page_size_raw = ::sysconf(_SC_PAGESIZE);
                 if (page_size_raw <= 0)
                     throw std::runtime_error("cannot determine quotient spill page size: " + label);
-                const auto mapped_coset = util::spill_align_up(
-                    one_coset, static_cast<std::size_t>(page_size_raw), label);
-                const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-                std::size_t maximum_writers = 1;
-                if (label == "t_edge" && !cuda_enabled)
-                {
-                    maximum_writers = target_size <= (std::size_t{1} << 22) && cpu_count >= 8
-                                          ? std::min<std::size_t>(24, cpu_count)
-                                          : std::min<std::size_t>(4, cpu_count);
-                }
+                const auto mapped_coset = util::spill_align_up(one_coset, static_cast<std::size_t>(page_size_raw), label);
+                constexpr std::size_t maximum_writers = 1;
 
-                // The two geometry vectors cover quotient values and shared
-                // coset points. Each producer has three scratch-vector units
-                // and one not-yet-published output-vector unit.
                 const auto geometry = checked_mul(one_coset, 2);
-                auto device_headroom = cuda_enabled ? (std::size_t{4} << 30) : 0;
-                if (cuda_enabled && label == "t_edge" && target_size >= (std::size_t{1} << 25))
-                    device_headroom = checked_add(device_headroom, std::size_t{6} << 30);
+                const auto device_headroom = cuda_enabled ? (std::size_t{4} << 30) : 0;
                 const auto fixed_bytes = checked_add(geometry, device_headroom);
                 const auto writer_bytes = checked_add(checked_mul(one_coset, 3), mapped_coset);
                 const auto minimum_bytes = checked_add(fixed_bytes, writer_bytes);
                 constexpr std::size_t maximum_hot_cache = std::size_t{24} << 30;
-                const auto preferred_bytes = checked_add(
-                    checked_add(fixed_bytes, checked_mul(writer_bytes, maximum_writers)), maximum_hot_cache);
+                const auto preferred_bytes = checked_add(checked_add(fixed_bytes, writer_bytes), maximum_hot_cache);
 
-                exclusive_ = cuda_enabled && label == "t_edge";
                 auto &shared = state();
                 std::unique_lock<std::mutex> lock(shared.mutex);
                 for (;;)
                 {
-                    if (shared.exclusive || (exclusive_ && shared.active != 0))
+                    if (shared.exclusive)
                     {
                         shared.changed.wait(lock);
                         continue;
                     }
 
                     const auto snapshot = util::read_effective_memory_snapshot();
-                    const auto reserve = util::recommended_memory_reserve_bytes(
-                        snapshot, std::size_t{16} << 30, 1, 4);
-                    const auto admission = util::admit_effective_memory(
-                        snapshot, 0, 0, reserve, 1, maximum);
+                    const auto reserve = util::recommended_memory_reserve_bytes(snapshot, std::size_t{8} << 30, 1, 8);
+                    const auto admission = util::admit_effective_memory(snapshot, 0, 0, reserve, 1, maximum);
                     const auto safe_bytes = admission.budget_bytes;
-                    const auto free_credit = safe_bytes > shared.reserved_bytes
-                                                 ? safe_bytes - shared.reserved_bytes
-                                                 : 0;
+                    const auto free_credit = safe_bytes > shared.reserved_bytes ? safe_bytes - shared.reserved_bytes : 0;
                     if (free_credit >= minimum_bytes)
                     {
                         const auto grant = std::min(preferred_bytes, free_credit);
-                        const auto writers = std::min(maximum_writers, (grant - fixed_bytes) / writer_bytes);
+                        const auto writers = std::min<std::size_t>(maximum_writers, (grant - fixed_bytes) / writer_bytes);
+                        if (writers == 0)
+                            throw std::runtime_error("quotient working-set admission produced zero writers: " + label);
                         const auto producer_bytes = checked_mul(writer_bytes, writers);
                         const auto hot_bytes = std::min(maximum_hot_cache, grant - fixed_bytes - producer_bytes);
-                        const auto transient = checked_add(
-                            checked_mul(checked_mul(one_coset, 3), writers), device_headroom);
+                        const auto transient = checked_add(checked_mul(checked_mul(one_coset, 3), writers), device_headroom);
 
                         plan_.enabled = true;
                         plan_.total_bytes = snapshot.effective_total_bytes;
@@ -5019,7 +5004,6 @@ namespace gatzk::protocol
 
                         shared.reserved_bytes += grant;
                         ++shared.active;
-                        shared.exclusive = exclusive_;
                         armed_ = true;
                         thread_owns_working_set() = true;
                         return;
@@ -5035,9 +5019,6 @@ namespace gatzk::protocol
                             " reserve_bytes=" + std::to_string(reserve) +
                             " available_known=" + std::to_string(snapshot.effective_available_known ? 1 : 0));
                     }
-
-                    // No producer-side lock is held here. Every admitted
-                    // materializer can finish and release its reservation.
                     shared.changed.wait(lock);
                 }
             }
@@ -5057,8 +5038,6 @@ namespace gatzk::protocol
                         std::terminate();
                     shared.reserved_bytes -= plan_.admitted_bytes;
                     --shared.active;
-                    if (exclusive_)
-                        shared.exclusive = false;
                 }
                 shared.changed.notify_all();
             }
@@ -5088,10 +5067,8 @@ namespace gatzk::protocol
             }
 
             QuotientWorkingSetPlan plan_;
-            bool exclusive_ = false;
             bool armed_ = false;
         };
-
         std::vector<std::string> quotient_materialization_dependency_labels(
             const ProtocolContext &context,
             const std::string &quotient_name);
@@ -7019,189 +6996,76 @@ namespace gatzk::protocol
             bool should_use_cuda_t_edge_engine()
             {
                 cuda_t_edge_selected_cache_slots_ = 0;
-
                 if (label_ != "t_edge" || !util::route2_options().cuda_field_hotspots)
-                {
                     return false;
-                }
 
                 if (!algebra::cuda_field_hotspots_available() || !cuda_t_edge_executor_available())
                 {
-                    throw std::runtime_error("CUDA t_edge route was requested but the CUDA executor is unavailable");
+                    progress_note("prove:quotient:t_edge:cuda_executor:unavailable:fallback=bounded_host");
+                    return false;
                 }
-
-                if (edge_evaluation_plan_ ==
-                    nullptr)
-                {
-                    throw std::runtime_error(
-                        "CUDA t_edge route "
-                        "is missing evaluation plan");
-                }
+                if (edge_evaluation_plan_ == nullptr)
+                    throw std::runtime_error("CUDA t_edge route is missing evaluation plan");
 
                 const bool leaf_exact_ntt_supported = cuda_t_edge_leaf_exact_ntt_supported(target_size_);
-
                 if (!leaf_exact_ntt_supported)
                 {
-                    throw std::runtime_error("CUDA t_edge route was requested but exact GPU leaf NTT is unsupported: target_size=" +
-                                             std::to_string(target_size_));
+                    progress_note("prove:quotient:t_edge:cuda_executor:leaf_ntt_unsupported:target_size=" + std::to_string(target_size_) + ":fallback=bounded_host");
+                    return false;
                 }
 
-                const auto program =
-                    build_t_edge_bound_program(
-                        context_,
-                        challenges_,
-                        trace_
-                            .external_evaluations,
-                        *edge_evaluation_plan_);
-
-                const auto cache_bounds =
-                    cuda_t_edge_leaf_cache_bounds(
-                        program);
-
-                const auto admission_shape =
-                    cuda_t_edge_executor_admission_shape(
-                        program);
-
-                if (!cuda_t_edge_executor_can_admit(
-                        target_size_,
-                        cache_bounds.minimum,
-                        leaf_exact_ntt_supported,
-                        admission_shape))
+                const auto program = build_t_edge_bound_program(context_, challenges_, trace_.external_evaluations, *edge_evaluation_plan_);
+                const auto cache_bounds = cuda_t_edge_leaf_cache_bounds(program);
+                const auto admission_shape = cuda_t_edge_executor_admission_shape(program);
+                if (!cuda_t_edge_executor_can_admit(target_size_, cache_bounds.minimum, leaf_exact_ntt_supported, admission_shape))
                 {
-                    progress_note("prove:quotient:t_edge:cuda_executor:admission_rejected:target_size=" +
-                                  std::to_string(target_size_) +
-                                  ":minimum_slots=" +
-                                  std::to_string(cache_bounds.minimum));
-
-                    throw std::runtime_error("CUDA t_edge route was requested but minimum GPU execution plan was not admitted: target_size=" +
-                                             std::to_string(target_size_) +
-                                             " minimum_slots=" +
-                                             std::to_string(cache_bounds.minimum));
+                    progress_note("prove:quotient:t_edge:cuda_executor:admission_rejected:target_size=" + std::to_string(target_size_) + ":minimum_slots=" + std::to_string(cache_bounds.minimum) + ":fallback=bounded_host");
+                    return false;
                 }
 
-                // Bound the adaptive resident leaf cache separately from the
-                // executor's global admission budget. The global admission
-                // gate protects correctness and OOM safety, while this bound
-                // prevents the leaf cache itself from consuming most of the
-                // available UMA/host memory.
-                std::size_t cache_slot_upper =
-                    cache_bounds.desired;
-
-                const auto memory =
-                    util::cached_effective_memory_snapshot();
-
-                if (memory.effective_available_known &&
-                    target_size_ != 0 &&
-                    target_size_ <=
-                        std::numeric_limits<std::size_t>::max() /
-                            sizeof(mcl::Fr))
+                std::size_t cache_slot_upper = cache_bounds.desired;
+                const auto memory = util::cached_effective_memory_snapshot();
+                if (memory.effective_available_known && target_size_ != 0 && target_size_ <= std::numeric_limits<std::size_t>::max() / sizeof(mcl::Fr))
                 {
-                    const auto bytes_per_slot =
-                        target_size_ *
-                        sizeof(mcl::Fr);
-
-                    constexpr std::size_t
-                        kMaximumAdaptiveLeafCacheBytes =
-                            std::size_t{32} << 30;
-
-                    const auto adaptive_cache_budget =
-                        std::min(
-                            kMaximumAdaptiveLeafCacheBytes,
-                            memory.effective_available_bytes / 4);
-
-                    const auto budget_slot_count =
-                        bytes_per_slot == 0
-                            ? cache_bounds.minimum
-                            : adaptive_cache_budget /
-                                  bytes_per_slot;
-
-                    cache_slot_upper =
-                        std::max(
-                            cache_bounds.minimum,
-                            std::min(
-                                cache_bounds.desired,
-                                budget_slot_count));
+                    const auto bytes_per_slot = target_size_ * sizeof(mcl::Fr);
+                    constexpr std::size_t kMaximumAdaptiveLeafCacheBytes = std::size_t{32} << 30;
+                    const auto adaptive_cache_budget = std::min(kMaximumAdaptiveLeafCacheBytes, memory.effective_available_bytes / 4);
+                    const auto budget_slot_count = bytes_per_slot == 0 ? cache_bounds.minimum : adaptive_cache_budget / bytes_per_slot;
+                    cache_slot_upper = std::max(cache_bounds.minimum, std::min(cache_bounds.desired, budget_slot_count));
                 }
 
-                // Admission cost is monotonic in cache_slot_count:
-                // all slot-dependent executor allocations are linear in the
-                // slot count. Search only within the execution-cache budget;
-                // the existing admission gate remains authoritative.
-                std::size_t low =
-                    cache_bounds.minimum;
-
-                std::size_t high =
-                    cache_slot_upper;
-
+                std::size_t low = cache_bounds.minimum;
+                std::size_t high = cache_slot_upper;
                 while (low < high)
                 {
-                    const auto middle =
-                        low +
-                        (high - low + 1) /
-                            2;
-
-                    if (cuda_t_edge_executor_can_admit(
-                            target_size_,
-                            middle,
-                            leaf_exact_ntt_supported,
-                            admission_shape))
-                    {
+                    const auto middle = low + (high - low + 1) / 2;
+                    if (cuda_t_edge_executor_can_admit(target_size_, middle, leaf_exact_ntt_supported, admission_shape))
                         low = middle;
-                    }
                     else
-                    {
                         high = middle - 1;
-                    }
                 }
 
-                cuda_t_edge_selected_cache_slots_ =
-                    low;
-
-                progress_note(
-                    "prove:quotient:t_edge:"
-                    "cuda_leaf_cache:"
-                    "minimum_slots=" +
-                    std::to_string(
-                        cache_bounds.minimum) +
-                    ":desired_slots=" +
-                    std::to_string(
-                        cache_bounds.desired) +
-                    ":budget_cap_slots=" +
-                    std::to_string(
-                        cache_slot_upper) +
-                    ":selected_slots=" +
-                    std::to_string(
-                        cuda_t_edge_selected_cache_slots_) +
-                    ":full_resident=" +
-                    std::to_string(
-                        cuda_t_edge_selected_cache_slots_ ==
-                                cache_bounds.desired
-                            ? 1
-                            : 0));
+                cuda_t_edge_selected_cache_slots_ = low;
+                progress_note("prove:quotient:t_edge:cuda_leaf_cache:minimum_slots=" + std::to_string(cache_bounds.minimum) +
+                              ":desired_slots=" + std::to_string(cache_bounds.desired) +
+                              ":budget_cap_slots=" + std::to_string(cache_slot_upper) +
+                              ":selected_slots=" + std::to_string(cuda_t_edge_selected_cache_slots_) +
+                              ":full_resident=" + std::to_string(cuda_t_edge_selected_cache_slots_ == cache_bounds.desired ? 1 : 0));
                 return true;
             }
-
             void reset_cuda_t_edge_transient_leaf_state()
             {
                 fast_coset_lookup_.clear();
                 edge_access_sequence_.clear();
-
+                record_edge_access_sequence_ = false;
                 {
-                    std::lock_guard<std::mutex>
-                        lock(
-                            coset_cache_mutex_);
-
+                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
                     coset_cache_.clear();
+                    coset_aliases_.clear();
                 }
-
                 semantic_coset_groups_.clear();
-
-                semantic_coset_group_by_label_
-                    .clear();
-
-                in_memory_coset_bytes_.store(
-                    0,
-                    std::memory_order_relaxed);
+                semantic_coset_group_by_label_.clear();
+                in_memory_coset_bytes_.store(0, std::memory_order_relaxed);
             }
 
             std::vector<FieldElement>
@@ -7256,8 +7120,6 @@ namespace gatzk::protocol
 
                 executor->prepare_program(
                     program);
-
-                const bool strict_cuda_leaf_route = true;
 
                 // CUDA t_edge materializes registered derived
                 // linear views directly instead of going through
@@ -7449,115 +7311,44 @@ namespace gatzk::protocol
                     }
                 };
 
-                const auto
-                    try_materialize_direct_gpu_leaf =
-                        [&](const std::string &label,
-                            std::size_t slot)
-                    -> bool
+                const auto try_materialize_direct_gpu_leaf = [&](const std::string &label, std::size_t slot) -> bool
                 {
-                    if (const auto *polynomial =
-                            lookup_polynomial(
-                                label);
-                        polynomial != nullptr)
+                    if (const auto *polynomial = lookup_polynomial(label); polynomial != nullptr)
                     {
-                        if (polynomial->basis ==
-                                algebra::
-                                    PolynomialBasis::
-                                        Evaluation &&
-                            polynomial->domain !=
-                                nullptr &&
-                            polynomial->domain->size ==
-                                domain_->size &&
-                            polynomial->domain->omega ==
-                                domain_->omega)
+                        if (polynomial->basis == algebra::PolynomialBasis::Evaluation && polynomial->domain != nullptr &&
+                            polynomial->domain->size == domain_->size && polynomial->domain->omega == domain_->omega &&
+                            polynomial->values().size() <= domain_->size)
                         {
-                            const auto &values =
-                                polynomial->values();
-
-                            const auto *blinder =
-                                polynomial
-                                        ->zero_domain_blinder
-                                        .empty()
-                                    ? nullptr
-                                    : FieldElement::
-                                          native_array_data(
-                                              polynomial
-                                                  ->zero_domain_blinder
-                                                  .data());
-
-                            return executor->materialize_evaluation_leaf(
-                                slot,
-                                FieldElement::
-                                    native_array_data(
-                                        values.data()),
-                                values.size(),
-                                blinder,
-                                polynomial
-                                    ->zero_domain_blinder
-                                    .size());
+                            const auto &values = polynomial->values();
+                            const auto &blinder = polynomial->zero_domain_blinder;
+                            if (target_size_ < 2 || domain_->size > target_size_ / 2 || blinder.size() > target_size_ / 2 - domain_->size)
+                                return false;
+                            return executor->materialize_evaluation_leaf(slot, values.empty() ? nullptr : FieldElement::native_array_data(values.data()),
+                                                                         values.size(), blinder.empty() ? nullptr : FieldElement::native_array_data(blinder.data()), blinder.size());
                         }
-
-                        if (polynomial->basis ==
-                            algebra::
-                                PolynomialBasis::
-                                    Coefficient)
+                        if (polynomial->basis == algebra::PolynomialBasis::Coefficient)
                         {
-                            const auto &coefficients =
-                                polynomial->values();
-
-                            return executor->materialize_coefficient_leaf(
-                                slot,
-                                FieldElement::
-                                    native_array_data(
-                                        coefficients.data()),
-                                coefficients.size());
+                            const auto &coefficients = polynomial->values();
+                            if (target_size_ < 2 || coefficients.size() > target_size_ / 2)
+                                return false;
+                            return executor->materialize_coefficient_leaf(slot, coefficients.empty() ? nullptr : FieldElement::native_array_data(coefficients.data()), coefficients.size());
                         }
                     }
 
-                    const auto spilled_it =
-                        trace_.spilled_polynomials
-                            .find(label);
+                    const auto spilled_it = trace_.spilled_polynomials.find(label);
+                    if (spilled_it == trace_.spilled_polynomials.end())
+                        return false;
+                    const auto &spilled = spilled_it->second;
+                    if (spilled.domain_name != domain_->name || spilled.size > domain_->size || spilled_file_value_count(spilled) > spilled.size)
+                        return false;
+                    if (target_size_ < 2 || domain_->size > target_size_ / 2 || spilled.zero_domain_blinder.size() > target_size_ / 2 - domain_->size)
+                        return false;
 
-                    if (spilled_it !=
-                            trace_
-                                .spilled_polynomials
-                                .end() &&
-                        spilled_it->second
-                                .domain_name ==
-                            domain_->name)
-                    {
-                        auto source_values =
-                            load_spilled_values(
-                                spilled_it->second);
-
-                        const auto *blinder =
-                            spilled_it->second
-                                    .zero_domain_blinder
-                                    .empty()
-                                ? nullptr
-                                : FieldElement::
-                                      native_array_data(
-                                          spilled_it
-                                              ->second
-                                              .zero_domain_blinder
-                                              .data());
-
-                        return executor->materialize_evaluation_leaf(
-                            slot,
-                            FieldElement::
-                                native_array_data(
-                                    source_values
-                                        .data()),
-                            source_values.size(),
-                            blinder,
-                            spilled_it->second
-                                .zero_domain_blinder
-                                .size());
-                    }
-
-                    return false;
+                    auto source_values = load_spilled_values(spilled);
+                    const auto &blinder = spilled.zero_domain_blinder;
+                    return executor->materialize_evaluation_leaf(slot, source_values.empty() ? nullptr : FieldElement::native_array_data(source_values.data()),
+                                                                 source_values.size(), blinder.empty() ? nullptr : FieldElement::native_array_data(blinder.data()), blinder.size());
                 };
-
                 struct CudaTEdgeLinearTelemetry
                 {
                     std::size_t descriptor_requests = 0;
@@ -7586,40 +7377,26 @@ namespace gatzk::protocol
                         "host_leaf_materialization_required=1");
                 }
 
-                const auto linear_direct_shape_is_supported =
-                    [&](const std::string &label)
+                const auto linear_direct_shape_is_supported = [&](const std::string &label)
                 {
-                    if (const auto *polynomial =
-                            lookup_polynomial(label);
-                        polynomial != nullptr)
+                    if (const auto *polynomial = lookup_polynomial(label); polynomial != nullptr)
                     {
-                        if (polynomial->basis ==
-                            algebra::PolynomialBasis::Evaluation)
+                        if (polynomial->basis == algebra::PolynomialBasis::Evaluation)
                         {
-                            return polynomial->domain != nullptr &&
-                                   polynomial->domain->size == domain_->size &&
-                                   polynomial->domain->omega == domain_->omega &&
-                                   polynomial->values().size() <= domain_->size;
+                            if (polynomial->domain == nullptr || polynomial->domain->size != domain_->size || polynomial->domain->omega != domain_->omega || polynomial->values().size() > domain_->size)
+                                return false;
+                            return target_size_ >= 2 && domain_->size <= target_size_ / 2 && polynomial->zero_domain_blinder.size() <= target_size_ / 2 - domain_->size;
                         }
-                        if (polynomial->basis ==
-                            algebra::PolynomialBasis::Coefficient)
-                        {
-                            const auto maximum_coefficient_count =
-                                target_size_ >= 2
-                                    ? target_size_ / 2
-                                    : std::size_t{0};
-                            return polynomial->values().size() <=
-                                   maximum_coefficient_count;
-                        }
+                        if (polynomial->basis == algebra::PolynomialBasis::Coefficient)
+                            return target_size_ >= 2 && polynomial->values().size() <= target_size_ / 2;
                         return false;
                     }
-                    const auto spilled_it =
-                        trace_.spilled_polynomials.find(label);
-                    return spilled_it !=
-                               trace_.spilled_polynomials.end() &&
-                           spilled_it->second.domain_name ==
-                               domain_->name &&
-                           spilled_it->second.size == domain_->size;
+                    const auto spilled_it = trace_.spilled_polynomials.find(label);
+                    if (spilled_it == trace_.spilled_polynomials.end())
+                        return false;
+                    const auto &spilled = spilled_it->second;
+                    return spilled.domain_name == domain_->name && spilled.size <= domain_->size && spilled_file_value_count(spilled) <= spilled.size &&
+                           target_size_ >= 2 && domain_->size <= target_size_ / 2 && spilled.zero_domain_blinder.size() <= target_size_ / 2 - domain_->size;
                 };
 
                 const auto try_materialize_derived_linear_gpu_leaf =
@@ -7908,108 +7685,60 @@ namespace gatzk::protocol
                     }
                     return true;
                 };
-                const auto materialize_label = [&](const std::string &label, std::size_t slot,
-                                                   const std::vector<std::string> &required)
+                const auto materialize_host_leaf_to_gpu = [&](const std::string &label, std::size_t slot)
+                {
+                    auto values = coset_values_ptr(label);
+                    if (values == nullptr || values->size() != target_size_)
+                        throw std::runtime_error("CUDA t_edge host fallback produced an invalid coset: " + label);
+                    constexpr std::size_t kUploadChunkElements = std::size_t{1} << 20;
+                    std::vector<FieldElement> staging(std::min(kUploadChunkElements, target_size_));
+                    for (std::size_t offset = 0; offset < target_size_; offset += kUploadChunkElements)
+                    {
+                        const auto count = std::min(kUploadChunkElements, target_size_ - offset);
+                        values->copy_logical_range(offset, count, staging.data());
+                        executor->upload_leaf_chunk(slot, offset, FieldElement::native_array_data(staging.data()), count);
+                    }
+                    reset_cuda_t_edge_transient_leaf_state();
+                };
+
+                const auto materialize_label = [&](const std::string &label, std::size_t slot, const std::vector<std::string> &required)
                 {
                     if (label == "__t_edge_boundary_l0")
                     {
-                        if (!executor->materialize_evaluation_leaf(slot,
-                                                                   FieldElement::native_array_data(boundary_evaluation.data()), 1, nullptr, 0))
+                        if (!executor->materialize_evaluation_leaf(slot, FieldElement::native_array_data(boundary_evaluation.data()), 1, nullptr, 0))
                             throw std::runtime_error("CUDA t_edge boundary leaf was not admitted");
                         reset_cuda_t_edge_transient_leaf_state();
                         return;
                     }
-                    // Preserve the canonical cache -> derived -> direct /
-                    // spill resolver order.  A descriptor target must first
-                    // attempt resident-linear materialization; every decline
-                    // (capacity, unsupported source, or API) falls directly
-                    // through to the host derived coset view.  In particular,
-                    // do not let a colliding direct target bypass its derived
-                    // resolver here.
-                    const auto descriptor =
-                        t_edge_derived_linear_descriptor(label);
-                    if (label != "__t_edge_boundary_l0" &&
-                        descriptor.has_value())
+
+                    if (t_edge_derived_linear_descriptor(label).has_value())
                     {
-                        if (try_materialize_derived_linear_gpu_leaf(
-                                label,
-                                slot,
-                                required))
+                        if (try_materialize_derived_linear_gpu_leaf(label, slot, required))
                         {
                             reset_cuda_t_edge_transient_leaf_state();
                             return;
-                        }
-                        if (strict_cuda_leaf_route)
-                        {
-                            throw std::runtime_error(
-                                "CUDA t_edge strict leaf route was selected but "
-                                "linear leaf execution failed: label=" +
-                                label +
-                                " capacity_declines=" + std::to_string(linear_telemetry.fallback_capacity) +
-                                " unsupported_declines=" + std::to_string(linear_telemetry.fallback_unsupported) +
-                                " api_declines=" + std::to_string(linear_telemetry.fallback_api_declined) +
-                                " target_size=" + std::to_string(target_size_) +
-                                " domain=" +
-                                (domain_ == nullptr
-                                     ? std::string("unknown")
-                                     : domain_->name) +
-                                " route=cuda_t_edge_linear");
                         }
                         ++linear_telemetry.host_derived_fallback;
-                    }
-                    else if (label != "__t_edge_boundary_l0")
-                    {
-                        const bool direct_source_exists =
-                            lookup_polynomial(label) != nullptr ||
-                            trace_.spilled_polynomials.contains(label);
-                        if (leaf_exact_ntt_supported &&
-                            try_materialize_direct_gpu_leaf(
-                                label,
-                                slot))
-                        {
-                            reset_cuda_t_edge_transient_leaf_state();
-                            return;
-                        }
-                        if (leaf_exact_ntt_supported &&
-                            direct_source_exists)
-                        {
-                            if (strict_cuda_leaf_route)
-                            {
-                                throw std::runtime_error(
-                                    "CUDA t_edge strict leaf route was selected but "
-                                    "direct leaf execution failed: label=" +
-                                    label +
-                                    " target_size=" + std::to_string(target_size_) +
-                                    " domain=" +
-                                    (domain_ == nullptr
-                                         ? std::string("unknown")
-                                         : domain_->name) +
-                                    " route=cuda_t_edge_direct_leaf");
-                            }
-                            ++linear_telemetry.direct_api_declined;
-                        }
-                        else if (!leaf_exact_ntt_supported)
-                        {
-                            ++linear_telemetry
-                                  .host_leaf_materialization_required;
-                        }
-                        ++linear_telemetry.host_leaf_fallback;
-                    }
-                    else if (!leaf_exact_ntt_supported)
-                    {
-                        ++linear_telemetry
-                              .host_leaf_materialization_required;
+                        materialize_host_leaf_to_gpu(label, slot);
+                        return;
                     }
 
-                    throw std::runtime_error(
-                        "CUDA t_edge leaf has no admitted GPU execution path: label=" + label +
-                        " target_size=" + std::to_string(target_size_) +
-                        " cache_slots=" + std::to_string(executor->cache_slot_count()) +
-                        " capacity_declines=" + std::to_string(linear_telemetry.fallback_capacity) +
-                        " unsupported_declines=" + std::to_string(linear_telemetry.fallback_unsupported) +
-                        " api_declines=" + std::to_string(linear_telemetry.fallback_api_declined));
+                    const bool direct_source_exists = lookup_polynomial(label) != nullptr || trace_.spilled_polynomials.contains(label);
+                    if (leaf_exact_ntt_supported && try_materialize_direct_gpu_leaf(label, slot))
+                    {
+                        reset_cuda_t_edge_transient_leaf_state();
+                        return;
+                    }
+                    if (!direct_source_exists)
+                        throw std::runtime_error("CUDA t_edge leaf has no registered source: " + label);
+
+                    if (leaf_exact_ntt_supported)
+                        ++linear_telemetry.direct_api_declined;
+                    else
+                        ++linear_telemetry.host_leaf_materialization_required;
+                    ++linear_telemetry.host_leaf_fallback;
+                    materialize_host_leaf_to_gpu(label, slot);
                 };
-
                 cuda_t_edge_transient_leaf_mode_ =
                     true;
 
@@ -9269,90 +8998,17 @@ namespace gatzk::protocol
 
                 if (cuda_t_edge_route)
                 {
-                    progress_note(
-                        "prove:quotient:t_edge:"
-                        "cuda_device_resident:start");
-
-                    cuda_t_edge_coefficients =
-                        materialize_cuda_t_edge_coefficients();
-
-                    progress_note(
-                        "prove:quotient:t_edge:"
-                        "cuda_device_resident:done");
+                    progress_note("prove:quotient:t_edge:cuda_device_resident:start");
+                    cuda_t_edge_coefficients = materialize_cuda_t_edge_coefficients();
+                    progress_note("prove:quotient:t_edge:cuda_device_resident:done");
                 }
-                else
+                else if (label_ != "t_edge")
                 {
-                    quotient_values.assign(
-                        target_size_,
-                        FieldElement::zero());
+                    quotient_values.assign(target_size_, FieldElement::zero());
                 }
                 // Warm the dependency cache before parallel point evaluation; after this the worker
                 // threads only read the cached coset vectors.
-                if (label_ == "t_edge" &&
-                    !cuda_t_edge_route)
-                {
-                    const auto prewarm_start = Clock::now();
-                    const auto dependency_labels = quotient_dependency_labels(context_, label_);
-                    std::vector<std::string> prewarm_labels;
-                    prewarm_labels.reserve(dependency_labels.size());
-                    for (const auto &dependency_label : dependency_labels)
-                    {
-                        if (append_t_edge_materializer_dependency(&prewarm_labels, dependency_label))
-                        {
-                            continue;
-                        }
-                        prewarm_labels.push_back(dependency_label);
-                    }
-                    progress_note("prove:quotient:t_edge:coset_prewarm:start");
-                    prewarm_coset_values(prewarm_labels);
-                    // Bind the evaluator's original dependency names after
-                    // their source columns are warm.  Derived edge names
-                    // resolve here to the same lazy, blinder-corrected coset
-                    // views used by the generic resolver, so the point loop
-                    // can follow direct pointers instead of reparsing
-                    // layer/head suffixes and challenge names at every point.
-                    seed_fast_coset_lookup(dependency_labels);
-                    require_t_edge_fast_coset_lookup(dependency_labels);
-                    edge_access_sequence_.clear();
-                    edge_access_plan_late_bind_count_ = 0;
-                    record_edge_access_sequence_ = true;
-                    try
-                    {
-                        (void)evaluate_at_index(0, shift_);
-                    }
-                    catch (...)
-                    {
-                        record_edge_access_sequence_ = false;
-                        edge_access_sequence_.clear();
-                        throw;
-                    }
-                    record_edge_access_sequence_ = false;
-                    if (edge_access_sequence_.empty())
-                    {
-                        throw std::runtime_error(
-                            "t_edge quotient access-plan is empty");
-                    }
-                    const auto null_access_count = static_cast<std::size_t>(
-                        std::count_if(
-                            edge_access_sequence_.begin(),
-                            edge_access_sequence_.end(),
-                            [](const TEdgeCosetAccess &access)
-                            { return access.values == nullptr; }));
-                    if (null_access_count != 0)
-                    {
-                        throw std::runtime_error(
-                            "t_edge quotient access-plan retained null derived fallbacks: " + std::to_string(null_access_count));
-                    }
-                    progress_note(
-                        "prove:quotient:t_edge:access_plan:entries=" + std::to_string(edge_access_sequence_.size()) + ":bound=" + std::to_string(edge_access_sequence_.size()) + ":late_bound=" + std::to_string(edge_access_plan_late_bind_count_) + ":null_derived_fallback=0");
-                    progress_note(
-                        "prove:quotient:t_edge:coset_prewarm:done:ms=" + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
-                    // The generic evaluator is the protocol source of truth. A
-                    // hand-unrolled route must reproduce evaluate_t_edge exactly
-                    // before it can enter the formal path; otherwise its
-                    // commitment polynomial could disagree with verifier claims.
-                }
-                else if (label_ == "t_FH")
+                if (label_ == "t_FH")
                 {
                     // The point evaluator runs up to 32 workers.  Letting those
                     // workers discover a cold FH dependency independently causes
@@ -9430,10 +9086,13 @@ namespace gatzk::protocol
                 const auto point_evaluation_start =
                     Clock::now();
 
-                if (!cuda_t_edge_route)
+                if (!cuda_t_edge_route && label_ == "t_edge")
                 {
-                    std::vector<FieldElement>
-                        quotient_zero_inverses;
+                    quotient_values = materialize_cpu_t_edge_quotient_values();
+                }
+                else if (!cuda_t_edge_route)
+                {
+                    std::vector<FieldElement> quotient_zero_inverses;
 
                     const auto boundary_one =
                         FieldElement::one();
@@ -10212,7 +9871,7 @@ namespace gatzk::protocol
 
             bool use_file_backed_coset_storage() const
             {
-                return target_size_ >= (std::size_t{1} << 17);
+                return label_ != "t_edge" && target_size_ >= (std::size_t{1} << 17);
             }
 
             std::size_t coset_byte_count(
@@ -10360,13 +10019,8 @@ namespace gatzk::protocol
                 // transform otherwise allocates two full half-size
                 // temporaries and then interleaves them into another full
                 // output vector.
-                if (label_ != "t_FH" ||
-                    target_size_ <
-                        (std::size_t{1} << 26) ||
-                    target_size_ < 2)
-                {
+                if (label_ != "t_FH" || target_size_ < (std::size_t{1} << 24) || target_size_ < 2)
                     return false;
-                }
 
                 const auto half_size =
                     target_size_ / 2;
@@ -11239,20 +10893,9 @@ namespace gatzk::protocol
                             1,
                             std::thread::hardware_concurrency());
 
-                    std::size_t worker_cap = 4;
-
-                    if (
-                        label_ == "t_edge" &&
-                        target_size_ <= (std::size_t{1} << 22) &&
-                        cpu_count >= 8)
-                    {
-                        worker_cap =
-                            std::min<std::size_t>(
-                                24,
-                                std::max<std::size_t>(
-                                    8,
-                                    cpu_count));
-                    }
+                    std::size_t worker_cap = label_ == "t_edge" && target_size_ >= (std::size_t{1} << 24) ? 1 : 4;
+                    if (label_ == "t_edge" && target_size_ <= (std::size_t{1} << 22) && cpu_count >= 8)
+                        worker_cap = std::min<std::size_t>(24, std::max<std::size_t>(8, cpu_count));
                     auto worker_count =
                         std::min<std::size_t>(
                             std::min<std::size_t>(
@@ -11362,6 +11005,272 @@ namespace gatzk::protocol
 
                 prewarm_range("base", unique_labels.begin(), derived_begin);
                 prewarm_range("derived", derived_begin, unique_labels.end());
+            }
+
+            void trim_t_edge_batch_state(const std::unordered_set<std::string> &keep)
+            {
+                fast_coset_lookup_.clear();
+                edge_access_sequence_.clear();
+                record_edge_access_sequence_ = false;
+                {
+                    std::lock_guard<std::mutex> lock(coset_cache_mutex_);
+                    for (auto it = coset_cache_.begin(); it != coset_cache_.end();)
+                    {
+                        if (!keep.contains(it->first))
+                            it = coset_cache_.erase(it);
+                        else
+                            ++it;
+                    }
+                    coset_aliases_.clear();
+                }
+                semantic_coset_groups_.clear();
+                semantic_coset_group_by_label_.clear();
+                in_memory_coset_bytes_.store(0, std::memory_order_relaxed);
+            }
+
+            std::vector<FieldElement> materialize_cpu_t_edge_quotient_values()
+            {
+                if (label_ != "t_edge" || edge_evaluation_plan_ == nullptr || domain_ == nullptr)
+                    throw std::runtime_error("bounded CPU t_edge route is missing its formal execution plan");
+
+                const auto program = build_t_edge_bound_program(context_, challenges_, trace_.external_evaluations, *edge_evaluation_plan_);
+                if (program.terms.empty() || program.accesses.empty() || program.maximum_stack_depth > kMaximumProgramStackDepth)
+                    throw std::runtime_error("bounded CPU t_edge program is empty or invalid");
+
+                const auto materialization_labels_for_access = [&](const std::string &label)
+                {
+                    std::vector<std::string> labels;
+                    if (label == "__t_edge_boundary_l0")
+                        return labels;
+                    if (!append_t_edge_materializer_dependency(&labels, label))
+                        labels.push_back(label);
+                    std::sort(labels.begin(), labels.end());
+                    labels.erase(std::unique(labels.begin(), labels.end()), labels.end());
+                    return labels;
+                };
+
+                std::size_t maximum_term_cosets = 0;
+                std::unordered_map<std::string, std::size_t> direct_frequency;
+                for (const auto &term : program.terms)
+                {
+                    std::unordered_set<std::string> term_cosets;
+                    std::unordered_set<std::string> term_direct;
+                    for (const auto access_index : term.required_accesses)
+                    {
+                        if (access_index >= program.accesses.size())
+                            throw std::runtime_error("bounded CPU t_edge access index overflow");
+                        const auto &label = program.accesses[access_index].label;
+                        for (const auto &source : materialization_labels_for_access(label))
+                            term_cosets.insert(source);
+                        if (label != "__t_edge_boundary_l0" && !is_edge_derived_coset_request(label))
+                            term_direct.insert(label);
+                    }
+                    maximum_term_cosets = std::max(maximum_term_cosets, term_cosets.size());
+                    for (const auto &label : term_direct)
+                        ++direct_frequency[label];
+                }
+                maximum_term_cosets = std::max<std::size_t>(1, maximum_term_cosets);
+
+                const auto one_coset_bytes = coset_byte_count(target_size_, "t_edge bounded coset");
+                const auto snapshot = util::read_effective_memory_snapshot();
+                const auto reserve = util::recommended_memory_reserve_bytes(snapshot, std::size_t{8} << 30, 1, 8);
+                const auto admission = util::admit_effective_memory(snapshot, 0, 0, reserve, 1, std::numeric_limits<std::size_t>::max());
+                if (one_coset_bytes == 0 || one_coset_bytes > std::numeric_limits<std::size_t>::max() / 4)
+                    throw std::runtime_error("bounded CPU t_edge coset size overflow");
+                const auto fixed_bytes = one_coset_bytes * 4;
+                if (admission.budget_bytes <= fixed_bytes)
+                    throw std::runtime_error("bounded CPU t_edge has no safe memory budget after quotient geometry");
+                const auto memory_cosets = (admission.budget_bytes - fixed_bytes) / one_coset_bytes;
+                const auto batch_coset_limit = std::min<std::size_t>(24, memory_cosets);
+                if (batch_coset_limit < maximum_term_cosets)
+                    throw std::runtime_error("bounded CPU t_edge cannot admit one formal term: required_cosets=" + std::to_string(maximum_term_cosets) +
+                                             " admitted_cosets=" + std::to_string(batch_coset_limit));
+
+                std::vector<std::pair<std::string, std::size_t>> ranked_direct(direct_frequency.begin(), direct_frequency.end());
+                std::sort(ranked_direct.begin(), ranked_direct.end(), [](const auto &lhs, const auto &rhs)
+                          { return lhs.second != rhs.second ? lhs.second > rhs.second : lhs.first < rhs.first; });
+                const auto persistent_limit = batch_coset_limit > maximum_term_cosets ? std::min<std::size_t>(4, batch_coset_limit - maximum_term_cosets) : 0;
+                std::unordered_set<std::string> persistent_labels;
+                for (std::size_t i = 0; i < std::min(persistent_limit, ranked_direct.size()); ++i)
+                    persistent_labels.insert(ranked_direct[i].first);
+
+                if (!persistent_labels.empty())
+                {
+                    std::vector<std::string> persistent(persistent_labels.begin(), persistent_labels.end());
+                    prewarm_coset_values(persistent);
+                    for (const auto &label : persistent)
+                        (void)coset_values_ptr(label);
+                    trim_t_edge_batch_state(persistent_labels);
+                }
+
+                auto boundary_polynomial = algebra::Polynomial::from_evaluations("__t_edge_boundary_l0", std::vector<FieldElement>{FieldElement::one()}, domain_);
+                auto boundary_coset = materialize_polynomial_coset(boundary_polynomial, "__t_edge_boundary_l0");
+                if (boundary_coset == nullptr || boundary_coset->size() != target_size_)
+                    throw std::runtime_error("bounded CPU t_edge boundary coset is invalid");
+
+                std::vector<FieldElement> quotient_values(target_size_, FieldElement::zero());
+                const auto process_batch = [&](std::size_t term_begin, std::size_t term_end)
+                {
+                    std::vector<std::string> prewarm_labels;
+                    std::unordered_set<std::string> prewarm_seen;
+                    std::vector<std::size_t> access_indices;
+                    std::unordered_set<std::size_t> access_seen;
+                    for (std::size_t term_index = term_begin; term_index < term_end; ++term_index)
+                    {
+                        for (const auto access_index : program.terms[term_index].required_accesses)
+                        {
+                            if (access_index >= program.accesses.size())
+                                throw std::runtime_error("bounded CPU t_edge batch access index overflow");
+                            if (access_seen.insert(access_index).second)
+                                access_indices.push_back(access_index);
+                            for (const auto &source : materialization_labels_for_access(program.accesses[access_index].label))
+                            {
+                                if (prewarm_seen.insert(source).second)
+                                    prewarm_labels.push_back(source);
+                            }
+                        }
+                    }
+                    prewarm_coset_values(prewarm_labels);
+
+                    std::vector<const QuotientCosetValues *> access_values(program.accesses.size(), nullptr);
+                    std::vector<QuotientCosetValuesPtr> access_owners;
+                    access_owners.reserve(access_indices.size());
+                    for (const auto access_index : access_indices)
+                    {
+                        const auto &access = program.accesses[access_index];
+                        if (access.label == "__t_edge_boundary_l0")
+                        {
+                            access_values[access_index] = boundary_coset.get();
+                            continue;
+                        }
+                        auto values = coset_values_ptr(access.label);
+                        if (values == nullptr || values->size() != target_size_)
+                            throw std::runtime_error("bounded CPU t_edge access has an invalid coset: " + access.label);
+                        access_values[access_index] = values.get();
+                        access_owners.push_back(std::move(values));
+                    }
+
+                    parallel_for_chunks_static(target_size_, std::size_t{1} << 14, 0, [&](std::size_t begin, std::size_t end)
+                                               {
+                        std::array<mcl::Fr, kMaximumProgramStackDepth> stack{};
+                        for (std::size_t point_index = begin; point_index < end; ++point_index)
+                        {
+                            const auto rotated_index = (point_index + rotation_step_) & (target_size_ - 1U);
+                            auto accumulator = quotient_values[point_index].native();
+                            for (std::size_t term_index = term_begin; term_index < term_end; ++term_index)
+                            {
+                                const auto &term = program.terms[term_index];
+                                if (term.instruction_begin > term.instruction_end || term.instruction_end > program.instructions.size())
+                                    throw std::runtime_error("bounded CPU t_edge instruction range is invalid");
+                                std::size_t depth = 0;
+                                for (std::size_t instruction_index = term.instruction_begin; instruction_index < term.instruction_end; ++instruction_index)
+                                {
+                                    const auto &instruction = program.instructions[instruction_index];
+                                    switch (instruction.opcode)
+                                    {
+                                    case TEdgeProgramOpcode::LoadAccess:
+                                    {
+                                        if (instruction.operand >= program.accesses.size() || depth >= stack.size())
+                                            throw std::runtime_error("bounded CPU t_edge load-access overflow");
+                                        const auto *values = access_values[instruction.operand];
+                                        if (values == nullptr)
+                                            throw std::runtime_error("bounded CPU t_edge load-access is unbound");
+                                        const auto value_index = program.accesses[instruction.operand].rotated ? rotated_index : point_index;
+                                        stack[depth++] = (*values)[value_index].native();
+                                        break;
+                                    }
+                                    case TEdgeProgramOpcode::LoadConstant:
+                                        if (instruction.operand >= program.constants.size() || depth >= stack.size())
+                                            throw std::runtime_error("bounded CPU t_edge load-constant overflow");
+                                        stack[depth++] = program.constants[instruction.operand].native();
+                                        break;
+                                    case TEdgeProgramOpcode::Add:
+                                    case TEdgeProgramOpcode::Subtract:
+                                    case TEdgeProgramOpcode::Multiply:
+                                    {
+                                        if (depth < 2)
+                                            throw std::runtime_error("bounded CPU t_edge binary stack underflow");
+                                        mcl::Fr value;
+                                        if (instruction.opcode == TEdgeProgramOpcode::Add)
+                                            mcl::Fr::add(value, stack[depth - 2], stack[depth - 1]);
+                                        else if (instruction.opcode == TEdgeProgramOpcode::Subtract)
+                                            mcl::Fr::sub(value, stack[depth - 2], stack[depth - 1]);
+                                        else
+                                            mcl::Fr::mul(value, stack[depth - 2], stack[depth - 1]);
+                                        stack[depth - 2] = value;
+                                        --depth;
+                                        break;
+                                    }
+                                    case TEdgeProgramOpcode::Negate:
+                                    {
+                                        if (depth == 0)
+                                            throw std::runtime_error("bounded CPU t_edge negate stack underflow");
+                                        mcl::Fr zero;
+                                        zero.clear();
+                                        mcl::Fr::sub(stack[depth - 1], zero, stack[depth - 1]);
+                                        break;
+                                    }
+                                    }
+                                }
+                                if (depth != 1)
+                                    throw std::runtime_error("bounded CPU t_edge term did not reduce to one value");
+                                mcl::Fr scaled;
+                                mcl::Fr::mul(scaled, stack[0], term.alpha_scale.native());
+                                mcl::Fr::add(accumulator, accumulator, scaled);
+                            }
+                            quotient_values[point_index] = FieldElement::from_native(accumulator);
+                        } });
+
+                    access_owners.clear();
+                    trim_t_edge_batch_state(persistent_labels);
+                };
+
+                std::size_t batch_count = 0;
+                for (std::size_t term_begin = 0; term_begin < program.terms.size();)
+                {
+                    std::unordered_set<std::string> batch_materialization = persistent_labels;
+                    std::size_t term_end = term_begin;
+                    while (term_end < program.terms.size() && term_end - term_begin < 64)
+                    {
+                        auto candidate = batch_materialization;
+                        for (const auto access_index : program.terms[term_end].required_accesses)
+                        {
+                            if (access_index >= program.accesses.size())
+                                throw std::runtime_error("bounded CPU t_edge batch planner access overflow");
+                            for (const auto &source : materialization_labels_for_access(program.accesses[access_index].label))
+                                candidate.insert(source);
+                        }
+                        if (candidate.size() > batch_coset_limit && term_end != term_begin)
+                            break;
+                        if (candidate.size() > batch_coset_limit)
+                            throw std::runtime_error("bounded CPU t_edge term exceeds admitted coset cache");
+                        batch_materialization.swap(candidate);
+                        ++term_end;
+                    }
+                    process_batch(term_begin, term_end);
+                    ++batch_count;
+                    term_begin = term_end;
+                }
+
+                const auto root = FieldElement::root_of_unity(target_size_);
+                const auto zero_step = root.pow(domain_->size);
+                auto zero_power = shift_.pow(domain_->size);
+                std::vector<FieldElement> zero_inverses(rotation_step_);
+                for (std::size_t residue = 0; residue < rotation_step_; ++residue)
+                {
+                    zero_inverses[residue] = (zero_power - FieldElement::one()).inv();
+                    zero_power *= zero_step;
+                }
+                parallel_for_chunks_static(target_size_, std::size_t{1} << 14, 0, [&](std::size_t begin, std::size_t end)
+                                           {
+                    for (std::size_t i = begin; i < end; ++i)
+                        quotient_values[i] *= zero_inverses[i % zero_inverses.size()]; });
+
+                progress_note("prove:quotient:t_edge:bounded_cpu:term_batches=" + std::to_string(batch_count) +
+                              ":cache_cosets=" + std::to_string(batch_coset_limit) +
+                              ":persistent_cosets=" + std::to_string(persistent_labels.size()) +
+                              ":max_term_cosets=" + std::to_string(maximum_term_cosets));
+                return quotient_values;
             }
 
             void seed_canonical_coset_aliases(const std::vector<std::string> &wave)
@@ -12169,18 +12078,10 @@ namespace gatzk::protocol
                 {
                     return nullptr;
                 }
-                const bool use_lazy_blinder_view =
-                    label_ == "t_FH" && target_size_ >= (std::size_t{1} << 26);
+                const bool use_lazy_blinder_view = label_ == "t_FH";
                 auto values = use_lazy_blinder_view
-                                  ? retain_lazy_coset_with_blinder_correction(
-                                        std::move(base_values),
-                                        correction,
-                                        requested_name)
-                                  : retain_coset_with_blinder_correction(
-                                        std::move(base_values),
-                                        std::move(semantic_values),
-                                        correction,
-                                        requested_name);
+                                  ? retain_lazy_coset_with_blinder_correction(std::move(base_values), correction, requested_name)
+                                  : retain_coset_with_blinder_correction(std::move(base_values), std::move(semantic_values), correction, requested_name);
                 progress_note(
                     "prove:quotient:t_FH:spilled_lazy:" + requested_name + ":done");
                 return values;

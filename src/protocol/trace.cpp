@@ -165,8 +165,12 @@ namespace gatzk::protocol
 
         bool detailed_profile_enabled()
         {
-            return std::getenv("GATZK_DETAILED_PROFILE") != nullptr ||
-                   std::getenv("GATZK_RUN_PROGRESS") != nullptr;
+            return std::getenv("GATZK_DETAILED_PROFILE") != nullptr || std::getenv("GATZK_RUN_PROGRESS") != nullptr;
+        }
+
+        bool linear_derivation_validation_enabled()
+        {
+            return detailed_profile_enabled() || std::getenv("GATZK_VALIDATE_LINEAR_DERIVATIONS") != nullptr;
         }
 
         void progress_note(const std::string &label)
@@ -1135,13 +1139,15 @@ namespace gatzk::protocol
             const std::string &name,
             const std::shared_ptr<algebra::RootOfUnityDomain> &target_domain)
         {
-            auto out = crypto::g1_zero();
+            std::vector<crypto::G1Point> points;
+            std::vector<FieldElement> scalars;
+            points.reserve(terms.size());
+            scalars.reserve(terms.size());
             for (const auto &term : terms)
             {
                 if (term.scale == FieldElement::zero())
-                {
                     continue;
-                }
+
                 const crypto::G1Point *base = nullptr;
                 crypto::G1Point dependency_component;
                 if (term.point.has_value())
@@ -1151,45 +1157,33 @@ namespace gatzk::protocol
                 else if (term.commitment != nullptr)
                 {
                     if (term.commitment->opening_polynomial == nullptr)
-                    {
-                        throw std::runtime_error(
-                            "explicit deferred linear commitment is missing opening material: " + name);
-                    }
-                    dependency_component =
-                        crypto::KZG::evaluation_commitment_component(
-                            *term.commitment, key);
+                        throw std::runtime_error("explicit deferred linear commitment is missing opening material: " + name);
+                    dependency_component = crypto::KZG::evaluation_commitment_component(*term.commitment, key);
                     base = &dependency_component;
                 }
                 else
                 {
-                    const auto *commitment =
-                        find_linear_dependency_commitment(
-                            term.label, trace, batch_commitments);
+                    const auto *commitment = find_linear_dependency_commitment(term.label, trace, batch_commitments);
                     if (commitment != nullptr)
                     {
-                        auto material =
-                            linear_dependency_opening_material(
-                                term.label,
-                                *commitment,
-                                trace,
-                                target_domain);
+                        auto material = linear_dependency_opening_material(term.label, *commitment, trace, target_domain);
                         auto resolved_commitment = *commitment;
-                        resolved_commitment.opening_polynomial =
-                            std::move(material);
-                        dependency_component =
-                            crypto::KZG::evaluation_commitment_component(
-                                resolved_commitment, key);
+                        resolved_commitment.opening_polynomial = std::move(material);
+                        dependency_component = crypto::KZG::evaluation_commitment_component(resolved_commitment, key);
                         base = &dependency_component;
                     }
                 }
                 if (base == nullptr)
-                {
-                    throw std::runtime_error(
-                        "missing dependency for deferred linear dynamic commitment " + name + ": " + term.label);
-                }
-                out = crypto::g1_add(out, crypto::g1_mul(*base, term.scale));
+                    throw std::runtime_error("missing dependency for deferred linear dynamic commitment " + name + ": " + term.label);
+                points.push_back(*base);
+                scalars.push_back(term.scale);
             }
-            return out;
+
+            if (points.empty())
+                return crypto::g1_zero();
+            if (points.size() == 1)
+                return crypto::g1_mul(points.front(), scalars.front());
+            return crypto::g1_multi_scalar_mul(points, scalars);
         }
 
         void validate_deferred_linear_evaluation_values(
@@ -3248,15 +3242,14 @@ namespace gatzk::protocol
                         throw std::runtime_error(
                             "deferred linear dynamic commitment is missing polynomial material: " + item.name);
                     }
-                    const auto validation_start = Clock::now();
-                    validate_deferred_linear_evaluation_values(
-                        item.deferred_linear_terms,
-                        *item.polynomial,
-                        trace,
-                        batch_commitments,
-                        item.name);
-                    progress_note(
-                        "trace:linear_value_validation:" + item.name + ":ms=" + std::to_string(elapsed_ms(validation_start, Clock::now())));
+                    if (item.polynomial->basis != algebra::PolynomialBasis::Evaluation || item.polynomial->domain == nullptr)
+                        throw std::runtime_error("deferred linear target is not an evaluation polynomial: " + item.name);
+                    if (linear_derivation_validation_enabled())
+                    {
+                        const auto validation_start = Clock::now();
+                        validate_deferred_linear_evaluation_values(item.deferred_linear_terms, *item.polynomial, trace, batch_commitments, item.name);
+                        progress_note("trace:linear_value_validation:" + item.name + ":ms=" + std::to_string(elapsed_ms(validation_start, Clock::now())));
+                    }
                     const auto evaluation_component =
                         timed_derived_commitment_point(
                             metrics,

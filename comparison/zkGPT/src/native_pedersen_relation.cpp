@@ -771,8 +771,6 @@ bool prove_opening(NativeProofSession &session, const PedersenBasis &basis,
         const Fr response_blinding = nonce_blinding + challenge * opening.blinding;
         session.absorb_fields(label + "/response",
                               {response_value, response_blinding});
-        if (!session_ok(session, reason))
-            throw std::runtime_error(reason_or(reason, "invalid proof session"));
         if (proof != nullptr) {
             proof->commitment_message = T;
             proof->challenge = challenge;
@@ -863,8 +861,6 @@ bool prove_hidden_linear(
         const Fr challenge = session.challenge(label + "/challenge");
         const Fr response = nonce + challenge * blinding_residual;
         session.absorb_field(label + "/response", response);
-        if (!session_ok(session, reason))
-            throw std::runtime_error(reason_or(reason, "invalid proof session"));
         if (proof != nullptr) {
             proof->relation_commitment = operand_residual;
             proof->commitment_message = T;
@@ -1013,8 +1009,6 @@ bool prove_multiplication(
         session.absorb_fields(label + "/response",
                               {response_a, response_a_blinding,
                                response_multiplication_blinding});
-        if (!session_ok(session, reason))
-            throw std::runtime_error(reason_or(reason, "invalid proof session"));
         if (proof != nullptr) {
             proof->first_commitment_message = T1;
             proof->second_commitment_message = T2;

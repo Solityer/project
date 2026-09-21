@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <mutex>
 #include <sstream>
@@ -260,13 +261,13 @@ std::vector<Int> flatten_model(const Model &model, const QuantConfig &quant) {
         for (double value : tensor.values) result.push_back(quantize_model_value(value, scale));
     };
     for (std::size_t layer = 0; layer < 2; ++layer) {
-        for (std::size_t head = 0; head < 8; ++head) {
+        for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
             append_tensor(model.tensor(hidden_tensor_name(layer, head, "seq/kernel")), quant.s_w_hidden[layer][head]);
             append_tensor(model.tensor(hidden_tensor_name(layer, head, "attn_src/kernel")), quant.s_a_src_hidden[layer][head]);
             append_tensor(model.tensor(hidden_tensor_name(layer, head, "attn_dst/kernel")), quant.s_a_dst_hidden[layer][head]);
         }
     }
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         append_tensor(model.tensor(output_tensor_name(head, "seq/kernel")), quant.s_w_output[head]);
         append_tensor(model.tensor(output_tensor_name(head, "attn_src/kernel")), quant.s_a_src_output[head]);
         append_tensor(model.tensor(output_tensor_name(head, "attn_dst/kernel")), quant.s_a_dst_output[head]);
@@ -275,17 +276,18 @@ std::vector<Int> flatten_model(const Model &model, const QuantConfig &quant) {
     return result;
 }
 
-std::vector<std::string> canonical_model_tensor_names() {
+std::vector<std::string> canonical_model_tensor_names(std::size_t hidden_heads,
+                                                      std::size_t output_heads) {
     std::vector<std::string> names;
-    names.reserve(56);
+    names.reserve(2 * hidden_heads * 3 + output_heads * 4);
     for (std::size_t layer = 0; layer < 2; ++layer) {
-        for (std::size_t head = 0; head < 8; ++head) {
+        for (std::size_t head = 0; head < hidden_heads; ++head) {
             names.push_back(hidden_tensor_name(layer, head, "seq/kernel"));
             names.push_back(hidden_tensor_name(layer, head, "attn_src/kernel"));
             names.push_back(hidden_tensor_name(layer, head, "attn_dst/kernel"));
         }
     }
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t head = 0; head < output_heads; ++head) {
         names.push_back(output_tensor_name(head, "seq/kernel"));
         names.push_back(output_tensor_name(head, "attn_src/kernel"));
         names.push_back(output_tensor_name(head, "attn_dst/kernel"));
@@ -304,7 +306,8 @@ CanonicalModelShape canonical_model_shape(const Model &model) {
     result.classes = model.classes();
     result.input_dim = model.input_dim();
     result.hidden_dim = model.hidden_dim();
-    const std::vector<std::string> names = canonical_model_tensor_names();
+    const std::vector<std::string> names = canonical_model_tensor_names(
+        model.hidden_heads(), model.manifest.output_heads);
     result.tensors.reserve(names.size());
     for (const std::string &name : names)
         result.tensors.push_back({name, model.tensor(name).shape});
@@ -329,6 +332,9 @@ Model make_shape_only_model(const CanonicalModelShape &shape) {
     model.manifest.label_format = "single_label";
     model.manifest.output_average_rule = "per_head_bias_then_arithmetic_mean";
     model.manifest.quantization_scale_chain = "gat_l3_scale_chain";
+    const std::size_t hidden_tensor_count = shape.tensor_count - shape.output_heads * 4;
+    const std::size_t hidden_heads =
+        hidden_tensor_count / ((shape.layers - 1) * 3);
     for (const CanonicalTensorShape &entry : shape.tensors) {
         Tensor tensor;
         tensor.name = entry.name;
@@ -347,13 +353,21 @@ bool canonical_model_shape_valid(const CanonicalModelShape &shape,
         return false;
     };
     try {
-        if (shape.model_arch_id.empty() || shape.tensor_count != 56 ||
-            shape.layers != 3 || shape.output_heads != 2 ||
+        if (shape.model_arch_id.empty() || shape.tensor_count < 10 ||
+            shape.layers != 3 || shape.output_heads == 0 ||
             shape.classes == 0 || shape.input_dim == 0 || shape.hidden_dim == 0 ||
             shape.tensors.size() != shape.tensor_count) {
             return fail("canonical model shape profile header is invalid");
         }
-        const std::vector<std::string> names = canonical_model_tensor_names();
+        if (shape.tensor_count < shape.output_heads * 4 ||
+            (shape.tensor_count - shape.output_heads * 4) % ((shape.layers - 1) * 3) != 0) {
+            return fail("canonical model shape head profile is invalid");
+        }
+        const std::size_t hidden_heads =
+            (shape.tensor_count - shape.output_heads * 4) / ((shape.layers - 1) * 3);
+        if (hidden_heads == 0) return fail("canonical model shape has no hidden heads");
+        const std::vector<std::string> names = canonical_model_tensor_names(
+            hidden_heads, shape.output_heads);
         if (names.size() != shape.tensors.size())
             return fail("canonical model shape profile count is invalid");
         std::size_t total_elements = 0;
@@ -536,13 +550,13 @@ void append_canonical_model_encoding(std::string &out, const Model &model,
         }
     };
     for (std::size_t layer = 0; layer < 2; ++layer) {
-        for (std::size_t head = 0; head < 8; ++head) {
+        for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
             append_tensor(model.tensor(hidden_tensor_name(layer, head, "seq/kernel")), quant.s_w_hidden[layer][head]);
             append_tensor(model.tensor(hidden_tensor_name(layer, head, "attn_src/kernel")), quant.s_a_src_hidden[layer][head]);
             append_tensor(model.tensor(hidden_tensor_name(layer, head, "attn_dst/kernel")), quant.s_a_dst_hidden[layer][head]);
         }
     }
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         append_tensor(model.tensor(output_tensor_name(head, "seq/kernel")), quant.s_w_output[head]);
         append_tensor(model.tensor(output_tensor_name(head, "attn_src/kernel")), quant.s_a_src_output[head]);
         append_tensor(model.tensor(output_tensor_name(head, "attn_dst/kernel")), quant.s_a_dst_output[head]);
@@ -572,13 +586,13 @@ std::string canonical_bounds_digest(const Model &model, const QuantConfig &quant
         append_int(encoded, max_abs);
     };
     for (std::size_t layer = 0; layer < 2; ++layer) {
-        for (std::size_t head = 0; head < 8; ++head) {
+        for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
             append_tensor(model.tensor(hidden_tensor_name(layer, head, "seq/kernel")), quant.s_w_hidden[layer][head]);
             append_tensor(model.tensor(hidden_tensor_name(layer, head, "attn_src/kernel")), quant.s_a_src_hidden[layer][head]);
             append_tensor(model.tensor(hidden_tensor_name(layer, head, "attn_dst/kernel")), quant.s_a_dst_hidden[layer][head]);
         }
     }
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         append_tensor(model.tensor(output_tensor_name(head, "seq/kernel")), quant.s_w_output[head]);
         append_tensor(model.tensor(output_tensor_name(head, "attn_src/kernel")), quant.s_a_src_output[head]);
         append_tensor(model.tensor(output_tensor_name(head, "attn_dst/kernel")), quant.s_a_dst_output[head]);
@@ -839,10 +853,10 @@ std::size_t canonical_aux_size(const Graph &graph, const Model &model) {
     const std::size_t classes = model.classes();
     std::size_t result = checked_mul(graph.num_nodes, model.input_dim(), "canonical input trace coordinates");
     for (std::size_t output_dim : {hidden0, hidden1}) {
-        result = checked_add(result, checked_mul(graph.num_nodes, checked_mul(output_dim, 8, "canonical concat width"), "canonical concat coordinates"), "canonical concat coordinates");
-        for (std::size_t head = 0; head < 8; ++head) result = checked_add(result, canonical_attention_aux_size(graph, output_dim), "canonical hidden attention coordinates");
+        result = checked_add(result, checked_mul(graph.num_nodes, checked_mul(output_dim, model.hidden_heads(), "canonical concat width"), "canonical concat coordinates"), "canonical concat coordinates");
+        for (std::size_t head = 0; head < model.hidden_heads(); ++head) result = checked_add(result, canonical_attention_aux_size(graph, output_dim), "canonical hidden attention coordinates");
     }
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         result = checked_add(result, canonical_attention_aux_size(graph, classes), "canonical output attention coordinates");
         result = checked_add(result, classes, "canonical output bias coordinates");
         const std::size_t output_coordinates = checked_mul(graph.num_nodes, classes, "canonical output coordinates");
@@ -878,8 +892,8 @@ QueryCounts canonical_query_counts(const Graph &graph, const Model &model) {
         result.range = checked_add(result.range, checked_mul(coordinates, 4, "canonical range queries"), "canonical range queries");
         result.range = checked_add(result.range, checked_mul(coordinates, 4, "canonical division queries"), "canonical division queries");
     };
-    for (std::size_t output_dim : {hidden0, hidden1}) for (std::size_t head = 0; head < 8; ++head) add_attention(output_dim, true);
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t output_dim : {hidden0, hidden1}) for (std::size_t head = 0; head < model.hidden_heads(); ++head) add_attention(output_dim, true);
+    for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         add_attention(classes, false);
         const std::size_t coordinates = checked_mul(graph.num_nodes, classes, "canonical output query coordinates");
         result.range = checked_add(result.range, checked_mul(coordinates, 4, "canonical alignment queries"), "canonical alignment queries");
@@ -1017,20 +1031,20 @@ TraceCoordinates make_trace_coordinates(const Graph &graph, const Model &model,
     for (std::size_t layer = 0; layer < 2; ++layer) {
         const std::size_t output_dim = model.tensor(hidden_tensor_name(layer, 0, "seq/kernel")).shape.dims.at(2);
         result.hidden_concat[layer] = cursor;
-        cursor = checked_add(cursor, checked_mul(graph.num_nodes, checked_mul(output_dim, 8, "concat width"), "concat coordinates"), "trace coordinate cursor");
-        result.hidden[layer].reserve(8);
+        cursor = checked_add(cursor, checked_mul(graph.num_nodes, checked_mul(output_dim, model.hidden_heads(), "concat width"), "concat coordinates"), "trace coordinate cursor");
+        result.hidden[layer].reserve(model.hidden_heads());
         const std::size_t input_dim = model.tensor(hidden_tensor_name(layer, 0, "seq/kernel")).shape.dims.at(1);
-        for (std::size_t head = 0; head < 8; ++head) result.hidden[layer].push_back(assign_attention_coordinates(cursor, graph, input_dim, output_dim));
+        for (std::size_t head = 0; head < model.hidden_heads(); ++head) result.hidden[layer].push_back(assign_attention_coordinates(cursor, graph, input_dim, output_dim));
     }
-    result.output.resize(2);
-    result.output_bias.resize(2);
-    result.output_aggregate.resize(2);
-    result.output_aligned.resize(2);
-    result.output_logits.resize(2);
-    result.output_alignment_divisions.resize(2);
+    result.output.resize(model.manifest.output_heads);
+    result.output_bias.resize(model.manifest.output_heads);
+    result.output_aggregate.resize(model.manifest.output_heads);
+    result.output_aligned.resize(model.manifest.output_heads);
+    result.output_logits.resize(model.manifest.output_heads);
+    result.output_alignment_divisions.resize(model.manifest.output_heads);
     const std::size_t classes = model.classes();
     const std::size_t output_coordinates = checked_mul(graph.num_nodes, classes, "output coordinates");
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         const std::size_t input_dim = model.tensor(output_tensor_name(head, "seq/kernel")).shape.dims.at(1);
         result.output[head] = assign_attention_coordinates(cursor, graph, input_dim, classes);
         result.output_bias[head] = cursor;
@@ -1699,7 +1713,7 @@ GatCircuitPlan build_virtual_sparse_plan(const Graph &graph,
         make_trace_coordinates(graph, model, plan.input_layout);
     const std::size_t classes = model.classes();
     std::vector<SparseGkrRelationSpec> sparse_specs;
-    sparse_specs.reserve(3 * (2 * 8 + 2) + 5);
+    sparse_specs.reserve(3 * (2 * model.hidden_heads() + model.manifest.output_heads) + 5);
     auto add_spec = [&](const std::string &relation_id,
                         const std::string &family_id,
                         SparseGkrRelationKind kind, std::size_t items,
@@ -1825,7 +1839,7 @@ GatCircuitPlan build_virtual_sparse_plan(const Graph &graph,
         const std::size_t lhs = layer == 0
             ? plan.input_layout.segments[0].offset
             : coordinates.hidden_concat[layer - 1];
-        for (std::size_t head = 0; head < 8; ++head) {
+        for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
             const std::string family = hidden_family(layer, head);
             add_fconn(family + "/projection", graph.num_nodes, inner, dim,
                       lhs, virtual_weight_offset,
@@ -1868,7 +1882,7 @@ GatCircuitPlan build_virtual_sparse_plan(const Graph &graph,
                       "recovered=SignedRoundDiv(...)"});
         }
     }
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         const std::string family = output_family(head);
         const std::size_t dim = classes;
         const std::size_t inner = model.tensor(
@@ -2599,7 +2613,7 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
         const std::size_t output_dim = layer_id == 0 ? hidden0_dim : hidden1_dim;
         const std::size_t input_dim = model.tensor(hidden_tensor_name(layer_id, 0, "seq/kernel")).shape.dims.at(1);
         const std::size_t projection_coordinates = checked_mul(graph.num_nodes, output_dim, "hidden projection coordinates");
-        for (std::size_t head = 0; head < 8; ++head) {
+        for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
             const AttentionCoordinates &a = coordinates.hidden[layer_id][head];
             const std::string family = hidden_family(layer_id, head);
             const std::size_t seq_w = w_cursor;
@@ -2730,14 +2744,14 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
             append_checkpoint(plan, "activation.hidden/" + family, "activation.hidden", "Aux", projection_coordinates,
                               a.activated, "Aux[row_major_exact[node,col]]");
         }
-        const std::size_t concat_coordinates = checked_mul(graph.num_nodes, checked_mul(output_dim, 8, "concat width"), "concat coordinates");
+        const std::size_t concat_coordinates = checked_mul(graph.num_nodes, checked_mul(output_dim, model.hidden_heads(), "concat width"), "concat coordinates");
         std::vector<ExplicitUnaryGate> concat_unary;
         concat_unary.reserve(concat_coordinates);
         for (std::size_t node = 0; node < graph.num_nodes; ++node) {
-            for (std::size_t head = 0; head < 8; ++head) {
+            for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
                 const AttentionCoordinates &a = coordinates.hidden[layer_id][head];
                 for (std::size_t col = 0; col < output_dim; ++col) {
-                    const std::size_t output_index = node * output_dim * 8 + head * output_dim + col;
+                    const std::size_t output_index = node * output_dim * model.hidden_heads() + head * output_dim + col;
                     concat_unary.push_back({output_index, a.activated + node * output_dim + col, 0, 1});
                 }
             }
@@ -2747,7 +2761,7 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
                           coordinates.hidden_concat[layer_id], "Aux[row_major_exact[node,head,col]]");
     }
 
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         const std::string family = output_family(head);
         const AttentionCoordinates &a = coordinates.output[head];
         const std::size_t projection_coordinates = checked_mul(graph.num_nodes, classes, "output projection coordinates");
@@ -2900,13 +2914,25 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
                           coordinates.output_logits[head], "Aux[row_major_exact[node,col]]");
     }
     const std::size_t output_coordinates = checked_mul(graph.num_nodes, classes, "final output coordinates");
-    std::vector<ExplicitBinaryGate> head_sum_binary;
-    head_sum_binary.reserve(output_coordinates);
-    for (std::size_t index = 0; index < output_coordinates; ++index) {
-        head_sum_binary.push_back({index, coordinates.output_logits[0] + index,
-                                   coordinates.output_logits[1] + index, 0, 1});
+    if (model.manifest.output_heads == 1) {
+        std::vector<ExplicitUnaryGate> head_sum_unary;
+        head_sum_unary.reserve(output_coordinates);
+        for (std::size_t index = 0; index < output_coordinates; ++index)
+            head_sum_unary.push_back({index, coordinates.output_logits[0] + index, 0, 1});
+        append_explicit_layer(plan, layerType::ADD_BIAS,
+                              std::max<std::size_t>(1, output_coordinates),
+                              head_sum_unary, {}, true);
+    } else {
+        std::vector<ExplicitBinaryGate> head_sum_binary;
+        head_sum_binary.reserve(output_coordinates);
+        for (std::size_t index = 0; index < output_coordinates; ++index) {
+            head_sum_binary.push_back({index, coordinates.output_logits[0] + index,
+                                       coordinates.output_logits[1] + index, 0, 1});
+        }
+        append_explicit_layer(plan, layerType::ADD_BIAS,
+                              std::max<std::size_t>(1, output_coordinates), {},
+                              head_sum_binary, true);
     }
-    append_explicit_layer(plan, layerType::ADD_BIAS, std::max<std::size_t>(1, output_coordinates), {}, head_sum_binary, true);
     append_checkpoint(plan, "output/head_sum", "output.public_logits", "Aux", output_coordinates,
                       coordinates.head_sum, "Aux[row_major_exact[node,class]]");
     std::vector<ExplicitUnaryGate> average_unary;
@@ -2986,7 +3012,7 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
         const std::size_t output_dim =
             model.tensor(hidden_tensor_name(layer_id, 0, "seq/kernel"))
                 .shape.dims.at(2);
-        for (std::size_t head = 0; head < 8; ++head) {
+        for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
             const AttentionCoordinates &a = coordinates.hidden[layer_id][head];
             add_attention_residuals(relation_builder, graph, incoming, a, true,
                                     quant);
@@ -2994,12 +3020,12 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
                                              layer_id, head, quant);
         }
         for (std::size_t node = 0; node < graph.num_nodes; ++node) {
-            for (std::size_t head = 0; head < 8; ++head) {
+            for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
                 const AttentionCoordinates &a = coordinates.hidden[layer_id][head];
                 for (std::size_t col = 0; col < output_dim; ++col) {
                     const std::size_t output_index =
                         coordinates.hidden_concat[layer_id] +
-                        node * output_dim * 8 + head * output_dim + col;
+                        node * output_dim * model.hidden_heads() + head * output_dim + col;
                     const std::size_t source =
                         a.activated + node * output_dim + col;
                     relation_builder.add_residual(
@@ -3009,16 +3035,16 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
         }
     }
 
-    std::array<std::size_t, 2> output_bias_offsets{{0, 0}};
+    std::vector<std::size_t> output_bias_offsets(model.manifest.output_heads, 0);
     for (const CheckpointDescriptor &checkpoint : plan.checkpoints) {
-        for (std::size_t head = 0; head < 2; ++head) {
+        for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
             const std::string expected =
                 "output/bias/output/head" + std::to_string(head);
             if (checkpoint.id == expected)
                 output_bias_offsets[head] = checkpoint.coordinate_offset;
         }
     }
-    for (std::size_t head = 0; head < 2; ++head) {
+    for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         const AttentionCoordinates &a = coordinates.output[head];
         const std::size_t output_coordinates =
             checked_mul(graph.num_nodes, classes, "output relation coordinates");
@@ -3044,10 +3070,12 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
         }
     }
     for (std::size_t index = 0; index < public_output_coordinates; ++index) {
-        relation_builder.add_residual(
-            {{coordinates.head_sum + index, -1},
-             {coordinates.output_logits[0] + index, 1},
-             {coordinates.output_logits[1] + index, 1}}, {});
+        std::vector<LinearTerm> average_terms;
+        average_terms.reserve(model.manifest.output_heads + 1);
+        average_terms.emplace_back(coordinates.head_sum + index, -1);
+        for (std::size_t head = 0; head < model.manifest.output_heads; ++head)
+            average_terms.emplace_back(coordinates.output_logits[head] + index, 1);
+        relation_builder.add_residual(std::move(average_terms), {});
         add_division_residuals(
             relation_builder, coordinates.final_average_divisions + index * 9,
             coordinates.final_logits + index,
@@ -6341,6 +6369,8 @@ GatCapacityReport inspect_gat_capacity(const Graph &graph, const Model &model,
         const std::size_t h1 = model.tensor(
             hidden_tensor_name(1, 0, "seq/kernel")).shape.dims.at(2);
         const std::size_t classes = model.classes();
+        const std::size_t hidden_heads = model.hidden_heads();
+        const std::size_t output_heads = model.manifest.output_heads;
         const auto mul = [](std::size_t a, std::size_t b, const char *what) {
             return checked_mul(a, b, what);
         };
@@ -6365,15 +6395,15 @@ GatCapacityReport inspect_gat_capacity(const Graph &graph, const Model &model,
             return add(result, mul(5, mul(nodes, dim, "capacity aggregation coordinates"), "capacity aggregation stages"), "capacity stage gates");
         };
         const auto concat_gates = [&](std::size_t dim) {
-            return mul(2, mul(nodes, mul(dim, 8, "capacity concat width"), "capacity concat coordinates"), "capacity concat gates");
+            return mul(2, mul(nodes, mul(dim, hidden_heads, "capacity concat width"), "capacity concat coordinates"), "capacity concat gates");
         };
         std::size_t explicit_gates = 0;
         for (std::size_t dim : {h0, h1}) {
-            explicit_gates = add(explicit_gates, mul(8, stage_gates(dim), "capacity hidden stages"), "capacity explicit gates");
-            explicit_gates = add(explicit_gates, mul(8, attention_relation(dim), "capacity hidden sparse relations"), "capacity explicit gates");
+            explicit_gates = add(explicit_gates, mul(hidden_heads, stage_gates(dim), "capacity hidden stages"), "capacity explicit gates");
+            explicit_gates = add(explicit_gates, mul(hidden_heads, attention_relation(dim), "capacity hidden sparse relations"), "capacity explicit gates");
             explicit_gates = add(explicit_gates, concat_gates(dim), "capacity concat gates");
         }
-        explicit_gates = add(explicit_gates, mul(2, stage_gates(classes), "capacity output stages"), "capacity explicit gates");
+        explicit_gates = add(explicit_gates, mul(output_heads, stage_gates(classes), "capacity output stages"), "capacity explicit gates");
         // Output heads have the same sparse arithmetic plus recovery, output
         // alignment, bias and logits equations (the latter are bounded by
         // 25 gates per output coordinate).
@@ -6381,14 +6411,14 @@ GatCapacityReport inspect_gat_capacity(const Graph &graph, const Model &model,
         std::size_t output_head = attention_relation(classes);
         output_head = add(output_head, mul(20, output_coordinates, "capacity output SignedRoundDiv"), "capacity output relations");
         output_head = add(output_head, mul(25, output_coordinates, "capacity output equations"), "capacity output relations");
-        explicit_gates = add(explicit_gates, mul(2, output_head, "capacity output relations"), "capacity explicit gates");
+        explicit_gates = add(explicit_gates, mul(output_heads, output_head, "capacity output relations"), "capacity explicit gates");
         explicit_gates = add(explicit_gates, mul(24, output_coordinates, "capacity final output wiring"), "capacity explicit gates");
         const std::size_t fconn_output_coordinates = add(
-            mul(8, mul(nodes, add(h0, 2, "capacity hidden FCONN width"),
+            mul(hidden_heads, mul(nodes, add(h0, 2, "capacity hidden FCONN width"),
                         "capacity hidden FCONN outputs"), "capacity hidden FCONN outputs"),
-            add(mul(8, mul(nodes, add(h1, 2, "capacity hidden FCONN width"),
+            add(mul(hidden_heads, mul(nodes, add(h1, 2, "capacity hidden FCONN width"),
                             "capacity hidden FCONN outputs"), "capacity FCONN outputs"),
-                mul(2, mul(nodes, add(classes, 2, "capacity output FCONN width"),
+                mul(output_heads, mul(nodes, add(classes, 2, "capacity output FCONN width"),
                             "capacity output FCONN outputs"), "capacity FCONN outputs"),
                 "capacity FCONN outputs"),
             "capacity FCONN outputs");
@@ -6399,12 +6429,12 @@ GatCapacityReport inspect_gat_capacity(const Graph &graph, const Model &model,
                              "capacity explicit gates");
         report.max_materialized_gate = explicit_gates;
         report.max_materialized_vector = mul(4, report.input_layout.n_in, "capacity four-segment input vector");
-        report.fconn_count = (2 * 8 + 2) * 3;
-        report.attention_relation_count = 2 * 8 + 2;
+        report.fconn_count = (2 * hidden_heads + output_heads) * 3;
+        report.attention_relation_count = 2 * hidden_heads + output_heads;
         report.division_relation_count = add(
-            mul(16, mul(nodes, h0, "capacity hidden division count"), "capacity hidden division count"),
-            add(mul(16, mul(nodes, h1, "capacity hidden division count"), "capacity hidden division count"),
-                mul(5, output_coordinates, "capacity output division count"),
+            mul(hidden_heads, mul(16, mul(nodes, h0, "capacity hidden division count"), "capacity hidden division count"), "capacity hidden division count"),
+            add(mul(hidden_heads, mul(16, mul(nodes, h1, "capacity hidden division count"), "capacity hidden division count"), "capacity hidden division count"),
+                mul(5 * (output_heads + 1), output_coordinates, "capacity output division count"),
                 "capacity division count"),
             "capacity division count");
         report.context_recipe_bytes_bound = 4ULL << 20;
@@ -6416,7 +6446,7 @@ GatCapacityReport inspect_gat_capacity(const Graph &graph, const Model &model,
             "capacity context payload bound");
         report.scratch_chunk_entries =
             static_cast<std::size_t>(kSparseGkrChunkEntries);
-        report.native_sparse_relation_count = 3 * (2 * 8 + 2) + 2;
+        report.native_sparse_relation_count = 3 * (2 * hidden_heads + output_heads) + 2;
         std::uint64_t sparse_edge_domain = 0;
         std::uint64_t sparse_node_domain = 0;
         std::uint64_t sparse_input_domain = 0;
@@ -7835,6 +7865,10 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
                       const std::string &privacy_profile) {
     ProveResult result;
     try {
+        const auto stage = [](const char *name) {
+            std::cerr << "gat_adapter_prover_stage: " << name << '\n';
+        };
+        stage("begin");
         graph.validate();
         model.validate_schema();
         quant.validate();
@@ -7995,8 +8029,8 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
                 build_lasso_chunk_families(plan, forward, tables);
             NativeLassoChunkBundleProverResult lasso_chunks;
             if (!native_lasso_prove_chunked_bundle(
-                    session, lasso_families, runtime.basis, &input_point,
-                    &lasso_chunks, &sparse_reason))
+                session, lasso_families, runtime.basis, &input_point,
+                &lasso_chunks, &sparse_reason))
                 throw std::runtime_error("chunked Lasso proof failed: " +
                                          sparse_reason);
             // The Lasso family aggregate is the canonical L_qry segment at
@@ -8056,6 +8090,7 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
             plan, privacy_profile);
         const GatCircuitWitness circuit_witness = build_gat_circuit_witness(
             plan, graph, public_features, model, quant, forward);
+        stage("witness");
         std::string witness_reason;
         if (!evaluate_gat_circuit_witness(plan, circuit_witness, &witness_reason))
             throw std::invalid_argument("canonical GAT witness validation failed: " +
@@ -8065,6 +8100,7 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
             model, quant, plan.input_layout, registration.model_arch_id);
         const std::string basis_id = fixed_digest(hash_hex(basis_label));
         const std::size_t domain = plan.input_layout.n_in;
+        stage("generators");
         std::vector<G1> generators(domain);
         for (std::size_t index = 0; index < domain; ++index)
             hashAndMapToG1(generators[index],
@@ -8082,6 +8118,7 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         com_aux.padded_size = domain;
         com_aux.point_hex = point_hex(aux_commitment.commitment);
 
+        stage("lasso-build");
         LassoAdapterBundle lasso = build_lasso_bundle(
             plan, forward, tables, basis_label);
         const std::vector<NativeLassoFamilyPublic> lasso_public =
@@ -8116,6 +8153,7 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         NativeProofSession session(kNativeArtifactDomain, statement);
         std::string reason;
         NativeLassoBundleResult lasso_result;
+        stage("lasso-prove");
         if (!native_lasso_prove_bundle(session, lasso.families, lasso.query,
                                        &lasso_result, &reason))
             throw std::runtime_error("native masked Lasso proof failed: " + reason);
@@ -8182,6 +8220,7 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         }
         NativeGkrInputBinding gkr_binding;
         NativeGkrProverResult gkr_result;
+        stage("gkr-prove");
         if (!prove_masked_gkr_transcript(
                 session, plan.circuit, gkr_witness,
                 circuit_witness.public_output, &reason, &gkr_binding,
@@ -8202,6 +8241,7 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
             throw std::runtime_error("native masked GKR input binding is malformed");
 
         const std::size_t r_dimension = core_log2(domain);
+        stage("input-openings");
         const std::vector<Fr> r_minus(gkr_binding.point.begin(),
                                       gkr_binding.point.begin() + r_dimension);
         // Native MLE folding numbers the first coordinate as the low bit.
@@ -8288,6 +8328,7 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
             throw std::runtime_error("masked GAT input linear relation failed: " + reason);
 
         GatProofArtifact artifact;
+        stage("artifact");
         artifact.privacy_profile = "masked_full";
         artifact.statement_digest = verifier_context_digest(context);
         artifact.com_aux = com_aux;
