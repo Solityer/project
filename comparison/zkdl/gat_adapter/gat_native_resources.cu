@@ -25,15 +25,24 @@ using Byte = std::uint8_t;
 using Digest = std::array<Byte, 32U>;
 constexpr std::size_t kG1Size = 48U;
 constexpr std::uint32_t kFrameVersion = 1U;
+constexpr std::uint64_t kSrsFrameHeaderBytes = 8U + 4U + 4U + 8U + 8U + 8U;
 // The proof context consumes one selected prefix chunk.  There is therefore
 // no protocol-wide 2^19 cap: a larger relation-family domain is represented
 // by its own authenticated frame (or by a larger selected chunk), while
 // unrelated families are never concatenated into one global domain.  The
 // byte bound is an operational allocation guard, not a domain truncation.
 constexpr std::uint64_t kMaxSrsFrameBytes = 1ULL << 32U;
+constexpr std::uint64_t kMaxNativeLogicalDomain = 1ULL << 30U;
 constexpr std::size_t kMaxJsonResourceBytes = 1U << 26U;
 constexpr std::uint64_t kMaxSrsFramePoints = kMaxSrsFrameBytes / kG1Size;
 constexpr const char* kUnavailable = "UNAVAILABLE";
+
+bool valid_srs_frame_bytes(std::uint64_t count, std::uint64_t bytes) {
+    if (count == 0U || count > (kMaxSrsFrameBytes - kSrsFrameHeaderBytes) / kG1Size) {
+        return false;
+    }
+    return bytes == kSrsFrameHeaderBytes + count * kG1Size;
+}
 
 void set_error(std::string* error, const std::string& message) {
     if (error) *error = message;
@@ -375,7 +384,7 @@ bool frame_u64(const std::vector<Byte>& bytes, std::size_t& offset, std::uint64_
 bool decode_frame(const std::vector<Byte>& bytes, PointFrame& frame,
                   std::string* error) {
     constexpr std::array<Byte, 8U> magic = {{'G', 'A', 'T', 'Z', 'K', 'G', '1', 'C'}};
-    constexpr std::size_t header_size = 8U + 4U + 4U + 8U + 8U + 8U;
+    constexpr std::size_t header_size = kSrsFrameHeaderBytes;
     if (bytes.size() < header_size || !std::equal(magic.begin(), magic.end(), bytes.begin())) {
         set_error(error, "BLOCKED: SRS point file is not a GATZKG1C frame");
         return false;
@@ -612,14 +621,16 @@ bool generator_id_field(const std::string& object, std::string& value,
 bool parse_chunk_frame_ref(const std::string& object, const char* label,
                            const std::filesystem::path& root, std::string& path,
                            std::string& digest, std::uint64_t& count,
+                           std::uint64_t& bytes,
                            std::string* error) {
     std::string raw_path;
     if (!resource_field_string(object, label, "path", raw_path) ||
         !resource_field_string(object, label, "sha256", digest) ||
         !resource_field_u64(object, label, "count", count) ||
-        count == 0U || !canonical_digest_text(digest)) {
+        !resource_field_u64(object, label, "bytes", bytes) ||
+        !canonical_digest_text(digest) || !valid_srs_frame_bytes(count, bytes)) {
         set_error(error, std::string("BLOCKED: SRS chunk omits canonical ") + label +
-                  " path/digest/count");
+                  " path/digest/count/bytes");
         return false;
     }
     std::filesystem::path checked;
@@ -675,7 +686,8 @@ bool parse_srs_chunk(const std::string& object, const std::string& family_id,
         chunk.point_count != chunk.domain || chunk.domain != basis_domain ||
         segment_size != basis_domain || point_size != kG1Size ||
         !power_of_two(chunk.domain) || !power_of_two(logical_domain) ||
-        logical_domain < basis_domain || chunk.domain > kMaxSrsFramePoints ||
+        logical_domain < basis_domain || logical_domain > kMaxNativeLogicalDomain ||
+        chunk.domain > kMaxSrsFramePoints ||
         segment_count != (logical_domain + segment_size - 1U) / segment_size ||
         chunk.degree < (chunk.domain == 1U ? 0U : chunk.domain - 1U) ||
         chunk.point_offset > std::numeric_limits<std::uint64_t>::max() - chunk.point_count) {
@@ -712,9 +724,12 @@ bool parse_srs_chunk(const std::string& object, const std::string& family_id,
         return false;
     }
     std::uint64_t g_count = 0U, h_count = 0U, u_count = 0U;
-    if (!parse_chunk_frame_ref(object, "G", root, chunk.g_path, chunk.g_digest, g_count, error) ||
-        !parse_chunk_frame_ref(object, "H", root, chunk.h_path, chunk.h_digest, h_count, error) ||
-        !parse_chunk_frame_ref(object, "U", root, chunk.u_path, chunk.u_digest, u_count, error) ||
+    if (!parse_chunk_frame_ref(object, "G", root, chunk.g_path, chunk.g_digest, g_count,
+                               chunk.g_bytes, error) ||
+        !parse_chunk_frame_ref(object, "H", root, chunk.h_path, chunk.h_digest, h_count,
+                               chunk.h_bytes, error) ||
+        !parse_chunk_frame_ref(object, "U", root, chunk.u_path, chunk.u_digest, u_count,
+                               chunk.u_bytes, error) ||
         g_count != chunk.point_count || h_count != 1U || u_count != 1U) {
         set_error(error, "BLOCKED: SRS chunk G/H/U point counts are not domain-bound");
         return false;
@@ -781,6 +796,11 @@ bool materialize_srs_chunk(const std::filesystem::path& root,
     if (!read_bytes(g_path, g_bytes, error, kMaxSrsFrameBytes) ||
         !read_bytes(h_path, h_bytes, error, kMaxSrsFrameBytes) ||
         !read_bytes(u_path, u_bytes, error, kMaxSrsFrameBytes)) return false;
+    if (g_bytes.size() != chunk.g_bytes || h_bytes.size() != chunk.h_bytes ||
+        u_bytes.size() != chunk.u_bytes) {
+        set_error(error, "BLOCKED: SRS frame byte size is not manifest-bound");
+        return false;
+    }
     const auto check_digest = [&](const std::vector<Byte>& bytes,
                                   const std::string& expected, const char* label) {
         if (resource_digest_hex(zkdl::sha256(bytes)) != expected) {
@@ -964,6 +984,7 @@ bool load_authenticated_srs(const Config& config,
         !resource_field_u64(manifest, "setup", "u_count", setup_u_count) ||
         !power_of_two(setup_domain) || setup_basis_domain != setup_domain ||
         !power_of_two(setup_basis_domain) || setup_logical_domain < setup_basis_domain ||
+        setup_logical_domain > kMaxNativeLogicalDomain ||
         setup_segment_size != setup_basis_domain || setup_segment_count == 0U ||
         setup_segment_count != (setup_logical_domain + setup_segment_size - 1U) / setup_segment_size ||
         setup_generator_count != setup_basis_domain || setup_h_count != 1U || setup_u_count != 1U) {

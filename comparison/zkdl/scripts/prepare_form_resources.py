@@ -49,6 +49,15 @@ def die(message: str) -> None:
     raise SystemExit(f"prepare-form-resources: BLOCKED: {message}")
 
 
+def srs_frame_bytes(count: int) -> int:
+    if count < 1:
+        die(f"SRS frame point count is invalid: {count}")
+    total = SRS_FRAME_HEADER_BYTES + count * G1_POINT_BYTES
+    if total > MAX_SRS_FRAME_BYTES:
+        die(f"SRS frame exceeds the native authenticated frame byte bound: {total}")
+    return total
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -711,16 +720,18 @@ def decode_g1(encoded: bytes, label: str) -> tuple[int, int]:
     return x, y
 
 
-def srs_frame_path(srs_dir: Path, descriptor: dict[str, Any], label: str) -> tuple[Path, str, int]:
+def srs_frame_path(srs_dir: Path, descriptor: dict[str, Any], label: str) -> tuple[Path, str, int, int]:
     if not isinstance(descriptor, dict):
         die(f"local SRS {label} frame descriptor is not an object")
     raw = descriptor.get("path")
     expected = descriptor.get("sha256")
     count = descriptor.get("count")
+    frame_bytes = descriptor.get("bytes")
     if (not isinstance(raw, str) or not raw or Path(raw).is_absolute() or ".." in Path(raw).parts or
             not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected) or
-            not isinstance(count, int) or count < 1):
-        die(f"local SRS {label} frame descriptor is malformed")
+            not isinstance(count, int) or count < 1 or not isinstance(frame_bytes, int) or
+            frame_bytes != srs_frame_bytes(count)):
+        die(f"local SRS {label} frame descriptor size/count is malformed")
     path = (srs_dir / Path(raw)).resolve()
     try:
         path.relative_to(srs_dir.resolve())
@@ -728,14 +739,16 @@ def srs_frame_path(srs_dir: Path, descriptor: dict[str, Any], label: str) -> tup
         die(f"local SRS {label} frame escapes SRS directory")
     if path.is_symlink() or not path.is_file():
         die(f"local SRS {label} frame is missing")
+    if path.stat().st_size != frame_bytes:
+        die(f"local SRS {label} frame byte size mismatch")
     if sha256_file(path) != expected:
         die(f"local SRS {label} frame digest mismatch")
-    return path, expected, count
+    return path, expected, count, frame_bytes
 
 
 def read_srs_frame_prefix(srs_dir: Path, descriptor: dict[str, Any], label: str,
                           required_count: int) -> list[tuple[int, int]]:
-    path, _, declared_count = srs_frame_path(srs_dir, descriptor, label)
+    path, _, declared_count, _ = srs_frame_path(srs_dir, descriptor, label)
     if required_count < 1 or required_count > declared_count:
         die(f"local SRS {label} frame does not cover required model domain")
     try:
@@ -815,6 +828,46 @@ def load_srs_basis(root: Path, values: dict[str, str], required_domain: int) -> 
     if generator_digest != selected["G"].get("sha256"):
         die("installed local SRS generator digest is not bound to G")
     return generators, h_points[0], generator_digest
+
+
+def plan_srs_segments(family_domains: dict[str, int],
+                      basis_domain: int = NATIVE_BASIS_DOMAIN) -> dict[str, Any]:
+    """Plan bounded basis frames without materializing any curve points.
+
+    ``logical_domain`` is the relation's padded coordinate domain.  It is
+    deliberately not a frame-size input: every family reuses the bounded
+    authenticated prefix basis through ordered logical segments.  The 4 GiB
+    guard therefore applies only to the actually materialized frame payload.
+    """
+    if basis_domain < 1 or basis_domain > MAX_NATIVE_DOMAIN or basis_domain & (basis_domain - 1):
+        die(f"SRS basis domain is not a native power of two: {basis_domain}")
+    frame_bytes = srs_frame_bytes(basis_domain)
+    if not family_domains or "*" not in family_domains:
+        die("authenticated SRS family-domain map must contain the common '*' prefix")
+    families: dict[str, dict[str, Any]] = {}
+    for family_id, logical_domain in sorted(family_domains.items()):
+        if (logical_domain < 1 or logical_domain > MAX_NATIVE_DOMAIN or
+                logical_domain & (logical_domain - 1)):
+            die(f"SRS family {family_id} has an invalid native logical power-of-two domain: {logical_domain}")
+        segment_count = (logical_domain + basis_domain - 1) // basis_domain
+        families[family_id] = {
+            "logical_domain": logical_domain,
+            "basis_domain": basis_domain,
+            "segment_size": basis_domain,
+            "segment_count": segment_count,
+            "segments": [
+                {
+                    "segment_index": index,
+                    "logical_offset": index * basis_domain,
+                    "actual_length": min(basis_domain, logical_domain - index * basis_domain),
+                    "padded_length": basis_domain,
+                    "basis_offset": 0,
+                    "basis_count": basis_domain,
+                }
+                for index in range(segment_count)
+            ],
+        }
+    return {"basis_domain": basis_domain, "frame_bytes": frame_bytes, "families": families}
 
 
 def make_tables(values: dict[str, str], quant_digest: str) -> dict[str, Any]:
@@ -956,17 +1009,11 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
     srs_dir.parent.mkdir(parents=True, exist_ok=True)
     if srs_dir.is_symlink():
         die(f"local SRS destination is symlinked: {srs_dir}")
-    if not family_domains or "*" not in family_domains:
-        die("authenticated SRS family-domain map must contain the common '*' prefix")
-    for family_id, chunk_domain in family_domains.items():
-        if chunk_domain < 1 or chunk_domain > MAX_NATIVE_DOMAIN or chunk_domain & (chunk_domain - 1):
-            die(f"SRS family {family_id} has an invalid native power-of-two domain: {chunk_domain}")
-        if chunk_domain > MAX_SRS_FRAME_BYTES // G1_POINT_BYTES:
-            die(f"SRS family {family_id} frame exceeds the native authenticated frame byte bound")
     # The logical relation may be much larger than the common IPA basis.  The
     # latter is intentionally bounded and reused by ordered segments; setup
     # must never materialize one G point per logical coordinate.
-    common_domain = NATIVE_BASIS_DOMAIN
+    segment_plan = plan_srs_segments(family_domains)
+    common_domain = int(segment_plan["basis_domain"])
     # All family chunks authenticate one common prefix basis.  The manifest
     # retains per-family required domains, but the large G frame and the H/U
     # frames are written once and referenced by every family.  Include a
@@ -999,8 +1046,7 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
     def write_frame(label: str, payloads: Iterable[bytes], count: int) -> dict[str, Any]:
         """Stream one authenticated common frame without retaining points."""
         relative = Path("wildcard") / f"{label}.chunk0.bin"
-        if count < 1 or SRS_FRAME_HEADER_BYTES + count * G1_POINT_BYTES > MAX_SRS_FRAME_BYTES:
-            die(f"SRS common {label} frame exceeds the native authenticated frame bound")
+        materialized_bytes = srs_frame_bytes(count)
         header = b"GATZKG1C" + struct.pack(
             "<IIQQQ", 1, G1_POINT_BYTES, count, domain, domain - 1
         )
@@ -1022,7 +1068,8 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
             die(f"SRS common {label} frame materialization failed: {exc}")
         if written != count:
             die(f"SRS common {label} frame point count mismatch: {written} != {count}")
-        return {"path": relative.as_posix(), "count": count, "sha256": digest.hexdigest()}
+        return {"path": relative.as_posix(), "count": count,
+                "bytes": materialized_bytes, "sha256": digest.hexdigest()}
 
     try:
         h_encoded, _ = random_point("H")
@@ -1040,7 +1087,8 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
         generator_id = "zkDL_native_local_csprng_g1_v1"
         families: list[dict[str, Any]] = []
         for family_id, required_domain in sorted(family_domains.items()):
-            segment_count = (required_domain + common_domain - 1) // common_domain
+            family_plan = segment_plan["families"][family_id]
+            segment_count = int(family_plan["segment_count"])
             chunk = {
                 "family_id": family_id, "chunk_id": f"{family_id}:chunk0",
                 "chunk_index": 0, "point_offset": 0, "point_count": domain,
@@ -1052,13 +1100,7 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
                 "generator_digest": g_meta["sha256"], "G": dict(g_meta),
                 "H": dict(h_meta), "U": dict(u_meta),
             }
-            chunk["segments"] = [
-                {"segment_index": index, "logical_offset": index * common_domain,
-                 "actual_length": min(common_domain, required_domain - index * common_domain),
-                 "padded_length": common_domain, "basis_offset": 0,
-                 "basis_count": common_domain}
-                for index in range(segment_count)
-            ]
+            chunk["segments"] = list(family_plan["segments"])
             families.append({"family_id": family_id, "chunks": [chunk]})
         default = next(item for item in families if item["family_id"] == "*")["chunks"][0]
         manifest = {
@@ -1182,10 +1224,14 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool) ->
     )
     update_config(config_path, {"degree_bound_id": degree_id})
     values = parse_config(config_path)
-    if not regenerate_srs and complete_resources_valid(root, config_path):
+    resources_valid = complete_resources_valid(root, config_path)
+    if not regenerate_srs and resources_valid:
         return "REUSED"
     srs_path = root / values["srs_path"]
-    if regenerate_srs or not srs_path.is_dir():
+    # Any stale/inconsistent authenticated resource set is rebuilt as one
+    # atomic setup unit.  This also upgrades old single-frame manifests to the
+    # segmented bytes-bound schema without asking the user to remove files.
+    if regenerate_srs or not srs_path.is_dir() or not resources_valid:
         srs_digest, generator_digest = write_srs(root, values, family_domains)
     else:
         srs_digest = sha256_file(srs_path / "srs_manifest.json")

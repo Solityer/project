@@ -444,7 +444,7 @@ int main(int argc, char **argv) {
         graph, features, quant, result.trace.tables, result.logits, registration,
         proof_plan, "masked_full");
     if (verifier_context_digest(context).empty()) return 1;
-    const std::string context_wire_path = "/tmp/zkgpt-verifier-context-v3-smoke.bin";
+    const std::string context_wire_path = "/tmp/zkgpt-verifier-context-v4-smoke.bin";
     std::string context_wire_reason;
     if (!write_verifier_context(context, context_wire_path, &context_wire_reason)) {
         std::cerr << "context write failed: " << context_wire_reason << "\n";
@@ -486,8 +486,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     std::cout << "gat_adapter_smoke: compact_recipe_bytes=" << recipe_bytes
-              << " v3_payload_bytes=" << payload_bytes
-              << " v3_wire_bytes=" << context_stat.st_size
+              << " v4_payload_bytes=" << payload_bytes
+              << " v4_wire_bytes=" << context_stat.st_size
               << " recipe_cap=67108864 wire_cap=2147483648\n";
     for (std::size_t layer_id = 0; layer_id < proof_plan.circuit.circuit.size(); ++layer_id) {
         const layer &producer_layer = proof_plan.circuit.circuit[layer_id];

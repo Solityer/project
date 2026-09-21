@@ -149,9 +149,9 @@ def main() -> int:
         })
 
     # Native SRS, model registry, and prover-only blinder resources are
-    # external trusted inputs.  For canonical datasets they must already be
-    # present, baseline-local, and digest-bound; this script never generates,
-    # repairs, or downgrades them to an UNAVAILABLE marker.
+    # baseline-local setup outputs.  For canonical datasets they must already
+    # be present, baseline-local, and digest-bound after setup; this script
+    # never generates, repairs, or downgrades them to an UNAVAILABLE marker.
     srs_path_raw = values.get("srs_path", "UNAVAILABLE")
     srs_manifest_digest = values.get("srs_manifest_digest", "UNAVAILABLE")
     model_registry_path_raw = values.get("model_registry_path", "UNAVAILABLE")
@@ -212,9 +212,9 @@ def main() -> int:
     if relation_keys[1] in relation_digests:
         payload["sorted_lookup_descriptor"] = values[relation_keys[1]]
         payload["sorted_lookup_descriptor_digest"] = relation_digests[relation_keys[1]]
-    if relation_keys[1] in relation_digests:
-        payload["integer_bound_ledger"] = values[relation_keys[1]]
-        payload["integer_bound_ledger_descriptor_digest"] = relation_digests[relation_keys[1]]
+    if relation_keys[2] in relation_digests:
+        payload["integer_bound_ledger"] = values[relation_keys[2]]
+        payload["integer_bound_ledger_descriptor_digest"] = relation_digests[relation_keys[2]]
     output = args.output or (local_path(root, values["export_dir"], "export_dir") / "asset_manifest.json")
     output = output.resolve()
     try:

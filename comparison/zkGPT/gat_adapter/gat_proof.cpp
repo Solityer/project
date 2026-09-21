@@ -57,6 +57,8 @@ const std::uint64_t kContextMaxShapeProfile = 128;
 const std::uint64_t kContextMaxShapeDimensions = 16;
 const char kNativeArtifactDomain[] = "zkgpt-native-gat-fs-v4";
 const char kVerifierContextMagic[] = "ZKGPTVC4";
+constexpr std::uint32_t kVerifierContextVersion = 4;
+const char kVerifierContextSchema[] = "zkgpt-gat-verifier-context-v4";
 const char kProofArtifactMagic[] = "ZKGPTGAT4";
 
 // Defined with the transcript bridge below; the production prover uses the
@@ -4468,7 +4470,7 @@ bool evaluate_layered_values(const GatCircuitPlan &plan,
 
 std::string context_encoding(const VerifierContext &context) {
     std::string encoded;
-    append_string(encoded, "zkgpt-gat-verifier-context-v4");
+    append_string(encoded, kVerifierContextSchema);
     append_string(encoded, context.relation_id);
     append_string(encoded, context.backend);
     append_string(encoded, context.model_arch_id);
@@ -7379,7 +7381,7 @@ namespace {
 
 std::string serialize_verifier_context_payload(const VerifierContext &context) {
     std::string payload;
-    append_string(payload, "zkgpt-gat-verifier-context-v4");
+    append_string(payload, kVerifierContextSchema);
     append_string(payload, context.relation_id);
     append_string(payload, context.backend);
     append_string(payload, context.model_arch_id);
@@ -7488,7 +7490,7 @@ bool write_verifier_context(const VerifierContext &context,
             return false;
         }
         output.write(kVerifierContextMagic, 8);
-        write_u32(output, 3);
+        write_u32(output, kVerifierContextVersion);
         write_u64(output, static_cast<std::uint64_t>(payload.size()));
         if (!payload.empty()) output.write(payload.data(), static_cast<std::streamsize>(payload.size()));
         output.flush();
@@ -7526,7 +7528,7 @@ bool read_verifier_context(const std::string &path,
         std::uint32_t version = 0;
         std::uint64_t payload_size = 0;
         if (!read_header_u32(wire, 8, version) || !read_header_u64(wire, 12, payload_size) ||
-            version != 3 || payload_size != wire.size() - header_size ||
+            version != kVerifierContextVersion || payload_size != wire.size() - header_size ||
             payload_size > kContextMaxWireBytes) {
             set_reason(reason, "unsupported, oversized, or non-canonical verifier context header");
             return false;
@@ -7534,7 +7536,7 @@ bool read_verifier_context(const std::string &path,
         ContextReader reader(wire, header_size, wire.size());
         VerifierContext parsed;
         std::string schema;
-        if (!reader.read_string(schema, "context schema") || schema != "zkgpt-gat-verifier-context-v3" ||
+        if (!reader.read_string(schema, "context schema") || schema != kVerifierContextSchema ||
             !reader.read_string(parsed.relation_id, "context relation") ||
             !reader.read_string(parsed.backend, "context backend") ||
             !reader.read_string(parsed.model_arch_id, "context model architecture") ||

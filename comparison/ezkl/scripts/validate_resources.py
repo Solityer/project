@@ -190,10 +190,33 @@ def validate_checkpoint_archive(root: Path, manifest_path: Path, checkpoint: dic
             f"declared {checkpoint.get('tensor_count')}, indexed {len(expected)}"
         )
 
+    archive_path = manifest_path.parent / "tensors.npz"
+    if not archive_path.is_file() or archive_path.is_symlink():
+        fail(f"checkpoint tensor archive is missing or symlinked: {archive_path}")
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            members = [name for name in archive.namelist() if not name.endswith("/")]
+    except (OSError, zipfile.BadZipFile) as exc:
+        fail(f"invalid checkpoint tensor archive {archive_path}: {exc}")
+    actual = set()
+    for member in members:
+        if not member.endswith(".npy") or "/" in member[:-4]:
+            fail(f"unexpected NPZ member in {archive_path}: {member}")
+        key = member[:-4]
+        if key in actual:
+            fail(f"duplicate NPZ member in {archive_path}: {member}")
+        actual.add(key)
+    expected_keys = set(expected)
+    if actual != expected_keys:
+        fail(
+            f"checkpoint archive/manifest mismatch in {archive_path}: "
+            f"missing={sorted(expected_keys - actual)}, extra={sorted(actual - expected_keys)}"
+        )
+
 
 def _npy_contract(path: Path) -> dict[str, Any]:
     with path.open("rb") as stream:
-        prefix = stream.read(12)
+        prefix = stream.read(10)
         if len(prefix) < 10 or prefix[:6] != b"\x93NUMPY":
             fail(f"invalid NPY magic: {path}")
         major = prefix[6]
@@ -201,9 +224,10 @@ def _npy_contract(path: Path) -> dict[str, Any]:
             header_len = int.from_bytes(prefix[8:10], "little")
             data_start = 10
         elif major == 2:
-            if len(prefix) < 12:
+            version_tail = stream.read(2)
+            if len(version_tail) != 2:
                 fail(f"truncated NPY header: {path}")
-            header_len = int.from_bytes(prefix[8:12], "little")
+            header_len = int.from_bytes(prefix[8:10] + version_tail, "little")
             data_start = 12
         else:
             fail(f"unsupported NPY version {major}: {path}")
@@ -433,30 +457,6 @@ def validate_table_archive(path: Path) -> None:
             fail(f"static-table registry digest mismatch: {path}")
         if stream.read(1):
             fail(f"static-table archive has trailing bytes: {path}")
-    archive_path = manifest_path.parent / "tensors.npz"
-    if not archive_path.is_file() or archive_path.is_symlink():
-        fail(f"checkpoint tensor archive is missing or symlinked: {archive_path}")
-    try:
-        with zipfile.ZipFile(archive_path) as archive:
-            members = [name for name in archive.namelist() if not name.endswith("/")]
-    except (OSError, zipfile.BadZipFile) as exc:
-        fail(f"invalid checkpoint tensor archive {archive_path}: {exc}")
-    actual = set()
-    for member in members:
-        if not member.endswith(".npy") or "/" in member[:-4]:
-            fail(f"unexpected NPZ member in {archive_path}: {member}")
-        key = member[:-4]
-        if key in actual:
-            fail(f"duplicate NPZ member in {archive_path}: {member}")
-        actual.add(key)
-    expected_keys = set(expected)
-    if actual != expected_keys:
-        fail(
-            f"checkpoint archive/manifest mismatch in {archive_path}: "
-            f"missing={sorted(expected_keys - actual)}, extra={sorted(actual - expected_keys)}"
-        )
-
-
 def source_snapshot(baseline_root: Path) -> dict[str, Any]:
     snapshot: dict[str, Any] = {"root": str(baseline_root.resolve())}
     try:

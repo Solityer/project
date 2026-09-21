@@ -240,7 +240,7 @@ void print_help() {
                  "--public-logits <relative-text> --artifact <relative-artifact> "
                  "[--baseline-root <zkGPT-root>] [--report <relative-json>]\n"
                  "       zkgpt_gat_verifier --capabilities\n"
-                 "The verifier reads only the complete v3 public context, public logits and proof artifact.\n";
+                 "The verifier reads only the complete v4 public context, public logits and proof artifact.\n";
 }
 
 } // namespace
@@ -268,7 +268,7 @@ int main(int argc, char **argv) {
         const std::string artifact_path = local_path(root, artifact_rel, "proof artifact");
 
         zkgpt::gat::initialize_gat_field();
-        // The v3 context reader reconstructs the layered plan from its compact
+        // The v4 context reader reconstructs the layered plan from its compact
         // recipe.  Keep it off the small process stack: malformed or missing
         // input must still fail closed without a stack overflow.
         std::unique_ptr<VerifierContext> context_storage(new VerifierContext());
@@ -290,7 +290,7 @@ int main(int argc, char **argv) {
             external_logits.cols != context.public_logits.cols ||
             external_logits.values != context.public_logits.values) {
             const std::string report = report_json(
-                "REJECTED", "separately supplied public logits do not match v3 context",
+                "REJECTED", "separately supplied public logits do not match v4 context",
                 statement_digest, context_rel, logits_rel, artifact_rel,
                 artifact_path, &context, nullptr);
             write_report(options.report, report);

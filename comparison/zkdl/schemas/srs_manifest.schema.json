@@ -88,5 +88,5 @@
       }
     }
   },
-  "$defs": {"frame": {"type": "object", "required": ["path", "sha256", "count"], "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "count": {"type": "integer", "minimum": 1}}}}
+  "$defs": {"frame": {"type": "object", "required": ["path", "sha256", "count", "bytes"], "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "count": {"type": "integer", "minimum": 1}, "bytes": {"type": "integer", "minimum": 1}}}}
 }

@@ -21,6 +21,10 @@ DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 BACKENDS = ("cpu", "gpu")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 NATIVE_BASIS_DOMAIN = 1 << 18
+MAX_NATIVE_DOMAIN = 1 << 30
+SRS_FRAME_HEADER_BYTES = 8 + 4 + 4 + 8 + 8 + 8
+G1_POINT_BYTES = 48
+MAX_SRS_FRAME_BYTES = 1 << 32
 
 
 class ArtifactError(ValueError):
@@ -190,7 +194,9 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
     segment_size = setup.get("segment_size")
     segment_count = setup.get("segment_count")
     if (basis_domain != NATIVE_BASIS_DOMAIN or not isinstance(logical_domain, int) or
-            logical_domain < basis_domain or segment_size != basis_domain or
+            logical_domain < basis_domain or logical_domain > MAX_NATIVE_DOMAIN or
+            logical_domain & (logical_domain - 1) or setup.get("domain") != basis_domain or
+            segment_size != basis_domain or
             not isinstance(segment_count, int) or segment_count < 1 or
             segment_count != (logical_domain + basis_domain - 1) // basis_domain or
             setup.get("generator_count") != basis_domain):
@@ -205,15 +211,23 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
     if setup.get("config_binding_digest") != _config_binding_digest(config_path):
         raise ArtifactError("SRS setup config binding digest mismatch")
 
-    def check_frame(item: Any, label: str) -> str:
+    def check_frame(item: Any, label: str, expected_count: int) -> str:
         if not isinstance(item, dict):
             raise ArtifactError(f"SRS manifest missing {label} frame")
         raw = item.get("path")
         declared = item.get("sha256")
-        if not isinstance(raw, str) or not isinstance(declared, str) or not HEX64.fullmatch(declared):
+        count = item.get("count")
+        frame_bytes = item.get("bytes")
+        if (not isinstance(raw, str) or not isinstance(declared, str) or not HEX64.fullmatch(declared) or
+                not isinstance(count, int) or count != expected_count or
+                not isinstance(frame_bytes, int) or
+                frame_bytes != SRS_FRAME_HEADER_BYTES + count * G1_POINT_BYTES or
+                frame_bytes > MAX_SRS_FRAME_BYTES):
             raise ArtifactError(f"SRS manifest has malformed {label} frame identity")
         frame = _local(srs_path, raw, f"SRS {label} frame")
         _regular(frame, f"SRS {label} frame")
+        if frame.stat().st_size != frame_bytes:
+            raise ArtifactError(f"SRS manifest {label} frame byte-size mismatch")
         relative = frame.relative_to(root).as_posix()
         if relative not in digests or digests[relative] != declared:
             raise ArtifactError(f"asset manifest does not authenticate SRS {label} frame")
@@ -239,6 +253,12 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
             if (chunk.get("basis_domain") != basis_domain or
                     chunk.get("segment_size") != basis_domain or
                     not isinstance(chunk_logical, int) or chunk_logical < 1 or
+                    chunk_logical > MAX_NATIVE_DOMAIN or chunk_logical & (chunk_logical - 1) or
+                    chunk.get("point_count") != basis_domain or
+                    chunk.get("domain") != basis_domain or
+                    chunk.get("point_offset") != 0 or
+                    chunk.get("degree") != max(0, basis_domain - 1) or
+                    chunk.get("point_size") != G1_POINT_BYTES or
                     chunk.get("segment_count") !=
                     (chunk_logical + basis_domain - 1) // basis_domain or
                     chunk.get("required_domain") != chunk_logical):
@@ -259,8 +279,11 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
                 offset += segment["actual_length"]
             if offset != chunk_logical:
                 raise ArtifactError("SRS segments do not cover logical domain")
-            frame_digests = {key: check_frame(chunk.get(key), f"{family.get('family_id', '?')}/{key}")
-                             for key in ("G", "H", "U")}
+            frame_digests = {
+                key: check_frame(chunk.get(key), f"{family.get('family_id', '?')}/{key}",
+                                 basis_domain if key == "G" else 1)
+                for key in ("G", "H", "U")
+            }
             if chunk.get("generator_digest") != frame_digests["G"]:
                 raise ArtifactError("SRS chunk generator digest mismatch")
             if _basis_digest(frame_digests["G"], frame_digests["H"], frame_digests["U"]) != basis:

@@ -583,7 +583,7 @@ void write_verifier_context(const std::string &path,
                             const VerifierContext &context) {
     std::string reason;
     if (!zkgpt::gat::write_verifier_context(context, path, &reason)) {
-        throw std::runtime_error("cannot write verifier context v3: " +
+        throw std::runtime_error("cannot write verifier context v4: " +
                                  (reason.empty() ? std::string("unknown error") : reason));
     }
 }
@@ -825,7 +825,7 @@ int main(int argc, char **argv) {
         VerifierContext context = make_verifier_context(
             graph, features, quant, tables, forward.logits, registration,
             plan, record.privacy_profile);
-        // These identities are part of the v3 public context, so the
+        // These identities are part of the v4 public context, so the
         // independent verifier can report the same tuple without opening
         // the checkpoint/cache or trusting a path-derived dataset name.
         context.backend = options.backend;

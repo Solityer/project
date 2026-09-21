@@ -55,6 +55,9 @@ struct AuthenticatedSrsResource {
         std::string g_digest;
         std::string h_digest;
         std::string u_digest;
+        std::uint64_t g_bytes = 0U;
+        std::uint64_t h_bytes = 0U;
+        std::uint64_t u_bytes = 0U;
         // Canonical digest of the G frame; retained separately so the
         // selected chunk identity is explicit in resource metadata.
         std::string generator_digest;

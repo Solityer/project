@@ -1495,17 +1495,28 @@ pub fn write_generated_metadata(spec: &CanonicalGat, output_dir: &Path) -> Resul
 
 fn write_atomic_metadata(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| format!("create temporary metadata {}: {}", path.display(), e))?;
-    temporary
-        .write_all(bytes)
-        .map_err(|e| format!("write temporary metadata {}: {}", path.display(), e))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|e| format!("sync temporary metadata {}: {}", path.display(), e))?;
-    temporary
-        .persist(path)
-        .map_err(|e| format!("install metadata {}: {}", path.display(), e))?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("metadata path has no valid filename: {}", path.display()))?;
+    let temporary = parent.join(format!(".{}.{}.tmp", name, std::process::id()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|e| format!("create temporary metadata {}: {}", path.display(), e))?;
+        file.write_all(bytes)
+            .map_err(|e| format!("write temporary metadata {}: {}", path.display(), e))?;
+        file.sync_all()
+            .map_err(|e| format!("sync temporary metadata {}: {}", path.display(), e))?;
+        drop(file);
+        fs::rename(&temporary, path)
+            .map_err(|e| format!("install metadata {}: {}", path.display(), e))
+    })();
+    if temporary.exists() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
     Ok(())
 }

@@ -290,9 +290,6 @@ SparseGkrPlan build_sparse_gkr_plan(
     plan.graph_topology_digest = graph_topology_digest;
     plan.static_tables_id = static_tables_id;
     plan.relations = relations;
-    std::string reason;
-    if (!validate_plan(graph, plan, &reason))
-        throw std::invalid_argument("invalid sparse GKR plan: " + reason);
     for (std::size_t index = 1; index < plan.relations.size(); ++index) {
         SparseGkrClaimLink link;
         link.from_relation = plan.relations[index - 1].relation_id;
@@ -300,6 +297,9 @@ SparseGkrPlan build_sparse_gkr_plan(
         link.claim_name = "terminal->initial/" + link.from_relation;
         plan.claim_links.push_back(std::move(link));
     }
+    std::string reason;
+    if (!validate_plan(graph, plan, &reason))
+        throw std::invalid_argument("invalid sparse GKR plan: " + reason);
     return plan;
 }
 

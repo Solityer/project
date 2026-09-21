@@ -21,6 +21,10 @@ from typing import Any
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 DATASETS = {"cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"}
 NATIVE_BASIS_DOMAIN = 1 << 18
+MAX_NATIVE_DOMAIN = 1 << 30
+SRS_FRAME_HEADER_BYTES = 8 + 4 + 4 + 8 + 8 + 8
+G1_POINT_BYTES = 48
+MAX_SRS_FRAME_BYTES = 1 << 32
 
 
 def fail(message: str) -> None:
@@ -134,8 +138,15 @@ def frame_path(root: Path, frame: dict[str, Any], label: str,
     if actual != declared:
         fail(f"SRS {label} frame digest mismatch")
     count = frame.get("count")
+    frame_bytes = frame.get("bytes")
     if not isinstance(count, int) or count < 1:
         fail(f"SRS {label}.count is invalid")
+    if (not isinstance(frame_bytes, int) or
+            frame_bytes != SRS_FRAME_HEADER_BYTES + count * G1_POINT_BYTES or
+            frame_bytes > MAX_SRS_FRAME_BYTES):
+        fail(f"SRS {label}.bytes is invalid")
+    if path.stat().st_size != frame_bytes:
+        fail(f"SRS {label}.bytes does not match the authenticated frame")
     return path
 
 
@@ -196,6 +207,8 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
     if (not isinstance(domain, int) or domain < 1 or domain & (domain - 1) or
             not isinstance(basis_domain, int) or basis_domain != NATIVE_BASIS_DOMAIN or
             not isinstance(logical_domain, int) or logical_domain < basis_domain or
+            logical_domain > MAX_NATIVE_DOMAIN or logical_domain & (logical_domain - 1) or
+            domain != basis_domain or
             not isinstance(segment_size, int) or segment_size != basis_domain or
             not isinstance(segment_count, int) or segment_count < 1 or
             segment_count != (logical_domain + basis_domain - 1) // basis_domain or
@@ -234,7 +247,8 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
             chunk_count = chunk.get("segment_count")
             if (not isinstance(index, int) or index < 0 or not isinstance(chunk_domain, int) or
                     chunk_domain != basis_domain or not isinstance(chunk_logical, int) or
-                    chunk_logical < 1 or chunk_logical & (chunk_logical - 1) or
+                    chunk_logical < 1 or chunk_logical > MAX_NATIVE_DOMAIN or
+                    chunk_logical & (chunk_logical - 1) or
                     not isinstance(chunk_basis, int) or chunk_basis != basis_domain or
                     not isinstance(chunk_size, int) or chunk_size != basis_domain or
                     not isinstance(chunk_count, int) or chunk_count != (chunk_logical + basis_domain - 1) // basis_domain):
