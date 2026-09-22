@@ -128,6 +128,23 @@ bool point_equal(const G1 &left, const G1 &right) {
     return point_encoding(left) == point_encoding(right);
 }
 
+// The masked Sumcheck transcript contains many affine relations whose
+// coefficients are exactly 0, +1, or -1.  mcl's generic G1*Fr path performs a
+// full scalar multiplication even for those values; using the group identity
+// and additions preserves the commitment exactly while avoiding the dominant
+// scalar-multiplication cost in the prover's relation checks.  Arbitrary
+// coefficients still use the native scalar path.
+void add_scaled(G1 &result, const G1 &point, const Fr &scalar) {
+    if (scalar.isZero()) return;
+    if (scalar == Fr(1)) {
+        result += point;
+    } else if (scalar == -Fr(1)) {
+        result -= point;
+    } else {
+        result += point * scalar;
+    }
+}
+
 bool valid_generator(const G1 &generator) {
     return generator.isValid() && generator.isValidOrder() &&
            !generator.isZero();
@@ -323,8 +340,8 @@ bool label_free(const NativeProofSession &session,
             return false;
         }
     }
-    for (const NativeProofMessage &message : session.messages()) {
-        if (expected.find(message.label) != expected.end()) {
+    for (const std::string &label : expected) {
+        if (session.has_label(label)) {
             set_reason(reason, "Pedersen transcript label is already used");
             return false;
         }
@@ -770,6 +787,59 @@ FastPath common_opening_fast_path(
     return candidate;
 }
 
+// The prover has just emitted each linked opening through prove_opening.  A
+// multiplication relation still needs to enforce that those representation
+// blocks precede the relation and carry the expected commitment, but invoking
+// the full independent-verifier path here needlessly replays the entire
+// transcript and repeats several G1 equations for every operand.  Keep the
+// wire-shape/commitment checks in the producer and leave the full Schnorr
+// equations to the independent verifier.
+bool require_prior_opening_fast(
+    const NativeProofSession &session, const PedersenBasis &basis,
+    const std::string &label, const ScalarCommitment &commitment,
+    std::size_t before, BlockRange *range, std::string *reason,
+    const FastPath &fast_path) {
+    if (!fast_commitment_matches(fast_path, basis, commitment) ||
+        !commitment.point.isValid() || !commitment.point.isValidOrder() ||
+        commitment.point.isZero() || !valid_label(label)) {
+        set_reason(reason, "Pedersen fast-path opening provenance is invalid");
+        return false;
+    }
+    std::size_t start = 0;
+    if (!find_unique_message(session, label + "/meta", start, reason))
+        return false;
+    const std::vector<NativeProofMessage> &messages = session.messages();
+    const std::size_t end = start + 4;
+    if (end > before || end > messages.size()) {
+        set_reason(reason, "Pedersen operand opening must precede relation");
+        return false;
+    }
+    const NativeProofMessage &meta = messages[start];
+    if (meta.kind != NativeProofMessageKind::Data ||
+        meta.label != label + "/meta" ||
+        messages[start + 1].kind != NativeProofMessageKind::Data ||
+        messages[start + 1].label != label + "/T" ||
+        messages[start + 2].kind != NativeProofMessageKind::Challenge ||
+        messages[start + 2].label != "challenge/" + label + "/challenge" ||
+        messages[start + 3].kind != NativeProofMessageKind::FieldVector ||
+        messages[start + 3].label != label + "/response") {
+        set_reason(reason, "Pedersen opening message order is invalid");
+        return false;
+    }
+    Reader reader{meta.payload};
+    ParsedHeader header;
+    std::string encoded_commitment;
+    if (!parse_header(reader, header, reason) ||
+        !header_matches(header, basis, "opening", reason) ||
+        !reader.read_string(encoded_commitment, kMaxPoint) ||
+        !reader.done() ||
+        !compare_string(point_encoding(commitment.point), encoded_commitment,
+                        "opening commitment", reason))
+        return false;
+    if (range != nullptr) *range = BlockRange{start, end};
+    return true;
+}
+
 } // namespace
 
 bool PedersenBasis::valid(std::string *reason) const {
@@ -838,7 +908,9 @@ ScalarCommitment commit(const PedersenBasis &basis, const Fr &value,
     }
     ScalarCommitment result;
     result.domain = basis.domain;
-    result.point = basis.G * value + basis.H * blinding;
+    result.point.clear();
+    add_scaled(result.point, basis.G, value);
+    add_scaled(result.point, basis.H, blinding);
     result.prover_fast_path = fast_path;
     return result;
 }
@@ -923,14 +995,16 @@ G1 linear_residual_commitment(
         operands.size() != coefficients.size() ||
         operands.size() > kMaxOperands)
         throw std::invalid_argument(reason.empty() ? "invalid linear relation" : reason);
-    G1 result = basis.G * (-public_value);
+    G1 result;
+    result.clear();
+    add_scaled(result, basis.G, -public_value);
     for (std::size_t i = 0; i < operands.size(); ++i) {
         if (use_fast_path &&
             !fast_commitment_matches(fast_path, basis, operands[i]))
             throw std::invalid_argument("Pedersen linear fast-path provenance mismatch");
         if (!use_fast_path && !operands[i].valid(basis, &reason))
             throw std::invalid_argument(reason);
-        result += operands[i].point * coefficients[i];
+        add_scaled(result, operands[i].point, coefficients[i]);
     }
     return result;
 }
@@ -1122,12 +1196,19 @@ bool prove_multiplication(
                         reason))
             throw std::invalid_argument(reason_or(reason, "invalid multiplication labels"));
         BlockRange ignored;
-        if (!require_prior_opening(session, basis, links.a_opening_label,
-                                   a.commitment, checkpoint, &ignored, reason) ||
-            !require_prior_opening(session, basis, links.b_opening_label,
-                                   b.commitment, checkpoint, &ignored, reason) ||
-            !require_prior_opening(session, basis, links.c_opening_label,
-                                   c.commitment, checkpoint, &ignored, reason))
+        const auto require = [&](const std::string &opening_label,
+                                 const ScalarCommitment &opening_commitment) {
+            return fast_path != nullptr
+                ? require_prior_opening_fast(
+                      session, basis, opening_label, opening_commitment,
+                      checkpoint, &ignored, reason, fast_path)
+                : require_prior_opening(
+                      session, basis, opening_label, opening_commitment,
+                      checkpoint, &ignored, reason);
+        };
+        if (!require(links.a_opening_label, a.commitment) ||
+            !require(links.b_opening_label, b.commitment) ||
+            !require(links.c_opening_label, c.commitment))
             throw std::invalid_argument(reason_or(reason, "invalid multiplication operand opening"));
         Fr d = random_nonzero_field();
         Fr s1 = random_nonzero_field();
@@ -1241,9 +1322,14 @@ bool prove_product3(
             {links.second.c_opening_label, &output}};
         for (const auto &entry : openings) {
             BlockRange ignored;
-            if (!require_prior_opening(session, basis, entry.first,
-                                       entry.second->commitment, checkpoint,
-                                       &ignored, reason))
+            const bool prior_ok = fast_path != nullptr
+                ? require_prior_opening_fast(
+                      session, basis, entry.first, entry.second->commitment,
+                      checkpoint, &ignored, reason, fast_path)
+                : require_prior_opening(
+                      session, basis, entry.first, entry.second->commitment,
+                      checkpoint, &ignored, reason);
+            if (!prior_ok)
                 throw std::invalid_argument(reason_or(reason, "invalid product3 operand opening"));
         }
         std::string meta;

@@ -587,7 +587,13 @@ F prover::Vres(const vector<F>::const_iterator &r, u32 output_size, u8 r_size,in
 
 void prover::sumcheckFinalize1(const F &previous_random, F &claim_0, F &claim_1) {
     prove_timer.start();
-    r_u[sumcheck_id].at(round - 1) = previous_random;
+    // A one-element source domain has a legitimate zero-round phase 1.  In
+    // that case there is no challenge to store; the terminal values are
+    // already the exact MLE evaluations at the empty point.  Do not index
+    // round-1, which previously turned this valid native layer into an
+    // exception after the masked adapter reached it.
+    if (round > 0)
+        r_u[sumcheck_id].at(round - 1) = previous_random;
     V_u0 = claim_0 = total[0] ? V_mult[0][0].eval(previous_random) : (~C.circuit[sumcheck_id].bit_length_u[0]) ? V_mult[0][0].b : F_ZERO;
     V_u1 = claim_1 = total[1] ? V_mult[1][0].eval(previous_random) : (~C.circuit[sumcheck_id].bit_length_u[1]) ? V_mult[1][0].b : F_ZERO;
     prove_timer.stop();

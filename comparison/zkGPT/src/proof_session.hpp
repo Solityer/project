@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 struct NativeProofStatement {
@@ -116,6 +117,13 @@ public:
     const NativeProofStatement &statement() const { return statement_; }
     std::string statement_digest() const { return statement_.root(); }
     const std::vector<NativeProofMessage> &messages() const { return messages_; }
+    // Prover-side relation helpers use this index to reject duplicate
+    // transcript labels without repeatedly scanning the complete message
+    // history.  The index is derived from the canonical message sequence and
+    // is not part of the serialized proof wire.
+    bool has_label(const std::string &label) const {
+        return label_index_.find(label) != label_index_.end();
+    }
 
 private:
     std::string domain_;
@@ -127,6 +135,7 @@ private:
     // message for each Fiat-Shamir challenge without changing transcript
     // bytes or the proof-session wire schema.
     std::string message_body_cache_;
+    std::unordered_set<std::string> label_index_;
 
     F derive(const std::string &label) const;
     void rebuild_message_body_cache();

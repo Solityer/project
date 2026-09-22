@@ -1,2 +1,0 @@
-terminate called after throwing an instance of 'std::invalid_argument'
-  what():  canonical GAT circuit has a non-zero residual at 1977

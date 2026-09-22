@@ -1,7 +1,0 @@
-gat_adapter_formal_stage: graph
-gat_adapter_formal_stage: probe-forward
-gat_adapter_formal_stage: formal-forward
-gat_adapter_formal_stage: plan
-gat_adapter_formal_stage: registration
-gat_adapter_formal_stage: context
-gat_adapter_formal_stage: masked-full-prove

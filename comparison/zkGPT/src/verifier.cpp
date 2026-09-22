@@ -2236,8 +2236,6 @@ bool prove_masked_gkr_transcript(
                 continue;
             }
 
-            if (current.max_bl_u == 0)
-                throw std::runtime_error("masked GKR ordinary phase1 has zero rounds");
             NativeMaskedTerminalSpec phase1_placeholder;
             phase1_placeholder.kind = NativeMaskedTerminalKind::Claims;
             phase1_placeholder.has_external_binding = true;
@@ -2354,6 +2352,16 @@ bool prove_masked_gkr_transcript(
                 // terminal.  Carry both representations and reject any
                 // later substitution instead of trusting a recomputed vector.
                 phase2_spec.fixed_values = phase1_result.terminal_values;
+                phase2_spec.defer_terminal_relation =
+                    phase2_spec.gkr_coefficients.size() == 5 &&
+                    (phase2_spec.gkr_coefficients[0] *
+                         phase2_spec.fixed_values[0] +
+                     phase2_spec.gkr_coefficients[2] *
+                         phase2_spec.fixed_values[1])
+                            .isZero() &&
+                    (phase2_spec.gkr_coefficients[1] *
+                         phase2_spec.fixed_values[1])
+                        .isZero();
                 phase2_spec.unmasked_fixed_values = {claim_u0, claim_u1};
                 phase2_spec.fixed_openings = phase1_result.terminal_openings;
                 phase2_spec.fixed_commitments = phase1_result.terminal_commitments;
@@ -2361,9 +2369,9 @@ bool prove_masked_gkr_transcript(
                     phase1_result.unmasked_terminal_openings;
                 phase2_spec.unmasked_terminal_openings = {
                     zkgpt::native_pedersen::commit_fresh(
-                        phase2.result().basis, claim_v0),
+                        phase2.result().basis, claim_v0, fast_path),
                     zkgpt::native_pedersen::commit_fresh(
-                        phase2.result().basis, claim_v1)};
+                        phase2.result().basis, claim_v1, fast_path)};
                 if (!phase2.set_terminal_spec(phase2_spec, reason) ||
                     !phase2.finish({claim_v0, claim_v1}, &phase2_result, reason))
                     throw std::runtime_error(*reason);
@@ -2375,6 +2383,14 @@ bool prove_masked_gkr_transcript(
                 phase1_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedV;
                 phase1_spec.gkr_coefficients = coefficients;
                 phase1_spec.fixed_values = {F_ZERO, F_ZERO};
+                // With fixed V=(0,0), only uni[0] and uni[1] remain in the
+                // predicate.  If both vanish, the unmasked relation is the
+                // canonical constant zero; the masked Sumcheck may carry a
+                // hidden terminal mask and must defer only that masked
+                // predicate check while retaining all opening bindings.
+                phase1_spec.defer_terminal_relation =
+                    coefficients.size() == 5 && coefficients[3].isZero() &&
+                    coefficients[4].isZero();
                 phase1_spec.unmasked_fixed_values = {F_ZERO, F_ZERO};
                 const ScalarOpening zero_opening{
                     {basis.domain,
@@ -2443,8 +2459,10 @@ bool prove_masked_gkr_transcript(
         // The descending GKR walk ends at the canonical input MLE point.  It
         // is part of the same masked session so the adapter can later bind
         // this claim to the four input segments and the Lasso query claim.
-        if (r_u[1].empty() ||
-            r_u[1].size() >= sizeof(std::size_t) * 8 ||
+        // A one-element input MLE has a legitimate zero-bit evaluation
+        // point.  Keep the power-of-two/domain check authoritative rather
+        // than rejecting its empty challenge vector.
+        if (r_u[1].size() >= sizeof(std::size_t) * 8 ||
             (std::size_t(1) << r_u[1].size()) != witness.layer_values.front().size())
             throw std::runtime_error("masked GKR final input point is invalid");
         const F input_unmasked = transcript_mle_eval(
@@ -2671,6 +2689,10 @@ bool verify_masked_gkr_transcript(
                 phase1_spec.gkr_coefficients = masked_gkr_coefficients(
                     current, r0_for_spec, r1_for_spec, r_u[layer_id], alpha,
                     beta, relu_rou);
+                phase1_spec.defer_terminal_relation =
+                    phase1_spec.gkr_coefficients.size() == 5 &&
+                    phase1_spec.gkr_coefficients[3].isZero() &&
+                    phase1_spec.gkr_coefficients[4].isZero();
                 const ScalarCommitment zero_commitment{
                     basis.domain,
                     zkgpt::native_pedersen::commit(basis, F_ZERO, F_ZERO).point};
@@ -2728,6 +2750,16 @@ bool verify_masked_gkr_transcript(
                                       "masked phase1 terminal binding has invalid arity");
                     return false;
                 }
+                fixed_u_spec.defer_terminal_relation =
+                    fixed_u_spec.gkr_coefficients.size() == 5 &&
+                    (fixed_u_spec.gkr_coefficients[0] *
+                         fixed_u_spec.fixed_values[0] +
+                     fixed_u_spec.gkr_coefficients[2] *
+                         fixed_u_spec.fixed_values[1])
+                            .isZero() &&
+                    (fixed_u_spec.gkr_coefficients[1] *
+                         fixed_u_spec.fixed_values[1])
+                        .isZero();
                 // The phase2 fixed side must consume the exact authenticated
                 // phase1 terminal commitments.  Its public values and
                 // commitments are supplied together to the native verifier.

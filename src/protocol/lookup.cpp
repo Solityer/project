@@ -72,7 +72,7 @@ namespace gatzk::protocol
                     {
                         const auto begin = chunk * chunk_size;
                         const auto end = std::min(
-                            values.size(), begin + chunk_size);
+                            values.size(`), begin + chunk_size);
                         if (begin >= end)
                         {
                             break;

@@ -313,6 +313,7 @@ void NativeProofSession::absorb(const std::string &label,
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Data, label,
                                            payload,
                                            static_cast<std::uint64_t>(messages_.size())});
+    label_index_.insert(messages_.back().label);
     append_message_encoding(message_body_cache_, messages_.back());
 }
 
@@ -322,6 +323,7 @@ void NativeProofSession::absorb_field(const std::string &label, const F &value) 
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Field, label,
                                            field_encoding(value),
                                            static_cast<std::uint64_t>(messages_.size())});
+    label_index_.insert(messages_.back().label);
     append_message_encoding(message_body_cache_, messages_.back());
 }
 
@@ -336,6 +338,7 @@ void NativeProofSession::absorb_fields(const std::string &label,
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::FieldVector, label,
                                            std::move(payload),
                                            static_cast<std::uint64_t>(messages_.size())});
+    label_index_.insert(messages_.back().label);
     append_message_encoding(message_body_cache_, messages_.back());
 }
 
@@ -362,6 +365,7 @@ F NativeProofSession::challenge(const std::string &label) {
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Challenge,
                                            challenge_label, field_encoding(result),
                                            static_cast<std::uint64_t>(messages_.size())});
+    label_index_.insert(messages_.back().label);
     append_message_encoding(message_body_cache_, messages_.back());
     return result;
 }
@@ -378,8 +382,13 @@ bool NativeProofSession::rollback(std::size_t checkpoint, std::string *reason) {
 
 void NativeProofSession::rebuild_message_body_cache() {
     message_body_cache_.clear();
+    label_index_.clear();
+    label_index_.reserve(messages_.size());
     for (const NativeProofMessage &message : messages_)
+    {
+        label_index_.insert(message.label);
         append_message_encoding(message_body_cache_, message);
+    }
 }
 
 bool NativeProofSession::replay(std::string *reason) const {

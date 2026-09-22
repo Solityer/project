@@ -11,6 +11,7 @@ data/cache/build_cpu_diag/
 comparison/ezkl/target/
 comparison/zkGPT/cmake-build-*/
 comparison/zkGPT/logs/
+comparison/zkGPT/results/.formal-preflight-*/
 
 # Local core execution regression artifacts
 tests/.core_execution/

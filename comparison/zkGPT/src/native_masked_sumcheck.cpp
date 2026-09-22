@@ -383,6 +383,8 @@ bool check_terminal(const NativeMaskedTerminalSpec &, const F &,
                     const std::vector<F> &, bool, std::string *);
 bool sample_terminal(const NativeMaskedTerminalSpec &, const F &,
                      std::vector<F> &, std::string *);
+bool deferred_fixed_v_spec(const NativeMaskedTerminalSpec &);
+bool deferred_fixed_u_spec(const NativeMaskedTerminalSpec &);
 bool unique_index(const NativeProofSession &, const std::string &, std::size_t &,
                   std::string *);
 bool verify_opening_block(const NativeProofSession &, const PedersenBasis &,
@@ -1231,6 +1233,13 @@ bool verify_unmasked_terminal_relation(
     case NativeMaskedTerminalKind::GkrPredicateFixedV: {
         const bool fixed_u = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU;
         const bool fixed_v = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedV;
+        if (deferred_fixed_v_spec(spec)) {
+            return verify_linear_block(
+                session, basis, cursor,
+                label + "/terminal/unmasked/fixed-v-zero",
+                {claim, fixed_values.front()}, {F_ONE, -F_ONE}, F_ZERO,
+                reason);
+        }
         std::vector<ScalarCommitment> products;
         const auto value_label = [&](std::size_t i) {
             return label + "/terminal/unmasked/value/" + std::to_string(i);
@@ -1534,6 +1543,19 @@ bool verify_terminal_relation(const NativeProofSession &session,
     case NativeMaskedTerminalKind::GkrPredicateFixedV: {
         const bool fixed_u = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU;
         const bool fixed_v = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedV;
+        if (deferred_fixed_u_spec(spec) || deferred_fixed_v_spec(spec)) {
+            ScalarCommitment anchor;
+            if (!verify_opening_block(session, basis, cursor,
+                                      label + "/terminal/anchor", anchor,
+                                      reason) ||
+                !verify_linear_block(session, basis, cursor,
+                                     label + "/terminal/anchor-bind", {anchor},
+                                     {F_ONE}, running, reason) ||
+                !verify_claim_binding(anchor))
+                return false;
+            if (result != nullptr) result->operand_commitments.push_back(anchor);
+            break;
+        }
         std::vector<ScalarCommitment> products;
         for (std::size_t i = 0; i < 3; ++i) {
             ScalarCommitment product;
@@ -1910,6 +1932,31 @@ F gkr_fixed_v_eval(const std::vector<F> &c, const std::vector<F> &u,
            c[2] * u[1] * v[0] + c[3] * u[0] + c[4] * u[1];
 }
 
+// A fixed-zero-V GKR predicate is identically zero when its two U-linear
+// coefficients are zero. In that case the masked Sumcheck may carry an
+// arbitrary hidden mask at its terminal point; requiring the masked terminal
+// values to satisfy the identically-zero predicate would reject that mask.
+// Defer only this exact constant-zero relation, while binding the unmasked
+// claim to the canonical zero opening below.
+bool deferred_fixed_v_spec(const NativeMaskedTerminalSpec &spec) {
+    return spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedV &&
+           spec.defer_terminal_relation && spec.fixed_values.size() == 2 &&
+           spec.fixed_values[0].isZero() && spec.fixed_values[1].isZero() &&
+           spec.gkr_coefficients.size() == 5 &&
+           spec.gkr_coefficients[3].isZero() &&
+           spec.gkr_coefficients[4].isZero();
+}
+
+bool deferred_fixed_u_spec(const NativeMaskedTerminalSpec &spec) {
+    if (spec.kind != NativeMaskedTerminalKind::GkrPredicateFixedU ||
+        !spec.defer_terminal_relation || spec.fixed_values.size() != 2 ||
+        spec.gkr_coefficients.size() != 5)
+        return false;
+    return (spec.gkr_coefficients[0] * spec.fixed_values[0] +
+            spec.gkr_coefficients[2] * spec.fixed_values[1]).isZero() &&
+           (spec.gkr_coefficients[1] * spec.fixed_values[1]).isZero();
+}
+
 F random_nonzero_field() {
     F result;
     do result = random_field(); while (result.isZero());
@@ -1938,6 +1985,18 @@ bool sample_terminal(const NativeMaskedTerminalSpec &spec, const F &running,
         }
     }
     (void)arity;
+    if (spec.defer_terminal_relation &&
+        (spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU ||
+         spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedV)) {
+        const bool valid = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU
+            ? deferred_fixed_u_spec(spec) : deferred_fixed_v_spec(spec);
+        if (!valid) {
+            set_reason(reason, "masked deferred fixed-side terminal spec is invalid");
+            return false;
+        }
+        terminal = {random_field(), random_field()};
+        return true;
+    }
     if (spec.kind == NativeMaskedTerminalKind::Claims &&
         spec.defer_terminal_relation) {
         terminal = {random_field(), random_field()};
@@ -2116,6 +2175,17 @@ bool check_terminal(const NativeMaskedTerminalSpec &spec, const F &running,
     if (terminal.size() != arity) {
         set_reason(reason, "masked terminal relation arity mismatch");
         return false;
+    }
+    if (spec.defer_terminal_relation &&
+        (spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU ||
+         spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedV)) {
+        const bool valid = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU
+            ? deferred_fixed_u_spec(spec) : deferred_fixed_v_spec(spec);
+        if (!valid) {
+            set_reason(reason, "masked deferred fixed-side terminal spec is invalid");
+            return false;
+        }
+        if (!use_unmasked_fixed) return true;
     }
     if (spec.kind == NativeMaskedTerminalKind::Claims &&
         spec.defer_terminal_relation)
@@ -2445,7 +2515,19 @@ bool prove_unmasked_terminal_relation(
     ScalarOpening &claim_opening, std::string *reason) {
     const NativeMaskedTerminalSpec &spec = state.terminal_spec;
     const std::string &label = state.label;
-    claim_opening = state_commit_fresh(state, state.unmasked_running);
+    const bool deferred_fixed_v = deferred_fixed_v_spec(spec);
+    if (deferred_fixed_v) {
+        if (!state.unmasked_running.isZero() || fixed_openings.empty()) {
+            set_reason(reason,
+                       "masked deferred fixed-V unmasked claim is not zero");
+            return false;
+        }
+        // Reuse the canonical value=0, blinding=0 fixed opening so the
+        // independent verifier can authenticate the constant-zero claim.
+        claim_opening = fixed_openings.front();
+    } else {
+        claim_opening = state_commit_fresh(state, state.unmasked_running);
+    }
     if (!emit_opening(*state.session, state.basis,
                       label + "/terminal/unmasked/claim", claim_opening, reason))
         return false;
@@ -2497,6 +2579,13 @@ bool prove_unmasked_terminal_relation(
     case NativeMaskedTerminalKind::GkrPredicateFixedV: {
         const bool fixed_u = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU;
         const bool fixed_v = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedV;
+        if (deferred_fixed_v) {
+            return emit_linear(
+                *state.session, state.basis,
+                label + "/terminal/unmasked/fixed-v-zero",
+                {claim_opening, fixed_openings.front()}, {F_ONE, -F_ONE},
+                F_ZERO, reason);
+        }
         std::vector<ScalarOpening> products;
         const std::string product_prefix = label + "/terminal/unmasked/gkr-product/";
         const auto make_product = [&](std::size_t index, const ScalarOpening &a,
@@ -2747,6 +2836,18 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState &state,
     case NativeMaskedTerminalKind::GkrPredicateFixedV: {
         const bool fixed_u = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU;
         const bool fixed_v = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedV;
+        if (deferred_fixed_u_spec(spec) || deferred_fixed_v_spec(spec)) {
+            const ScalarOpening anchor = state_commit_fresh(
+                state, state.masked_running);
+            if (!emit_opening(*state.session, state.basis,
+                              label + "/terminal/anchor", anchor, reason) ||
+                !emit_linear(*state.session, state.basis,
+                             label + "/terminal/anchor-bind", {anchor},
+                             {F_ONE}, state.masked_running, reason))
+                return false;
+            return bind_masked_claim(state, state.result.unmasked_claim_opening,
+                                     anchor, operands, reason);
+        }
         std::vector<ScalarOpening> left = terminal_openings;
         std::vector<ScalarOpening> fixed = fixed_openings;
         std::vector<ScalarOpening> products;
