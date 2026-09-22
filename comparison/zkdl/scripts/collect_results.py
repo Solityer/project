@@ -19,8 +19,15 @@ from result_artifacts import ArtifactError, audit_run, require_exact_matrix, req
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--runs", type=Path, default=Path("runs"))
+    parser.add_argument("--runs", type=Path, default=None,
+                        help="baseline-local run directory (legacy spelling)")
+    parser.add_argument("--runs-dir", type=Path, default=None,
+                        help="run directory relative to --root (fixture mode supports a temp root)")
+    parser.add_argument("--root", type=Path, default=None,
+                        help="explicit artifact root; requires --fixture-mode")
     parser.add_argument("--output", type=Path, default=Path("results/collected.json"))
+    parser.add_argument("--fixture-mode", action="store_true",
+                        help="audit explicitly-marked tiny CPU fixture artifacts, never formal results")
     parser.add_argument(
         "--require-matrix",
         action="store_true",
@@ -32,8 +39,14 @@ def main() -> int:
         help="require exactly one fully audited cell for each canonical dataset on this backend",
     )
     args = parser.parse_args()
-    root = Path(__file__).resolve().parent.parent
-    runs = (root / args.runs).resolve()
+    if args.runs is not None and args.runs_dir is not None:
+        raise SystemExit("collect-results: --runs and --runs-dir are mutually exclusive")
+    formal_root = Path(__file__).resolve().parent.parent
+    if args.root is not None and not args.fixture_mode:
+        raise SystemExit("collect-results: --root requires explicit --fixture-mode")
+    root = (args.root if args.root is not None else formal_root).resolve()
+    runs_arg = args.runs_dir if args.runs_dir is not None else args.runs
+    runs = (root / (runs_arg if runs_arg is not None else Path("runs"))).resolve()
     try:
         runs.relative_to(root.resolve())
     except ValueError:
@@ -47,7 +60,7 @@ def main() -> int:
     failures: list[str] = []
     for record_path in records:
         try:
-            rows.append(audit_run(root, record_path.parent))
+            rows.append(audit_run(root, record_path.parent, fixture_mode=args.fixture_mode))
         except ArtifactError as exc:
             failures.append(str(exc))
     if failures:
@@ -78,6 +91,7 @@ def main() -> int:
             "schema": "zkDL_gat_result_collection_v2",
             "mode": "matrix" if args.require_matrix else "selected_backend" if args.require_selected_backend else "unconstrained",
             "selected_backend": args.require_selected_backend,
+            **({"fixture_mode": True} if args.fixture_mode else {}),
             "rows": rows,
         }, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

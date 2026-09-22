@@ -66,10 +66,11 @@ def main(args: argparse.Namespace) -> int:
     prepare = ROOT / "scripts" / "prepare_gat_resources.py"
     resource_validator = ROOT / "scripts" / "validate_resources.py"
     build = ROOT / "scripts" / "build_ezkl.sh"
+    producer = ROOT / "scripts" / "produce_public_statement.py"
     single = ROOT / "scripts" / "run_single_dataset.py"
     collect = ROOT / "scripts" / "collect_results.py"
     validate = ROOT / "scripts" / "validate_final.py"
-    for path in (provision, prepare, resource_validator, build, single, collect, validate):
+    for path in (provision, prepare, resource_validator, build, producer, single, collect, validate):
         if not path.is_file():
             abort(f"missing formal runner component: {path}")
 
@@ -123,16 +124,26 @@ def main(args: argparse.Namespace) -> int:
         run(setup, f"{dataset} native setup")
         run(
             [
-                local_cli(binary, "binary"),
-                "gat-produce",
+                python,
+                local_cli(producer, "independent producer"),
                 "--dataset",
                 dataset,
                 "--resource-manifest",
                 "resources/resource_manifest.json",
+                "--setup-context",
+                local_cli(output / "producer_context.json", "producer setup context"),
                 "--output-dir",
                 local_cli(output, "output-dir"),
+                "--config",
+                local_cli(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg", "config"),
+                "--statement",
+                local_cli(output / "statement.json", "public statement"),
+                "--public-output",
+                local_cli(output / "public_output.json", "public output"),
+                "--producer-manifest",
+                local_cli(output / "producer_manifest.json", "producer manifest"),
             ],
-            f"{dataset} independent gat-produce",
+            f"{dataset} independent public statement/Y producer",
         )
         run(
             [
@@ -150,6 +161,8 @@ def main(args: argparse.Namespace) -> int:
                 local_cli(output / "statement.json", "public statement"),
                 "--public-output",
                 local_cli(output / "public_output.json", "public output"),
+                "--producer-manifest",
+                local_cli(output / "producer_manifest.json", "producer manifest"),
                 "--binary",
                 local_cli(binary, "binary"),
                 "--output-dir",

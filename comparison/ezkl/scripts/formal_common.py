@@ -63,7 +63,7 @@ CANONICAL_CONTRACT_KEYS = {
     "native_backend",
     "gpu_backend",
 }
-CONTRACT_CHAIN = ("gat-prepare", "gat-produce", "gat-witness", "prove", "verify")
+CONTRACT_CHAIN = ("gat-prepare", "produce-public-statement", "gat-witness", "prove", "verify")
 FORBIDDEN_PATH_MARKERS = (
     "dummy",
     "gen-srs",
@@ -162,7 +162,7 @@ def _source_files() -> list[Path]:
         path = ROOT / relative
         if path.is_file() and not path.is_symlink():
             paths.append(path)
-    return sorted(set(paths), key=lambda p: p.relative_to(ROOT).as_posix())
+    return sorted(set(paths), key=lambda p: tuple(p.relative_to(ROOT).parts))
 
 
 def source_tree_hash() -> str:
@@ -265,10 +265,10 @@ def load_cli_contract() -> dict[str, Any]:
             abort(f"GAT adapter contract maps {key} to a forbidden non-formal command")
     if (
         commands["prepare_command"] != "gat-prepare"
-        or commands["producer_command"] != "gat-produce"
+        or commands["producer_command"] != "produce-public-statement"
         or commands["witness_command"] != "gat-witness"
     ):
-        abort("GAT adapter contract must expose gat-prepare, gat-produce and gat-witness")
+        abort("GAT adapter contract must expose gat-prepare, external producer and gat-witness")
     if commands["prove_command"] != "prove" or commands["verify_command"] != "verify":
         abort("GAT adapter contract must use official prove and verify commands")
     if contract.get("proof_instance_binding") != "native_public_instances":
@@ -300,9 +300,19 @@ def load_cli_contract() -> dict[str, Any]:
             "--srs-path",
             "--public-statement",
             "--public-output",
+            "--producer-manifest",
             "--gpu",
         },
-        "producer": {"--dataset", "--resource-manifest", "--output-dir", "--gpu"},
+        "producer": {
+            "--dataset",
+            "--resource-manifest",
+            "--setup-context",
+            "--output-dir",
+            "--config",
+            "--statement",
+            "--public-output",
+            "--producer-manifest",
+        },
         "witness": {
             "--dataset",
             "--resource-manifest",
@@ -709,6 +719,7 @@ def validate_artifact_identity(
         "files",
         "source_snapshot",
         "statement_sha256",
+        "producer_manifest_sha256",
         "ezkl_security_profile_id",
     }
     require_exact_keys(manifest, required, "artifact identity manifest")
@@ -804,6 +815,14 @@ def validate_artifact_identity(
         if manifest[key] != sha256(path):
             abort(f"artifact identity mismatch for {key}: {path}")
     require_digest(manifest["statement_sha256"], "artifact statement_sha256")
+    require_digest(manifest["producer_manifest_sha256"], "artifact producer_manifest_sha256")
+    for name, digest in (
+        ("producer_context.json", sha256(artifact_root / "producer_context.json")),
+        ("producer_manifest.json", manifest["producer_manifest_sha256"]),
+    ):
+        record = file_records.get(name)
+        if record is None or record["sha256"] != digest:
+            abort(f"artifact file {name} is not bound to the producer chain")
     if manifest["source_tree_sha256"] != source_tree_hash():
         abort("artifact identity source_tree_sha256 does not match current source")
     if manifest["resource_manifest_sha256"] != resource_manifest_hash():

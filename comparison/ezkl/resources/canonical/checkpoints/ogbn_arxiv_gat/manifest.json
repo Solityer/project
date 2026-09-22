@@ -10,7 +10,7 @@
   ],
   "dataset": "ogbn_arxiv",
   "degree_bound_id": "ledger:gat:ogbn_arxiv:v1",
-  "degree_bound_digest": "REQUIRED_LOCAL_GENERATED_LEDGER_SHA256",
+  "degree_bound_digest": "f82d649abbcb9e017ffbdd8eb3aef27a95ca79ee4d02c558ba8359767d9a2cda",
   "edge_sort_rule": "edge_gid_then_dst_stable",
   "family_schema": "multi_layer_multi_head",
   "hidden_head_specs": [
@@ -180,7 +180,7 @@
   "self_loop_rule": "per_node",
   "split_format": "index_split",
   "static_table_id": "tables:gat:ogbn_arxiv:v1",
-  "static_table_digest": "REQUIRED_LOCAL_GENERATED_STATIC_TABLE_SHA256",
+  "static_table_digest": "84f753639b5372d3852917f62ec4f4ce8030a0dd6e1316848ab5b8ebde24b154",
   "subgraph_rule": "whole_graph",
   "task_type": "transductive_node_classification",
   "tensor_count": 56,

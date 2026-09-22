@@ -39,7 +39,7 @@ pub fn native_poseidon_hash(values: &[Fp]) -> Result<Fp, String> {
 
 /// Return the native parameter hash in ezkl's canonical field encoding.
 pub fn native_poseidon_hash_string(values: &[Fp]) -> Result<String, String> {
-    Ok(crate::pfsys::field_to_string(&native_poseidon_hash(
+    Ok(crate::pfsys::canonical_fr_to_string(&native_poseidon_hash(
         values,
     )?))
 }

@@ -74,6 +74,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--config")
     p.add_argument("--public-statement", help="external verifier-facing public statement")
     p.add_argument("--public-output", help="external verifier-facing public output/Y")
+    p.add_argument("--producer-manifest", help="external producer provenance/digest manifest")
     p.add_argument("--settings")
     p.add_argument("--compiled-circuit")
     p.add_argument("--vk")
@@ -214,8 +215,8 @@ def print_plan(args: argparse.Namespace, config: Path, output: Path) -> None:
     print(f"dataset={args.dataset} backend={args.backend}")
     print(f"config={baseline_relative(config, 'config')}")
     print(f"output_dir={baseline_relative(output, 'output-dir')}")
-    print("execution order: gat-prepare --phase setup -> gat-produce (separate command) -> gat-prepare --phase final -> gat-witness -> prove -> verify")
-    print("rerun with --execute-formal, --public-statement and --public-output; native SRS comes from the authenticated manifest")
+    print("execution order: gat-prepare --phase setup -> independent public-statement producer -> gat-prepare --phase final -> gat-witness -> prove -> verify")
+    print("rerun with --execute-formal, --public-statement, --public-output and --producer-manifest; native SRS comes from the authenticated manifest")
 
 
 def main(args: argparse.Namespace) -> int:
@@ -232,14 +233,17 @@ def main(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         abort("--dry-run cannot be combined with --execute-formal")
-    if not args.public_statement or not args.public_output:
-        abort("--execute-formal requires both --public-statement and --public-output")
+    if not args.public_statement or not args.public_output or not args.producer_manifest:
+        abort("--execute-formal requires --public-statement, --public-output and --producer-manifest")
     statement = ensure_relative_arg(args.public_statement, "public-statement")
     public_output = ensure_relative_arg(args.public_output, "public-output")
+    producer_manifest = ensure_relative_arg(args.producer_manifest, "producer-manifest")
     reject_forbidden_path(statement, "public-statement")
     reject_forbidden_path(public_output, "public-output")
+    reject_forbidden_path(producer_manifest, "producer-manifest")
     require_file(statement, "external public statement")
     require_file(public_output, "external public output Y")
+    require_file(producer_manifest, "external producer manifest")
     public_values = public_output_values(public_output, dataset=args.dataset)
     validate_public_statement(
         statement,
@@ -292,7 +296,7 @@ def main(args: argparse.Namespace) -> int:
             abort(f"--reuse-setup requires an existing regular output directory: {output}")
     else:
         if output.exists() or output.is_symlink():
-            abort(f"output-dir already exists; run setup and gat-produce first, then use --reuse-setup: {output}")
+            abort(f"output-dir already exists; run setup and independent producer first, then use --reuse-setup: {output}")
         output.mkdir(parents=True)
     logs = output / "logs"
     if logs.exists() and logs.is_symlink():
@@ -353,6 +357,9 @@ def main(args: argparse.Namespace) -> int:
         require_file(path, label)
 
     require_file(output / "circuit_ref.json", "setup circuit reference")
+    require_file(output / "producer_context.json", "producer setup context")
+    if producer_manifest.parent != output:
+        abort("producer-manifest must be inside output-dir")
 
     if "qat_best_logits" in public_output.name or "qat_best_logits" in public_output.as_posix():
         abort("qat_best_logits is not a formal public output")
@@ -376,6 +383,8 @@ def main(args: argparse.Namespace) -> int:
         cli_path(statement, "public statement"),
         "--public-output",
         cli_path(public_output, "public output"),
+        "--producer-manifest",
+        cli_path(producer_manifest, "producer manifest"),
     ]
     if args.backend == "gpu":
         final_command.append("--gpu")
@@ -411,10 +420,18 @@ def main(args: argparse.Namespace) -> int:
         abort("external public output Y disagrees element-by-element with statement")
     if artifact["statement_sha256"] != sha256(statement):
         abort("artifact statement_sha256 does not bind the selected external statement")
+    if artifact["producer_manifest_sha256"] != sha256(producer_manifest):
+        abort("artifact producer_manifest_sha256 does not bind the selected producer manifest")
     artifact_file_records = {record["path"]: record for record in artifact["files"]}
     for name, digest in (("statement.json", sha256(statement)), ("public_output.json", sha256(public_output))):
         if name not in artifact_file_records or artifact_file_records[name]["sha256"] != digest:
             abort(f"artifact file {name} does not bind the selected external public boundary")
+    for name, digest in (
+        ("producer_context.json", sha256(output / "producer_context.json")),
+        ("producer_manifest.json", sha256(producer_manifest)),
+    ):
+        if name not in artifact_file_records or artifact_file_records[name]["sha256"] != digest:
+            abort(f"artifact file {name} does not bind the independent producer chain")
 
     witness_ms = run_command(
         [

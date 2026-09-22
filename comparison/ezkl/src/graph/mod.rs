@@ -2271,6 +2271,10 @@ impl Circuit<Fp> for GraphCircuit {
             } else {
                 vec![]
             };
+            // Keep the runtime parameter assignment in the model's module
+            // namespace so its advice allocator does not overlap the module
+            // regions used by the parameter hash.
+            layouter.assign_region(|| "_enter_module_2", |_| Ok(()))?;
             let (assigned_parameter, assigned_constants) = layouter.assign_region(
                 || "runtime_parameter_input",
                 |region| {

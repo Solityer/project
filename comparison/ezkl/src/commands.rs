@@ -480,6 +480,10 @@ pub enum Commands {
         /// during the final phase.
         #[arg(long, value_hint = clap::ValueHint::FilePath)]
         public_output: Option<PathBuf>,
+        /// Independent producer provenance/digest manifest. Required only
+        /// during the final phase.
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        producer_manifest: Option<PathBuf>,
         /// Request the official GPU path. Missing GPU backend/device fails closed.
         #[arg(long, action = clap::ArgAction::SetTrue)]
         gpu: bool,

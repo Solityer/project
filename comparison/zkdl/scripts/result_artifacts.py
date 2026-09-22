@@ -25,10 +25,19 @@ MAX_NATIVE_DOMAIN = 1 << 30
 SRS_FRAME_HEADER_BYTES = 8 + 4 + 4 + 8 + 8 + 8
 G1_POINT_BYTES = 48
 MAX_SRS_FRAME_BYTES = 1 << 32
+FIXTURE_PROOF_SCOPE = "fixture_segmented_relation"
 
 
 class ArtifactError(ValueError):
     """A production artifact failed a fail-closed audit."""
+
+
+def fixture_statement_id(dataset: str, proof_digest: str,
+                         evidence_digest: str) -> str:
+    """Derive the explicit fixture statement identity from bound evidence."""
+    encoded = ("zkDL.gat.fixture.statement.v1\n" + dataset + "\n" +
+               proof_digest + "\n" + evidence_digest + "\n").encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def sha256_file(path: Path) -> str:
@@ -371,9 +380,117 @@ def _audit_assets(root: Path, run_dir: Path, statement: dict[str, str]) -> tuple
     return manifest, asset_digest
 
 
+def _audit_fixture_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
+                       expected_backend: str | None = None) -> dict[str, str]:
+    """Audit one explicitly-marked tiny CPU fixture artifact.
+
+    This path is never selected by the formal collector/validator defaults.
+    It still binds every result row to the real native proof bytes and to a
+    separately recorded independent-verifier evidence digest, while refusing
+    GPU/fallback claims and stale or missing sidecars.
+    """
+    run_dir = run_dir.resolve()
+    try:
+        run_dir.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ArtifactError(f"fixture run directory escapes fixture root: {run_dir}") from exc
+    record_path = _regular(run_dir / "run.record", "fixture run record")
+    proof_path = _regular(run_dir / "proof.bin", "fixture proof artifact")
+    envelope_path = _regular(run_dir / "proof.meta", "fixture proof envelope")
+    statement_path = _regular(run_dir / "statement.txt", "fixture public statement")
+    verification_path = _regular(run_dir / "verification.result", "fixture verification result")
+    evidence_path = _regular(run_dir / "independent_verify.evidence", "fixture verifier evidence")
+    public_output = _regular(run_dir / "public_Y.txt", "fixture public output")
+    record = read_kv(record_path)
+    envelope = read_kv(envelope_path)
+    statement = read_kv(statement_path)
+    verification = read_kv(verification_path)
+    dataset = _required(record, "dataset", record_path)
+    backend = _required(record, "backend", record_path)
+    if dataset not in DATASETS:
+        raise ArtifactError(f"fixture dataset is non-canonical: {dataset}")
+    if backend != "cpu":
+        raise ArtifactError(f"fixture backend is not CPU: {backend}")
+    if expected_dataset is not None and dataset != expected_dataset:
+        raise ArtifactError(f"fixture dataset mismatch in {record_path}")
+    if expected_backend is not None and backend != expected_backend:
+        raise ArtifactError(f"fixture backend mismatch in {record_path}")
+    if any(values.get("fixture_mode") != "1"
+           for values in (record, envelope, statement, verification)):
+        raise ArtifactError(f"fixture mode marker is missing: {run_dir}")
+    if record.get("schema") != "zkDL_gat_run_record_v1" or record.get("verification_status") != "VERIFIED":
+        raise ArtifactError(f"fixture run record is not VERIFIED: {record_path}")
+    if envelope.get("schema_id") != "zkDL_gat_proof_envelope_v1" or envelope.get("status") != "PROVED":
+        raise ArtifactError(f"fixture proof envelope is not PROVED: {envelope_path}")
+    if envelope.get("backend") != "cpu" or envelope.get("proof_scope") != FIXTURE_PROOF_SCOPE:
+        raise ArtifactError(f"fixture proof envelope backend/scope mismatch: {envelope_path}")
+    if verification.get("status") != "VERIFIED" or verification.get("backend") != "cpu":
+        raise ArtifactError(f"fixture independent verifier did not return VERIFIED: {verification_path}")
+    if statement.get("schema") != "zkDL_gat_statement_v1" or statement.get("dataset") != dataset:
+        raise ArtifactError(f"fixture statement schema/dataset mismatch: {statement_path}")
+    if statement.get("proof_scope") != FIXTURE_PROOF_SCOPE or statement.get("verifier_reads_witness") != "0":
+        raise ArtifactError(f"fixture statement violates verifier boundary: {statement_path}")
+    for values, label in ((record, "record"), (envelope, "envelope"),
+                          (statement, "statement"), (verification, "verification")):
+        if values.get("silent_fallback") != "0":
+            raise ArtifactError(f"fixture {label} claims silent fallback")
+        if values.get("gpu_kernel_executed") != "0":
+            raise ArtifactError(f"fixture {label} claims GPU execution")
+    proof_bytes = proof_path.read_bytes()
+    if len(proof_bytes) < 4 or proof_bytes[:4] != b"GATR":
+        raise ArtifactError(f"fixture proof is not a native GATR artifact: {proof_path}")
+    proof_digest = sha256_file(proof_path)
+    evidence = evidence_path.read_text(encoding="utf-8")
+    evidence_digest = sha256_file(evidence_path)
+    if "independent_verify=PASS" not in evidence or f"artifact_sha256={proof_digest}" not in evidence:
+        raise ArtifactError("fixture evidence does not bind independent verification to proof bytes")
+    expected_statement = fixture_statement_id(dataset, proof_digest, evidence_digest)
+    if statement.get("statement_id") != expected_statement:
+        raise ArtifactError("fixture statement identity is stale or not evidence-bound")
+    for values, label in ((record, "record"), (envelope, "envelope"),
+                          (verification, "verification")):
+        if values.get("statement_id") != expected_statement:
+            raise ArtifactError(f"fixture {label}/statement identity mismatch")
+        if values.get("proof_id") != proof_digest:
+            raise ArtifactError(f"fixture {label}/proof identity mismatch")
+    if statement.get("proof_id") != proof_digest or statement.get("fixture_evidence_digest") != evidence_digest:
+        raise ArtifactError("fixture statement artifact/evidence identity mismatch")
+    try:
+        declared_size = int(record.get("proof_size_bytes", "0"))
+        envelope_size = int(envelope.get("proof_size_bytes", "0"))
+    except ValueError as exc:
+        raise ArtifactError("fixture proof size is not an integer") from exc
+    if declared_size != len(proof_bytes) or envelope_size != len(proof_bytes):
+        raise ArtifactError("fixture proof size is stale")
+    if record.get("proof_scope") != FIXTURE_PROOF_SCOPE or envelope.get("proof_scope") != FIXTURE_PROOF_SCOPE:
+        raise ArtifactError("fixture record/envelope proof scope mismatch")
+    if record.get("verifier_reads_witness") != "0" or record.get("output_bound") != "1":
+        raise ArtifactError("fixture record violates CPU/output boundary")
+    if envelope.get("verifier_reads_witness") != "0" or envelope.get("output_bound") != "1":
+        raise ArtifactError("fixture envelope violates CPU/output boundary")
+    if public_output.stat().st_size == 0:
+        raise ArtifactError("fixture public output is empty")
+    return {
+        **record,
+        "run_dir": run_dir.relative_to(root.resolve()).as_posix(),
+        "proof_digest": proof_digest,
+        "proof_artifact_path": proof_path.relative_to(root.resolve()).as_posix(),
+        "proof_meta_digest": sha256_file(envelope_path),
+        "statement_digest": sha256_file(statement_path),
+        "verification_result_digest": sha256_file(verification_path),
+        "asset_manifest_schema": "fixture-explicit-no-formal-assets",
+        "native_core_api": "zkdl_native_gat_bridge_v1",
+        "independent_verification": "1",
+        "fixture_mode": "1",
+    }
+
+
 def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
-              expected_backend: str | None = None) -> dict[str, str]:
+              expected_backend: str | None = None, fixture_mode: bool = False) -> dict[str, str]:
     """Audit one runner output directory and return collector-ready fields."""
+    if fixture_mode:
+        return _audit_fixture_run(root, run_dir, expected_dataset=expected_dataset,
+                                  expected_backend=expected_backend)
     run_dir = run_dir.resolve()
     try:
         run_dir.relative_to(root.resolve())

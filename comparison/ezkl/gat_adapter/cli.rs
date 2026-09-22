@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 /// Baseline-local location of the generated contract consumed by formal
 /// runners.  The build step creates the directory before invoking this
@@ -71,13 +71,13 @@ impl FormalCliContract {
             proof_instance_binding: "native_public_instances".into(),
             official_chain: vec![
                 "gat-prepare".into(),
-                "gat-produce".into(),
+                "produce-public-statement".into(),
                 "gat-witness".into(),
                 "prove".into(),
                 "verify".into(),
             ],
             prepare_command: "gat-prepare".into(),
-            producer_command: "gat-produce".into(),
+            producer_command: "produce-public-statement".into(),
             witness_command: "gat-witness".into(),
             prove_command: "prove".into(),
             verify_command: "verify".into(),
@@ -90,13 +90,18 @@ impl FormalCliContract {
                     "--srs-path".into(),
                     "--public-statement".into(),
                     "--public-output".into(),
+                    "--producer-manifest".into(),
                     "--gpu".into(),
                 ],
                 producer: vec![
                     "--dataset".into(),
                     "--resource-manifest".into(),
+                    "--setup-context".into(),
                     "--output-dir".into(),
-                    "--gpu".into(),
+                    "--config".into(),
+                    "--statement".into(),
+                    "--public-output".into(),
+                    "--producer-manifest".into(),
                 ],
                 witness: vec![
                     "--dataset".into(),
@@ -142,15 +147,17 @@ impl FormalCliContract {
     /// Write a generated contract and validate it before publication.
     pub fn write(path: &Path) -> Result<(), String> {
         validate_contract_path(path)?;
+        let resolved_path = resolve_contract_path(path)?;
         let contract = Self::canonical();
         contract.validate()?;
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = resolved_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("create {}: {}", parent.display(), e))?;
         }
         let bytes = serde_json::to_vec_pretty(&contract)
             .map_err(|e| format!("serialize formal CLI contract: {}", e))?;
-        fs::write(path, bytes).map_err(|e| format!("write formal CLI contract: {}", e))
+        fs::write(&resolved_path, bytes)
+            .map_err(|e| format!("write formal CLI contract: {}", e))
     }
 }
 
@@ -172,4 +179,95 @@ fn validate_contract_path(path: &Path) -> Result<(), String> {
         return Err("formal CLI contract path must not be empty".into());
     }
     Ok(())
+}
+
+/// Resolve a validated relative contract path only at the IO boundary.
+///
+/// The formal contract path is intentionally validated in its original
+/// baseline-relative form.  Existing path components are then checked for
+/// symlinks and the canonical parent/target must remain below the canonical
+/// current working directory (the active baseline root).
+fn resolve_contract_path(path: &Path) -> Result<PathBuf, String> {
+    let baseline_root = std::env::current_dir()
+        .map_err(|e| format!("resolve formal CLI baseline root: {}", e))?;
+    let canonical_root = baseline_root
+        .canonicalize()
+        .map_err(|e| format!("canonicalize formal CLI baseline root: {}", e))?;
+    let resolved = baseline_root.join(path);
+    ensure_no_symlink_components(&resolved, &baseline_root)?;
+    if let Some(parent) = resolved.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("create formal CLI parent {}: {}", parent.display(), e))?;
+            ensure_no_symlink_components(&resolved, &baseline_root)?;
+        }
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|e| format!("canonicalize formal CLI parent {}: {}", parent.display(), e))?;
+        if !canonical_parent.starts_with(&canonical_root) {
+            return Err(format!(
+                "formal CLI contract path escapes baseline root: {}",
+                path.display()
+            ));
+        }
+    }
+    if resolved.exists() {
+        let canonical_target = resolved
+            .canonicalize()
+            .map_err(|e| format!("canonicalize formal CLI contract {}: {}", resolved.display(), e))?;
+        if !canonical_target.starts_with(&canonical_root) {
+            return Err(format!(
+                "formal CLI contract path escapes baseline root: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(resolved)
+}
+
+fn ensure_no_symlink_components(path: &Path, root: &Path) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| format!("formal CLI path escapes baseline root: {}", path.display()))?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "formal CLI contract path contains a symlink: {}",
+                    path.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!(
+                    "inspect formal CLI contract path {}: {}",
+                    current.display(), error
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_contract_path, DEFAULT_FORMAL_CONTRACT};
+    use std::path::Path;
+
+    #[test]
+    fn formal_contract_default_is_baseline_relative() {
+        assert!(validate_contract_path(Path::new(DEFAULT_FORMAL_CONTRACT)).is_ok());
+    }
+
+    #[test]
+    fn formal_contract_rejects_absolute_and_parent_paths() {
+        assert!(validate_contract_path(Path::new("/tmp/formal_cli.json")).is_err());
+        assert!(validate_contract_path(Path::new("../formal_cli.json")).is_err());
+    }
 }

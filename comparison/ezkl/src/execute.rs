@@ -10,9 +10,8 @@ use crate::eth::register_vka_via_rv;
 use crate::eth::{get_contract_artifacts, verify_proof_via_solidity};
 use crate::gat_adapter::{
     build_model_for_run_args, load_dataset_with_manifest, load_relation_resources_with_manifest,
-    output_digest, write_generated_metadata, ArtifactFile, ArtifactManifest, BoundCircuitRef,
-    CoreRunManifest, DigestIdentity, FormalCliContract, GpuEvidence, PublicEzkl, PublicStatement,
-    RoundingMode, SrsProvenance,
+    write_generated_metadata, ArtifactFile, ArtifactManifest, BoundCircuitRef, CoreRunManifest,
+    FormalCliContract, GpuEvidence, PublicStatement, RoundingMode, SrsProvenance,
 };
 use crate::graph::input::GraphData;
 use crate::graph::modules::ModuleForwardResult;
@@ -21,7 +20,9 @@ use crate::pfsys::{
     create_keys, load_pk, load_vk, save_params, save_pk, swap_proof_commitments, Snark,
 };
 use crate::pfsys::{create_proof_circuit, verify_proof_circuit, ProofSplitCommit};
-use crate::pfsys::{encode_calldata, save_vk, srs::*, string_to_field};
+use crate::pfsys::{
+    canonical_fr_to_string, canonical_string_to_fr, encode_calldata, save_vk, srs::*,
+};
 use crate::tensor::TensorError;
 use crate::RunArgs;
 use crate::EZKL_BUF_CAPACITY;
@@ -57,7 +58,7 @@ use lazy_static::lazy_static;
 use log::debug;
 use log::{info, trace, warn};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
@@ -206,6 +207,7 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             srs_path,
             public_statement,
             public_output,
+            producer_manifest,
             gpu,
         } => gat_prepare(
             dataset,
@@ -215,6 +217,7 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             srs_path,
             public_statement,
             public_output,
+            producer_manifest,
             gpu,
         ),
         Commands::GatProduce {
@@ -1737,7 +1740,7 @@ fn gat_parameter_tensor(
 }
 
 fn native_hash_string(value: Fr) -> String {
-    crate::pfsys::field_to_string(&value)
+    canonical_fr_to_string(&value)
 }
 
 fn assert_native_gat_identity(
@@ -2075,9 +2078,8 @@ fn public_instances_from_statement(
         .map(|shape| vec![Fr::from(0u64); shape.iter().product()])
         .collect();
     witness.processed_params = Some(ModuleForwardResult {
-        poseidon_hash: Some(vec![string_to_field::<Fr>(
-            &statement.public_ezkl.model_hash,
-        )]),
+        poseidon_hash: Some(vec![canonical_string_to_fr(&statement.public_ezkl.model_hash)
+            .map_err(EZKLError::from)?]),
         polycommit: None,
     });
     circuit.load_graph_witness(&witness)?;
@@ -2092,6 +2094,7 @@ fn gat_prepare(
     srs_path: PathBuf,
     public_statement_path: Option<PathBuf>,
     public_output_path: Option<PathBuf>,
+    producer_manifest_path: Option<PathBuf>,
     gpu: bool,
 ) -> Result<String, EZKLError> {
     enforce_gat_gpu(gpu)?;
@@ -2103,6 +2106,9 @@ fn gat_prepare(
     }
     if let Some(path) = public_output_path.as_ref() {
         require_formal_local_path(path, "public output")?;
+    }
+    if let Some(path) = producer_manifest_path.as_ref() {
+        require_formal_local_path(path, "producer manifest")?;
     }
     if matches!(phase, GatPreparePhase::Final) {
         require_formal_regular_file(
@@ -2116,6 +2122,12 @@ fn gat_prepare(
                 .as_ref()
                 .ok_or_else(|| "final GAT preparation requires --public-output".to_string())?,
             "public output",
+        )?;
+        require_formal_regular_file(
+            producer_manifest_path
+                .as_ref()
+                .ok_or_else(|| "final GAT preparation requires --producer-manifest".to_string())?,
+            "producer manifest",
         )?;
     }
     if let Ok(metadata) = std::fs::symlink_metadata(&output_dir) {
@@ -2143,6 +2155,8 @@ fn gat_prepare(
                 .ok_or_else(|| "final GAT preparation requires --public-statement".to_string())?,
             public_output_path
                 .ok_or_else(|| "final GAT preparation requires --public-output".to_string())?,
+            producer_manifest_path
+                .ok_or_else(|| "final GAT preparation requires --producer-manifest".to_string())?,
             backend,
         ),
     }
@@ -2175,6 +2189,8 @@ fn gat_prepare_setup(
         "gat_static_tables.json",
         "gat_integer_ledger.json",
         "circuit_ref.json",
+        "producer_context.json",
+        "producer_manifest.json",
         "artifact_manifest.json",
         "statement.json",
         "public_output.json",
@@ -2239,11 +2255,535 @@ fn gat_prepare_setup(
     let context_path = output_dir.join(DEFAULT_GAT_SETUP_CONTEXT);
     let context_bytes = serde_json::to_vec_pretty(&setup_context)?;
     std::fs::write(&context_path, context_bytes)?;
-    let contract_path = loaded
-        .baseline_root
-        .join("artifacts/gat_adapter/formal_cli.json");
-    FormalCliContract::write(&contract_path).map_err(EZKLError::from)?;
+    // This setup-only context exposes identities required by the independent
+    // public-statement producer without exposing private model parameters.
+    // The producer recomputes the canonical model digest and public Y; the
+    // native final phase rebinds the resulting statement to this context.
+    let producer_context = expected_producer_context(&loaded, &setup_context);
+    std::fs::write(
+        output_dir.join("producer_context.json"),
+        serde_json::to_vec_pretty(&producer_context)?,
+    )?;
+    FormalCliContract::write(Path::new(DEFAULT_FORMAL_CONTRACT)).map_err(EZKLError::from)?;
     Ok(output_dir.display().to_string())
+}
+
+fn expected_producer_context(
+    loaded: &crate::gat_adapter::LoadedGat,
+    setup_context: &BoundCircuitRef,
+) -> JsonValue {
+    serde_json::json!({
+        "schema_version": 1,
+        "relation_id": "R_GAT-ezkl",
+        "dataset": loaded.dataset,
+        "model_arch_id": loaded.spec.model.model_arch_id,
+        "quant_cfg_id": loaded.spec.quant_cfg_id,
+        "quantization": loaded.spec.quantization,
+        "static_tables": {
+            "id": loaded.spec.tables.static_tables_id,
+            "digest": loaded.spec.tables.static_tables_digest,
+        },
+        "ledger": loaded.spec.ledger_identity,
+        "topology": loaded.spec.topology,
+        "model": {
+            "model_hash_field": loaded.spec.model_binding.hash,
+            "model_digest_sha256": loaded.spec.model_binding.canonical_model_digest,
+            "hash_domain": loaded.spec.model_binding.hash_domain,
+        },
+        "circuit": setup_context,
+        "ezkl_security_profile_id": loaded.spec.ezkl_security_profile_id,
+    })
+}
+
+fn baseline_relative_path(root: &Path, path: &Path, label: &str) -> Result<String, EZKLError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    absolute
+        .strip_prefix(root)
+        .map(|value| value.to_string_lossy().replace('\\', "/"))
+        .map_err(|_| format!("{} escapes baseline root: {}", label, path.display()).into())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalProducerManifest {
+    schema_version: u32,
+    producer_id: String,
+    producer_version: String,
+    independent: bool,
+    relation_id: String,
+    dataset: String,
+    producer_script: String,
+    producer_script_sha256: String,
+    config_path: String,
+    config_sha256: String,
+    resource_manifest_path: String,
+    resource_manifest_sha256: String,
+    checkpoint_manifest_path: String,
+    checkpoint_manifest_sha256: String,
+    tensor_archive_path: String,
+    tensor_archive_sha256: String,
+    feature_path: String,
+    feature_sha256: String,
+    setup_context_path: String,
+    setup_context_sha256: String,
+    model_arch_id: String,
+    model_hash: String,
+    hash_domain: String,
+    canonical_model_digest: String,
+    circuit_ref: BoundCircuitRef,
+    input_digest: String,
+    output_digest: String,
+    public_output_sha256: String,
+    statement_sha256: String,
+    public_statement_path: String,
+    public_output_path: String,
+    provenance: JsonValue,
+}
+
+fn validate_external_producer_manifest(
+    path: &Path,
+    loaded: &crate::gat_adapter::LoadedGat,
+    producer_context_path: &Path,
+    statement_path: &Path,
+    public_output_path: &Path,
+    statement: &PublicStatement,
+    setup_context: &BoundCircuitRef,
+) -> Result<(), EZKLError> {
+    require_formal_regular_file(path, "independent producer manifest")?;
+    require_formal_regular_file(producer_context_path, "producer setup context")?;
+    let bytes = std::fs::read(path)?;
+    let manifest: ExternalProducerManifest = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse independent producer manifest: {}", error))?;
+    let valid_digest = |label: &str, value: &str| -> Result<(), EZKLError> {
+        if value.len() != 64
+            || value.bytes().any(|byte| !byte.is_ascii_hexdigit())
+            || value.bytes().any(|byte| byte.is_ascii_uppercase())
+        {
+            return Err(format!("{} is not a lowercase SHA-256 digest", label).into());
+        }
+        Ok(())
+    };
+    for (label, value) in [
+        ("producer_script_sha256", &manifest.producer_script_sha256),
+        ("config_sha256", &manifest.config_sha256),
+        ("resource_manifest_sha256", &manifest.resource_manifest_sha256),
+        ("checkpoint_manifest_sha256", &manifest.checkpoint_manifest_sha256),
+        ("tensor_archive_sha256", &manifest.tensor_archive_sha256),
+        ("feature_sha256", &manifest.feature_sha256),
+        ("setup_context_sha256", &manifest.setup_context_sha256),
+        ("input_digest", &manifest.input_digest),
+        ("output_digest", &manifest.output_digest),
+        ("public_output_sha256", &manifest.public_output_sha256),
+        ("statement_sha256", &manifest.statement_sha256),
+    ] {
+        valid_digest(label, value)?;
+    }
+    if manifest.schema_version != 1
+        || manifest.producer_id != "ezkl-gat-independent-python"
+        || manifest.producer_version != "1"
+        || !manifest.independent
+        || manifest.relation_id != "R_GAT-ezkl"
+        || manifest.dataset != loaded.dataset
+        || manifest.producer_script != "scripts/produce_public_statement.py"
+        || manifest.config_path != format!("resources/canonical/configs/{}_secure.cfg", loaded.dataset)
+        || manifest.resource_manifest_path != "resources/resource_manifest.json"
+        || manifest.model_arch_id != loaded.spec.model.model_arch_id
+        || manifest.model_hash != loaded.spec.model_binding.hash
+        || manifest.hash_domain != loaded.spec.model_binding.hash_domain
+        || manifest.canonical_model_digest != loaded.spec.model_binding.canonical_model_digest
+        || manifest.circuit_ref != *setup_context
+        || manifest.setup_context_path
+            != baseline_relative_path(
+                &loaded.baseline_root,
+                producer_context_path,
+                "producer setup context",
+            )?
+        || manifest.public_statement_path
+            != baseline_relative_path(
+                &loaded.baseline_root,
+                statement_path,
+                "public statement",
+            )?
+        || manifest.public_output_path
+            != baseline_relative_path(
+                &loaded.baseline_root,
+                public_output_path,
+                "public output",
+            )?
+    {
+        return Err("independent producer manifest identity disagrees with authenticated resources".into());
+    }
+    let expected_context = expected_producer_context(loaded, setup_context);
+    let context: JsonValue = serde_json::from_slice(&std::fs::read(producer_context_path)?)
+        .map_err(|error| format!("parse producer setup context: {}", error))?;
+    if context != expected_context {
+        return Err("producer setup context is stale or disagrees with authenticated resources".into());
+    }
+    let checkpoint_root = format!(
+        "resources/canonical/checkpoints/{}_gat",
+        loaded.dataset
+    );
+    let feature_name = if loaded.dataset == "cora"
+        || loaded.dataset == "citeseer"
+        || loaded.dataset == "pubmed"
+    {
+        "features.txt"
+    } else {
+        "features.npy"
+    };
+    let expected_checkpoint_path = format!("{}/manifest.json", checkpoint_root);
+    let expected_tensor_path = format!("{}/tensors.txt", checkpoint_root);
+    let expected_feature_path = format!(
+        "resources/canonical/cache/{}/{}",
+        loaded.dataset, feature_name
+    );
+    if manifest.checkpoint_manifest_path != expected_checkpoint_path
+        || manifest.tensor_archive_path != expected_tensor_path
+        || manifest.feature_path != expected_feature_path
+        || manifest.setup_context_sha256 != get_file_hash(producer_context_path)?
+    {
+        return Err("independent producer resource/setup paths or digests are stale".into());
+    }
+    let config_path = loaded
+        .baseline_root
+        .join(format!("resources/canonical/configs/{}_secure.cfg", loaded.dataset));
+    let resource_manifest_path = loaded.baseline_root.join("resources/resource_manifest.json");
+    let producer_script_path = loaded
+        .baseline_root
+        .join("scripts/produce_public_statement.py");
+    let checkpoint_manifest_path = loaded
+        .baseline_root
+        .join(&manifest.checkpoint_manifest_path);
+    let tensor_archive_path = loaded.baseline_root.join(&manifest.tensor_archive_path);
+    let feature_path = loaded.baseline_root.join(&manifest.feature_path);
+    if get_file_hash(&config_path)? != manifest.config_sha256
+        || get_file_hash(&resource_manifest_path)? != manifest.resource_manifest_sha256
+        || get_file_hash(&producer_script_path)? != manifest.producer_script_sha256
+        || get_file_hash(&checkpoint_manifest_path)? != manifest.checkpoint_manifest_sha256
+        || get_file_hash(&tensor_archive_path)? != manifest.tensor_archive_sha256
+        || get_file_hash(&feature_path)? != manifest.feature_sha256
+    {
+        return Err("independent producer source/config/resource/model digest is stale".into());
+    }
+    let mut input_bytes = b"ezkl-gat-public-input-v1".to_vec();
+    for value in &statement.public_ezkl.feature_table {
+        input_bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    let topology_bytes = hex::decode(&statement.public_ezkl.topology.digest)
+        .map_err(|error| format!("decode statement topology digest: {}", error))?;
+    input_bytes.extend_from_slice(&topology_bytes);
+    let expected_input_digest =
+        crate::gat_adapter::schema::sha256_digest(&input_bytes).map_err(EZKLError::from)?;
+    if manifest.resource_manifest_sha256 != loaded.resource_manifest_sha256
+        || manifest.input_digest != expected_input_digest
+        || manifest.output_digest != statement.output_digest
+        || manifest.public_output_sha256 != statement.public_output_sha256
+        || manifest.public_output_sha256 != get_file_hash(public_output_path)?
+        || manifest.statement_sha256 != get_file_hash(statement_path)?
+    {
+        return Err("independent producer output/statement digest rebinding failed".into());
+    }
+    let provenance = manifest
+        .provenance
+        .as_object()
+        .ok_or_else(|| "independent producer provenance is not an object".to_string())?;
+    if provenance.get("language").and_then(JsonValue::as_str) != Some("python")
+        || provenance.get("algorithm").and_then(JsonValue::as_str)
+            != Some("canonical_integer_gat_v1")
+        || provenance.get("witness_loaded").and_then(JsonValue::as_bool) != Some(false)
+        || provenance
+            .get("native_ezkl_commands")
+            .and_then(JsonValue::as_array)
+            .map(|values| !values.is_empty())
+            .unwrap_or(true)
+        || provenance
+            .get("proof_commands")
+            .and_then(JsonValue::as_array)
+            .map(|values| !values.is_empty())
+            .unwrap_or(true)
+    {
+        return Err("independent producer provenance is not external-only".into());
+    }
+    Ok(())
+}
+
+fn formal_run_relative_path(run_dir: &Path, baseline_root: &Path) -> Result<PathBuf, EZKLError> {
+    // Environment-provided run directories may be either baseline-relative
+    // (the normal CLI form) or absolute (the tiny-E2E orchestration form).
+    // First reject lexical traversal/absolute-relative ambiguity, then resolve
+    // the existing path and require canonical containment in this baseline.
+    let lexical_relative = if run_dir.is_absolute() {
+        let relative = run_dir.strip_prefix(baseline_root).map_err(|_| {
+            format!("formal run directory escapes baseline: {}", run_dir.display())
+        })?;
+        require_formal_local_path(relative, "formal run directory")?;
+        relative.to_path_buf()
+    } else {
+        require_formal_local_path(run_dir, "formal run directory")?;
+        run_dir.to_path_buf()
+    };
+    if lexical_relative.as_os_str().is_empty() {
+        return Err("formal run directory must be below the baseline root".into());
+    }
+    let canonical_root = baseline_root.canonicalize()?;
+    let canonical_run = baseline_root
+        .join(&lexical_relative)
+        .canonicalize()
+        .map_err(|error| {
+            format!(
+                "cannot resolve formal run directory {}: {}",
+                run_dir.display(),
+                error
+            )
+        })?;
+    let canonical_relative = canonical_run.strip_prefix(&canonical_root).map_err(|_| {
+        format!("formal run directory escapes baseline: {}", run_dir.display())
+    })?;
+    require_formal_local_path(canonical_relative, "formal run directory")?;
+    if canonical_relative.as_os_str().is_empty() {
+        return Err("formal run directory must be below the baseline root".into());
+    }
+    Ok(canonical_relative.to_path_buf())
+}
+
+fn validate_formal_producer_run(run_dir: &Path) -> Result<(), EZKLError> {
+    let baseline_root = std::env::current_dir()?;
+    let run_relative = formal_run_relative_path(run_dir, &baseline_root)?;
+    require_formal_local_path(&run_relative, "formal run directory")?;
+    let artifact_path = run_relative.join("artifact_manifest.json");
+    let statement_path = run_relative.join("statement.json");
+    let public_output_path = run_relative.join("public_output.json");
+    let producer_context_path = run_relative.join("producer_context.json");
+    let producer_manifest_path = run_relative.join("producer_manifest.json");
+    for (path, label) in [
+        (&artifact_path, "artifact manifest"),
+        (&statement_path, "statement"),
+        (&public_output_path, "public output"),
+        (&producer_context_path, "producer setup context"),
+        (&producer_manifest_path, "producer manifest"),
+    ] {
+        require_formal_regular_file(path, label)?;
+    }
+    let artifact = ArtifactManifest::load(&artifact_path).map_err(EZKLError::from)?;
+    artifact.validate().map_err(EZKLError::from)?;
+    if artifact.producer_manifest_sha256 != get_file_hash(&producer_manifest_path)? {
+        return Err("artifact producer manifest digest is stale".into());
+    }
+    let producer_record = artifact
+        .files
+        .iter()
+        .find(|file| file.path == "producer_manifest.json")
+        .ok_or_else(|| "artifact manifest has no producer manifest file".to_string())?;
+    if producer_record.sha256 != artifact.producer_manifest_sha256 {
+        return Err("artifact producer manifest top-level/file digest mismatch".into());
+    }
+    let statement = PublicStatement::load(&statement_path).map_err(EZKLError::from)?;
+    let output = parse_public_output(&public_output_path, &statement.dataset)?;
+    if output != statement.public_ezkl.y {
+        return Err("formal producer run public output disagrees with statement".into());
+    }
+    let loaded = load_dataset_with_manifest(
+        &baseline_root,
+        Path::new("resources/resource_manifest.json"),
+        &artifact.dataset,
+    )
+    .map_err(EZKLError::from)?;
+    if artifact.resource_manifest_sha256 != loaded.resource_manifest_sha256 {
+        return Err("formal producer run artifact resource identity is stale".into());
+    }
+    let setup_context = load_setup_circuit_ref(&run_relative.join(DEFAULT_GAT_SETUP_CONTEXT))?;
+    if setup_context != artifact.circuit_ref {
+        return Err("formal producer setup context disagrees with artifact circuit".into());
+    }
+    let mut bound_spec = loaded.spec.clone();
+    bound_spec.circuit_ref = Some(artifact.circuit_ref.native.clone());
+    bound_spec.validate().map_err(EZKLError::from)?;
+    validate_statement_against_loaded(&statement, &bound_spec)?;
+    validate_external_producer_manifest(
+        &producer_manifest_path,
+        &loaded,
+        &producer_context_path,
+        &statement_path,
+        &public_output_path,
+        &statement,
+        &setup_context,
+    )
+}
+
+fn validate_external_producer_manifest_public(
+    path: &Path,
+    producer_context_path: &Path,
+    statement_path: &Path,
+    public_output_path: &Path,
+    statement: &PublicStatement,
+    circuit_ref: &BoundCircuitRef,
+    authenticated_resources: &crate::gat_adapter::AuthenticatedRelationResources,
+    baseline_root: &Path,
+) -> Result<(), EZKLError> {
+    require_formal_regular_file(path, "independent producer manifest")?;
+    require_formal_regular_file(producer_context_path, "producer setup context")?;
+    let manifest: ExternalProducerManifest =
+        serde_json::from_slice(&std::fs::read(path)?).map_err(|error| {
+            format!("parse independent producer manifest: {}", error)
+        })?;
+    let valid_digest = |label: &str, value: &str| -> Result<(), EZKLError> {
+        if value.len() != 64
+            || value.bytes().any(|byte| !byte.is_ascii_hexdigit())
+            || value.bytes().any(|byte| byte.is_ascii_uppercase())
+        {
+            return Err(format!("{} is not a lowercase SHA-256 digest", label).into());
+        }
+        Ok(())
+    };
+    for (label, value) in [
+        ("producer_script_sha256", &manifest.producer_script_sha256),
+        ("config_sha256", &manifest.config_sha256),
+        ("resource_manifest_sha256", &manifest.resource_manifest_sha256),
+        ("checkpoint_manifest_sha256", &manifest.checkpoint_manifest_sha256),
+        ("tensor_archive_sha256", &manifest.tensor_archive_sha256),
+        ("feature_sha256", &manifest.feature_sha256),
+        ("setup_context_sha256", &manifest.setup_context_sha256),
+        ("input_digest", &manifest.input_digest),
+        ("output_digest", &manifest.output_digest),
+        ("public_output_sha256", &manifest.public_output_sha256),
+        ("statement_sha256", &manifest.statement_sha256),
+    ] {
+        valid_digest(label, value)?;
+    }
+    let root = baseline_root;
+    let statement_rel = baseline_relative_path(root, statement_path, "public statement")?;
+    let output_rel = baseline_relative_path(root, public_output_path, "public output")?;
+    let context_rel =
+        baseline_relative_path(root, producer_context_path, "producer setup context")?;
+    let feature_name = if statement.dataset == "cora"
+        || statement.dataset == "citeseer"
+        || statement.dataset == "pubmed"
+    {
+        "features.txt"
+    } else {
+        "features.npy"
+    };
+    let checkpoint_root = format!(
+        "resources/canonical/checkpoints/{}_gat",
+        statement.dataset
+    );
+    let expected_context = serde_json::json!({
+        "schema_version": 1,
+        "relation_id": "R_GAT-ezkl",
+        "dataset": statement.dataset,
+        "model_arch_id": statement.model_arch_id,
+        "quant_cfg_id": statement.quant_cfg_id,
+        "quantization": statement.public_ezkl.quant,
+        "static_tables": statement.public_ezkl.static_tables,
+        "ledger": statement.public_ezkl.ledger,
+        "topology": statement.public_ezkl.topology,
+        "model": {
+            "model_hash_field": statement.public_ezkl.model.hash,
+            "model_digest_sha256": statement.public_ezkl.model.canonical_model_digest,
+            "hash_domain": statement.public_ezkl.model.hash_domain,
+        },
+        "circuit": statement.public_ezkl.circuit,
+        "ezkl_security_profile_id": statement.ezkl_security_profile_id,
+    });
+    let context: JsonValue = serde_json::from_slice(&std::fs::read(producer_context_path)?)
+        .map_err(|error| format!("parse producer setup context: {}", error))?;
+    if context != expected_context {
+        return Err("producer setup context is not bound to the public statement".into());
+    }
+    let expected_checkpoint_path = format!("{}/manifest.json", checkpoint_root);
+    let expected_tensor_path = format!("{}/tensors.txt", checkpoint_root);
+    let expected_feature_path = format!(
+        "resources/canonical/cache/{}/{}",
+        statement.dataset, feature_name
+    );
+    if manifest.schema_version != 1
+        || manifest.producer_id != "ezkl-gat-independent-python"
+        || manifest.producer_version != "1"
+        || !manifest.independent
+        || manifest.relation_id != "R_GAT-ezkl"
+        || manifest.dataset != statement.dataset
+        || manifest.producer_script != "scripts/produce_public_statement.py"
+        || manifest.config_path
+            != format!(
+                "resources/canonical/configs/{}_secure.cfg",
+                statement.dataset
+            )
+        || manifest.resource_manifest_path != "resources/resource_manifest.json"
+        || manifest.checkpoint_manifest_path != expected_checkpoint_path
+        || manifest.tensor_archive_path != expected_tensor_path
+        || manifest.feature_path != expected_feature_path
+        || manifest.setup_context_path != context_rel
+        || manifest.model_arch_id != statement.model_arch_id
+        || manifest.model_hash != statement.public_ezkl.model.hash
+        || manifest.hash_domain != statement.public_ezkl.model.hash_domain
+        || manifest.canonical_model_digest
+            != statement.public_ezkl.model.canonical_model_digest
+        || manifest.circuit_ref != *circuit_ref
+        || manifest.public_statement_path != statement_rel
+        || manifest.public_output_path != output_rel
+    {
+        return Err("public verifier producer manifest identity mismatch".into());
+    }
+    let config_path = root.join(&manifest.config_path);
+    let resource_manifest_path = root.join(&manifest.resource_manifest_path);
+    let producer_script_path = root.join(&manifest.producer_script);
+    let checkpoint_manifest_path = root.join(&manifest.checkpoint_manifest_path);
+    let tensor_archive_path = root.join(&manifest.tensor_archive_path);
+    let feature_path = root.join(&manifest.feature_path);
+    if manifest.resource_manifest_sha256 != authenticated_resources.resource_manifest_sha256
+        || manifest.config_sha256 != get_file_hash(&config_path)?
+        || manifest.resource_manifest_sha256 != get_file_hash(&resource_manifest_path)?
+        || manifest.producer_script_sha256 != get_file_hash(&producer_script_path)?
+        || manifest.checkpoint_manifest_sha256 != get_file_hash(&checkpoint_manifest_path)?
+        || manifest.tensor_archive_sha256 != get_file_hash(&tensor_archive_path)?
+        || manifest.feature_sha256 != get_file_hash(&feature_path)?
+        || manifest.setup_context_sha256 != get_file_hash(producer_context_path)?
+        || manifest.statement_sha256 != get_file_hash(statement_path)?
+        || manifest.public_output_sha256 != get_file_hash(public_output_path)?
+    {
+        return Err("public verifier producer resource/setup digest mismatch".into());
+    }
+    let mut input_bytes = b"ezkl-gat-public-input-v1".to_vec();
+    for value in &statement.public_ezkl.feature_table {
+        input_bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    input_bytes.extend_from_slice(
+        &hex::decode(&statement.public_ezkl.topology.digest)
+            .map_err(|error| format!("decode statement topology digest: {}", error))?,
+    );
+    let expected_input_digest =
+        crate::gat_adapter::schema::sha256_digest(&input_bytes).map_err(EZKLError::from)?;
+    if manifest.input_digest != expected_input_digest
+        || manifest.output_digest != statement.output_digest
+    {
+        return Err("public verifier producer input/output digest mismatch".into());
+    }
+    let provenance = manifest
+        .provenance
+        .as_object()
+        .ok_or_else(|| "independent producer provenance is not an object".to_string())?;
+    if provenance.get("language").and_then(JsonValue::as_str) != Some("python")
+        || provenance.get("algorithm").and_then(JsonValue::as_str)
+            != Some("canonical_integer_gat_v1")
+        || provenance.get("witness_loaded").and_then(JsonValue::as_bool) != Some(false)
+        || provenance
+            .get("native_ezkl_commands")
+            .and_then(JsonValue::as_array)
+            .map(|values| !values.is_empty())
+            .unwrap_or(true)
+        || provenance
+            .get("proof_commands")
+            .and_then(JsonValue::as_array)
+            .map(|values| !values.is_empty())
+            .unwrap_or(true)
+    {
+        return Err("public verifier producer provenance is not external-only".into());
+    }
+    Ok(())
 }
 
 fn gat_prepare_final(
@@ -2253,6 +2793,7 @@ fn gat_prepare_final(
     srs_sha256: String,
     public_statement_path: PathBuf,
     public_output_path: PathBuf,
+    producer_manifest_path: PathBuf,
     backend: String,
 ) -> Result<String, EZKLError> {
     let settings_path = output_dir.join("settings.json");
@@ -2260,6 +2801,7 @@ fn gat_prepare_final(
     let pk_path = output_dir.join("pk.key");
     let vk_path = output_dir.join("vk.key");
     let context_path = output_dir.join(DEFAULT_GAT_SETUP_CONTEXT);
+    let producer_context_path = output_dir.join("producer_context.json");
     let artifact_path = output_dir.join("artifact_manifest.json");
     for (path, label) in [
         (&settings_path, "settings"),
@@ -2267,6 +2809,8 @@ fn gat_prepare_final(
         (&pk_path, "proving key"),
         (&vk_path, "verification key"),
         (&context_path, "setup CircuitRef"),
+        (&producer_context_path, "producer setup context"),
+        (&producer_manifest_path, "producer manifest"),
     ] {
         require_formal_regular_file(path, label)?;
     }
@@ -2316,6 +2860,15 @@ fn gat_prepare_final(
             "external public statement CircuitRef does not match the setup artifacts".into(),
         );
     }
+    validate_external_producer_manifest(
+        &producer_manifest_path,
+        &loaded,
+        &producer_context_path,
+        &public_statement_path,
+        &public_output_path,
+        &supplied_statement,
+        &setup_context,
+    )?;
 
     let bound_statement_path = output_dir.join("statement.json");
     let bound_output_path = output_dir.join("public_output.json");
@@ -2332,6 +2885,8 @@ fn gat_prepare_final(
         (&bound_statement_path, "statement.json"),
         (&bound_output_path, "public_output.json"),
         (&bound_srs_path, "srs.kzg"),
+        (&producer_context_path, "producer_context.json"),
+        (&producer_manifest_path, "producer_manifest.json"),
         (
             &output_dir.join("gat_static_tables.json"),
             "gat_static_tables.json",
@@ -2380,6 +2935,7 @@ fn gat_prepare_final(
         files,
         source_snapshot: loaded.source_snapshot.clone(),
         statement_sha256: statement_sha,
+        producer_manifest_sha256: get_file_hash(&producer_manifest_path)?,
         compiled_circuit_sha256: compiled_sha,
         settings_sha256: settings_sha,
         vk_sha256: vk_sha,
@@ -2389,10 +2945,7 @@ fn gat_prepare_final(
         ezkl_security_profile_id: loaded.spec.ezkl_security_profile_id.clone(),
     };
     artifact.save(&artifact_path).map_err(EZKLError::from)?;
-    let contract_path = loaded
-        .baseline_root
-        .join("artifacts/gat_adapter/formal_cli.json");
-    FormalCliContract::write(&contract_path).map_err(EZKLError::from)?;
+    FormalCliContract::write(Path::new(DEFAULT_FORMAL_CONTRACT)).map_err(EZKLError::from)?;
     Ok(output_dir.display().to_string())
 }
 
@@ -2409,6 +2962,12 @@ fn gat_produce(
     output_dir: PathBuf,
     gpu: bool,
 ) -> Result<String, EZKLError> {
+    let _ = (dataset, resource_manifest, output_dir, gpu);
+    return Err(
+        "gat-produce is a disabled legacy command; use the independent Python public-statement producer"
+            .into(),
+    );
+    /*
     enforce_gat_gpu(gpu)?;
     require_formal_local_path(&resource_manifest, "resource manifest")?;
     require_formal_local_path(&output_dir, "setup output directory")?;
@@ -2540,6 +3099,7 @@ fn gat_produce(
     statement.statement_digest = statement.digest_without_self().map_err(EZKLError::from)?;
     statement.save(&statement_path).map_err(EZKLError::from)?;
     Ok(output_dir.display().to_string())
+    */
 }
 
 fn gat_witness(
@@ -2565,6 +3125,10 @@ fn gat_witness(
     let output_dir = compiled_circuit
         .parent()
         .ok_or_else(|| "compiled circuit has no setup output directory".to_string())?;
+    let producer_context_path = output_dir.join("producer_context.json");
+    let producer_manifest_path = output_dir.join("producer_manifest.json");
+    require_formal_regular_file(&producer_context_path, "producer setup context")?;
+    require_formal_regular_file(&producer_manifest_path, "producer manifest")?;
     let setup_context = load_setup_circuit_ref(&output_dir.join(DEFAULT_GAT_SETUP_CONTEXT))?;
     let settings_path = output_dir.join("settings.json");
     let vk_path = output_dir.join("vk.key");
@@ -2583,9 +3147,18 @@ fn gat_witness(
         return Err("external statement CircuitRef does not match the setup artifacts".into());
     }
     let mut bound_spec = loaded.spec.clone();
-    bound_spec.circuit_ref = Some(circuit_ref);
+    bound_spec.circuit_ref = Some(circuit_ref.clone());
     bound_spec.validate().map_err(EZKLError::from)?;
     validate_statement_against_loaded(&statement, &bound_spec)?;
+    validate_external_producer_manifest(
+        &producer_manifest_path,
+        &loaded,
+        &producer_context_path,
+        &statement_path,
+        &output_dir.join("public_output.json"),
+        &statement,
+        &setup_context,
+    )?;
     let mut circuit = GraphCircuit::load(compiled_circuit)?;
     assert_native_gat_identity(&circuit, &loaded.spec)?;
     if !circuit.settings().run_args.input_visibility.is_public()
@@ -2605,7 +3178,7 @@ fn gat_witness(
         Some(&native_params),
         None,
         None,
-        RegionSettings::all_false(
+        RegionSettings::all_true(
             circuit.settings().run_args.decomp_base,
             circuit.settings().run_args.decomp_legs,
         ),
@@ -2686,6 +3259,9 @@ pub(crate) fn prove(
     srs_path: Option<PathBuf>,
     check_mode: CheckMode,
 ) -> Result<Snark<Fr, G1Affine>, EZKLError> {
+    if let Ok(run_dir) = std::env::var("EZKL_GAT_RUN_DIR") {
+        validate_formal_producer_run(Path::new(&run_dir))?;
+    }
     let data = GraphWitness::from_path(data_path)?;
     let mut circuit = GraphCircuit::load(compiled_circuit_path)?;
 
@@ -2870,6 +3446,7 @@ fn validate_artifact_files(
             "pk.key" => Some(&artifact.pk_sha256),
             "vk.key" => Some(&artifact.vk_sha256),
             "statement.json" => Some(&artifact.statement_sha256),
+            "producer_manifest.json" => Some(&artifact.producer_manifest_sha256),
             _ => None,
         };
         if let Some(expected) = expected_top_level {
@@ -2897,6 +3474,8 @@ fn validate_artifact_files(
     }
     let static_tables_path = root.join("gat_static_tables.json");
     let integer_ledger_path = root.join("gat_integer_ledger.json");
+    let producer_context_path = root.join("producer_context.json");
+    let producer_manifest_path = root.join("producer_manifest.json");
     let required = [
         ("proof.json", proof_path, "proof"),
         ("srs.kzg", srs_path, "SRS"),
@@ -2909,6 +3488,16 @@ fn validate_artifact_files(
             "gat_integer_ledger.json",
             integer_ledger_path.as_path(),
             "integer ledger",
+        ),
+        (
+            "producer_context.json",
+            producer_context_path.as_path(),
+            "producer context",
+        ),
+        (
+            "producer_manifest.json",
+            producer_manifest_path.as_path(),
+            "producer manifest",
         ),
     ];
     for (name, path, label) in required {
@@ -3073,13 +3662,42 @@ pub(crate) fn verify_with_formal_inputs(
         if output_sha != statement.public_output_sha256 {
             return Err("external public output digest disagrees with statement".into());
         }
+        let artifact_root = artifact_manifest_path
+            .parent()
+            .ok_or_else(|| "artifact manifest has no parent directory".to_string())?;
+        let producer_context_path = artifact_root.join("producer_context.json");
+        let producer_manifest_path = artifact_root.join("producer_manifest.json");
+        require_formal_regular_file(&producer_context_path, "producer setup context")?;
+        require_formal_regular_file(&producer_manifest_path, "producer manifest")?;
+        if artifact.producer_manifest_sha256 != get_file_hash(&producer_manifest_path)? {
+            return Err("artifact producer manifest digest does not match producer file".into());
+        }
+        let producer_record = artifact
+            .files
+            .iter()
+            .find(|file| file.path == "producer_manifest.json")
+            .ok_or_else(|| "artifact manifest has no producer manifest file".to_string())?;
+        if producer_record.sha256 != artifact.producer_manifest_sha256 {
+            return Err("artifact producer manifest file/top-level digest mismatch".into());
+        }
+        let setup_context = load_setup_circuit_ref(&artifact_root.join(DEFAULT_GAT_SETUP_CONTEXT))?;
+        if setup_context != artifact.circuit_ref {
+            return Err("producer setup context does not match artifact CircuitRef".into());
+        }
+        validate_external_producer_manifest_public(
+            &producer_manifest_path,
+            &producer_context_path,
+            &statement_path,
+            &public_output_path,
+            &statement,
+            &artifact.circuit_ref,
+            &authenticated_resources,
+            &baseline_root,
+        )?;
         let srs_for_identity = srs_path
             .as_ref()
             .ok_or_else(|| "formal verify requires an explicit SRS path".to_string())?;
-        let compiled_path = artifact_manifest_path
-            .parent()
-            .ok_or_else(|| "artifact manifest has no parent directory".to_string())?
-            .join("compiled.circuit");
+        let compiled_path = artifact_root.join("compiled.circuit");
         validate_artifact_files(
             &artifact_manifest_path,
             &artifact,

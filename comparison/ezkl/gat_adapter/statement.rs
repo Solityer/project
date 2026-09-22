@@ -7,6 +7,7 @@
 
 use crate::gat_adapter::manifest::BoundCircuitRef;
 use crate::gat_adapter::schema::{sha256_digest, DigestIdentity, ModelBinding};
+use crate::pfsys::canonical_string_to_fr;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -213,8 +214,16 @@ impl PublicStatement {
     pub fn digest_without_self(&self) -> Result<String, String> {
         let mut clone = self.clone();
         clone.statement_digest.clear();
-        let bytes =
-            serde_json::to_vec(&clone).map_err(|e| format!("serialize statement: {}", e))?;
+        // Route the digest through serde_json::Value before encoding.  The
+        // setup context is a JSON value while the native verifier reloads a
+        // typed statement (including a flattened CircuitRef); hashing the
+        // typed struct directly would make the cross-language digest depend
+        // on incidental struct/flatten field order.  The default serde_json
+        // map is ordered, so this is a stable recursive canonical encoding.
+        let canonical =
+            serde_json::to_value(&clone).map_err(|e| format!("serialize statement: {}", e))?;
+        let bytes = serde_json::to_vec(&canonical)
+            .map_err(|e| format!("serialize canonical statement: {}", e))?;
         sha256_digest(&bytes)
     }
 
@@ -357,11 +366,7 @@ fn valid_digest(label: &str, digest: &str) -> Result<(), String> {
 }
 
 fn is_native_field_encoding(value: &str) -> bool {
-    value.len() == 66
-        && value.starts_with("0x")
-        && value[2..]
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    canonical_string_to_fr(value).is_ok()
 }
 
 fn digest_i128(values: &[i128]) -> Result<String, String> {

@@ -90,6 +90,26 @@ def parse_cfg(path: Path) -> dict[str, str]:
     return result
 
 
+def scale_list(config: dict[str, str], key: str) -> list[int]:
+    value = config.get(key)
+    if value is None:
+        raise ValueError(f"missing scale-chain key {key}")
+    try:
+        values = [int(item.strip()) for item in value.split(",")]
+    except ValueError as exc:
+        raise ValueError(f"invalid scale-chain key {key}: {value}") from exc
+    if not values or any(item <= 0 for item in values):
+        raise ValueError(f"scale-chain key {key} must contain positive integers")
+    return values
+
+
+def scale_value(config: dict[str, str], key: str) -> int:
+    values = scale_list(config, key)
+    if len(values) != 1:
+        raise ValueError(f"scale-chain key {key} must contain one value")
+    return values[0]
+
+
 def write_cfg(path: Path, updates: dict[str, str]) -> None:
     lines = path.read_text().splitlines()
     seen: set[str] = set()
@@ -221,7 +241,7 @@ def graph_info(root: Path, dataset: str, meta: dict[str, str]) -> tuple[int, int
 def npy_contract(path: Path) -> dict[str, Any]:
     """Read only the bounded NPY header and stream its authenticated payload."""
     with path.open("rb") as stream:
-        prefix = stream.read(12)
+        prefix = stream.read(10)
         if len(prefix) < 10 or prefix[:6] != NPY_MAGIC:
             raise ValueError(f"invalid npy file {path}")
         major = prefix[6]
@@ -229,6 +249,7 @@ def npy_contract(path: Path) -> dict[str, Any]:
             header_len = int.from_bytes(prefix[8:10], "little")
             start = 10
         elif major == 2:
+            prefix += stream.read(2)
             if len(prefix) < 12:
                 raise ValueError(f"truncated npy header {path}")
             header_len = int.from_bytes(prefix[8:12], "little")
@@ -559,6 +580,8 @@ def build_ledger(
     dataset: str,
     tables: dict[str, Any],
     meta: dict[str, str],
+    checkpoint: dict[str, Any],
+    scales: dict[str, str],
     maxima: dict[str, int],
     feature_max: int,
     degree: int,
@@ -579,11 +602,43 @@ def build_ledger(
         abs(tables["max_relu"]["input_min"]), abs(tables["max_relu"]["input_max"])
     )
     table_output = max(lrelu_output, elu_output, max_relu_input)
+    hidden_layers = checkpoint.get("hidden_layers")
+    if not isinstance(hidden_layers, list) or not hidden_layers:
+        raise ValueError("checkpoint hidden_layers must be a non-empty list")
+    if int(checkpoint.get("L", 0)) != len(hidden_layers) + 1:
+        raise ValueError("checkpoint layer count is not closed")
+    output_heads = int(checkpoint.get("K_out", 0))
+    if output_heads <= 0:
+        raise ValueError("checkpoint output head count must be positive")
+    s_agg_pre = scale_list(scales, "s_agg_pre")
+    if len(s_agg_pre) != len(hidden_layers):
+        raise ValueError("hidden aggregation scale count does not match checkpoint")
+    s_h_prime = [
+        scale_list(scales, f"s_h_prime_hidden_{layer_idx}")
+        for layer_idx in range(len(hidden_layers))
+    ]
+    if any(
+        len(layer_scales) != int(layer["head_count"])
+        for layer_scales, layer in zip(s_h_prime, hidden_layers)
+    ):
+        raise ValueError("hidden projection scale count does not match checkpoint")
+    s_y_prime = scale_list(scales, "s_y_prime")
+    if len(s_y_prime) != output_heads:
+        raise ValueError("output projection scale count does not match checkpoint")
+    s_out_pre = scale_value(scales, "s_out_pre")
     families: list[dict[str, Any]] = []
     current_bound = max(1, feature_max)
-    for layer in range(2):
-        input_dim = int(meta["num_features"]) if layer == 0 else 64
-        for head in range(8):
+    current_dim = int(meta["num_features"])
+    for layer_idx, layer_meta in enumerate(hidden_layers):
+        layer = int(layer_meta["layer_index"])
+        if layer != layer_idx:
+            raise ValueError("checkpoint hidden layer indices are not contiguous")
+        input_dim = int(layer_meta["input_dim"])
+        head_count = int(layer_meta["head_count"])
+        head_dim = int(layer_meta["head_dim"])
+        if input_dim != current_dim or head_count <= 0 or head_dim <= 0:
+            raise ValueError("checkpoint hidden dimensions are not closed")
+        for head in range(head_count):
             weight = max(
                 1, maxima.get(f"hidden/layer{layer}/head{head}/seq", 1)
             )
@@ -596,8 +651,8 @@ def build_ledger(
             score = max(lrelu_input, 2 * projected * attention)
             summation = max(1, degree * exp_output)
             numerator = max(1, summation * projected)
-            dividend = max(elu_input, numerator * 16)
-            divisor = max(1, summation * 64)
+            dividend = max(elu_input, numerator * s_agg_pre[layer_idx])
+            divisor = max(1, summation * s_h_prime[layer_idx][head])
             quotient = max(1, (dividend + divisor // 2) // divisor)
             aux = max(
                 max_relu_input,
@@ -623,22 +678,28 @@ def build_ledger(
                     "max_divisor": divisor,
                 }
             )
+        current_dim = head_count * head_dim
         current_bound = max(1, elu_output)
-    classes = int(meta["num_classes"])
-    for head in range(2):
+    classes = int(checkpoint["C"])
+    if classes != int(meta["num_classes"]):
+        raise ValueError("checkpoint class count disagrees with dataset metadata")
+    for head in range(output_heads):
         weight = max(1, maxima.get(f"output/head{head}/seq", 1))
         attention = max(
             1,
             maxima.get(f"output/head{head}/attn_src", 1),
             maxima.get(f"output/head{head}/attn_dst", 1),
         )
-        bias = max(0, maxima.get(f"output/head{head}/output_bias", 0))
-        projected = max(1, 64 * current_bound * weight)
+        # quantized_model() records each tensor maximum under its containing
+        # head prefix (for example ``output/head0``); keep the bias bound
+        # lookup aligned with that authenticated key.
+        bias = max(0, maxima.get(f"output/head{head}", 0))
+        projected = max(1, current_dim * current_bound * weight)
         score = max(lrelu_input, 2 * projected * attention)
         summation = max(1, degree * exp_output)
         numerator = max(1, summation * projected)
-        dividend = max(1, numerator * 16, elu_input)
-        divisor = max(1, summation * 64, 16)
+        dividend = max(1, numerator * s_out_pre, elu_input)
+        divisor = max(1, summation * s_y_prime[head], s_out_pre)
         quotient = max(1, (dividend + divisor // 2) // divisor)
         aux = max(
             max_relu_input,
@@ -762,6 +823,9 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
         raise SystemExit(f"generate_gat_resources: unsupported dataset {dataset}")
     config = parse_cfg(root / "resources/canonical/configs" / f"{dataset}_secure.cfg")
     meta = parse_cfg(root / "resources/canonical/cache" / dataset / "meta.cfg")
+    scales = parse_cfg(root / "resources/canonical/configs/quantization_scale_chain.cfg")
+    manifest_path = root / "resources/canonical/checkpoints" / f"{dataset}_gat/manifest.json"
+    checkpoint = json.loads(manifest_path.read_text())
     nodes, edges, degree = graph_info(root, dataset, meta)
     maxima = quantized_model(root, dataset)
     feature_max = feature_bound(root, dataset, meta)
@@ -774,7 +838,9 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
         degree,
         config.get("batching_rule") == "whole_graph_single",
     )
-    ledger = build_ledger(dataset, tables, meta, maxima, feature_max, degree)
+    ledger = build_ledger(
+        dataset, tables, meta, checkpoint, scales, maxima, feature_max, degree
+    )
     table_path = root / "resources/canonical/tables" / dataset / "gat_static_tables.bin"
     ledger_path = root / "resources/canonical/ledgers" / dataset / "gat_integer_ledger.json"
     write_table_archive(table_path, tables)
@@ -809,8 +875,6 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
             root / "resources/canonical/cache" / dataset / "meta.cfg",
             feature_updates,
         )
-    manifest_path = root / "resources/canonical/checkpoints" / f"{dataset}_gat/manifest.json"
-    checkpoint = json.loads(manifest_path.read_text())
     checkpoint["static_table_id"] = tables["static_tables_id"]
     checkpoint["static_table_digest"] = tables["static_tables_digest"]
     checkpoint["degree_bound_id"] = ledger["ledger_id"]

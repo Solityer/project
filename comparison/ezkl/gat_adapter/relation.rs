@@ -6,11 +6,11 @@
 //! same relations with Halo2 constraints; callers must not use this module as
 //! a host-only replacement for the circuit.
 
-use halo2curves::bn256::Fr as Bn254Fr;
-use halo2curves::ff::PrimeField;
 use num::{BigUint, Zero};
 
-use super::schema::{scale_exponent_to_multiplier, CanonicalGat, ExactTable};
+use super::schema::{
+    parse_authenticated_bn254_modulus, scale_exponent_to_multiplier, CanonicalGat, ExactTable,
+};
 
 /// Rounding rule used by signed fixed-point divisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -294,14 +294,7 @@ fn mod_from_signed(value: i128, modulus: &BigUint) -> BigUint {
 }
 
 fn modulus_from_spec(model: &CanonicalGat) -> Result<BigUint, String> {
-    let modulus = BigUint::parse_bytes(model.ledger.field_modulus.as_bytes(), 10)
-        .ok_or_else(|| "field modulus is not a decimal BigUint".to_string())?;
-    let native = BigUint::parse_bytes(Bn254Fr::MODULUS.as_bytes(), 10)
-        .ok_or_else(|| "native BN254 modulus is not decimal".to_string())?;
-    if modulus != native {
-        return Err("field modulus does not match native BN254 Fr".into());
-    }
-    Ok(modulus)
+    parse_authenticated_bn254_modulus(&model.ledger.field_modulus)
 }
 
 fn mod_mul(a: i128, b: i128, modulus: &BigUint) -> BigUint {

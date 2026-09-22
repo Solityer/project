@@ -233,6 +233,11 @@ impl<S: Spec<Fp, WIDTH, RATE> + Sync, const WIDTH: usize, const RATE: usize> Mod
                     } => {
                         // this should never ever fail
                         let num_elems = dims[*idx].iter().product::<usize>();
+                        let tensor_offset = initial_offset
+                            + dims[..*idx]
+                                .iter()
+                                .map(|x| x.iter().product::<usize>())
+                                .sum::<usize>();
                         (0..num_elems)
                             .map(|i| {
                                 let x = i % WIDTH;
@@ -240,7 +245,7 @@ impl<S: Spec<Fp, WIDTH, RATE> + Sync, const WIDTH: usize, const RATE: usize> Mod
                                 region.assign_advice_from_instance(
                                     || "pub input anchor",
                                     *col,
-                                    initial_offset + i,
+                                    tensor_offset + i,
                                     self.config.hash_inputs[x],
                                     y,
                                 )

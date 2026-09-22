@@ -133,6 +133,13 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--runs-root", default="runs/formal")
     result.add_argument("--output", default="results/formal_matrix.json")
     result.add_argument(
+        "--datasets",
+        nargs="+",
+        choices=DATASETS,
+        default=list(DATASETS),
+        help="dataset axis to collect; default requires the strict five-dataset matrix",
+    )
+    result.add_argument(
         "--backends",
         nargs="+",
         choices=BACKENDS,
@@ -318,7 +325,7 @@ def validate_cell(path: Path) -> dict[str, Any]:
         abort(f"{path} core proof-instance attestation does not match the native proof")
     if sha256(core_path) != result["core_run_manifest_sha256"]:
         abort(f"{path} core run manifest digest mismatch")
-    if artifact["circuit_ref"] != circuit_ref:
+    if require_circuit_ref(artifact["circuit_ref"], "artifact circuit_ref") != circuit_ref:
         abort(f"{path} circuit_ref does not match artifact identity")
     if result["srs_provenance"] != artifact["srs_provenance"]:
         abort(f"{path} SRS provenance does not match artifact identity")
@@ -346,6 +353,9 @@ def check_pair_consistency(cells: list[dict[str, Any]]) -> None:
 
 
 def main(args: argparse.Namespace) -> int:
+    selected_datasets = tuple(args.datasets)
+    if len(set(selected_datasets)) != len(selected_datasets):
+        abort("--datasets must not contain duplicates")
     selected_backends = tuple(args.backends)
     if len(set(selected_backends)) != len(selected_backends):
         abort("--backends must not contain duplicates")
@@ -355,12 +365,12 @@ def main(args: argparse.Namespace) -> int:
     if output.is_symlink():
         abort(f"collector output must not be a symlink: {output}")
     cells: list[dict[str, Any]] = []
-    for dataset in DATASETS:
+    for dataset in selected_datasets:
         for backend in selected_backends:
             result_path = runs_root / dataset / backend / "result.json"
             reject_forbidden_path(result_path, f"{dataset}/{backend} result")
             cells.append(validate_cell(result_path))
-    if len(cells) != len(DATASETS) * len(selected_backends):
+    if len(cells) != len(selected_datasets) * len(selected_backends):
         abort("collector did not obtain the requested dataset/backend cells")
     check_pair_consistency(cells)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -369,7 +379,7 @@ def main(args: argparse.Namespace) -> int:
         "baseline": "ezkl",
         "collection_status": "COLLECTED_PENDING_FINAL_VALIDATION",
         "relation_id": CANONICAL_RELATION,
-        "datasets": list(DATASETS),
+        "datasets": list(selected_datasets),
         "backends": list(selected_backends),
         "cell_count": len(cells),
         "source_tree_sha256": source_tree_hash(),

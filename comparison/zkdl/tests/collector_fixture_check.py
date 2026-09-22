@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Bounded collector/final-validator check for the native CPU fixture.
+
+The input proof must be an artifact emitted by the already-passed native
+segmented fixture.  This script creates only explicit fixture-mode records in
+one TemporaryDirectory; formal collector/validator mode is checked to reject
+those records.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS = ROOT / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+from result_artifacts import (  # noqa: E402
+    DATASETS,
+    FIXTURE_PROOF_SCOPE,
+    fixture_statement_id,
+)
+
+
+def digest_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def write_kv(path: Path, values: dict[str, object]) -> None:
+    path.write_text(
+        "".join(f"{key}={value}\n" for key, value in values.items()),
+        encoding="utf-8",
+    )
+
+
+def invoke(command: list[str], expected: int) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=20)
+    if result.returncode != expected:
+        raise RuntimeError(
+            f"unexpected exit={result.returncode} expected={expected}\n"
+            f"stdout={result.stdout}\nstderr={result.stderr}"
+        )
+    return result
+
+
+def make_records(root: Path, artifact: Path, evidence: str) -> str:
+    artifact_bytes = artifact.read_bytes()
+    artifact_digest = digest_bytes(artifact_bytes)
+    if not artifact_bytes.startswith(b"GATR"):
+        raise RuntimeError("input artifact is not a native GATR artifact")
+    evidence_text = (
+        evidence.strip() + "\n" +
+        f"source_artifact={artifact.resolve()}\n" +
+        f"artifact_sha256={artifact_digest}\n" +
+        "independent_verify=PASS\n"
+    )
+    evidence_digest = digest_bytes(evidence_text.encode("utf-8"))
+    runs = root / "runs"
+    runs.mkdir()
+    for dataset in DATASETS:
+        run_dir = runs / f"{dataset}-fixture"
+        run_dir.mkdir()
+        (run_dir / "proof.bin").write_bytes(artifact_bytes)
+        (run_dir / "public_Y.txt").write_text("fixture-public-output\n", encoding="utf-8")
+        (run_dir / "independent_verify.evidence").write_text(evidence_text, encoding="utf-8")
+        proof_digest = artifact_digest
+        statement_id = fixture_statement_id(dataset, proof_digest, evidence_digest)
+        record = {
+            "schema": "zkDL_gat_run_record_v1",
+            "fixture_mode": 1,
+            "dataset": dataset,
+            "backend": "cpu",
+            "statement_id": statement_id,
+            "proof_id": proof_digest,
+            "verification_status": "VERIFIED",
+            "proof_scope": FIXTURE_PROOF_SCOPE,
+            "proof_size_bytes": len(artifact_bytes),
+            "commitment_size_bytes": 0,
+            "commitment_time_seconds": "0",
+            "prove_time_seconds": "0",
+            "verify_time_seconds": "0",
+            "verifier_reads_witness": 0,
+            "gpu_kernel_executed": 0,
+            "silent_fallback": 0,
+            "output_bound": 1,
+            "fixture_evidence_digest": evidence_digest,
+        }
+        envelope = {
+            "schema_id": "zkDL_gat_proof_envelope_v1",
+            "fixture_mode": 1,
+            "status": "PROVED",
+            "native_core_api": "zkdl_native_gat_bridge_v1",
+            "backend": "cpu",
+            "proof_scope": FIXTURE_PROOF_SCOPE,
+            "statement_id": statement_id,
+            "proof_id": proof_digest,
+            "proof_size_bytes": len(artifact_bytes),
+            "verifier_reads_witness": 0,
+            "gpu_kernel_executed": 0,
+            "silent_fallback": 0,
+            "output_bound": 1,
+            "fixture_evidence_digest": evidence_digest,
+        }
+        statement = {
+            "schema": "zkDL_gat_statement_v1",
+            "fixture_mode": 1,
+            "dataset": dataset,
+            "statement_id": statement_id,
+            "proof_id": proof_digest,
+            "proof_scope": FIXTURE_PROOF_SCOPE,
+            "verifier_reads_witness": 0,
+            "gpu_kernel_executed": 0,
+            "silent_fallback": 0,
+            "output_bound": 1,
+            "privacy_policy": "fixture_cpu_only",
+            "public_output_path": "public_Y.txt",
+            "fixture_evidence_digest": evidence_digest,
+        }
+        verification = {
+            "schema": "zkDL_gat_verification_result_v1",
+            "fixture_mode": 1,
+            "status": "VERIFIED",
+            "backend": "cpu",
+            "statement_id": statement_id,
+            "proof_id": proof_digest,
+            "proof_artifact_sha256": proof_digest,
+            "independent_verify": "PASS",
+            "gpu_kernel_executed": 0,
+            "silent_fallback": 0,
+            "fixture_evidence_digest": evidence_digest,
+        }
+        write_kv(run_dir / "run.record", record)
+        write_kv(run_dir / "proof.meta", envelope)
+        write_kv(run_dir / "statement.txt", statement)
+        write_kv(run_dir / "verification.result", verification)
+        (run_dir / "independent_verify.evidence").chmod(0o600)
+    return artifact_digest
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--artifact", type=Path, required=True)
+    parser.add_argument("--evidence", required=True,
+                        help="captured native fixture evidence containing independent_verify=PASS")
+    args = parser.parse_args()
+    artifact = args.artifact.resolve()
+    if artifact.is_symlink() or not artifact.is_file():
+        raise SystemExit(f"collector-fixture: artifact is missing or symlinked: {artifact}")
+    if "independent_verify=PASS" not in args.evidence:
+        raise SystemExit("collector-fixture: evidence must contain independent_verify=PASS")
+    with tempfile.TemporaryDirectory(prefix="zkdl-collector-fixture-") as raw_root:
+        root = Path(raw_root)
+        artifact_digest = make_records(root, artifact, args.evidence)
+        common = ["--root", str(root), "--runs-dir", "runs"]
+        collect = [sys.executable, str(SCRIPTS / "collect_results.py"),
+                   *common, "--output", "results/collected.json",
+                   "--fixture-mode", "--require-selected-backend", "cpu"]
+        final = [sys.executable, str(SCRIPTS / "final_validate.py"),
+                 *common, "--fixture-mode", "--backend", "cpu"]
+        collected = invoke(collect, 0)
+        validated = invoke(final, 0)
+        formal_reject = invoke([
+            sys.executable, str(SCRIPTS / "final_validate.py"),
+            *common, "--backend", "cpu"], 1)
+
+        first = root / "runs" / "cora-fixture"
+        checks: list[tuple[str, callable]] = []
+
+        def mutate_gpu() -> None:
+            path = first / "run.record"
+            path.write_text(path.read_text(encoding="utf-8").replace("backend=cpu", "backend=gpu"), encoding="utf-8")
+
+        def mutate_fallback() -> None:
+            path = first / "run.record"
+            path.write_text(path.read_text(encoding="utf-8").replace("silent_fallback=0", "silent_fallback=1"), encoding="utf-8")
+
+        def mutate_stale() -> None:
+            path = first / "proof.bin"
+            path.write_bytes(path.read_bytes() + b"stale")
+
+        def mutate_missing() -> None:
+            (first / "verification.result").unlink()
+
+        for label, mutate in (("gpu", mutate_gpu), ("fallback", mutate_fallback),
+                              ("stale", mutate_stale), ("missing", mutate_missing)):
+            snapshot = {path: path.read_bytes() for path in first.iterdir() if path.is_file()}
+            mutate()
+            rejected = invoke(collect, 1)
+            for path in list(first.iterdir()):
+                if path.is_file() and path not in snapshot:
+                    path.unlink()
+            for path, contents in snapshot.items():
+                path.write_bytes(contents)
+            checks.append((label, rejected))
+
+        # Re-run the final validator after all negative mutations are restored.
+        final_after = invoke(final, 0)
+        print(
+            f"collector_fixture PASS artifact_sha256={artifact_digest} "
+            f"{collected.stdout.strip()} {validated.stdout.strip()} "
+            f"formal_reject={formal_reject.returncode} "
+            f"negative_checks={','.join(label for label, _ in checks)} "
+            f"{final_after.stdout.strip()}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError) as exc:
+        print(f"collector_fixture FAIL: {exc}", file=sys.stderr)
+        raise SystemExit(1)

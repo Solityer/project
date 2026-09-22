@@ -5,6 +5,7 @@
 //! contract, the authenticated lookup tables and the private model tensor
 //! layout used by the ezkl graph adapter.
 
+use crate::pfsys::canonical_string_to_fr;
 use halo2curves::bn256::Fr as Bn254Fr;
 use halo2curves::ff::PrimeField;
 use num::{BigUint, One};
@@ -80,6 +81,50 @@ fn validate_digest(label: &str, digest: &str) -> Result<(), String> {
         return Err(format!("{} must use lowercase hexadecimal", label));
     }
     Ok(())
+}
+
+/// Parse one canonical unsigned BN254 modulus representation.
+///
+/// Native halo2curves exposes `PrimeField::MODULUS` as a lower-case `0x`
+/// hexadecimal string, while the baseline resource generator serializes the
+/// ledger modulus as canonical decimal.  Accept exactly those two forms and
+/// reject signs, whitespace, upper-case hex, and non-canonical leading zeroes
+/// before comparing the resulting integer.
+pub fn parse_bn254_modulus(value: &str, label: &str) -> Result<BigUint, String> {
+    if value.is_empty() || value.trim() != value {
+        return Err(format!("{} must not be empty or contain whitespace", label));
+    }
+    if value.starts_with('+') || value.starts_with('-') {
+        return Err(format!("{} must be unsigned", label));
+    }
+    let (digits, radix) = if let Some(hex) = value.strip_prefix("0x") {
+        if hex.is_empty()
+            || hex.bytes().any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+        {
+            return Err(format!("{} must use lower-case 0x hexadecimal", label));
+        }
+        (hex, 16)
+    } else {
+        if value.bytes().any(|byte| !byte.is_ascii_digit()) {
+            return Err(format!("{} must use canonical decimal or 0x hexadecimal", label));
+        }
+        (value, 10)
+    };
+    if digits.len() > 1 && digits.starts_with('0') {
+        return Err(format!("{} has non-canonical leading zeroes", label));
+    }
+    BigUint::parse_bytes(digits.as_bytes(), radix)
+        .ok_or_else(|| format!("{} is not a valid unsigned integer", label))
+}
+
+/// Parse and authenticate a resource ledger's BN254 Fr modulus.
+pub fn parse_authenticated_bn254_modulus(value: &str) -> Result<BigUint, String> {
+    let modulus = parse_bn254_modulus(value, "field_modulus")?;
+    let native = parse_bn254_modulus(Bn254Fr::MODULUS, "native BN254 Fr modulus")?;
+    if modulus != native {
+        return Err("field_modulus does not match native BN254 Fr".into());
+    }
+    Ok(modulus)
 }
 
 /// An externally indexed object whose bytes are authenticated by a digest.
@@ -184,6 +229,8 @@ impl ModelBinding {
         if self.hash.is_empty() {
             return Err("model binding hash must not be empty".into());
         }
+        canonical_string_to_fr(&self.hash)
+            .map_err(|error| format!("model binding hash: {}", error))?;
         validate_digest(
             "model binding canonical_model_digest",
             &self.canonical_model_digest,
@@ -1158,13 +1205,7 @@ impl IntegerBoundLedger {
 
     /// Validate no-wrap and non-negative auxiliary bounds against BN254 Fr.
     pub fn validate(&self) -> Result<(), String> {
-        let modulus = BigUint::parse_bytes(self.field_modulus.as_bytes(), 10)
-            .ok_or_else(|| "field_modulus is not an unsigned decimal integer".to_string())?;
-        let native_modulus = BigUint::parse_bytes(Bn254Fr::MODULUS.as_bytes(), 10)
-            .ok_or_else(|| "native BN254 Fr modulus is not decimal".to_string())?;
-        if modulus != native_modulus {
-            return Err("field_modulus does not match native BN254 Fr".into());
-        }
+        let modulus = parse_authenticated_bn254_modulus(&self.field_modulus)?;
         if modulus <= BigUint::from(2_u8) {
             return Err("field_modulus is too small".into());
         }

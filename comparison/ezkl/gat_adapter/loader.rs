@@ -71,6 +71,33 @@ struct HiddenLayerMeta {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct HiddenHeadSpec {
+    attn_dst_kernel: String,
+    attn_src_kernel: String,
+    layer_index: usize,
+    local_head_index: usize,
+    seq_kernel: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HiddenProfileMeta {
+    head_count: usize,
+    head_dim: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutputHeadSpec {
+    attn_dst_kernel: String,
+    attn_src_kernel: String,
+    head_index: usize,
+    output_bias: String,
+    seq_kernel: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[allow(dead_code)]
 struct CheckpointManifest {
     #[serde(rename = "C")]
@@ -88,16 +115,16 @@ struct CheckpointManifest {
     degree_bound_digest: String,
     edge_sort_rule: String,
     family_schema: String,
-    hidden_head_specs: Vec<serde_json::Value>,
+    hidden_head_specs: Vec<HiddenHeadSpec>,
     hidden_layers: Vec<HiddenLayerMeta>,
-    hidden_profile: Vec<serde_json::Value>,
+    hidden_profile: Vec<HiddenProfileMeta>,
     input_preprocess_id: String,
     label_format: String,
     loss: String,
     model_arch_id: String,
     model_param_id: String,
     output_average_rule: String,
-    output_head_specs: Vec<serde_json::Value>,
+    output_head_specs: Vec<OutputHeadSpec>,
     quant_cfg_id: String,
     quantization_scale_chain: String,
     report_unit: String,
@@ -165,7 +192,10 @@ struct ParsedNpy {
     shape: Vec<usize>,
     dtype: String,
     order: String,
-    values: Vec<f64>,
+    /// Quantized values are materialized directly while the authenticated
+    /// payload is streamed.  Keeping only this representation avoids the
+    /// historical `Vec<f64>` plus `Vec<i128>` peak for PPI/OGBN features.
+    values: Vec<i128>,
 }
 
 /// Load and authenticate one of the five canonical dataset bundles.
@@ -491,13 +521,117 @@ fn validate_checkpoint(
     if checkpoint.dataset != dataset
         || checkpoint.classes != meta.num_classes
         || checkpoint.d_in_profile.first().copied() != Some(meta.num_features)
-        || checkpoint.tensor_count != 56
-        || checkpoint.layers != 3
-        || checkpoint.output_heads != 2
-        || checkpoint.hidden_layers.len() != 2
-        || checkpoint.output_head_specs.len() != 2
     {
         return Err("checkpoint shape/topology does not match dataset metadata".into());
+    }
+    if checkpoint.layers < 2
+        || checkpoint.layers != checkpoint.hidden_layers.len() + 1
+        || checkpoint.d_in_profile.len() != checkpoint.hidden_layers.len()
+        || checkpoint.hidden_profile.len() != checkpoint.hidden_layers.len()
+        || checkpoint.output_heads == 0
+        || checkpoint.output_head_specs.len() != checkpoint.output_heads
+    {
+        return Err("checkpoint layer/head schema is not closed".into());
+    }
+
+    let expected_tensors = expected_tensor_layout(checkpoint)?;
+    if checkpoint.tensor_count != expected_tensors.len()
+        || checkpoint.tensor_index.len() != expected_tensors.len()
+    {
+        return Err(format!(
+            "checkpoint tensor count {} does not match authenticated architecture (expected {})",
+            checkpoint.tensor_count,
+            expected_tensors.len()
+        ));
+    }
+    let expected_names = expected_tensors
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<HashSet<_>>();
+    let actual_names = checkpoint
+        .tensor_index
+        .keys()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    if actual_names != expected_names {
+        return Err("checkpoint tensor roles do not match authenticated architecture".into());
+    }
+    for (name, shape) in &expected_tensors {
+        let tensor = checkpoint
+            .tensor_index
+            .get(name)
+            .ok_or_else(|| format!("checkpoint is missing tensor {}", name))?;
+        if tensor.shape != *shape {
+            return Err(format!(
+                "checkpoint tensor {} shape {:?} does not match authenticated shape {:?}",
+                name, tensor.shape, shape
+            ));
+        }
+    }
+
+    let mut hidden_spec_cursor = 0_usize;
+    for (layer_idx, layer) in checkpoint.hidden_layers.iter().enumerate() {
+        if layer.layer_index != layer_idx
+            || checkpoint.d_in_profile[layer_idx] != layer.input_dim
+            || checkpoint.hidden_profile[layer_idx].head_count != layer.head_count
+            || checkpoint.hidden_profile[layer_idx].head_dim != layer.head_dim
+            || layer.head_count == 0
+            || layer.head_dim == 0
+        {
+            return Err(format!(
+                "checkpoint hidden layer {} architecture metadata is not closed",
+                layer_idx
+            ));
+        }
+        if layer_idx > 0 {
+            let previous = &checkpoint.hidden_layers[layer_idx - 1];
+            let expected_input = previous
+                .head_count
+                .checked_mul(previous.head_dim)
+                .ok_or("checkpoint hidden dimension overflow")?;
+            if layer.input_dim != expected_input {
+                return Err(format!(
+                    "checkpoint hidden layer {} input dimension does not match previous concat",
+                    layer_idx
+                ));
+            }
+        }
+        for head_idx in 0..layer.head_count {
+            let spec = checkpoint
+                .hidden_head_specs
+                .get(hidden_spec_cursor)
+                .ok_or("checkpoint hidden head specification count mismatch")?;
+            let prefix = format!("hidden/layer{}/head{}", layer_idx, head_idx);
+            if spec.layer_index != layer_idx
+                || spec.local_head_index != head_idx
+                || spec.attn_dst_kernel != format!("{}/attn_dst/kernel", prefix)
+                || spec.attn_src_kernel != format!("{}/attn_src/kernel", prefix)
+                || spec.seq_kernel != format!("{}/seq/kernel", prefix)
+            {
+                return Err(format!(
+                    "checkpoint hidden head specification order/role mismatch at layer {} head {}",
+                    layer_idx, head_idx
+                ));
+            }
+            hidden_spec_cursor += 1;
+        }
+    }
+    if hidden_spec_cursor != checkpoint.hidden_head_specs.len() {
+        return Err("checkpoint hidden head specification count mismatch".into());
+    }
+    for (head_idx, spec) in checkpoint.output_head_specs.iter().enumerate() {
+        let prefix = format!("output/head{}", head_idx);
+        if spec.head_index != head_idx
+            || spec.attn_dst_kernel != format!("{}/attn_dst/kernel", prefix)
+            || spec.attn_src_kernel != format!("{}/attn_src/kernel", prefix)
+            || spec.seq_kernel != format!("{}/seq/kernel", prefix)
+            || spec.output_bias != format!("{}/output_bias", prefix)
+        {
+            return Err(format!(
+                "checkpoint output head specification order/role mismatch at head {}",
+                head_idx
+            ));
+        }
     }
     if checkpoint.family_schema != "multi_layer_multi_head"
         || checkpoint.output_average_rule != "per_head_bias_then_arithmetic_mean"
@@ -525,6 +659,66 @@ fn validate_checkpoint(
         }
     }
     Ok(())
+}
+
+/// Derive the canonical tensor role order and shape from the authenticated
+/// architecture.  Three tensors belong to every hidden head and four to
+/// every output head; this yields 10 tensors for the compact 1/1/1 fixture and
+/// 56 tensors for the formal 8/8/2 model without weakening either contract.
+fn expected_tensor_layout(
+    checkpoint: &CheckpointManifest,
+) -> Result<Vec<(String, Vec<usize>)>, String> {
+    let mut expected = Vec::new();
+    for (layer_idx, layer) in checkpoint.hidden_layers.iter().enumerate() {
+        for head_idx in 0..layer.head_count {
+            let prefix = format!("hidden/layer{}/head{}", layer_idx, head_idx);
+            expected.push((
+                format!("{}/attn_dst/kernel", prefix),
+                vec![1, layer.head_dim, 1],
+            ));
+            expected.push((
+                format!("{}/attn_src/kernel", prefix),
+                vec![1, layer.head_dim, 1],
+            ));
+            expected.push((
+                format!("{}/seq/kernel", prefix),
+                vec![1, layer.input_dim, layer.head_dim],
+            ));
+        }
+    }
+    let output_input_dim = checkpoint
+        .hidden_layers
+        .last()
+        .ok_or("checkpoint has no hidden layers")?
+        .head_count
+        .checked_mul(
+            checkpoint
+                .hidden_layers
+                .last()
+                .ok_or("checkpoint has no hidden layers")?
+                .head_dim,
+        )
+        .ok_or("checkpoint output input dimension overflow")?;
+    for head_idx in 0..checkpoint.output_heads {
+        let prefix = format!("output/head{}", head_idx);
+        expected.push((
+            format!("{}/attn_dst/kernel", prefix),
+            vec![1, checkpoint.classes, 1],
+        ));
+        expected.push((
+            format!("{}/attn_src/kernel", prefix),
+            vec![1, checkpoint.classes, 1],
+        ));
+        expected.push((
+            format!("{}/seq/kernel", prefix),
+            vec![1, output_input_dim, checkpoint.classes],
+        ));
+        expected.push((
+            format!("{}/output_bias", prefix),
+            vec![1, checkpoint.classes, 1],
+        ));
+    }
+    Ok(expected)
 }
 
 fn parse_usize(value: &str, label: &str) -> Result<usize, String> {
@@ -632,7 +826,7 @@ fn parse_features(
     scales: &ScaleChain,
 ) -> Result<Vec<i128>, String> {
     if path.extension().and_then(|x| x.to_str()) == Some("npy") {
-        let parsed = parse_npy(path)?;
+        let parsed = parse_npy(path, scales.s_input)?;
         let expected_shape = vec![meta.num_nodes, meta.num_features];
         if parsed.shape != expected_shape {
             return Err(format!(
@@ -653,11 +847,7 @@ fn parse_features(
         if meta.feature_sha256.as_deref() != Some(digest.as_str()) {
             return Err("feature npy SHA-256 does not match authenticated metadata".into());
         }
-        return parsed
-            .values
-            .into_iter()
-            .map(|x| quantize(x, scales.s_input))
-            .collect();
+        return Ok(parsed.values);
     }
     let text = fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     let mut lines = text.lines();
@@ -996,7 +1186,7 @@ fn parse_tensor_archive(
     Ok(result)
 }
 
-fn parse_npy(path: &Path) -> Result<ParsedNpy, String> {
+fn parse_npy(path: &Path, quantization_exponent: i32) -> Result<ParsedNpy, String> {
     let file = fs::File::open(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     let mut reader = BufReader::new(file);
     let mut prefix = [0_u8; 8];
@@ -1088,20 +1278,25 @@ fn parse_npy(path: &Path) -> Result<ParsedNpy, String> {
     }
     let mut values = Vec::with_capacity(count);
     let mut remaining = expected_bytes;
-    let mut chunk = vec![0_u8; 1024 * 1024];
+    // Keep each read aligned to the scalar width.  Values are quantized as
+    // they leave the byte buffer, so no floating-point payload vector is
+    // retained alongside the canonical integer feature tensor.
+    let chunk_size = (1024 * 1024) - ((1024 * 1024) % item_size);
+    let mut chunk = vec![0_u8; chunk_size];
     while remaining > 0 {
         let take = remaining.min(chunk.len());
         reader
             .read_exact(&mut chunk[..take])
             .map_err(|e| format!("read NumPy payload {}: {}", path.display(), e))?;
         for value_bytes in chunk[..take].chunks_exact(item_size) {
-            values.push(if item_size == 4 {
+            let value = if item_size == 4 {
                 let bytes: [u8; 4] = value_bytes.try_into().unwrap();
                 f32::from_le_bytes(bytes) as f64
             } else {
                 let bytes: [u8; 8] = value_bytes.try_into().unwrap();
                 f64::from_le_bytes(bytes)
-            });
+            };
+            values.push(quantize(value, quantization_exponent)?);
         }
         remaining -= take;
     }

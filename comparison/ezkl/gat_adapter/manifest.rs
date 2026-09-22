@@ -189,6 +189,8 @@ pub struct ArtifactManifest {
     pub source_snapshot: ResourceSourceSnapshot,
     /// Canonical statement identity.
     pub statement_sha256: String,
+    /// Independent producer provenance/identity manifest digest.
+    pub producer_manifest_sha256: String,
     /// Circuit/settings/VK identity from the native setup.
     pub compiled_circuit_sha256: String,
     /// Settings digest.
@@ -595,6 +597,7 @@ impl ArtifactManifest {
             ("source_tree_sha256", &self.source_tree_sha256),
             ("resource_manifest_sha256", &self.resource_manifest_sha256),
             ("statement_sha256", &self.statement_sha256),
+            ("producer_manifest_sha256", &self.producer_manifest_sha256),
             ("compiled_circuit_sha256", &self.compiled_circuit_sha256),
             ("settings_sha256", &self.settings_sha256),
             ("vk_sha256", &self.vk_sha256),
@@ -666,6 +669,8 @@ impl ArtifactManifest {
         let required = [
             "statement.json",
             "public_output.json",
+            "producer_context.json",
+            "producer_manifest.json",
             "settings.json",
             "compiled.circuit",
             "srs.kzg",
@@ -720,6 +725,7 @@ fn validate_artifact_json_shape(value: &Value) -> Result<(), String> {
             "files",
             "source_snapshot",
             "statement_sha256",
+            "producer_manifest_sha256",
             "compiled_circuit_sha256",
             "settings_sha256",
             "vk_sha256",

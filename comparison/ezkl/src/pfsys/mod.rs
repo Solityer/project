@@ -165,6 +165,37 @@ pub fn field_to_string<F: PrimeField + SerdeObject + Serialize>(fp: &F) -> Strin
     b
 }
 
+/// Encode the native BN254 Fr values that cross the authenticated GAT
+/// statement boundary.
+///
+/// This is deliberately separate from [`field_to_string`], whose historical
+/// ezkl wire format is used by a number of unrelated graph artifacts.  The
+/// GAT statement format is stricter: it carries the canonical 32-byte
+/// `PrimeField::Repr` emitted by halo2curves, in little-endian byte order,
+/// with an explicit `0x` prefix and lower-case hexadecimal digits.
+pub fn canonical_fr_to_string(value: &bn256::Fr) -> String {
+    format!("0x{}", hex::encode(value.to_repr().as_ref()))
+}
+
+/// Decode one authenticated GAT BN254 Fr value without reduction or
+/// alternate encodings.
+pub fn canonical_string_to_fr(value: &str) -> Result<bn256::Fr, String> {
+    if value.len() != 66 || !value.starts_with("0x") {
+        return Err("native BN254 Fr must be encoded as 0x plus 64 hex digits".into());
+    }
+    if value[2..]
+        .bytes()
+        .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+    {
+        return Err("native BN254 Fr encoding must use lower-case hexadecimal".into());
+    }
+    let mut repr = [0_u8; 32];
+    hex::decode_to_slice(&value[2..], &mut repr)
+        .map_err(|error| format!("invalid native BN254 Fr encoding: {}", error))?;
+    Option::from(bn256::Fr::from_repr(repr.into()))
+        .ok_or_else(|| "native BN254 Fr encoding is not a canonical field element".into())
+}
+
 /// converts a little endian Hex string into a field element
 pub fn string_to_field<F: PrimeField + SerdeObject + Serialize + DeserializeOwned>(
     b: &String,

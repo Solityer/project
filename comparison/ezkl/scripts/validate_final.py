@@ -27,6 +27,13 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--matrix", default="results/formal_matrix.json")
     result.add_argument(
+        "--datasets",
+        nargs="+",
+        choices=DATASETS,
+        default=list(DATASETS),
+        help="dataset axis expected in the matrix; default requires the strict five-dataset matrix",
+    )
+    result.add_argument(
         "--backends",
         nargs="+",
         choices=BACKENDS,
@@ -37,6 +44,9 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(args: argparse.Namespace) -> int:
+    selected_datasets = tuple(args.datasets)
+    if len(set(selected_datasets)) != len(selected_datasets):
+        abort("--datasets must not contain duplicates")
     selected_backends = tuple(args.backends) if args.backends is not None else BACKENDS
     if len(set(selected_backends)) != len(selected_backends):
         abort("--backends must not contain duplicates")
@@ -74,10 +84,10 @@ def main(args: argparse.Namespace) -> int:
         abort("formal matrix was not produced by the strict collector")
     if matrix["relation_id"] != CANONICAL_RELATION:
         abort("formal matrix relation mismatch")
-    if matrix["datasets"] != list(DATASETS) or matrix["backends"] != list(selected_backends):
+    if matrix["datasets"] != list(selected_datasets) or matrix["backends"] != list(selected_backends):
         abort("formal matrix dataset/backend axes are not canonical")
     cells = matrix["cells"]
-    if not isinstance(cells, list) or len(cells) != len(DATASETS) * len(selected_backends):
+    if not isinstance(cells, list) or len(cells) != len(selected_datasets) * len(selected_backends):
         abort("formal matrix does not contain the requested dataset/backend cells")
     expected_pair_check = set(selected_backends) == set(BACKENDS)
     if matrix["cell_count"] != len(cells) or matrix["pair_consistency_checked"] is not expected_pair_check:
@@ -108,7 +118,7 @@ def main(args: argparse.Namespace) -> int:
             if cell[field] != refreshed_cell.get(field):
                 abort(f"formal matrix cell is stale for {key}: field={field}")
         refreshed.append(refreshed_cell)
-    expected = {(dataset, backend) for dataset in DATASETS for backend in selected_backends}
+    expected = {(dataset, backend) for dataset in selected_datasets for backend in selected_backends}
     if keys != expected:
         abort(f"formal matrix is missing or has extra cells: expected={sorted(expected)}, got={sorted(keys)}")
     check_pair_consistency(refreshed)
