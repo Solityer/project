@@ -184,16 +184,23 @@ std::size_t find_message(const NativeProofSession &session,
                          const std::string &label,
                          NativeProofMessageKind kind,
                          std::string *reason) {
+    const std::vector<std::size_t> *positions = session.message_positions(label);
+    if (positions == nullptr || positions->empty()) {
+        set_reason(reason, "missing native Lasso message: " + label);
+        return session.messages().size();
+    }
     std::size_t result = session.messages().size();
-    for (std::size_t i = 0; i < session.messages().size(); ++i) {
-        if (session.messages()[i].label != label ||
-            session.messages()[i].kind != kind)
-            continue;
+    for (std::size_t position : *positions) {
+        if (position >= session.messages().size()) {
+            set_reason(reason, "native Lasso message index is out of range: " + label);
+            return session.messages().size();
+        }
+        if (session.messages()[position].kind != kind) continue;
         if (result != session.messages().size()) {
             set_reason(reason, "duplicate native Lasso message: " + label);
             return session.messages().size();
         }
-        result = i;
+        result = position;
     }
     if (result == session.messages().size())
         set_reason(reason, "missing native Lasso message: " + label);
@@ -1583,15 +1590,23 @@ bool parse_masked_open_claim(const NativeProofSession &session,
                              const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
                              zkgpt::native_pedersen::ScalarCommitment *raw_commitment = nullptr,
                              zkgpt::native_pedersen::ScalarCommitment *masked_commitment = nullptr) {
-    const NativeProofMessage *found = nullptr;
-    for (const NativeProofMessage &message : session.messages()) {
-        if (message.label != label + "/claim") continue;
-        if (found != nullptr) {
-            set_reason(reason, "duplicate masked Hyrax claim: " + label);
-            return false;
-        }
-        found = &message;
+    const std::string claim_label = label + "/claim";
+    const std::vector<std::size_t> *positions =
+        session.message_positions(claim_label);
+    if (positions == nullptr || positions->empty()) {
+        set_reason(reason, "malformed masked Hyrax claim: " + label);
+        return false;
     }
+    if (positions->size() != 1) {
+        set_reason(reason, "duplicate masked Hyrax claim: " + label);
+        return false;
+    }
+    const std::size_t position = positions->front();
+    if (position >= session.messages().size()) {
+        set_reason(reason, "masked Hyrax claim index is out of range: " + label);
+        return false;
+    }
+    const NativeProofMessage *found = &session.messages()[position];
     std::vector<std::string> parts;
     const std::size_t expected = scalar_basis == nullptr ? 2 : 5;
     if (found == nullptr || found->kind != NativeProofMessageKind::Data ||
@@ -2418,7 +2433,7 @@ bool native_lasso_verify_bundle(
         if (!verify_masked_opening(
                 session, query.commitment, query_basis_id(query), query.generators,
                 local.final_query_point, NativeLassoTerminalOpeningLabels::l_qry(),
-                final_claim, reason, true, false, &scalar_basis))
+                final_claim, reason, true, true, &scalar_basis))
             return false;
         if (!advance_masked_scope(session, NativeLassoTerminalOpeningLabels::l_qry(),
                                   position, reason))

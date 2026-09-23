@@ -362,19 +362,19 @@ struct BlockRange {
 bool find_unique_message(const NativeProofSession &session,
                          const std::string &label, std::size_t &index,
                          std::string *reason) {
-    const std::vector<NativeProofMessage> &messages = session.messages();
-    bool found = false;
-    for (std::size_t i = 0; i < messages.size(); ++i) {
-        if (messages[i].label != label) continue;
-        if (found) {
-            set_reason(reason, "Pedersen transcript contains duplicate labels");
-            return false;
-        }
-        found = true;
-        index = i;
-    }
-    if (!found) {
+    const std::vector<std::size_t> *positions =
+        session.message_positions(label);
+    if (positions == nullptr || positions->empty()) {
         set_reason(reason, "Pedersen transcript message is missing");
+        return false;
+    }
+    if (positions->size() != 1) {
+        set_reason(reason, "Pedersen transcript contains duplicate labels");
+        return false;
+    }
+    index = positions->front();
+    if (index >= session.messages().size()) {
+        set_reason(reason, "Pedersen transcript message index is out of range");
         return false;
     }
     return true;
@@ -392,26 +392,26 @@ bool derive_challenge(const NativeProofSession &session,
         set_reason(reason, "Pedersen challenge message is invalid");
         return false;
     }
-    std::vector<NativeProofMessage> prefix(
-        messages.begin(), messages.begin() + challenge_index);
-    NativeProofSession rebuilt;
-    if (!NativeProofSession::from_messages(session.domain(), session.statement(),
-                                            prefix, rebuilt, reason))
-        return false;
-    try {
-        const Fr expected = rebuilt.challenge(challenge_label);
-        Fr encoded;
-        if (!decode_field(messages[challenge_index].payload, encoded, reason) ||
-            expected != encoded) {
-            set_reason(reason, "Pedersen Fiat-Shamir challenge mismatch");
-            return false;
-        }
-        challenge = expected;
-        return true;
-    } catch (const std::exception &error) {
-        set_reason(reason, error.what());
-        return false;
-    }
+    // Every caller verifies the immutable NativeProofSession first. Its full
+    // replay authenticates this challenge against the exact preceding
+    // transcript; rebuilding and replaying a prefix for each local opening or
+    // relation would repeat the same global work without adding a check.
+    if (!session.replay(reason)) return false;
+    return decode_field(messages[challenge_index].payload, challenge, reason);
+}
+
+std::string opening_validation_cache_key(
+    const NativeProofSession &session, const PedersenBasis &basis,
+    const std::string &label, const ScalarCommitment &commitment) {
+    std::string key;
+    append_u64(key, session.content_version());
+    append_string(key, label);
+    append_string(key, basis.domain);
+    append_string(key, point_encoding(basis.G));
+    append_string(key, point_encoding(basis.H));
+    append_string(key, commitment.domain);
+    append_string(key, point_encoding(commitment.point)); // expected opening point
+    return key;
 }
 
 bool compare_string(const std::string &expected, const std::string &actual,
@@ -978,9 +978,18 @@ bool verify_opening(const NativeProofSession &session,
                     const PedersenBasis &basis, const std::string &label,
                     const ScalarCommitment &commitment,
                     std::string *reason) {
+    if (!valid_label(label) || !basis.valid(reason) ||
+        !commitment.valid(basis, reason))
+        return false;
+    const std::string cache_key = opening_validation_cache_key(
+        session, basis, label, commitment);
+    if (session.has_cached_verified_opening(cache_key)) return true;
     BlockRange range;
-    return parse_opening_block(session, basis, label, commitment, range, nullptr,
-                               reason);
+    if (!parse_opening_block(session, basis, label, commitment, range, nullptr,
+                             reason))
+        return false;
+    session.cache_verified_opening(cache_key);
+    return true;
 }
 
 G1 linear_residual_commitment(

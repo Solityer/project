@@ -661,17 +661,21 @@ bool decode_open_point(const std::string &encoded, G1 &value) {
 const NativeProofMessage *find_open_message(
     const NativeProofSession &session, const std::string &label,
     std::string *reason) {
-    const NativeProofMessage *found = nullptr;
-    for (const NativeProofMessage &message : session.messages()) {
-        if (message.label != label) continue;
-        if (found != nullptr) {
-            set_open_reason(reason, "duplicate Hyrax opening message: " + label);
-            return nullptr;
-        }
-        found = &message;
+    const std::vector<std::size_t> *positions = session.message_positions(label);
+    if (positions == nullptr || positions->empty()) {
+        set_open_reason(reason, "missing Hyrax opening message: " + label);
+        return nullptr;
     }
-    if (found == nullptr) set_open_reason(reason, "missing Hyrax opening message: " + label);
-    return found;
+    if (positions->size() != 1) {
+        set_open_reason(reason, "duplicate Hyrax opening message: " + label);
+        return nullptr;
+    }
+    const std::size_t position = positions->front();
+    if (position >= session.messages().size()) {
+        set_open_reason(reason, "Hyrax opening message index is out of range: " + label);
+        return nullptr;
+    }
+    return &session.messages()[position];
 }
 
 bool has_prefix(const std::string &value, const std::string &prefix) {
@@ -858,18 +862,19 @@ bool verify_opening_with_session(
 
         const std::string opening_prefix = label + "/";
         const std::string challenge_prefix = "challenge/" + label + "/";
-        std::size_t basis_index = session.messages().size();
-        for (std::size_t index = 0; index < session.messages().size(); ++index) {
-            if (session.messages()[index].label == label + "/basis") {
-                if (basis_index != session.messages().size()) {
-                    set_open_reason(reason, "duplicate Hyrax basis binding");
-                    return false;
-                }
-                basis_index = index;
-            }
-        }
-        if (basis_index == session.messages().size()) {
+        const std::vector<std::size_t> *basis_positions =
+            session.message_positions(label + "/basis");
+        if (basis_positions == nullptr || basis_positions->empty()) {
             set_open_reason(reason, "missing Hyrax basis binding");
+            return false;
+        }
+        if (basis_positions->size() != 1) {
+            set_open_reason(reason, "duplicate Hyrax basis binding");
+            return false;
+        }
+        const std::size_t basis_index = basis_positions->front();
+        if (basis_index >= session.messages().size()) {
+            set_open_reason(reason, "Hyrax basis binding index is out of range");
             return false;
         }
         for (std::size_t index = 0; index < basis_index; ++index) {
@@ -1367,17 +1372,19 @@ bool verify_masked_mle_opening_with_session(
             throw std::invalid_argument("masked Hyrax verifier statement basis mismatch");
         if (!session.replay(reason)) return false;
 
-        std::size_t position = session.messages().size();
-        for (std::size_t index = 0; index < session.messages().size(); ++index) {
-            if (session.messages()[index].label != label + "/basis") continue;
-            if (position != session.messages().size()) {
-                set_open_reason(reason, "duplicate masked Hyrax basis message");
-                return false;
-            }
-            position = index;
-        }
-        if (position == session.messages().size()) {
+        const std::vector<std::size_t> *basis_positions =
+            session.message_positions(label + "/basis");
+        if (basis_positions == nullptr || basis_positions->empty()) {
             set_open_reason(reason, "missing masked Hyrax basis message");
+            return false;
+        }
+        if (basis_positions->size() != 1) {
+            set_open_reason(reason, "duplicate masked Hyrax basis message");
+            return false;
+        }
+        const std::size_t position = basis_positions->front();
+        if (position >= session.messages().size()) {
+            set_open_reason(reason, "masked Hyrax basis message index is out of range");
             return false;
         }
         std::size_t cursor = position;

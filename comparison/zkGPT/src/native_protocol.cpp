@@ -14,7 +14,17 @@ const NativeProofMessage *find_message(const NativeProofSession &session,
                                        const std::string &label,
                                        std::string *reason) {
     const NativeProofMessage *found = nullptr;
-    for (const NativeProofMessage &message : session.messages()) {
+    const std::vector<std::size_t> *positions = session.message_positions(label);
+    if (positions == nullptr) {
+        set_reason(reason, "missing native protocol message: " + label);
+        return nullptr;
+    }
+    for (std::size_t position : *positions) {
+        if (position >= session.messages().size()) {
+            set_reason(reason, "native protocol message index is out of range: " + label);
+            return nullptr;
+        }
+        const NativeProofMessage &message = session.messages()[position];
         if (message.kind != kind || message.label != label) continue;
         if (found != nullptr) {
             set_reason(reason, "duplicate native protocol message: " + label);
@@ -31,7 +41,16 @@ bool message_index(const NativeProofSession &session,
                    NativeProofMessageKind kind, const std::string &label,
                    std::size_t &index, std::string *reason) {
     bool found = false;
-    for (std::size_t i = 0; i < session.messages().size(); ++i) {
+    const std::vector<std::size_t> *positions = session.message_positions(label);
+    if (positions == nullptr) {
+        set_reason(reason, "missing native protocol message: " + label);
+        return false;
+    }
+    for (std::size_t i : *positions) {
+        if (i >= session.messages().size()) {
+            set_reason(reason, "native protocol message index is out of range: " + label);
+            return false;
+        }
         const NativeProofMessage &message = session.messages()[i];
         if (message.kind != kind || message.label != label) continue;
         if (found) {

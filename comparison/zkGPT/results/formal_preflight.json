@@ -1,0 +1,49 @@
+{
+  "backends": {
+    "cpu": {
+      "blocker": "formal adapter smoke failed with 1; partial diagnostics: /home/pzh/project/comparison/zkGPT/results/.formal-preflight-i0r9p6nb",
+      "capabilities": {
+        "independent": true,
+        "masked_full": true,
+        "reads_checkpoint": false,
+        "reads_witness": false,
+        "schema": "zkgpt-gat-verifier-capabilities-v2"
+      },
+      "capability_status": "FORMAL_CPU_MASKED_FULL",
+      "formal_backend_supported": true,
+      "prover": "build/cpu/gat_adapter/zkgpt_gat_prover",
+      "prover_fingerprint": {
+        "mtime_ns": 1790170892657580475,
+        "sha256": "362a569eb35f67ec8388c00f4585ffa247083a23ad9f613ccf47b38565fa3bbe",
+        "size_bytes": 2732912
+      },
+      "ready": false,
+      "verifier": "build/cpu/gat_adapter/zkgpt_gat_verifier",
+      "verifier_fingerprint": {
+        "mtime_ns": 1790170892835584155,
+        "sha256": "b7445afe052a8b279bbac811fe6ec07fc0d8c44c97b4f0a2ccb634b2969f4345",
+        "size_bytes": 2665832
+      }
+    }
+  },
+  "blockers": [
+    "formal adapter smoke failed with 1; partial diagnostics: /home/pzh/project/comparison/zkGPT/results/.formal-preflight-i0r9p6nb"
+  ],
+  "capacity": {},
+  "formal_datasets_started": false,
+  "formal_experiment_eligible": false,
+  "no_fallback": true,
+  "resource_manifest_fingerprint": {
+    "mtime_ns": 1789963244779296003,
+    "sha256": "459e538bb5cb6bf1f2fa7c9adb3645678319f36612bfaa32e7589408a5a4c773",
+    "size_bytes": 8330
+  },
+  "resource_manifest_sha256": "459e538bb5cb6bf1f2fa7c9adb3645678319f36612bfaa32e7589408a5a4c773",
+  "resources_ready": true,
+  "schema": "zkgpt-gat-formal-preflight-v2",
+  "source_ready": true,
+  "status": "BLOCKED",
+  "tiny_formal": null,
+  "verifier_reads_checkpoint": false,
+  "verifier_reads_witness": false
+}

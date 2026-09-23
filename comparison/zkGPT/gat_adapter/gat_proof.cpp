@@ -1149,6 +1149,81 @@ void require_input_region(const GatCircuitPlan &plan, std::size_t offset,
     }
 }
 
+const InputSegment *canonical_segment_for_span(const InputLayout &layout,
+                                               std::size_t offset,
+                                               std::size_t length) {
+    const InputSegment *matched = nullptr;
+    for (const InputSegment &segment : layout.segments) {
+        if (offset < segment.offset) continue;
+        const std::size_t local = offset - segment.offset;
+        if (local > segment.logical_length ||
+            length > segment.logical_length - local)
+            continue;
+        if (matched != nullptr) return nullptr;
+        matched = &segment;
+    }
+    return matched;
+}
+
+void bind_matmul_segments(MatMulDescriptor &descriptor,
+                          const InputLayout &layout) {
+    const std::size_t lhs_span = checked_mul(
+        descriptor.rows, descriptor.inner, "MatMul canonical LHS span");
+    const std::size_t rhs_span = checked_mul(
+        descriptor.inner, descriptor.cols, "MatMul canonical RHS span");
+    const InputSegment *lhs = canonical_segment_for_span(
+        layout, descriptor.lhs_offset, lhs_span);
+    const InputSegment *rhs = canonical_segment_for_span(
+        layout, descriptor.rhs_offset, rhs_span);
+    const InputSegment *output = canonical_segment_for_span(
+        layout, descriptor.output_offset, descriptor.output_coordinates);
+    if (lhs == nullptr || rhs == nullptr || output == nullptr)
+        throw std::invalid_argument(
+            "MatMul operand/output span is not inside a canonical logical segment");
+    descriptor.lhs_segment = lhs->name;
+    descriptor.rhs_segment = rhs->name;
+    descriptor.output_segment = output->name;
+}
+
+NativeGkrMatmulShape native_gkr_shape_from_descriptor(
+    const MatMulDescriptor &descriptor, const InputLayout &layout) {
+    NativeGkrMatmulShape shape;
+    shape.rows = descriptor.rows;
+    shape.inner = descriptor.inner;
+    shape.cols = descriptor.cols;
+    shape.relation_id = descriptor.relation_id;
+    shape.family_id = descriptor.family_id;
+    shape.lhs_offset = descriptor.lhs_offset;
+    shape.rhs_offset = descriptor.rhs_offset;
+    shape.output_offset = descriptor.output_offset;
+    shape.input_segment_domain = layout.n_in;
+    for (const InputSegment &segment : layout.segments)
+        shape.input_segment_logical_lengths.push_back(segment.logical_length);
+    const InputSegment *lhs = canonical_segment_for_span(
+        layout, descriptor.lhs_offset,
+        checked_mul(descriptor.rows, descriptor.inner,
+                    "native GKR canonical LHS span"));
+    const InputSegment *rhs = canonical_segment_for_span(
+        layout, descriptor.rhs_offset,
+        checked_mul(descriptor.inner, descriptor.cols,
+                    "native GKR canonical RHS span"));
+    const InputSegment *output = canonical_segment_for_span(
+        layout, descriptor.output_offset, descriptor.output_coordinates);
+    if (lhs == nullptr || rhs == nullptr || output == nullptr ||
+        lhs->name != descriptor.lhs_segment ||
+        rhs->name != descriptor.rhs_segment ||
+        output->name != descriptor.output_segment)
+        throw std::invalid_argument(
+            "native GKR MatMul descriptor has a stale canonical segment mapping");
+    shape.lhs_segment = lhs->name;
+    shape.rhs_segment = rhs->name;
+    shape.lhs_segment_offset = descriptor.lhs_offset - lhs->offset;
+    shape.rhs_segment_offset = descriptor.rhs_offset - rhs->offset;
+    shape.output_segment = output->name;
+    shape.output_segment_offset = descriptor.output_offset - output->offset;
+    return shape;
+}
+
 void append_unary_layer(GatCircuitPlan &plan, layerType type, std::size_t output_size,
                         std::size_t input_offset, std::size_t input_stride = 1) {
     if (plan.circuit.circuit.size() >= std::numeric_limits<u8>::max()) throw std::overflow_error("zkGPT circuit has too many layers");
@@ -2520,6 +2595,7 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
             descriptor.lhs_offset = lhs_offset;
             descriptor.rhs_offset = rhs_offset;
             descriptor.output_offset = output_offset;
+            bind_matmul_segments(descriptor, plan.input_layout);
             descriptor.coordinate_rule = "row_major_exact[row,term,col]";
             descriptor.scale_rule = scale_rule;
             plan.matmuls.push_back(descriptor);
@@ -2794,6 +2870,7 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
         projection.lhs_offset = coordinates.hidden_concat[1];
         projection.rhs_offset = seq_w;
         projection.output_offset = a.projection;
+        bind_matmul_segments(projection, plan.input_layout);
         projection.coordinate_rule = "row_major_exact[row,term,col]";
         projection.scale_rule = "s_cat*s_w_output[head]->s_yprime_output[head]";
         plan.matmuls.push_back(projection);
@@ -2822,6 +2899,7 @@ GatCircuitPlan build_plan_impl(const Graph &graph, const Model &model,
             descriptor.lhs_offset = lhs_offset;
             descriptor.rhs_offset = rhs_offset;
             descriptor.output_offset = output_offset;
+            bind_matmul_segments(descriptor, plan.input_layout);
             descriptor.coordinate_rule = "row_major_exact[row,term,col]";
             descriptor.scale_rule = scale;
             plan.matmuls.push_back(descriptor);
@@ -3458,11 +3536,28 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan &plan, std::string *rea
             return offset <= input_size && length <= input_size - offset;
         };
         for (const MatMulDescriptor &descriptor : plan.matmuls) {
+            const InputSegment *lhs_segment = canonical_segment_for_span(
+                plan.input_layout, descriptor.lhs_offset,
+                checked_mul(descriptor.rows, descriptor.inner,
+                            "plan MatMul canonical LHS span"));
+            const InputSegment *rhs_segment = canonical_segment_for_span(
+                plan.input_layout, descriptor.rhs_offset,
+                checked_mul(descriptor.inner, descriptor.cols,
+                            "plan MatMul canonical RHS span"));
+            const InputSegment *output_segment = canonical_segment_for_span(
+                plan.input_layout, descriptor.output_offset,
+                descriptor.output_coordinates);
             if (descriptor.relation_id.empty() || descriptor.rows == 0 || descriptor.inner == 0 || descriptor.cols == 0 ||
                 descriptor.output_coordinates != checked_mul(descriptor.rows, descriptor.cols, "plan MatMul output") ||
                 !require_span(descriptor.lhs_offset, checked_mul(descriptor.rows, descriptor.inner, "plan MatMul lhs")) ||
                 !require_span(descriptor.rhs_offset, checked_mul(descriptor.inner, descriptor.cols, "plan MatMul rhs")) ||
                 !require_span(descriptor.output_offset, descriptor.output_coordinates) ||
+                lhs_segment == nullptr || rhs_segment == nullptr ||
+                output_segment == nullptr ||
+                descriptor.lhs_segment != lhs_segment->name ||
+                descriptor.rhs_segment != rhs_segment->name ||
+                descriptor.output_segment != output_segment->name ||
+                descriptor.output_segment != "Aux" ||
                 descriptor.coordinate_rule.find("row_major_exact") == std::string::npos ||
                 descriptor.scale_rule.empty() || descriptor.native_path.empty()) {
                 return fail("MatMul descriptor shape, coordinate, or scale binding is invalid");
@@ -7137,7 +7232,9 @@ bool sparse_proof_wire_valid(const SparseGkrProofWire &wire,
     return true;
 }
 
-bool GatProofArtifact::valid_wire(std::string *reason) const {
+bool GatProofArtifact::valid_wire(
+    std::string *reason,
+    const NativeProofSession *authenticated_session) const {
     try {
         if (version != 6 || schema != "zkgpt-gat-proof-v6") {
             set_reason(reason, "unsupported proof wire version");
@@ -7255,10 +7352,22 @@ bool GatProofArtifact::valid_wire(std::string *reason) const {
             set_reason(reason, "proof wire contains a private payload marker");
             return false;
         }
-        NativeProofSession session;
-        if (!native_session(session, reason)) return false;
-        if (session.statement_digest() != statement_digest ||
-            session.digest() != transcript_digest) {
+        NativeProofSession parsed_session;
+        const NativeProofSession *session = authenticated_session;
+        if (session == nullptr) {
+            if (!native_session(parsed_session, reason)) return false;
+            session = &parsed_session;
+        } else {
+            if (session->domain() != native_domain) {
+                set_reason(reason,
+                           "provided native proof session domain mismatch");
+                return false;
+            }
+            if (!session->valid(reason) || !session->replay(reason))
+                return false;
+        }
+        if (session->statement_digest() != statement_digest ||
+            session->digest() != transcript_digest) {
             set_reason(reason, "Fiat-Shamir transcript or statement binding mismatch");
             return false;
         }
@@ -8227,14 +8336,8 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         gkr_witness.matmuls.reserve(plan.matmuls.size());
         for (const MatMulDescriptor &descriptor : plan.matmuls) {
             NativeGkrMatmulWitness matmul;
-            matmul.shape.rows = descriptor.rows;
-            matmul.shape.inner = descriptor.inner;
-            matmul.shape.cols = descriptor.cols;
-            matmul.shape.relation_id = descriptor.relation_id;
-            matmul.shape.family_id = descriptor.family_id;
-            matmul.shape.lhs_offset = descriptor.lhs_offset;
-            matmul.shape.rhs_offset = descriptor.rhs_offset;
-            matmul.shape.output_offset = descriptor.output_offset;
+            matmul.shape = native_gkr_shape_from_descriptor(
+                descriptor, plan.input_layout);
             const std::size_t lhs_size = checked_mul(
                 descriptor.rows, descriptor.inner,
                 "native GKR MatMul LHS size");
@@ -8291,10 +8394,19 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
             !gkr_binding.claim_commitment.valid(scalar_basis, &reason) ||
             !gkr_binding.unmasked_claim_commitment.valid(scalar_basis, &reason) ||
             !gkr_binding.mask_commitment.valid(scalar_basis, &reason) ||
+            !gkr_binding.unmasked_input_value_commitment.valid(scalar_basis,
+                                                                &reason) ||
+            !gkr_binding.masked_input_value_commitment.valid(scalar_basis,
+                                                              &reason) ||
             !gkr_result.has_unmasked_input_claim_opening ||
             !gkr_result.unmasked_input_claim_opening.valid(scalar_basis, &reason) ||
             gkr_result.unmasked_input_claim_opening.commitment.point !=
-                gkr_binding.unmasked_claim_commitment.point)
+                gkr_binding.unmasked_claim_commitment.point ||
+            !gkr_result.has_unmasked_input_value_opening ||
+            !gkr_result.unmasked_input_value_opening.valid(scalar_basis,
+                                                            &reason) ||
+            gkr_result.unmasked_input_value_opening.commitment.point !=
+                gkr_binding.unmasked_input_value_commitment.point)
             throw std::runtime_error("native masked GKR input binding is malformed");
 
         const std::size_t r_dimension = core_log2(domain);
@@ -8376,7 +8488,7 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
             throw std::runtime_error("masked input opening omitted scalar binding");
         if (!zkgpt::native_pedersen::prove_hidden_linear(
                 session, scalar_basis, "combine/input-linear",
-                {gkr_result.unmasked_input_claim_opening,
+                {gkr_result.unmasked_input_value_opening,
                  w_opening.raw_evaluation_opening,
                  aux_opening.raw_evaluation_opening,
                  l_opening.raw_evaluation_opening},
@@ -8395,8 +8507,6 @@ ProveResult prove_gat(const GatCircuitPlan &plan, const Graph &graph,
         artifact.native_messages = session.messages();
         artifact.transcript_digest = session.digest();
         core_copy_sections(session, artifact);
-        if (!artifact.valid_wire(&reason))
-            throw std::runtime_error("formal masked GAT artifact is invalid: " + reason);
         std::string verify_reason;
         if (!verify_gat(context, artifact, &verify_reason))
             throw std::runtime_error("formal masked GAT self-verification failed: " +
@@ -8806,7 +8916,10 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
             context.model_arch_id != context.registration.model_arch_id) { set_reason(reason, "public verifier context identity mismatch"); return false; }
         if (context.privacy_extension_profile_id != "masked_full") { set_reason(reason, "unsupported_privacy_profile"); return false; }
         if (artifact.privacy_profile != "masked_full") { set_reason(reason, "unsupported_privacy_profile"); return false; }
-        if (!artifact.valid_wire(reason)) return false;
+        NativeProofSession session;
+        if (!artifact.native_session(session, reason) ||
+            !artifact.valid_wire(reason, &session))
+            return false;
         VerifierContext canonical = context;
         const std::string expected_statement = verifier_context_digest(canonical);
         if (artifact.statement_digest != expected_statement) { set_reason(reason, "proof statement digest does not match independent public context"); return false; }
@@ -8862,9 +8975,6 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
             return false;
         }
 
-        NativeProofSession session;
-        if (!artifact.native_session(session, reason)) return false;
-
         // Formal masked_full artifacts have one strict native grammar.  In
         // particular, do not let an unknown/clear adapter message sit between
         // two valid native scopes and be ignored by a component verifier.
@@ -8913,8 +9023,12 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
             context.plan, artifact.com_L, basis_label);
         NativeLassoBundleResult lasso_result;
         if (!native_lasso_verify_bundle(session, lasso_families, lasso_query,
-                                        &lasso_result, reason))
+                                        &lasso_result, reason)) {
+            if (reason != nullptr && reason->empty())
+                set_reason(reason,
+                           "native Lasso verifier rejected without a diagnostic");
             return false;
+        }
 
         std::vector<F> public_output;
         public_output.reserve(context.public_logits.values.size() +
@@ -8935,18 +9049,9 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
 
         std::vector<NativeGkrMatmulShape> matmuls;
         matmuls.reserve(context.plan.matmuls.size());
-        for (const MatMulDescriptor &descriptor : context.plan.matmuls) {
-            NativeGkrMatmulShape shape;
-            shape.rows = descriptor.rows;
-            shape.inner = descriptor.inner;
-            shape.cols = descriptor.cols;
-            shape.relation_id = descriptor.relation_id;
-            shape.family_id = descriptor.family_id;
-            shape.lhs_offset = descriptor.lhs_offset;
-            shape.rhs_offset = descriptor.rhs_offset;
-            shape.output_offset = descriptor.output_offset;
-            matmuls.push_back(std::move(shape));
-        }
+        for (const MatMulDescriptor &descriptor : context.plan.matmuls)
+            matmuls.push_back(native_gkr_shape_from_descriptor(
+                descriptor, context.plan.input_layout));
 
         std::size_t gkr_start = session.messages().size();
         for (std::size_t index = 0; index < session.messages().size(); ++index) {
@@ -8979,8 +9084,12 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
         if (!verify_masked_gkr_transcript(session, context.plan.circuit,
                                           public_output, matmuls, gkr_start,
                                           &gkr_end, reason,
-                                          &verified_gkr_binding))
+                                          &verified_gkr_binding)) {
+            if (reason != nullptr && reason->empty())
+                set_reason(reason,
+                           "native GKR verifier rejected without a diagnostic");
             return false;
+        }
 
         const zkgpt::native_pedersen::PedersenBasis scalar_basis =
             zkgpt::native_pedersen::derive_basis(
@@ -8990,6 +9099,10 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
             !verified_gkr_binding.unmasked_claim_commitment.valid(scalar_basis,
                                                                   reason) ||
             !verified_gkr_binding.mask_commitment.valid(scalar_basis, reason) ||
+            !verified_gkr_binding.unmasked_input_value_commitment.valid(
+                scalar_basis, reason) ||
+            !verified_gkr_binding.masked_input_value_commitment.valid(
+                scalar_basis, reason) ||
             !lasso_result.has_final_l_commitment ||
             !lasso_result.final_l_commitment.valid(scalar_basis, reason) ||
             lasso_result.final_query_point.empty()) {
@@ -9243,7 +9356,8 @@ bool verify_gat(const VerifierContext &context, const GatProofArtifact &artifact
         }
         if (!zkgpt::native_pedersen::verify_hidden_linear(
                 session, scalar_basis, "combine/input-linear",
-                {verified_gkr_binding.unmasked_claim_commitment, raw_w, raw_aux, raw_l},
+                {verified_gkr_binding.unmasked_input_value_commitment,
+                 raw_w, raw_aux, raw_l},
                 {F_ONE, -c_w, -c_aux, -c_l}, c_x * x_eval, reason))
             return false;
         const std::array<std::string, 6> relation_labels = {
@@ -9339,7 +9453,17 @@ const NativeProofMessage *core_find_message(
     const NativeProofSession &session, NativeProofMessageKind kind,
     const std::string &label, std::string *reason) {
     const NativeProofMessage *found = nullptr;
-    for (const NativeProofMessage &message : session.messages()) {
+    const std::vector<std::size_t> *positions = session.message_positions(label);
+    if (positions == nullptr) {
+        set_reason(reason, "missing masked core message: " + label);
+        return nullptr;
+    }
+    for (std::size_t position : *positions) {
+        if (position >= session.messages().size()) {
+            set_reason(reason, "masked core message index is out of range: " + label);
+            return nullptr;
+        }
+        const NativeProofMessage &message = session.messages()[position];
         if (message.kind != kind || message.label != label) continue;
         if (found != nullptr) {
             set_reason(reason, "duplicate masked core message: " + label);

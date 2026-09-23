@@ -313,7 +313,8 @@ void NativeProofSession::absorb(const std::string &label,
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Data, label,
                                            payload,
                                            static_cast<std::uint64_t>(messages_.size())});
-    label_index_.insert(messages_.back().label);
+    invalidate_validation_cache();
+    label_positions_[messages_.back().label].push_back(messages_.size() - 1);
     append_message_encoding(message_body_cache_, messages_.back());
 }
 
@@ -323,7 +324,8 @@ void NativeProofSession::absorb_field(const std::string &label, const F &value) 
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Field, label,
                                            field_encoding(value),
                                            static_cast<std::uint64_t>(messages_.size())});
-    label_index_.insert(messages_.back().label);
+    invalidate_validation_cache();
+    label_positions_[messages_.back().label].push_back(messages_.size() - 1);
     append_message_encoding(message_body_cache_, messages_.back());
 }
 
@@ -338,7 +340,8 @@ void NativeProofSession::absorb_fields(const std::string &label,
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::FieldVector, label,
                                            std::move(payload),
                                            static_cast<std::uint64_t>(messages_.size())});
-    label_index_.insert(messages_.back().label);
+    invalidate_validation_cache();
+    label_positions_[messages_.back().label].push_back(messages_.size() - 1);
     append_message_encoding(message_body_cache_, messages_.back());
 }
 
@@ -365,7 +368,8 @@ F NativeProofSession::challenge(const std::string &label) {
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Challenge,
                                            challenge_label, field_encoding(result),
                                            static_cast<std::uint64_t>(messages_.size())});
-    label_index_.insert(messages_.back().label);
+    invalidate_validation_cache();
+    label_positions_[messages_.back().label].push_back(messages_.size() - 1);
     append_message_encoding(message_body_cache_, messages_.back());
     return result;
 }
@@ -381,17 +385,43 @@ bool NativeProofSession::rollback(std::size_t checkpoint, std::string *reason) {
 }
 
 void NativeProofSession::rebuild_message_body_cache() {
+    invalidate_validation_cache();
     message_body_cache_.clear();
-    label_index_.clear();
-    label_index_.reserve(messages_.size());
-    for (const NativeProofMessage &message : messages_)
-    {
-        label_index_.insert(message.label);
+    label_positions_.clear();
+    label_positions_.reserve(messages_.size());
+    for (std::size_t index = 0; index < messages_.size(); ++index) {
+        const NativeProofMessage &message = messages_[index];
+        label_positions_[message.label].push_back(index);
         append_message_encoding(message_body_cache_, message);
     }
 }
 
+void NativeProofSession::invalidate_validation_cache() {
+    ++content_version_;
+    valid_cache_ = false;
+    replay_cache_ = false;
+    valid_cache_reason_.clear();
+    replay_cache_reason_.clear();
+    verified_opening_cache_.clear();
+}
+
 bool NativeProofSession::replay(std::string *reason) const {
+    if (replay_cache_ && replay_cache_version_ == content_version_) {
+        if (!replay_cache_result_)
+            set_reason(reason, replay_cache_reason_);
+        return replay_cache_result_;
+    }
+    std::string local_reason;
+    const bool result = replay_uncached(&local_reason);
+    replay_cache_ = true;
+    replay_cache_version_ = content_version_;
+    replay_cache_result_ = result;
+    replay_cache_reason_ = result ? std::string() : local_reason;
+    if (!result) set_reason(reason, replay_cache_reason_);
+    return result;
+}
+
+bool NativeProofSession::replay_uncached(std::string *reason) const {
     try {
         if (!valid(reason)) return false;
         NativeProofSession prefix(domain_, statement_);
@@ -433,6 +463,21 @@ std::string NativeProofSession::digest() const {
 }
 
 bool NativeProofSession::valid(std::string *reason) const {
+    if (valid_cache_ && valid_cache_version_ == content_version_) {
+        if (!valid_cache_result_) set_reason(reason, valid_cache_reason_);
+        return valid_cache_result_;
+    }
+    std::string local_reason;
+    const bool result = valid_uncached(&local_reason);
+    valid_cache_ = true;
+    valid_cache_version_ = content_version_;
+    valid_cache_result_ = result;
+    valid_cache_reason_ = result ? std::string() : local_reason;
+    if (!result) set_reason(reason, valid_cache_reason_);
+    return result;
+}
+
+bool NativeProofSession::valid_uncached(std::string *reason) const {
     if (domain_.empty() || domain_.size() > kMaxString) {
         set_reason(reason, "native proof session domain is invalid");
         return false;

@@ -591,7 +591,9 @@ struct GatProofArtifact {
     SparseGkrProofWire sparse_gkr;
 
     bool has_private_payload() const;
-    bool valid_wire(std::string *reason = nullptr) const;
+    bool valid_wire(
+        std::string *reason = nullptr,
+        const NativeProofSession *authenticated_session = nullptr) const;
     bool native_session(NativeProofSession &out,
                        std::string *reason = nullptr) const;
     bool write(const std::string &path, std::string *reason = nullptr) const;

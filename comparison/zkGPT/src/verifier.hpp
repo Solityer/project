@@ -80,6 +80,17 @@ struct NativeGkrMatmulShape {
     std::size_t lhs_offset = 0;
     std::size_t rhs_offset = 0;
     std::size_t output_offset = 0;
+    // Formal GAT adapters provide the canonical four-segment input mapping.
+    // A zero segment domain is reserved for the small protocol-level fixtures
+    // that exercise the native GKR API without a GAT input layout.
+    std::size_t input_segment_domain = 0;
+    std::string lhs_segment;
+    std::string rhs_segment;
+    std::size_t lhs_segment_offset = 0;
+    std::size_t rhs_segment_offset = 0;
+    std::vector<std::size_t> input_segment_logical_lengths;
+    std::string output_segment;
+    std::size_t output_segment_offset = 0;
 };
 
 // Prover-only witness for one native FCONN matrix relation.  The LHS is
@@ -114,6 +125,13 @@ struct NativeGkrInputBinding {
     zkgpt::native_pedersen::ScalarCommitment claim_commitment;
     zkgpt::native_pedersen::ScalarCommitment unmasked_claim_commitment;
     zkgpt::native_pedersen::ScalarCommitment mask_commitment;
+    // The unmasked claim is the native randomized input-source aggregate
+    // q(r)*V_input(r).  The separate raw witness evaluation is the
+    // Product2Public terminal V_input(r), which the GAT adapter connects to
+    // the canonical X/W/Aux/L_qry openings.
+    zkgpt::native_pedersen::ScalarCommitment unmasked_input_value_commitment;
+    zkgpt::native_pedersen::ScalarCommitment masked_input_value_commitment;
+    F input_weight_evaluation = F_ZERO;
 };
 
 // Prover-only result for the combine adapter.  The opening is deliberately
@@ -121,8 +139,13 @@ struct NativeGkrInputBinding {
 // NativeProofSession; it remains an in-memory witness owned by the caller.
 struct NativeGkrProverResult {
     NativeGkrInputBinding input_binding;
+    // The product-aggregate opening is retained for transcript consistency;
+    // the raw canonical input MLE opening is consumed by the GAT segment
+    // opening composition.
     zkgpt::native_pedersen::ScalarOpening unmasked_input_claim_opening;
     bool has_unmasked_input_claim_opening = false;
+    zkgpt::native_pedersen::ScalarOpening unmasked_input_value_opening;
+    bool has_unmasked_input_value_opening = false;
 };
 
 // Official masked layered-circuit prover.  It performs the native GKR walk

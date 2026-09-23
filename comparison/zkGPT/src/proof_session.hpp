@@ -6,8 +6,22 @@
 #include <cstdint>
 #include <iosfwd>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+class NativeProofSession;
+
+namespace zkgpt {
+namespace native_pedersen {
+struct PedersenBasis;
+struct ScalarCommitment;
+bool verify_opening(const NativeProofSession &session,
+                    const PedersenBasis &basis, const std::string &label,
+                    const ScalarCommitment &commitment,
+                    std::string *reason);
+} // namespace native_pedersen
+} // namespace zkgpt
 
 struct NativeProofStatement {
     // Every field below is an externally authenticated digest or immutable
@@ -117,15 +131,33 @@ public:
     const NativeProofStatement &statement() const { return statement_; }
     std::string statement_digest() const { return statement_.root(); }
     const std::vector<NativeProofMessage> &messages() const { return messages_; }
+    std::uint64_t content_version() const { return content_version_; }
+    const std::vector<std::size_t> *message_positions(
+        const std::string &label) const {
+        const auto found = label_positions_.find(label);
+        return found == label_positions_.end() ? nullptr : &found->second;
+    }
     // Prover-side relation helpers use this index to reject duplicate
     // transcript labels without repeatedly scanning the complete message
     // history.  The index is derived from the canonical message sequence and
     // is not part of the serialized proof wire.
     bool has_label(const std::string &label) const {
-        return label_index_.find(label) != label_index_.end();
+        return label_positions_.find(label) != label_positions_.end();
     }
 
 private:
+    friend bool zkgpt::native_pedersen::verify_opening(
+        const NativeProofSession &, const zkgpt::native_pedersen::PedersenBasis &,
+        const std::string &, const zkgpt::native_pedersen::ScalarCommitment &,
+        std::string *);
+
+    bool has_cached_verified_opening(const std::string &key) const {
+        return verified_opening_cache_.find(key) !=
+               verified_opening_cache_.end();
+    }
+    void cache_verified_opening(const std::string &key) const {
+        verified_opening_cache_.insert(key);
+    }
     std::string domain_;
     NativeProofStatement statement_;
     std::vector<NativeProofMessage> messages_;
@@ -135,10 +167,27 @@ private:
     // message for each Fiat-Shamir challenge without changing transcript
     // bytes or the proof-session wire schema.
     std::string message_body_cache_;
-    std::unordered_set<std::string> label_index_;
+    std::unordered_map<std::string, std::vector<std::size_t>> label_positions_;
+    mutable std::unordered_set<std::string> verified_opening_cache_;
+    // Verification scopes are parsed independently but all consume the same
+    // immutable session. Cache validation/replay results and diagnostics until
+    // the transcript is mutated; this changes neither challenge inputs nor
+    // which equations each scope verifies.
+    std::uint64_t content_version_ = 0;
+    mutable bool valid_cache_ = false;
+    mutable bool replay_cache_ = false;
+    mutable std::uint64_t valid_cache_version_ = 0;
+    mutable std::uint64_t replay_cache_version_ = 0;
+    mutable bool valid_cache_result_ = false;
+    mutable bool replay_cache_result_ = false;
+    mutable std::string valid_cache_reason_;
+    mutable std::string replay_cache_reason_;
 
     F derive(const std::string &label) const;
+    void invalidate_validation_cache();
     void rebuild_message_body_cache();
+    bool valid_uncached(std::string *reason) const;
+    bool replay_uncached(std::string *reason) const;
     static std::string field_encoding(const F &value);
     static bool decode_field(const std::string &payload, F &value);
     static bool decode_fields(const std::string &payload, std::vector<F> &values);

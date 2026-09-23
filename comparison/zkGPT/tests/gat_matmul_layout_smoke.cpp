@@ -109,18 +109,18 @@ int main() {
     // Walk the native masked FCONN with an asymmetric, non-power-of-two
     // inner dimension.  The zero at the end of every RHS column is padding,
     // not the first coordinate of the next column.
-    const MatMulDescriptor native_descriptor = descriptor(2, 3, 2, 6);
+    const MatMulDescriptor native_descriptor = descriptor(2, 3, 2, 8);
     const std::vector<Fr> canonical_native_input{
         Fr(1), Fr(2), Fr(3), Fr(4), Fr(5), Fr(6),
-        Fr(10), Fr(40), Fr(20), Fr(50), Fr(30), Fr(60)};
+        Fr(0), Fr(0), Fr(10), Fr(40), Fr(20), Fr(50), Fr(30), Fr(60),
+        Fr(0), Fr(0)};
     const std::vector<Fr> native_right = pack_native_gkr_matmul_rhs(
         native_descriptor, canonical_native_input);
     assert((native_right == std::vector<Fr>{Fr(10), Fr(20), Fr(30), Fr(0),
                                             Fr(40), Fr(50), Fr(60), Fr(0)}));
 
     NativeLayeredGkrWitness witness;
-    witness.layer_values = {{Fr(0), Fr(0), Fr(0), Fr(0), Fr(0), Fr(0),
-                             Fr(0), Fr(0)},
+    witness.layer_values = {canonical_native_input,
                             {Fr(140), Fr(320), Fr(320), Fr(770)},
                             {Fr(140), Fr(320), Fr(320), Fr(770)}};
     NativeGkrMatmulWitness matmul;
@@ -135,9 +135,9 @@ int main() {
     witness.matmuls.push_back(matmul);
 
     layeredCircuit circuit = make_power_of_two_circuit();
-    circuit.circuit[0].size = 8;
-    circuit.circuit[0].zero_start_id = 8;
-    circuit.circuit[0].bit_length = 3;
+    circuit.circuit[0].size = 16;
+    circuit.circuit[0].zero_start_id = 16;
+    circuit.circuit[0].bit_length = 4;
     circuit.circuit[1].size = 4;
     circuit.circuit[1].zero_start_id = 4;
     circuit.circuit[1].bit_length = 2;

@@ -1786,18 +1786,19 @@ bool opening_commitment_at(const NativeProofSession &session,
 
 bool unique_index(const NativeProofSession &session, const std::string &label,
                   std::size_t &index, std::string *reason) {
-    bool found = false;
-    for (std::size_t i = 0; i < session.messages().size(); ++i) {
-        if (session.messages()[i].label != label) continue;
-        if (found) {
-            set_reason(reason, "masked Sumcheck transcript contains duplicate labels");
-            return false;
-        }
-        found = true;
-        index = i;
-    }
-    if (!found) {
+    const std::vector<std::size_t> *positions =
+        session.message_positions(label);
+    if (positions == nullptr || positions->empty()) {
         set_reason(reason, "masked Sumcheck transcript message is missing: " + label);
+        return false;
+    }
+    if (positions->size() != 1) {
+        set_reason(reason, "masked Sumcheck transcript contains duplicate labels");
+        return false;
+    }
+    index = positions->front();
+    if (index >= session.messages().size()) {
+        set_reason(reason, "masked Sumcheck transcript label index is out of range");
         return false;
     }
     return true;
