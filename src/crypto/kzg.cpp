@@ -2463,8 +2463,9 @@ namespace gatzk::crypto
                     polynomial.size() ||
                 resident->logical_count >
                     resident->capacity ||
-                resident->nonzero_count >
-                    resident->logical_count)
+                (resident->nonzero_count_known &&
+                 resident->nonzero_count >
+                     resident->logical_count))
             {
                 throw std::runtime_error(
                     "invalid CUDA resident coefficient metadata");
@@ -2503,10 +2504,6 @@ namespace gatzk::crypto
 
             polynomial->data.resize(
                 logical_count);
-
-            polynomial
-                ->cuda_resident_coefficients
-                .reset();
         }
 
         std::size_t estimated_commitment_msm_work(const algebra::Polynomial &polynomial)
@@ -2516,7 +2513,12 @@ namespace gatzk::crypto
                         polynomial);
                 resident != nullptr)
             {
-                return resident->nonzero_count;
+                return resident
+                               ->nonzero_count_known
+                           ? resident
+                                 ->nonzero_count
+                           : resident
+                                 ->logical_count;
             }
 
             const auto &values = polynomial.values();
@@ -3280,11 +3282,13 @@ namespace gatzk::crypto
 
                     stable_msm_options
                         .device_montgomery_scalar_nonzero_count_known =
-                        true;
+                        resident
+                            ->nonzero_count_known;
 
                     stable_msm_options
                         .device_montgomery_scalar_nonzero_count =
-                        resident->nonzero_count;
+                        resident
+                            ->nonzero_count;
                 }
 
                 point =
@@ -3432,6 +3436,149 @@ namespace gatzk::crypto
                     semantic_commitment_reuse;
                 profile->msm_ms = elapsed_ms(msm_start, Clock::now());
             }
+            return point;
+        }
+
+        G1Point commit_resident_evaluation_point(
+            const std::string &name,
+            const std::shared_ptr<
+                algebra::RootOfUnityDomain> &domain,
+            const algebra::
+                CudaResidentCoefficientBuffer
+                    &resident,
+            const KZGProverKey &pk,
+            CommitObjectProfile *profile = nullptr,
+            const G1MSMExecutionOptions *msm_options = nullptr)
+        {
+            if (domain == nullptr ||
+                resident.device_montgomery_limbs ==
+                    nullptr ||
+                resident.logical_count !=
+                    domain->size ||
+                resident.capacity <
+                    resident.logical_count)
+            {
+                throw std::runtime_error(
+                    "resident evaluation opening metadata is invalid: " +
+                    name);
+            }
+
+            algebra::Polynomial
+                srs_descriptor;
+
+            srs_descriptor.name =
+                name;
+
+            srs_descriptor.basis =
+                algebra::
+                    PolynomialBasis::
+                        Evaluation;
+
+            srs_descriptor.domain =
+                domain;
+
+            const auto *lagrange_srs =
+                evaluation_srs_points(
+                    srs_descriptor,
+                    pk);
+
+            if (lagrange_srs == nullptr ||
+                lagrange_srs->size() <
+                    resident.logical_count)
+            {
+                throw std::runtime_error(
+                    "resident evaluation opening exceeds Lagrange SRS: " +
+                    name);
+            }
+
+            G1MSMProfile msm_profile;
+
+            const auto start =
+                Clock::now();
+
+            const G1MSMExecutionOptions
+                resident_options{
+                    .max_worker_count =
+                        msm_options != nullptr
+                            ? msm_options
+                                  ->max_worker_count
+                            : 0,
+                    .stable_srs_bases =
+                        true,
+                    .stable_srs_capacity =
+                        lagrange_srs
+                            ->size(),
+                    .device_montgomery_scalars =
+                        resident
+                            .device_montgomery_limbs,
+                    .device_montgomery_scalar_capacity =
+                        resident.capacity,
+                    .device_montgomery_scalar_device =
+                        resident.device,
+                    .device_montgomery_scalar_nonzero_count_known =
+                        resident
+                            .nonzero_count_known,
+                    .device_montgomery_scalar_nonzero_count =
+                        resident
+                            .nonzero_count,
+            };
+
+            const auto point =
+                g1_multi_scalar_mul_profiled(
+                    lagrange_srs->data(),
+                    nullptr,
+                    resident.logical_count,
+                    profile != nullptr
+                        ? &msm_profile
+                        : nullptr,
+                    &resident_options);
+
+            if (profile != nullptr)
+            {
+                profile->name =
+                    name;
+
+                profile->basis =
+                    "evaluation";
+
+                profile->domain =
+                    domain->name;
+
+                profile->vector_length =
+                    resident.logical_count;
+
+                profile->nonzero_scalar_count =
+                    msm_profile
+                        .nonzero_scalar_count;
+
+                profile->effective_scalar_count =
+                    msm_profile
+                        .effective_scalar_count;
+
+                profile->zero_scalar_skipping =
+                    msm_profile
+                        .zero_scalar_skipping;
+
+                profile->sparse_compaction =
+                    msm_profile
+                        .sparse_compaction;
+
+                profile->constant_tail_folding =
+                    false;
+
+                profile->multithreaded_msm =
+                    msm_profile
+                        .multithreaded;
+
+                profile->semantic_commitment_reuse =
+                    false;
+
+                profile->msm_ms =
+                    elapsed_ms(
+                        start,
+                        Clock::now());
+            }
+
             return point;
         }
 
@@ -3685,26 +3832,127 @@ namespace gatzk::crypto
         {
             if (pk.powers_g1 == nullptr)
             {
-                throw std::runtime_error("missing coefficient proving SRS");
+                throw std::runtime_error(
+                    "missing coefficient proving SRS");
             }
-            thread_local std::vector<FieldElement> quotient;
+
+            std::size_t coefficient_count =
+                coefficients.size();
+
+            while (coefficient_count > 1 &&
+                   coefficients[coefficient_count - 1] ==
+                       FieldElement::zero())
+            {
+                --coefficient_count;
+            }
+
+            if (coefficient_count > 1)
+            {
+                std::shared_ptr<
+                    const algebra::
+                        CudaResidentCoefficientBuffer>
+                    resident_quotient;
+
+                if (algebra::
+                        try_cuda_coefficient_opening_quotient_resident_native(
+                            FieldElement::
+                                native_array_data(
+                                    coefficients.data()),
+                            coefficient_count,
+                            point.native(),
+                            value.native(),
+                            &resident_quotient))
+                {
+                    if (resident_quotient ==
+                            nullptr ||
+                        resident_quotient
+                                ->logical_count >
+                            pk.powers_g1
+                                ->size() ||
+                        resident_quotient
+                                ->logical_count >
+                            pk.degree_bound + 1)
+                    {
+                        throw std::runtime_error(
+                            "resident coefficient witness quotient exceeds SRS degree bound");
+                    }
+
+                    const G1MSMExecutionOptions
+                        resident_options{
+                            .max_worker_count =
+                                msm_options !=
+                                        nullptr
+                                    ? msm_options
+                                          ->max_worker_count
+                                    : 0,
+                            .stable_srs_bases =
+                                true,
+                            .stable_srs_capacity =
+                                pk.powers_g1
+                                    ->size(),
+                            .device_montgomery_scalars =
+                                resident_quotient
+                                    ->device_montgomery_limbs,
+                            .device_montgomery_scalar_capacity =
+                                resident_quotient
+                                    ->capacity,
+                            .device_montgomery_scalar_device =
+                                resident_quotient
+                                    ->device,
+                            .device_montgomery_scalar_nonzero_count_known =
+                                resident_quotient
+                                    ->nonzero_count_known,
+                            .device_montgomery_scalar_nonzero_count =
+                                resident_quotient
+                                    ->nonzero_count,
+                    };
+
+                    return g1_multi_scalar_mul_profiled(
+                        pk.powers_g1->data(),
+                        nullptr,
+                        resident_quotient
+                            ->logical_count,
+                        nullptr,
+                        &resident_options);
+                }
+            }
+
+            thread_local std::vector<FieldElement>
+                quotient;
+
             if (!coefficient_single_point_quotient_coefficients(
-                    &quotient, coefficients, point, value, worker_cap))
+                    &quotient,
+                    coefficients,
+                    point,
+                    value,
+                    worker_cap))
             {
                 return g1_zero();
             }
-            if (quotient.size() > pk.powers_g1->size() || quotient.size() > pk.degree_bound + 1)
+
+            if (quotient.size() >
+                    pk.powers_g1->size() ||
+                quotient.size() >
+                    pk.degree_bound + 1)
             {
-                throw std::runtime_error("coefficient witness quotient exceeds SRS degree bound");
+                throw std::runtime_error(
+                    "coefficient witness quotient exceeds SRS degree bound");
             }
-            const G1MSMExecutionOptions stable_msm_options{
-                .max_worker_count =
-                    msm_options != nullptr
-                        ? msm_options->max_worker_count
-                        : 0,
-                .stable_srs_bases = true,
-                .stable_srs_capacity = pk.powers_g1->size(),
+
+            const G1MSMExecutionOptions
+                stable_msm_options{
+                    .max_worker_count =
+                        msm_options != nullptr
+                            ? msm_options
+                                  ->max_worker_count
+                            : 0,
+                    .stable_srs_bases =
+                        true,
+                    .stable_srs_capacity =
+                        pk.powers_g1
+                            ->size(),
             };
+
             return g1_multi_scalar_mul_profiled(
                 pk.powers_g1->data(),
                 quotient.data(),
@@ -3906,7 +4154,10 @@ namespace gatzk::crypto
             const std::vector<FieldElement> &source,
             const FieldElement &scale,
             std::size_t worker_cap,
-            bool source_is_ephemeral = false)
+            bool source_is_ephemeral = false,
+            const algebra::
+                CudaResidentCoefficientBuffer
+                    *resident_source = nullptr)
         {
             if (plan == nullptr)
             {
@@ -3919,7 +4170,8 @@ namespace gatzk::crypto
                 return;
             }
 
-            if (plan->coefficient_fold.empty() &&
+            if (resident_source == nullptr &&
+                plan->coefficient_fold.empty() &&
                 scale == FieldElement::one())
             {
                 plan->coefficient_fold =
@@ -3929,6 +4181,24 @@ namespace gatzk::crypto
                     false;
 
                 return;
+            }
+
+            if (resident_source != nullptr)
+            {
+                if (resident_source
+                            ->device_montgomery_limbs ==
+                        nullptr ||
+                    resident_source
+                            ->logical_count !=
+                        source.size() ||
+                    resident_source
+                            ->capacity <
+                        resident_source
+                            ->logical_count)
+                {
+                    throw std::runtime_error(
+                        "coefficient opening fold received invalid resident material");
+                }
             }
 
             if (plan->coefficient_fold.size() <
@@ -3964,13 +4234,31 @@ namespace gatzk::crypto
             if (plan->cuda_coefficient_fold_session !=
                 nullptr)
             {
-                plan->cuda_coefficient_fold_session
-                    ->accumulate_range(
-                        source_native,
-                        scale.native(),
-                        0,
-                        source.size(),
-                        source_is_ephemeral);
+                if (resident_source !=
+                    nullptr)
+                {
+                    plan
+                        ->cuda_coefficient_fold_session
+                        ->accumulate_device_range(
+                            resident_source
+                                ->device_montgomery_limbs,
+                            resident_source
+                                ->device,
+                            scale.native(),
+                            0,
+                            source.size());
+                }
+                else
+                {
+                    plan
+                        ->cuda_coefficient_fold_session
+                        ->accumulate_range(
+                            source_native,
+                            scale.native(),
+                            0,
+                            source.size(),
+                            source_is_ephemeral);
+                }
 
                 plan->coefficient_fold_pristine =
                     false;
@@ -5052,7 +5340,11 @@ namespace gatzk::crypto
                             &plan,
                             polynomial.values(),
                             term.scale,
-                            worker_cap);
+                            worker_cap,
+                            false,
+                            polynomial
+                                .cuda_resident_coefficients
+                                .get());
                     }
                     for (std::size_t point_index = 0; point_index < point_count; ++point_index)
                     {
@@ -5598,7 +5890,12 @@ namespace gatzk::crypto
                             material->values(),
                             scale,
                             worker_cap,
-                            commitments[i].opening_polynomial == nullptr);
+                            commitments[i]
+                                    .opening_polynomial ==
+                                nullptr,
+                            material
+                                ->cuda_resident_coefficients
+                                .get());
                     }
 
                     for (std::size_t point_index = 0;
@@ -6321,71 +6618,183 @@ namespace gatzk::crypto
                 opening_evaluation_scratch;
             for (const auto &group : plan.evaluation_groups)
             {
-                opening_evaluation_scratch.resize(group.domain->size);
-                auto *quotient_values_native = FieldElement::mutable_native_array_data(opening_evaluation_scratch.data());
-                const auto *folded_values_native = FieldElement::native_array_data(group.folded_values.data());
+                const auto *folded_values_native =
+                    FieldElement::
+                        native_array_data(
+                            group
+                                .folded_values
+                                .data());
 
-                const auto fused_start = Clock::now();
-                const bool cuda_fused = algebra::try_cuda_opening_inverse_and_quotient_native(
-                    folded_values_native,
-                    quotient_values_native,
-                    group.scaled_claim_sums[point_index].native(),
-                    group.domain->size,
-                    group.domain->omega,
-                    point);
+                std::shared_ptr<
+                    const algebra::
+                        CudaResidentCoefficientBuffer>
+                    resident_quotient;
 
-                if (!cuda_fused)
-                {
-                    const auto inverse_start = Clock::now();
-                    build_opening_inverse_denominators(&opening_evaluation_scratch, group.domain, point, worker_cap);
-                    if (profile != nullptr)
-                    {
-                        profile->denominator_inverse_ms += elapsed_ms(inverse_start, Clock::now());
-                        profile->denominator_inverse_cache_misses += 1;
-                    }
-
-                    const auto assembly_start = Clock::now();
-                    mcl::Fr zero;
-                    zero.clear();
-                    mcl::Fr base_numerator;
-                    mcl::Fr::sub(base_numerator, zero, group.scaled_claim_sums[point_index].native());
-                    parallel_for_chunks_capped(group.domain->size, 1ULL << 15, worker_cap, [&](std::size_t begin, std::size_t end)
-                                               {
-                        for (std::size_t row = begin; row < end; ++row)
-                        {
-                            mcl::Fr numerator = base_numerator;
-                            mcl::Fr::add(numerator, numerator, folded_values_native[row]);
-                            mcl::Fr::mul(quotient_values_native[row], numerator, quotient_values_native[row]);
-                        } });
-                    if (profile != nullptr)
-                        profile->quotient_assembly_ms += elapsed_ms(assembly_start, Clock::now());
-                }
-                else if (profile != nullptr)
-                {
-                    const auto fused_ms = elapsed_ms(fused_start, Clock::now());
-                    profile->denominator_inverse_ms += fused_ms;
-                    profile->denominator_inverse_cache_misses += 1;
-                }
-
-                const auto witness_msm_start =
+                const auto fused_start =
                     Clock::now();
+
+                const bool cuda_resident =
+                    algebra::
+                        try_cuda_opening_inverse_and_quotient_resident_native(
+                            folded_values_native,
+                            group
+                                .scaled_claim_sums[point_index]
+                                .native(),
+                            group.domain->size,
+                            group.domain->omega,
+                            point,
+                            &resident_quotient);
 
                 CommitObjectProfile
                     witness_commit_profile;
 
-                out = g1_add(
-                    out,
-                    commit_borrowed_evaluation_point(
-                        "folded_" +
-                            group.domain->name +
-                            "_witness",
-                        opening_evaluation_scratch,
+                const auto witness_msm_start =
+                    Clock::now();
+
+                if (cuda_resident)
+                {
+                    if (resident_quotient ==
+                        nullptr)
+                    {
+                        throw std::runtime_error(
+                            "CUDA resident opening returned no quotient material");
+                    }
+
+                    if (profile != nullptr)
+                    {
+                        profile
+                            ->denominator_inverse_ms +=
+                            elapsed_ms(
+                                fused_start,
+                                Clock::now());
+
+                        profile
+                            ->denominator_inverse_cache_misses +=
+                            1;
+                    }
+
+                    out =
+                        g1_add(
+                            out,
+                            commit_resident_evaluation_point(
+                                "folded_" +
+                                    group
+                                        .domain
+                                        ->name +
+                                    "_witness",
+                                group.domain,
+                                *resident_quotient,
+                                pk,
+                                profile !=
+                                        nullptr
+                                    ? &witness_commit_profile
+                                    : nullptr,
+                                msm_options));
+                }
+                else
+                {
+                    opening_evaluation_scratch
+                        .resize(
+                            group.domain
+                                ->size);
+
+                    auto *quotient_values_native =
+                        FieldElement::
+                            mutable_native_array_data(
+                                opening_evaluation_scratch
+                                    .data());
+
+                    const auto inverse_start =
+                        Clock::now();
+
+                    build_opening_inverse_denominators(
+                        &opening_evaluation_scratch,
                         group.domain,
-                        pk,
-                        profile != nullptr
-                            ? &witness_commit_profile
-                            : nullptr,
-                        msm_options));
+                        point,
+                        worker_cap);
+
+                    if (profile != nullptr)
+                    {
+                        profile
+                            ->denominator_inverse_ms +=
+                            elapsed_ms(
+                                inverse_start,
+                                Clock::now());
+
+                        profile
+                            ->denominator_inverse_cache_misses +=
+                            1;
+                    }
+
+                    const auto assembly_start =
+                        Clock::now();
+
+                    mcl::Fr zero;
+                    zero.clear();
+
+                    mcl::Fr base_numerator;
+
+                    mcl::Fr::sub(
+                        base_numerator,
+                        zero,
+                        group
+                            .scaled_claim_sums[point_index]
+                            .native());
+
+                    parallel_for_chunks_capped(
+                        group.domain->size,
+                        1ULL << 15,
+                        worker_cap,
+                        [&](std::size_t begin,
+                            std::size_t end)
+                        {
+                            for (std::size_t row =
+                                     begin;
+                                 row < end;
+                                 ++row)
+                            {
+                                mcl::Fr numerator =
+                                    base_numerator;
+
+                                mcl::Fr::add(
+                                    numerator,
+                                    numerator,
+                                    folded_values_native[row]);
+
+                                mcl::Fr::mul(
+                                    quotient_values_native[row],
+                                    numerator,
+                                    quotient_values_native[row]);
+                            }
+                        });
+
+                    if (profile != nullptr)
+                    {
+                        profile
+                            ->quotient_assembly_ms +=
+                            elapsed_ms(
+                                assembly_start,
+                                Clock::now());
+                    }
+
+                    out =
+                        g1_add(
+                            out,
+                            commit_borrowed_evaluation_point(
+                                "folded_" +
+                                    group
+                                        .domain
+                                        ->name +
+                                    "_witness",
+                                opening_evaluation_scratch,
+                                group.domain,
+                                pk,
+                                profile !=
+                                        nullptr
+                                    ? &witness_commit_profile
+                                    : nullptr,
+                                msm_options));
+                }
 
                 if (profile != nullptr &&
                     progress_enabled())

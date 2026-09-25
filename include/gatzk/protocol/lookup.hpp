@@ -16,6 +16,19 @@ namespace gatzk::protocol
         std::vector<algebra::FieldElement> query;
     };
 
+    struct LogUpRoundColumns
+    {
+        LogUpInverseColumns inverses;
+
+        std::vector<
+            algebra::FieldElement>
+            accumulator;
+
+        double inverse_ms = 0.0;
+
+        double accumulator_ms = 0.0;
+    };
+
     struct IndexedViewActivePrefixWitness
     {
         std::vector<algebra::FieldElement> inverses;
@@ -34,6 +47,15 @@ namespace gatzk::protocol
         const std::vector<algebra::FieldElement> &q_table,
         const std::vector<algebra::FieldElement> &q_query,
         const algebra::FieldElement &beta);
+
+    LogUpRoundColumns build_logup_round_columns(
+        const std::vector<algebra::FieldElement> &table,
+        const std::vector<algebra::FieldElement> &query,
+        const std::vector<algebra::FieldElement> &multiplicity,
+        const std::vector<algebra::FieldElement> &q_table,
+        const std::vector<algebra::FieldElement> &q_query,
+        const algebra::FieldElement &beta,
+        std::size_t active_count);
 
     std::vector<algebra::FieldElement>
     build_logup_accumulator_from_inverse_columns_with_active_count(

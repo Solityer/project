@@ -28,6 +28,7 @@ namespace gatzk::protocol
         constexpr std::size_t kDefaultTileSize = std::size_t{1} << 20;
         constexpr std::size_t kMaximumTileSize = std::size_t{1} << 22;
         constexpr std::size_t kMaximumTargetSize = std::size_t{1} << 27;
+        constexpr std::size_t kPipelineSlotCount = 2;
 
         [[noreturn]] void throw_cuda_t_fh_error(const char *operation, cudaError_t status)
         {
@@ -221,12 +222,55 @@ namespace gatzk::protocol
                 auto status = cudaMalloc(reinterpret_cast<void **>(&device_quotient_), quotient_bytes);
                 if (status != cudaSuccess)
                     throw_cuda_t_fh_error("quotient allocation", status);
-                status = cudaMalloc(reinterpret_cast<void **>(&device_boundary_products_), tile_capacity_ * sizeof(GpuFr));
-                if (status != cudaSuccess)
-                    throw_cuda_t_fh_error("boundary product allocation", status);
-                status = cudaMalloc(reinterpret_cast<void **>(&device_boundary_inverse_products_), tile_capacity_ * sizeof(GpuFr));
-                if (status != cudaSuccess)
-                    throw_cuda_t_fh_error("boundary inverse allocation", status);
+                for (std::size_t slot = 0;
+                     slot < kPipelineSlotCount;
+                     ++slot)
+                {
+                    status =
+                        cudaStreamCreateWithFlags(
+                            &tile_streams_[slot],
+                            cudaStreamNonBlocking);
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_t_fh_error(
+                            "tile stream creation",
+                            status);
+                    }
+
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<
+                                void **>(
+                                &device_boundary_products_[slot]),
+                            tile_capacity_ *
+                                sizeof(GpuFr));
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_t_fh_error(
+                            "boundary product allocation",
+                            status);
+                    }
+
+                    status =
+                        cudaMalloc(
+                            reinterpret_cast<
+                                void **>(
+                                &device_boundary_inverse_products_[slot]),
+                            tile_capacity_ *
+                                sizeof(GpuFr));
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_cuda_t_fh_error(
+                            "boundary inverse allocation",
+                            status);
+                    }
+                }
             }
 
             ~CudaTFHExecutorImpl() override
@@ -239,13 +283,80 @@ namespace gatzk::protocol
                 return tile_capacity_;
             }
 
-            void evaluate_tile(const CudaTFHTile &tile) override
+            std::size_t pipeline_slot_count() const override
             {
-                validate_tile(tile);
-                const auto blocks = static_cast<unsigned>((tile.count + kBlockSize - 1U) / kBlockSize);
+                return kPipelineSlotCount;
+            }
 
-                prepare_boundary_denominator_kernel<<<blocks, kBlockSize>>>(
-                    device_boundary_products_,
+            void wait_for_slot(
+                std::size_t slot) override
+            {
+                if (slot >=
+                    kPipelineSlotCount)
+                {
+                    throw std::runtime_error(
+                        "invalid CUDA t_FH pipeline slot");
+                }
+
+                if (!slot_in_flight_[slot])
+                {
+                    return;
+                }
+
+                const auto status =
+                    cudaStreamSynchronize(
+                        tile_streams_[slot]);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_t_fh_error(
+                        "tile completion synchronization",
+                        status);
+                }
+
+                algebra::
+                    record_cuda_stream_sync();
+
+                slot_in_flight_[slot] =
+                    false;
+            }
+
+            void evaluate_tile(
+                const CudaTFHTile &tile,
+                std::size_t slot) override
+            {
+                validate_tile(
+                    tile);
+
+                if (slot >=
+                    kPipelineSlotCount)
+                {
+                    throw std::runtime_error(
+                        "invalid CUDA t_FH pipeline slot");
+                }
+
+                if (slot_in_flight_[slot])
+                {
+                    throw std::runtime_error(
+                        "CUDA t_FH pipeline slot reused before completion");
+                }
+
+                const auto blocks =
+                    static_cast<unsigned>(
+                        (tile.count +
+                         kBlockSize - 1U) /
+                        kBlockSize);
+
+                const auto stream =
+                    tile_streams_[slot];
+
+                prepare_boundary_denominator_kernel<<<
+                    blocks,
+                    kBlockSize,
+                    0,
+                    stream>>>(
+                    device_boundary_products_[slot],
                     tile.logical_begin,
                     tile.count,
                     gpu_field(shift_),
@@ -253,72 +364,157 @@ namespace gatzk::protocol
                     device_lane_root_powers_,
                     device_block_root_powers_);
 
-                auto status = cudaGetLastError();
-                if (status != cudaSuccess)
-                    throw_cuda_t_fh_error("boundary denominator launch", status);
-                status = cudaStreamSynchronize(nullptr);
-                if (status != cudaSuccess)
-                    throw_cuda_t_fh_error("boundary denominator synchronization", status);
-                algebra::record_cuda_kernel_invocations(1);
-                algebra::record_cuda_stream_sync();
+                auto status =
+                    cudaGetLastError();
 
-                if (!algebra::try_cuda_batch_inverse_native(
-                        reinterpret_cast<const mcl::Fr *>(device_boundary_products_),
-                        reinterpret_cast<mcl::Fr *>(device_boundary_inverse_products_),
-                        tile.count))
+                if (status !=
+                    cudaSuccess)
                 {
-                    throw std::runtime_error("selected CUDA t_FH boundary inverse route was unavailable");
+                    throw_cuda_t_fh_error(
+                        "boundary denominator launch",
+                        status);
                 }
 
-                evaluate_t_fh_kernel<<<blocks, kBlockSize>>>(
+                status =
+                    cudaStreamSynchronize(
+                        stream);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_t_fh_error(
+                        "boundary denominator synchronization",
+                        status);
+                }
+
+                algebra::
+                    record_cuda_kernel_invocations(
+                        1);
+
+                algebra::
+                    record_cuda_stream_sync();
+
+                if (!algebra::
+                        try_cuda_batch_inverse_native(
+                            reinterpret_cast<
+                                const mcl::Fr *>(
+                                device_boundary_products_[slot]),
+                            reinterpret_cast<
+                                mcl::Fr *>(
+                                device_boundary_inverse_products_[slot]),
+                            tile.count))
+                {
+                    throw std::runtime_error(
+                        "selected CUDA t_FH boundary inverse route was unavailable");
+                }
+
+                evaluate_t_fh_kernel<<<
+                    blocks,
+                    kBlockSize,
+                    0,
+                    stream>>>(
                     device_quotient_,
                     tile.logical_begin,
                     tile.count,
-                    target_size_ / domain_size_,
+                    target_size_ /
+                        domain_size_,
                     gpu_field(shift_),
                     gpu_field(last_point_),
                     gpu_field(inv_domain_size_),
-                    gpu_field(parameters_.alpha_quot),
-                    gpu_field(parameters_.beta_feat),
-                    gpu_field(parameters_.eta_feat),
+                    gpu_field(
+                        parameters_
+                            .alpha_quot),
+                    gpu_field(
+                        parameters_
+                            .beta_feat),
+                    gpu_field(
+                        parameters_
+                            .eta_feat),
                     device_lane_root_powers_,
                     device_block_root_powers_,
                     device_zero_cycle_,
                     device_zero_inverse_cycle_,
-                    device_boundary_inverse_products_,
-                    reinterpret_cast<const GpuFr *>(tile.q_table),
-                    reinterpret_cast<const GpuFr *>(tile.q_query),
-                    reinterpret_cast<const GpuFr *>(tile.table),
-                    reinterpret_cast<const GpuFr *>(tile.query),
-                    reinterpret_cast<const GpuFr *>(tile.multiplicity),
-                    reinterpret_cast<const GpuFr *>(tile.j_table),
-                    reinterpret_cast<const GpuFr *>(tile.j_query),
-                    reinterpret_cast<const GpuFr *>(tile.accumulator),
-                    reinterpret_cast<const GpuFr *>(tile.accumulator_next),
-                    reinterpret_cast<const GpuFr *>(tile.table_row),
-                    reinterpret_cast<const GpuFr *>(tile.table_column),
-                    reinterpret_cast<const GpuFr *>(tile.table_feature),
-                    reinterpret_cast<const GpuFr *>(tile.query_row),
-                    reinterpret_cast<const GpuFr *>(tile.query_column),
-                    reinterpret_cast<const GpuFr *>(tile.query_feature),
-                    parameters_.feature_encoding_terms_enabled);
+                    device_boundary_inverse_products_[slot],
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.q_table),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.q_query),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.table),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.query),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.multiplicity),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.j_table),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.j_query),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.accumulator),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.accumulator_next),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.table_row),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.table_column),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.table_feature),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.query_row),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.query_column),
+                    reinterpret_cast<
+                        const GpuFr *>(
+                        tile.query_feature),
+                    parameters_
+                        .feature_encoding_terms_enabled);
 
-                status = cudaGetLastError();
-                if (status != cudaSuccess)
-                    throw_cuda_t_fh_error("quotient evaluation launch", status);
-                status = cudaStreamSynchronize(nullptr);
-                if (status != cudaSuccess)
-                    throw_cuda_t_fh_error("quotient evaluation synchronization", status);
-                algebra::record_cuda_kernel_invocations(1);
-                algebra::record_cuda_stream_sync();
+                status =
+                    cudaGetLastError();
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_cuda_t_fh_error(
+                        "quotient evaluation launch",
+                        status);
+                }
+
+                algebra::
+                    record_cuda_kernel_invocations(
+                        1);
+
+                slot_in_flight_[slot] =
+                    true;
             }
-
             std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> finalize_coefficients(
                 algebra::FieldElement *host_coefficients,
                 std::size_t host_capacity) override
             {
                 if (host_coefficients == nullptr || host_capacity < target_size_)
                     throw std::runtime_error("CUDA t_FH coefficient output is too small");
+
+                for (std::size_t slot = 0;
+                     slot < kPipelineSlotCount;
+                     ++slot)
+                {
+                    wait_for_slot(
+                        slot);
+                }
 
                 release_boundary_buffers();
 
@@ -370,6 +566,7 @@ namespace gatzk::protocol
                 descriptor->capacity = target_size_;
                 descriptor->logical_count = logical_count;
                 descriptor->nonzero_count = nonzero_count;
+                descriptor->nonzero_count_known = true;
                 descriptor->device = device;
                 descriptor->host_transfer = std::move(host_transfer);
                 return descriptor;
@@ -404,12 +601,46 @@ namespace gatzk::protocol
 
             void release_boundary_buffers() noexcept
             {
-                if (device_boundary_products_ != nullptr)
-                    (void)cudaFree(device_boundary_products_);
-                if (device_boundary_inverse_products_ != nullptr)
-                    (void)cudaFree(device_boundary_inverse_products_);
-                device_boundary_products_ = nullptr;
-                device_boundary_inverse_products_ = nullptr;
+                for (std::size_t slot = 0;
+                     slot < kPipelineSlotCount;
+                     ++slot)
+                {
+                    if (tile_streams_[slot] !=
+                        nullptr)
+                    {
+                        (void)cudaStreamSynchronize(
+                            tile_streams_[slot]);
+                    }
+
+                    if (device_boundary_products_[slot] != nullptr)
+                    {
+                        (void)cudaFree(
+                            device_boundary_products_[slot]);
+
+                        device_boundary_products_[slot] = nullptr;
+                    }
+
+                    if (device_boundary_inverse_products_[slot] != nullptr)
+                    {
+                        (void)cudaFree(
+                            device_boundary_inverse_products_[slot]);
+
+                        device_boundary_inverse_products_[slot] = nullptr;
+                    }
+
+                    if (tile_streams_[slot] !=
+                        nullptr)
+                    {
+                        (void)cudaStreamDestroy(
+                            tile_streams_[slot]);
+
+                        tile_streams_[slot] =
+                            nullptr;
+                    }
+
+                    slot_in_flight_[slot] =
+                        false;
+                }
             }
 
             void release_noexcept() noexcept
@@ -440,8 +671,35 @@ namespace gatzk::protocol
             CudaTFHParameters parameters_;
             std::size_t tile_capacity_ = kDefaultTileSize;
             GpuFr *device_quotient_ = nullptr;
-            GpuFr *device_boundary_products_ = nullptr;
-            GpuFr *device_boundary_inverse_products_ = nullptr;
+
+            std::array<
+                GpuFr *,
+                kPipelineSlotCount>
+                device_boundary_products_{
+                    nullptr,
+                    nullptr};
+
+            std::array<
+                GpuFr *,
+                kPipelineSlotCount>
+                device_boundary_inverse_products_{
+                    nullptr,
+                    nullptr};
+
+            std::array<
+                cudaStream_t,
+                kPipelineSlotCount>
+                tile_streams_{
+                    nullptr,
+                    nullptr};
+
+            std::array<
+                bool,
+                kPipelineSlotCount>
+                slot_in_flight_{
+                    false,
+                    false};
+
             GpuFr *device_lane_root_powers_ = nullptr;
             GpuFr *device_block_root_powers_ = nullptr;
             GpuFr *device_zero_cycle_ = nullptr;
@@ -466,8 +724,15 @@ namespace gatzk::protocol
         if (!host.effective_available_known)
             return false;
 
-        const auto quotient_bytes = target_size * sizeof(GpuFr);
-        const auto tile_scratch_bytes = 2 * tile_size * sizeof(GpuFr);
+        const auto quotient_bytes =
+            target_size *
+            sizeof(GpuFr);
+
+        const auto tile_scratch_bytes =
+            kPipelineSlotCount *
+            2 *
+            tile_size *
+            sizeof(GpuFr);
         const auto reserve = std::max<std::size_t>(std::size_t{16} << 30, host.effective_total_known ? host.effective_total_bytes / 8 : std::size_t{16} << 30);
         if (host.effective_available_bytes <= reserve)
             return false;

@@ -1570,9 +1570,20 @@ namespace gatzk::crypto
         G1MSMProfile *profile,
         const G1MSMExecutionOptions *options)
     {
-        if ((points == nullptr || scalars == nullptr) && count != 0)
+        const auto *early_device_montgomery_scalars =
+            options != nullptr
+                ? options
+                      ->device_montgomery_scalars
+                : nullptr;
+
+        if ((points == nullptr ||
+             (scalars == nullptr &&
+              early_device_montgomery_scalars ==
+                  nullptr)) &&
+            count != 0)
         {
-            throw std::runtime_error("G1 MSM received null input");
+            throw std::runtime_error(
+                "G1 MSM received null input");
         }
         if (profile != nullptr)
         {
@@ -1685,6 +1696,43 @@ namespace gatzk::crypto
             {
                 throw std::runtime_error(
                     "resident CUDA scalar MSM attempted a CPU fallback");
+            }
+
+            return out;
+        }
+
+        if (device_montgomery_scalars !=
+                nullptr &&
+            scalars == nullptr)
+        {
+            if (profile != nullptr)
+            {
+                profile->nonzero_scalar_count =
+                    count;
+
+                profile->effective_scalar_count =
+                    count;
+
+                profile->zero_scalar_skipping =
+                    false;
+
+                profile->sparse_compaction =
+                    false;
+            }
+
+            if (!execute_cuda_msm_when_requested(
+                    &out,
+                    points,
+                    nullptr,
+                    count,
+                    stable_srs_bases,
+                    stable_srs_capacity,
+                    device_montgomery_scalars,
+                    device_montgomery_scalar_capacity,
+                    device_montgomery_scalar_device))
+            {
+                throw std::runtime_error(
+                    "device-only resident CUDA scalar MSM attempted a CPU fallback");
             }
 
             return out;

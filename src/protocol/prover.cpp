@@ -8660,45 +8660,243 @@ namespace gatzk::protocol
                 if (tile_capacity == 0)
                     throw std::runtime_error("CUDA t_FH executor returned zero tile capacity");
 
-                FHTileStaging staging;
-                auto discard_set = file_backed_coset_discard_set();
+                const auto pipeline_slots =
+                    executor
+                        ->pipeline_slot_count();
 
-                for (std::size_t begin = 0; begin < target_size_; begin += tile_capacity)
+                if (pipeline_slots == 0)
                 {
-                    const auto count = std::min(tile_capacity, target_size_ - begin);
+                    throw std::runtime_error(
+                        "CUDA t_FH executor returned zero pipeline slots");
+                }
+
+                std::vector<FHTileStaging>
+                    staging(
+                        pipeline_slots);
+
+                std::vector<std::size_t>
+                    completed_prefix(
+                        pipeline_slots,
+                        0);
+
+                auto discard_set =
+                    file_backed_coset_discard_set();
+
+                std::size_t tile_index = 0;
+
+                for (std::size_t begin = 0;
+                     begin < target_size_;
+                     begin += tile_capacity,
+                                 ++tile_index)
+                {
+                    const auto slot =
+                        tile_index %
+                        pipeline_slots;
+
+                    executor->wait_for_slot(
+                        slot);
+
+                    if (completed_prefix[slot] != 0)
+                    {
+                        for (const auto &values :
+                             discard_set)
+                        {
+                            if (values !=
+                                nullptr)
+                            {
+                                values
+                                    ->discard_prefix(
+                                        completed_prefix[slot]);
+                            }
+                        }
+                    }
+
+                    auto &tile_staging =
+                        staging[slot];
+
+                    const auto count =
+                        std::min(
+                            tile_capacity,
+                            target_size_ -
+                                begin);
+
                     CudaTFHTile tile;
-                    tile.logical_begin = begin;
-                    tile.count = count;
-                    tile.q_table = fh_tile_source(fh_coset_slots_.q_table, begin, count, &staging.q_table);
-                    tile.q_query = fh_tile_source(fh_coset_slots_.q_query, begin, count, &staging.q_query);
-                    tile.table = fh_tile_source(fh_coset_slots_.table, begin, count, &staging.table);
-                    tile.query = fh_tile_source(fh_coset_slots_.query, begin, count, &staging.query);
-                    tile.multiplicity = fh_tile_source(fh_coset_slots_.multiplicity, begin, count, &staging.multiplicity);
-                    tile.j_table = fh_tile_source(fh_coset_slots_.j_table, begin, count, &staging.j_table);
-                    tile.j_query = fh_tile_source(fh_coset_slots_.j_query, begin, count, &staging.j_query);
-                    tile.accumulator = fh_tile_source(fh_coset_slots_.accumulator, begin, count, &staging.accumulator);
-                    tile.accumulator_next = fh_rotated_tile_source(fh_coset_slots_.accumulator, begin, count, &staging.accumulator_next);
+
+                    tile.logical_begin =
+                        begin;
+
+                    tile.count =
+                        count;
+
+                    tile.q_table =
+                        fh_tile_source(
+                            fh_coset_slots_
+                                .q_table,
+                            begin,
+                            count,
+                            &tile_staging
+                                 .q_table);
+
+                    tile.q_query =
+                        fh_tile_source(
+                            fh_coset_slots_
+                                .q_query,
+                            begin,
+                            count,
+                            &tile_staging
+                                 .q_query);
+
+                    tile.table =
+                        fh_tile_source(
+                            fh_coset_slots_
+                                .table,
+                            begin,
+                            count,
+                            &tile_staging
+                                 .table);
+
+                    tile.query =
+                        fh_tile_source(
+                            fh_coset_slots_
+                                .query,
+                            begin,
+                            count,
+                            &tile_staging
+                                 .query);
+
+                    tile.multiplicity =
+                        fh_tile_source(
+                            fh_coset_slots_
+                                .multiplicity,
+                            begin,
+                            count,
+                            &tile_staging
+                                 .multiplicity);
+
+                    tile.j_table =
+                        fh_tile_source(
+                            fh_coset_slots_
+                                .j_table,
+                            begin,
+                            count,
+                            &tile_staging
+                                 .j_table);
+
+                    tile.j_query =
+                        fh_tile_source(
+                            fh_coset_slots_
+                                .j_query,
+                            begin,
+                            count,
+                            &tile_staging
+                                 .j_query);
+
+                    tile.accumulator =
+                        fh_tile_source(
+                            fh_coset_slots_
+                                .accumulator,
+                            begin,
+                            count,
+                            &tile_staging
+                                 .accumulator);
+
+                    tile.accumulator_next =
+                        fh_rotated_tile_source(
+                            fh_coset_slots_
+                                .accumulator,
+                            begin,
+                            count,
+                            &tile_staging
+                                 .accumulator_next);
 
                     if (!fh_feature_encoding_terms_are_identically_zero_)
                     {
-                        tile.table_row = fh_tile_source(fh_coset_slots_.table_row, begin, count, &staging.table_row);
-                        tile.table_column = fh_tile_source(fh_coset_slots_.table_column, begin, count, &staging.table_column);
-                        tile.table_feature = fh_tile_source(fh_coset_slots_.table_feature, begin, count, &staging.table_feature);
-                        tile.query_row = fh_tile_source(fh_coset_slots_.query_row, begin, count, &staging.query_row);
-                        tile.query_column = fh_tile_source(fh_coset_slots_.query_column, begin, count, &staging.query_column);
-                        tile.query_feature = fh_tile_source(fh_coset_slots_.query_feature, begin, count, &staging.query_feature);
+                        tile.table_row =
+                            fh_tile_source(
+                                fh_coset_slots_
+                                    .table_row,
+                                begin,
+                                count,
+                                &tile_staging
+                                     .table_row);
+
+                        tile.table_column =
+                            fh_tile_source(
+                                fh_coset_slots_
+                                    .table_column,
+                                begin,
+                                count,
+                                &tile_staging
+                                     .table_column);
+
+                        tile.table_feature =
+                            fh_tile_source(
+                                fh_coset_slots_
+                                    .table_feature,
+                                begin,
+                                count,
+                                &tile_staging
+                                     .table_feature);
+
+                        tile.query_row =
+                            fh_tile_source(
+                                fh_coset_slots_
+                                    .query_row,
+                                begin,
+                                count,
+                                &tile_staging
+                                     .query_row);
+
+                        tile.query_column =
+                            fh_tile_source(
+                                fh_coset_slots_
+                                    .query_column,
+                                begin,
+                                count,
+                                &tile_staging
+                                     .query_column);
+
+                        tile.query_feature =
+                            fh_tile_source(
+                                fh_coset_slots_
+                                    .query_feature,
+                                begin,
+                                count,
+                                &tile_staging
+                                     .query_feature);
                     }
 
-                    executor->evaluate_tile(tile);
-                    for (const auto &values : discard_set)
+                    executor->evaluate_tile(
+                        tile,
+                        slot);
+
+                    completed_prefix[slot] =
+                        begin + count;
+                }
+
+                for (std::size_t slot = 0;
+                     slot < pipeline_slots;
+                     ++slot)
+                {
+                    executor->wait_for_slot(
+                        slot);
+                }
+
+                for (const auto &values :
+                     discard_set)
+                {
+                    if (values != nullptr)
                     {
-                        if (values != nullptr)
-                            values->discard_prefix(begin + count);
+                        values->discard_prefix(
+                            target_size_);
                     }
                 }
 
                 discard_set.clear();
-                staging = FHTileStaging{};
+
+                std::vector<FHTileStaging>()
+                    .swap(
+                        staging);
                 fh_coset_slots_ = {};
                 fast_coset_lookup_.clear();
                 {
@@ -9884,8 +10082,19 @@ namespace gatzk::protocol
                 if (selected_resident != nullptr)
                 {
                     const auto &resident = *selected_resident;
-                    if (resident.device_montgomery_limbs == nullptr || resident.device < 0 || resident.logical_count == 0 || resident.logical_count > polynomial.size() || resident.logical_count > resident.capacity || resident.nonzero_count > resident.logical_count)
-                        throw std::runtime_error("CUDA resident quotient coefficient metadata is invalid: " + label_);
+                    if (resident.device_montgomery_limbs == nullptr ||
+                        resident.device < 0 ||
+                        resident.logical_count == 0 ||
+                        resident.logical_count > polynomial.size() ||
+                        resident.logical_count > resident.capacity ||
+                        (resident.nonzero_count_known &&
+                         resident.nonzero_count >
+                             resident.logical_count))
+                    {
+                        throw std::runtime_error(
+                            "CUDA resident quotient coefficient metadata is invalid: " +
+                            label_);
+                    }
                     polynomial.cuda_resident_coefficients = std::move(selected_resident);
                 }
 

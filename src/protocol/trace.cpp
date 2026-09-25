@@ -7404,45 +7404,34 @@ namespace gatzk::protocol
             const std::size_t d_cat = model::max_hidden_concat_width(context.model);
             const std::size_t n_classes = local.num_classes;
             const bool enable_single_graph_selector_shortcut = local.graph_count == 1;
-            auto profiled_logup_inverse = [&](
-                                              const std::vector<FieldElement> &table,
-                                              const std::vector<FieldElement> &query,
-                                              const std::vector<FieldElement> &q_table,
-                                              const std::vector<FieldElement> &q_query,
-                                              const FieldElement &beta)
+            auto profiled_logup_round = [&](
+                                            const std::vector<FieldElement> &table,
+                                            const std::vector<FieldElement> &query,
+                                            const std::vector<FieldElement> &multiplicity,
+                                            const std::vector<FieldElement> &q_table,
+                                            const std::vector<FieldElement> &q_query,
+                                            const FieldElement &beta,
+                                            std::size_t active_count)
             {
-                const auto start = Clock::now();
-                auto out = build_logup_inverse_columns(
-                    table, query, q_table, q_query, beta);
-                add_metric(
-                    metrics != nullptr
-                        ? &metrics->lookup_inverse_ms
-                        : nullptr,
-                    start);
-                return out;
-            };
-            auto profiled_logup_accumulator = [&](
-                                                  const std::vector<FieldElement> &table_inverse,
-                                                  const std::vector<FieldElement> &query_inverse,
-                                                  const std::vector<FieldElement> &multiplicity,
-                                                  const std::vector<FieldElement> &q_table,
-                                                  const std::vector<FieldElement> &q_query,
-                                                  std::size_t active_count)
-            {
-                const auto start = Clock::now();
                 auto out =
-                    build_logup_accumulator_from_inverse_columns_with_active_count(
-                        table_inverse,
-                        query_inverse,
+                    build_logup_round_columns(
+                        table,
+                        query,
                         multiplicity,
                         q_table,
                         q_query,
+                        beta,
                         active_count);
-                add_metric(
-                    metrics != nullptr
-                        ? &metrics->lookup_accumulator_ms
-                        : nullptr,
-                    start);
+
+                if (metrics != nullptr)
+                {
+                    metrics->lookup_inverse_ms +=
+                        out.inverse_ms;
+
+                    metrics->lookup_accumulator_ms +=
+                        out.accumulator_ms;
+                }
+
                 return out;
             };
 
@@ -7737,20 +7726,28 @@ namespace gatzk::protocol
                 trace.challenges["beta_feat"] = transcript.challenge("beta_feat");
 
                 const auto fh_accumulator_start = Clock::now();
-                auto j_feat = profiled_logup_inverse(
-                    table_feat,
-                    query_feat,
-                    q_tbl_feat,
-                    q_qry_feat,
-                    trace.challenges.at("beta_feat"));
-                auto r_feat =
-                    profiled_logup_accumulator(
-                        j_feat.table,
-                        j_feat.query,
+                auto feat_round =
+                    profiled_logup_round(
+                        table_feat,
+                        query_feat,
                         multiplicity_feat,
                         q_tbl_feat,
                         q_qry_feat,
-                        lookup_active_transition_limit(context.dataset.num_nodes * d_in, n_nodes * d_in, domains.fh->size));
+                        trace.challenges.at(
+                            "beta_feat"),
+                        lookup_active_transition_limit(
+                            context.dataset.num_nodes *
+                                d_in,
+                            n_nodes * d_in,
+                            domains.fh->size));
+
+                auto j_feat =
+                    std::move(
+                        feat_round.inverses);
+
+                auto r_feat =
+                    std::move(
+                        feat_round.accumulator);
                 add_metric(metrics != nullptr ? &metrics->fh_accumulator_build_ms : nullptr, fh_accumulator_start);
                 add_metric(metrics != nullptr ? &metrics->lookup_trace_ms : nullptr, lookup_stage_start);
                 add_dynamic_commitment_batch(
@@ -8219,22 +8216,23 @@ namespace gatzk::protocol
                         trace.challenges[beta_name] =
                             beta;
 
-                        auto inverses =
-                            profiled_logup_inverse(
+                        auto logup_round =
+                            profiled_logup_round(
                                 *table,
                                 item.padded_limb_query,
-                                q_tbl_r,
-                                q_query,
-                                beta);
-
-                        auto accumulator =
-                            profiled_logup_accumulator(
-                                inverses.table,
-                                inverses.query,
                                 *item.multiplicity,
                                 q_tbl_r,
                                 q_query,
+                                beta,
                                 active_count);
+
+                        auto inverses =
+                            std::move(
+                                logup_round.inverses);
+
+                        auto accumulator =
+                            std::move(
+                                logup_round.accumulator);
 
                         const auto j_table_label =
                             signed_division_range_label(
@@ -9100,15 +9098,26 @@ namespace gatzk::protocol
                 }
                 const auto beta_l = transcript.challenge(challenge("beta_L_h"));
                 trace.challenges[challenge("beta_L_h")] = beta_l;
-                auto j_l = profiled_logup_inverse(table_l, query_l, q_tbl_l, q_qry_l, beta_l);
-                auto r_l =
-                    profiled_logup_accumulator(
-                        j_l.table,
-                        j_l.query,
+                auto l_round =
+                    profiled_logup_round(
+                        table_l,
+                        query_l,
                         m_l,
                         q_tbl_l,
                         q_qry_l,
-                        lookup_active_transition_limit(context.tables.lrelu.size(), n_edges, domains.edge->size));
+                        beta_l,
+                        lookup_active_transition_limit(
+                            context.tables.lrelu.size(),
+                            n_edges,
+                            domains.edge->size));
+
+                auto j_l =
+                    std::move(
+                        l_round.inverses);
+
+                auto r_l =
+                    std::move(
+                        l_round.accumulator);
                 add_dynamic_commitment_batch(
                     trace,
                     {
@@ -9157,15 +9166,26 @@ namespace gatzk::protocol
                 }
                 const auto beta_r = transcript.challenge(challenge("beta_R_h"));
                 trace.challenges[challenge("beta_R_h")] = beta_r;
-                auto j_r = profiled_logup_inverse(table_r, query_r, q_tbl_r, q_qry_r, beta_r);
-                auto r_r =
-                    profiled_logup_accumulator(
-                        j_r.table,
-                        j_r.query,
+                auto r_round =
+                    profiled_logup_round(
+                        table_r,
+                        query_r,
                         m_r,
                         q_tbl_r,
                         q_qry_r,
-                        lookup_active_transition_limit(context.tables.range.size(), n_edges, domains.edge->size));
+                        beta_r,
+                        lookup_active_transition_limit(
+                            context.tables.range.size(),
+                            n_edges,
+                            domains.edge->size));
+
+                auto j_r =
+                    std::move(
+                        r_round.inverses);
+
+                auto r_r =
+                    std::move(
+                        r_round.accumulator);
                 add_dynamic_commitment_batch(
                     trace,
                     {
@@ -9226,15 +9246,26 @@ namespace gatzk::protocol
                 }
                 const auto beta_exp = transcript.challenge(challenge("beta_exp_h"));
                 trace.challenges[challenge("beta_exp_h")] = beta_exp;
-                auto j_exp = profiled_logup_inverse(table_exp, query_exp, q_tbl_exp, q_qry_exp, beta_exp);
-                auto r_exp =
-                    profiled_logup_accumulator(
-                        j_exp.table,
-                        j_exp.query,
+                auto exp_round =
+                    profiled_logup_round(
+                        table_exp,
+                        query_exp,
                         m_exp,
                         q_tbl_exp,
                         q_qry_exp,
-                        lookup_active_transition_limit(context.tables.exp.size(), n_edges, domains.edge->size));
+                        beta_exp,
+                        lookup_active_transition_limit(
+                            context.tables.exp.size(),
+                            n_edges,
+                            domains.edge->size));
+
+                auto j_exp =
+                    std::move(
+                        exp_round.inverses);
+
+                auto r_exp =
+                    std::move(
+                        exp_round.accumulator);
                 stage_start = Clock::now();
 
                 auto widehat_v_pre_star =
@@ -9608,15 +9639,26 @@ namespace gatzk::protocol
                 }
                 const auto beta_elu = transcript.challenge(challenge("beta_ELU_h"));
                 trace.challenges[challenge("beta_ELU_h")] = beta_elu;
-                auto j_elu = profiled_logup_inverse(table_elu, query_elu, q_tbl_elu, q_qry_elu, beta_elu);
-                auto r_elu =
-                    profiled_logup_accumulator(
-                        j_elu.table,
-                        j_elu.query,
+                auto elu_round =
+                    profiled_logup_round(
+                        table_elu,
+                        query_elu,
                         m_elu,
                         q_tbl_elu,
                         q_qry_elu,
-                        lookup_active_transition_limit(context.tables.elu.size(), n_nodes * head_dim, domains.edge->size));
+                        beta_elu,
+                        lookup_active_transition_limit(
+                            context.tables.elu.size(),
+                            n_nodes * head_dim,
+                            domains.edge->size));
+
+                auto j_elu =
+                    std::move(
+                        elu_round.inverses);
+
+                auto r_elu =
+                    std::move(
+                        elu_round.accumulator);
                 add_dynamic_commitment_batch(
                     trace,
                     {
@@ -10499,10 +10541,23 @@ namespace gatzk::protocol
 
                     const auto beta = transcript.challenge(beta_name);
                     trace.challenges[beta_name] = beta;
-                    auto inverses = profiled_logup_inverse(table, query, q_table, q_query, beta);
-                    auto accumulator = profiled_logup_accumulator(
-                        inverses.table, inverses.query, multiplicity,
-                        q_table, q_query, active_count);
+                    auto logup_round =
+                        profiled_logup_round(
+                            table,
+                            query,
+                            multiplicity,
+                            q_table,
+                            q_query,
+                            beta,
+                            active_count);
+
+                    auto inverses =
+                        std::move(
+                            logup_round.inverses);
+
+                    auto accumulator =
+                        std::move(
+                            logup_round.accumulator);
                     add_dynamic_commitment_batch(
                         trace,
                         {

@@ -1968,14 +1968,6 @@ namespace gatzk::protocol
                             algebra::
                                 record_cuda_h2d(
                                     layout_bytes);
-                            status = cudaStreamSynchronize(nullptr);
-                            if (status != cudaSuccess)
-                            {
-                                throw_cuda_t_edge_error("batched leaf-layout completion", status);
-                            }
-
-                            algebra::
-                                record_cuda_stream_sync();
 
                             return true;
                         }
@@ -2124,7 +2116,8 @@ namespace gatzk::protocol
                 }
 
                 status =
-                    cudaDeviceSynchronize();
+                    cudaStreamSynchronize(
+                        nullptr);
 
                 if (status != cudaSuccess)
                 {
@@ -3146,6 +3139,9 @@ namespace gatzk::protocol
 
                 descriptor->nonzero_count =
                     nonzero_count;
+
+                descriptor->nonzero_count_known =
+                    true;
 
                 descriptor->device =
                     resident_device;

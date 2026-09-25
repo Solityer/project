@@ -2074,7 +2074,10 @@ namespace gatzk::crypto
                  ++batch)
             {
                 if (outputs[batch] == nullptr ||
-                    scalar_vectors[batch] == nullptr)
+                    (scalar_vectors[batch] ==
+                         nullptr &&
+                     device_montgomery_scalars ==
+                         nullptr))
                 {
                     throw std::runtime_error(
                         "CUDA cached-base chunked MSM contains null member");
@@ -3238,7 +3241,12 @@ namespace gatzk::crypto
                 "is unavailable");
         }
 
-        if (output == nullptr || (count != 0 && (points == nullptr || scalars == nullptr)))
+        if (output == nullptr ||
+            (count != 0 &&
+             (points == nullptr ||
+              (scalars == nullptr &&
+               device_montgomery_scalars ==
+                   nullptr))))
         {
             throw std::runtime_error(
                 "CUDA G1 MSM selected with null input");
@@ -3497,7 +3505,10 @@ namespace gatzk::crypto
              ++batch)
         {
             if (outputs[batch] == nullptr ||
-                scalar_vectors[batch] == nullptr)
+                (scalar_vectors[batch] ==
+                     nullptr &&
+                 (!resident_scalar_batch ||
+                  device_montgomery_scalar_vectors[batch] == nullptr)))
             {
                 throw std::runtime_error(
                     "CUDA G1 MSM batch contains null member");
@@ -3763,6 +3774,76 @@ namespace gatzk::crypto
             catch (const std::bad_alloc &)
             {
                 reusable_scalar_staging().release();
+            }
+        }
+
+        if (resident_scalar_batch)
+        {
+            const auto execute_resident_streamed =
+                [&]()
+            {
+                for (std::size_t batch = 0;
+                     batch < batch_size;
+                     ++batch)
+                {
+                    if (counts[batch] == 0)
+                    {
+                        *outputs[batch] =
+                            g1_zero();
+
+                        continue;
+                    }
+
+                    execute_streamed_cuda_msm(
+                        outputs[batch],
+                        points,
+                        nullptr,
+                        counts[batch],
+                        device_montgomery_scalar_vectors[batch],
+                        device_montgomery_scalar_capacities[batch],
+                        device_montgomery_scalar_devices[batch]);
+                }
+            };
+
+            try
+            {
+                execute_resident_streamed();
+
+                return true;
+            }
+            catch (const CudaMsmResourcePressure &)
+            {
+                cache.clear();
+
+                reusable_scalar_staging()
+                    .release();
+
+                release_stream_msm_buffers();
+
+                util::info(
+                    "cuda_msm resident streamed batch resource pressure: "
+                    "cleared resident base cache and retrying");
+
+                execute_resident_streamed();
+
+                return true;
+            }
+            catch (const std::bad_alloc &)
+            {
+                cache.clear();
+
+                reusable_scalar_staging()
+                    .release();
+
+                release_stream_msm_buffers();
+
+                util::info(
+                    "cuda_msm resident streamed batch host pressure: "
+                    "cleared resident base cache and retrying");
+
+                execute_resident_streamed();
+
+                return true;
             }
         }
 

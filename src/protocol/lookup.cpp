@@ -3,6 +3,7 @@
 #include "gatzk/algebra/vector_ops.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -385,6 +386,174 @@ namespace gatzk::protocol
     {
         return build_logup_inverse_columns_impl(
             table, query, q_table, q_query, beta);
+    }
+
+    LogUpRoundColumns build_logup_round_columns(
+        const std::vector<algebra::FieldElement> &table,
+        const std::vector<algebra::FieldElement> &query,
+        const std::vector<algebra::FieldElement> &multiplicity,
+        const std::vector<algebra::FieldElement> &q_table,
+        const std::vector<algebra::FieldElement> &q_query,
+        const algebra::FieldElement &beta,
+        std::size_t active_count)
+    {
+        const auto n =
+            table.size();
+
+        if (query.size() != n ||
+            multiplicity.size() != n ||
+            q_table.size() != n ||
+            q_query.size() != n)
+        {
+            throw std::runtime_error(
+                "fused LogUp input size mismatch");
+        }
+
+        LogUpRoundColumns out;
+
+        out.inverses.table.assign(
+            n,
+            FieldElement::zero());
+
+        out.inverses.query.assign(
+            n,
+            FieldElement::zero());
+
+        out.accumulator.assign(
+            n,
+            FieldElement::zero());
+
+        const auto wall_start =
+            std::chrono::
+                steady_clock::now();
+
+        if (n > 1)
+        {
+            const auto bounded_active =
+                std::min(
+                    active_count,
+                    n - 1U);
+
+            algebra::
+                CudaLogupExecutionProfile
+                    cuda_profile;
+
+            if (algebra::
+                    try_cuda_logup_inverse_and_accumulator_native(
+                        FieldElement::
+                            native_array_data(
+                                table.data()),
+                        FieldElement::
+                            native_array_data(
+                                query.data()),
+                        FieldElement::
+                            native_array_data(
+                                q_table.data()),
+                        FieldElement::
+                            native_array_data(
+                                q_query.data()),
+                        beta.native(),
+                        FieldElement::
+                            native_array_data(
+                                multiplicity.data()),
+                        FieldElement::
+                            mutable_native_array_data(
+                                out.inverses
+                                    .table
+                                    .data()),
+                        FieldElement::
+                            mutable_native_array_data(
+                                out.inverses
+                                    .query
+                                    .data()),
+                        FieldElement::
+                            mutable_native_array_data(
+                                out.accumulator
+                                    .data()),
+                        bounded_active,
+                        n,
+                        &cuda_profile))
+            {
+                const auto wall_ms =
+                    std::chrono::duration<
+                        double,
+                        std::milli>(
+                        std::chrono::
+                            steady_clock::now() -
+                        wall_start)
+                        .count();
+
+                const auto gpu_ms =
+                    cuda_profile.inverse_ms +
+                    cuda_profile.accumulator_ms;
+
+                if (gpu_ms > 0.0 &&
+                    gpu_ms <= wall_ms)
+                {
+                    out.inverse_ms =
+                        cuda_profile.inverse_ms;
+
+                    out.accumulator_ms =
+                        cuda_profile.accumulator_ms +
+                        (wall_ms - gpu_ms);
+                }
+                else
+                {
+                    out.inverse_ms =
+                        wall_ms;
+
+                    out.accumulator_ms =
+                        0.0;
+                }
+
+                return out;
+            }
+        }
+
+        auto phase_start =
+            std::chrono::
+                steady_clock::now();
+
+        out.inverses =
+            build_logup_inverse_columns_impl(
+                table,
+                query,
+                q_table,
+                q_query,
+                beta);
+
+        out.inverse_ms =
+            std::chrono::duration<
+                double,
+                std::milli>(
+                std::chrono::
+                    steady_clock::now() -
+                phase_start)
+                .count();
+
+        phase_start =
+            std::chrono::
+                steady_clock::now();
+
+        out.accumulator =
+            build_logup_accumulator_from_inverse_columns_with_active_count(
+                out.inverses.table,
+                out.inverses.query,
+                multiplicity,
+                q_table,
+                q_query,
+                active_count);
+
+        out.accumulator_ms =
+            std::chrono::duration<
+                double,
+                std::milli>(
+                std::chrono::
+                    steady_clock::now() -
+                phase_start)
+                .count();
+
+        return out;
     }
 
     namespace

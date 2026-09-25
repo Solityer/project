@@ -49,14 +49,24 @@ namespace gatzk::protocol
     {
     public:
         virtual ~CudaTFHExecutor() = default;
-        virtual std::size_t tile_capacity() const = 0;
-        virtual void evaluate_tile(const CudaTFHTile &tile) = 0;
+
+        virtual std::size_t
+        tile_capacity() const = 0;
+
+        virtual std::size_t
+        pipeline_slot_count() const = 0;
+
+        virtual void wait_for_slot(
+            std::size_t slot) = 0;
+
+        virtual void evaluate_tile(
+            const CudaTFHTile &tile,
+            std::size_t slot) = 0;
 
         virtual std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> finalize_coefficients(
             algebra::FieldElement *host_coefficients,
             std::size_t host_capacity) = 0;
     };
-
     bool cuda_t_fh_executor_available();
 
     bool cuda_t_fh_executor_can_admit(

@@ -13,6 +13,7 @@
 #include <mutex>
 #include <unordered_map>
 #include "gatzk/algebra/cuda_field.cuh"
+#include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/algebra/cuda_weighted_session.hpp"
 #include "gatzk/util/effective_memory.hpp"
@@ -971,6 +972,142 @@ namespace gatzk::algebra
                     {
                         throw_scaled_accumulate_cuda_error(
                             "session kernel launch",
+                            status);
+                    }
+
+                    record_cuda_kernel_invocations(
+                        1);
+
+                    processed +=
+                        current_count;
+                }
+
+                record_cuda_opening_fold_call();
+            }
+
+            void accumulate_device_range(
+                const std::uint64_t *device_montgomery_source,
+                int source_device,
+                const mcl::Fr &scale,
+                std::size_t target_offset,
+                std::size_t element_count) override
+            {
+                if (finished_)
+                {
+                    throw std::runtime_error(
+                        "CUDA scaled accumulate session is already finished");
+                }
+
+                if (element_count == 0 ||
+                    scale.isZero())
+                {
+                    return;
+                }
+
+                if (device_montgomery_source ==
+                    nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA scaled accumulate resident source is null");
+                }
+
+                if (target_offset >
+                        element_count_ ||
+                    element_count >
+                        element_count_ -
+                            target_offset)
+                {
+                    throw std::runtime_error(
+                        "CUDA scaled accumulate resident source exceeds target");
+                }
+
+                int current_device = -1;
+
+                auto status =
+                    cudaGetDevice(
+                        &current_device);
+
+                if (status !=
+                    cudaSuccess)
+                {
+                    throw_scaled_accumulate_cuda_error(
+                        "resident source device lookup",
+                        status);
+                }
+
+                if (source_device !=
+                    current_device)
+                {
+                    throw std::runtime_error(
+                        "CUDA scaled accumulate resident source belongs to another device");
+                }
+
+                gpu::GpuFr gpu_scale{};
+
+                std::memcpy(
+                    gpu_scale.d,
+                    &scale,
+                    sizeof(gpu_scale.d));
+
+                constexpr std::size_t
+                    kMaximumElementsPerLaunch =
+                        static_cast<std::size_t>(
+                            std::numeric_limits<
+                                unsigned>::max()) *
+                        kBlockSize;
+
+                std::size_t processed = 0;
+
+                while (processed <
+                       element_count)
+                {
+                    const auto current_count =
+                        std::min(
+                            element_count -
+                                processed,
+                            kMaximumElementsPerLaunch);
+
+                    const auto block_count_size =
+                        (current_count +
+                         kBlockSize - 1) /
+                        kBlockSize;
+
+                    auto *target =
+                        zero_copy_target_
+                            ? reinterpret_cast<
+                                  gpu::GpuFr *>(
+                                  host_target_ +
+                                  target_offset +
+                                  processed)
+                            : device_target_ +
+                                  target_offset +
+                                  processed;
+
+                    const auto *source =
+                        reinterpret_cast<
+                            const gpu::GpuFr *>(
+                            device_montgomery_source) +
+                        processed;
+
+                    scaled_accumulate_kernel<<<
+                        static_cast<unsigned>(
+                            block_count_size),
+                        kBlockSize,
+                        0,
+                        stream_>>>(
+                        target,
+                        source,
+                        gpu_scale,
+                        current_count);
+
+                    status =
+                        cudaGetLastError();
+
+                    if (status !=
+                        cudaSuccess)
+                    {
+                        throw_scaled_accumulate_cuda_error(
+                            "resident session kernel launch",
                             status);
                     }
 
@@ -2685,6 +2822,18 @@ namespace gatzk::algebra
                     need_error);
             }
 
+            bool ensure_logup(
+                std::size_t count)
+            {
+                return ensure(
+                    count,
+                    true,
+                    true,
+                    false,
+                    true,
+                    true);
+            }
+
             bool ensure_barycentric(
                 std::size_t count)
             {
@@ -3310,6 +3459,109 @@ namespace gatzk::algebra
                 gpu::fr_mul(
                     numerator,
                     quotient_values[index]);
+        }
+
+        constexpr std::size_t
+            kCoefficientOpeningRowsPerThread =
+                1024;
+
+        __global__ void
+        coefficient_opening_block_summary_kernel(
+            const gpu::GpuFr *coefficients,
+            gpu::GpuFr point,
+            gpu::GpuFr *block_constants,
+            std::size_t quotient_size)
+        {
+            const auto logical_block =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            const auto begin =
+                logical_block *
+                kCoefficientOpeningRowsPerThread;
+
+            if (begin >= quotient_size)
+            {
+                return;
+            }
+
+            auto end =
+                begin +
+                kCoefficientOpeningRowsPerThread;
+
+            if (end > quotient_size)
+            {
+                end = quotient_size;
+            }
+
+            auto accumulated =
+                gpu::fr_zero();
+
+            for (std::size_t index = end;
+                 index-- > begin;)
+            {
+                accumulated =
+                    gpu::fr_add(
+                        coefficients[index + 1],
+                        gpu::fr_mul(
+                            point,
+                            accumulated));
+            }
+
+            block_constants[logical_block] =
+                accumulated;
+        }
+
+        __global__ void
+        coefficient_opening_emit_kernel(
+            const gpu::GpuFr *coefficients,
+            gpu::GpuFr point,
+            const gpu::GpuFr *block_incoming,
+            gpu::GpuFr *quotient,
+            std::size_t quotient_size)
+        {
+            const auto logical_block =
+                static_cast<std::size_t>(
+                    blockIdx.x) *
+                    blockDim.x +
+                threadIdx.x;
+
+            const auto begin =
+                logical_block *
+                kCoefficientOpeningRowsPerThread;
+
+            if (begin >= quotient_size)
+            {
+                return;
+            }
+
+            auto end =
+                begin +
+                kCoefficientOpeningRowsPerThread;
+
+            if (end > quotient_size)
+            {
+                end = quotient_size;
+            }
+
+            auto accumulated =
+                block_incoming[logical_block];
+
+            for (std::size_t index = end;
+                 index-- > begin;)
+            {
+                accumulated =
+                    gpu::fr_add(
+                        coefficients[index + 1],
+                        gpu::fr_mul(
+                            point,
+                            accumulated));
+
+                quotient[index] =
+                    accumulated;
+            }
         }
 
         __global__ void
@@ -4625,6 +4877,629 @@ namespace gatzk::algebra
         return true;
     }
 
+    bool opening_inverse_and_quotient_resident_cuda(
+        const mcl::Fr *folded_values,
+        const mcl::Fr &scaled_claim_sum,
+        std::size_t domain_size,
+        const mcl::Fr &omega,
+        const mcl::Fr &point,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            *resident_output)
+    {
+        if (resident_output == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA resident opening descriptor is null");
+        }
+
+        resident_output->reset();
+
+        if (domain_size == 0 ||
+            folded_values == nullptr)
+        {
+            return false;
+        }
+
+        int device = -1;
+
+        auto status =
+            cudaGetDevice(
+                &device);
+
+        if (status !=
+            cudaSuccess)
+        {
+            throw_scan_cuda_error(
+                "resident opening device lookup",
+                status);
+        }
+
+        mcl::Fr *device_quotient =
+            nullptr;
+
+        const auto byte_count =
+            domain_size *
+            sizeof(mcl::Fr);
+
+        status =
+            cudaMalloc(
+                reinterpret_cast<
+                    void **>(
+                    &device_quotient),
+                byte_count);
+
+        if (status ==
+            cudaErrorMemoryAllocation)
+        {
+            (void)cudaGetLastError();
+            return false;
+        }
+
+        if (status !=
+            cudaSuccess)
+        {
+            throw_scan_cuda_error(
+                "resident opening quotient allocation",
+                status);
+        }
+
+        try
+        {
+            if (!opening_inverse_and_quotient_cuda(
+                    folded_values,
+                    device_quotient,
+                    scaled_claim_sum,
+                    domain_size,
+                    omega,
+                    point))
+            {
+                cudaFree(
+                    device_quotient);
+
+                return false;
+            }
+        }
+        catch (...)
+        {
+            (void)cudaFree(
+                device_quotient);
+
+            throw;
+        }
+
+        auto *owned =
+            device_quotient;
+
+        std::shared_ptr<void>
+            allocation(
+                owned,
+                [device](
+                    void *pointer) noexcept
+                {
+                    if (pointer == nullptr)
+                    {
+                        return;
+                    }
+
+                    int previous = -1;
+
+                    if (cudaGetDevice(
+                            &previous) !=
+                        cudaSuccess)
+                    {
+                        return;
+                    }
+
+                    if (previous !=
+                            device &&
+                        cudaSetDevice(
+                            device) !=
+                            cudaSuccess)
+                    {
+                        return;
+                    }
+
+                    (void)cudaFree(
+                        pointer);
+
+                    if (previous !=
+                        device)
+                    {
+                        (void)cudaSetDevice(
+                            previous);
+                    }
+                });
+
+        auto descriptor =
+            std::make_shared<
+                CudaResidentCoefficientBuffer>();
+
+        descriptor->allocation =
+            std::move(
+                allocation);
+
+        descriptor
+            ->device_montgomery_limbs =
+            reinterpret_cast<
+                const std::uint64_t *>(
+                owned);
+
+        descriptor->capacity =
+            domain_size;
+
+        descriptor->logical_count =
+            domain_size;
+
+        descriptor->nonzero_count =
+            domain_size;
+
+        descriptor->nonzero_count_known =
+            false;
+
+        descriptor->device =
+            device;
+
+        descriptor->host_transfer.reset();
+
+        *resident_output =
+            std::move(
+                descriptor);
+
+        record_cuda_opening_fold_call();
+
+        return true;
+    }
+
+    bool coefficient_opening_quotient_resident_cuda(
+        const mcl::Fr *coefficients,
+        std::size_t coefficient_count,
+        const mcl::Fr &point,
+        const mcl::Fr &claimed_value,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            *resident_output)
+    {
+        if (resident_output == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA resident coefficient opening descriptor is null");
+        }
+
+        resident_output->reset();
+
+        if (coefficients == nullptr ||
+            coefficient_count <= 1 ||
+            !cuda_backend_unified_addressing_available())
+        {
+            return false;
+        }
+
+        const auto quotient_size =
+            coefficient_count - 1;
+
+        const auto block_count =
+            (quotient_size +
+             kCoefficientOpeningRowsPerThread -
+             1) /
+            kCoefficientOpeningRowsPerThread;
+
+        if (block_count == 0)
+        {
+            return false;
+        }
+
+        auto &workspace =
+            persistent_scan_workspace();
+
+        if (!workspace.ensure_sum(
+                block_count,
+                false))
+        {
+            return false;
+        }
+
+        const auto stream =
+            workspace.stream();
+
+        auto *block_constants =
+            workspace.scratch_a();
+
+        auto *block_incoming =
+            workspace.prefixes();
+
+        mcl::Fr *device_quotient =
+            nullptr;
+
+        auto status =
+            cudaMalloc(
+                reinterpret_cast<
+                    void **>(
+                    &device_quotient),
+                quotient_size *
+                    sizeof(mcl::Fr));
+
+        if (status ==
+            cudaErrorMemoryAllocation)
+        {
+            (void)cudaGetLastError();
+            return false;
+        }
+
+        if (status !=
+            cudaSuccess)
+        {
+            throw_scan_cuda_error(
+                "coefficient opening quotient allocation",
+                status);
+        }
+
+        gpu::GpuFr gpu_point{};
+
+        std::memcpy(
+            gpu_point.d,
+            &point,
+            sizeof(gpu_point.d));
+
+        constexpr unsigned
+            kBlockSize = 256;
+
+        const auto grid_size =
+            (block_count +
+             kBlockSize - 1) /
+            kBlockSize;
+
+        if (grid_size >
+            std::numeric_limits<
+                unsigned>::max())
+        {
+            cudaFree(
+                device_quotient);
+
+            throw std::runtime_error(
+                "CUDA coefficient opening grid exceeds CUDA limits");
+        }
+
+        try
+        {
+            coefficient_opening_block_summary_kernel<<<
+                static_cast<unsigned>(
+                    grid_size),
+                kBlockSize,
+                0,
+                stream>>>(
+                reinterpret_cast<
+                    const gpu::GpuFr *>(
+                    coefficients),
+                gpu_point,
+                block_constants,
+                quotient_size);
+
+            status =
+                cudaGetLastError();
+
+            if (status !=
+                cudaSuccess)
+            {
+                throw_scan_cuda_error(
+                    "coefficient opening summary launch",
+                    status);
+            }
+
+            std::vector<mcl::Fr>
+                host_constants(
+                    block_count);
+
+            const auto block_bytes =
+                block_count *
+                sizeof(mcl::Fr);
+
+            status =
+                cudaMemcpyAsync(
+                    host_constants.data(),
+                    block_constants,
+                    block_bytes,
+                    cudaMemcpyDeviceToHost,
+                    stream);
+
+            if (status !=
+                cudaSuccess)
+            {
+                throw_scan_cuda_error(
+                    "coefficient opening summary download",
+                    status);
+            }
+
+            record_cuda_d2h(
+                block_bytes);
+
+            status =
+                cudaStreamSynchronize(
+                    stream);
+
+            if (status !=
+                cudaSuccess)
+            {
+                throw_scan_cuda_error(
+                    "coefficient opening summary synchronization",
+                    status);
+            }
+
+            record_cuda_stream_sync();
+
+            std::vector<mcl::Fr>
+                host_incoming(
+                    block_count);
+
+            mcl::Fr boundary;
+            boundary.clear();
+
+            const auto point_field =
+                FieldElement::
+                    from_native(
+                        point);
+
+            const auto full_multiplier =
+                point_field
+                    .pow(
+                        kCoefficientOpeningRowsPerThread)
+                    .native();
+
+            for (std::size_t block =
+                     block_count;
+                 block-- > 0;)
+            {
+                host_incoming[block] =
+                    boundary;
+
+                const auto begin =
+                    block *
+                    kCoefficientOpeningRowsPerThread;
+
+                const auto block_length =
+                    std::min(
+                        kCoefficientOpeningRowsPerThread,
+                        quotient_size -
+                            begin);
+
+                const auto multiplier =
+                    block_length ==
+                            kCoefficientOpeningRowsPerThread
+                        ? full_multiplier
+                        : point_field
+                              .pow(
+                                  block_length)
+                              .native();
+
+                mcl::Fr scaled;
+
+                mcl::Fr::mul(
+                    scaled,
+                    boundary,
+                    multiplier);
+
+                mcl::Fr::add(
+                    boundary,
+                    host_constants[block],
+                    scaled);
+            }
+
+            status =
+                cudaMemcpyAsync(
+                    block_incoming,
+                    host_incoming.data(),
+                    block_bytes,
+                    cudaMemcpyHostToDevice,
+                    stream);
+
+            if (status !=
+                cudaSuccess)
+            {
+                throw_scan_cuda_error(
+                    "coefficient opening incoming upload",
+                    status);
+            }
+
+            record_cuda_h2d(
+                block_bytes);
+
+            coefficient_opening_emit_kernel<<<
+                static_cast<unsigned>(
+                    grid_size),
+                kBlockSize,
+                0,
+                stream>>>(
+                reinterpret_cast<
+                    const gpu::GpuFr *>(
+                    coefficients),
+                gpu_point,
+                block_incoming,
+                reinterpret_cast<
+                    gpu::GpuFr *>(
+                    device_quotient),
+                quotient_size);
+
+            status =
+                cudaGetLastError();
+
+            if (status !=
+                cudaSuccess)
+            {
+                throw_scan_cuda_error(
+                    "coefficient opening emit launch",
+                    status);
+            }
+
+            mcl::Fr quotient_zero;
+
+            status =
+                cudaMemcpyAsync(
+                    &quotient_zero,
+                    device_quotient,
+                    sizeof(mcl::Fr),
+                    cudaMemcpyDeviceToHost,
+                    stream);
+
+            if (status !=
+                cudaSuccess)
+            {
+                throw_scan_cuda_error(
+                    "coefficient opening remainder download",
+                    status);
+            }
+
+            record_cuda_d2h(
+                sizeof(mcl::Fr));
+
+            status =
+                cudaStreamSynchronize(
+                    stream);
+
+            if (status !=
+                cudaSuccess)
+            {
+                throw_scan_cuda_error(
+                    "coefficient opening emit synchronization",
+                    status);
+            }
+
+            record_cuda_stream_sync();
+
+            record_cuda_kernel_invocations(
+                2);
+
+            mcl::Fr remainder;
+            mcl::Fr product;
+
+            mcl::Fr::sub(
+                remainder,
+                coefficients[0],
+                claimed_value);
+
+            mcl::Fr::mul(
+                product,
+                point,
+                quotient_zero);
+
+            mcl::Fr::add(
+                remainder,
+                remainder,
+                product);
+
+            if (!remainder.isZero())
+            {
+                throw std::runtime_error(
+                    "claimed value does not match committed polynomial");
+            }
+        }
+        catch (...)
+        {
+            (void)cudaFree(
+                device_quotient);
+
+            throw;
+        }
+
+        int device = -1;
+
+        status =
+            cudaGetDevice(
+                &device);
+
+        if (status !=
+            cudaSuccess)
+        {
+            cudaFree(
+                device_quotient);
+
+            throw_scan_cuda_error(
+                "coefficient opening resident device lookup",
+                status);
+        }
+
+        auto *owned =
+            device_quotient;
+
+        std::shared_ptr<void>
+            allocation(
+                owned,
+                [device](
+                    void *pointer) noexcept
+                {
+                    if (pointer == nullptr)
+                    {
+                        return;
+                    }
+
+                    int previous = -1;
+
+                    if (cudaGetDevice(
+                            &previous) !=
+                        cudaSuccess)
+                    {
+                        return;
+                    }
+
+                    if (previous !=
+                            device &&
+                        cudaSetDevice(
+                            device) !=
+                            cudaSuccess)
+                    {
+                        return;
+                    }
+
+                    (void)cudaFree(
+                        pointer);
+
+                    if (previous !=
+                        device)
+                    {
+                        (void)cudaSetDevice(
+                            previous);
+                    }
+                });
+
+        auto descriptor =
+            std::make_shared<
+                CudaResidentCoefficientBuffer>();
+
+        descriptor->allocation =
+            std::move(
+                allocation);
+
+        descriptor
+            ->device_montgomery_limbs =
+            reinterpret_cast<
+                const std::uint64_t *>(
+                owned);
+
+        descriptor->capacity =
+            quotient_size;
+
+        descriptor->logical_count =
+            quotient_size;
+
+        descriptor->nonzero_count =
+            quotient_size;
+
+        descriptor->nonzero_count_known =
+            false;
+
+        descriptor->device =
+            device;
+
+        descriptor->host_transfer.reset();
+
+        *resident_output =
+            std::move(
+                descriptor);
+
+        record_cuda_opening_fold_call();
+
+        return true;
+    }
+
     bool logup_inverse_columns_cuda(
         const mcl::Fr *table,
         const mcl::Fr *query,
@@ -5066,6 +5941,474 @@ namespace gatzk::algebra
 
         return true;
     }
+    bool logup_inverse_and_accumulator_cuda(
+        const mcl::Fr *table,
+        const mcl::Fr *query,
+        const mcl::Fr *q_table,
+        const mcl::Fr *q_query,
+        const mcl::Fr &beta,
+        const mcl::Fr *multiplicity,
+        mcl::Fr *table_inverse,
+        mcl::Fr *query_inverse,
+        mcl::Fr *accumulator,
+        std::size_t active_count,
+        std::size_t element_count,
+        CudaLogupExecutionProfile *profile)
+    {
+        if (profile != nullptr)
+        {
+            *profile =
+                CudaLogupExecutionProfile{};
+        }
+
+        if (element_count == 0 ||
+            active_count == 0)
+        {
+            return true;
+        }
+
+        if (!cuda_backend_unified_addressing_available())
+        {
+            return false;
+        }
+
+        if (active_count >=
+            element_count)
+        {
+            throw std::runtime_error(
+                "CUDA fused LogUp active count exceeds domain");
+        }
+
+        auto &workspace =
+            persistent_scan_workspace();
+
+        if (!workspace.ensure_logup(
+                element_count))
+        {
+            throw std::runtime_error(
+                "CUDA fused LogUp workspace allocation failed");
+        }
+
+        const auto stream =
+            workspace.stream();
+
+        auto *prefixes =
+            workspace.prefixes();
+
+        auto *suffixes =
+            workspace.suffixes();
+
+        auto *terms =
+            workspace.scratch_a();
+
+        auto *global_inverse =
+            workspace.global_inverse();
+
+        auto *error =
+            workspace.error();
+
+        auto &scan_levels =
+            workspace.scan_levels();
+
+        gpu::GpuFr gpu_beta{};
+
+        std::memcpy(
+            gpu_beta.d,
+            &beta,
+            sizeof(gpu_beta.d));
+
+        auto status =
+            cudaMemsetAsync(
+                error,
+                0,
+                sizeof(unsigned int),
+                stream);
+
+        if (status !=
+            cudaSuccess)
+        {
+            throw_scan_cuda_error(
+                "fused LogUp error reset",
+                status);
+        }
+
+        struct TimingEvents
+        {
+            cudaEvent_t start = nullptr;
+            cudaEvent_t inverse_done = nullptr;
+            cudaEvent_t accumulator_done = nullptr;
+            bool ready = false;
+
+            ~TimingEvents()
+            {
+                if (start != nullptr)
+                    (void)cudaEventDestroy(start);
+
+                if (inverse_done != nullptr)
+                    (void)cudaEventDestroy(inverse_done);
+
+                if (accumulator_done != nullptr)
+                    (void)cudaEventDestroy(accumulator_done);
+            }
+        };
+
+        TimingEvents timing;
+
+        if (profile != nullptr)
+        {
+            if (cudaEventCreate(
+                    &timing.start) ==
+                    cudaSuccess &&
+                cudaEventCreate(
+                    &timing.inverse_done) ==
+                    cudaSuccess &&
+                cudaEventCreate(
+                    &timing.accumulator_done) ==
+                    cudaSuccess)
+            {
+                if (cudaEventRecord(
+                        timing.start,
+                        stream) ==
+                    cudaSuccess)
+                {
+                    timing.ready =
+                        true;
+                }
+            }
+
+            if (!timing.ready)
+            {
+                (void)cudaGetLastError();
+            }
+        }
+
+        constexpr unsigned
+            block_size = 256;
+
+        const auto blocks =
+            static_cast<unsigned>(
+                (element_count +
+                 block_size - 1U) /
+                block_size);
+
+        std::size_t kernel_count = 0;
+
+        const auto run_column =
+            [&](const mcl::Fr *values,
+                const mcl::Fr *selectors,
+                mcl::Fr *output)
+        {
+            auto *gpu_output =
+                reinterpret_cast<
+                    gpu::GpuFr *>(
+                    output);
+
+            logup_prepare_denominator_kernel<<<
+                blocks,
+                block_size,
+                0,
+                stream>>>(
+                reinterpret_cast<
+                    const gpu::GpuFr *>(
+                    values),
+                reinterpret_cast<
+                    const gpu::GpuFr *>(
+                    selectors),
+                gpu_beta,
+                gpu_output,
+                error,
+                element_count);
+
+            auto launch_status =
+                cudaGetLastError();
+
+            if (launch_status !=
+                cudaSuccess)
+            {
+                throw_scan_cuda_error(
+                    "fused LogUp denominator preparation",
+                    launch_status);
+            }
+
+            ++kernel_count;
+
+            if (!launch_exclusive_product_scan(
+                    gpu_output,
+                    prefixes,
+                    element_count,
+                    false,
+                    scan_levels,
+                    0,
+                    &kernel_count,
+                    stream) ||
+                !launch_exclusive_product_scan(
+                    gpu_output,
+                    suffixes,
+                    element_count,
+                    true,
+                    scan_levels,
+                    0,
+                    &kernel_count,
+                    stream))
+            {
+                throw std::runtime_error(
+                    "CUDA fused LogUp inverse scan failed");
+            }
+
+            barycentric_invert_product_kernel<<<
+                1,
+                1,
+                0,
+                stream>>>(
+                gpu_output,
+                prefixes,
+                global_inverse,
+                element_count);
+
+            launch_status =
+                cudaGetLastError();
+
+            if (launch_status !=
+                cudaSuccess)
+            {
+                throw_scan_cuda_error(
+                    "fused LogUp product inversion",
+                    launch_status);
+            }
+
+            ++kernel_count;
+
+            logup_finalize_inverse_kernel<<<
+                blocks,
+                block_size,
+                0,
+                stream>>>(
+                reinterpret_cast<
+                    const gpu::GpuFr *>(
+                    selectors),
+                prefixes,
+                suffixes,
+                global_inverse,
+                gpu_output,
+                element_count);
+
+            launch_status =
+                cudaGetLastError();
+
+            if (launch_status !=
+                cudaSuccess)
+            {
+                throw_scan_cuda_error(
+                    "fused LogUp inverse finalize",
+                    launch_status);
+            }
+
+            ++kernel_count;
+        };
+
+        run_column(
+            table,
+            q_table,
+            table_inverse);
+
+        run_column(
+            query,
+            q_query,
+            query_inverse);
+
+        if (timing.ready)
+        {
+            if (cudaEventRecord(
+                    timing.inverse_done,
+                    stream) !=
+                cudaSuccess)
+            {
+                timing.ready =
+                    false;
+
+                (void)cudaGetLastError();
+            }
+        }
+
+        const auto active_blocks =
+            static_cast<unsigned>(
+                (active_count +
+                 block_size - 1U) /
+                block_size);
+
+        logup_term_kernel<<<
+            active_blocks,
+            block_size,
+            0,
+            stream>>>(
+            reinterpret_cast<
+                const gpu::GpuFr *>(
+                table_inverse),
+            reinterpret_cast<
+                const gpu::GpuFr *>(
+                query_inverse),
+            reinterpret_cast<
+                const gpu::GpuFr *>(
+                multiplicity),
+            reinterpret_cast<
+                const gpu::GpuFr *>(
+                q_table),
+            reinterpret_cast<
+                const gpu::GpuFr *>(
+                q_query),
+            terms,
+            error,
+            active_count);
+
+        status =
+            cudaGetLastError();
+
+        if (status !=
+            cudaSuccess)
+        {
+            throw_scan_cuda_error(
+                "fused LogUp term launch",
+                status);
+        }
+
+        ++kernel_count;
+
+        if (!launch_exclusive_sum_scan(
+                terms,
+                prefixes,
+                active_count,
+                scan_levels,
+                0,
+                &kernel_count,
+                stream))
+        {
+            throw std::runtime_error(
+                "CUDA fused LogUp accumulator scan failed");
+        }
+
+        const auto output_blocks =
+            static_cast<unsigned>(
+                (element_count +
+                 block_size - 1U) /
+                block_size);
+
+        prefix_accumulator_finalize_kernel<<<
+            output_blocks,
+            block_size,
+            0,
+            stream>>>(
+            terms,
+            prefixes,
+            reinterpret_cast<
+                gpu::GpuFr *>(
+                accumulator),
+            active_count,
+            element_count);
+
+        status =
+            cudaGetLastError();
+
+        if (status !=
+            cudaSuccess)
+        {
+            throw_scan_cuda_error(
+                "fused LogUp accumulator finalize",
+                status);
+        }
+
+        ++kernel_count;
+
+        if (timing.ready)
+        {
+            if (cudaEventRecord(
+                    timing.accumulator_done,
+                    stream) !=
+                cudaSuccess)
+            {
+                timing.ready =
+                    false;
+
+                (void)cudaGetLastError();
+            }
+        }
+
+        unsigned int host_error = 0;
+
+        status =
+            cudaMemcpyAsync(
+                &host_error,
+                error,
+                sizeof(host_error),
+                cudaMemcpyDeviceToHost,
+                stream);
+
+        if (status !=
+            cudaSuccess)
+        {
+            throw_scan_cuda_error(
+                "fused LogUp error download",
+                status);
+        }
+
+        status =
+            cudaStreamSynchronize(
+                stream);
+
+        if (status !=
+            cudaSuccess)
+        {
+            throw_scan_cuda_error(
+                "fused LogUp synchronization",
+                status);
+        }
+
+        record_cuda_kernel_invocations(
+            kernel_count);
+
+        record_cuda_stream_sync();
+
+        if (profile != nullptr &&
+            timing.ready)
+        {
+            float inverse_ms = 0.0F;
+            float accumulator_ms = 0.0F;
+
+            if (cudaEventElapsedTime(
+                    &inverse_ms,
+                    timing.start,
+                    timing.inverse_done) ==
+                    cudaSuccess &&
+                cudaEventElapsedTime(
+                    &accumulator_ms,
+                    timing.inverse_done,
+                    timing.accumulator_done) ==
+                    cudaSuccess)
+            {
+                profile->inverse_ms =
+                    static_cast<double>(
+                        inverse_ms);
+
+                profile->accumulator_ms =
+                    static_cast<double>(
+                        accumulator_ms);
+            }
+        }
+
+        if (host_error == 1)
+        {
+            throw std::runtime_error(
+                "cannot invert zero in lookup inverse columns");
+        }
+
+        if (host_error == 2)
+        {
+            throw std::runtime_error(
+                "lookup selector is not boolean");
+        }
+
+        return true;
+    }
+
     bool scaled_prefix_accumulator_cuda(
         const mcl::Fr *values,
         const mcl::Fr &scale,
@@ -6138,144 +7481,412 @@ namespace gatzk::algebra
         return true;
     }
 
-    // ---- 统一地址空间下的零拷贝列式求值 ----
-    // GPU 直接经由主机指针读取列数据，无需再做显式交织拷贝。
     bool weighted_poly_eval_gpu_columnar(
-        const uint64_t *weight_limbs,       // 主机侧 `domain_size × 4 uint64`
-        const uint64_t *const *column_ptrs, // 每列一个主机指针
-        uint64_t *output_limbs,             // 主机侧 `poly_count × 4 uint64`
+        const uint64_t *weight_limbs,
+        const uint64_t *const *column_ptrs,
+        uint64_t *output_limbs,
         std::size_t domain_size,
         std::size_t row_count,
         const std::size_t *column_lengths,
         std::size_t weight_rotation)
     {
-
-        if (domain_size == 0 || row_count == 0)
+        if (domain_size == 0 ||
+            row_count == 0)
+        {
             return true;
-        if (row_count > 65535)
-            return false;
-
-        // 统一地址空间设备上，GPU 可直接访问主机指针，只需为局部结果与指针表分配设备内存。
-        constexpr unsigned kBlockDim = 256;
-        const auto num_blocks = static_cast<unsigned>((domain_size + kBlockDim - 1) / kBlockDim);
-        const auto grid_y = static_cast<unsigned>(row_count);
-
-        // 在设备端保存列指针数组。
-        const gpu::GpuFr **d_columns = nullptr;
-        const auto ptr_bytes = row_count * sizeof(const gpu::GpuFr *);
-        if (cudaMalloc(&d_columns, ptr_bytes) != cudaSuccess)
-            return false;
-
-        // 主机侧把 `uint64_t*` 解释成 `GpuFr*`，保持底层 limb 布局一致。
-        std::vector<const gpu::GpuFr *> h_columns(row_count);
-        for (std::size_t i = 0; i < row_count; ++i)
-        {
-            h_columns[i] = reinterpret_cast<const gpu::GpuFr *>(column_ptrs[i]);
         }
-        if (cudaMemcpy(d_columns, h_columns.data(), ptr_bytes, cudaMemcpyHostToDevice) != cudaSuccess)
+
+        if (weight_limbs == nullptr ||
+            column_ptrs == nullptr ||
+            output_limbs == nullptr ||
+            row_count > 65535)
         {
-            cudaFree(d_columns);
             return false;
         }
-        record_cuda_h2d(ptr_bytes);
 
-        std::size_t *d_column_lengths = nullptr;
+        constexpr unsigned
+            kBlockDim = 256;
+
+        const auto num_blocks =
+            static_cast<std::size_t>(
+                (domain_size +
+                 kBlockDim - 1) /
+                kBlockDim);
+
+        if (num_blocks >
+            std::numeric_limits<
+                unsigned>::max())
+        {
+            return false;
+        }
+
+        if (row_count >
+            std::numeric_limits<
+                std::size_t>::max() /
+                num_blocks)
+        {
+            return false;
+        }
+
+        const auto partial_count =
+            num_blocks *
+            row_count;
+
+        struct ColumnarWorkspace
+        {
+            cudaStream_t stream = nullptr;
+            const gpu::GpuFr **columns = nullptr;
+            std::size_t *lengths = nullptr;
+            gpu::GpuFr *partials = nullptr;
+            gpu::GpuFr *final_values = nullptr;
+            std::size_t column_capacity = 0;
+            std::size_t length_capacity = 0;
+            std::size_t partial_capacity = 0;
+            std::size_t final_capacity = 0;
+
+            bool has_allocations() const
+            {
+                return columns != nullptr ||
+                       lengths != nullptr ||
+                       partials != nullptr ||
+                       final_values != nullptr;
+            }
+
+            bool ensure_stream()
+            {
+                if (stream != nullptr)
+                    return true;
+
+                const auto status =
+                    cudaStreamCreateWithFlags(
+                        &stream,
+                        cudaStreamNonBlocking);
+
+                if (status != cudaSuccess)
+                {
+                    stream = nullptr;
+                    return false;
+                }
+                return true;
+            }
+
+            bool synchronize_for_growth()
+            {
+                if (!has_allocations())
+                    return true;
+
+                const auto status =
+                    cudaStreamSynchronize(stream);
+
+                if (status != cudaSuccess)
+                    return false;
+
+                record_cuda_stream_sync();
+                return true;
+            }
+
+            bool ensure(
+                std::size_t rows,
+                std::size_t partials_required,
+                bool need_lengths)
+            {
+                if (!ensure_stream())
+                    return false;
+
+                const bool grow =
+                    column_capacity < rows ||
+                    partial_capacity < partials_required ||
+                    final_capacity < rows ||
+                    (need_lengths &&
+                     length_capacity < rows);
+
+                if (!grow)
+                    return true;
+
+                if (!synchronize_for_growth())
+                    return false;
+
+                if (column_capacity < rows)
+                {
+                    if (columns != nullptr)
+                    {
+                        (void)cudaFree(columns);
+                        columns = nullptr;
+                        column_capacity = 0;
+                    }
+
+                    if (cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &columns),
+                            rows *
+                                sizeof(
+                                    const gpu::GpuFr *)) !=
+                        cudaSuccess)
+                    {
+                        return false;
+                    }
+
+                    column_capacity = rows;
+                }
+
+                if (need_lengths &&
+                    length_capacity < rows)
+                {
+                    if (lengths != nullptr)
+                    {
+                        (void)cudaFree(lengths);
+                        lengths = nullptr;
+                        length_capacity = 0;
+                    }
+
+                    if (cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &lengths),
+                            rows *
+                                sizeof(
+                                    std::size_t)) !=
+                        cudaSuccess)
+                    {
+                        return false;
+                    }
+
+                    length_capacity = rows;
+                }
+
+                if (partial_capacity <
+                    partials_required)
+                {
+                    if (partials != nullptr)
+                    {
+                        (void)cudaFree(partials);
+                        partials = nullptr;
+                        partial_capacity = 0;
+                    }
+
+                    if (cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &partials),
+                            partials_required *
+                                sizeof(
+                                    gpu::GpuFr)) !=
+                        cudaSuccess)
+                    {
+                        return false;
+                    }
+
+                    partial_capacity =
+                        partials_required;
+                }
+
+                if (final_capacity < rows)
+                {
+                    if (final_values != nullptr)
+                    {
+                        (void)cudaFree(final_values);
+                        final_values = nullptr;
+                        final_capacity = 0;
+                    }
+
+                    if (cudaMalloc(
+                            reinterpret_cast<void **>(
+                                &final_values),
+                            rows *
+                                sizeof(
+                                    gpu::GpuFr)) !=
+                        cudaSuccess)
+                    {
+                        return false;
+                    }
+
+                    final_capacity = rows;
+                }
+
+                return true;
+            }
+
+            ~ColumnarWorkspace()
+            {
+                if (stream != nullptr)
+                    (void)cudaStreamSynchronize(stream);
+                if (columns != nullptr)
+                    (void)cudaFree(columns);
+                if (lengths != nullptr)
+                    (void)cudaFree(lengths);
+                if (partials != nullptr)
+                    (void)cudaFree(partials);
+                if (final_values != nullptr)
+                    (void)cudaFree(final_values);
+                if (stream != nullptr)
+                    (void)cudaStreamDestroy(stream);
+            }
+        };
+
+        thread_local ColumnarWorkspace
+            workspace;
+
+        if (!workspace.ensure(
+                row_count,
+                partial_count,
+                column_lengths != nullptr))
+        {
+            return false;
+        }
+
+        std::vector<
+            const gpu::GpuFr *>
+            host_columns(
+                row_count);
+
+        for (std::size_t index = 0;
+             index < row_count;
+             ++index)
+        {
+            if (column_ptrs[index] == nullptr)
+                return false;
+
+            host_columns[index] =
+                reinterpret_cast<
+                    const gpu::GpuFr *>(
+                    column_ptrs[index]);
+        }
+
+        const auto pointer_bytes =
+            row_count *
+            sizeof(
+                const gpu::GpuFr *);
+
+        auto status =
+            cudaMemcpyAsync(
+                workspace.columns,
+                host_columns.data(),
+                pointer_bytes,
+                cudaMemcpyHostToDevice,
+                workspace.stream);
+
+        if (status != cudaSuccess)
+            return false;
+
+        record_cuda_h2d(pointer_bytes);
+
+        const std::size_t *device_lengths =
+            nullptr;
+
         if (column_lengths != nullptr)
         {
-            const auto length_bytes = row_count * sizeof(std::size_t);
-            if (cudaMalloc(&d_column_lengths, length_bytes) != cudaSuccess)
-            {
-                cudaFree(d_columns);
-                return false;
-            }
-            if (cudaMemcpy(
-                    d_column_lengths,
+            const auto length_bytes =
+                row_count *
+                sizeof(std::size_t);
+
+            status =
+                cudaMemcpyAsync(
+                    workspace.lengths,
                     column_lengths,
                     length_bytes,
-                    cudaMemcpyHostToDevice) != cudaSuccess)
-            {
-                cudaFree(d_column_lengths);
-                cudaFree(d_columns);
+                    cudaMemcpyHostToDevice,
+                    workspace.stream);
+
+            if (status != cudaSuccess)
                 return false;
-            }
+
             record_cuda_h2d(length_bytes);
+            device_lengths = workspace.lengths;
         }
 
-        // 为局部结果申请设备缓冲区。
-        const auto partial_bytes = static_cast<std::size_t>(num_blocks) * row_count * sizeof(gpu::GpuFr);
-        gpu::GpuFr *d_partials = nullptr;
-        if (cudaMalloc(&d_partials, partial_bytes) != cudaSuccess)
-        {
-            cudaFree(d_column_lengths);
-            cudaFree(d_columns);
-            return false;
-        }
-        if (cudaMemset(d_partials, 0, partial_bytes) != cudaSuccess)
-        {
-            cudaFree(d_partials);
-            cudaFree(d_column_lengths);
-            cudaFree(d_columns);
-            return false;
-        }
+        const auto partial_bytes =
+            partial_count *
+            sizeof(gpu::GpuFr);
 
-        // 启动列式 kernel，直接读取主机侧权重和列数据。
-        dim3 grid(num_blocks, grid_y);
-        const auto smem_bytes = kBlockDim * sizeof(gpu::GpuFr);
-        weighted_eval_columnar_kernel<<<grid, kBlockDim, smem_bytes>>>(
-            reinterpret_cast<const gpu::GpuFr *>(weight_limbs),
-            d_columns,
-            d_column_lengths,
-            d_partials,
+        status =
+            cudaMemsetAsync(
+                workspace.partials,
+                0,
+                partial_bytes,
+                workspace.stream);
+
+        if (status != cudaSuccess)
+            return false;
+
+        dim3 grid(
+            static_cast<unsigned>(
+                num_blocks),
+            static_cast<unsigned>(
+                row_count));
+
+        const auto shared_bytes =
+            kBlockDim *
+            sizeof(gpu::GpuFr);
+
+        weighted_eval_columnar_kernel<<<
+            grid,
+            kBlockDim,
+            shared_bytes,
+            workspace.stream>>>(
+            reinterpret_cast<
+                const gpu::GpuFr *>(
+                weight_limbs),
+            workspace.columns,
+            device_lengths,
+            workspace.partials,
             domain_size,
             row_count,
-            weight_rotation % domain_size);
+            weight_rotation %
+                domain_size);
 
-        // 汇总局部结果。
-        const auto result_bytes = row_count * sizeof(gpu::GpuFr);
-        gpu::GpuFr *d_final = nullptr;
-        if (cudaMalloc(&d_final, result_bytes) != cudaSuccess)
-        {
-            cudaFree(d_partials);
-            cudaFree(d_column_lengths);
-            cudaFree(d_columns);
+        status = cudaGetLastError();
+
+        if (status != cudaSuccess)
             return false;
-        }
 
-        {
-            constexpr unsigned rBlock = 256;
-            const auto rGrid = static_cast<unsigned>((row_count + rBlock - 1) / rBlock);
-            reduce_partials_kernel<<<rGrid, rBlock>>>(d_partials, d_final, num_blocks, row_count);
-        }
+        const auto reduce_grid =
+            static_cast<unsigned>(
+                (row_count +
+                 kBlockDim - 1) /
+                kBlockDim);
 
-        if (cudaDeviceSynchronize() != cudaSuccess)
-        {
-            cudaFree(d_final);
-            cudaFree(d_partials);
-            cudaFree(d_column_lengths);
-            cudaFree(d_columns);
+        reduce_partials_kernel<<<
+            reduce_grid,
+            kBlockDim,
+            0,
+            workspace.stream>>>(
+            workspace.partials,
+            workspace.final_values,
+            static_cast<unsigned>(
+                num_blocks),
+            row_count);
+
+        status = cudaGetLastError();
+
+        if (status != cudaSuccess)
             return false;
-        }
-        record_cuda_stream_sync();
 
-        // 下载最终结果。
-        if (cudaMemcpy(output_limbs, d_final, result_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
-        {
-            cudaFree(d_final);
-            cudaFree(d_partials);
-            cudaFree(d_column_lengths);
-            cudaFree(d_columns);
+        const auto result_bytes =
+            row_count *
+            sizeof(gpu::GpuFr);
+
+        status =
+            cudaMemcpyAsync(
+                output_limbs,
+                workspace.final_values,
+                result_bytes,
+                cudaMemcpyDeviceToHost,
+                workspace.stream);
+
+        if (status != cudaSuccess)
             return false;
-        }
+
         record_cuda_d2h(result_bytes);
 
-        cudaFree(d_final);
-        cudaFree(d_partials);
-        cudaFree(d_column_lengths);
-        cudaFree(d_columns);
+        status =
+            cudaStreamSynchronize(
+                workspace.stream);
+
+        if (status != cudaSuccess)
+            return false;
+
+        record_cuda_stream_sync();
         record_cuda_kernel_invocations(2);
         return true;
     }
-
     // ---- 共享权重的多列求值入口 ----
     // 统一地址空间设备走单次列式 kernel，离散显卡则复用权重并顺序处理每一列。
     bool weighted_poly_eval_gpu_multi(

@@ -65,6 +65,8 @@ namespace gatzk::algebra
 
         std::size_t nonzero_count = 0;
 
+        bool nonzero_count_known = true;
+
         int device = -1;
 
         std::shared_ptr<

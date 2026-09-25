@@ -12,6 +12,8 @@
 
 namespace gatzk::algebra
 {
+    struct CudaResidentCoefficientBuffer;
+
     // 代数实现后端。它只影响执行放置，不引入第二套协议语义。
     enum class AlgebraBackend
     {
@@ -35,6 +37,13 @@ namespace gatzk::algebra
             std::size_t target_offset,
             std::size_t element_count,
             bool source_is_ephemeral = false) = 0;
+
+        virtual void accumulate_device_range(
+            const std::uint64_t *device_montgomery_source,
+            int source_device,
+            const mcl::Fr &scale,
+            std::size_t target_offset,
+            std::size_t element_count) = 0;
 
         virtual void finish() = 0;
     };
@@ -207,6 +216,45 @@ namespace gatzk::algebra
         std::size_t domain_size,
         const FieldElement &omega,
         const FieldElement &point);
+
+    bool try_cuda_opening_inverse_and_quotient_resident_native(
+        const mcl::Fr *folded_values,
+        const mcl::Fr &scaled_claim_sum,
+        std::size_t domain_size,
+        const FieldElement &omega,
+        const FieldElement &point,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            *resident_output);
+
+    bool try_cuda_coefficient_opening_quotient_resident_native(
+        const mcl::Fr *coefficients,
+        std::size_t coefficient_count,
+        const mcl::Fr &point,
+        const mcl::Fr &claimed_value,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            *resident_output);
+
+    struct CudaLogupExecutionProfile
+    {
+        double inverse_ms = 0.0;
+        double accumulator_ms = 0.0;
+    };
+
+    bool try_cuda_logup_inverse_and_accumulator_native(
+        const mcl::Fr *table,
+        const mcl::Fr *query,
+        const mcl::Fr *q_table,
+        const mcl::Fr *q_query,
+        const mcl::Fr &beta,
+        const mcl::Fr *multiplicity,
+        mcl::Fr *table_inverse,
+        mcl::Fr *query_inverse,
+        mcl::Fr *accumulator,
+        std::size_t active_count,
+        std::size_t element_count,
+        CudaLogupExecutionProfile *profile = nullptr);
 
     bool try_cuda_logup_inverse_columns_native(
         const mcl::Fr *table,

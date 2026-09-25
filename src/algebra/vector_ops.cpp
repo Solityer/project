@@ -68,6 +68,39 @@ namespace gatzk::algebra
         const mcl::Fr &omega,
         const mcl::Fr &point);
 
+    bool opening_inverse_and_quotient_resident_cuda(
+        const mcl::Fr *folded_values,
+        const mcl::Fr &scaled_claim_sum,
+        std::size_t domain_size,
+        const mcl::Fr &omega,
+        const mcl::Fr &point,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            *resident_output);
+
+    bool coefficient_opening_quotient_resident_cuda(
+        const mcl::Fr *coefficients,
+        std::size_t coefficient_count,
+        const mcl::Fr &point,
+        const mcl::Fr &claimed_value,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            *resident_output);
+
+    bool logup_inverse_and_accumulator_cuda(
+        const mcl::Fr *table,
+        const mcl::Fr *query,
+        const mcl::Fr *q_table,
+        const mcl::Fr *q_query,
+        const mcl::Fr &beta,
+        const mcl::Fr *multiplicity,
+        mcl::Fr *table_inverse,
+        mcl::Fr *query_inverse,
+        mcl::Fr *accumulator,
+        std::size_t active_count,
+        std::size_t element_count,
+        CudaLogupExecutionProfile *profile);
+
     bool logup_inverse_columns_cuda(
         const mcl::Fr *table,
         const mcl::Fr *query,
@@ -932,16 +965,52 @@ namespace gatzk::algebra
 
             const auto even_workers = transform_workers / 2;
             const auto odd_workers = transform_workers - even_workers;
-            auto even_task = std::async(
-                std::launch::async,
-                [&]
-                {
-                    intt_in_place_parallel_impl(
-                        even.data(), half_size, even_workers);
-                });
-            intt_in_place_parallel_impl(
-                odd.data(), half_size, odd_workers);
-            even_task.get();
+
+            constexpr std::size_t
+                kRecursiveScratchMaximum =
+                    std::size_t{1} << 22;
+
+            if (size >
+                kRecursiveScratchMaximum)
+            {
+                const auto half_plan =
+                    ntt_plan(
+                        half_size);
+
+                auto even_task =
+                    std::async(
+                        std::launch::async,
+                        [&, half_plan]
+                        {
+                            half_plan->intt(
+                                even.data());
+                        });
+
+                half_plan->intt(
+                    odd.data());
+
+                even_task.get();
+            }
+            else
+            {
+                auto even_task =
+                    std::async(
+                        std::launch::async,
+                        [&]
+                        {
+                            intt_in_place_parallel_impl(
+                                even.data(),
+                                half_size,
+                                even_workers);
+                        });
+
+                intt_in_place_parallel_impl(
+                    odd.data(),
+                    half_size,
+                    odd_workers);
+
+                even_task.get();
+            }
 
             const auto omega_inverse =
                 FieldElement::root_of_unity(size).inv().native();
@@ -1964,6 +2033,163 @@ namespace gatzk::algebra
             throw std::runtime_error("selected CUDA fused opening route was unavailable");
         return true;
 #else
+        return false;
+#endif
+    }
+
+    bool try_cuda_opening_inverse_and_quotient_resident_native(
+        const mcl::Fr *folded_values,
+        const mcl::Fr &scaled_claim_sum,
+        std::size_t domain_size,
+        const FieldElement &omega,
+        const FieldElement &point,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            *resident_output)
+    {
+        if (!cuda_field_route_enabled() ||
+            !cuda_backend_unified_addressing_available() ||
+            domain_size <
+                (std::size_t{1} << 18))
+        {
+            return false;
+        }
+
+        if (folded_values == nullptr ||
+            resident_output == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA resident fused opening received a null buffer");
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!opening_inverse_and_quotient_resident_cuda(
+                folded_values,
+                scaled_claim_sum,
+                domain_size,
+                omega.native(),
+                point.native(),
+                resident_output))
+        {
+            throw std::runtime_error(
+                "selected CUDA resident fused opening route was unavailable");
+        }
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    bool try_cuda_coefficient_opening_quotient_resident_native(
+        const mcl::Fr *coefficients,
+        std::size_t coefficient_count,
+        const mcl::Fr &point,
+        const mcl::Fr &claimed_value,
+        std::shared_ptr<
+            const CudaResidentCoefficientBuffer>
+            *resident_output)
+    {
+        if (!cuda_field_route_enabled() ||
+            !cuda_backend_unified_addressing_available() ||
+            coefficient_count <= 1 ||
+            coefficient_count - 1 <
+                (std::size_t{1} << 18))
+        {
+            return false;
+        }
+
+        if (coefficients == nullptr ||
+            resident_output == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA resident coefficient opening received a null buffer");
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!coefficient_opening_quotient_resident_cuda(
+                coefficients,
+                coefficient_count,
+                point,
+                claimed_value,
+                resident_output))
+        {
+            throw std::runtime_error(
+                "selected CUDA resident coefficient opening route was unavailable");
+        }
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    bool try_cuda_logup_inverse_and_accumulator_native(
+        const mcl::Fr *table,
+        const mcl::Fr *query,
+        const mcl::Fr *q_table,
+        const mcl::Fr *q_query,
+        const mcl::Fr &beta,
+        const mcl::Fr *multiplicity,
+        mcl::Fr *table_inverse,
+        mcl::Fr *query_inverse,
+        mcl::Fr *accumulator,
+        std::size_t active_count,
+        std::size_t element_count,
+        CudaLogupExecutionProfile *profile)
+    {
+        if (!(cuda_field_route_enabled() ||
+              cuda_trace_route_enabled()) ||
+            !cuda_backend_unified_addressing_available() ||
+            element_count <
+                (std::size_t{1} << 18) ||
+            active_count <
+                (std::size_t{1} << 18))
+        {
+            return false;
+        }
+
+        if (table == nullptr ||
+            query == nullptr ||
+            q_table == nullptr ||
+            q_query == nullptr ||
+            multiplicity == nullptr ||
+            table_inverse == nullptr ||
+            query_inverse == nullptr ||
+            accumulator == nullptr)
+        {
+            throw std::runtime_error(
+                "CUDA fused LogUp received a null buffer");
+        }
+
+        if (active_count >= element_count)
+        {
+            throw std::runtime_error(
+                "CUDA fused LogUp active count exceeds transition domain");
+        }
+
+#if GATZK_ENABLE_CUDA_BACKEND
+        if (!logup_inverse_and_accumulator_cuda(
+                table,
+                query,
+                q_table,
+                q_query,
+                beta,
+                multiplicity,
+                table_inverse,
+                query_inverse,
+                accumulator,
+                active_count,
+                element_count,
+                profile))
+        {
+            throw std::runtime_error(
+                "selected CUDA fused LogUp route was unavailable");
+        }
+
+        return true;
+#else
+        (void)profile;
         return false;
 #endif
     }
