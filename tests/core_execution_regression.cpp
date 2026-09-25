@@ -570,7 +570,9 @@ namespace
         tile.j_query = F::native_array_data(j_query.data());
         tile.accumulator = F::native_array_data(accumulator.data());
         tile.accumulator_next = F::native_array_data(accumulator_next.data());
-        executor->evaluate_tile(tile);
+        require(executor->pipeline_slot_count() >= 1, "CUDA t_FH pipeline slot count");
+        executor->evaluate_tile(tile, 0);
+        executor->wait_for_slot(0);
 
         std::vector<F> gpu_coefficients(target_size, F::zero());
         const auto resident = executor->finalize_coefficients(gpu_coefficients.data(), gpu_coefficients.size());
