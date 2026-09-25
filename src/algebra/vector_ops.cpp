@@ -305,33 +305,48 @@ namespace gatzk::algebra
         static std::size_t cached_bytes = 0;
         static std::size_t use_clock = 0;
 
-        constexpr std::size_t kMinimumCacheBudget = std::size_t{64} << 20;
-        constexpr std::size_t kDefaultCacheBudget = std::size_t{512} << 20;
-        constexpr std::size_t kMaximumCacheBudget = std::size_t{2} << 30;
-        constexpr std::size_t kPinnedSmallPlanMaximum = std::size_t{1} << 20;
+        static constexpr std::size_t kMinimumCacheBudget =
+            std::size_t{64} << 20;
+
+        static constexpr std::size_t kDefaultCacheBudget =
+            std::size_t{512} << 20;
+
+        static constexpr std::size_t kMaximumCacheBudget =
+            std::size_t{2} << 30;
+
+        static constexpr std::size_t kPinnedSmallPlanMaximum =
+            std::size_t{1} << 20;
 
         const auto cache_budget = []() -> std::size_t
         {
-            const auto memory = util::cached_effective_memory_snapshot();
-            std::size_t budget = kDefaultCacheBudget;
+            const auto memory =
+                util::cached_effective_memory_snapshot();
+
+            std::size_t budget =
+                kDefaultCacheBudget;
 
             if (memory.effective_total_known)
             {
-                budget = std::clamp(
-                    memory.effective_total_bytes / std::size_t{16},
-                    kMinimumCacheBudget,
-                    kMaximumCacheBudget);
+                budget =
+                    std::clamp(
+                        memory.effective_total_bytes /
+                            std::size_t{16},
+                        kMinimumCacheBudget,
+                        kMaximumCacheBudget);
             }
 
             if (memory.effective_available_known)
             {
-                const auto available_budget = std::max(
-                    kMinimumCacheBudget,
-                    memory.effective_available_bytes / std::size_t{8});
+                const auto available_budget =
+                    std::max(
+                        kMinimumCacheBudget,
+                        memory.effective_available_bytes /
+                            std::size_t{8});
 
-                budget = std::min(
-                    budget,
-                    available_budget);
+                budget =
+                    std::min(
+                        budget,
+                        available_budget);
             }
 
             return budget;
