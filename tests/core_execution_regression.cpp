@@ -117,6 +117,13 @@ namespace
             auto coefficients = sample(n);
             auto evaluations = coefficients;
             algebra::ntt_in_place(F::mutable_native_array_data(evaluations.data()), n);
+
+            auto round_trip = evaluations;
+            algebra::intt_in_place(
+                F::mutable_native_array_data(round_trip.data()),
+                n);
+            require(round_trip == coefficients, "parallel NTT/INTT round trip");
+
             auto p = P::from_evaluations("test_evaluation", evaluations, domain);
             for (const auto &x : {F::zero(), F::one(), F(7)})
                 require(p.semantic_evaluate(x) == reference_horner(coefficients, x), "batched barycentric evaluation");
@@ -136,6 +143,46 @@ namespace
             reject([&]
                    { (void)algebra::materialize_blinded_coefficients(p, n); }, "blinder extent");
         }
+
+        constexpr std::size_t pair_size =
+            std::size_t{1} << 16;
+
+        auto first_pair = sample(pair_size);
+        auto second_pair = sample(pair_size);
+
+        std::reverse(
+            second_pair.begin(),
+            second_pair.end());
+
+        auto expected_first = first_pair;
+        auto expected_second = second_pair;
+
+        const auto reference_plan =
+            algebra::ntt_plan(pair_size);
+
+        reference_plan->ntt(
+            F::mutable_native_array_data(
+                expected_first.data()));
+
+        reference_plan->ntt(
+            F::mutable_native_array_data(
+                expected_second.data()));
+
+        algebra::ntt_pair_in_place(
+            F::mutable_native_array_data(
+                first_pair.data()),
+            F::mutable_native_array_data(
+                second_pair.data()),
+            pair_size,
+            8);
+
+        require(
+            first_pair == expected_first,
+            "parallel paired NTT first lane");
+
+        require(
+            second_pair == expected_second,
+            "parallel paired NTT second lane");
     }
 
     void test_taylor()

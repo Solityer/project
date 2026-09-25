@@ -15,6 +15,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include "gatzk/util/effective_memory.hpp"
 #include "gatzk/util/route2.hpp"
 
 #if GATZK_ENABLE_CUDA_BACKEND
@@ -292,34 +293,156 @@ namespace gatzk::algebra
 
     std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size)
     {
+        struct CachedPlan
+        {
+            std::shared_ptr<const mcl::Ntt<mcl::Fr>> plan;
+            std::size_t bytes = 0;
+            std::size_t last_use = 0;
+        };
+
         static std::mutex mutex;
-        static std::unordered_map<std::size_t, std::shared_ptr<const mcl::Ntt<mcl::Fr>>> cache;
+        static std::unordered_map<std::size_t, CachedPlan> cache;
+        static std::size_t cached_bytes = 0;
+        static std::size_t use_clock = 0;
+
+        constexpr std::size_t kMinimumCacheBudget = std::size_t{64} << 20;
+        constexpr std::size_t kDefaultCacheBudget = std::size_t{512} << 20;
+        constexpr std::size_t kMaximumCacheBudget = std::size_t{2} << 30;
+        constexpr std::size_t kPinnedSmallPlanMaximum = std::size_t{1} << 20;
+
+        const auto cache_budget = []() -> std::size_t
+        {
+            const auto memory = util::cached_effective_memory_snapshot();
+            std::size_t budget = kDefaultCacheBudget;
+
+            if (memory.effective_total_known)
+            {
+                budget = std::clamp(
+                    memory.effective_total_bytes / std::size_t{16},
+                    kMinimumCacheBudget,
+                    kMaximumCacheBudget);
+            }
+
+            if (memory.effective_available_known)
+            {
+                const auto available_budget = std::max(
+                    kMinimumCacheBudget,
+                    memory.effective_available_bytes / std::size_t{8});
+
+                budget = std::min(
+                    budget,
+                    available_budget);
+            }
+
+            return budget;
+        }();
+
         {
             std::lock_guard<std::mutex> lock(mutex);
-            if (const auto it = cache.find(size); it != cache.end())
+            const auto it = cache.find(size);
+
+            if (it != cache.end())
             {
-                return it->second;
+                it->second.last_use = ++use_clock;
+                return it->second.plan;
             }
         }
 
         auto plan = std::make_shared<mcl::Ntt<mcl::Fr>>();
         const mcl::Fr generator = 5;
         const mcl::Vint root_exponent = (mcl::Fr::getOp().mp - 1) >> 32;
-        mcl::Fr::pow(plan->root_, generator, root_exponent);
+
+        mcl::Fr::pow(
+            plan->root_,
+            generator,
+            root_exponent);
+
         if (!plan->init(size))
         {
-            throw std::runtime_error("failed to initialize NTT plan for size " + std::to_string(size));
+            throw std::runtime_error(
+                "failed to initialize NTT plan for size " +
+                std::to_string(size));
         }
-        if (!(FieldElement::from_native(plan->getW()) == FieldElement::root_of_unity(size)))
-        {
-            throw std::runtime_error("NTT root does not match protocol domain root for size " + std::to_string(size));
-        }
-        std::lock_guard<std::mutex> lock(mutex);
-        const auto [it, inserted] = cache.emplace(size, plan);
-        (void)inserted;
-        return it->second;
-    }
 
+        if (!(FieldElement::from_native(plan->getW()) ==
+              FieldElement::root_of_unity(size)))
+        {
+            throw std::runtime_error(
+                "NTT root does not match protocol domain root for size " +
+                std::to_string(size));
+        }
+
+        const auto plan_bytes =
+            mcl::Ntt<mcl::Fr>::requiredByteSize(size);
+
+        std::lock_guard<std::mutex> lock(mutex);
+
+        if (const auto existing = cache.find(size);
+            existing != cache.end())
+        {
+            existing->second.last_use = ++use_clock;
+            return existing->second.plan;
+        }
+
+        if (plan_bytes <= cache_budget)
+        {
+            while (cached_bytes > cache_budget - plan_bytes)
+            {
+                auto victim = cache.end();
+
+                for (auto it = cache.begin();
+                     it != cache.end();
+                     ++it)
+                {
+                    if (it->first <= kPinnedSmallPlanMaximum)
+                    {
+                        continue;
+                    }
+
+                    if (victim == cache.end() ||
+                        it->second.last_use <
+                            victim->second.last_use)
+                    {
+                        victim = it;
+                    }
+                }
+
+                if (victim == cache.end())
+                {
+                    break;
+                }
+
+                cached_bytes -= victim->second.bytes;
+                cache.erase(victim);
+            }
+
+            if (cached_bytes <= cache_budget - plan_bytes)
+            {
+                CachedPlan entry;
+                entry.plan = plan;
+                entry.bytes = plan_bytes;
+                entry.last_use = ++use_clock;
+
+                cached_bytes += plan_bytes;
+
+                const auto [it, inserted] =
+                    cache.emplace(
+                        size,
+                        std::move(entry));
+
+                if (inserted)
+                {
+                    return it->second.plan;
+                }
+
+                cached_bytes -= plan_bytes;
+                it->second.last_use = ++use_clock;
+                return it->second.plan;
+            }
+        }
+
+        return plan;
+    }
     void geometric_powers_native(
         mcl::Fr *output,
         std::size_t size,
@@ -784,115 +907,226 @@ namespace gatzk::algebra
 
     namespace
     {
-        void ntt_out_of_place_parallel_impl(
-            mcl::Fr *source,
-            mcl::Fr *output,
+        void radix2_ntt_in_place_parallel_impl(
+            mcl::Fr *values,
             std::size_t size,
-            std::size_t transform_workers)
+            std::size_t transform_workers,
+            bool inverse)
         {
-            constexpr std::size_t kParallelSplitThreshold = 1ULL << 18;
-            if (size < kParallelSplitThreshold || transform_workers < 2)
+            const auto plan = ntt_plan(size);
+
+            constexpr std::size_t kStageParallelThreshold =
+                std::size_t{1} << 15;
+
+            if (size < kStageParallelThreshold ||
+                transform_workers < 2)
             {
-                std::copy(source, source + size, output);
-                ntt_plan(size)->ntt(output);
+                if (inverse)
+                    plan->intt(values);
+                else
+                    plan->ntt(values);
                 return;
             }
 
-            const auto half_size = size / 2;
-            const auto lane_worker_count =
-                std::min<std::size_t>({
-                    8,
-                    std::max<std::size_t>(
-                        1,
-                        transform_workers),
-                    std::max<std::size_t>(
-                        1,
-                        (half_size + (1ULL << 18) - 1) / (1ULL << 18)),
-                });
+            const auto worker_budget =
+                std::max<std::size_t>(
+                    1,
+                    transform_workers);
 
-            const auto parallel_half_ranges =
-                [&](const auto &range_fn)
+            const auto parallel_ranges =
+                [&](std::size_t item_count,
+                    std::size_t minimum_items_per_worker,
+                    const auto &range_fn)
             {
-                if (lane_worker_count <= 1)
+                if (item_count == 0)
+                    return;
+
+                const auto useful_workers =
+                    std::max<std::size_t>(
+                        1,
+                        1 +
+                            (item_count - 1) /
+                                minimum_items_per_worker);
+
+                const auto worker_count =
+                    std::min<std::size_t>({
+                        worker_budget,
+                        item_count,
+                        useful_workers,
+                    });
+
+                if (worker_count <= 1)
                 {
-                    range_fn(0, half_size);
+                    range_fn(0, item_count);
                     return;
                 }
+
                 const auto chunk_size =
-                    (half_size + lane_worker_count - 1) / lane_worker_count;
+                    (item_count + worker_count - 1) /
+                    worker_count;
+
                 std::vector<std::future<void>> futures;
-                futures.reserve(lane_worker_count);
-                for (std::size_t worker = 0;
-                     worker < lane_worker_count; ++worker)
+                futures.reserve(worker_count - 1);
+
+                for (std::size_t worker = 1;
+                     worker < worker_count;
+                     ++worker)
                 {
-                    const auto begin = worker * chunk_size;
-                    const auto end = std::min(
-                        half_size, begin + chunk_size);
+                    const auto begin =
+                        worker * chunk_size;
+                    const auto end =
+                        std::min(
+                            item_count,
+                            begin + chunk_size);
+
                     if (begin >= end)
-                    {
                         break;
-                    }
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&, begin, end]
-                        {
-                            range_fn(begin, end);
-                        }));
+
+                    futures.push_back(
+                        std::async(
+                            std::launch::async,
+                            [&, begin, end]
+                            {
+                                range_fn(begin, end);
+                            }));
                 }
+
+                range_fn(
+                    0,
+                    std::min(
+                        item_count,
+                        chunk_size));
+
                 for (auto &future : futures)
-                {
                     future.get();
-                }
             };
 
-            parallel_half_ranges([&](std::size_t begin, std::size_t end)
-                                 {
-                for (std::size_t index = begin; index < end; ++index)
+            parallel_ranges(
+                size,
+                std::size_t{1} << 16,
+                [&](std::size_t begin,
+                    std::size_t end)
                 {
-                    output[index] = source[2 * index];
-                    output[index + half_size] = source[2 * index + 1];
-                } });
+                    for (std::size_t index = begin;
+                         index < end;
+                         ++index)
+                    {
+                        const auto reversed =
+                            static_cast<std::size_t>(
+                                plan->br_.rev(
+                                    index,
+                                    plan->bitN_));
 
-            const auto even_workers = transform_workers / 2;
-            const auto odd_workers = transform_workers - even_workers;
-            auto even_task = std::async(
-                std::launch::async,
-                [&]
-                {
-                    ntt_out_of_place_parallel_impl(
-                        output,
-                        source,
-                        half_size,
-                        even_workers);
+                        if (index < reversed)
+                        {
+                            std::swap(
+                                values[index],
+                                values[reversed]);
+                        }
+                    }
                 });
-            ntt_out_of_place_parallel_impl(
-                output + half_size,
-                source + half_size,
-                half_size,
-                odd_workers);
-            even_task.get();
 
-            const auto omega = FieldElement::root_of_unity(size).native();
-            const auto omega_field = FieldElement::from_native(omega);
-            parallel_half_ranges([&](std::size_t begin, std::size_t end)
-                                 {
-                auto omega_power = omega_field.pow(begin).native();
-                for (std::size_t index = begin; index < end; ++index)
+            const auto *weights =
+                plan->getWs();
+
+            std::size_t twiddle_stride =
+                size;
+
+            for (std::size_t lane_size = 1;
+                 lane_size < size;
+                 lane_size <<= 1U)
+            {
+                twiddle_stride >>= 1U;
+
+                const auto butterfly_count =
+                    size / 2;
+
+                parallel_ranges(
+                    butterfly_count,
+                    std::size_t{1} << 14,
+                    [&](std::size_t begin,
+                        std::size_t end)
+                    {
+                        for (std::size_t flat = begin;
+                             flat < end;
+                             ++flat)
+                        {
+                            const auto block =
+                                flat / lane_size;
+                            const auto offset =
+                                flat -
+                                block * lane_size;
+                            const auto left =
+                                block *
+                                    (lane_size * 2) +
+                                offset;
+                            const auto right =
+                                left + lane_size;
+                            const auto twiddle_index =
+                                offset *
+                                twiddle_stride;
+                            const auto weight_index =
+                                inverse
+                                    ? size -
+                                          twiddle_index
+                                    : twiddle_index;
+
+                            mcl::Fr product;
+                            mcl::Fr::mul(
+                                product,
+                                values[right],
+                                weights[weight_index]);
+
+                            const auto left_value =
+                                values[left];
+
+                            mcl::Fr::sub(
+                                values[right],
+                                left_value,
+                                product);
+
+                            mcl::Fr::add(
+                                values[left],
+                                left_value,
+                                product);
+                        }
+                    });
+            }
+
+            if (!inverse)
+                return;
+
+            const auto inverse_size =
+                plan->invN_;
+
+            parallel_ranges(
+                size,
+                std::size_t{1} << 16,
+                [&](std::size_t begin,
+                    std::size_t end)
                 {
-                    mcl::Fr odd_scaled;
-                    mcl::Fr::mul(
-                        odd_scaled,
-                        source[index + half_size],
-                        omega_power);
-                    mcl::Fr::add(
-                        output[index], source[index], odd_scaled);
-                    mcl::Fr::sub(
-                        output[index + half_size],
-                        source[index],
-                        odd_scaled);
-                    mcl::Fr::mul(
-                        omega_power, omega_power, omega);
-                } });
+                    for (std::size_t index = begin;
+                         index < end;
+                         ++index)
+                    {
+                        mcl::Fr::mul(
+                            values[index],
+                            values[index],
+                            inverse_size);
+                    }
+                });
+        }
+
+        void ntt_in_place_parallel_impl(
+            mcl::Fr *values,
+            std::size_t size,
+            std::size_t transform_workers)
+        {
+            radix2_ntt_in_place_parallel_impl(
+                values,
+                size,
+                transform_workers,
+                false);
         }
 
         void intt_in_place_parallel_impl(
@@ -900,140 +1134,11 @@ namespace gatzk::algebra
             std::size_t size,
             std::size_t transform_workers)
         {
-            constexpr std::size_t kParallelSplitThreshold = 1ULL << 15;
-            if (size < kParallelSplitThreshold || transform_workers < 2)
-            {
-                ntt_plan(size)->intt(values);
-                return;
-            }
-
-            const auto half_size = size / 2;
-            std::vector<mcl::Fr> even(half_size);
-            std::vector<mcl::Fr> odd(half_size);
-
-            const auto lane_worker_count =
-                std::min<std::size_t>({
-                    8,
-                    std::max<std::size_t>(
-                        1,
-                        transform_workers),
-                    std::max<std::size_t>(
-                        1,
-                        (half_size + (1ULL << 18) - 1) / (1ULL << 18)),
-                });
-            const auto parallel_half_ranges =
-                [&](const auto &range_fn)
-            {
-                if (lane_worker_count <= 1)
-                {
-                    range_fn(0, half_size);
-                    return;
-                }
-                const auto chunk_size =
-                    (half_size + lane_worker_count - 1) / lane_worker_count;
-                std::vector<std::future<void>> futures;
-                futures.reserve(lane_worker_count);
-                for (std::size_t worker = 0;
-                     worker < lane_worker_count; ++worker)
-                {
-                    const auto begin = worker * chunk_size;
-                    const auto end = std::min(
-                        half_size, begin + chunk_size);
-                    if (begin >= end)
-                    {
-                        break;
-                    }
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&, begin, end]
-                        {
-                            range_fn(begin, end);
-                        }));
-                }
-                for (auto &future : futures)
-                {
-                    future.get();
-                }
-            };
-            parallel_half_ranges([&](std::size_t begin, std::size_t end)
-                                 {
-                for (std::size_t i = begin; i < end; ++i)
-                {
-                    even[i] = values[2 * i];
-                    odd[i] = values[2 * i + 1];
-                } });
-
-            const auto even_workers = transform_workers / 2;
-            const auto odd_workers = transform_workers - even_workers;
-
-            constexpr std::size_t
-                kRecursiveScratchMaximum =
-                    std::size_t{1} << 22;
-
-            if (size >
-                kRecursiveScratchMaximum)
-            {
-                const auto half_plan =
-                    ntt_plan(
-                        half_size);
-
-                auto even_task =
-                    std::async(
-                        std::launch::async,
-                        [&, half_plan]
-                        {
-                            half_plan->intt(
-                                even.data());
-                        });
-
-                half_plan->intt(
-                    odd.data());
-
-                even_task.get();
-            }
-            else
-            {
-                auto even_task =
-                    std::async(
-                        std::launch::async,
-                        [&]
-                        {
-                            intt_in_place_parallel_impl(
-                                even.data(),
-                                half_size,
-                                even_workers);
-                        });
-
-                intt_in_place_parallel_impl(
-                    odd.data(),
-                    half_size,
-                    odd_workers);
-
-                even_task.get();
-            }
-
-            const auto omega_inverse =
-                FieldElement::root_of_unity(size).inv().native();
-            const auto omega_inverse_field =
-                FieldElement::from_native(omega_inverse);
-            const auto inverse_two = FieldElement(2).inv().native();
-            parallel_half_ranges([&](std::size_t begin, std::size_t end)
-                                 {
-                auto omega_power = omega_inverse_field.pow(begin).native();
-                for (std::size_t i = begin; i < end; ++i)
-                {
-                    mcl::Fr odd_scaled;
-                    mcl::Fr sum;
-                    mcl::Fr difference;
-                    mcl::Fr::mul(odd_scaled, odd[i], omega_power);
-                    mcl::Fr::add(sum, even[i], odd_scaled);
-                    mcl::Fr::sub(difference, even[i], odd_scaled);
-                    mcl::Fr::mul(values[i], sum, inverse_two);
-                    mcl::Fr::mul(
-                        values[i + half_size], difference, inverse_two);
-                    mcl::Fr::mul(
-                        omega_power, omega_power, omega_inverse);
-                } });
+            radix2_ntt_in_place_parallel_impl(
+                values,
+                size,
+                transform_workers,
+                true);
         }
     }
 
@@ -1118,10 +1223,16 @@ namespace gatzk::algebra
             return;
         }
 
-        (void)max_worker_count;
+        const auto transform_workers =
+            std::min<std::size_t>(
+                32,
+                bounded_worker_count(
+                    max_worker_count));
 
-        ntt_plan(size)->ntt(
-            values);
+        ntt_in_place_parallel_impl(
+            values,
+            size,
+            transform_workers);
     }
     void ntt_pair_in_place(
         mcl::Fr *first,
@@ -1151,19 +1262,17 @@ namespace gatzk::algebra
         }
 
         constexpr std::size_t kParallelPairThreshold =
-            1ULL << 15;
+            std::size_t{1} << 15;
 
-        constexpr std::size_t kRecursiveParallelThreshold =
-            1ULL << 18;
-
-        constexpr std::size_t kRecursiveParallelMaximum =
-            1ULL << 24;
+        constexpr std::size_t kStageParallelPairThreshold =
+            std::size_t{1} << 18;
 
         const auto available_workers =
             bounded_worker_count(
                 max_worker_count);
 
-        if (size < kParallelPairThreshold || available_workers < 2)
+        if (size < kParallelPairThreshold ||
+            available_workers < 2)
         {
             const auto plan =
                 ntt_plan(size);
@@ -1174,46 +1283,32 @@ namespace gatzk::algebra
             return;
         }
 
-        if (size >= kRecursiveParallelThreshold && size <= kRecursiveParallelMaximum && available_workers >= 4)
+        if (size >= kStageParallelPairThreshold &&
+            available_workers >= 4)
         {
             const auto per_transform_workers =
                 std::max<std::size_t>(
-                    1,
+                    2,
                     std::min<std::size_t>(
                         16,
                         available_workers / 2));
-
-            auto run_transform =
-                [=](mcl::Fr *values)
-            {
-                // Keep transform scratch scoped to this quotient transform.
-                // A thread_local buffer could retain hundreds of
-                // MiB after quotient materialization and carry that memory
-                // pressure into KZG opening and verification.
-                std::vector<mcl::Fr>
-                    scratch(size);
-
-                ntt_out_of_place_parallel_impl(
-                    values,
-                    scratch.data(),
-                    size,
-                    per_transform_workers);
-
-                std::copy_n(
-                    scratch.data(),
-                    size,
-                    values);
-            };
 
             auto first_task =
                 std::async(
                     std::launch::async,
                     [=]
                     {
-                        run_transform(first);
+                        ntt_in_place_parallel_impl(
+                            first,
+                            size,
+                            per_transform_workers);
                     });
 
-            run_transform(second);
+            ntt_in_place_parallel_impl(
+                second,
+                size,
+                per_transform_workers);
+
             first_task.get();
 
             return;

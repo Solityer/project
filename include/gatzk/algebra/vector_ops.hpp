@@ -80,6 +80,26 @@ namespace gatzk::algebra
         bool first_target_is_zero = false,
         bool second_target_is_zero = false);
 
+    class CudaBatchInverseSession
+    {
+    public:
+        virtual ~CudaBatchInverseSession() = default;
+
+        virtual void *
+        native_stream_handle() = 0;
+
+        virtual void enqueue(
+            const mcl::Fr *input,
+            mcl::Fr *output,
+            std::size_t element_count) = 0;
+
+        virtual void wait() = 0;
+    };
+
+    std::unique_ptr<CudaBatchInverseSession>
+    create_cuda_batch_inverse_session(
+        std::size_t maximum_element_count);
+
     // 返回当前构建与运行环境解析出的代数后端信息。
     AlgebraBackend configured_algebra_backend();
     std::string configured_algebra_backend_name();

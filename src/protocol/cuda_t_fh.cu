@@ -226,17 +226,16 @@ namespace gatzk::protocol
                      slot < kPipelineSlotCount;
                      ++slot)
                 {
-                    status =
-                        cudaStreamCreateWithFlags(
-                            &tile_streams_[slot],
-                            cudaStreamNonBlocking);
+                    inverse_sessions_[slot] =
+                        algebra::
+                            create_cuda_batch_inverse_session(
+                                tile_capacity_);
 
-                    if (status !=
-                        cudaSuccess)
+                    if (inverse_sessions_[slot] ==
+                        nullptr)
                     {
-                        throw_cuda_t_fh_error(
-                            "tile stream creation",
-                            status);
+                        throw std::runtime_error(
+                            "CUDA t_FH failed to create an asynchronous batch inverse session");
                     }
 
                     status =
@@ -303,20 +302,15 @@ namespace gatzk::protocol
                     return;
                 }
 
-                const auto status =
-                    cudaStreamSynchronize(
-                        tile_streams_[slot]);
-
-                if (status !=
-                    cudaSuccess)
+                if (inverse_sessions_[slot] ==
+                    nullptr)
                 {
-                    throw_cuda_t_fh_error(
-                        "tile completion synchronization",
-                        status);
+                    throw std::runtime_error(
+                        "CUDA t_FH pipeline slot has no inverse session");
                 }
 
-                algebra::
-                    record_cuda_stream_sync();
+                inverse_sessions_[slot]
+                    ->wait();
 
                 slot_in_flight_[slot] =
                     false;
@@ -342,6 +336,13 @@ namespace gatzk::protocol
                         "CUDA t_FH pipeline slot reused before completion");
                 }
 
+                if (inverse_sessions_[slot] ==
+                    nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_FH pipeline slot has no inverse session");
+                }
+
                 const auto blocks =
                     static_cast<unsigned>(
                         (tile.count +
@@ -349,7 +350,16 @@ namespace gatzk::protocol
                         kBlockSize);
 
                 const auto stream =
-                    tile_streams_[slot];
+                    reinterpret_cast<
+                        cudaStream_t>(
+                        inverse_sessions_[slot]
+                            ->native_stream_handle());
+
+                if (stream == nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA t_FH inverse session returned a null stream");
+                }
 
                 prepare_boundary_denominator_kernel<<<
                     blocks,
@@ -375,38 +385,19 @@ namespace gatzk::protocol
                         status);
                 }
 
-                status =
-                    cudaStreamSynchronize(
-                        stream);
-
-                if (status !=
-                    cudaSuccess)
-                {
-                    throw_cuda_t_fh_error(
-                        "boundary denominator synchronization",
-                        status);
-                }
-
                 algebra::
                     record_cuda_kernel_invocations(
                         1);
 
-                algebra::
-                    record_cuda_stream_sync();
-
-                if (!algebra::
-                        try_cuda_batch_inverse_native(
-                            reinterpret_cast<
-                                const mcl::Fr *>(
-                                device_boundary_products_[slot]),
-                            reinterpret_cast<
-                                mcl::Fr *>(
-                                device_boundary_inverse_products_[slot]),
-                            tile.count))
-                {
-                    throw std::runtime_error(
-                        "selected CUDA t_FH boundary inverse route was unavailable");
-                }
+                inverse_sessions_[slot]
+                    ->enqueue(
+                        reinterpret_cast<
+                            const mcl::Fr *>(
+                            device_boundary_products_[slot]),
+                        reinterpret_cast<
+                            mcl::Fr *>(
+                            device_boundary_inverse_products_[slot]),
+                        tile.count);
 
                 evaluate_t_fh_kernel<<<
                     blocks,
@@ -605,12 +596,8 @@ namespace gatzk::protocol
                      slot < kPipelineSlotCount;
                      ++slot)
                 {
-                    if (tile_streams_[slot] !=
-                        nullptr)
-                    {
-                        (void)cudaStreamSynchronize(
-                            tile_streams_[slot]);
-                    }
+                    inverse_sessions_[slot]
+                        .reset();
 
                     if (device_boundary_products_[slot] != nullptr)
                     {
@@ -626,16 +613,6 @@ namespace gatzk::protocol
                             device_boundary_inverse_products_[slot]);
 
                         device_boundary_inverse_products_[slot] = nullptr;
-                    }
-
-                    if (tile_streams_[slot] !=
-                        nullptr)
-                    {
-                        (void)cudaStreamDestroy(
-                            tile_streams_[slot]);
-
-                        tile_streams_[slot] =
-                            nullptr;
                     }
 
                     slot_in_flight_[slot] =
@@ -687,11 +664,11 @@ namespace gatzk::protocol
                     nullptr};
 
             std::array<
-                cudaStream_t,
+                std::unique_ptr<
+                    algebra::
+                        CudaBatchInverseSession>,
                 kPipelineSlotCount>
-                tile_streams_{
-                    nullptr,
-                    nullptr};
+                inverse_sessions_{};
 
             std::array<
                 bool,
@@ -730,7 +707,7 @@ namespace gatzk::protocol
 
         const auto tile_scratch_bytes =
             kPipelineSlotCount *
-            2 *
+            4 *
             tile_size *
             sizeof(GpuFr);
         const auto reserve = std::max<std::size_t>(std::size_t{16} << 30, host.effective_total_known ? host.effective_total_bytes / 8 : std::size_t{16} << 30);

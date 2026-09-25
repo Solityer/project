@@ -1049,6 +1049,9 @@ namespace gatzk::algebra
                     &scale,
                     sizeof(gpu_scale.d));
 
+                constexpr unsigned
+                    kBlockSize = 256;
+
                 constexpr std::size_t
                     kMaximumElementsPerLaunch =
                         static_cast<std::size_t>(
@@ -1071,6 +1074,14 @@ namespace gatzk::algebra
                         (current_count +
                          kBlockSize - 1) /
                         kBlockSize;
+
+                    if (block_count_size >
+                        std::numeric_limits<
+                            unsigned>::max())
+                    {
+                        throw std::runtime_error(
+                            "CUDA resident scaled accumulate grid exceeds CUDA launch limits");
+                    }
 
                     auto *target =
                         zero_copy_target_
@@ -4067,12 +4078,345 @@ namespace gatzk::algebra
                     terms[source]);
         }
 
+        class CudaBatchInverseSessionImpl final
+            : public CudaBatchInverseSession
+        {
+        public:
+            explicit CudaBatchInverseSessionImpl(
+                std::size_t maximum_element_count)
+                : maximum_element_count_(
+                      maximum_element_count)
+            {
+                if (maximum_element_count_ == 0)
+                {
+                    throw std::runtime_error(
+                        "CUDA batch inverse session requires a non-zero capacity");
+                }
+
+                if (!workspace_.ensure_product(
+                        maximum_element_count_))
+                {
+                    throw std::runtime_error(
+                        "CUDA batch inverse session workspace allocation failed");
+                }
+
+                const auto status =
+                    cudaHostAlloc(
+                        reinterpret_cast<
+                            void **>(
+                            &host_error_),
+                        sizeof(
+                            unsigned int),
+                        cudaHostAllocPortable);
+
+                if (status != cudaSuccess)
+                {
+                    host_error_ = nullptr;
+
+                    throw_scan_cuda_error(
+                        "batch inverse session host error allocation",
+                        status);
+                }
+
+                *host_error_ = 0;
+            }
+
+            ~CudaBatchInverseSessionImpl()
+                override
+            {
+                if (pending_)
+                {
+                    (void)cudaStreamSynchronize(
+                        workspace_.stream());
+                }
+
+                if (host_error_ != nullptr)
+                {
+                    (void)cudaFreeHost(
+                        host_error_);
+
+                    host_error_ = nullptr;
+                }
+            }
+
+            void *
+            native_stream_handle()
+                override
+            {
+                return reinterpret_cast<
+                    void *>(
+                    workspace_.stream());
+            }
+
+            void enqueue(
+                const mcl::Fr *input,
+                mcl::Fr *output,
+                std::size_t element_count)
+                override
+            {
+                if (pending_)
+                {
+                    throw std::runtime_error(
+                        "CUDA batch inverse session already has an in-flight operation");
+                }
+
+                if (element_count == 0)
+                {
+                    return;
+                }
+
+                if (input == nullptr ||
+                    output == nullptr)
+                {
+                    throw std::runtime_error(
+                        "CUDA batch inverse session received null storage");
+                }
+
+                if (element_count >
+                    maximum_element_count_)
+                {
+                    throw std::runtime_error(
+                        "CUDA batch inverse session input exceeds reserved capacity");
+                }
+
+                const auto block_count_size =
+                    (element_count +
+                     kBarycentricScanBlockSize -
+                     1U) /
+                    kBarycentricScanBlockSize;
+
+                if (block_count_size >
+                    std::numeric_limits<
+                        unsigned>::max())
+                {
+                    throw std::runtime_error(
+                        "CUDA batch inverse session grid exceeds CUDA limits");
+                }
+
+                const auto stream =
+                    workspace_.stream();
+
+                auto *prefixes =
+                    workspace_.prefixes();
+
+                auto *suffixes =
+                    workspace_.suffixes();
+
+                auto *global_inverse =
+                    workspace_.global_inverse();
+
+                auto *error =
+                    workspace_.error();
+
+                auto &scan_levels =
+                    workspace_.scan_levels();
+
+                *host_error_ = 0;
+
+                auto status =
+                    cudaMemsetAsync(
+                        error,
+                        0,
+                        sizeof(
+                            unsigned int),
+                        stream);
+
+                if (status != cudaSuccess)
+                {
+                    throw_scan_cuda_error(
+                        "batch inverse session error reset",
+                        status);
+                }
+
+                const auto *gpu_input =
+                    reinterpret_cast<
+                        const gpu::GpuFr *>(
+                        input);
+
+                auto *gpu_output =
+                    reinterpret_cast<
+                        gpu::GpuFr *>(
+                        output);
+
+                validate_nonzero_kernel<<<
+                    static_cast<unsigned>(
+                        block_count_size),
+                    kBarycentricScanBlockSize,
+                    0,
+                    stream>>>(
+                    gpu_input,
+                    error,
+                    element_count);
+
+                status =
+                    cudaGetLastError();
+
+                if (status != cudaSuccess)
+                {
+                    throw_scan_cuda_error(
+                        "batch inverse session validation launch",
+                        status);
+                }
+
+                std::size_t kernel_count = 1;
+
+                if (!launch_exclusive_product_scan(
+                        gpu_input,
+                        prefixes,
+                        element_count,
+                        false,
+                        scan_levels,
+                        0,
+                        &kernel_count,
+                        stream) ||
+                    !launch_exclusive_product_scan(
+                        gpu_input,
+                        suffixes,
+                        element_count,
+                        true,
+                        scan_levels,
+                        0,
+                        &kernel_count,
+                        stream))
+                {
+                    throw std::runtime_error(
+                        "CUDA batch inverse session scan failed");
+                }
+
+                barycentric_invert_product_kernel<<<
+                    1,
+                    1,
+                    0,
+                    stream>>>(
+                    gpu_input,
+                    prefixes,
+                    global_inverse,
+                    element_count);
+
+                status =
+                    cudaGetLastError();
+
+                if (status != cudaSuccess)
+                {
+                    throw_scan_cuda_error(
+                        "batch inverse session product inversion launch",
+                        status);
+                }
+
+                ++kernel_count;
+
+                inverse_finalize_kernel<<<
+                    static_cast<unsigned>(
+                        block_count_size),
+                    kBarycentricScanBlockSize,
+                    0,
+                    stream>>>(
+                    prefixes,
+                    suffixes,
+                    global_inverse,
+                    gpu_output,
+                    element_count,
+                    false);
+
+                status =
+                    cudaGetLastError();
+
+                if (status != cudaSuccess)
+                {
+                    throw_scan_cuda_error(
+                        "batch inverse session finalize launch",
+                        status);
+                }
+
+                ++kernel_count;
+
+                status =
+                    cudaMemcpyAsync(
+                        host_error_,
+                        error,
+                        sizeof(
+                            unsigned int),
+                        cudaMemcpyDeviceToHost,
+                        stream);
+
+                if (status != cudaSuccess)
+                {
+                    throw_scan_cuda_error(
+                        "batch inverse session error download",
+                        status);
+                }
+
+                record_cuda_kernel_invocations(
+                    kernel_count);
+
+                record_cuda_d2h(
+                    sizeof(
+                        unsigned int));
+
+                pending_ = true;
+            }
+
+            void wait()
+                override
+            {
+                if (!pending_)
+                {
+                    return;
+                }
+
+                const auto status =
+                    cudaStreamSynchronize(
+                        workspace_.stream());
+
+                pending_ = false;
+
+                if (status != cudaSuccess)
+                {
+                    throw_scan_cuda_error(
+                        "batch inverse session synchronization",
+                        status);
+                }
+
+                record_cuda_stream_sync();
+
+                if (*host_error_ != 0)
+                {
+                    throw std::runtime_error(
+                        "CUDA batch inverse session encountered zero");
+                }
+            }
+
+        private:
+            std::size_t maximum_element_count_ = 0;
+
+            PersistentScanWorkspace workspace_;
+
+            unsigned int *host_error_ = nullptr;
+
+            bool pending_ = false;
+        };
+
     } // namespace
 
     void release_cuda_scan_workspace()
     {
         persistent_scan_workspace()
             .release();
+    }
+
+    std::unique_ptr<CudaBatchInverseSession>
+    create_cuda_batch_inverse_session(
+        std::size_t maximum_element_count)
+    {
+        if (maximum_element_count == 0 ||
+            !cuda_backend_unified_addressing_available())
+        {
+            return nullptr;
+        }
+
+        return std::make_unique<
+            CudaBatchInverseSessionImpl>(
+            maximum_element_count);
     }
 
     bool barycentric_weights_gpu(
