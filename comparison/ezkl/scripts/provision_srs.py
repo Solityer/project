@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
-"""Provision the baseline-local official ezkl KZG SRS through native ``get-srs``.
+"""Provision the baseline-local official ezkl KZG SRS from its source contract.
 
-The production SRS path is deliberately owned by the pinned ezkl binary.  This
-script selects the largest public logrows/hash pair exposed by the current
-source, asks that binary to download and authenticate it, rechecks the result,
-and atomically installs one shared cache for all formal datasets.  The
-``gen-srs`` command and operator-supplied files are never accepted here.
+The pinned ezkl source owns the official URL and SHA-256 pair.  This script
+downloads that SRS with resumable standard-library HTTP, authenticates it, and
+atomically installs one shared cache for all formal datasets.  The ``gen-srs``
+command and operator-supplied files are never accepted here.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -32,6 +35,15 @@ MIN_FORMAL_SRS_BYTES = 4096
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HASH_ROW = re.compile(r"\(\s*(\d+)\s*,\s*\"([0-9a-f]{64})\"\s*,")
 URL_ROW = re.compile(r'pub const PUBLIC_SRS_URL:\s*&str\s*=\s*"([^"]+)"\s*;')
+CONTENT_RANGE_ROW = re.compile(r"^bytes (\d+)-(\d+)/(\d+|\*)$", re.IGNORECASE)
+UNSATISFIED_RANGE_ROW = re.compile(r"^bytes \*/(\d+)$", re.IGNORECASE)
+DOWNLOAD_ATTEMPTS = 4
+DOWNLOAD_BACKOFF_SECONDS = 1.0
+DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+class DownloadError(RuntimeError):
+    """A retryable official SRS download failure."""
 
 
 def fail(message: str) -> NoReturn:
@@ -92,71 +104,173 @@ def formal_srs_path(path: Path, label: str) -> Path:
     return path
 
 
-def native_path(path: Path) -> str:
+def response_length(response: Any) -> int | None:
+    value = response.headers.get("Content-Length")
+    if value is None:
+        return None
     try:
-        return path.relative_to(ROOT).as_posix()
-    except ValueError:
-        fail(f"native SRS path escapes baseline: {path}")
+        length = int(value)
+    except ValueError as exc:
+        raise DownloadError(f"invalid Content-Length: {value}") from exc
+    if length < 0:
+        raise DownloadError(f"invalid Content-Length: {value}")
+    return length
 
 
-def native_get_srs(binary: Path, target: Path, logrows: int) -> tuple[bool, str]:
-    command = [
-        str(binary),
-        "get-srs",
-        "--srs-path",
-        native_path(target),
-        "--logrows",
-        str(logrows),
-    ]
-    completed = subprocess.run(
-        command,
-        cwd=ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    output = completed.stdout.strip()
-    if output:
-        print(output)
-    return completed.returncode == 0, output
+def response_range(response: Any) -> tuple[int, int, int | None]:
+    value = response.headers.get("Content-Range", "").strip()
+    match = CONTENT_RANGE_ROW.fullmatch(value)
+    if match is None:
+        raise DownloadError(f"206 response has invalid Content-Range: {value or '<missing>'}")
+    start, end = int(match.group(1)), int(match.group(2))
+    total = None if match.group(3) == "*" else int(match.group(3))
+    if end < start or (total is not None and end >= total):
+        raise DownloadError(f"206 response has invalid Content-Range: {value}")
+    return start, end, total
 
 
-def validate_native_file(path: Path, expected: str) -> int:
-    formal_srs_path(path, "native official SRS")
-    actual = digest(path)
+def sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def download_once(url: str, partial: Path) -> bool:
+    offset = partial.stat().st_size if partial.exists() else 0
+    headers = {"Accept-Encoding": "identity"}
+    if offset:
+        headers["Range"] = f"bytes={offset}-"
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        response = urllib.request.urlopen(request, timeout=60)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 416:
+            value = exc.headers.get("Content-Range", "").strip()
+            match = UNSATISFIED_RANGE_ROW.fullmatch(value)
+            if match is not None and int(match.group(1)) == offset:
+                return True
+        raise DownloadError(f"HTTP {exc.code}: {exc.reason}") from exc
+    except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise DownloadError(str(exc)) from exc
+
+    try:
+        with response:
+            status = response.getcode()
+            total = None
+            if status == 206:
+                start, end, total = response_range(response)
+                if start != offset:
+                    raise DownloadError(f"206 response starts at {start}, expected {offset}")
+                expected_bytes = end - start + 1
+                declared_length = response_length(response)
+                if declared_length is not None and declared_length != expected_bytes:
+                    raise DownloadError(
+                        f"206 Content-Length {declared_length} != Content-Range length {expected_bytes}"
+                    )
+                mode = "ab"
+            elif status == 200:
+                expected_bytes = response_length(response)
+                mode = "wb"
+                offset = 0
+            else:
+                raise DownloadError(f"unexpected HTTP status: {status}")
+
+            received = 0
+            with partial.open(mode) as stream:
+                try:
+                    while True:
+                        if expected_bytes is None:
+                            chunk = response.read(DOWNLOAD_CHUNK_BYTES)
+                            if not chunk:
+                                break
+                        else:
+                            remaining = expected_bytes - received
+                            if remaining == 0:
+                                if response.read(1):
+                                    raise DownloadError("response body exceeds declared length")
+                                break
+                            chunk = response.read(min(DOWNLOAD_CHUNK_BYTES, remaining + 1))
+                            if not chunk:
+                                raise DownloadError(
+                                    f"short response body: received {received} of {expected_bytes} bytes"
+                                )
+                            if len(chunk) > remaining:
+                                stream.write(chunk[:remaining])
+                                received += remaining
+                                raise DownloadError("response body exceeds declared length")
+                        stream.write(chunk)
+                        received += len(chunk)
+                    if expected_bytes is not None and received != expected_bytes:
+                        raise DownloadError(
+                            f"short response body: received {received} of {expected_bytes} bytes"
+                        )
+                    if total is not None and offset + received != total:
+                        raise DownloadError(
+                            f"short range response: reached {offset + received} of {total} bytes"
+                        )
+                finally:
+                    stream.flush()
+                    os.fsync(stream.fileno())
+    except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise DownloadError(str(exc)) from exc
+    return True
+
+
+def install_verified_srs(partial: Path, destination: Path, expected: str, actual: str | None = None) -> tuple[int, str]:
+    formal_srs_path(partial, "downloaded official SRS")
+    actual = digest(partial) if actual is None else actual
     if actual != expected:
-        fail(f"native official SRS digest mismatch: expected {expected}, got {actual}")
-    return path.stat().st_size
+        fail(f"downloaded official SRS digest mismatch: expected {expected}, got {actual}")
+    size = partial.stat().st_size
+    os.replace(partial, destination)
+    sync_directory(destination.parent)
+    formal_srs_path(destination, "native official SRS")
+    return size, actual
 
 
-def install_shared_srs(binary: Path, logrows: int, expected: str) -> tuple[Path, int]:
+def download_official_srs(url: str, partial: Path, destination: Path, expected: str) -> tuple[int, str]:
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            download_once(url, partial)
+            return install_verified_srs(partial, destination, expected)
+        except DownloadError as exc:
+            if attempt == DOWNLOAD_ATTEMPTS:
+                fail(f"official SRS download failed after {attempt} attempts: {exc}")
+            delay = DOWNLOAD_BACKOFF_SECONDS * attempt
+            print(
+                f"official SRS download attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed: {exc}; "
+                f"retrying in {delay:g}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def install_shared_srs(source_url: str, logrows: int, expected: str) -> tuple[Path, int, str]:
     SRS_ROOT.mkdir(parents=True, exist_ok=True)
     destination = SRS_ROOT / f"kzg{logrows}.srs"
     if destination.is_symlink() or (destination.exists() and not destination.is_file()):
         fail(f"shared native SRS destination is not a regular file: {destination}")
 
     if destination.exists():
-        valid, _ = native_get_srs(binary, destination, logrows)
-        if valid:
-            size = validate_native_file(destination, expected)
-            return destination, size
+        if destination.stat().st_size >= MIN_FORMAL_SRS_BYTES:
+            actual = digest(destination)
+            if actual == expected:
+                formal_srs_path(destination, "native official SRS")
+                return destination, destination.stat().st_size, actual
 
-    fd, temporary_name = tempfile.mkstemp(prefix=f".kzg{logrows}.", suffix=".native-get-srs", dir=SRS_ROOT)
-    os.close(fd)
-    temporary = Path(temporary_name)
-    temporary.unlink()
-    try:
-        valid, _ = native_get_srs(binary, temporary, logrows)
-        if not valid:
-            fail("native get-srs failed; official SRS was not installed")
-        size = validate_native_file(temporary, expected)
-        os.replace(temporary, destination)
-        size = validate_native_file(destination, expected)
-        return destination, size
-    finally:
-        if temporary.exists() or temporary.is_symlink():
-            temporary.unlink()
+    partial = SRS_ROOT / f".kzg{logrows}.srs.partial"
+    if partial.is_symlink() or (partial.exists() and not partial.is_file()):
+        fail(f"SRS partial path is not a regular file: {partial}")
+    if partial.exists() and partial.stat().st_size >= MIN_FORMAL_SRS_BYTES:
+        actual = digest(partial)
+        if actual == expected:
+            size, actual = install_verified_srs(partial, destination, expected, actual)
+            return destination, size, actual
+    size, actual = download_official_srs(f"{source_url}{logrows}.srs", partial, destination, expected)
+    return destination, size, actual
 
 
 def atomic_write(path: Path, value: dict[str, Any]) -> None:
@@ -268,10 +382,9 @@ def refresh_resource_identity() -> None:
 def main(args: argparse.Namespace) -> int:
     if any(flag in sys.argv[1:] for flag in ("--source", "--sha256", "--dataset", "--replace", "gen-srs")):
         fail("manual SRS source/hash and dummy gen-srs inputs are forbidden")
-    binary = local_binary(args.binary)
+    local_binary(args.binary)
     source_url, logrows, expected = source_contract()
-    destination, size = install_shared_srs(binary, logrows, expected)
-    actual = digest(destination)
+    destination, size, actual = install_shared_srs(source_url, logrows, expected)
     relative = destination.relative_to(ROOT).as_posix()
     srs_id = f"official_ezkl_native_shared_kzg{logrows}_srs"
     source_object = {
