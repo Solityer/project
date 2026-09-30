@@ -409,9 +409,11 @@ def validate_registry(root: Path, values: dict[str, str], srs: Path,
         version = tensor.get("segment_binding_version")
         segment_size = tensor.get("segment_size")
         segment_count = tensor.get("segment_count")
+        expected_segment_size = min(domain, NATIVE_BASIS_DOMAIN)
         if (version != 1 or not isinstance(segment_size, int) or segment_size < 1 or
-                segment_size & (segment_size - 1) or not isinstance(segment_count, int) or
-                segment_count < 1 or segment_size * segment_count != domain):
+                segment_size & (segment_size - 1) or segment_size != expected_segment_size or
+                not isinstance(segment_count, int) or segment_count < 1 or
+                segment_count != (domain + segment_size - 1) // segment_size):
             fail(f"model tensor segment layout is not canonical: {tensor_id}")
         srs_manifest_digest = required_digest(tensor, "srs_manifest_digest", "model tensor")
         basis_digest = required_digest(tensor, "basis_digest", "model tensor")

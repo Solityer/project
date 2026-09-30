@@ -1344,8 +1344,10 @@ bool load_authenticated_model_registry(const Config& config,
             segment_size == 0U || segment_size > std::numeric_limits<std::uint32_t>::max() ||
             !power_of_two(segment_size) || segment_count == 0U ||
             segment_count > std::numeric_limits<std::uint32_t>::max() ||
-            segment_size > std::numeric_limits<std::uint32_t>::max() / segment_count ||
-            segment_size * segment_count != domain ||
+            segment_size > srs.basis_domain ||
+            segment_size != std::min<std::uint64_t>(domain, srs.basis_domain) ||
+            segment_count !=
+                (domain + segment_size - 1U) / segment_size ||
             !json_string_field(object, "srs_manifest_digest", srs_manifest_text) ||
             !json_string_field(object, "basis_digest", basis_text) ||
             !json_string_field(object, "segment_commitment_digest", vector_digest_text) ||

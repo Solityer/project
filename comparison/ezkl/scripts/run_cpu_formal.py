@@ -84,7 +84,9 @@ def main(args: argparse.Namespace) -> int:
         [python, local_cli(resource_validator, "resource validator"), "--require-complete"],
         "require complete authenticated resources",
     )
-    run([local_cli(build, "build script"), "--cpu"], "build official ezkl CPU binary")
+    # Invoke the checked-in shell entrypoint through bash so the formal runner
+    # remains usable when a source checkout does not preserve executable bits.
+    run(["bash", local_cli(build, "build script"), "--cpu"], "build official ezkl CPU binary")
 
     # The native binary is now source-matched to the code used by the build.
     # provision_srs.py parses the native PUBLIC_SRS_SHA256_HASHES table, uses

@@ -62,7 +62,7 @@
               "padded_shape": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}},
               "commitment": {"type": "string", "pattern": "^[0-9a-f]{96}$"},
               "segment_binding_version": {"const": 1},
-              "segment_size": {"type": "integer", "minimum": 1},
+              "segment_size": {"type": "integer", "minimum": 1, "description": "Per-tensor authenticated prefix capacity; the native reader requires min(domain_size, common SRS basis_domain)."},
               "segment_count": {"type": "integer", "minimum": 1},
               "srs_manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
               "basis_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

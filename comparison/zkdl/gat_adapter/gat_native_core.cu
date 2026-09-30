@@ -427,11 +427,30 @@ bool resource_admission(const Config& config, const NativeRelationWitness& witne
         const AuthenticatedSrsResource::Chunk* selected = nullptr;
         if (!select_authenticated_srs_chunk(
                 &srs, expected.tensor_id, expected.domain_size, &selected, error) ||
-            selected == nullptr || selected->segment_size != expected.segment_size ||
-            selected->segment_count != expected.segment_count ||
-            selected->basis_digest != srs.basis_digest ||
-            selected->generator_digest != digest_hex(srs.generator_digest) ||
-            selected->segments.size() != expected.segment_commitments.size()) {
+            selected == nullptr) {
+            if (error && error->empty())
+                *error = "BLOCKED: model registry segment layout is not covered by authenticated SRS";
+            return false;
+        }
+        // A model tensor may use the exact prefix required by its logical
+        // domain.  The selected SRS chunk, however, is the shared public
+        // frame and therefore always exposes the complete basis_domain.  Do
+        // not compare those two capacities as if they were the same field.
+        // The prefix remains authenticated below by the decoded common frame
+        // and its independently recomputed IPA digest.
+        const std::uint64_t expected_segment_size =
+            std::min<std::uint64_t>(expected.domain_size, srs.basis_domain);
+        const std::uint64_t expected_segment_count =
+            (expected.domain_size + expected_segment_size - 1U) / expected_segment_size;
+        const bool common_chunk_valid =
+            selected->segment_size == srs.basis_domain &&
+            selected->basis_digest == srs.basis_digest &&
+            selected->generator_digest == digest_hex(srs.generator_digest) &&
+            selected->generators.size() >= srs.basis_domain &&
+            selected->blinding_generator.size() == kNativeG1WireBytes &&
+            selected->u_generator.size() == kNativeG1WireBytes;
+        if (expected.segment_size != expected_segment_size ||
+            expected.segment_count != expected_segment_count || !common_chunk_valid) {
             if (error && error->empty())
                 *error = "BLOCKED: model registry segment layout is not covered by authenticated SRS";
             return false;
@@ -446,11 +465,15 @@ bool resource_admission(const Config& config, const NativeRelationWitness& witne
         for (std::size_t segment_index = 0U;
              segment_index < expected.segment_commitments.size(); ++segment_index) {
             const auto& declared = expected.segment_commitments[segment_index];
-            const auto& authenticated = selected->segments[segment_index];
-            if (authenticated.segment_index != declared.segment_index ||
-                authenticated.logical_offset != declared.logical_offset ||
-                authenticated.actual_length != declared.actual_length ||
-                authenticated.padded_length != declared.padded_length ||
+            const std::uint64_t expected_offset =
+                static_cast<std::uint64_t>(segment_index) * expected.segment_size;
+            const std::uint32_t expected_actual = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(expected.segment_size,
+                                        expected.domain_size - expected_offset));
+            if (declared.segment_index != segment_index ||
+                declared.logical_offset != expected_offset ||
+                declared.actual_length != expected_actual ||
+                declared.padded_length != expected.segment_size ||
                 declared.frame_digest != authenticated_frame_digest) {
                 if (error) *error = "BLOCKED: model registry segment metadata/frame is not SRS-bound";
                 return false;

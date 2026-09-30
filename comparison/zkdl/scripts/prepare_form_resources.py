@@ -918,7 +918,14 @@ def load_srs_basis(root: Path, values: dict[str, str], required_domain: int) -> 
     basis_domain = selected.get("basis_domain")
     if not isinstance(basis_domain, int) or basis_domain < 1 or basis_domain & (basis_domain - 1):
         die("installed local SRS default chunk has no canonical basis_domain")
-    generators = read_srs_frame_prefix(srs_dir, selected.get("G"), "G", min(required_domain, basis_domain))
+    # Model registry entries carry the IPA digest of the complete common
+    # authenticated basis, even when an individual tensor uses only a shorter
+    # legal prefix.  Read that complete frame here; taking only the largest
+    # model-domain prefix would produce a digest for a different basis than
+    # the native prover/verifier resource.
+    generators = read_srs_frame_prefix(srs_dir, selected.get("G"), "G", basis_domain)
+    if len(generators) != basis_domain:
+        die("installed local SRS common G frame does not cover its basis_domain")
     h_points = read_srs_frame_prefix(srs_dir, selected.get("H"), "H", 1)
     u_points = read_srs_frame_prefix(srs_dir, selected.get("U"), "U", 1)
     generator_digest = selected.get("generator_digest")

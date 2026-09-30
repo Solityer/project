@@ -3341,9 +3341,17 @@ bool prove_masked_gkr_transcript(
                     coefficients.size() == 5 && coefficients[3].isZero() &&
                     coefficients[4].isZero();
                 phase1_spec.unmasked_fixed_values = {F_ZERO, F_ZERO};
-                const ScalarOpening zero_opening =
-                    zkgpt::native_pedersen::commit_fresh(
-                        basis, F_ZERO, fast_path);
+                // Fixed V=(0,0) is a public constant, so both the masked and
+                // unmasked terminal bindings must use the canonical
+                // zero-value/zero-blinder commitment expected by the
+                // independent verifier.  Keep this public identity opening
+                // off the fast path: the fast-path operand guard requires a
+                // non-identity commitment, while the ordinary native
+                // Pedersen relation still proves this opening completely.
+                const ScalarOpening zero_opening{
+                    zkgpt::native_pedersen::commit(
+                        basis, F_ZERO, F_ZERO),
+                    F_ZERO, F_ZERO, nullptr};
                 phase1_spec.fixed_openings = {
                     zero_opening, zero_opening};
                 phase1_spec.unmasked_fixed_openings = {zero_opening, zero_opening};
@@ -3811,8 +3819,12 @@ bool verify_masked_gkr_transcript(
                     static_cast<std::uint32_t>(shape.inner));
                 const std::size_t k = ceilPow2BitLength(
                     static_cast<std::uint32_t>(shape.cols));
-                if (r_u[layer_id + 1].size() < n + k)
+                if (r_u[layer_id + 1].size() < n + k) {
+                    masked_set_reason(
+                        reason,
+                        "masked GKR FCONN predecessor point has the wrong dimension");
                     return false;
+                }
                 r_u[layer_id].assign(m + n, F_ZERO);
                 r_v[layer_id].assign(m + k, F_ZERO);
                 for (std::size_t bit = m; bit < m + n; ++bit)
@@ -3910,7 +3922,6 @@ bool verify_masked_gkr_transcript(
                 previous_lane_active = false;
                 continue;
             }
-            if (current.max_bl_u == 0) return false;
             const std::string phase1_label = prefix + "/phase1";
             NativeMaskedSumcheckResult phase1_result;
             NativeMaskedTerminalSpec phase1_spec;

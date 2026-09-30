@@ -1,7 +1,7 @@
 {
   "backends": {
     "cpu": {
-      "blocker": "formal adapter smoke failed with 1; partial diagnostics: /home/pzh/project/comparison/zkGPT/results/.formal-preflight-i0r9p6nb",
+      "blocker": "formal adapter smoke timed out after 120s; partial diagnostics: /home/pzh/project/comparison/zkGPT/results/.formal-preflight-7__9_cy7",
       "capabilities": {
         "independent": true,
         "masked_full": true,
@@ -13,21 +13,21 @@
       "formal_backend_supported": true,
       "prover": "build/cpu/gat_adapter/zkgpt_gat_prover",
       "prover_fingerprint": {
-        "mtime_ns": 1790170892657580475,
-        "sha256": "362a569eb35f67ec8388c00f4585ffa247083a23ad9f613ccf47b38565fa3bbe",
-        "size_bytes": 2732912
+        "mtime_ns": 1790756536719592217,
+        "sha256": "f15b53105fbcb03e898e417612873dab82cae416fbb0ee799c9bba28854ff12e",
+        "size_bytes": 2732728
       },
       "ready": false,
       "verifier": "build/cpu/gat_adapter/zkgpt_gat_verifier",
       "verifier_fingerprint": {
-        "mtime_ns": 1790170892835584155,
-        "sha256": "b7445afe052a8b279bbac811fe6ec07fc0d8c44c97b4f0a2ccb634b2969f4345",
-        "size_bytes": 2665832
+        "mtime_ns": 1790756536888590642,
+        "sha256": "8fd36657d85055f6640db2b68f1003e65498036670fe9e071b3b5d1d17f0183c",
+        "size_bytes": 2665544
       }
     }
   },
   "blockers": [
-    "formal adapter smoke failed with 1; partial diagnostics: /home/pzh/project/comparison/zkGPT/results/.formal-preflight-i0r9p6nb"
+    "formal adapter smoke timed out after 120s; partial diagnostics: /home/pzh/project/comparison/zkGPT/results/.formal-preflight-7__9_cy7"
   ],
   "capacity": {},
   "formal_datasets_started": false,
