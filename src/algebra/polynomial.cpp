@@ -22,12 +22,8 @@ namespace gatzk::algebra
     namespace
     {
         // 用于并行计算时拆分区间 [begin, end)
-        FieldElement barycentric_sum_range(
-            const std::vector<FieldElement> &values,
-            const std::vector<FieldElement> &domain_points,
-            const FieldElement &x,
-            std::size_t begin,
-            std::size_t end)
+        FieldElement barycentric_sum_range(const std::vector<FieldElement> &values, const std::vector<FieldElement> &domain_points, const FieldElement &x,
+                                           std::size_t begin, std::size_t end)
         {
             FieldElement sum = FieldElement::zero();
             for (std::size_t i = begin; i < end; ++i)
@@ -132,13 +128,9 @@ namespace gatzk::algebra
         {
             throw std::out_of_range("Lagrange basis index exceeds domain size");
         }
-        if (const auto point_index = rotation_shift(
-                FieldElement::one(), x);
-            point_index.has_value())
+        if (const auto point_index = rotation_shift(FieldElement::one(), x); point_index.has_value())
         {
-            return *point_index == index
-                       ? FieldElement::one()
-                       : FieldElement::zero();
+            return *point_index == index ? FieldElement::one() : FieldElement::zero();
         }
         const FieldElement xi = point_at(index);
         const FieldElement numerator = zero_polynomial_eval(x) * xi;
@@ -165,10 +157,7 @@ namespace gatzk::algebra
             uint64_t x_limbs[4] = {xu[0], xu[1], xu[2], xu[3]};
             uint64_t zero_eval_limbs[4] = {zu[0], zu[1], zu[2], zu[3]};
             uint64_t inv_n_limbs[4] = {nu[0], nu[1], nu[2], nu[3]};
-            const bool gpu_ok = barycentric_weights_gpu(
-                omega_limbs, x_limbs, zero_eval_limbs, inv_n_limbs,
-                reinterpret_cast<uint64_t *>(weights.data()),
-                size);
+            const bool gpu_ok = barycentric_weights_gpu(omega_limbs, x_limbs, zero_eval_limbs, inv_n_limbs, reinterpret_cast<uint64_t *>(weights.data()), size);
             if (gpu_ok)
             {
                 return weights;
@@ -177,8 +166,7 @@ namespace gatzk::algebra
         }
 
         const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        const bool use_parallel =
-            route2.parallel_fft && size >= (1ULL << 20) && cpu_count > 1;
+        const bool use_parallel = route2.parallel_fft && size >= (1ULL << 20) && cpu_count > 1;
 
         if (!use_parallel)
         {
@@ -225,8 +213,7 @@ namespace gatzk::algebra
         // --- 并行实现：分段批量求逆 ---
         // 数学上仍然是在还原每个 `(x - omega^i)^{-1}`，只是把前后缀乘积拆到多线程执行。
 
-        const std::size_t task_count =
-            std::min<std::size_t>(cpu_count, (size + (1ULL << 20) - 1) / (1ULL << 20));
+        const std::size_t task_count = std::min<std::size_t>(cpu_count, (size + (1ULL << 20) - 1) / (1ULL << 20));
         const std::size_t chunk_size = (size + task_count - 1) / task_count;
 
         std::vector<mcl::Fr> denominators(size);
@@ -244,32 +231,29 @@ namespace gatzk::algebra
             futures.reserve(task_count);
             for (std::size_t task = 0; task < task_count; ++task)
             {
-                futures.push_back(std::async(
-                    std::launch::async,
-                    [&, task]()
-                    {
-                        const std::size_t begin = task * chunk_size;
-                        const std::size_t end = std::min(size, begin + chunk_size);
-                        FieldElement omega_power = points_precomputed
-                                                       ? FieldElement::zero()
-                                                       : omega.pow(static_cast<std::uint64_t>(begin));
+                futures.push_back(std::async(std::launch::async,
+                                             [&, task]()
+                                             {
+                                                 const std::size_t begin = task * chunk_size;
+                                                 const std::size_t end = std::min(size, begin + chunk_size);
+                                                 FieldElement omega_power =
+                                                     points_precomputed ? FieldElement::zero() : omega.pow(static_cast<std::uint64_t>(begin));
 
-                        mcl::Fr acc;
-                        acc = mcl::Fr(1);
-                        for (std::size_t i = begin; i < end; ++i)
-                        {
-                            const auto current_pt =
-                                points_precomputed ? points[i].native() : omega_power.native();
-                            mcl::Fr::sub(denominators[i], x.native(), current_pt);
-                            prefix_within[i] = acc;
-                            mcl::Fr::mul(acc, acc, denominators[i]);
-                            if (!points_precomputed)
-                            {
-                                omega_power *= omega;
-                            }
-                        }
-                        chunk_products[task] = acc;
-                    }));
+                                                 mcl::Fr acc;
+                                                 acc = mcl::Fr(1);
+                                                 for (std::size_t i = begin; i < end; ++i)
+                                                 {
+                                                     const auto current_pt = points_precomputed ? points[i].native() : omega_power.native();
+                                                     mcl::Fr::sub(denominators[i], x.native(), current_pt);
+                                                     prefix_within[i] = acc;
+                                                     mcl::Fr::mul(acc, acc, denominators[i]);
+                                                     if (!points_precomputed)
+                                                     {
+                                                         omega_power *= omega;
+                                                     }
+                                                 }
+                                                 chunk_products[task] = acc;
+                                             }));
             }
             for (auto &f : futures)
             {
@@ -309,46 +293,43 @@ namespace gatzk::algebra
             futures.reserve(task_count);
             for (std::size_t task = 0; task < task_count; ++task)
             {
-                futures.push_back(std::async(
-                    std::launch::async,
-                    [&, task]()
-                    {
-                        const std::size_t begin = task * chunk_size;
-                        const std::size_t end = std::min(size, begin + chunk_size);
-                        if (begin >= end)
-                        {
-                            return;
-                        }
-                        // 非预计算域需要从段末尾开始倒推 `omega^i`。
-                        FieldElement omega_power = points_precomputed
-                                                       ? FieldElement::zero()
-                                                       : omega.pow(static_cast<std::uint64_t>(end - 1));
+                futures.push_back(std::async(std::launch::async,
+                                             [&, task]()
+                                             {
+                                                 const std::size_t begin = task * chunk_size;
+                                                 const std::size_t end = std::min(size, begin + chunk_size);
+                                                 if (begin >= end)
+                                                 {
+                                                     return;
+                                                 }
+                                                 // 非预计算域需要从段末尾开始倒推 `omega^i`。
+                                                 FieldElement omega_power =
+                                                     points_precomputed ? FieldElement::zero() : omega.pow(static_cast<std::uint64_t>(end - 1));
 
-                        mcl::Fr running_suffix;
-                        running_suffix = mcl::Fr(1); // 表示段内后缀积 `∏_{j=i+1}^{end-1} d[j]`
+                                                 mcl::Fr running_suffix;
+                                                 running_suffix = mcl::Fr(1); // 表示段内后缀积 `∏_{j=i+1}^{end-1} d[j]`
 
-                        for (std::size_t i = end; i-- > begin;)
-                        {
-                            // 还原当前分母的逆元。
-                            mcl::Fr inv_d;
-                            mcl::Fr::mul(inv_d, chunk_outer_inv[task], prefix_within[i]);
-                            mcl::Fr::mul(inv_d, inv_d, running_suffix);
+                                                 for (std::size_t i = end; i-- > begin;)
+                                                 {
+                                                     // 还原当前分母的逆元。
+                                                     mcl::Fr inv_d;
+                                                     mcl::Fr::mul(inv_d, chunk_outer_inv[task], prefix_within[i]);
+                                                     mcl::Fr::mul(inv_d, inv_d, running_suffix);
 
-                            // 写出与 formal 主线一致的 barycentric 权重。
-                            const auto scaled_pt = points_precomputed
-                                                       ? points_scaled_by_inv_size[i].native()
-                                                       : (omega_power * inv_size).native();
-                            mcl::Fr::mul(weights[i], zero_eval, scaled_pt);
-                            mcl::Fr::mul(weights[i], weights[i], inv_d);
+                                                     // 写出与 formal 主线一致的 barycentric 权重。
+                                                     const auto scaled_pt =
+                                                         points_precomputed ? points_scaled_by_inv_size[i].native() : (omega_power * inv_size).native();
+                                                     mcl::Fr::mul(weights[i], zero_eval, scaled_pt);
+                                                     mcl::Fr::mul(weights[i], weights[i], inv_d);
 
-                            // 更新段内后缀积和 `omega^i`。
-                            mcl::Fr::mul(running_suffix, running_suffix, denominators[i]);
-                            if (!points_precomputed && i > begin)
-                            {
-                                omega_power *= omega_inv;
-                            }
-                        }
-                    }));
+                                                     // 更新段内后缀积和 `omega^i`。
+                                                     mcl::Fr::mul(running_suffix, running_suffix, denominators[i]);
+                                                     if (!points_precomputed && i > begin)
+                                                     {
+                                                         omega_power *= omega_inv;
+                                                     }
+                                                 }
+                                             }));
             }
             for (auto &f : futures)
             {
@@ -371,9 +352,7 @@ namespace gatzk::algebra
     }
 
     // 给定域中两点from和to，返回满足 to = from * omega^shift 的shift值
-    std::optional<std::size_t> RootOfUnityDomain::rotation_shift(
-        const FieldElement &from,
-        const FieldElement &to) const
+    std::optional<std::size_t> RootOfUnityDomain::rotation_shift(const FieldElement &from, const FieldElement &to) const
     {
         if (from.is_zero() || to.is_zero())
         {
@@ -414,10 +393,7 @@ namespace gatzk::algebra
     }
 
     // 从求值列表创建多项式（基为求值形式），必须提供匹配的单位根域
-    Polynomial Polynomial::from_evaluations(
-        const std::string &name,
-        std::vector<FieldElement> evaluations,
-        const std::shared_ptr<RootOfUnityDomain> &domain)
+    Polynomial Polynomial::from_evaluations(const std::string &name, std::vector<FieldElement> evaluations, const std::shared_ptr<RootOfUnityDomain> &domain)
     {
         if (domain == nullptr || evaluations.size() > domain->size)
         {
@@ -431,10 +407,8 @@ namespace gatzk::algebra
         return out;
     }
 
-    Polynomial Polynomial::from_shared_evaluations(
-        const std::string &name,
-        std::shared_ptr<const std::vector<FieldElement>> evaluations,
-        const std::shared_ptr<RootOfUnityDomain> &domain)
+    Polynomial Polynomial::from_shared_evaluations(const std::string &name, std::shared_ptr<const std::vector<FieldElement>> evaluations,
+                                                   const std::shared_ptr<RootOfUnityDomain> &domain)
     {
         if (domain == nullptr || evaluations == nullptr || evaluations->size() > domain->size)
         {
@@ -476,8 +450,7 @@ namespace gatzk::algebra
             throw std::runtime_error("evaluation polynomial exceeds its domain");
         if (source.empty())
             return FieldElement::zero();
-        if (const auto index = domain->rotation_shift(FieldElement::one(), x);
-            index.has_value())
+        if (const auto index = domain->rotation_shift(FieldElement::one(), x); index.has_value())
             return *index < source.size() ? source[*index] : FieldElement::zero();
 
         const auto scale = domain->zero_polynomial_eval(x) * domain->inv_size;
@@ -490,13 +463,9 @@ namespace gatzk::algebra
         constexpr std::size_t grain = std::size_t{1} << 14;
         const auto blocks = source.size() / grain + (source.size() % grain != 0);
         const auto hardware = std::max(1U, std::thread::hardware_concurrency());
-        const auto workers = util::route2_options().parallel_fft
-                                 ? std::min<std::size_t>(blocks, hardware)
-                                 : std::size_t{1};
+        const auto workers = util::route2_options().parallel_fft ? std::min<std::size_t>(blocks, hardware) : std::size_t{1};
         const auto *input = FieldElement::native_array_data(source.data());
-        const auto *points = domain->points_precomputed
-                                 ? FieldElement::native_array_data(domain->points.data())
-                                 : nullptr;
+        const auto *points = domain->points_precomputed ? FieldElement::native_array_data(domain->points.data()) : nullptr;
         const auto omega_inverse = domain->omega.inv();
         std::vector<FieldElement> partial(blocks, FieldElement::zero());
         std::atomic<std::size_t> next{0};
@@ -592,9 +561,7 @@ namespace gatzk::algebra
     }
 
     // 霍纳方法求多项式值：系数从高次到低次存储
-    FieldElement horner(
-        const std::vector<FieldElement> &coefficients,
-        const FieldElement &x)
+    FieldElement horner(const std::vector<FieldElement> &coefficients, const FieldElement &x)
     {
         if (coefficients.empty())
         {
@@ -602,8 +569,7 @@ namespace gatzk::algebra
         }
         constexpr std::size_t kBlockElements = std::size_t{1} << 16;
         constexpr std::size_t kParallelElements = std::size_t{1} << 19;
-        const auto hardware = std::max<std::size_t>(
-            1, std::thread::hardware_concurrency());
+        const auto hardware = std::max<std::size_t>(1, std::thread::hardware_concurrency());
         const auto *input = FieldElement::native_array_data(coefficients.data());
         const auto &point = x.native();
 
@@ -619,38 +585,35 @@ namespace gatzk::algebra
             return FieldElement::from_native(value);
         };
 
-        if (!util::route2_options().parallel_fft ||
-            coefficients.size() < kParallelElements || hardware == 1)
+        if (!util::route2_options().parallel_fft || coefficients.size() < kParallelElements || hardware == 1)
         {
             return evaluate_block(0, coefficients.size());
         }
 
-        const auto block_count =
-            1 + (coefficients.size() - 1) / kBlockElements;
+        const auto block_count = 1 + (coefficients.size() - 1) / kBlockElements;
         const auto worker_count = std::min(hardware, block_count);
-        std::vector<FieldElement> partial(
-            block_count, FieldElement::zero());
+        std::vector<FieldElement> partial(block_count, FieldElement::zero());
         std::vector<std::future<void>> futures;
         futures.reserve(worker_count);
 
         std::atomic<std::size_t> next_block{0};
         for (std::size_t worker = 0; worker < worker_count; ++worker)
         {
-            futures.push_back(std::async(std::launch::async, [&]()
+            futures.push_back(std::async(std::launch::async,
+                                         [&]()
                                          {
-                while (true)
-                {
-                    const auto block = next_block.fetch_add(
-                        1, std::memory_order_relaxed);
-                    if (block >= block_count)
-                    {
-                        break;
-                    }
-                    const auto begin = block * kBlockElements;
-                    const auto count = std::min(
-                        kBlockElements, coefficients.size() - begin);
-                    partial[block] = evaluate_block(begin, begin + count);
-                } }));
+                                             while (true)
+                                             {
+                                                 const auto block = next_block.fetch_add(1, std::memory_order_relaxed);
+                                                 if (block >= block_count)
+                                                 {
+                                                     break;
+                                                 }
+                                                 const auto begin = block * kBlockElements;
+                                                 const auto count = std::min(kBlockElements, coefficients.size() - begin);
+                                                 partial[block] = evaluate_block(begin, begin + count);
+                                             }
+                                         }));
         }
         for (auto &future : futures)
         {
@@ -668,10 +631,7 @@ namespace gatzk::algebra
     }
 
     // 拉格朗日插值：给定点集points和对应函数值values，计算在x处的插值结果
-    FieldElement interpolate_at(
-        const std::vector<FieldElement> &points,
-        const std::vector<FieldElement> &values,
-        const FieldElement &x)
+    FieldElement interpolate_at(const std::vector<FieldElement> &points, const std::vector<FieldElement> &values, const FieldElement &x)
     {
         if (points.size() != values.size())
         {
@@ -702,14 +662,11 @@ namespace gatzk::algebra
         return total;
     }
 
-    std::vector<FieldElement> materialize_blinded_coefficients(
-        const Polynomial &polynomial,
-        std::size_t configured_degree)
+    std::vector<FieldElement> materialize_blinded_coefficients(const Polynomial &polynomial, std::size_t configured_degree)
     {
         if (configured_degree == std::numeric_limits<std::size_t>::max())
         {
-            throw std::runtime_error(
-                "configured polynomial degree overflows coefficient length");
+            throw std::runtime_error("configured polynomial degree overflows coefficient length");
         }
         const auto configured_length = configured_degree + 1;
         const auto &source = polynomial.values();
@@ -718,49 +675,36 @@ namespace gatzk::algebra
         {
             if (source.size() > configured_length)
             {
-                throw std::runtime_error(
-                    "coefficient polynomial exceeds configured shift degree: " +
-                    polynomial.name);
+                throw std::runtime_error("coefficient polynomial exceeds configured shift degree: " + polynomial.name);
             }
             if (!polynomial.zero_domain_blinder.empty())
             {
-                throw std::runtime_error(
-                    "coefficient polynomial cannot carry a domain-vanishing blinder: " +
-                    polynomial.name);
+                throw std::runtime_error("coefficient polynomial cannot carry a domain-vanishing blinder: " + polynomial.name);
             }
-            std::vector<FieldElement> out(
-                configured_length, FieldElement::zero());
+            std::vector<FieldElement> out(configured_length, FieldElement::zero());
             std::copy(source.begin(), source.end(), out.begin());
             return out;
         }
 
         if (polynomial.domain == nullptr)
         {
-            throw std::runtime_error(
-                "evaluation polynomial is missing its domain during coefficient materialization: " +
-                polynomial.name);
+            throw std::runtime_error("evaluation polynomial is missing its domain during coefficient materialization: " + polynomial.name);
         }
         const auto n = polynomial.domain->size;
         if (source.size() > n || n > configured_length)
         {
-            throw std::runtime_error(
-                "evaluation polynomial exceeds configured shift degree: " +
-                polynomial.name);
+            throw std::runtime_error("evaluation polynomial exceeds configured shift degree: " + polynomial.name);
         }
         if (polynomial.zero_domain_blinder.size() > configured_length - n)
         {
-            throw std::runtime_error(
-                "domain-vanishing blinder exceeds configured shift degree: " +
-                polynomial.name);
+            throw std::runtime_error("domain-vanishing blinder exceeds configured shift degree: " + polynomial.name);
         }
 
         // The final buffer owns both the interpolant and its registered tail.
         // Transform only the first n entries; never transform the blinder.
-        std::vector<FieldElement> out(
-            configured_length, FieldElement::zero());
+        std::vector<FieldElement> out(configured_length, FieldElement::zero());
         std::copy(source.begin(), source.end(), out.begin());
-        intt_in_place(
-            FieldElement::mutable_native_array_data(out.data()), n);
+        intt_in_place(FieldElement::mutable_native_array_data(out.data()), n);
 
         for (std::size_t i = 0; i < polynomial.zero_domain_blinder.size(); ++i)
         {
@@ -772,15 +716,12 @@ namespace gatzk::algebra
 
     namespace
     {
-        template <typename Fn>
-        void taylor_parallel_ranges(std::size_t count, Fn &&fn)
+        template <typename Fn> void taylor_parallel_ranges(std::size_t count, Fn &&fn)
         {
             constexpr std::size_t grain = std::size_t{1} << 15;
             const auto blocks = count / grain + (count % grain != 0);
-            const auto workers = util::route2_options().parallel_fft
-                                     ? std::min<std::size_t>(
-                                           blocks, std::max(1U, std::thread::hardware_concurrency()))
-                                     : std::size_t{1};
+            const auto workers =
+                util::route2_options().parallel_fft ? std::min<std::size_t>(blocks, std::max(1U, std::thread::hardware_concurrency())) : std::size_t{1};
             if (workers <= 1)
             {
                 fn(0, count);
@@ -791,16 +732,18 @@ namespace gatzk::algebra
             futures.reserve(workers);
             for (std::size_t worker = 0; worker < workers; ++worker)
             {
-                futures.push_back(std::async(std::launch::async, [&]
+                futures.push_back(std::async(std::launch::async,
+                                             [&]
                                              {
-                    for (;;)
-                    {
-                        const auto block = next.fetch_add(1, std::memory_order_relaxed);
-                        if (block >= blocks)
-                            break;
-                        const auto begin = block * grain;
-                        fn(begin, begin + std::min(grain, count - begin));
-                    } }));
+                                                 for (;;)
+                                                 {
+                                                     const auto block = next.fetch_add(1, std::memory_order_relaxed);
+                                                     if (block >= blocks)
+                                                         break;
+                                                     const auto begin = block * grain;
+                                                     fn(begin, begin + std::min(grain, count - begin));
+                                                 }
+                                             }));
             }
             for (auto &future : futures)
                 future.get();
@@ -825,12 +768,8 @@ namespace gatzk::algebra
         struct TaylorShiftCache
         {
             std::mutex mutex;
-            std::unordered_map<std::size_t,
-                               std::shared_ptr<const TaylorFactorials>>
-                factorials;
-            std::unordered_map<std::string,
-                               std::shared_ptr<const TaylorShiftPrecompute>>
-                kernels;
+            std::unordered_map<std::size_t, std::shared_ptr<const TaylorFactorials>> factorials;
+            std::unordered_map<std::string, std::shared_ptr<const TaylorShiftPrecompute>> kernels;
             std::unordered_map<std::string, std::uint64_t> last_use;
             std::uint64_t clock = 0;
         };
@@ -846,8 +785,7 @@ namespace gatzk::algebra
             std::size_t bytes = 0;
             const auto add = [&](std::size_t count)
             {
-                if (count > (std::numeric_limits<std::size_t>::max() - bytes) /
-                                sizeof(FieldElement))
+                if (count > (std::numeric_limits<std::size_t>::max() - bytes) / sizeof(FieldElement))
                     bytes = std::numeric_limits<std::size_t>::max();
                 else
                     bytes += count * sizeof(FieldElement);
@@ -874,10 +812,7 @@ namespace gatzk::algebra
             return std::size_t{512} << 20;
         }
 
-        void trim_taylor_cache(
-            TaylorShiftCache &cache,
-            std::size_t limit,
-            std::size_t preserve_factor_count)
+        void trim_taylor_cache(TaylorShiftCache &cache, std::size_t limit, std::size_t preserve_factor_count)
         {
             const auto prune_factorials = [&]
             {
@@ -924,8 +859,7 @@ namespace gatzk::algebra
             cache.last_use[key] = cache.clock;
         }
 
-        std::shared_ptr<const TaylorFactorials>
-        make_taylor_factorials(std::size_t count)
+        std::shared_ptr<const TaylorFactorials> make_taylor_factorials(std::size_t count)
         {
             auto out = std::make_shared<TaylorFactorials>();
             out->factorial.assign(count, FieldElement::one());
@@ -935,20 +869,22 @@ namespace gatzk::algebra
             std::vector<FieldElement> products(blocks, FieldElement::one());
 
             // Each block first stores local prefix products.
-            taylor_parallel_ranges(count, [&](std::size_t begin, std::size_t end)
+            taylor_parallel_ranges(count,
+                                   [&](std::size_t begin, std::size_t end)
                                    {
-                for (std::size_t base = begin; base < end; base += grain)
-                {
-                    const auto limit = base + std::min(grain, end - base);
-                    auto product = FieldElement::one();
-                    for (std::size_t i = base; i < limit; ++i)
-                    {
-                        if (i != 0)
-                            product *= FieldElement(static_cast<std::uint64_t>(i));
-                        out->factorial[i] = product;
-                    }
-                    products[base / grain] = product;
-                } });
+                                       for (std::size_t base = begin; base < end; base += grain)
+                                       {
+                                           const auto limit = base + std::min(grain, end - base);
+                                           auto product = FieldElement::one();
+                                           for (std::size_t i = base; i < limit; ++i)
+                                           {
+                                               if (i != 0)
+                                                   product *= FieldElement(static_cast<std::uint64_t>(i));
+                                               out->factorial[i] = product;
+                                           }
+                                           products[base / grain] = product;
+                                       }
+                                   });
 
             std::vector<FieldElement> prefixes(blocks, FieldElement::one());
             auto product = FieldElement::one();
@@ -965,29 +901,28 @@ namespace gatzk::algebra
                 inverse *= products[block];
             }
 
-            taylor_parallel_ranges(count, [&](std::size_t begin, std::size_t end)
+            taylor_parallel_ranges(count,
+                                   [&](std::size_t begin, std::size_t end)
                                    {
-                for (std::size_t base = begin; base < end; base += grain)
-                {
-                    const auto limit = base + std::min(grain, end - base);
-                    const auto block = base / grain;
-                    for (std::size_t i = base; i < limit; ++i)
-                        out->factorial[i] *= prefixes[block];
-                    auto inverse_value = inverse_ends[block];
-                    for (std::size_t i = limit; i-- > base;)
-                    {
-                        out->inverse_factorial[i] = inverse_value;
-                        if (i != 0)
-                            inverse_value *= FieldElement(static_cast<std::uint64_t>(i));
-                    }
-                } });
+                                       for (std::size_t base = begin; base < end; base += grain)
+                                       {
+                                           const auto limit = base + std::min(grain, end - base);
+                                           const auto block = base / grain;
+                                           for (std::size_t i = base; i < limit; ++i)
+                                               out->factorial[i] *= prefixes[block];
+                                           auto inverse_value = inverse_ends[block];
+                                           for (std::size_t i = limit; i-- > base;)
+                                           {
+                                               out->inverse_factorial[i] = inverse_value;
+                                               if (i != 0)
+                                                   inverse_value *= FieldElement(static_cast<std::uint64_t>(i));
+                                           }
+                                       }
+                                   });
             return out;
         }
 
-        std::shared_ptr<const TaylorShiftPrecompute>
-        cached_taylor_shift_precompute(
-            std::size_t configured_degree,
-            const FieldElement &delta)
+        std::shared_ptr<const TaylorShiftPrecompute> cached_taylor_shift_precompute(std::size_t configured_degree, const FieldElement &delta)
         {
             auto &cache = taylor_shift_cache();
             // Single flight: concurrent misses must not duplicate a large NTT.
@@ -1022,13 +957,10 @@ namespace gatzk::algebra
                     throw std::runtime_error("Taylor cache size overflow");
                 additional_count += 2 * count;
             }
-            if (prepared->wrapped_tail_length > maximum - additional_count ||
-                additional_count + prepared->wrapped_tail_length > maximum / sizeof(FieldElement))
+            if (prepared->wrapped_tail_length > maximum - additional_count || additional_count + prepared->wrapped_tail_length > maximum / sizeof(FieldElement))
                 throw std::runtime_error("Taylor cache byte size overflow");
-            const auto additional_bytes =
-                (additional_count + prepared->wrapped_tail_length) * sizeof(FieldElement);
-            trim_taylor_cache(
-                cache, limit > additional_bytes ? limit - additional_bytes : 0, count);
+            const auto additional_bytes = (additional_count + prepared->wrapped_tail_length) * sizeof(FieldElement);
+            trim_taylor_cache(cache, limit > additional_bytes ? limit - additional_bytes : 0, count);
             auto found_factorials = cache.factorials.find(count);
             if (found_factorials == cache.factorials.end())
                 found_factorials = cache.factorials.emplace(count, make_taylor_factorials(count)).first;
@@ -1036,21 +968,20 @@ namespace gatzk::algebra
 
             auto &kernel = prepared->shifted_inverse_factorial_ntt;
             kernel.assign(prepared->convolution_domain_size, FieldElement::zero());
-            taylor_parallel_ranges(count, [&](std::size_t begin, std::size_t end)
+            taylor_parallel_ranges(count,
+                                   [&](std::size_t begin, std::size_t end)
                                    {
-                auto delta_power = delta.pow(static_cast<std::uint64_t>(begin));
-                for (std::size_t i = begin; i < end; ++i)
-                {
-                    kernel[i] = delta_power * prepared->factorials->inverse_factorial[i];
-                    delta_power *= delta;
-                } });
+                                       auto delta_power = delta.pow(static_cast<std::uint64_t>(begin));
+                                       for (std::size_t i = begin; i < end; ++i)
+                                       {
+                                           kernel[i] = delta_power * prepared->factorials->inverse_factorial[i];
+                                           delta_power *= delta;
+                                       }
+                                   });
             prepared->tail_begin = count - prepared->wrapped_tail_length;
-            prepared->wrapped_kernel_tail.assign(
-                kernel.begin() + static_cast<std::ptrdiff_t>(prepared->tail_begin),
-                kernel.begin() + static_cast<std::ptrdiff_t>(count));
-            ntt_in_place(
-                FieldElement::mutable_native_array_data(kernel.data()),
-                prepared->convolution_domain_size);
+            prepared->wrapped_kernel_tail.assign(kernel.begin() + static_cast<std::ptrdiff_t>(prepared->tail_begin),
+                                                 kernel.begin() + static_cast<std::ptrdiff_t>(count));
+            ntt_in_place(FieldElement::mutable_native_array_data(kernel.data()), prepared->convolution_domain_size);
             cache.kernels.emplace(key, prepared);
             touch_taylor_cache(cache, key);
             trim_taylor_cache(cache, limit, count);
@@ -1072,10 +1003,7 @@ namespace gatzk::algebra
         }
     }
 
-    std::vector<FieldElement> coefficient_taylor_shift(
-        const std::vector<FieldElement> &coefficients,
-        std::size_t configured_degree,
-        const FieldElement &delta)
+    std::vector<FieldElement> coefficient_taylor_shift(const std::vector<FieldElement> &coefficients, std::size_t configured_degree, const FieldElement &delta)
     {
         if (configured_degree == std::numeric_limits<std::size_t>::max())
             throw std::runtime_error("configured Taylor-shift degree overflows coefficient length");
@@ -1097,50 +1025,51 @@ namespace gatzk::algebra
         const auto &inverse_factorial = prepared->factorials->inverse_factorial;
         const auto size = prepared->convolution_domain_size;
         std::vector<FieldElement> a_rev(size, FieldElement::zero());
-        taylor_parallel_ranges(count, [&](std::size_t begin, std::size_t end)
+        taylor_parallel_ranges(count,
+                               [&](std::size_t begin, std::size_t end)
                                {
-            for (std::size_t i = begin; i < end; ++i)
-            {
-                const auto source = configured_degree - i;
-                a_rev[i] = coefficients[source] * factorial[source];
-            } });
+                                   for (std::size_t i = begin; i < end; ++i)
+                                   {
+                                       const auto source = configured_degree - i;
+                                       a_rev[i] = coefficients[source] * factorial[source];
+                                   }
+                               });
 
         // A false return means that the CUDA route was never selected.
         // A selected CUDA route reports every admission/execution failure.
-        if (!try_cuda_taylor_convolution(
-                FieldElement::mutable_native_array_data(a_rev.data()),
-                FieldElement::native_array_data(prepared->shifted_inverse_factorial_ntt.data()),
-                size))
+        if (!try_cuda_taylor_convolution(FieldElement::mutable_native_array_data(a_rev.data()),
+                                         FieldElement::native_array_data(prepared->shifted_inverse_factorial_ntt.data()), size))
         {
             ntt_in_place(FieldElement::mutable_native_array_data(a_rev.data()), size);
-            taylor_parallel_ranges(size, [&](std::size_t begin, std::size_t end)
+            taylor_parallel_ranges(size,
+                                   [&](std::size_t begin, std::size_t end)
                                    {
-                for (std::size_t i = begin; i < end; ++i)
-                    a_rev[i] *= prepared->shifted_inverse_factorial_ntt[i]; });
+                                       for (std::size_t i = begin; i < end; ++i)
+                                           a_rev[i] *= prepared->shifted_inverse_factorial_ntt[i];
+                                   });
             intt_in_place(FieldElement::mutable_native_array_data(a_rev.data()), size);
         }
 
-        for (std::size_t wrapped_index = 0;
-             wrapped_index < prepared->wrapped_tail_length; ++wrapped_index)
+        for (std::size_t wrapped_index = 0; wrapped_index < prepared->wrapped_tail_length; ++wrapped_index)
         {
             const auto linear_index = size + wrapped_index;
             auto wrapped = FieldElement::zero();
-            for (std::size_t source = linear_index - configured_degree;
-                 source <= configured_degree; ++source)
+            for (std::size_t source = linear_index - configured_degree; source <= configured_degree; ++source)
             {
                 const auto source_coefficient = configured_degree - source;
                 const auto kernel_index = linear_index - source - prepared->tail_begin;
-                wrapped += coefficients[source_coefficient] * factorial[source_coefficient] *
-                           prepared->wrapped_kernel_tail.at(kernel_index);
+                wrapped += coefficients[source_coefficient] * factorial[source_coefficient] * prepared->wrapped_kernel_tail.at(kernel_index);
             }
             a_rev[wrapped_index] -= wrapped;
         }
 
         std::vector<FieldElement> shifted(count, FieldElement::zero());
-        taylor_parallel_ranges(count, [&](std::size_t begin, std::size_t end)
+        taylor_parallel_ranges(count,
+                               [&](std::size_t begin, std::size_t end)
                                {
-            for (std::size_t k = begin; k < end; ++k)
-                shifted[k] = a_rev[configured_degree - k] * inverse_factorial[k]; });
+                                   for (std::size_t k = begin; k < end; ++k)
+                                       shifted[k] = a_rev[configured_degree - k] * inverse_factorial[k];
+                               });
         return shifted;
     }
 

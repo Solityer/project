@@ -9,13 +9,7 @@ from typing import Dict, List, Mapping, Sequence
 
 import numpy as np
 
-from quantization_scale_chain import (
-    CANONICAL_QUANT_CFG_ID,
-    OGBN_ARXIV_INTERNAL_NAME,
-    canonical_input_preprocess_id,
-    canonical_quantization_scale_chain,
-)
-
+from quantization_scale_chain import CANONICAL_QUANT_CFG_ID, OGBN_ARXIV_INTERNAL_NAME, canonical_input_preprocess_id, canonical_quantization_scale_chain
 
 # The JSON manifest is emitted by ``build_family_manifest`` and the PPI
 # importer.  Keep this list synchronized with the C++ checkpoint reader: a
@@ -174,21 +168,9 @@ CHECKPOINT_METADATA_REQUIRED_FIELDS = frozenset(
 _U64_MAX = (1 << 64) - 1
 
 _HIDDEN_PROFILE_FIELDS = frozenset({"head_count", "head_dim"})
-_HIDDEN_LAYER_FIELDS = frozenset(
-    {"layer_index", "input_dim", "head_count", "head_dim"}
-)
-_HIDDEN_HEAD_FIELDS = frozenset(
-    {
-        "layer_index",
-        "local_head_index",
-        "seq_kernel",
-        "attn_dst_kernel",
-        "attn_src_kernel",
-    }
-)
-_OUTPUT_HEAD_FIELDS = frozenset(
-    {"head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel", "output_bias"}
-)
+_HIDDEN_LAYER_FIELDS = frozenset({"layer_index", "input_dim", "head_count", "head_dim"})
+_HIDDEN_HEAD_FIELDS = frozenset({"layer_index", "local_head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel"})
+_OUTPUT_HEAD_FIELDS = frozenset({"head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel", "output_bias"})
 _TENSOR_INDEX_FIELDS = frozenset({"archive_key", "dtype", "shape"})
 
 
@@ -226,11 +208,7 @@ def load_checkpoint_manifest(path: pathlib.Path) -> Dict[str, object]:
     """
     manifest_path = pathlib.Path(path)
     try:
-        value = json.loads(
-            manifest_path.read_text(encoding="utf-8"),
-            object_pairs_hook=_reject_duplicate_json_pairs,
-            parse_constant=_reject_json_constant,
-        )
+        value = json.loads(manifest_path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_json_pairs, parse_constant=_reject_json_constant)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise ValueError(f"unable to load canonical checkpoint manifest {manifest_path}: {error}") from error
     if not isinstance(value, dict):
@@ -263,33 +241,19 @@ def _require_float(value: object, label: str, *, positive: bool = False) -> floa
     return result
 
 
-def _require_exact_object(
-    value: object,
-    allowed: frozenset[str],
-    required: frozenset[str],
-    label: str,
-) -> dict[str, object]:
+def _require_exact_object(value: object, allowed: frozenset[str], required: frozenset[str], label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be an object")
     _validate_field_set(value, allowed, required, label)
     return value
 
 
-def _require_unsigned_array(
-    value: object,
-    label: str,
-    *,
-    nonempty: bool = True,
-    positive: bool = False,
-) -> list[int]:
+def _require_unsigned_array(value: object, label: str, *, nonempty: bool = True, positive: bool = False) -> list[int]:
     if not isinstance(value, list):
         raise ValueError(f"{label} must be an array")
     if nonempty and not value:
         raise ValueError(f"{label} must be a non-empty array")
-    return [
-        _require_unsigned(element, f"{label}[{index}]", positive=positive)
-        for index, element in enumerate(value)
-    ]
+    return [_require_unsigned(element, f"{label}[{index}]", positive=positive) for index, element in enumerate(value)]
 
 
 def _validate_profile_and_dimension_chain(
@@ -315,106 +279,63 @@ def _validate_profile_and_dimension_chain(
 
     previous_concat = None
     for layer_index, profile_entry in enumerate(hidden_profile):
-        head_count = _require_unsigned(
-            profile_entry["head_count"],
-            f"{label}.hidden_profile[{layer_index}].head_count",
-            positive=True,
-        )
-        head_dim = _require_unsigned(
-            profile_entry["head_dim"],
-            f"{label}.hidden_profile[{layer_index}].head_dim",
-            positive=True,
-        )
+        head_count = _require_unsigned(profile_entry["head_count"], f"{label}.hidden_profile[{layer_index}].head_count", positive=True)
+        head_dim = _require_unsigned(profile_entry["head_dim"], f"{label}.hidden_profile[{layer_index}].head_dim", positive=True)
         input_dim = d_in_profile[layer_index]
         if input_dim == 0:
             raise ValueError(f"{label}.d_in_profile[{layer_index}] must be positive")
         if previous_concat is not None and input_dim != previous_concat:
-            raise ValueError(
-                f"{label}.d_in_profile[{layer_index}] conflicts with previous concat width"
-            )
+            raise ValueError(f"{label}.d_in_profile[{layer_index}] conflicts with previous concat width")
         previous_concat = head_count * head_dim
 
-    if layer_count != 3 or output_head_count != 2 or [
-        {
-            "head_count": profile["head_count"],
-            "head_dim": profile["head_dim"],
-        }
-        for profile in hidden_profile
-    ] != [
-        {"head_count": 8, "head_dim": 8},
-        {"head_count": 8, "head_dim": 8},
-    ]:
+    if (
+        layer_count != 3
+        or output_head_count != 2
+        or [{"head_count": profile["head_count"], "head_dim": profile["head_dim"]} for profile in hidden_profile]
+        != [{"head_count": 8, "head_dim": 8}, {"head_count": 8, "head_dim": 8}]
+    ):
         raise ValueError(f"{label} must use the canonical L=3, hidden 8x8/8x8, K_out=2 shape")
 
     if hidden_layers is not None:
         if len(hidden_layers) != len(hidden_profile):
             raise ValueError(f"{label}.hidden_layers conflicts with hidden_profile length")
         for layer_index, layer in enumerate(hidden_layers):
-            if _require_unsigned(
-                layer["layer_index"], f"{label}.hidden_layers[{layer_index}].layer_index"
-            ) != layer_index:
+            if _require_unsigned(layer["layer_index"], f"{label}.hidden_layers[{layer_index}].layer_index") != layer_index:
                 raise ValueError(f"{label}.hidden_layers must use contiguous layer_index values")
-            if _require_unsigned(
-                layer["input_dim"], f"{label}.hidden_layers[{layer_index}].input_dim", positive=True
-            ) != d_in_profile[layer_index]:
+            if _require_unsigned(layer["input_dim"], f"{label}.hidden_layers[{layer_index}].input_dim", positive=True) != d_in_profile[layer_index]:
                 raise ValueError(f"{label}.hidden_layers[{layer_index}].input_dim conflicts with d_in_profile")
-            if _require_unsigned(
-                layer["head_count"], f"{label}.hidden_layers[{layer_index}].head_count", positive=True
-            ) != _require_unsigned(
-                hidden_profile[layer_index]["head_count"],
-                f"{label}.hidden_profile[{layer_index}].head_count",
-                positive=True,
-            ) or _require_unsigned(
-                layer["head_dim"], f"{label}.hidden_layers[{layer_index}].head_dim", positive=True
-            ) != _require_unsigned(
-                hidden_profile[layer_index]["head_dim"],
-                f"{label}.hidden_profile[{layer_index}].head_dim",
-                positive=True,
+            if _require_unsigned(layer["head_count"], f"{label}.hidden_layers[{layer_index}].head_count", positive=True) != _require_unsigned(
+                hidden_profile[layer_index]["head_count"], f"{label}.hidden_profile[{layer_index}].head_count", positive=True
+            ) or _require_unsigned(layer["head_dim"], f"{label}.hidden_layers[{layer_index}].head_dim", positive=True) != _require_unsigned(
+                hidden_profile[layer_index]["head_dim"], f"{label}.hidden_profile[{layer_index}].head_dim", positive=True
             ):
                 raise ValueError(f"{label}.hidden_layers[{layer_index}] conflicts with hidden_profile")
 
 
-def _validate_tensor_index(
-    value: object,
-    label: str,
-) -> dict[str, dict[str, object]]:
+def _validate_tensor_index(value: object, label: str) -> dict[str, dict[str, object]]:
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be an object")
     result: dict[str, dict[str, object]] = {}
     archive_keys: set[str] = set()
     for name, raw_entry in value.items():
         _require_string(name, f"{label} logical tensor name")
-        entry = _require_exact_object(
-            raw_entry,
-            _TENSOR_INDEX_FIELDS,
-            _TENSOR_INDEX_FIELDS,
-            f"{label}[{name!r}]",
-        )
+        entry = _require_exact_object(raw_entry, _TENSOR_INDEX_FIELDS, _TENSOR_INDEX_FIELDS, f"{label}[{name!r}]")
         archive_key_value = _require_string(entry["archive_key"], f"{label}[{name!r}].archive_key")
         expected_archive_key = archive_key(name)
         if archive_key_value != expected_archive_key:
-            raise ValueError(
-                f"{label}[{name!r}].archive_key is not the canonical NPZ encoding key"
-            )
+            raise ValueError(f"{label}[{name!r}].archive_key is not the canonical NPZ encoding key")
         if archive_key_value in archive_keys:
             raise ValueError(f"{label} archive_key is not unique: {archive_key_value}")
         archive_keys.add(archive_key_value)
         dtype = _require_string(entry["dtype"], f"{label}[{name!r}].dtype")
         if dtype != "float32":
             raise ValueError(f"{label}[{name!r}].dtype must be float32")
-        shape = _require_unsigned_array(
-            entry["shape"], f"{label}[{name!r}].shape", positive=True
-        )
+        shape = _require_unsigned_array(entry["shape"], f"{label}[{name!r}].shape", positive=True)
         result[name] = {"archive_key": archive_key_value, "dtype": dtype, "shape": shape}
     return result
 
 
-def _tensor_shape(
-    tensor_index: dict[str, dict[str, object]],
-    name: object,
-    expected: tuple[int, ...],
-    label: str,
-) -> None:
+def _tensor_shape(tensor_index: dict[str, dict[str, object]], name: object, expected: tuple[int, ...], label: str) -> None:
     tensor_name = _require_string(name, f"{label} tensor reference")
     if tensor_name not in tensor_index:
         raise ValueError(f"{label} references missing tensor: {tensor_name}")
@@ -435,9 +356,7 @@ def _validate_head_specs_and_tensor_shapes(
     expected_pairs = [
         (layer_index, local_head_index)
         for layer_index, layer in enumerate(hidden_layers)
-        for local_head_index in range(
-            _require_unsigned(layer["head_count"], f"{label}.hidden_layers[{layer_index}].head_count", positive=True)
-        )
+        for local_head_index in range(_require_unsigned(layer["head_count"], f"{label}.hidden_layers[{layer_index}].head_count", positive=True))
     ]
     actual_pairs = [
         (
@@ -455,21 +374,16 @@ def _validate_head_specs_and_tensor_shapes(
         layer = hidden_layers[layer_index]
         input_dim = _require_unsigned(layer["input_dim"], f"{label}.hidden_layers[{layer_index}].input_dim", positive=True)
         output_dim = _require_unsigned(layer["head_dim"], f"{label}.hidden_layers[{layer_index}].head_dim", positive=True)
-        for field, shape in (
-            ("seq_kernel", (1, input_dim, output_dim)),
-            ("attn_dst_kernel", (1, output_dim, 1)),
-            ("attn_src_kernel", (1, output_dim, 1)),
-        ):
+        for field, shape in (("seq_kernel", (1, input_dim, output_dim)), ("attn_dst_kernel", (1, output_dim, 1)), ("attn_src_kernel", (1, output_dim, 1))):
             name = _require_string(spec[field], f"{label}.hidden_head_specs[{spec_index}].{field}")
             referenced.append(name)
             _tensor_shape(tensor_index, name, shape, f"{label}.hidden_head_specs[{spec_index}].{field}")
 
-    output_input_dim = _require_unsigned(hidden_layers[-1]["head_count"], f"{label}.hidden_layers[-1].head_count", positive=True) * _require_unsigned(hidden_layers[-1]["head_dim"], f"{label}.hidden_layers[-1].head_dim", positive=True)
+    output_input_dim = _require_unsigned(hidden_layers[-1]["head_count"], f"{label}.hidden_layers[-1].head_count", positive=True) * _require_unsigned(
+        hidden_layers[-1]["head_dim"], f"{label}.hidden_layers[-1].head_dim", positive=True
+    )
     expected_output_indices = list(range(len(output_head_specs)))
-    actual_output_indices = [
-        _require_unsigned(spec["head_index"], f"{label}.output_head_specs.head_index")
-        for spec in output_head_specs
-    ]
+    actual_output_indices = [_require_unsigned(spec["head_index"], f"{label}.output_head_specs.head_index") for spec in output_head_specs]
     if actual_output_indices != expected_output_indices:
         raise ValueError(f"{label}.output_head_specs must use contiguous head_index values")
     for spec_index, spec in enumerate(output_head_specs):
@@ -495,33 +409,41 @@ def _validate_head_specs_and_tensor_shapes(
 def _validate_manifest_types_and_shape(manifest: Mapping[str, object]) -> None:
     """Validate the complete nested manifest schema and all shape identities."""
     for field in (
-        "checkpoint_prefix", "dataset", "family_schema", "output_average_rule",
-        "task_type", "report_unit", "selection_metric", "model_arch_id",
-        "model_param_id", "input_preprocess_id", "quant_cfg_id",
-        "quantization_scale_chain", "static_table_id", "degree_bound_id",
-        "batching_rule", "subgraph_rule", "self_loop_rule", "edge_sort_rule",
-        "label_format", "loss", "split_format",
+        "checkpoint_prefix",
+        "dataset",
+        "family_schema",
+        "output_average_rule",
+        "task_type",
+        "report_unit",
+        "selection_metric",
+        "model_arch_id",
+        "model_param_id",
+        "input_preprocess_id",
+        "quant_cfg_id",
+        "quantization_scale_chain",
+        "static_table_id",
+        "degree_bound_id",
+        "batching_rule",
+        "subgraph_rule",
+        "self_loop_rule",
+        "edge_sort_rule",
+        "label_format",
+        "loss",
+        "split_format",
     ):
         _require_string(manifest[field], f"checkpoint manifest.{field}")
     layer_count = _require_unsigned(manifest["L"], "checkpoint manifest.L", positive=True)
     output_head_count = _require_unsigned(manifest["K_out"], "checkpoint manifest.K_out", positive=True)
     class_count = _require_unsigned(manifest["C"], "checkpoint manifest.C", positive=True)
     tensor_count = _require_unsigned(manifest["tensor_count"], "checkpoint manifest.tensor_count")
-    d_in_profile = _require_unsigned_array(
-        manifest["d_in_profile"], "checkpoint manifest.d_in_profile", positive=True
-    )
+    d_in_profile = _require_unsigned_array(manifest["d_in_profile"], "checkpoint manifest.d_in_profile", positive=True)
 
     hidden_profile_raw = manifest["hidden_profile"]
     if not isinstance(hidden_profile_raw, list) or not hidden_profile_raw:
         raise ValueError("checkpoint manifest.hidden_profile must be a non-empty array")
     hidden_profile: list[dict[str, object]] = []
     for index, raw_entry in enumerate(hidden_profile_raw):
-        entry = _require_exact_object(
-            raw_entry,
-            _HIDDEN_PROFILE_FIELDS,
-            _HIDDEN_PROFILE_FIELDS,
-            f"checkpoint manifest.hidden_profile[{index}]",
-        )
+        entry = _require_exact_object(raw_entry, _HIDDEN_PROFILE_FIELDS, _HIDDEN_PROFILE_FIELDS, f"checkpoint manifest.hidden_profile[{index}]")
         _require_unsigned(entry["head_count"], f"checkpoint manifest.hidden_profile[{index}].head_count", positive=True)
         _require_unsigned(entry["head_dim"], f"checkpoint manifest.hidden_profile[{index}].head_dim", positive=True)
         hidden_profile.append(entry)
@@ -531,18 +453,9 @@ def _validate_manifest_types_and_shape(manifest: Mapping[str, object]) -> None:
         raise ValueError("checkpoint manifest.hidden_layers must be a non-empty array")
     hidden_layers: list[dict[str, object]] = []
     for index, raw_entry in enumerate(hidden_layers_raw):
-        entry = _require_exact_object(
-            raw_entry,
-            _HIDDEN_LAYER_FIELDS,
-            _HIDDEN_LAYER_FIELDS,
-            f"checkpoint manifest.hidden_layers[{index}]",
-        )
+        entry = _require_exact_object(raw_entry, _HIDDEN_LAYER_FIELDS, _HIDDEN_LAYER_FIELDS, f"checkpoint manifest.hidden_layers[{index}]")
         for field in ("layer_index", "input_dim", "head_count", "head_dim"):
-            _require_unsigned(
-                entry[field],
-                f"checkpoint manifest.hidden_layers[{index}].{field}",
-                positive=field != "layer_index",
-            )
+            _require_unsigned(entry[field], f"checkpoint manifest.hidden_layers[{index}].{field}", positive=field != "layer_index")
         hidden_layers.append(entry)
 
     hidden_head_specs_raw = manifest["hidden_head_specs"]
@@ -550,12 +463,7 @@ def _validate_manifest_types_and_shape(manifest: Mapping[str, object]) -> None:
         raise ValueError("checkpoint manifest.hidden_head_specs must be an array")
     hidden_head_specs: list[dict[str, object]] = []
     for index, raw_entry in enumerate(hidden_head_specs_raw):
-        entry = _require_exact_object(
-            raw_entry,
-            _HIDDEN_HEAD_FIELDS,
-            _HIDDEN_HEAD_FIELDS,
-            f"checkpoint manifest.hidden_head_specs[{index}]",
-        )
+        entry = _require_exact_object(raw_entry, _HIDDEN_HEAD_FIELDS, _HIDDEN_HEAD_FIELDS, f"checkpoint manifest.hidden_head_specs[{index}]")
         for field in ("layer_index", "local_head_index"):
             _require_unsigned(entry[field], f"checkpoint manifest.hidden_head_specs[{index}].{field}")
         for field in ("seq_kernel", "attn_dst_kernel", "attn_src_kernel"):
@@ -567,12 +475,7 @@ def _validate_manifest_types_and_shape(manifest: Mapping[str, object]) -> None:
         raise ValueError("checkpoint manifest.output_head_specs must be a non-empty array")
     output_head_specs: list[dict[str, object]] = []
     for index, raw_entry in enumerate(output_head_specs_raw):
-        entry = _require_exact_object(
-            raw_entry,
-            _OUTPUT_HEAD_FIELDS,
-            _OUTPUT_HEAD_FIELDS,
-            f"checkpoint manifest.output_head_specs[{index}]",
-        )
+        entry = _require_exact_object(raw_entry, _OUTPUT_HEAD_FIELDS, _OUTPUT_HEAD_FIELDS, f"checkpoint manifest.output_head_specs[{index}]")
         _require_unsigned(entry["head_index"], f"checkpoint manifest.output_head_specs[{index}].head_index")
         for field in ("seq_kernel", "attn_dst_kernel", "attn_src_kernel", "output_bias"):
             _require_string(entry[field], f"checkpoint manifest.output_head_specs[{index}].{field}")
@@ -593,8 +496,7 @@ def _validate_manifest_types_and_shape(manifest: Mapping[str, object]) -> None:
         label="checkpoint manifest",
     )
     if len(hidden_head_specs) != sum(
-        _require_unsigned(layer["head_count"], "checkpoint manifest.hidden_layers.head_count", positive=True)
-        for layer in hidden_layers
+        _require_unsigned(layer["head_count"], "checkpoint manifest.hidden_layers.head_count", positive=True) for layer in hidden_layers
     ):
         raise ValueError("checkpoint manifest.hidden_head_specs count conflicts with hidden_layers")
     _validate_head_specs_and_tensor_shapes(
@@ -641,17 +543,10 @@ def canonical_checkpoint_semantics(dataset: str) -> Dict[str, str]:
     }
 
 
-def _validate_field_set(
-    values: Mapping[str, object],
-    allowed: frozenset[str],
-    required: frozenset[str],
-    label: str,
-) -> None:
+def _validate_field_set(values: Mapping[str, object], allowed: frozenset[str], required: frozenset[str], label: str) -> None:
     unexpected = sorted(set(values).difference(allowed))
     if unexpected:
-        raise ValueError(
-            f"{label} contains unknown/non-canonical manifest field: {unexpected[0]}"
-        )
+        raise ValueError(f"{label} contains unknown/non-canonical manifest field: {unexpected[0]}")
     missing = sorted(required.difference(values))
     if missing:
         raise ValueError(f"{label} is missing canonical field: {missing[0]}")
@@ -660,26 +555,17 @@ def _validate_field_set(
 def validate_checkpoint_manifest(manifest: Mapping[str, object]) -> None:
     if not isinstance(manifest, dict):
         raise ValueError("checkpoint manifest must be an object")
-    _validate_field_set(
-        manifest,
-        CHECKPOINT_MANIFEST_FIELDS,
-        CHECKPOINT_MANIFEST_REQUIRED_FIELDS,
-        "checkpoint manifest",
-    )
+    _validate_field_set(manifest, CHECKPOINT_MANIFEST_FIELDS, CHECKPOINT_MANIFEST_REQUIRED_FIELDS, "checkpoint manifest")
     _validate_manifest_types_and_shape(manifest)
     if manifest["family_schema"] != "multi_layer_multi_head":
         raise ValueError("checkpoint manifest family_schema is not canonical")
     semantics = canonical_checkpoint_semantics(manifest["dataset"])
     for key, expected in semantics.items():
         if manifest[key] != expected:
-            raise ValueError(
-                f"checkpoint manifest {key} is not canonical for {manifest['dataset']!r}"
-            )
+            raise ValueError(f"checkpoint manifest {key} is not canonical for {manifest['dataset']!r}")
     if manifest["input_preprocess_id"] != canonical_input_preprocess_id(manifest["dataset"]):
         raise ValueError("checkpoint manifest input_preprocess_id does not match dataset")
-    expected_chain = canonical_quantization_scale_chain(
-        manifest["quant_cfg_id"], manifest["hidden_profile"], manifest["K_out"]
-    ).canonical_serialization()
+    expected_chain = canonical_quantization_scale_chain(manifest["quant_cfg_id"], manifest["hidden_profile"], manifest["K_out"]).canonical_serialization()
     if manifest["quantization_scale_chain"] != expected_chain:
         raise ValueError("checkpoint manifest quantization_scale_chain is not canonical")
 
@@ -687,18 +573,28 @@ def validate_checkpoint_manifest(manifest: Mapping[str, object]) -> None:
 def validate_checkpoint_metadata(metadata: Mapping[str, object]) -> None:
     if not isinstance(metadata, dict):
         raise ValueError("checkpoint metadata must be an object")
-    _validate_field_set(
-        metadata,
-        CHECKPOINT_METADATA_FIELDS,
-        CHECKPOINT_METADATA_REQUIRED_FIELDS,
-        "checkpoint metadata",
-    )
+    _validate_field_set(metadata, CHECKPOINT_METADATA_FIELDS, CHECKPOINT_METADATA_REQUIRED_FIELDS, "checkpoint metadata")
     for field in (
-        "dataset", "family_schema", "task_type", "report_unit", "selection_metric",
-        "model_arch_id", "model_param_id", "quant_cfg_id", "input_preprocess_id",
-        "quantization_scale_chain", "static_table_id", "degree_bound_id",
-        "output_average_rule", "batching_rule", "subgraph_rule", "self_loop_rule",
-        "edge_sort_rule", "label_format", "loss", "split_format",
+        "dataset",
+        "family_schema",
+        "task_type",
+        "report_unit",
+        "selection_metric",
+        "model_arch_id",
+        "model_param_id",
+        "quant_cfg_id",
+        "input_preprocess_id",
+        "quantization_scale_chain",
+        "static_table_id",
+        "degree_bound_id",
+        "output_average_rule",
+        "batching_rule",
+        "subgraph_rule",
+        "self_loop_rule",
+        "edge_sort_rule",
+        "label_format",
+        "loss",
+        "split_format",
     ):
         _require_string(metadata[field], f"checkpoint metadata.{field}")
     layer_count = _require_unsigned(metadata["L"], "checkpoint metadata.L", positive=True)
@@ -708,9 +604,7 @@ def validate_checkpoint_metadata(metadata: Mapping[str, object]) -> None:
     num_classes = _require_unsigned(metadata["num_classes"], "checkpoint metadata.num_classes", positive=True)
     if class_count != num_classes:
         raise ValueError("checkpoint metadata.C conflicts with num_classes")
-    d_in_profile = _require_unsigned_array(
-        metadata["d_in_profile"], "checkpoint metadata.d_in_profile", positive=True
-    )
+    d_in_profile = _require_unsigned_array(metadata["d_in_profile"], "checkpoint metadata.d_in_profile", positive=True)
     if d_in_profile[0] != num_features:
         raise ValueError("checkpoint metadata.num_features conflicts with d_in_profile")
     raw_profile = metadata["hidden_profile"]
@@ -718,12 +612,7 @@ def validate_checkpoint_metadata(metadata: Mapping[str, object]) -> None:
         raise ValueError("checkpoint metadata.hidden_profile must be a non-empty array")
     profile: list[dict[str, object]] = []
     for index, raw_entry in enumerate(raw_profile):
-        entry = _require_exact_object(
-            raw_entry,
-            _HIDDEN_PROFILE_FIELDS,
-            _HIDDEN_PROFILE_FIELDS,
-            f"checkpoint metadata.hidden_profile[{index}]",
-        )
+        entry = _require_exact_object(raw_entry, _HIDDEN_PROFILE_FIELDS, _HIDDEN_PROFILE_FIELDS, f"checkpoint metadata.hidden_profile[{index}]")
         _require_unsigned(entry["head_count"], f"checkpoint metadata.hidden_profile[{index}].head_count", positive=True)
         _require_unsigned(entry["head_dim"], f"checkpoint metadata.hidden_profile[{index}].head_dim", positive=True)
         profile.append(entry)
@@ -747,14 +636,10 @@ def validate_checkpoint_metadata(metadata: Mapping[str, object]) -> None:
     semantics = canonical_checkpoint_semantics(metadata["dataset"])
     for key, expected in semantics.items():
         if metadata[key] != expected:
-            raise ValueError(
-                f"checkpoint metadata {key} is not canonical for {metadata['dataset']!r}"
-            )
+            raise ValueError(f"checkpoint metadata {key} is not canonical for {metadata['dataset']!r}")
     if metadata["input_preprocess_id"] != canonical_input_preprocess_id(metadata["dataset"]):
         raise ValueError("checkpoint metadata input_preprocess_id does not match dataset")
-    expected_chain = canonical_quantization_scale_chain(
-        metadata["quant_cfg_id"], metadata["hidden_profile"], metadata["K_out"]
-    ).canonical_serialization()
+    expected_chain = canonical_quantization_scale_chain(metadata["quant_cfg_id"], metadata["hidden_profile"], metadata["K_out"]).canonical_serialization()
     if metadata["quantization_scale_chain"] != expected_chain:
         raise ValueError("checkpoint metadata quantization_scale_chain is not canonical")
 
@@ -768,11 +653,7 @@ def _parse_decimal_unsigned(token: str, label: str, *, positive: bool = False) -
 def _shape_element_count(shape: Sequence[int], label: str) -> int:
     count = 1
     for index, dimension in enumerate(shape):
-        count *= _require_unsigned(
-            dimension,
-            f"{label}[{index}]",
-            positive=True,
-        )
+        count *= _require_unsigned(dimension, f"{label}[{index}]", positive=True)
     return count
 
 
@@ -796,10 +677,7 @@ def _parse_text_float32(token: str, label: str) -> np.float32:
     return result
 
 
-def _load_text_tensor_map(
-    manifest: Mapping[str, object],
-    path: pathlib.Path,
-) -> Dict[str, np.ndarray]:
+def _load_text_tensor_map(manifest: Mapping[str, object], path: pathlib.Path) -> Dict[str, np.ndarray]:
     tensor_index = manifest["tensor_index"]
     if not isinstance(tensor_index, dict):
         raise ValueError("checkpoint manifest.tensor_index must be an object")
@@ -827,12 +705,7 @@ def _load_text_tensor_map(
         if cursor + rank + 1 > len(tokens):
             raise ValueError("truncated checkpoint tensor dump shape")
         shape = tuple(
-            _parse_decimal_unsigned(
-                tokens[cursor + index],
-                f"checkpoint tensor dump dimension {name}[{index}]",
-                positive=True,
-            )
-            for index in range(rank)
+            _parse_decimal_unsigned(tokens[cursor + index], f"checkpoint tensor dump dimension {name}[{index}]", positive=True) for index in range(rank)
         )
         cursor += rank
         count = _parse_decimal_unsigned(tokens[cursor], "checkpoint tensor dump count")
@@ -864,11 +737,7 @@ def _load_text_tensor_map(
     return tensors
 
 
-def validate_tensor_encodings(
-    manifest: Mapping[str, object],
-    npz_path: pathlib.Path,
-    text_path: pathlib.Path,
-) -> Dict[str, np.ndarray]:
+def validate_tensor_encodings(manifest: Mapping[str, object], npz_path: pathlib.Path, text_path: pathlib.Path) -> Dict[str, np.ndarray]:
     """Validate and cross-check the one canonical NPZ/TXT tensor map.
 
     ``tensor_index`` names are the sole logical identities.  Each manifest
@@ -883,10 +752,7 @@ def validate_tensor_encodings(
     tensor_index = manifest["tensor_index"]
     assert isinstance(tensor_index, dict)
 
-    expected_archive_keys = {
-        archive_key(name)
-        for name in tensor_index
-    }
+    expected_archive_keys = {archive_key(name) for name in tensor_index}
     npz_by_name: Dict[str, np.ndarray] = {}
     try:
         with np.load(npz_path, allow_pickle=False) as archive:
@@ -904,10 +770,7 @@ def validate_tensor_encodings(
                 expected_shape = tuple(raw_entry["shape"])
                 if tuple(array.shape) != expected_shape:
                     raise ValueError(f"checkpoint NPZ shape mismatch: {logical_name}")
-                expected_count = _shape_element_count(
-                    expected_shape,
-                    f"checkpoint manifest tensor_index[{logical_name!r}].shape",
-                )
+                expected_count = _shape_element_count(expected_shape, f"checkpoint manifest tensor_index[{logical_name!r}].shape")
                 if int(array.size) != expected_count:
                     raise ValueError(f"checkpoint NPZ element count mismatch: {logical_name}")
                 if not bool(np.all(np.isfinite(array))):
@@ -931,9 +794,7 @@ def validate_tensor_encodings(
         if npz_tensor.size != text_tensor.size:
             raise ValueError(f"checkpoint NPZ/TXT element count mismatch: {logical_name}")
         if npz_tensor.tobytes(order="C") != text_tensor.tobytes(order="C"):
-            raise ValueError(
-                f"checkpoint NPZ/TXT value mismatch for canonical tensor: {logical_name}"
-            )
+            raise ValueError(f"checkpoint NPZ/TXT value mismatch for canonical tensor: {logical_name}")
     return npz_by_name
 
 
@@ -979,38 +840,25 @@ def build_family_manifest(
 ) -> Dict[str, object]:
     expected_preprocess_id = canonical_input_preprocess_id(dataset)
     if input_preprocess_id != expected_preprocess_id:
-        raise ValueError(
-            "formal checkpoint manifest input_preprocess_id does not match dataset"
-        )
+        raise ValueError("formal checkpoint manifest input_preprocess_id does not match dataset")
     if quant_cfg_id != CANONICAL_QUANT_CFG_ID:
         raise ValueError("formal checkpoint manifest quant_cfg_id is not canonical")
     _require_string(quantization_scale_chain, "formal checkpoint manifest quantization_scale_chain")
     hidden_profile = [
         {
-            "head_count": _require_unsigned(
-                layer["head_count"], "formal checkpoint manifest hidden head_count", positive=True
-            ),
-            "head_dim": _require_unsigned(
-                layer["head_dim"], "formal checkpoint manifest hidden head_dim", positive=True
-            ),
+            "head_count": _require_unsigned(layer["head_count"], "formal checkpoint manifest hidden head_count", positive=True),
+            "head_dim": _require_unsigned(layer["head_dim"], "formal checkpoint manifest hidden head_dim", positive=True),
         }
         for layer in hidden_layers
     ]
     k_out = len(output_head_specs)
-    if len(hidden_layers) != 2 or hidden_profile != [
-        {"head_count": 8, "head_dim": 8},
-        {"head_count": 8, "head_dim": 8},
-    ]:
+    if len(hidden_layers) != 2 or hidden_profile != [{"head_count": 8, "head_dim": 8}, {"head_count": 8, "head_dim": 8}]:
         raise ValueError("formal checkpoint manifest requires hidden_profile=[8x8,8x8]")
     if len(d_in_profile) != 2:
         raise ValueError("formal checkpoint manifest requires two input dimensions")
     if k_out != 2:
         raise ValueError("formal checkpoint manifest requires K_out=2")
-    expected_chain = canonical_quantization_scale_chain(
-        quant_cfg_id,
-        hidden_profile,
-        k_out,
-    ).canonical_serialization()
+    expected_chain = canonical_quantization_scale_chain(quant_cfg_id, hidden_profile, k_out).canonical_serialization()
     if quantization_scale_chain != expected_chain:
         raise ValueError("formal checkpoint manifest quantization_scale_chain is not canonical")
     _require_string(model_arch_id, "formal checkpoint manifest model_arch_id")
@@ -1046,10 +894,6 @@ def build_family_manifest(
     tensor_index = manifest["tensor_index"]
     assert isinstance(tensor_index, dict)
     for name, tensor in sorted(tensors.items()):
-        tensor_index[name] = {
-            "archive_key": archive_key(name),
-            "dtype": str(tensor.dtype),
-            "shape": list(tensor.shape),
-        }
+        tensor_index[name] = {"archive_key": archive_key(name), "dtype": str(tensor.dtype), "shape": list(tensor.shape)}
     validate_checkpoint_manifest(manifest)
     return manifest

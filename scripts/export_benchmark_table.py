@@ -9,7 +9,6 @@ import pathlib
 from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
-
 # Only manifests produced with the canonical protocol-verifier timing boundary
 # may enter the official benchmark table.  This keeps the reported timings
 # under one stable measurement definition.
@@ -17,9 +16,7 @@ CANONICAL_TIMING_SCHEMA = "online_trace_commit_prove_protocol_verify_v2"
 
 
 _AGGREGATE_PATH = pathlib.Path(__file__).resolve().with_name("aggregate_secure_results.py")
-_AGGREGATE_SPEC = importlib.util.spec_from_file_location(
-    "gatzk_aggregate_secure_results_for_export", _AGGREGATE_PATH
-)
+_AGGREGATE_SPEC = importlib.util.spec_from_file_location("gatzk_aggregate_secure_results_for_export", _AGGREGATE_PATH)
 if _AGGREGATE_SPEC is None or _AGGREGATE_SPEC.loader is None:
     raise RuntimeError(f"cannot load acceptance contract: {_AGGREGATE_PATH}")
 _AGGREGATE = importlib.util.module_from_spec(_AGGREGATE_SPEC)
@@ -30,13 +27,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 class LoadedManifest(dict):
     """Manifest carrying the inputs needed for repeatable attestation re-auth."""
 
-    def __init__(
-        self,
-        values: Dict[str, object],
-        manifest_path: pathlib.Path,
-        attestation_path: str,
-        attestation_digest: str,
-    ):
+    def __init__(self, values: Dict[str, object], manifest_path: pathlib.Path, attestation_path: str, attestation_digest: str):
         super().__init__(values)
         # A prevalidated dictionary is deliberately not accepted here.  The
         # exporter rereads the external path and checks its digest/bindings on
@@ -97,11 +88,7 @@ def normalize_scalar(value):
     return maybe_number(value)
 
 
-def _validate_verifier_report_binding(
-    manifest: Dict[str, object],
-    manifest_path: pathlib.Path,
-    proof_hash: str,
-) -> None:
+def _validate_verifier_report_binding(manifest: Dict[str, object], manifest_path: pathlib.Path, proof_hash: str) -> None:
     """Bind the public acceptance state to the binary-produced verifier report.
 
     The full aggregate command additionally checks the external registry,
@@ -111,9 +98,7 @@ def _validate_verifier_report_binding(
     claimed acceptance state.
     """
     context = f"benchmark export/{manifest_path.parent}"
-    report_name = _AGGREGATE.nonempty_string(
-        manifest.get("verifier_report_path"), "verifier_report_path", context
-    )
+    report_name = _AGGREGATE.nonempty_string(manifest.get("verifier_report_path"), "verifier_report_path", context)
     report_relative = pathlib.Path(report_name)
     if report_relative.is_absolute() or report_relative.parent != pathlib.Path("."):
         raise ValueError(f"{context}: verifier_report_path must be a run-local basename")
@@ -126,33 +111,20 @@ def _validate_verifier_report_binding(
     if report.get("format") != "zkgat_verifier_report":
         raise ValueError(f"{context}: verifier report format mismatch")
 
-    manifest_verifier = _AGGREGATE.as_bool(
-        manifest.get("verifier_accepted"), "verifier_accepted", context
-    )
-    report_verifier = _AGGREGATE.as_bool(
-        report.get("verify_result"), "verify_result", context
-    )
+    manifest_verifier = _AGGREGATE.as_bool(manifest.get("verifier_accepted"), "verifier_accepted", context)
+    report_verifier = _AGGREGATE.as_bool(report.get("verify_result"), "verify_result", context)
     if report_verifier is not manifest_verifier or not report_verifier:
         raise ValueError(f"{context}: verifier report acceptance is not manifest-bound")
-    for field in (
-        "reference_consistency_passed",
-        "security_budget_passed",
-    ):
+    for field in ("reference_consistency_passed", "security_budget_passed"):
         if not _AGGREGATE.as_bool(report.get(field), field, context):
             raise ValueError(f"{context}: verifier report {field} is not true")
         if _AGGREGATE.as_bool(manifest.get(field), field, context) is not True:
             raise ValueError(f"{context}: manifest {field} is not true")
 
-    report_tamper_passed = _AGGREGATE.as_bool(
-        report.get("tamper_tests_passed"), "tamper_tests_passed", context
-    )
-    report_tamper_ms = _AGGREGATE.as_float(
-        report.get("tamper_tests_ms"), "tamper_tests_ms", context
-    )
+    report_tamper_passed = _AGGREGATE.as_bool(report.get("tamper_tests_passed"), "tamper_tests_passed", context)
+    report_tamper_ms = _AGGREGATE.as_float(report.get("tamper_tests_ms"), "tamper_tests_ms", context)
     if report_tamper_passed:
-        report_tamper_map = _AGGREGATE.canonical_tamper_case_string(
-            report.get("tamper_test_case_map"), "tamper_test_case_map", context
-        )
+        report_tamper_map = _AGGREGATE.canonical_tamper_case_string(report.get("tamper_test_case_map"), "tamper_test_case_map", context)
         if report_tamper_ms <= 0.0:
             raise ValueError(f"{context}: verifier report tamper_tests_ms must be positive")
     else:
@@ -160,25 +132,15 @@ def _validate_verifier_report_binding(
             raise ValueError(f"{context}: verifier report pending tamper state is malformed")
         report_tamper_map = ""
 
-    manifest_tamper_keys = {
-        "tamper_tests_passed",
-        "tamper_test_case_map",
-        "tamper_tests_ms",
-    }
+    manifest_tamper_keys = {"tamper_tests_passed", "tamper_test_case_map", "tamper_tests_ms"}
     present_manifest_tamper_keys = manifest_tamper_keys & set(manifest)
     if present_manifest_tamper_keys:
         if present_manifest_tamper_keys != manifest_tamper_keys:
             raise ValueError(f"{context}: run manifest tamper state is partial")
-        manifest_tamper_passed = _AGGREGATE.as_bool(
-            manifest.get("tamper_tests_passed"), "tamper_tests_passed", context
-        )
-        manifest_tamper_ms = _AGGREGATE.as_float(
-            manifest.get("tamper_tests_ms"), "tamper_tests_ms", context
-        )
+        manifest_tamper_passed = _AGGREGATE.as_bool(manifest.get("tamper_tests_passed"), "tamper_tests_passed", context)
+        manifest_tamper_ms = _AGGREGATE.as_float(manifest.get("tamper_tests_ms"), "tamper_tests_ms", context)
         if manifest_tamper_passed:
-            manifest_tamper_map = _AGGREGATE.canonical_tamper_case_string(
-                manifest.get("tamper_test_case_map"), "tamper_test_case_map", context
-            )
+            manifest_tamper_map = _AGGREGATE.canonical_tamper_case_string(manifest.get("tamper_test_case_map"), "tamper_test_case_map", context)
             if manifest_tamper_map != report_tamper_map or manifest_tamper_ms != report_tamper_ms:
                 raise ValueError(f"{context}: verifier report tamper state is not manifest-bound")
         elif manifest.get("tamper_test_case_map") != "" or manifest_tamper_ms != 0.0:
@@ -206,12 +168,8 @@ def _validate_verifier_report_binding(
         raise ValueError(f"{context}: verifier report verifier registry digest is not manifest-bound")
     if report.get("proof_bin_sha256") != proof_hash:
         raise ValueError(f"{context}: verifier report proof hash is not proof-bound")
-    parsed_digest = _AGGREGATE.sha256_string(
-        report.get("parsed_output_digest"), "parsed_output_digest", context
-    )
-    report_output_digest = _AGGREGATE.sha256_string(
-        report.get("proof_public_output_hash"), "proof_public_output_hash", context
-    )
+    parsed_digest = _AGGREGATE.sha256_string(report.get("parsed_output_digest"), "parsed_output_digest", context)
+    report_output_digest = _AGGREGATE.sha256_string(report.get("proof_public_output_hash"), "proof_public_output_hash", context)
     if parsed_digest != report_output_digest or report_output_digest != manifest.get("proof_public_output_hash"):
         raise ValueError(f"{context}: verifier report output digest is not manifest-bound")
     if _AGGREGATE.as_int(report.get("parsed_output_count"), "parsed_output_count", context) <= 0:
@@ -221,47 +179,24 @@ def _validate_verifier_report_binding(
         raise ValueError(f"{context}: verifier_report_hash does not match verifier_report.json")
 
 
-def load_manifest(
-    path: pathlib.Path,
-    attestation_path: str | None = None,
-    attestation_digest: str | None = None,
-) -> Dict[str, object]:
+def load_manifest(path: pathlib.Path, attestation_path: str | None = None, attestation_digest: str | None = None) -> Dict[str, object]:
     manifest_path = path / "run_manifest.json" if path.is_dir() else path
     if not manifest_path.is_file() or manifest_path.is_symlink():
         raise ValueError(f"run manifest must be a regular file: {manifest_path}")
-    data = _AGGREGATE.load_json_object(
-        manifest_path, f"benchmark export/{manifest_path.parent}"
-    )
+    data = _AGGREGATE.load_json_object(manifest_path, f"benchmark export/{manifest_path.parent}")
     manifest = {key: normalize_scalar(value) for key, value in data.items()}
-    _AGGREGATE.nonempty_string(
-        manifest.get("input_preprocess_id"),
-        "input_preprocess_id",
-        f"benchmark export/{manifest_path.parent}",
-    )
+    _AGGREGATE.nonempty_string(manifest.get("input_preprocess_id"), "input_preprocess_id", f"benchmark export/{manifest_path.parent}")
     proof_path = manifest_path.parent / "proof.bin"
     if not proof_path.is_file() or proof_path.is_symlink():
         raise ValueError(f"official benchmark export requires a regular proof.bin: {proof_path}")
     actual_proof_hash = _AGGREGATE.sha256_file(proof_path)
     if manifest.get("proof_hash") != actual_proof_hash:
-        raise ValueError(
-            f"official benchmark export proof_hash does not match proof.bin: {manifest_path.parent}"
-        )
+        raise ValueError(f"official benchmark export proof_hash does not match proof.bin: {manifest_path.parent}")
     _validate_verifier_report_binding(manifest, manifest_path, actual_proof_hash)
     attestation = _AGGREGATE.check_tamper_attestation_manifest_binding(
-        PROJECT_ROOT,
-        manifest_path.parent,
-        proof_path,
-        manifest,
-        attestation_path,
-        attestation_digest,
-        f"benchmark export/{manifest_path.parent}",
+        PROJECT_ROOT, manifest_path.parent, proof_path, manifest, attestation_path, attestation_digest, f"benchmark export/{manifest_path.parent}"
     )
-    return LoadedManifest(
-        manifest,
-        manifest_path,
-        attestation_path,
-        attestation_digest,
-    )
+    return LoadedManifest(manifest, manifest_path, attestation_path, attestation_digest)
 
 
 def infer_benchmark_mode(manifest: Dict[str, object]) -> str:
@@ -292,38 +227,22 @@ def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, obj
     # The binding helper performs `check_verified_tamper_attestation` from the
     # external path and digest; no caller-provided verified mapping is trusted.
     if not isinstance(manifest, LoadedManifest):
-        raise ValueError(
-            f"{context}: benchmark export requires a manifest loaded with external attestation inputs"
-        )
+        raise ValueError(f"{context}: benchmark export requires a manifest loaded with external attestation inputs")
     manifest_path = manifest._manifest_path
     proof_path = manifest_path.parent / "proof.bin"
     attestation = _AGGREGATE.check_tamper_attestation_manifest_binding(
-        PROJECT_ROOT,
-        manifest_path.parent,
-        proof_path,
-        manifest,
-        manifest._attestation_path,
-        manifest._attestation_digest,
-        context,
+        PROJECT_ROOT, manifest_path.parent, proof_path, manifest, manifest._attestation_path, manifest._attestation_digest, context
     )
     _AGGREGATE.check_manifest_tamper_state(manifest, attestation, context)
-    _, _, input_preprocess_id = _AGGREGATE.check_manifest_config_binding(
-        PROJECT_ROOT, dataset, manifest, context
-    )
+    _, _, input_preprocess_id = _AGGREGATE.check_manifest_config_binding(PROJECT_ROOT, dataset, manifest, context)
     benchmark_mode = infer_benchmark_mode(manifest)
     if benchmark_mode != "single":
         raise ValueError(f"official benchmark export only supports single manifests, got {benchmark_mode!r} for {dataset}")
-    if _AGGREGATE.as_bool(
-        manifest.get("is_full_dataset"), "is_full_dataset", f"benchmark export/{dataset}"
-    ) is not True:
+    if _AGGREGATE.as_bool(manifest.get("is_full_dataset"), "is_full_dataset", f"benchmark export/{dataset}") is not True:
         raise ValueError(f"official benchmark export only supports full-dataset manifests: {dataset}")
-    if _AGGREGATE.as_bool(
-        manifest.get("full_dataset"), "full_dataset", f"benchmark export/{dataset}"
-    ) is not True:
+    if _AGGREGATE.as_bool(manifest.get("full_dataset"), "full_dataset", f"benchmark export/{dataset}") is not True:
         raise ValueError(f"official benchmark export only supports full-dataset manifests: {dataset}")
-    if _AGGREGATE.as_bool(
-        manifest.get("stale_result"), "stale_result", f"benchmark export/{dataset}"
-    ) is not False:
+    if _AGGREGATE.as_bool(manifest.get("stale_result"), "stale_result", f"benchmark export/{dataset}") is not False:
         raise ValueError(f"official benchmark export refuses stale manifests: {dataset}")
     # Keep the benchmark table on the same manifest-level acceptance contract
     # as aggregate_secure_results.py.  In particular, `verified` alone only
@@ -333,9 +252,7 @@ def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, obj
     _AGGREGATE.check_formal_acceptance_state(manifest, f"benchmark export/{dataset}")
     timing_schema = manifest.get("timing_schema")
     if timing_schema != CANONICAL_TIMING_SCHEMA:
-        raise ValueError(
-            f"official benchmark export requires timing_schema={CANONICAL_TIMING_SCHEMA!r} for {dataset}, got {timing_schema!r}"
-        )
+        raise ValueError(f"official benchmark export requires timing_schema={CANONICAL_TIMING_SCHEMA!r} for {dataset}, got {timing_schema!r}")
     _AGGREGATE.validate_online_timing(manifest, context)
     timing_values = {}
     for field in ("commitment_time_ms", "prove_time_ms", "verify_time_ms"):
@@ -425,33 +342,17 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
     # 只展示三项正式时间和 canonical proof bytes 大小。
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "benchmark_mode": mode,
-        "rows": rows,
-    }
+    payload = {"generated_at": datetime.now(timezone.utc).isoformat(), "benchmark_mode": mode, "rows": rows}
     (output_dir / "latest.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
-    csv_columns = [
-        "dataset",
-        "status",
-        "blocker",
-        "benchmark_mode",
-        "commitment_time_ms",
-        "prove_time_ms",
-        "verify_time_ms",
-        "proof_size_bytes",
-    ]
+    csv_columns = ["dataset", "status", "blocker", "benchmark_mode", "commitment_time_ms", "prove_time_ms", "verify_time_ms", "proof_size_bytes"]
     with (output_dir / "latest.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=csv_columns)
         writer.writeheader()
         for row in rows:
             writer.writerow({column: row.get(column) for column in csv_columns})
 
-    lines = [
-        "# 最新正式结果",
-        "",
-    ]
+    lines = ["# 最新正式结果", ""]
     lines.extend(
         [
             "| 数据集 | 状态 | commitment_time_ms | prove_time_ms | verify_time_ms | proof_size_bytes | 阻塞说明 |",
@@ -481,18 +382,8 @@ def main() -> None:
     # 数据集顺序只影响展示，不允许改变每行来自正式 manifest 的字段定义。
     parser = argparse.ArgumentParser()
     parser.add_argument("--run", action="append", default=[], help="dataset=run_manifest.json_or_dir")
-    parser.add_argument(
-        "--attestation",
-        action="append",
-        default=[],
-        help="dataset=external tamper attestation path (one per --run)",
-    )
-    parser.add_argument(
-        "--attestation-digest",
-        action="append",
-        default=[],
-        help="dataset=external SHA-256 tamper-attestation digest (one per --run)",
-    )
+    parser.add_argument("--attestation", action="append", default=[], help="dataset=external tamper attestation path (one per --run)")
+    parser.add_argument("--attestation-digest", action="append", default=[], help="dataset=external SHA-256 tamper-attestation digest (one per --run)")
     parser.add_argument("--blocked", action="append", default=[], help="dataset=reason")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--dataset-order", default="cora,citeseer,pubmed,ppi,ogbn_arxiv")
@@ -518,14 +409,7 @@ def main() -> None:
             raise ValueError(f"duplicate run assignment: {dataset}")
         if dataset not in attestation_paths or dataset not in attestation_digests:
             raise ValueError(f"missing external attestation path or digest for {dataset}")
-        rows_by_dataset[dataset] = make_success_row(
-            dataset,
-            load_manifest(
-                pathlib.Path(path_value),
-                attestation_paths[dataset],
-                attestation_digests[dataset],
-            ),
-        )
+        rows_by_dataset[dataset] = make_success_row(dataset, load_manifest(pathlib.Path(path_value), attestation_paths[dataset], attestation_digests[dataset]))
 
     mode = ensure_consistent_benchmark_mode(list(rows_by_dataset.values()))
     blocked_mode = args.blocked_benchmark_mode or mode
@@ -535,17 +419,11 @@ def main() -> None:
             raise ValueError(f"duplicate benchmark assignment: {dataset}")
         rows_by_dataset[dataset] = make_blocked_row(dataset, blocked_mode, reason)
 
-    successful_datasets = {
-        dataset for dataset, row in rows_by_dataset.items() if row["status"] == "ok"
-    }
+    successful_datasets = {dataset for dataset, row in rows_by_dataset.items() if row["status"] == "ok"}
     if set(attestation_paths) != successful_datasets:
-        raise ValueError(
-            "external attestation paths must cover exactly the successful --run datasets"
-        )
+        raise ValueError("external attestation paths must cover exactly the successful --run datasets")
     if set(attestation_digests) != successful_datasets:
-        raise ValueError(
-            "external attestation digests must cover exactly the successful --run datasets"
-        )
+        raise ValueError("external attestation digests must cover exactly the successful --run datasets")
 
     ordered_rows: List[Dict[str, object]] = []
     ordered_datasets = [entry.strip() for entry in args.dataset_order.split(",") if entry.strip()]

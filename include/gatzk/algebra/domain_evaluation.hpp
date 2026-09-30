@@ -24,9 +24,7 @@ namespace gatzk::algebra
         return point.to_string();
     }
 
-    inline std::string domain_point_cache_key(
-        const std::shared_ptr<RootOfUnityDomain> &domain,
-        const FieldElement &point)
+    inline std::string domain_point_cache_key(const std::shared_ptr<RootOfUnityDomain> &domain, const FieldElement &point)
     {
         if (domain == nullptr)
         {
@@ -42,9 +40,7 @@ namespace gatzk::algebra
         std::vector<mcl::Fr> native_weights;
     };
 
-    inline DomainEvaluationWeights build_domain_evaluation_weights(
-        const std::shared_ptr<RootOfUnityDomain> &domain,
-        const FieldElement &point)
+    inline DomainEvaluationWeights build_domain_evaluation_weights(const std::shared_ptr<RootOfUnityDomain> &domain, const FieldElement &point)
     {
         if (domain == nullptr)
         {
@@ -52,9 +48,7 @@ namespace gatzk::algebra
         }
 
         DomainEvaluationWeights entry;
-        if (const auto shift = domain->rotation_shift(
-                FieldElement::one(), point);
-            shift.has_value())
+        if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value())
         {
             entry.direct_index = *shift;
         }
@@ -69,51 +63,29 @@ namespace gatzk::algebra
     class DomainEvaluationWeightCache
     {
     public:
-        const DomainEvaluationWeights &get(
-            const std::shared_ptr<RootOfUnityDomain> &domain,
-            const FieldElement &point)
+        const DomainEvaluationWeights &get(const std::shared_ptr<RootOfUnityDomain> &domain, const FieldElement &point)
         {
-            const auto cache_key =
-                domain_point_cache_key(
-                    domain,
-                    point);
+            const auto cache_key = domain_point_cache_key(domain, point);
 
-            return get_or_build(
-                cache_key,
-                [&]()
-                {
-                    return build_domain_evaluation_weights(
-                        domain,
-                        point);
-                });
+            return get_or_build(cache_key, [&]() { return build_domain_evaluation_weights(domain, point); });
         }
 
     private:
-        template <typename Builder>
-        const DomainEvaluationWeights &
-        get_or_build(
-            const std::string &cache_key,
-            Builder &&builder)
+        template <typename Builder> const DomainEvaluationWeights &get_or_build(const std::string &cache_key, Builder &&builder)
         {
             {
-                std::unique_lock<std::mutex>
-                    lock(mutex_);
+                std::unique_lock<std::mutex> lock(mutex_);
 
                 for (;;)
                 {
-                    if (const auto it =
-                            entries_.find(
-                                cache_key);
-                        it != entries_.end())
+                    if (const auto it = entries_.find(cache_key); it != entries_.end())
                     {
                         return it->second;
                     }
 
-                    if (!in_flight_.contains(
-                            cache_key))
+                    if (!in_flight_.contains(cache_key))
                     {
-                        in_flight_.insert(
-                            cache_key);
+                        in_flight_.insert(cache_key);
 
                         break;
                     }
@@ -124,19 +96,13 @@ namespace gatzk::algebra
 
             try
             {
-                auto entry =
-                    builder();
+                auto entry = builder();
 
-                std::lock_guard<std::mutex>
-                    lock(mutex_);
+                std::lock_guard<std::mutex> lock(mutex_);
 
-                in_flight_.erase(
-                    cache_key);
+                in_flight_.erase(cache_key);
 
-                const auto [it, inserted] =
-                    entries_.emplace(
-                        cache_key,
-                        std::move(entry));
+                const auto [it, inserted] = entries_.emplace(cache_key, std::move(entry));
 
                 (void)inserted;
 
@@ -147,11 +113,9 @@ namespace gatzk::algebra
             catch (...)
             {
                 {
-                    std::lock_guard<std::mutex>
-                        lock(mutex_);
+                    std::lock_guard<std::mutex> lock(mutex_);
 
-                    in_flight_.erase(
-                        cache_key);
+                    in_flight_.erase(cache_key);
                 }
 
                 cv_.notify_all();
@@ -163,12 +127,8 @@ namespace gatzk::algebra
         std::mutex mutex_;
         std::condition_variable cv_;
 
-        std::unordered_set<std::string>
-            in_flight_;
+        std::unordered_set<std::string> in_flight_;
 
-        std::unordered_map<
-            std::string,
-            DomainEvaluationWeights>
-            entries_;
+        std::unordered_map<std::string, DomainEvaluationWeights> entries_;
     };
 }

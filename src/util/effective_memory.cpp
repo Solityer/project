@@ -44,15 +44,11 @@ namespace gatzk::util
 
         std::string_view trim(std::string_view value)
         {
-            while (!value.empty() &&
-                   (value.front() == ' ' || value.front() == '\t' ||
-                    value.front() == '\r' || value.front() == '\n'))
+            while (!value.empty() && (value.front() == ' ' || value.front() == '\t' || value.front() == '\r' || value.front() == '\n'))
             {
                 value.remove_prefix(1);
             }
-            while (!value.empty() &&
-                   (value.back() == ' ' || value.back() == '\t' ||
-                    value.back() == '\r' || value.back() == '\n'))
+            while (!value.empty() && (value.back() == ' ' || value.back() == '\t' || value.back() == '\r' || value.back() == '\n'))
             {
                 value.remove_suffix(1);
             }
@@ -68,11 +64,7 @@ namespace gatzk::util
             }
 
             std::uint64_t parsed = 0;
-            const auto result = std::from_chars(
-                value.data(),
-                value.data() + value.size(),
-                parsed,
-                10);
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed, 10);
             if (result.ec != std::errc{} || result.ptr != value.data() + value.size())
             {
                 return std::nullopt;
@@ -110,9 +102,7 @@ namespace gatzk::util
                 return parsed;
             }
 
-            if (*value >
-                static_cast<std::uint64_t>(
-                    std::numeric_limits<std::size_t>::max()))
+            if (*value > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
             {
                 return parsed;
             }
@@ -122,9 +112,7 @@ namespace gatzk::util
             return parsed;
         }
 
-        ParsedBytes parse_meminfo_bytes(
-            std::string_view raw,
-            bool *malformed)
+        ParsedBytes parse_meminfo_bytes(std::string_view raw, bool *malformed)
         {
             ParsedBytes parsed;
             const auto separator = raw.find_first_of(" \t");
@@ -147,17 +135,9 @@ namespace gatzk::util
                 return parsed;
             }
             const auto number_end = raw.find_first_of(" \t", number_begin);
-            const auto number = raw.substr(
-                number_begin,
-                number_end == std::string_view::npos
-                    ? std::string_view::npos
-                    : number_end - number_begin);
+            const auto number = raw.substr(number_begin, number_end == std::string_view::npos ? std::string_view::npos : number_end - number_begin);
             const auto value_kib = parse_uint64(number);
-            if (!value_kib.has_value() ||
-                *value_kib >
-                    static_cast<std::uint64_t>(
-                        std::numeric_limits<std::size_t>::max()) /
-                        kKiB)
+            if (!value_kib.has_value() || *value_kib > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) / kKiB)
             {
                 if (malformed != nullptr)
                 {
@@ -172,11 +152,7 @@ namespace gatzk::util
                 if (unit_begin != std::string_view::npos)
                 {
                     const auto unit_end = raw.find_first_of(" \t", unit_begin);
-                    const auto unit = raw.substr(
-                        unit_begin,
-                        unit_end == std::string_view::npos
-                            ? std::string_view::npos
-                            : unit_end - unit_begin);
+                    const auto unit = raw.substr(unit_begin, unit_end == std::string_view::npos ? std::string_view::npos : unit_end - unit_begin);
                     if (unit != "kB")
                     {
                         if (malformed != nullptr)
@@ -201,11 +177,7 @@ namespace gatzk::util
             while (begin <= text.size())
             {
                 const auto end = text.find('\n', begin);
-                const auto line = text.substr(
-                    begin,
-                    end == std::string_view::npos
-                        ? std::string_view::npos
-                        : end - begin);
+                const auto line = text.substr(begin, end == std::string_view::npos ? std::string_view::npos : end - begin);
                 const auto colon = line.find(':');
                 if (colon != std::string_view::npos)
                 {
@@ -229,10 +201,7 @@ namespace gatzk::util
             return parsed;
         }
 
-        bool checked_add(
-            std::size_t lhs,
-            std::size_t rhs,
-            std::size_t *out)
+        bool checked_add(std::size_t lhs, std::size_t rhs, std::size_t *out)
         {
             if (lhs > std::numeric_limits<std::size_t>::max() - rhs)
             {
@@ -242,8 +211,7 @@ namespace gatzk::util
             return true;
         }
 
-        std::optional<std::string> read_text_file(
-            const std::filesystem::path &path)
+        std::optional<std::string> read_text_file(const std::filesystem::path &path)
         {
             std::ifstream input(path);
             if (!input)
@@ -259,19 +227,13 @@ namespace gatzk::util
             return contents.str();
         }
 
-        bool controller_list_contains(
-            std::string_view controllers,
-            std::string_view wanted)
+        bool controller_list_contains(std::string_view controllers, std::string_view wanted)
         {
             std::size_t begin = 0;
             while (begin <= controllers.size())
             {
                 const auto end = controllers.find(',', begin);
-                const auto controller = controllers.substr(
-                    begin,
-                    end == std::string_view::npos
-                        ? std::string_view::npos
-                        : end - begin);
+                const auto controller = controllers.substr(begin, end == std::string_view::npos ? std::string_view::npos : end - begin);
                 if (controller == wanted)
                 {
                     return true;
@@ -285,14 +247,10 @@ namespace gatzk::util
             return false;
         }
 
-        std::vector<std::filesystem::path> cgroup_paths(
-            bool v2,
-            std::string_view file)
+        std::vector<std::filesystem::path> cgroup_paths(bool v2, std::string_view file)
         {
             std::vector<std::filesystem::path> membership_paths;
-            const auto root = v2
-                                  ? std::filesystem::path("/sys/fs/cgroup")
-                                  : std::filesystem::path("/sys/fs/cgroup/memory");
+            const auto root = v2 ? std::filesystem::path("/sys/fs/cgroup") : std::filesystem::path("/sys/fs/cgroup/memory");
 
             const auto self_cgroup = read_text_file("/proc/self/cgroup");
             if (!self_cgroup.has_value())
@@ -304,32 +262,17 @@ namespace gatzk::util
             while (begin <= self_cgroup->size())
             {
                 const auto end = self_cgroup->find('\n', begin);
-                const auto line = std::string_view(*self_cgroup).substr(
-                    begin,
-                    end == std::string::npos
-                        ? std::string_view::npos
-                        : end - begin);
+                const auto line = std::string_view(*self_cgroup).substr(begin, end == std::string::npos ? std::string_view::npos : end - begin);
                 const auto first_colon = line.find(':');
-                const auto second_colon =
-                    first_colon == std::string_view::npos
-                        ? std::string_view::npos
-                        : line.find(':', first_colon + 1);
-                if (first_colon != std::string_view::npos &&
-                    second_colon != std::string_view::npos)
+                const auto second_colon = first_colon == std::string_view::npos ? std::string_view::npos : line.find(':', first_colon + 1);
+                if (first_colon != std::string_view::npos && second_colon != std::string_view::npos)
                 {
-                    const auto controllers = line.substr(
-                        first_colon + 1,
-                        second_colon - first_colon - 1);
+                    const auto controllers = line.substr(first_colon + 1, second_colon - first_colon - 1);
                     const auto relative = line.substr(second_colon + 1);
-                    const bool matches = v2
-                                              ? controllers.empty()
-                                              : controller_list_contains(
-                                                    controllers,
-                                                    "memory");
+                    const bool matches = v2 ? controllers.empty() : controller_list_contains(controllers, "memory");
                     if (matches && !relative.empty() && relative.front() == '/')
                     {
-                        membership_paths.emplace_back(
-                            root / relative.substr(1) / file);
+                        membership_paths.emplace_back(root / relative.substr(1) / file);
                     }
                 }
                 if (end == std::string::npos)
@@ -349,9 +292,7 @@ namespace gatzk::util
             return {root / file};
         }
 
-        std::optional<std::string> read_first_cgroup_file(
-            bool v2,
-            std::string_view file)
+        std::optional<std::string> read_first_cgroup_file(bool v2, std::string_view file)
         {
             for (const auto &path : cgroup_paths(v2, file))
             {
@@ -384,8 +325,7 @@ namespace gatzk::util
 
     } // namespace
 
-    EffectiveMemorySnapshot parse_effective_memory_snapshot(
-        const EffectiveMemoryTextSources &sources)
+    EffectiveMemorySnapshot parse_effective_memory_snapshot(const EffectiveMemoryTextSources &sources)
     {
         EffectiveMemorySnapshot snapshot;
         bool host_malformed = false;
@@ -396,39 +336,15 @@ namespace gatzk::util
         snapshot.host_available_bytes = meminfo.available.value;
         snapshot.conservative = host_malformed;
 
-        const auto select_limit = [](std::string_view legacy,
-                                     std::string_view membership,
-                                     std::string_view root)
-        {
-            return !membership.empty()
-                       ? membership
-                       : (!root.empty() ? root : legacy);
-        };
-        const auto select_current = [](std::string_view legacy,
-                                       std::string_view membership,
-                                       std::string_view root)
-        {
-            return !membership.empty()
-                       ? membership
-                       : (!root.empty() ? root : legacy);
-        };
+        const auto select_limit = [](std::string_view legacy, std::string_view membership, std::string_view root)
+        { return !membership.empty() ? membership : (!root.empty() ? root : legacy); };
+        const auto select_current = [](std::string_view legacy, std::string_view membership, std::string_view root)
+        { return !membership.empty() ? membership : (!root.empty() ? root : legacy); };
 
-        const auto v2_limit = select_limit(
-            sources.cgroup_v2_limit,
-            sources.cgroup_v2_membership_limit,
-            sources.cgroup_v2_root_limit);
-        const auto v2_current = select_current(
-            sources.cgroup_v2_current,
-            sources.cgroup_v2_membership_current,
-            sources.cgroup_v2_root_current);
-        const auto v1_limit = select_limit(
-            sources.cgroup_v1_limit,
-            sources.cgroup_v1_membership_limit,
-            sources.cgroup_v1_root_limit);
-        const auto v1_current = select_current(
-            sources.cgroup_v1_current,
-            sources.cgroup_v1_membership_current,
-            sources.cgroup_v1_root_current);
+        const auto v2_limit = select_limit(sources.cgroup_v2_limit, sources.cgroup_v2_membership_limit, sources.cgroup_v2_root_limit);
+        const auto v2_current = select_current(sources.cgroup_v2_current, sources.cgroup_v2_membership_current, sources.cgroup_v2_root_current);
+        const auto v1_limit = select_limit(sources.cgroup_v1_limit, sources.cgroup_v1_membership_limit, sources.cgroup_v1_root_limit);
+        const auto v1_current = select_current(sources.cgroup_v1_current, sources.cgroup_v1_membership_current, sources.cgroup_v1_root_current);
 
         // Do not trim before checking presence: whitespace and the explicit
         // unreadable/empty markers are controller evidence and must be
@@ -438,10 +354,8 @@ namespace gatzk::util
         snapshot.cgroup_v2 = use_v2;
         snapshot.cgroup_v1 = use_v1;
 
-        const auto limit = parse_cgroup_value(
-            use_v2 ? v2_limit : v1_limit);
-        const auto current = parse_cgroup_value(
-            use_v2 ? v2_current : v1_current);
+        const auto limit = parse_cgroup_value(use_v2 ? v2_limit : v1_limit);
+        const auto current = parse_cgroup_value(use_v2 ? v2_current : v1_current);
 
         if (use_v2 || use_v1)
         {
@@ -471,8 +385,7 @@ namespace gatzk::util
             }
         }
 
-        if (snapshot.host_total_known && snapshot.host_available_known &&
-            snapshot.host_available_bytes > snapshot.host_total_bytes)
+        if (snapshot.host_total_known && snapshot.host_available_known && snapshot.host_available_bytes > snapshot.host_total_bytes)
         {
             snapshot.host_available_known = false;
             snapshot.host_available_bytes = 0;
@@ -484,9 +397,7 @@ namespace gatzk::util
             snapshot.effective_total_bytes = snapshot.host_total_bytes;
             snapshot.effective_total_known = true;
         }
-        if (snapshot.cgroup_limit_known &&
-            (!snapshot.effective_total_known ||
-             snapshot.cgroup_limit_bytes < snapshot.effective_total_bytes))
+        if (snapshot.cgroup_limit_known && (!snapshot.effective_total_known || snapshot.cgroup_limit_bytes < snapshot.effective_total_bytes))
         {
             snapshot.effective_total_bytes = snapshot.cgroup_limit_bytes;
             snapshot.effective_total_known = true;
@@ -515,9 +426,7 @@ namespace gatzk::util
             if (snapshot.cgroup_current_known)
             {
                 const auto cgroup_available =
-                    snapshot.cgroup_current_bytes >= snapshot.cgroup_limit_bytes
-                        ? std::size_t{0}
-                        : snapshot.cgroup_limit_bytes - snapshot.cgroup_current_bytes;
+                    snapshot.cgroup_current_bytes >= snapshot.cgroup_limit_bytes ? std::size_t{0} : snapshot.cgroup_limit_bytes - snapshot.cgroup_current_bytes;
                 if (!available_known || cgroup_available < available)
                 {
                     available = cgroup_available;
@@ -538,8 +447,7 @@ namespace gatzk::util
         // MemAvailable value cannot prove that the process is below its
         // effective cgroup limit. Preserve the diagnostic byte value only in
         // the snapshot fields; public admission must see unknown/zero.
-        if ((snapshot.cgroup_v2 || snapshot.cgroup_v1) &&
-            snapshot.cgroup_malformed)
+        if ((snapshot.cgroup_v2 || snapshot.cgroup_v1) && snapshot.cgroup_malformed)
         {
             available = 0;
             available_known = false;
@@ -548,8 +456,7 @@ namespace gatzk::util
 
         snapshot.effective_available_bytes = available;
         snapshot.effective_available_known = available_known;
-        if (snapshot.effective_total_known &&
-            snapshot.effective_available_bytes > snapshot.effective_total_bytes)
+        if (snapshot.effective_total_known && snapshot.effective_available_bytes > snapshot.effective_total_bytes)
         {
             snapshot.effective_available_bytes = snapshot.effective_total_bytes;
             snapshot.conservative = true;
@@ -587,22 +494,21 @@ namespace gatzk::util
             cgroup_v1_current = *contents;
         }
 
-        auto snapshot = parse_effective_memory_snapshot(
-            EffectiveMemoryTextSources{
-                .meminfo = meminfo,
-                .cgroup_v2_limit = cgroup_v2_limit,
-                .cgroup_v2_current = cgroup_v2_current,
-                .cgroup_v1_limit = cgroup_v1_limit,
-                .cgroup_v1_current = cgroup_v1_current,
-                .cgroup_v2_membership_limit = {},
-                .cgroup_v2_membership_current = {},
-                .cgroup_v2_root_limit = {},
-                .cgroup_v2_root_current = {},
-                .cgroup_v1_membership_limit = {},
-                .cgroup_v1_membership_current = {},
-                .cgroup_v1_root_limit = {},
-                .cgroup_v1_root_current = {},
-            });
+        auto snapshot = parse_effective_memory_snapshot(EffectiveMemoryTextSources{
+            .meminfo = meminfo,
+            .cgroup_v2_limit = cgroup_v2_limit,
+            .cgroup_v2_current = cgroup_v2_current,
+            .cgroup_v1_limit = cgroup_v1_limit,
+            .cgroup_v1_current = cgroup_v1_current,
+            .cgroup_v2_membership_limit = {},
+            .cgroup_v2_membership_current = {},
+            .cgroup_v2_root_limit = {},
+            .cgroup_v2_root_current = {},
+            .cgroup_v1_membership_limit = {},
+            .cgroup_v1_membership_current = {},
+            .cgroup_v1_root_limit = {},
+            .cgroup_v1_root_current = {},
+        });
 
         // /proc/meminfo can be unavailable in a restricted container or can
         // contain an overflowing/malformed value.  Retain independently
@@ -610,20 +516,15 @@ namespace gatzk::util
         // trustworthy total and available count.  Do not synthesize an
         // available budget from total/8: an unknown available count remains
         // zero and is rejected by the common admission helper.
-        const auto bytes_from_pages = [](long pages_raw, long page_size_raw)
-            -> std::optional<std::size_t>
+        const auto bytes_from_pages = [](long pages_raw, long page_size_raw) -> std::optional<std::size_t>
         {
             if (pages_raw <= 0 || page_size_raw <= 0)
             {
                 return std::nullopt;
             }
             const auto pages = static_cast<std::uintmax_t>(pages_raw);
-            const auto page_size =
-                static_cast<std::uintmax_t>(page_size_raw);
-            if (pages >
-                static_cast<std::uintmax_t>(
-                    std::numeric_limits<std::size_t>::max()) /
-                    page_size)
+            const auto page_size = static_cast<std::uintmax_t>(page_size_raw);
+            if (pages > static_cast<std::uintmax_t>(std::numeric_limits<std::size_t>::max()) / page_size)
             {
                 return std::nullopt;
             }
@@ -631,24 +532,17 @@ namespace gatzk::util
         };
 
         const auto page_size_raw = ::sysconf(_SC_PAGESIZE);
-        const auto sysconf_total = bytes_from_pages(
-            ::sysconf(_SC_PHYS_PAGES),
-            page_size_raw);
-        const auto sysconf_available = bytes_from_pages(
-            ::sysconf(_SC_AVPHYS_PAGES),
-            page_size_raw);
+        const auto sysconf_total = bytes_from_pages(::sysconf(_SC_PHYS_PAGES), page_size_raw);
+        const auto sysconf_available = bytes_from_pages(::sysconf(_SC_AVPHYS_PAGES), page_size_raw);
 
         if (!snapshot.host_total_known && sysconf_total.has_value())
         {
             snapshot.host_total_known = true;
             snapshot.host_total_bytes = *sysconf_total;
-            if (!snapshot.effective_total_known ||
-                snapshot.host_total_bytes <
-                    snapshot.effective_total_bytes)
+            if (!snapshot.effective_total_known || snapshot.host_total_bytes < snapshot.effective_total_bytes)
             {
                 snapshot.effective_total_known = true;
-                snapshot.effective_total_bytes =
-                    snapshot.host_total_bytes;
+                snapshot.effective_total_bytes = snapshot.host_total_bytes;
             }
             snapshot.conservative = true;
         }
@@ -657,15 +551,11 @@ namespace gatzk::util
         // bare-metal host. It is only used when no finite cgroup limit is
         // known and no malformed controller value needs to be contained. A
         // finite controller's current usage remains authoritative.
-        if (!snapshot.host_available_known &&
-            sysconf_available.has_value() &&
-            !snapshot.cgroup_limit_known &&
-            !snapshot.cgroup_malformed)
+        if (!snapshot.host_available_known && sysconf_available.has_value() && !snapshot.cgroup_limit_known && !snapshot.cgroup_malformed)
         {
             snapshot.host_available_known = true;
             snapshot.host_available_bytes = *sysconf_available;
-            if (snapshot.host_total_known &&
-                snapshot.host_available_bytes > snapshot.host_total_bytes)
+            if (snapshot.host_total_known && snapshot.host_available_bytes > snapshot.host_total_bytes)
             {
                 snapshot.host_available_known = false;
                 snapshot.host_available_bytes = 0;
@@ -673,8 +563,7 @@ namespace gatzk::util
             }
             else if (!snapshot.effective_available_known)
             {
-                snapshot.effective_available_bytes =
-                    snapshot.host_available_bytes;
+                snapshot.effective_available_bytes = snapshot.host_available_bytes;
                 snapshot.effective_available_known = true;
                 snapshot.conservative = true;
             }
@@ -701,16 +590,12 @@ namespace gatzk::util
         return snapshot;
     }
 
-    std::size_t recommended_memory_reserve_bytes(
-        const EffectiveMemorySnapshot &snapshot,
-        std::size_t minimum_bytes,
-        std::size_t numerator,
-        std::size_t denominator)
+    std::size_t recommended_memory_reserve_bytes(const EffectiveMemorySnapshot &snapshot, std::size_t minimum_bytes, std::size_t numerator,
+                                                 std::size_t denominator)
     {
         if (denominator == 0)
         {
-            throw std::invalid_argument(
-                "memory reserve denominator must be non-zero");
+            throw std::invalid_argument("memory reserve denominator must be non-zero");
         }
         if (numerator == 0)
         {
@@ -723,26 +608,17 @@ namespace gatzk::util
             // while admit_effective_memory rejects unknown availability.
             return minimum_bytes;
         }
-        const auto scaled =
-            snapshot.effective_total_bytes <=
-                        std::numeric_limits<std::size_t>::max() / numerator
-                ? (snapshot.effective_total_bytes * numerator) / denominator
-                : std::numeric_limits<std::size_t>::max();
+        const auto scaled = snapshot.effective_total_bytes <= std::numeric_limits<std::size_t>::max() / numerator
+                                ? (snapshot.effective_total_bytes * numerator) / denominator
+                                : std::numeric_limits<std::size_t>::max();
         return std::max(minimum_bytes, scaled);
     }
 
-    EffectiveMemoryAdmission admit_effective_memory(
-        const EffectiveMemorySnapshot &snapshot,
-        std::size_t transient_bytes,
-        std::size_t geometry_bytes,
-        std::size_t reserve_bytes,
-        std::size_t divisor,
-        std::size_t maximum_budget_bytes)
+    EffectiveMemoryAdmission admit_effective_memory(const EffectiveMemorySnapshot &snapshot, std::size_t transient_bytes, std::size_t geometry_bytes,
+                                                    std::size_t reserve_bytes, std::size_t divisor, std::size_t maximum_budget_bytes)
     {
         EffectiveMemoryAdmission admission{
-            .available_bytes = snapshot.effective_available_known
-                                   ? snapshot.effective_available_bytes
-                                   : std::size_t{0},
+            .available_bytes = snapshot.effective_available_known ? snapshot.effective_available_bytes : std::size_t{0},
             .reserve_bytes = reserve_bytes,
             .transient_bytes = transient_bytes,
             .geometry_bytes = geometry_bytes,
@@ -751,46 +627,34 @@ namespace gatzk::util
         };
 
         std::size_t overhead = 0;
-        if (!snapshot.effective_available_known ||
-            !checked_add(reserve_bytes, transient_bytes, &overhead) ||
-            !checked_add(overhead, geometry_bytes, &overhead) ||
-            divisor == 0 ||
-            admission.available_bytes <= overhead)
+        if (!snapshot.effective_available_known || !checked_add(reserve_bytes, transient_bytes, &overhead) ||
+            !checked_add(overhead, geometry_bytes, &overhead) || divisor == 0 || admission.available_bytes <= overhead)
         {
             return admission;
         }
 
-        auto budget =
-            (admission.available_bytes - overhead) / divisor;
+        auto budget = (admission.available_bytes - overhead) / divisor;
         if (snapshot.conservative)
         {
             budget /= 2;
         }
-        admission.budget_bytes =
-            std::min(budget, maximum_budget_bytes);
+        admission.budget_bytes = std::min(budget, maximum_budget_bytes);
         return admission;
     }
 
-    OpeningMemoryAdmission admit_opening_memory(
-        const EffectiveMemorySnapshot &snapshot,
-        const OpeningMemoryWorkset *worksets,
-        std::size_t workset_count,
-        std::size_t reserve_bytes,
-        std::size_t maximum_parallel_groups)
+    OpeningMemoryAdmission admit_opening_memory(const EffectiveMemorySnapshot &snapshot, const OpeningMemoryWorkset *worksets, std::size_t workset_count,
+                                                std::size_t reserve_bytes, std::size_t maximum_parallel_groups)
     {
         OpeningMemoryAdmission result{
             .budget_bytes = 0,
             .largest_workset_bytes = 0,
-            .maximum_parallel_groups = workset_count == 0
-                                           ? 0
-                                           : std::size_t{1},
+            .maximum_parallel_groups = workset_count == 0 ? 0 : std::size_t{1},
             .memory_known = snapshot.effective_available_known,
             .overflow = false,
             .conservative = snapshot.conservative,
         };
 
-        if (worksets == nullptr || workset_count == 0 ||
-            maximum_parallel_groups == 0)
+        if (worksets == nullptr || workset_count == 0 || maximum_parallel_groups == 0)
         {
             result.maximum_parallel_groups = 0;
             return result;
@@ -800,43 +664,29 @@ namespace gatzk::util
         {
             const auto &workset = worksets[index];
             std::size_t total = 0;
-            if (!checked_add(total, workset.folded_bytes, &total) ||
-                !checked_add(total, workset.scratch_bytes, &total) ||
+            if (!checked_add(total, workset.folded_bytes, &total) || !checked_add(total, workset.scratch_bytes, &total) ||
                 !checked_add(total, workset.source_bytes, &total))
             {
                 result.overflow = true;
                 result.maximum_parallel_groups = 1;
                 return result;
             }
-            result.largest_workset_bytes = std::max(
-                result.largest_workset_bytes,
-                total);
+            result.largest_workset_bytes = std::max(result.largest_workset_bytes, total);
         }
 
-        const auto base = admit_effective_memory(
-            snapshot,
-            0,
-            0,
-            reserve_bytes,
-            1,
-            std::numeric_limits<std::size_t>::max());
+        const auto base = admit_effective_memory(snapshot, 0, 0, reserve_bytes, 1, std::numeric_limits<std::size_t>::max());
         result.budget_bytes = base.budget_bytes;
 
         // A snapshot without a trustworthy available-memory value is never
         // used to infer safe overlap.  One group remains the fail-closed cap.
-        if (!result.memory_known ||
-            result.largest_workset_bytes == 0 ||
-            result.budget_bytes == 0)
+        if (!result.memory_known || result.largest_workset_bytes == 0 || result.budget_bytes == 0)
         {
             result.maximum_parallel_groups = 1;
             return result;
         }
 
-        const auto by_budget =
-            result.budget_bytes / result.largest_workset_bytes;
-        result.maximum_parallel_groups = std::min(
-            maximum_parallel_groups,
-            std::max<std::size_t>(1, by_budget));
+        const auto by_budget = result.budget_bytes / result.largest_workset_bytes;
+        result.maximum_parallel_groups = std::min(maximum_parallel_groups, std::max<std::size_t>(1, by_budget));
         return result;
     }
 

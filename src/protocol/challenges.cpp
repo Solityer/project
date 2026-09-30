@@ -27,10 +27,7 @@ namespace gatzk::protocol
         std::string sha256_hex(std::string_view data)
         {
             std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
-            SHA256(
-                reinterpret_cast<const unsigned char *>(data.data()),
-                data.size(),
-                digest.data());
+            SHA256(reinterpret_cast<const unsigned char *>(data.data()), data.size(), digest.data());
             std::ostringstream out;
             out << std::hex << std::setfill('0');
             for (const auto byte : digest)
@@ -45,10 +42,7 @@ namespace gatzk::protocol
             transcript.absorb_text(label, value);
         }
 
-        void absorb(
-            crypto::Transcript &transcript,
-            const std::string &label,
-            const std::unordered_map<std::string, crypto::Commitment> &commitments)
+        void absorb(crypto::Transcript &transcript, const std::string &label, const std::unordered_map<std::string, crypto::Commitment> &commitments)
         {
             transcript.absorb_commitment(label, commitments.at(label).point);
         }
@@ -58,10 +52,8 @@ namespace gatzk::protocol
             transcript.absorb_commitment(label, context.static_commitments.at(label).point);
         }
 
-        void absorb_model_reblind(
-            crypto::Transcript &transcript,
-            const std::string &anchor_label,
-            const std::unordered_map<std::string, crypto::Commitment> &commitments)
+        void absorb_model_reblind(crypto::Transcript &transcript, const std::string &anchor_label,
+                                  const std::unordered_map<std::string, crypto::Commitment> &commitments)
         {
             const auto proof_label = model_proof_local_label(anchor_label);
             const auto witness_label = model_reblind_witness_label(anchor_label);
@@ -126,8 +118,7 @@ namespace gatzk::protocol
 
         void append_attention_head_dynamic_labels(std::vector<std::string> &labels, const std::string &prefix)
         {
-            auto push = [&](const std::string &suffix)
-            { labels.push_back(prefix + "_" + suffix); };
+            auto push = [&](const std::string &suffix) { labels.push_back(prefix + "_" + suffix); };
             push("H_prime");
             push("a_proj");
             push("b_proj");
@@ -234,11 +225,8 @@ namespace gatzk::protocol
             push("R_dst");
         }
 
-        void append_concat_labels(
-            std::vector<std::string> &labels,
-            const std::string &concat_label,
-            const std::string &concat_star_label,
-            const std::string &cat_prefix)
+        void append_concat_labels(std::vector<std::string> &labels, const std::string &concat_label, const std::string &concat_star_label,
+                                  const std::string &cat_prefix)
         {
             labels.push_back(concat_label);
             labels.push_back(concat_star_label);
@@ -248,11 +236,8 @@ namespace gatzk::protocol
             labels.push_back(cat_prefix + "_Acc");
         }
 
-        void append_output_head_dynamic_labels(
-            std::vector<std::string> &labels,
-            const std::string &prefix,
-            const std::string &y_lin_label,
-            const std::string &y_label)
+        void append_output_head_dynamic_labels(std::vector<std::string> &labels, const std::string &prefix, const std::string &y_lin_label,
+                                               const std::string &y_label)
         {
             labels.push_back(prefix + "_Y_prime");
             labels.push_back(prefix + "_a_proj");
@@ -271,9 +256,7 @@ namespace gatzk::protocol
             labels.push_back(prefix + "_E_src_edge");
             labels.push_back(prefix + "_E_dst_edge");
             labels.push_back(prefix + "_Y_prime_star");
-            labels.push_back(
-                external_mask_label(
-                    prefix + "_Y_prime_star"));
+            labels.push_back(external_mask_label(prefix + "_Y_prime_star"));
             labels.push_back(prefix + "_Y_prime_star_edge");
             labels.push_back(prefix + "_Table_src");
             labels.push_back(prefix + "_Query_src");
@@ -348,14 +331,9 @@ namespace gatzk::protocol
             labels.push_back(prefix + "_Y_flat");
         }
 
-        void append_signed_division_labels(
-            std::vector<std::string> &labels,
-            const std::string &prefix,
-            std::size_t range_bits)
+        void append_signed_division_labels(std::vector<std::string> &labels, const std::string &prefix, std::size_t range_bits)
         {
-            for (const auto *suffix : {
-                     "Active", "X", "D", "Y", "Sigma", "Zero",
-                     "A", "A_inv", "D_inv", "Q", "R", "Delta"})
+            for (const auto *suffix : {"Active", "X", "D", "Y", "Sigma", "Zero", "A", "A_inv", "D_inv", "Q", "R", "Delta"})
             {
                 labels.push_back(prefix + suffix);
             }
@@ -386,21 +364,21 @@ namespace gatzk::protocol
         metadata.srs_id = context.kzg.manifest.srs_id;
         if (context.compiler_artifact == nullptr || context.validated_compiler_artifact_identity != context.compiler_artifact.get())
         {
-            throw std::runtime_error(
-                "VerifierContext is missing the authenticated ProtocolCompilerArtifact identity");
+            throw std::runtime_error("VerifierContext is missing the authenticated ProtocolCompilerArtifact identity");
         }
         const auto &compiler_artifact = *context.compiler_artifact;
         metadata.protocol_schema_id = sha256_hex(compiler_artifact.protocol_canonical_bytes);
         metadata.instance_schema_hash = sha256_hex(compiler_artifact.instance_canonical_bytes);
         if (context.kzg.manifest.protocol_schema_id.empty() || context.kzg.manifest.protocol_schema_id != metadata.protocol_schema_id)
         {
-            throw std::runtime_error(
-                "instance protocol compiler artifact is not authenticated by the SRS manifest");
+            throw std::runtime_error("instance protocol compiler artifact is not authenticated by the SRS manifest");
         }
         metadata.srs_type = context.kzg.manifest.srs_type;
         metadata.srs_degree_bound = std::to_string(context.kzg.manifest.degree_bound);
-        metadata.kzg_assumption_profile =
-            context.kzg.manifest.kzg_assumption_profile_id + "|D_max=" + std::to_string(context.kzg.manifest.kzg_assumption_degree_bound) + "|security_bits=" + std::to_string(context.kzg.manifest.kzg_assumption_security_bits) + "|domain_catalog=" + context.kzg.manifest.kzg_assumption_domain_catalog_hash;
+        metadata.kzg_assumption_profile = context.kzg.manifest.kzg_assumption_profile_id +
+                                          "|D_max=" + std::to_string(context.kzg.manifest.kzg_assumption_degree_bound) +
+                                          "|security_bits=" + std::to_string(context.kzg.manifest.kzg_assumption_security_bits) +
+                                          "|domain_catalog=" + context.kzg.manifest.kzg_assumption_domain_catalog_hash;
         metadata.privacy_policy = context.config.privacy_policy;
         metadata.input_privacy = context.config.input_privacy;
         metadata.output_mode = context.config.output_mode;
@@ -408,31 +386,24 @@ namespace gatzk::protocol
         metadata.binding_mode = context.config.binding_mode;
         metadata.model_arch = !context.config.model_arch_id.empty()
                                   ? context.config.model_arch_id
-                                  : ("L=" + std::to_string(context.model.L) + "|hidden=" + hidden_profile_string(context.model) + "|K_out=" + std::to_string(context.model.K_out) + "|C=" + std::to_string(context.local.num_classes) + "|bias=per_output_head|average=signed_round_div");
+                                  : ("L=" + std::to_string(context.model.L) + "|hidden=" + hidden_profile_string(context.model) +
+                                     "|K_out=" + std::to_string(context.model.K_out) + "|C=" + std::to_string(context.local.num_classes) +
+                                     "|bias=per_output_head|average=signed_round_div");
         std::ostringstream model_registry;
         model_registry << "id="
-                       << (!context.config.model_param_id.empty()
-                               ? context.config.model_param_id
-                               : ("checkpoint_bundle:" + context.config.checkpoint_bundle));
-        for (std::size_t layer = 0;
-             layer < context.model.hidden_layers.size();
-             ++layer)
-            for (std::size_t head = 0;
-                 head < context.model.hidden_layers[layer].heads.size();
-                 ++head)
+                       << (!context.config.model_param_id.empty() ? context.config.model_param_id : ("checkpoint_bundle:" + context.config.checkpoint_bundle));
+        for (std::size_t layer = 0; layer < context.model.hidden_layers.size(); ++layer)
+            for (std::size_t head = 0; head < context.model.hidden_layers[layer].heads.size(); ++head)
             {
                 for (std::size_t column = 0;; ++column)
                 {
-                    const auto label = hidden_weight_column_label(
-                        layer, head, column);
+                    const auto label = hidden_weight_column_label(layer, head, column);
                     const auto it = context.static_commitments.find(label);
                     if (it == context.static_commitments.end())
                         break;
                     model_registry << '|' << label << '=' << it->second.point.to_string();
                 }
-                for (const auto &label : {
-                         hidden_src_label(layer, head),
-                         hidden_dst_label(layer, head)})
+                for (const auto &label : {hidden_src_label(layer, head), hidden_dst_label(layer, head)})
                 {
                     model_registry << '|' << label << '=' << context.static_commitments.at(label).point.to_string();
                 }
@@ -444,9 +415,7 @@ namespace gatzk::protocol
                 const auto label = output_weight_column_label(head, column);
                 model_registry << '|' << label << '=' << context.static_commitments.at(label).point.to_string();
             }
-            for (const auto &label : {
-                     output_src_label(head), output_dst_label(head),
-                     output_bias_label(head)})
+            for (const auto &label : {output_src_label(head), output_dst_label(head), output_bias_label(head)})
             {
                 model_registry << '|' << label << '=' << context.static_commitments.at(label).point.to_string();
             }
@@ -454,54 +423,51 @@ namespace gatzk::protocol
         metadata.model_params = "registry_sha256=" + sha256_hex(model_registry.str());
 
         std::ostringstream table_registry;
-        table_registry << "id="
-                       << (!context.config.static_table_id.empty()
-                               ? context.config.static_table_id
-                               : "tables=lrelu,elu,exp,range")
+        table_registry << "id=" << (!context.config.static_table_id.empty() ? context.config.static_table_id : "tables=lrelu,elu,exp,range")
                        << "|generator=deterministic";
-        for (const auto *label : {
-                 "V_T_H", "V_T_L_x", "V_T_L_y", "V_T_ELU_x", "V_T_ELU_y",
-                 "V_T_exp_x", "V_T_exp_y", "V_T_range"})
+        for (const auto *label : {"V_T_H", "V_T_L_x", "V_T_L_y", "V_T_ELU_x", "V_T_ELU_y", "V_T_exp_x", "V_T_exp_y", "V_T_range"})
         {
-            if (const auto it = context.static_commitments.find(label);
-                it != context.static_commitments.end())
+            if (const auto it = context.static_commitments.find(label); it != context.static_commitments.end())
             {
                 table_registry << '|' << label << '=' << it->second.point.to_string();
             }
         }
         metadata.static_tables = "registry_sha256=" + sha256_hex(table_registry.str());
-        const auto quantization_serialization =
-            context.config.quantization.canonical_serialization();
+        const auto quantization_serialization = context.config.quantization.canonical_serialization();
         if (quantization_serialization.empty() || context.config.quant_cfg_id.empty())
         {
-            throw std::runtime_error(
-                "formal public metadata requires the validated canonical quantization scale chain");
+            throw std::runtime_error("formal public metadata requires the validated canonical quantization scale chain");
         }
-        metadata.quant_config =
-            context.config.quant_cfg_id + "|" + quantization_serialization + "|integer_bound_ledger|entries=" + std::to_string(compiler_artifact.integer_bound_ledger.size()) + "|sha256=" + sha256_hex(integer_bound_ledger_canonical_bytes(compiler_artifact.integer_bound_ledger));
-        metadata.domain_cfg =
-            "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size) + ",edge=" + context.domains.edge->name + ":" + std::to_string(context.domains.edge->size) + ",in=" + context.domains.in->name + ":" + std::to_string(context.domains.in->size) + ",d_h=" + context.domains.d->name + ":" + std::to_string(context.domains.d->size) + ",cat=" + context.domains.cat->name + ":" + std::to_string(context.domains.cat->size) + ",C=" + context.domains.c->name + ":" + std::to_string(context.domains.c->size) + ",N=" + context.domains.n->name + ":" + std::to_string(context.domains.n->size);
-        metadata.dim_cfg =
-            "N_total=" + std::to_string(context.dataset.num_nodes) + ",N=" + std::to_string(context.local.num_nodes) + ",E=" + std::to_string(context.local.edges.size()) + ",G_batch=" + std::to_string(context.local.graph_count) + ",node_ptr=" + size_vector_string(context.local.node_ptr) + ",edge_ptr=" + size_vector_string(context.local.edge_ptr) + ",d_in=" + std::to_string(context.local.num_features) + ",d_h=" + std::to_string(hidden_head_width(context.model)) + ",d_cat=" + std::to_string(concat_width(context.model)) + ",C=" + std::to_string(context.local.num_classes) + ",B=" + std::to_string(context.config.range_bits) + ",K_out=" + std::to_string(context.model.K_out);
-        metadata.encoding =
-            "wire|u64=le|field=canonical-le32|point=canonical-compressed"
-            "|transcript=sha256-hash-chain|strings=type-tagged-u64-length"
-            "|hash_suite=sha256|hash_to_field=rejection-counter-u32";
-        metadata.padding_rule =
-            "lookup+route+psq=hold-last|evaluation-columns=zero-pad+selector"
-            "|coefficient-tail=coefficient-region-pad";
-        metadata.degree_bound = !context.config.degree_bound_id.empty()
-                                    ? (context.config.degree_bound_id + "|registry=" + sha256_hex(compiler_artifact.instance_canonical_bytes + "|degree_registry"))
-                                    : ("D_max=" + std::to_string(context.kzg.manifest.degree_bound) + "|policy=object-ledger+quotient+blinding|registry=" + sha256_hex(compiler_artifact.instance_canonical_bytes + "|degree_registry"));
-        const auto security_summary = std::find_if(
-            compiler_artifact.security_budget_ledger.begin(),
-            compiler_artifact.security_budget_ledger.end(),
-            [](const CompilerLedgerEntry &entry)
-            { return entry.id == "budget:summary"; });
+        metadata.quant_config = context.config.quant_cfg_id + "|" + quantization_serialization +
+                                "|integer_bound_ledger|entries=" + std::to_string(compiler_artifact.integer_bound_ledger.size()) +
+                                "|sha256=" + sha256_hex(integer_bound_ledger_canonical_bytes(compiler_artifact.integer_bound_ledger));
+        metadata.domain_cfg = "FH=" + context.domains.fh->name + ":" + std::to_string(context.domains.fh->size) + ",edge=" + context.domains.edge->name + ":" +
+                              std::to_string(context.domains.edge->size) + ",in=" + context.domains.in->name + ":" + std::to_string(context.domains.in->size) +
+                              ",d_h=" + context.domains.d->name + ":" + std::to_string(context.domains.d->size) + ",cat=" + context.domains.cat->name + ":" +
+                              std::to_string(context.domains.cat->size) + ",C=" + context.domains.c->name + ":" + std::to_string(context.domains.c->size) +
+                              ",N=" + context.domains.n->name + ":" + std::to_string(context.domains.n->size);
+        metadata.dim_cfg = "N_total=" + std::to_string(context.dataset.num_nodes) + ",N=" + std::to_string(context.local.num_nodes) +
+                           ",E=" + std::to_string(context.local.edges.size()) + ",G_batch=" + std::to_string(context.local.graph_count) +
+                           ",node_ptr=" + size_vector_string(context.local.node_ptr) + ",edge_ptr=" + size_vector_string(context.local.edge_ptr) +
+                           ",d_in=" + std::to_string(context.local.num_features) + ",d_h=" + std::to_string(hidden_head_width(context.model)) +
+                           ",d_cat=" + std::to_string(concat_width(context.model)) + ",C=" + std::to_string(context.local.num_classes) +
+                           ",B=" + std::to_string(context.config.range_bits) + ",K_out=" + std::to_string(context.model.K_out);
+        metadata.encoding = "wire|u64=le|field=canonical-le32|point=canonical-compressed"
+                            "|transcript=sha256-hash-chain|strings=type-tagged-u64-length"
+                            "|hash_suite=sha256|hash_to_field=rejection-counter-u32";
+        metadata.padding_rule = "lookup+route+psq=hold-last|evaluation-columns=zero-pad+selector"
+                                "|coefficient-tail=coefficient-region-pad";
+        metadata.degree_bound =
+            !context.config.degree_bound_id.empty()
+                ? (context.config.degree_bound_id + "|registry=" + sha256_hex(compiler_artifact.instance_canonical_bytes + "|degree_registry"))
+                : ("D_max=" + std::to_string(context.kzg.manifest.degree_bound) +
+                   "|policy=object-ledger+quotient+blinding|registry=" + sha256_hex(compiler_artifact.instance_canonical_bytes + "|degree_registry"));
+        const auto security_summary = std::find_if(compiler_artifact.security_budget_ledger.begin(), compiler_artifact.security_budget_ledger.end(),
+                                                   [](const CompilerLedgerEntry &entry) { return entry.id == "budget:summary"; });
         if (security_summary == compiler_artifact.security_budget_ledger.end())
-            throw std::runtime_error(
-                "ProtocolCompilerArtifact is missing SecurityBudgetLedger summary");
-        metadata.security_budget = security_summary->expression_or_certificate + "|ledger=" + sha256_hex(compiler_artifact.instance_canonical_bytes + "|security_budget");
+            throw std::runtime_error("ProtocolCompilerArtifact is missing SecurityBudgetLedger summary");
+        metadata.security_budget =
+            security_summary->expression_or_certificate + "|ledger=" + sha256_hex(compiler_artifact.instance_canonical_bytes + "|security_budget");
         metadata.input_preprocess_id = context.config.input_preprocess_id;
         metadata.public_output.clear();
         return metadata;
@@ -543,308 +509,185 @@ namespace gatzk::protocol
         }
     }
 
-    void absorb_binding_relation_metadata(
-        crypto::Transcript &transcript,
-        const BindingRelationMeta &metadata)
+    void absorb_binding_relation_metadata(crypto::Transcript &transcript, const BindingRelationMeta &metadata)
     {
         const auto base = "Pi_bind.meta:" + metadata.relation_id + ":";
         transcript.absorb_text(base + "relation_id", metadata.relation_id);
         transcript.absorb_text(base + "object_kind", metadata.object_kind);
-        transcript.absorb_scalar(
-            base + "layer_present",
-            algebra::FieldElement(metadata.layer_id.has_value() ? 1 : 0));
+        transcript.absorb_scalar(base + "layer_present", algebra::FieldElement(metadata.layer_id.has_value() ? 1 : 0));
         if (metadata.layer_id.has_value())
-            transcript.absorb_scalar(
-                base + "layer_id", algebra::FieldElement(*metadata.layer_id));
-        transcript.absorb_scalar(
-            base + "head_present",
-            algebra::FieldElement(metadata.head_id.has_value() ? 1 : 0));
+            transcript.absorb_scalar(base + "layer_id", algebra::FieldElement(*metadata.layer_id));
+        transcript.absorb_scalar(base + "head_present", algebra::FieldElement(metadata.head_id.has_value() ? 1 : 0));
         if (metadata.head_id.has_value())
-            transcript.absorb_scalar(
-                base + "head_id", algebra::FieldElement(*metadata.head_id));
-        auto absorb_text_vector = [&](std::string_view field,
-                                      const std::vector<std::string> &values)
+            transcript.absorb_scalar(base + "head_id", algebra::FieldElement(*metadata.head_id));
+        auto absorb_text_vector = [&](std::string_view field, const std::vector<std::string> &values)
         {
-            transcript.absorb_scalar(
-                base + std::string(field) + ":count",
-                algebra::FieldElement(values.size()));
+            transcript.absorb_scalar(base + std::string(field) + ":count", algebra::FieldElement(values.size()));
             for (std::size_t i = 0; i < values.size(); ++i)
-                transcript.absorb_text(
-                    base + std::string(field) + ":" + std::to_string(i),
-                    values[i]);
+                transcript.absorb_text(base + std::string(field) + ":" + std::to_string(i), values[i]);
         };
         absorb_text_vector("source_objects", metadata.source_objects);
         absorb_text_vector("target_objects", metadata.target_objects);
         absorb_text_vector("work_domains", metadata.work_domains);
-        transcript.absorb_scalar(
-            base + "real_lengths:count",
-            algebra::FieldElement(metadata.real_lengths.size()));
+        transcript.absorb_scalar(base + "real_lengths:count", algebra::FieldElement(metadata.real_lengths.size()));
         for (std::size_t i = 0; i < metadata.real_lengths.size(); ++i)
-            transcript.absorb_scalar(
-                base + "real_lengths:" + std::to_string(i),
-                algebra::FieldElement(metadata.real_lengths[i]));
+            transcript.absorb_scalar(base + "real_lengths:" + std::to_string(i), algebra::FieldElement(metadata.real_lengths[i]));
         absorb_text_vector("quotient_relations", metadata.quotient_relations);
-        transcript.absorb_scalar(
-            base + "canonical_matrix_count",
-            algebra::FieldElement(metadata.canonical_matrices.size()));
+        transcript.absorb_scalar(base + "canonical_matrix_count", algebra::FieldElement(metadata.canonical_matrices.size()));
         for (std::size_t i = 0; i < metadata.canonical_matrices.size(); ++i)
         {
             const auto &matrix = metadata.canonical_matrices[i];
             const auto label = base + "canonical:" + std::to_string(i) + ":";
             transcript.absorb_text(label + "relation_id", matrix.relation_id);
             transcript.absorb_text(label + "matrix_object", matrix.matrix_object);
-            transcript.absorb_text(
-                label + "canonical_domain", matrix.canonical_domain);
-            transcript.absorb_scalar(
-                label + "row_count", algebra::FieldElement(matrix.row_count));
-            transcript.absorb_scalar(
-                label + "column_count",
-                algebra::FieldElement(matrix.column_count));
-            transcript.absorb_scalar(
-                label + "column_object_count",
-                algebra::FieldElement(matrix.column_objects.size()));
+            transcript.absorb_text(label + "canonical_domain", matrix.canonical_domain);
+            transcript.absorb_scalar(label + "row_count", algebra::FieldElement(matrix.row_count));
+            transcript.absorb_scalar(label + "column_count", algebra::FieldElement(matrix.column_count));
+            transcript.absorb_scalar(label + "column_object_count", algebra::FieldElement(matrix.column_objects.size()));
             for (std::size_t j = 0; j < matrix.column_objects.size(); ++j)
-                transcript.absorb_text(
-                    label + "column_object:" + std::to_string(j),
-                    matrix.column_objects[j]);
-            transcript.absorb_text(
-                label + "compressed_object", matrix.compressed_object);
-            transcript.absorb_text(
-                label + "compression_challenge_label",
-                matrix.compression_challenge_label);
+                transcript.absorb_text(label + "column_object:" + std::to_string(j), matrix.column_objects[j]);
+            transcript.absorb_text(label + "compressed_object", matrix.compressed_object);
+            transcript.absorb_text(label + "compression_challenge_label", matrix.compression_challenge_label);
         }
-        transcript.absorb_scalar(
-            base + "aggregation_relation_count",
-            algebra::FieldElement(metadata.aggregation_relations.size()));
-        for (std::size_t i = 0;
-             i < metadata.aggregation_relations.size(); ++i)
+        transcript.absorb_scalar(base + "aggregation_relation_count", algebra::FieldElement(metadata.aggregation_relations.size()));
+        for (std::size_t i = 0; i < metadata.aggregation_relations.size(); ++i)
         {
             const auto &relation = metadata.aggregation_relations[i];
             const auto label = base + "aggregation:" + std::to_string(i) + ":";
             for (const auto &[field, value] :
-                 std::vector<std::pair<std::string, std::string>>{
-                     {"relation_id", relation.relation_id},
-                     {"source_matrix_object", relation.source_matrix_object},
-                     {"target_matrix_object", relation.target_matrix_object},
-                     {"alpha_object", relation.alpha_object},
-                     {"node_domain", relation.node_domain},
-                     {"edge_domain", relation.edge_domain},
-                     {"compression_challenge_label",
-                      relation.compression_challenge_label},
-                     {"source_node_object", relation.source_node_object},
-                     {"target_node_object", relation.target_node_object},
-                     {"source_edge_object", relation.source_edge_object},
-                     {"target_edge_object", relation.target_edge_object},
-                     {"product_object", relation.product_object},
-                     {"psq_object", relation.psq_object}})
+                 std::vector<std::pair<std::string, std::string>>{{"relation_id", relation.relation_id},
+                                                                  {"source_matrix_object", relation.source_matrix_object},
+                                                                  {"target_matrix_object", relation.target_matrix_object},
+                                                                  {"alpha_object", relation.alpha_object},
+                                                                  {"node_domain", relation.node_domain},
+                                                                  {"edge_domain", relation.edge_domain},
+                                                                  {"compression_challenge_label", relation.compression_challenge_label},
+                                                                  {"source_node_object", relation.source_node_object},
+                                                                  {"target_node_object", relation.target_node_object},
+                                                                  {"source_edge_object", relation.source_edge_object},
+                                                                  {"target_edge_object", relation.target_edge_object},
+                                                                  {"product_object", relation.product_object},
+                                                                  {"psq_object", relation.psq_object}})
                 transcript.absorb_text(label + field, value);
-            transcript.absorb_scalar(
-                label + "row_count",
-                algebra::FieldElement(relation.row_count));
-            transcript.absorb_scalar(
-                label + "column_count",
-                algebra::FieldElement(relation.column_count));
-            const auto absorb_route = [&](
-                                          std::string_view role,
-                                          const AggregationRouteRelationMeta &route)
+            transcript.absorb_scalar(label + "row_count", algebra::FieldElement(relation.row_count));
+            transcript.absorb_scalar(label + "column_count", algebra::FieldElement(relation.column_count));
+            const auto absorb_route = [&](std::string_view role, const AggregationRouteRelationMeta &route)
             {
                 const auto route_label = label + std::string(role) + ":";
                 for (const auto &[field, value] :
-                     std::vector<std::pair<std::string, std::string>>{
-                         {"relation_id", route.relation_id},
-                         {"index_object", route.index_object},
-                         {"node_value_object", route.node_value_object},
-                         {"edge_value_object", route.edge_value_object},
-                         {"table_object", route.table_object},
-                         {"query_object", route.query_object},
-                         {"multiplicity_object", route.multiplicity_object},
-                         {"node_inverse_object", route.node_inverse_object},
-                         {"edge_inverse_object", route.edge_inverse_object},
-                         {"node_accumulator_object",
-                          route.node_accumulator_object},
-                         {"edge_accumulator_object",
-                          route.edge_accumulator_object},
-                         {"shifted_accumulator_object",
-                          route.shifted_accumulator_object},
-                         {"relation_virtual_object",
-                          route.relation_virtual_object},
-                         {"eta_challenge_label", route.eta_challenge_label},
-                         {"beta_challenge_label", route.beta_challenge_label},
-                         {"terminal_challenge_label",
-                          route.terminal_challenge_label}})
+                     std::vector<std::pair<std::string, std::string>>{{"relation_id", route.relation_id},
+                                                                      {"index_object", route.index_object},
+                                                                      {"node_value_object", route.node_value_object},
+                                                                      {"edge_value_object", route.edge_value_object},
+                                                                      {"table_object", route.table_object},
+                                                                      {"query_object", route.query_object},
+                                                                      {"multiplicity_object", route.multiplicity_object},
+                                                                      {"node_inverse_object", route.node_inverse_object},
+                                                                      {"edge_inverse_object", route.edge_inverse_object},
+                                                                      {"node_accumulator_object", route.node_accumulator_object},
+                                                                      {"edge_accumulator_object", route.edge_accumulator_object},
+                                                                      {"shifted_accumulator_object", route.shifted_accumulator_object},
+                                                                      {"relation_virtual_object", route.relation_virtual_object},
+                                                                      {"eta_challenge_label", route.eta_challenge_label},
+                                                                      {"beta_challenge_label", route.beta_challenge_label},
+                                                                      {"terminal_challenge_label", route.terminal_challenge_label}})
                     transcript.absorb_text(route_label + field, value);
-                transcript.absorb_scalar(
-                    route_label + "node_terminal_point",
-                    route.node_terminal_point);
-                transcript.absorb_scalar(
-                    route_label + "edge_terminal_point",
-                    route.edge_terminal_point);
-                transcript.absorb_scalar(
-                    route_label + "terminal_delta", route.terminal_delta);
-                transcript.absorb_scalar(
-                    route_label + "configured_shift_degree",
-                    algebra::FieldElement(route.configured_shift_degree));
-                transcript.absorb_scalar(
-                    route_label + "shift_domain_size",
-                    algebra::FieldElement(route.shift_domain_size));
+                transcript.absorb_scalar(route_label + "node_terminal_point", route.node_terminal_point);
+                transcript.absorb_scalar(route_label + "edge_terminal_point", route.edge_terminal_point);
+                transcript.absorb_scalar(route_label + "terminal_delta", route.terminal_delta);
+                transcript.absorb_scalar(route_label + "configured_shift_degree", algebra::FieldElement(route.configured_shift_degree));
+                transcript.absorb_scalar(route_label + "shift_domain_size", algebra::FieldElement(route.shift_domain_size));
             };
             absorb_route("source_route", relation.source_route);
             absorb_route("target_route", relation.target_route);
-            absorb_text_vector(
-                "aggregation:" + std::to_string(i) + ":commitment_order",
-                relation.commitment_order);
+            absorb_text_vector("aggregation:" + std::to_string(i) + ":commitment_order", relation.commitment_order);
         }
-        transcript.absorb_scalar(
-            base + "route_terminal_relation_count",
-            algebra::FieldElement(metadata.route_terminal_relations.size()));
-        for (std::size_t i = 0;
-             i < metadata.route_terminal_relations.size(); ++i)
+        transcript.absorb_scalar(base + "route_terminal_relation_count", algebra::FieldElement(metadata.route_terminal_relations.size()));
+        for (std::size_t i = 0; i < metadata.route_terminal_relations.size(); ++i)
         {
             const auto &relation = metadata.route_terminal_relations[i];
             const auto label = base + "route_terminal:" + std::to_string(i) + ":";
             for (const auto &[field, value] :
-                 std::vector<std::pair<std::string, std::string>>{
-                     {"relation_id", relation.relation_id},
-                     {"node_accumulator_object",
-                      relation.node_accumulator_object},
-                     {"edge_accumulator_object",
-                      relation.edge_accumulator_object},
-                     {"shifted_accumulator_object",
-                      relation.shifted_accumulator_object},
-                     {"relation_virtual_object",
-                      relation.relation_virtual_object},
-                     {"node_domain", relation.node_domain},
-                     {"edge_domain", relation.edge_domain},
-                     {"challenge_label", relation.challenge_label}})
+                 std::vector<std::pair<std::string, std::string>>{{"relation_id", relation.relation_id},
+                                                                  {"node_accumulator_object", relation.node_accumulator_object},
+                                                                  {"edge_accumulator_object", relation.edge_accumulator_object},
+                                                                  {"shifted_accumulator_object", relation.shifted_accumulator_object},
+                                                                  {"relation_virtual_object", relation.relation_virtual_object},
+                                                                  {"node_domain", relation.node_domain},
+                                                                  {"edge_domain", relation.edge_domain},
+                                                                  {"challenge_label", relation.challenge_label}})
                 transcript.absorb_text(label + field, value);
-            transcript.absorb_scalar(
-                label + "node_terminal_point",
-                relation.node_terminal_point);
-            transcript.absorb_scalar(
-                label + "edge_terminal_point",
-                relation.edge_terminal_point);
-            transcript.absorb_scalar(
-                label + "terminal_delta", relation.terminal_delta);
-            transcript.absorb_scalar(
-                label + "configured_shift_degree",
-                algebra::FieldElement(relation.configured_shift_degree));
-            transcript.absorb_scalar(
-                label + "shift_domain_size",
-                algebra::FieldElement(relation.shift_domain_size));
+            transcript.absorb_scalar(label + "node_terminal_point", relation.node_terminal_point);
+            transcript.absorb_scalar(label + "edge_terminal_point", relation.edge_terminal_point);
+            transcript.absorb_scalar(label + "terminal_delta", relation.terminal_delta);
+            transcript.absorb_scalar(label + "configured_shift_degree", algebra::FieldElement(relation.configured_shift_degree));
+            transcript.absorb_scalar(label + "shift_domain_size", algebra::FieldElement(relation.shift_domain_size));
         }
-        transcript.absorb_scalar(
-            base + "indexed_view_count", algebra::FieldElement(metadata.indexed_views.size()));
+        transcript.absorb_scalar(base + "indexed_view_count", algebra::FieldElement(metadata.indexed_views.size()));
         for (std::size_t i = 0; i < metadata.indexed_views.size(); ++i)
         {
             const auto &view = metadata.indexed_views[i];
             const auto label = base + "indexed:" + std::to_string(i) + ":";
-            for (const auto &[field, value] : std::vector<std::pair<std::string, std::string>>{
-                     {"relation_id", view.relation_id},
-                     {"canonical_object", view.canonical_object},
-                     {"view_object", view.view_object},
-                     {"canonical_domain", view.canonical_domain},
-                     {"view_domain", view.view_domain},
-                     {"index_map_id", view.index_map_id},
-                     {"canonical_selector_id", view.canonical_selector_id},
-                     {"query_selector_id", view.query_selector_id},
-                     {"multiplicity_id", view.multiplicity_id},
-                     {"eta_label", view.eta_challenge_label},
-                     {"beta_label", view.beta_challenge_label}})
+            for (const auto &[field, value] : std::vector<std::pair<std::string, std::string>>{{"relation_id", view.relation_id},
+                                                                                               {"canonical_object", view.canonical_object},
+                                                                                               {"view_object", view.view_object},
+                                                                                               {"canonical_domain", view.canonical_domain},
+                                                                                               {"view_domain", view.view_domain},
+                                                                                               {"index_map_id", view.index_map_id},
+                                                                                               {"canonical_selector_id", view.canonical_selector_id},
+                                                                                               {"query_selector_id", view.query_selector_id},
+                                                                                               {"multiplicity_id", view.multiplicity_id},
+                                                                                               {"eta_label", view.eta_challenge_label},
+                                                                                               {"beta_label", view.beta_challenge_label}})
                 transcript.absorb_text(label + field, value);
-            transcript.absorb_scalar(
-                label + "canonical_length", algebra::FieldElement(view.canonical_length));
+            transcript.absorb_scalar(label + "canonical_length", algebra::FieldElement(view.canonical_length));
             transcript.absorb_scalar(label + "view_length", algebra::FieldElement(view.view_length));
-            transcript.absorb_scalar(
-                label + "commitment_count", algebra::FieldElement(view.commitment_order.size()));
+            transcript.absorb_scalar(label + "commitment_count", algebra::FieldElement(view.commitment_order.size()));
             for (std::size_t j = 0; j < view.commitment_order.size(); ++j)
-                transcript.absorb_text(
-                    label + "commitment:" + std::to_string(j), view.commitment_order[j]);
+                transcript.absorb_text(label + "commitment:" + std::to_string(j), view.commitment_order[j]);
         }
-        transcript.absorb_scalar(
-            base + "coefficient_basis_relation_count",
-            algebra::FieldElement(metadata.coefficient_basis_relations.size()));
-        for (std::size_t i = 0;
-             i < metadata.coefficient_basis_relations.size(); ++i)
+        transcript.absorb_scalar(base + "coefficient_basis_relation_count", algebra::FieldElement(metadata.coefficient_basis_relations.size()));
+        for (std::size_t i = 0; i < metadata.coefficient_basis_relations.size(); ++i)
         {
             const auto &relation = metadata.coefficient_basis_relations[i];
             const auto label = base + "basis:" + std::to_string(i) + ":";
-            for (const auto &[field, value] :
-                 std::vector<std::pair<std::string, std::string>>{
-                     {"relation_id", relation.relation_id},
-                     {"canonical_object", relation.canonical_object},
-                     {"coefficient_object", relation.coefficient_object},
-                     {"carrier_domain", relation.carrier_domain},
-                     {"power_object", relation.power_object},
-                     {"gamma_label", relation.gamma_challenge_label},
-                     {"relation_challenge_label",
-                      relation.relation_challenge_label}})
+            for (const auto &[field, value] : std::vector<std::pair<std::string, std::string>>{{"relation_id", relation.relation_id},
+                                                                                               {"canonical_object", relation.canonical_object},
+                                                                                               {"coefficient_object", relation.coefficient_object},
+                                                                                               {"carrier_domain", relation.carrier_domain},
+                                                                                               {"power_object", relation.power_object},
+                                                                                               {"gamma_label", relation.gamma_challenge_label},
+                                                                                               {"relation_challenge_label", relation.relation_challenge_label}})
                 transcript.absorb_text(label + field, value);
-            transcript.absorb_scalar(
-                label + "low_degree_length",
-                algebra::FieldElement(relation.low_degree_length));
-            transcript.absorb_scalar(
-                label + "tail_length",
-                algebra::FieldElement(relation.tail_length));
-            transcript.absorb_scalar(
-                label + "total_length",
-                algebra::FieldElement(relation.total_length));
-            transcript.absorb_scalar(
-                label + "semantic_position_count",
-                algebra::FieldElement(relation.semantic_positions.size()));
+            transcript.absorb_scalar(label + "low_degree_length", algebra::FieldElement(relation.low_degree_length));
+            transcript.absorb_scalar(label + "tail_length", algebra::FieldElement(relation.tail_length));
+            transcript.absorb_scalar(label + "total_length", algebra::FieldElement(relation.total_length));
+            transcript.absorb_scalar(label + "semantic_position_count", algebra::FieldElement(relation.semantic_positions.size()));
             for (std::size_t j = 0; j < relation.semantic_positions.size(); ++j)
-                transcript.absorb_scalar(
-                    label + "semantic_position:" + std::to_string(j),
-                    algebra::FieldElement(relation.semantic_positions[j]));
-            transcript.absorb_scalar(
-                label + "chunk_count",
-                algebra::FieldElement(relation.chunks.size()));
+                transcript.absorb_scalar(label + "semantic_position:" + std::to_string(j), algebra::FieldElement(relation.semantic_positions[j]));
+            transcript.absorb_scalar(label + "chunk_count", algebra::FieldElement(relation.chunks.size()));
             for (std::size_t j = 0; j < relation.chunks.size(); ++j)
             {
                 const auto &chunk = relation.chunks[j];
                 const auto chunk_label = label + "chunk:" + std::to_string(j) + ":";
-                transcript.absorb_text(
-                    chunk_label + "object_id", chunk.object_id);
-                transcript.absorb_text(
-                    chunk_label + "accumulator_object",
-                    chunk.accumulator_object);
-                transcript.absorb_text(
-                    chunk_label + "shifted_accumulator_object",
-                    chunk.shifted_accumulator_object);
-                transcript.absorb_scalar(
-                    chunk_label + "index",
-                    algebra::FieldElement(chunk.chunk_index));
-                transcript.absorb_scalar(
-                    chunk_label + "offset",
-                    algebra::FieldElement(chunk.offset));
-                transcript.absorb_scalar(
-                    chunk_label + "length",
-                    algebra::FieldElement(chunk.length));
-                transcript.absorb_scalar(
-                    chunk_label + "terminal_point", chunk.terminal_point);
-                transcript.absorb_scalar(
-                    chunk_label + "configured_shift_degree",
-                    algebra::FieldElement(chunk.configured_shift_degree));
-                transcript.absorb_scalar(
-                    chunk_label + "shift_domain_size",
-                    algebra::FieldElement(chunk.shift_domain_size));
+                transcript.absorb_text(chunk_label + "object_id", chunk.object_id);
+                transcript.absorb_text(chunk_label + "accumulator_object", chunk.accumulator_object);
+                transcript.absorb_text(chunk_label + "shifted_accumulator_object", chunk.shifted_accumulator_object);
+                transcript.absorb_scalar(chunk_label + "index", algebra::FieldElement(chunk.chunk_index));
+                transcript.absorb_scalar(chunk_label + "offset", algebra::FieldElement(chunk.offset));
+                transcript.absorb_scalar(chunk_label + "length", algebra::FieldElement(chunk.length));
+                transcript.absorb_scalar(chunk_label + "terminal_point", chunk.terminal_point);
+                transcript.absorb_scalar(chunk_label + "configured_shift_degree", algebra::FieldElement(chunk.configured_shift_degree));
+                transcript.absorb_scalar(chunk_label + "shift_domain_size", algebra::FieldElement(chunk.shift_domain_size));
             }
-            transcript.absorb_scalar(
-                label + "commitment_count",
-                algebra::FieldElement(relation.commitment_order.size()));
+            transcript.absorb_scalar(label + "commitment_count", algebra::FieldElement(relation.commitment_order.size()));
             for (std::size_t j = 0; j < relation.commitment_order.size(); ++j)
-                transcript.absorb_text(
-                    label + "commitment:" + std::to_string(j),
-                    relation.commitment_order[j]);
-            transcript.absorb_scalar(
-                label + "opening_claim_count",
-                algebra::FieldElement(relation.opening_claim_order.size()));
+                transcript.absorb_text(label + "commitment:" + std::to_string(j), relation.commitment_order[j]);
+            transcript.absorb_scalar(label + "opening_claim_count", algebra::FieldElement(relation.opening_claim_order.size()));
             for (std::size_t j = 0; j < relation.opening_claim_order.size(); ++j)
-                transcript.absorb_text(
-                    label + "opening_claim:" + std::to_string(j),
-                    relation.opening_claim_order[j]);
+                transcript.absorb_text(label + "opening_claim:" + std::to_string(j), relation.opening_claim_order[j]);
         }
-        transcript.absorb_scalar(
-            base + "shift_relation_count", algebra::FieldElement(metadata.shift_relations.size()));
+        transcript.absorb_scalar(base + "shift_relation_count", algebra::FieldElement(metadata.shift_relations.size()));
         for (std::size_t i = 0; i < metadata.shift_relations.size(); ++i)
         {
             const auto &relation = metadata.shift_relations[i];
@@ -852,45 +695,28 @@ namespace gatzk::protocol
             transcript.absorb_text(label + "relation_id", relation.relation_id);
             transcript.absorb_text(label + "challenge_label", relation.challenge_label);
             transcript.absorb_scalar(label + "lambda0", relation.lambda0);
-            transcript.absorb_scalar(
-                label + "exclusion_degree", algebra::FieldElement(relation.exclusion_degree));
-            transcript.absorb_scalar(
-                label + "max_difference_degree", algebra::FieldElement(relation.max_difference_degree));
-            transcript.absorb_scalar(
-                label + "source_count", algebra::FieldElement(relation.source_linear_maps.size()));
+            transcript.absorb_scalar(label + "exclusion_degree", algebra::FieldElement(relation.exclusion_degree));
+            transcript.absorb_scalar(label + "max_difference_degree", algebra::FieldElement(relation.max_difference_degree));
+            transcript.absorb_scalar(label + "source_count", algebra::FieldElement(relation.source_linear_maps.size()));
             for (std::size_t j = 0; j < relation.source_linear_maps.size(); ++j)
             {
-                transcript.absorb_text(
-                    label + "source_map:" + std::to_string(j), relation.source_linear_maps[j]);
-                transcript.absorb_text(
-                    label + "source_domain:" + std::to_string(j), relation.source_domains.at(j));
-                transcript.absorb_text(
-                    label + "source_kind:" + std::to_string(j), relation.source_value_kinds.at(j));
-                transcript.absorb_scalar(
-                    label + "point:" + std::to_string(j), relation.canonical_points.at(j));
-                transcript.absorb_scalar(
-                    label + "delta:" + std::to_string(j), relation.deltas.at(j));
+                transcript.absorb_text(label + "source_map:" + std::to_string(j), relation.source_linear_maps[j]);
+                transcript.absorb_text(label + "source_domain:" + std::to_string(j), relation.source_domains.at(j));
+                transcript.absorb_text(label + "source_kind:" + std::to_string(j), relation.source_value_kinds.at(j));
+                transcript.absorb_scalar(label + "point:" + std::to_string(j), relation.canonical_points.at(j));
+                transcript.absorb_scalar(label + "delta:" + std::to_string(j), relation.deltas.at(j));
             }
             for (std::size_t j = 0; j < relation.configured_degrees.size(); ++j)
             {
-                transcript.absorb_scalar(
-                    label + "configured_degree:" + std::to_string(j),
-                    algebra::FieldElement(relation.configured_degrees[j]));
-                transcript.absorb_scalar(
-                    label + "shift_domain_size:" + std::to_string(j),
-                    algebra::FieldElement(relation.shift_domain_sizes.at(j)));
+                transcript.absorb_scalar(label + "configured_degree:" + std::to_string(j), algebra::FieldElement(relation.configured_degrees[j]));
+                transcript.absorb_scalar(label + "shift_domain_size:" + std::to_string(j), algebra::FieldElement(relation.shift_domain_sizes.at(j)));
             }
             for (std::size_t j = 0; j < relation.opening_claim_order.size(); ++j)
-                transcript.absorb_text(
-                    label + "opening_claim:" + std::to_string(j),
-                    relation.opening_claim_order[j]);
+                transcript.absorb_text(label + "opening_claim:" + std::to_string(j), relation.opening_claim_order[j]);
         }
     }
 
-    std::string canonical_output_digest(
-        const std::vector<algebra::FieldElement> &public_logits,
-        std::size_t node_count,
-        std::size_t class_count)
+    std::string canonical_output_digest(const std::vector<algebra::FieldElement> &public_logits, std::size_t node_count, std::size_t class_count)
     {
         const auto wide_count = static_cast<unsigned __int128>(node_count) * static_cast<unsigned __int128>(class_count);
         if (node_count == 0 || class_count == 0 || wide_count == 0 || wide_count > std::numeric_limits<std::uint64_t>::max())
@@ -950,12 +776,10 @@ namespace gatzk::protocol
         return encoded;
     }
 
-    std::string canonical_public_output_descriptor(
-        const std::vector<algebra::FieldElement> &public_logits,
-        std::size_t node_count,
-        std::size_t class_count)
+    std::string canonical_public_output_descriptor(const std::vector<algebra::FieldElement> &public_logits, std::size_t node_count, std::size_t class_count)
     {
-        return "N=" + std::to_string(node_count) + "|C=" + std::to_string(class_count) + "|encoding=canonical-field-le32" + "|digest=" + canonical_output_digest(public_logits, node_count, class_count);
+        return "N=" + std::to_string(node_count) + "|C=" + std::to_string(class_count) + "|encoding=canonical-field-le32" +
+               "|digest=" + canonical_output_digest(public_logits, node_count, class_count);
     }
 
     std::vector<std::string> dynamic_commitment_labels(const ProtocolContext &context)
@@ -963,53 +787,29 @@ namespace gatzk::protocol
         // 这里返回的是 proof 中动态承诺的正式顺序。
         // family 形状越宽，标签数量越多，最终 proof_size_bytes 也会随之增加。
         std::vector<std::string> labels = {
-            "P_H",
-            "P_Table_feat",
-            "P_Query_feat",
-            "P_m_feat",
-            "P_J_tbl_feat",
-            "P_J_qry_feat",
-            "P_R_feat",
+            "P_H", "P_Table_feat", "P_Query_feat", "P_m_feat", "P_J_tbl_feat", "P_J_qry_feat", "P_R_feat",
         };
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
+        for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
             const auto &layer = context.model.hidden_layers[layer_index];
-            for (std::size_t head_index = 0;
-                 head_index < layer.heads.size();
-                 ++head_index)
+            for (std::size_t head_index = 0; head_index < layer.heads.size(); ++head_index)
             {
                 const auto prefix = hidden_head_prefix(layer_index, head_index);
                 append_attention_head_dynamic_labels(labels, prefix);
-                append_signed_division_labels(
-                    labels, prefix + "_Div_", context.config.range_bits);
-                labels.push_back(hidden_model_binding_blinder_label(
-                    layer_index, head_index, "proj"));
-                labels.push_back(hidden_model_binding_blinder_label(
-                    layer_index, head_index, "src"));
-                labels.push_back(hidden_model_binding_blinder_label(
-                    layer_index, head_index, "dst"));
+                append_signed_division_labels(labels, prefix + "_Div_", context.config.range_bits);
+                labels.push_back(hidden_model_binding_blinder_label(layer_index, head_index, "proj"));
+                labels.push_back(hidden_model_binding_blinder_label(layer_index, head_index, "src"));
+                labels.push_back(hidden_model_binding_blinder_label(layer_index, head_index, "dst"));
             }
             // The concat block is serialized immediately after all heads of
             // its layer and before the next layer's hidden-head family.
-            append_concat_labels(
-                labels,
-                hidden_layer_concat_label(layer_index),
-                hidden_layer_concat_star_label(layer_index),
-                hidden_layer_cat_prefix(layer_index));
+            append_concat_labels(labels, hidden_layer_concat_label(layer_index), hidden_layer_concat_star_label(layer_index),
+                                 hidden_layer_cat_prefix(layer_index));
         }
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
-            append_output_head_dynamic_labels(
-                labels,
-                output_head_prefix(head_index),
-                output_y_lin_label(head_index),
-                output_y_label(head_index));
-            append_signed_division_labels(
-                labels,
-                output_head_prefix(head_index) + "_Div_",
-                context.config.range_bits);
+            append_output_head_dynamic_labels(labels, output_head_prefix(head_index), output_y_lin_label(head_index), output_y_label(head_index));
+            append_signed_division_labels(labels, output_head_prefix(head_index) + "_Div_", context.config.range_bits);
             labels.push_back(output_model_binding_blinder_label(head_index, "proj"));
             labels.push_back(output_model_binding_blinder_label(head_index, "src"));
             labels.push_back(output_model_binding_blinder_label(head_index, "dst"));
@@ -1028,38 +828,25 @@ namespace gatzk::protocol
         labels.push_back("P_avg_Bind_b");
         labels.push_back("P_avg_Bind_Acc");
 
-        for (const auto &spec :
-             matrix_fold_binding_specs(context))
+        for (const auto &spec : matrix_fold_binding_specs(context))
         {
-            labels.push_back(
-                spec.source_fold_object);
-            labels.push_back(
-                spec.source_accumulator_object +
-                "_Weight");
-            labels.push_back(
-                spec.source_accumulator_object);
-            labels.push_back(
-                spec.fold_accumulator_object);
+            labels.push_back(spec.source_fold_object);
+            labels.push_back(spec.source_accumulator_object + "_Weight");
+            labels.push_back(spec.source_accumulator_object);
+            labels.push_back(spec.fold_accumulator_object);
         }
 
-        for (const auto &spec :
-             flat_matrix_binding_specs(context))
+        for (const auto &spec : flat_matrix_binding_specs(context))
         {
-            labels.push_back(
-                spec.row_fold_object);
-            labels.push_back(
-                spec.row_accumulator_object);
-            labels.push_back(
-                spec.flat_accumulator_object);
+            labels.push_back(spec.row_fold_object);
+            labels.push_back(spec.row_accumulator_object);
+            labels.push_back(spec.flat_accumulator_object);
         }
 
-        for (const auto &spec :
-             broadcast_flat_binding_specs(context))
+        for (const auto &spec : broadcast_flat_binding_specs(context))
         {
-            labels.push_back(
-                spec.node_accumulator_object);
-            labels.push_back(
-                spec.flat_accumulator_object);
+            labels.push_back(spec.node_accumulator_object);
+            labels.push_back(spec.flat_accumulator_object);
         }
 
         return labels;
@@ -1067,8 +854,7 @@ namespace gatzk::protocol
 
     std::vector<std::string> quotient_commitment_labels(const ProtocolContext &context)
     {
-        const std::vector<std::string> quotient_labels = {
-            "t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
+        const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
         std::vector<std::string> labels;
         labels.reserve(quotient_labels.size() * 2);
         for (const auto &label : quotient_labels)
@@ -1088,9 +874,7 @@ namespace gatzk::protocol
         return "R_" + quotient_label;
     }
 
-    std::map<std::string, algebra::FieldElement> derive_domain_opening_challenges(
-        const ProtocolContext &context,
-        crypto::Transcript &transcript)
+    std::map<std::string, algebra::FieldElement> derive_domain_opening_challenges(const ProtocolContext &context, crypto::Transcript &transcript)
     {
         struct DomainChallengeSpec
         {
@@ -1098,13 +882,8 @@ namespace gatzk::protocol
             std::shared_ptr<algebra::RootOfUnityDomain> domain;
         };
         const std::vector<DomainChallengeSpec> specs = {
-            {"z_FH", context.domains.fh},
-            {"z_edge", context.domains.edge},
-            {"z_in", context.domains.in},
-            {"z_d_h", context.domains.d},
-            {"z_cat", context.domains.cat},
-            {"z_C", context.domains.c},
-            {"z_N", context.domains.n},
+            {"z_FH", context.domains.fh},   {"z_edge", context.domains.edge}, {"z_in", context.domains.in}, {"z_d_h", context.domains.d},
+            {"z_cat", context.domains.cat}, {"z_C", context.domains.c},       {"z_N", context.domains.n},
         };
         std::vector<algebra::FieldElement> prior_points;
         prior_points.reserve(specs.size() * 2);
@@ -1112,20 +891,17 @@ namespace gatzk::protocol
         for (const auto &spec : specs)
         {
             if (spec.domain == nullptr)
-                throw std::runtime_error(
-                    "missing registered domain for opening challenge: " + spec.label);
-            const auto point = transcript.challenge_excluding(
-                spec.label,
-                [&](const algebra::FieldElement &candidate)
-                {
-                    const auto rotated = candidate * spec.domain->omega;
-                    if (spec.domain->zero_polynomial_eval(candidate).is_zero() || candidate == rotated)
-                        return true;
-                    return std::any_of(
-                        prior_points.begin(), prior_points.end(),
-                        [&](const algebra::FieldElement &prior)
-                        { return candidate == prior || rotated == prior; });
-                });
+                throw std::runtime_error("missing registered domain for opening challenge: " + spec.label);
+            const auto point =
+                transcript.challenge_excluding(spec.label,
+                                               [&](const algebra::FieldElement &candidate)
+                                               {
+                                                   const auto rotated = candidate * spec.domain->omega;
+                                                   if (spec.domain->zero_polynomial_eval(candidate).is_zero() || candidate == rotated)
+                                                       return true;
+                                                   return std::any_of(prior_points.begin(), prior_points.end(), [&](const algebra::FieldElement &prior)
+                                                                      { return candidate == prior || rotated == prior; });
+                                               });
             out.emplace(spec.label, point);
             prior_points.push_back(point);
             prior_points.push_back(point * spec.domain->omega);
@@ -1133,12 +909,9 @@ namespace gatzk::protocol
         return out;
     }
 
-    PublicOutputChallenges derive_public_output_challenges(
-        const PublicMetadata &metadata,
-        const crypto::Commitment &output_commitment,
-        const std::vector<algebra::FieldElement> &public_logits,
-        std::size_t node_count,
-        std::size_t class_count)
+    PublicOutputChallenges derive_public_output_challenges(const PublicMetadata &metadata, const crypto::Commitment &output_commitment,
+                                                           const std::vector<algebra::FieldElement> &public_logits, std::size_t node_count,
+                                                           std::size_t class_count)
     {
         if (node_count == 0 || class_count == 0 || public_logits.size() != node_count * class_count)
         {
@@ -1160,11 +933,10 @@ namespace gatzk::protocol
 
     // 按正式 transcript 顺序重放 challenge，供 prove 与 verify 共享同一挑战语义。
     // 当 quotient commitment 仍未生成时，函数只返回前半段 challenge，避免在 build_context 阶段改写顺序。
-    std::map<std::string, algebra::FieldElement> replay_challenges(
-        const ProtocolContext &context,
-        const std::unordered_map<std::string, crypto::Commitment> &dynamic_commitments,
-        const std::unordered_map<std::string, crypto::Commitment> &quotient_commitments,
-        const PublicMetadata *proof_metadata)
+    std::map<std::string, algebra::FieldElement> replay_challenges(const ProtocolContext &context,
+                                                                   const std::unordered_map<std::string, crypto::Commitment> &dynamic_commitments,
+                                                                   const std::unordered_map<std::string, crypto::Commitment> &quotient_commitments,
+                                                                   const PublicMetadata *proof_metadata)
     {
         const auto dynamic_labels = dynamic_commitment_labels(context);
         const auto quotient_labels = quotient_commitment_labels(context);
@@ -1174,9 +946,7 @@ namespace gatzk::protocol
 
         auto replay_signed_division = [&](const std::string &division_prefix)
         {
-            for (const auto *suffix : {
-                     "Active", "X", "D", "Y", "Sigma", "Zero",
-                     "A", "A_inv", "D_inv", "Q", "R", "Delta"})
+            for (const auto *suffix : {"Active", "X", "D", "Y", "Sigma", "Zero", "A", "A_inv", "D_inv", "Q", "R", "Delta"})
             {
                 absorb(transcript, division_prefix + suffix, dynamic_commitments);
             }
@@ -1185,28 +955,16 @@ namespace gatzk::protocol
             {
                 for (std::size_t limb = 0; limb < limb_count; ++limb)
                 {
-                    absorb(
-                        transcript,
-                        signed_division_limb_label(division_prefix, value_name, limb),
-                        dynamic_commitments);
+                    absorb(transcript, signed_division_limb_label(division_prefix, value_name, limb), dynamic_commitments);
                     for (const auto *column : {"Table", "Query", "m"})
                     {
-                        absorb(
-                            transcript,
-                            signed_division_range_label(
-                                division_prefix, value_name, limb, column),
-                            dynamic_commitments);
+                        absorb(transcript, signed_division_range_label(division_prefix, value_name, limb, column), dynamic_commitments);
                     }
-                    const auto beta_name = signed_division_beta_name(
-                        division_prefix, value_name, limb);
+                    const auto beta_name = signed_division_beta_name(division_prefix, value_name, limb);
                     out[beta_name] = transcript.challenge(beta_name);
                     for (const auto *column : {"J_tbl", "J_qry", "R"})
                     {
-                        absorb(
-                            transcript,
-                            signed_division_range_label(
-                                division_prefix, value_name, limb, column),
-                            dynamic_commitments);
+                        absorb(transcript, signed_division_range_label(division_prefix, value_name, limb, column), dynamic_commitments);
                     }
                 }
             }
@@ -1222,28 +980,15 @@ namespace gatzk::protocol
         }
         transcript.absorb_scalar("N", algebra::FieldElement(context.local.num_nodes));
         transcript.absorb_scalar("E", algebra::FieldElement(context.local.edges.size()));
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
+        for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
             const auto &layer = context.model.hidden_layers[layer_index];
-            transcript.absorb_scalar(
-                "d_in_l" + std::to_string(layer_index),
-                algebra::FieldElement(layer.input_dim));
-            transcript.absorb_scalar(
-                "d_h_l" + std::to_string(layer_index),
-                algebra::FieldElement(layer.shape.head_dim));
-            transcript.absorb_scalar(
-                "d_cat_l" + std::to_string(layer_index),
-                algebra::FieldElement(
-                    layer.shape.head_count * layer.shape.head_dim));
+            transcript.absorb_scalar("d_in_l" + std::to_string(layer_index), algebra::FieldElement(layer.input_dim));
+            transcript.absorb_scalar("d_h_l" + std::to_string(layer_index), algebra::FieldElement(layer.shape.head_dim));
+            transcript.absorb_scalar("d_cat_l" + std::to_string(layer_index), algebra::FieldElement(layer.shape.head_count * layer.shape.head_dim));
         }
-        transcript.absorb_scalar(
-            "d_in_out",
-            algebra::FieldElement(context.model.output_layer.input_dim));
-        transcript.absorb_scalar(
-            "d_out",
-            algebra::FieldElement(context.local.num_classes));
+        transcript.absorb_scalar("d_in_out", algebra::FieldElement(context.model.output_layer.input_dim));
+        transcript.absorb_scalar("d_out", algebra::FieldElement(context.local.num_classes));
         transcript.absorb_scalar("C", algebra::FieldElement(context.local.num_classes));
         transcript.absorb_scalar("B", algebra::FieldElement(context.config.range_bits));
         absorb_public(transcript, context, "P_I");
@@ -1260,42 +1005,24 @@ namespace gatzk::protocol
         absorb_public(transcript, context, "P_AggBind_m_src");
         absorb_public(transcript, context, "P_AggBind_m_dst");
         absorb_public(transcript, context, "P_AggBind_index_N");
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
+        for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
-            absorb_public(
-                transcript, context,
-                hidden_q_in_selector_label(layer_index));
-            absorb_public(
-                transcript, context,
-                hidden_q_d_h_selector_label(layer_index));
-            absorb_public(
-                transcript, context,
-                hidden_q_cat_selector_label(layer_index));
-            absorb_public(
-                transcript, context,
-                hidden_q_nd_h_selector_label(layer_index));
+            absorb_public(transcript, context, hidden_q_in_selector_label(layer_index));
+            absorb_public(transcript, context, hidden_q_d_h_selector_label(layer_index));
+            absorb_public(transcript, context, hidden_q_cat_selector_label(layer_index));
+            absorb_public(transcript, context, hidden_q_nd_h_selector_label(layer_index));
         }
-        absorb_public(
-            transcript, context, output_q_cat_selector_label());
+        absorb_public(transcript, context, output_q_cat_selector_label());
         absorb_public(transcript, context, "P_Q_C_valid");
         absorb_public(transcript, context, "P_BiasIndex_C");
         absorb_public(transcript, context, "P_BiasMultiplicity_C");
         absorb_public(transcript, context, "P_BiasIndex_edge");
         constexpr std::size_t kCoefficientTailBaseObservationCount = 3;
-        const auto bias_basis_chunks = coefficient_chunk_layout(
-            context.local.num_classes + kCoefficientTailBaseObservationCount,
-            context.domains.edge->size);
-        for (std::size_t head_index = 0;
-             head_index < context.model.output_layer.heads.size(); ++head_index)
+        const auto bias_basis_chunks = coefficient_chunk_layout(context.local.num_classes + kCoefficientTailBaseObservationCount, context.domains.edge->size);
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             for (const auto &chunk : bias_basis_chunks)
-                for (const auto *region : {
-                         "active", "semantic", "gap", "tail"})
-                    absorb_public(
-                        transcript, context,
-                        output_bias_basis_region_selector_label(
-                            head_index, chunk.chunk_index, region));
+                for (const auto *region : {"active", "semantic", "gap", "tail"})
+                    absorb_public(transcript, context, output_bias_basis_region_selector_label(head_index, chunk.chunk_index, region));
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
             absorb_public(transcript, context, "P_Q_div_out" + std::to_string(head_index));
@@ -1315,81 +1042,44 @@ namespace gatzk::protocol
         for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
             const bool is_first_layer = layer_index == 0;
-            const auto input_label =
-                is_first_layer
-                    ? std::string("P_H")
-                    : hidden_layer_concat_label(layer_index - 1);
-            for (std::size_t head_index = 0;
-                 head_index < context.model.hidden_layers[layer_index].heads.size();
-                 ++head_index)
+            const auto input_label = is_first_layer ? std::string("P_H") : hidden_layer_concat_label(layer_index - 1);
+            for (std::size_t head_index = 0; head_index < context.model.hidden_layers[layer_index].heads.size(); ++head_index)
             {
                 const auto prefix = hidden_head_prefix(layer_index, head_index);
-                const auto challenge = [&](std::string_view base)
-                {
-                    return hidden_challenge_name(base, layer_index, head_index);
-                };
+                const auto challenge = [&](std::string_view base) { return hidden_challenge_name(base, layer_index, head_index); };
                 absorb(transcript, input_label, dynamic_commitments);
                 absorb(transcript, prefix + "_H_prime", dynamic_commitments);
 
-                for (std::size_t column = 0;
-                     column <
-                     context.model.hidden_layers[layer_index]
-                         .shape.head_dim;
-                     ++column)
+                for (std::size_t column = 0; column < context.model.hidden_layers[layer_index].shape.head_dim; ++column)
                 {
-                    absorb(
-                        transcript,
-                        canonical_matrix_column_label(
-                            prefix + "_H_prime",
-                            column),
-                        dynamic_commitments);
+                    absorb(transcript, canonical_matrix_column_label(prefix + "_H_prime", column), dynamic_commitments);
                 }
 
-                for (std::size_t column = 0;
-                     column < context.model.hidden_layers[layer_index].shape.head_dim;
-                     ++column)
+                for (std::size_t column = 0; column < context.model.hidden_layers[layer_index].shape.head_dim; ++column)
                 {
-                    absorb_model_reblind(
-                        transcript,
-                        hidden_weight_column_label(layer_index, head_index, column),
-                        dynamic_commitments);
+                    absorb_model_reblind(transcript, hidden_weight_column_label(layer_index, head_index, column), dynamic_commitments);
                 }
                 out[challenge("y_proj_h")] = transcript.challenge(challenge("y_proj_h"));
                 out[challenge("xi_h")] = transcript.challenge(challenge("xi_h"));
 
                 absorb(transcript, prefix + "_H_prime", dynamic_commitments);
                 absorb(transcript, prefix + "_E_src", dynamic_commitments);
-                absorb(
-                    transcript,
-                    hidden_score_mask_label(layer_index, head_index, "src"),
-                    dynamic_commitments);
-                absorb_model_reblind(
-                    transcript, hidden_src_label(layer_index, head_index), dynamic_commitments);
+                absorb(transcript, hidden_score_mask_label(layer_index, head_index, "src"), dynamic_commitments);
+                absorb_model_reblind(transcript, hidden_src_label(layer_index, head_index), dynamic_commitments);
                 out[challenge("y_src_h")] = transcript.challenge(challenge("y_src_h"));
 
                 absorb(transcript, prefix + "_H_prime", dynamic_commitments);
                 absorb(transcript, prefix + "_E_dst", dynamic_commitments);
-                absorb(
-                    transcript,
-                    hidden_score_mask_label(layer_index, head_index, "dst"),
-                    dynamic_commitments);
-                absorb_model_reblind(
-                    transcript, hidden_dst_label(layer_index, head_index), dynamic_commitments);
+                absorb(transcript, hidden_score_mask_label(layer_index, head_index, "dst"), dynamic_commitments);
+                absorb_model_reblind(transcript, hidden_dst_label(layer_index, head_index), dynamic_commitments);
                 out[challenge("y_dst_h")] = transcript.challenge(challenge("y_dst_h"));
 
                 absorb(transcript, prefix + "_H_star", dynamic_commitments);
-                absorb(
-                    transcript,
-                    external_mask_label(prefix + "_H_star"),
-                    dynamic_commitments);
+                absorb(transcript, external_mask_label(prefix + "_H_star"), dynamic_commitments);
 
-                out[challenge("rho_proj_h")] =
-                    transcript.challenge(
-                        challenge("rho_proj_h"));
+                out[challenge("rho_proj_h")] = transcript.challenge(challenge("rho_proj_h"));
 
-                out[challenge("y_star_h")] =
-                    transcript.challenge(
-                        challenge("y_star_h"));
+                out[challenge("y_star_h")] = transcript.challenge(challenge("y_star_h"));
 
                 absorb(transcript, prefix + "_E_src", dynamic_commitments);
                 absorb(transcript, prefix + "_H_star", dynamic_commitments);
@@ -1442,8 +1132,7 @@ namespace gatzk::protocol
                 absorb(transcript, prefix + "_J_qry_exp", dynamic_commitments);
                 absorb(transcript, prefix + "_R_exp", dynamic_commitments);
 
-                for (const auto *suffix :
-                     {
+                for (const auto *suffix : {
                          "_Sum",
                          "_Sum_edge",
                          "_H_agg_pre_star",
@@ -1451,15 +1140,10 @@ namespace gatzk::protocol
                          "_widehat_v_pre_star",
                      })
                 {
-                    absorb(
-                        transcript,
-                        prefix + suffix,
-                        dynamic_commitments);
+                    absorb(transcript, prefix + suffix, dynamic_commitments);
                 }
 
-                out[challenge("lambda_psq_h")] =
-                    transcript.challenge(
-                        challenge("lambda_psq_h"));
+                out[challenge("lambda_psq_h")] = transcript.challenge(challenge("lambda_psq_h"));
 
                 absorb(transcript, prefix + "_T_psq", dynamic_commitments);
                 absorb(transcript, prefix + "_T_psq_edge", dynamic_commitments);
@@ -1475,10 +1159,7 @@ namespace gatzk::protocol
 
                 absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
                 absorb(transcript, prefix + "_H_agg_pre_star", dynamic_commitments);
-                absorb(
-                    transcript,
-                    external_mask_label(prefix + "_H_agg_pre_star"),
-                    dynamic_commitments);
+                absorb(transcript, external_mask_label(prefix + "_H_agg_pre_star"), dynamic_commitments);
                 out[challenge("y_agg_pre_h")] = transcript.challenge(challenge("y_agg_pre_h"));
                 absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
                 absorb(transcript, prefix + "_H_agg", dynamic_commitments);
@@ -1497,15 +1178,11 @@ namespace gatzk::protocol
 
                 absorb(transcript, prefix + "_H_agg", dynamic_commitments);
                 absorb(transcript, prefix + "_H_agg_star", dynamic_commitments);
-                absorb(
-                    transcript,
-                    external_mask_label(prefix + "_H_agg_star"),
-                    dynamic_commitments);
+                absorb(transcript, external_mask_label(prefix + "_H_agg_star"), dynamic_commitments);
                 out[challenge("y_agg_h")] = transcript.challenge(challenge("y_agg_h"));
 
-                for (const auto *suffix : {
-                         "_E_dst", "_M", "_Sum", "_inv", "_H_agg_star",
-                         "_E_dst_edge", "_M_edge", "_Sum_edge", "_inv_edge", "_H_agg_star_edge"})
+                for (const auto *suffix :
+                     {"_E_dst", "_M", "_Sum", "_inv", "_H_agg_star", "_E_dst_edge", "_M_edge", "_Sum_edge", "_inv_edge", "_H_agg_star_edge"})
                 {
                     absorb(transcript, prefix + suffix, dynamic_commitments);
                 }
@@ -1522,44 +1199,24 @@ namespace gatzk::protocol
             }
 
             absorb(transcript, hidden_layer_concat_label(layer_index), dynamic_commitments);
-            out[hidden_concat_xi_name(layer_index)] =
-                transcript.challenge(hidden_concat_xi_name(layer_index));
+            out[hidden_concat_xi_name(layer_index)] = transcript.challenge(hidden_concat_xi_name(layer_index));
             absorb(transcript, hidden_layer_concat_star_label(layer_index), dynamic_commitments);
-            absorb(
-                transcript,
-                external_mask_label(hidden_layer_concat_star_label(layer_index)),
-                dynamic_commitments);
-            out[hidden_concat_y_name(layer_index)] =
-                transcript.challenge(hidden_concat_y_name(layer_index));
+            absorb(transcript, external_mask_label(hidden_layer_concat_star_label(layer_index)), dynamic_commitments);
+            out[hidden_concat_y_name(layer_index)] = transcript.challenge(hidden_concat_y_name(layer_index));
         }
 
-        const auto final_hidden_label =
-            hidden_layer_concat_label(context.model.hidden_layers.size() - 1);
-        for (std::size_t head_index = 0;
-             head_index < context.model.output_layer.heads.size();
-             ++head_index)
+        const auto final_hidden_label = hidden_layer_concat_label(context.model.hidden_layers.size() - 1);
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
-            absorb(
-                transcript,
-                output_head_prefix(head_index) + "_Y_prime",
-                dynamic_commitments);
+            absorb(transcript, output_head_prefix(head_index) + "_Y_prime", dynamic_commitments);
 
-            for (std::size_t column = 0;
-                 column < context.local.num_classes;
-                 ++column)
+            for (std::size_t column = 0; column < context.local.num_classes; ++column)
             {
-                absorb(
-                    transcript,
-                    canonical_matrix_column_label(
-                        output_head_prefix(head_index) +
-                            "_Y_prime",
-                        column),
-                    dynamic_commitments);
+                absorb(transcript, canonical_matrix_column_label(output_head_prefix(head_index) + "_Y_prime", column), dynamic_commitments);
             }
         }
 
-        out["xi_out"] =
-            transcript.challenge("xi_out");
+        out["xi_out"] = transcript.challenge("xi_out");
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
             const auto prefix = output_head_prefix(head_index);
@@ -1568,59 +1225,29 @@ namespace gatzk::protocol
             absorb(transcript, prefix + "_Y_prime", dynamic_commitments);
             for (std::size_t column = 0; column < context.local.num_classes; ++column)
             {
-                absorb_model_reblind(
-                    transcript,
-                    output_weight_column_label(head_index, column),
-                    dynamic_commitments);
+                absorb_model_reblind(transcript, output_weight_column_label(head_index, column), dynamic_commitments);
             }
-            out[output_challenge_name("y_proj_out", head_index)] =
-                transcript.challenge(output_challenge_name("y_proj_out", head_index));
+            out[output_challenge_name("y_proj_out", head_index)] = transcript.challenge(output_challenge_name("y_proj_out", head_index));
             absorb(transcript, prefix + "_Y_prime", dynamic_commitments);
             absorb(transcript, prefix + "_E_src", dynamic_commitments);
-            absorb(
-                transcript,
-                output_score_mask_label(head_index, "src"),
-                dynamic_commitments);
-            absorb_model_reblind(
-                transcript,
-                output_src_label(head_index),
-                dynamic_commitments);
-            out[output_challenge_name("y_src_out", head_index)] =
-                transcript.challenge(output_challenge_name("y_src_out", head_index));
+            absorb(transcript, output_score_mask_label(head_index, "src"), dynamic_commitments);
+            absorb_model_reblind(transcript, output_src_label(head_index), dynamic_commitments);
+            out[output_challenge_name("y_src_out", head_index)] = transcript.challenge(output_challenge_name("y_src_out", head_index));
             absorb(transcript, prefix + "_Y_prime", dynamic_commitments);
             absorb(transcript, prefix + "_E_dst", dynamic_commitments);
-            absorb(
-                transcript,
-                output_score_mask_label(head_index, "dst"),
-                dynamic_commitments);
-            absorb_model_reblind(
-                transcript,
-                output_dst_label(head_index),
-                dynamic_commitments);
-            out[output_challenge_name("y_dst_out", head_index)] =
-                transcript.challenge(output_challenge_name("y_dst_out", head_index));
+            absorb(transcript, output_score_mask_label(head_index, "dst"), dynamic_commitments);
+            absorb_model_reblind(transcript, output_dst_label(head_index), dynamic_commitments);
+            out[output_challenge_name("y_dst_out", head_index)] = transcript.challenge(output_challenge_name("y_dst_out", head_index));
             absorb(transcript, prefix + "_Y_prime_star", dynamic_commitments);
-            absorb(
-                transcript,
-                external_mask_label(
-                    prefix + "_Y_prime_star"),
-                dynamic_commitments);
+            absorb(transcript, external_mask_label(prefix + "_Y_prime_star"), dynamic_commitments);
 
-            out[output_challenge_name(
-                "rho_proj_out",
-                head_index)] =
-                transcript.challenge(
-                    output_challenge_name(
-                        "rho_proj_out",
-                        head_index));
+            out[output_challenge_name("rho_proj_out", head_index)] = transcript.challenge(output_challenge_name("rho_proj_out", head_index));
             absorb(transcript, prefix + "_Y_prime_star_edge", dynamic_commitments);
-            out[output_challenge_name("eta_src_out", head_index)] =
-                transcript.challenge(output_challenge_name("eta_src_out", head_index));
+            out[output_challenge_name("eta_src_out", head_index)] = transcript.challenge(output_challenge_name("eta_src_out", head_index));
             absorb(transcript, prefix + "_Table_src", dynamic_commitments);
             absorb(transcript, prefix + "_Query_src", dynamic_commitments);
             absorb(transcript, prefix + "_m_src", dynamic_commitments);
-            out[output_challenge_name("beta_src_out", head_index)] =
-                transcript.challenge(output_challenge_name("beta_src_out", head_index));
+            out[output_challenge_name("beta_src_out", head_index)] = transcript.challenge(output_challenge_name("beta_src_out", head_index));
             absorb(transcript, prefix + "_J_src_node", dynamic_commitments);
             absorb(transcript, prefix + "_J_src_edge", dynamic_commitments);
             absorb(transcript, prefix + "_R_src_node", dynamic_commitments);
@@ -1629,14 +1256,12 @@ namespace gatzk::protocol
             absorb(transcript, prefix + "_Z", dynamic_commitments);
             absorb_static(transcript, context, "V_T_L_x");
             absorb_static(transcript, context, "V_T_L_y");
-            out[output_challenge_name("eta_L_out", head_index)] =
-                transcript.challenge(output_challenge_name("eta_L_out", head_index));
+            out[output_challenge_name("eta_L_out", head_index)] = transcript.challenge(output_challenge_name("eta_L_out", head_index));
             for (const auto *suffix : {"_Table_L", "_Query_L", "_m_L"})
             {
                 absorb(transcript, prefix + suffix, dynamic_commitments);
             }
-            out[output_challenge_name("beta_L_out", head_index)] =
-                transcript.challenge(output_challenge_name("beta_L_out", head_index));
+            out[output_challenge_name("beta_L_out", head_index)] = transcript.challenge(output_challenge_name("beta_L_out", head_index));
             for (const auto *suffix : {"_J_tbl_L", "_J_qry_L", "_R_L"})
             {
                 absorb(transcript, prefix + suffix, dynamic_commitments);
@@ -1649,8 +1274,7 @@ namespace gatzk::protocol
             {
                 absorb(transcript, prefix + suffix, dynamic_commitments);
             }
-            out[output_challenge_name("beta_R_out", head_index)] =
-                transcript.challenge(output_challenge_name("beta_R_out", head_index));
+            out[output_challenge_name("beta_R_out", head_index)] = transcript.challenge(output_challenge_name("beta_R_out", head_index));
             for (const auto *suffix : {"_J_tbl_R", "_J_qry_R", "_R_R"})
             {
                 absorb(transcript, prefix + suffix, dynamic_commitments);
@@ -1659,21 +1283,18 @@ namespace gatzk::protocol
             absorb(transcript, prefix + "_U", dynamic_commitments);
             absorb_static(transcript, context, "V_T_exp_x");
             absorb_static(transcript, context, "V_T_exp_y");
-            out[output_challenge_name("eta_exp_out", head_index)] =
-                transcript.challenge(output_challenge_name("eta_exp_out", head_index));
+            out[output_challenge_name("eta_exp_out", head_index)] = transcript.challenge(output_challenge_name("eta_exp_out", head_index));
             for (const auto *suffix : {"_Table_exp", "_Query_exp", "_m_exp"})
             {
                 absorb(transcript, prefix + suffix, dynamic_commitments);
             }
-            out[output_challenge_name("beta_exp_out", head_index)] =
-                transcript.challenge(output_challenge_name("beta_exp_out", head_index));
+            out[output_challenge_name("beta_exp_out", head_index)] = transcript.challenge(output_challenge_name("beta_exp_out", head_index));
             for (const auto *suffix : {"_J_tbl_exp", "_J_qry_exp", "_R_exp"})
             {
                 absorb(transcript, prefix + suffix, dynamic_commitments);
             }
 
-            for (const auto *suffix :
-                 {
+            for (const auto *suffix : {
                      "_Sum",
                      "_Sum_edge",
                      "_Y_star",
@@ -1681,52 +1302,35 @@ namespace gatzk::protocol
                      "_widehat_y_star",
                  })
             {
-                absorb(
-                    transcript,
-                    prefix + suffix,
-                    dynamic_commitments);
+                absorb(transcript, prefix + suffix, dynamic_commitments);
             }
 
-            out[output_challenge_name("lambda_out", head_index)] =
-                transcript.challenge(
-                    output_challenge_name(
-                        "lambda_out",
-                        head_index));
+            out[output_challenge_name("lambda_out", head_index)] = transcript.challenge(output_challenge_name("lambda_out", head_index));
 
             absorb(transcript, prefix + "_T", dynamic_commitments);
             absorb(transcript, prefix + "_T_edge", dynamic_commitments);
-            out[output_challenge_name("eta_t_out", head_index)] =
-                transcript.challenge(output_challenge_name("eta_t_out", head_index));
+            out[output_challenge_name("eta_t_out", head_index)] = transcript.challenge(output_challenge_name("eta_t_out", head_index));
             absorb(transcript, prefix + "_Table_t", dynamic_commitments);
             absorb(transcript, prefix + "_Query_t", dynamic_commitments);
             absorb(transcript, prefix + "_m_t", dynamic_commitments);
-            out[output_challenge_name("beta_t_out", head_index)] =
-                transcript.challenge(output_challenge_name("beta_t_out", head_index));
+            out[output_challenge_name("beta_t_out", head_index)] = transcript.challenge(output_challenge_name("beta_t_out", head_index));
             absorb(transcript, prefix + "_J_t_node", dynamic_commitments);
             absorb(transcript, prefix + "_J_t_edge", dynamic_commitments);
             absorb(transcript, prefix + "_R_t_node", dynamic_commitments);
             absorb(transcript, prefix + "_R_t", dynamic_commitments);
             absorb(transcript, y_label, dynamic_commitments);
             absorb(transcript, prefix + "_Y_star", dynamic_commitments);
-            absorb(
-                transcript,
-                external_mask_label(prefix + "_Y_star"),
-                dynamic_commitments);
-            out[output_challenge_name("y_out_star", head_index)] =
-                transcript.challenge(output_challenge_name("y_out_star", head_index));
-            for (const auto *suffix : {
-                     "_E_dst", "_M", "_Sum", "_inv", "_Y_star",
-                     "_E_dst_edge", "_M_edge", "_Sum_edge", "_inv_edge", "_Y_star_edge"})
+            absorb(transcript, external_mask_label(prefix + "_Y_star"), dynamic_commitments);
+            out[output_challenge_name("y_out_star", head_index)] = transcript.challenge(output_challenge_name("y_out_star", head_index));
+            for (const auto *suffix : {"_E_dst", "_M", "_Sum", "_inv", "_Y_star", "_E_dst_edge", "_M_edge", "_Sum_edge", "_inv_edge", "_Y_star_edge"})
             {
                 absorb(transcript, prefix + suffix, dynamic_commitments);
             }
-            out[output_challenge_name("eta_dst_out", head_index)] =
-                transcript.challenge(output_challenge_name("eta_dst_out", head_index));
+            out[output_challenge_name("eta_dst_out", head_index)] = transcript.challenge(output_challenge_name("eta_dst_out", head_index));
             absorb(transcript, prefix + "_Table_dst", dynamic_commitments);
             absorb(transcript, prefix + "_Query_dst", dynamic_commitments);
             absorb(transcript, prefix + "_m_dst", dynamic_commitments);
-            out[output_challenge_name("beta_dst_out", head_index)] =
-                transcript.challenge(output_challenge_name("beta_dst_out", head_index));
+            out[output_challenge_name("beta_dst_out", head_index)] = transcript.challenge(output_challenge_name("beta_dst_out", head_index));
             absorb(transcript, prefix + "_J_dst_node", dynamic_commitments);
             absorb(transcript, prefix + "_J_dst_edge", dynamic_commitments);
             absorb(transcript, prefix + "_R_dst_node", dynamic_commitments);
@@ -1736,256 +1340,122 @@ namespace gatzk::protocol
 
         replay_signed_division("P_avg_Div_");
 
-        for (const auto &spec :
-             matrix_fold_binding_specs(context))
+        for (const auto &spec : matrix_fold_binding_specs(context))
         {
-            absorb(
-                transcript,
-                spec.fold_object,
-                dynamic_commitments);
+            absorb(transcript, spec.fold_object, dynamic_commitments);
 
             if (spec.public_source)
             {
-                absorb(
-                    transcript,
-                    "P_H",
-                    dynamic_commitments);
+                absorb(transcript, "P_H", dynamic_commitments);
             }
             else
             {
-                for (std::size_t column = 0;
-                     column < spec.width;
-                     ++column)
+                for (std::size_t column = 0; column < spec.width; ++column)
                 {
-                    absorb(
-                        transcript,
-                        canonical_matrix_column_label(
-                            spec.source_matrix_object,
-                            column),
-                        dynamic_commitments);
+                    absorb(transcript, canonical_matrix_column_label(spec.source_matrix_object, column), dynamic_commitments);
                 }
             }
 
-            out[spec.lambda_challenge] =
-                transcript.challenge(
-                    spec.lambda_challenge);
+            out[spec.lambda_challenge] = transcript.challenge(spec.lambda_challenge);
 
-            absorb(
-                transcript,
-                spec.source_fold_object,
-                dynamic_commitments);
+            absorb(transcript, spec.source_fold_object, dynamic_commitments);
 
-            absorb(
-                transcript,
-                spec.source_accumulator_object +
-                    "_Weight",
-                dynamic_commitments);
+            absorb(transcript, spec.source_accumulator_object + "_Weight", dynamic_commitments);
 
-            absorb(
-                transcript,
-                spec.source_accumulator_object,
-                dynamic_commitments);
+            absorb(transcript, spec.source_accumulator_object, dynamic_commitments);
 
-            absorb(
-                transcript,
-                spec.fold_accumulator_object,
-                dynamic_commitments);
+            absorb(transcript, spec.fold_accumulator_object, dynamic_commitments);
         }
 
-        for (const auto &spec :
-             flat_matrix_binding_specs(context))
+        for (const auto &spec : flat_matrix_binding_specs(context))
         {
-            absorb(
-                transcript,
-                spec.flat_object,
-                dynamic_commitments);
+            absorb(transcript, spec.flat_object, dynamic_commitments);
 
-            for (std::size_t column = 0;
-                 column < spec.columns;
-                 ++column)
+            for (std::size_t column = 0; column < spec.columns; ++column)
             {
-                absorb(
-                    transcript,
-                    canonical_matrix_column_label(
-                        spec.matrix_object,
-                        column),
-                    dynamic_commitments);
+                absorb(transcript, canonical_matrix_column_label(spec.matrix_object, column), dynamic_commitments);
             }
 
-            out[spec.lambda_challenge] =
-                transcript.challenge(
-                    spec.lambda_challenge);
+            out[spec.lambda_challenge] = transcript.challenge(spec.lambda_challenge);
 
-            absorb(
-                transcript,
-                spec.row_fold_object,
-                dynamic_commitments);
+            absorb(transcript, spec.row_fold_object, dynamic_commitments);
 
-            absorb(
-                transcript,
-                spec.row_accumulator_object,
-                dynamic_commitments);
+            absorb(transcript, spec.row_accumulator_object, dynamic_commitments);
 
-            absorb(
-                transcript,
-                spec.flat_accumulator_object,
-                dynamic_commitments);
+            absorb(transcript, spec.flat_accumulator_object, dynamic_commitments);
         }
 
-        for (const auto &spec :
-             broadcast_flat_binding_specs(context))
+        for (const auto &spec : broadcast_flat_binding_specs(context))
         {
-            absorb(
-                transcript,
-                spec.node_object,
-                dynamic_commitments);
+            absorb(transcript, spec.node_object, dynamic_commitments);
 
-            absorb(
-                transcript,
-                spec.flat_object,
-                dynamic_commitments);
+            absorb(transcript, spec.flat_object, dynamic_commitments);
 
-            out[spec.lambda_challenge] =
-                transcript.challenge(
-                    spec.lambda_challenge);
+            out[spec.lambda_challenge] = transcript.challenge(spec.lambda_challenge);
 
-            absorb(
-                transcript,
-                spec.node_accumulator_object,
-                dynamic_commitments);
+            absorb(transcript, spec.node_accumulator_object, dynamic_commitments);
 
-            absorb(
-                transcript,
-                spec.flat_accumulator_object,
-                dynamic_commitments);
+            absorb(transcript, spec.flat_accumulator_object, dynamic_commitments);
         }
-        const auto binding_metadata =
-            build_binding_relation_metadata(context);
+        const auto binding_metadata = build_binding_relation_metadata(context);
         for (const auto &meta : binding_metadata)
         {
             absorb_binding_relation_metadata(transcript, meta);
-            for (const auto &relation :
-                 meta.route_terminal_relations)
+            for (const auto &relation : meta.route_terminal_relations)
             {
-                absorb(
-                    transcript,
-                    relation.shifted_accumulator_object,
-                    dynamic_commitments);
+                absorb(transcript, relation.shifted_accumulator_object, dynamic_commitments);
 
-                std::shared_ptr<
-                    algebra::RootOfUnityDomain>
-                    relation_edge_domain;
+                std::shared_ptr<algebra::RootOfUnityDomain> relation_edge_domain;
 
-                for (const auto &domain : {
-                         context.domains.fh,
-                         context.domains.edge,
-                         context.domains.in,
-                         context.domains.d,
-                         context.domains.cat,
-                         context.domains.c,
-                         context.domains.n})
+                for (const auto &domain : {context.domains.fh, context.domains.edge, context.domains.in, context.domains.d, context.domains.cat,
+                                           context.domains.c, context.domains.n})
                 {
-                    if (domain != nullptr &&
-                        domain->name ==
-                            relation.edge_domain)
+                    if (domain != nullptr && domain->name == relation.edge_domain)
                     {
-                        relation_edge_domain =
-                            domain;
+                        relation_edge_domain = domain;
                         break;
                     }
                 }
 
                 if (relation_edge_domain == nullptr)
                 {
-                    throw std::runtime_error(
-                        "route terminal replay domain missing: " +
-                        relation.relation_id);
+                    throw std::runtime_error("route terminal replay domain missing: " + relation.relation_id);
                 }
 
                 out[relation.challenge_label] =
-                    transcript.challenge_excluding(
-                        relation.challenge_label,
-                        [&](const algebra::FieldElement &candidate)
-                        {
-                            return relation_edge_domain
-                                ->zero_polynomial_eval(
-                                    candidate +
-                                    relation.terminal_delta)
-                                .is_zero();
-                        });
+                    transcript.challenge_excluding(relation.challenge_label, [&](const algebra::FieldElement &candidate)
+                                                   { return relation_edge_domain->zero_polynomial_eval(candidate + relation.terminal_delta).is_zero(); });
             }
             for (const auto &matrix : meta.canonical_matrices)
             {
-                absorb(
-                    transcript, matrix.matrix_object,
-                    dynamic_commitments);
+                absorb(transcript, matrix.matrix_object, dynamic_commitments);
                 for (const auto &column : matrix.column_objects)
                     absorb(transcript, column, dynamic_commitments);
-                out[matrix.compression_challenge_label] =
-                    transcript.challenge(
-                        matrix.compression_challenge_label);
-                absorb(
-                    transcript, matrix.compressed_object,
-                    dynamic_commitments);
+                out[matrix.compression_challenge_label] = transcript.challenge(matrix.compression_challenge_label);
+                absorb(transcript, matrix.compressed_object, dynamic_commitments);
             }
             for (const auto &relation : meta.aggregation_relations)
             {
-                absorb(
-                    transcript, relation.alpha_object,
-                    dynamic_commitments);
-                out[relation.compression_challenge_label] =
-                    transcript.challenge(
-                        relation.compression_challenge_label);
-                for (const auto *object : {
-                         &relation.source_node_object,
-                         &relation.target_node_object,
-                         &relation.source_edge_object,
-                         &relation.target_edge_object,
-                         &relation.product_object,
-                         &relation.psq_object})
+                absorb(transcript, relation.alpha_object, dynamic_commitments);
+                out[relation.compression_challenge_label] = transcript.challenge(relation.compression_challenge_label);
+                for (const auto *object : {&relation.source_node_object, &relation.target_node_object, &relation.source_edge_object,
+                                           &relation.target_edge_object, &relation.product_object, &relation.psq_object})
                     absorb(transcript, *object, dynamic_commitments);
-                for (const auto *route : {
-                         &relation.source_route,
-                         &relation.target_route})
+                for (const auto *route : {&relation.source_route, &relation.target_route})
                 {
-                    absorb(
-                        transcript, route->node_value_object,
-                        dynamic_commitments);
-                    absorb(
-                        transcript, route->edge_value_object,
-                        dynamic_commitments);
-                    out[route->eta_challenge_label] =
-                        transcript.challenge(
-                            route->eta_challenge_label);
-                    absorb(
-                        transcript, route->table_object,
-                        dynamic_commitments);
-                    absorb(
-                        transcript, route->query_object,
-                        dynamic_commitments);
-                    absorb_public(
-                        transcript, context,
-                        route->multiplicity_object);
-                    out[route->beta_challenge_label] =
-                        transcript.challenge(
-                            route->beta_challenge_label);
-                    for (const auto *object : {
-                             &route->node_inverse_object,
-                             &route->edge_inverse_object,
-                             &route->node_accumulator_object,
-                             &route->edge_accumulator_object,
-                             &route->shifted_accumulator_object})
+                    absorb(transcript, route->node_value_object, dynamic_commitments);
+                    absorb(transcript, route->edge_value_object, dynamic_commitments);
+                    out[route->eta_challenge_label] = transcript.challenge(route->eta_challenge_label);
+                    absorb(transcript, route->table_object, dynamic_commitments);
+                    absorb(transcript, route->query_object, dynamic_commitments);
+                    absorb_public(transcript, context, route->multiplicity_object);
+                    out[route->beta_challenge_label] = transcript.challenge(route->beta_challenge_label);
+                    for (const auto *object : {&route->node_inverse_object, &route->edge_inverse_object, &route->node_accumulator_object,
+                                               &route->edge_accumulator_object, &route->shifted_accumulator_object})
                         absorb(transcript, *object, dynamic_commitments);
                     out[route->terminal_challenge_label] =
-                        transcript.challenge_excluding(
-                            route->terminal_challenge_label,
-                            [&](const algebra::FieldElement &candidate)
-                            {
-                                return context.domains.edge
-                                    ->zero_polynomial_eval(
-                                        candidate + route->terminal_delta)
-                                    .is_zero();
-                            });
+                        transcript.challenge_excluding(route->terminal_challenge_label, [&](const algebra::FieldElement &candidate)
+                                                       { return context.domains.edge->zero_polynomial_eval(candidate + route->terminal_delta).is_zero(); });
                 }
             }
         }
@@ -1994,140 +1464,81 @@ namespace gatzk::protocol
         {
             absorb(transcript, output_y_lin_label(head_index), dynamic_commitments);
             absorb(transcript, output_y_label(head_index), dynamic_commitments);
-            absorb_model_reblind(
-                transcript,
-                output_bias_label(head_index),
-                dynamic_commitments);
+            absorb_model_reblind(transcript, output_bias_label(head_index), dynamic_commitments);
             absorb(transcript, output_head_prefix(head_index) + "_Y_star", dynamic_commitments);
             absorb(transcript, output_head_prefix(head_index) + "_Table_dst", dynamic_commitments);
             absorb(transcript, output_head_prefix(head_index) + "_Query_dst", dynamic_commitments);
             absorb(transcript, output_head_prefix(head_index) + "_Y_pre_flat", dynamic_commitments);
             absorb(transcript, output_head_prefix(head_index) + "_Bias_flat", dynamic_commitments);
             absorb(transcript, output_head_prefix(head_index) + "_Y_flat", dynamic_commitments);
-            for (const auto *suffix : {
-                     "Active", "X", "D", "Y", "Sigma", "Zero",
-                     "A", "A_inv", "D_inv", "Q", "R", "Delta"})
+            for (const auto *suffix : {"Active", "X", "D", "Y", "Sigma", "Zero", "A", "A_inv", "D_inv", "Q", "R", "Delta"})
             {
-                absorb(
-                    transcript,
-                    output_head_prefix(head_index) + "_Div_" + suffix,
-                    dynamic_commitments);
+                absorb(transcript, output_head_prefix(head_index) + "_Div_" + suffix, dynamic_commitments);
             }
             const auto relation_id = "bind:output:" + std::to_string(head_index);
-            const auto meta_it = std::find_if(
-                binding_metadata.begin(), binding_metadata.end(),
-                [&](const BindingRelationMeta &meta)
-                { return meta.relation_id == relation_id; });
+            const auto meta_it = std::find_if(binding_metadata.begin(), binding_metadata.end(),
+                                              [&](const BindingRelationMeta &meta) { return meta.relation_id == relation_id; });
             if (meta_it == binding_metadata.end() || meta_it->indexed_views.size() != 1)
             {
-                throw std::runtime_error(
-                    "output bias binding transcript metadata is missing");
+                throw std::runtime_error("output bias binding transcript metadata is missing");
             }
             const auto &view_meta = meta_it->indexed_views.front();
-            const auto *shift_meta_ptr = find_unique_shift_relation_by_kind(
-                *meta_it, "output-bias-terminal");
+            const auto *shift_meta_ptr = find_unique_shift_relation_by_kind(*meta_it, "output-bias-terminal");
             if (shift_meta_ptr == nullptr)
-                throw std::runtime_error(
-                    "output bias terminal relation is not uniquely registered during replay");
+                throw std::runtime_error("output bias terminal relation is not uniquely registered during replay");
             const auto &shift_meta = *shift_meta_ptr;
-            out[view_meta.eta_challenge_label] = transcript.challenge(
-                view_meta.eta_challenge_label);
+            out[view_meta.eta_challenge_label] = transcript.challenge(view_meta.eta_challenge_label);
             for (const auto *suffix : {"Table_can", "Query", "m_can"})
-                absorb(
-                    transcript,
-                    output_bias_view_label(head_index, suffix),
-                    dynamic_commitments);
-            out[view_meta.beta_challenge_label] = transcript.challenge(
-                view_meta.beta_challenge_label);
+                absorb(transcript, output_bias_view_label(head_index, suffix), dynamic_commitments);
+            out[view_meta.beta_challenge_label] = transcript.challenge(view_meta.beta_challenge_label);
             for (const auto *suffix : {"J_can", "J_qry", "R_can", "R_qry"})
-                absorb(
-                    transcript,
-                    output_bias_view_label(head_index, suffix),
-                    dynamic_commitments);
+                absorb(transcript, output_bias_view_label(head_index, suffix), dynamic_commitments);
             if (shift_meta.configured_degrees.empty())
             {
-                out[shift_meta.challenge_label] = transcript.challenge(
-                    shift_meta.challenge_label);
+                out[shift_meta.challenge_label] = transcript.challenge(shift_meta.challenge_label);
             }
             else
             {
-                absorb(
-                    transcript,
-                    output_bias_view_label(head_index, "R_shifted"),
-                    dynamic_commitments);
-                const auto second_domain =
-                    shift_meta.source_domains.at(1) == context.domains.c->name
-                        ? context.domains.c
-                        : context.domains.edge;
-                out[shift_meta.challenge_label] = transcript.challenge_excluding(
-                    shift_meta.challenge_label,
-                    [&](const algebra::FieldElement &candidate)
-                    {
-                        return second_domain->zero_polynomial_eval(
-                                                candidate + shift_meta.deltas.at(1))
-                            .is_zero();
-                    });
+                absorb(transcript, output_bias_view_label(head_index, "R_shifted"), dynamic_commitments);
+                const auto second_domain = shift_meta.source_domains.at(1) == context.domains.c->name ? context.domains.c : context.domains.edge;
+                out[shift_meta.challenge_label] =
+                    transcript.challenge_excluding(shift_meta.challenge_label, [&](const algebra::FieldElement &candidate)
+                                                   { return second_domain->zero_polynomial_eval(candidate + shift_meta.deltas.at(1)).is_zero(); });
             }
             if (meta_it->coefficient_basis_relations.size() != 1)
-                throw std::runtime_error(
-                    "output bias coefficient basis metadata is not unique during replay");
-            const auto &basis =
-                meta_it->coefficient_basis_relations.front();
-            const auto pre_gamma_commitment_count =
-                basis.chunks.size() + 1;
+                throw std::runtime_error("output bias coefficient basis metadata is not unique during replay");
+            const auto &basis = meta_it->coefficient_basis_relations.front();
+            const auto pre_gamma_commitment_count = basis.chunks.size() + 1;
             if (basis.commitment_order.size() != pre_gamma_commitment_count + basis.chunks.size())
-                throw std::runtime_error(
-                    "output bias coefficient basis commitment order is invalid");
-            for (std::size_t index = 0;
-                 index < basis.chunks.size(); ++index)
+                throw std::runtime_error("output bias coefficient basis commitment order is invalid");
+            for (std::size_t index = 0; index < basis.chunks.size(); ++index)
                 if (basis.commitment_order[pre_gamma_commitment_count + index] != basis.chunks[index].accumulator_object)
-                    throw std::runtime_error(
-                        "output bias coefficient basis accumulator order is invalid");
-            for (std::size_t index = 0;
-                 index < pre_gamma_commitment_count; ++index)
-                absorb(
-                    transcript, basis.commitment_order[index],
-                    dynamic_commitments);
-            out[basis.gamma_challenge_label] =
-                transcript.challenge_excluding(
-                    basis.gamma_challenge_label,
-                    [&](const algebra::FieldElement &candidate)
-                    {
-                        return candidate.is_zero() || std::any_of(
-                                                          basis.chunks.begin(), basis.chunks.end(),
-                                                          [&](const CoefficientBasisChunkMeta &chunk)
-                                                          { return candidate == chunk.terminal_point; });
-                    });
+                    throw std::runtime_error("output bias coefficient basis accumulator order is invalid");
+            for (std::size_t index = 0; index < pre_gamma_commitment_count; ++index)
+                absorb(transcript, basis.commitment_order[index], dynamic_commitments);
+            out[basis.gamma_challenge_label] = transcript.challenge_excluding(
+                basis.gamma_challenge_label,
+                [&](const algebra::FieldElement &candidate)
+                {
+                    return candidate.is_zero() || std::any_of(basis.chunks.begin(), basis.chunks.end(),
+                                                              [&](const CoefficientBasisChunkMeta &chunk) { return candidate == chunk.terminal_point; });
+                });
             for (const auto &chunk : basis.chunks)
-                absorb(
-                    transcript, chunk.accumulator_object,
-                    dynamic_commitments);
+                absorb(transcript, chunk.accumulator_object, dynamic_commitments);
             for (const auto &chunk : basis.chunks)
-                absorb(
-                    transcript, chunk.shifted_accumulator_object,
-                    dynamic_commitments);
+                absorb(transcript, chunk.shifted_accumulator_object, dynamic_commitments);
             const auto gamma = out.at(basis.gamma_challenge_label);
-            out[basis.relation_challenge_label] =
-                transcript.challenge_excluding(
-                    basis.relation_challenge_label,
-                    [&](const algebra::FieldElement &candidate)
-                    {
-                        return std::any_of(
-                            basis.chunks.begin(), basis.chunks.end(),
-                            [&](const CoefficientBasisChunkMeta &chunk)
-                            {
-                                return context.domains.edge
-                                    ->zero_polynomial_eval(
-                                        candidate + chunk.terminal_point - gamma)
-                                    .is_zero();
-                            });
-                    });
+            out[basis.relation_challenge_label] = transcript.challenge_excluding(
+                basis.relation_challenge_label,
+                [&](const algebra::FieldElement &candidate)
+                {
+                    return std::any_of(basis.chunks.begin(), basis.chunks.end(), [&](const CoefficientBasisChunkMeta &chunk)
+                                       { return context.domains.edge->zero_polynomial_eval(candidate + chunk.terminal_point - gamma).is_zero(); });
+                });
         }
         absorb(transcript, "P_Y_lin", dynamic_commitments);
         absorb(transcript, "P_Y", dynamic_commitments);
-        for (const auto *suffix : {
-                 "Active", "X", "D", "Y", "Sigma", "Zero",
-                 "A", "A_inv", "D_inv", "Q", "R", "Delta"})
+        for (const auto *suffix : {"Active", "X", "D", "Y", "Sigma", "Zero", "A", "A_inv", "D_inv", "Q", "R", "Delta"})
         {
             absorb(transcript, "P_avg_Div_" + std::string(suffix), dynamic_commitments);
         }
@@ -2161,8 +1572,7 @@ namespace gatzk::protocol
         {
             absorb(transcript, label, quotient_commitments);
         }
-        for (const auto &[label, point] :
-             derive_domain_opening_challenges(context, transcript))
+        for (const auto &[label, point] : derive_domain_opening_challenges(context, transcript))
             out[label] = point;
         return out;
     }

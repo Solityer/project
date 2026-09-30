@@ -13,32 +13,17 @@ namespace gatzk::protocol::internal
     {
         using algebra::FieldElement;
 
-        FieldElement challenge_at(
-            const std::map<std::string, FieldElement> &challenges,
-            std::string_view base,
-            bool hidden,
-            std::size_t layer_index,
-            std::size_t head_index)
+        FieldElement challenge_at(const std::map<std::string, FieldElement> &challenges, std::string_view base, bool hidden, std::size_t layer_index,
+                                  std::size_t head_index)
         {
             std::string challenge_base(base);
-            if (!hidden &&
-                challenge_base.size() >= 2 &&
-                challenge_base.ends_with("_h"))
+            if (!hidden && challenge_base.size() >= 2 && challenge_base.ends_with("_h"))
             {
-                challenge_base.replace(
-                    challenge_base.size() - 2,
-                    2,
-                    "_out");
+                challenge_base.replace(challenge_base.size() - 2, 2, "_out");
             }
 
-            const auto challenge_name = hidden
-                ? hidden_challenge_name(
-                      challenge_base,
-                      layer_index,
-                      head_index)
-                : output_challenge_name(
-                      challenge_base,
-                      head_index);
+            const auto challenge_name =
+                hidden ? hidden_challenge_name(challenge_base, layer_index, head_index) : output_challenge_name(challenge_base, head_index);
             return challenges.at(challenge_name);
         }
 
@@ -51,75 +36,52 @@ namespace gatzk::protocol::internal
             std::size_t head_index = 0;
         };
 
-        std::optional<NameMatch> match_name(
-            std::string_view name,
-            const TEdgeDescriptorShape &shape)
+        std::optional<NameMatch> match_name(std::string_view name, const TEdgeDescriptorShape &shape)
         {
-            for (std::size_t layer_index = 0;
-                 layer_index < shape.hidden_head_counts.size();
-                 ++layer_index)
+            for (std::size_t layer_index = 0; layer_index < shape.hidden_head_counts.size(); ++layer_index)
             {
-                for (std::size_t head_index = 0;
-                     head_index < shape.hidden_head_counts[layer_index];
-                     ++head_index)
+                for (std::size_t head_index = 0; head_index < shape.hidden_head_counts[layer_index]; ++head_index)
                 {
-                    const auto prefix =
-                        hidden_head_prefix(layer_index, head_index) + "_";
+                    const auto prefix = hidden_head_prefix(layer_index, head_index) + "_";
                     if (name.rfind(prefix, 0) == 0)
                     {
-                        return NameMatch{
-                            .prefix = prefix,
-                            .suffix = std::string(name.substr(prefix.size())),
-                            .hidden = true,
-                            .layer_index = layer_index,
-                            .head_index = head_index};
+                        return NameMatch{.prefix = prefix,
+                                         .suffix = std::string(name.substr(prefix.size())),
+                                         .hidden = true,
+                                         .layer_index = layer_index,
+                                         .head_index = head_index};
                     }
                 }
             }
 
-            for (std::size_t head_index = 0;
-                 head_index < shape.output_head_count;
-                 ++head_index)
+            for (std::size_t head_index = 0; head_index < shape.output_head_count; ++head_index)
             {
                 const auto prefix = output_head_prefix(head_index) + "_";
                 if (name.rfind(prefix, 0) == 0)
                 {
                     return NameMatch{
-                        .prefix = prefix,
-                        .suffix = std::string(name.substr(prefix.size())),
-                        .hidden = false,
-                        .layer_index = 0,
-                        .head_index = head_index};
+                        .prefix = prefix, .suffix = std::string(name.substr(prefix.size())), .hidden = false, .layer_index = 0, .head_index = head_index};
                 }
             }
             return std::nullopt;
         }
 
-        bool collision_sensitive(
-            const NameMatch &match)
+        bool collision_sensitive(const NameMatch &match)
         {
-            return (match.hidden &&
-                    (match.suffix == "w_psq" ||
-                     match.suffix == "T_psq_edge")) ||
-                   (!match.hidden && match.suffix == "w");
+            return (match.hidden && (match.suffix == "w_psq" || match.suffix == "T_psq_edge")) || (!match.hidden && match.suffix == "w");
         }
     } // namespace
 
-    std::optional<TEdgeDerivedLinearDescriptor>
-    make_t_edge_derived_linear_descriptor(
-        std::string_view name,
-        const TEdgeDescriptorShape &shape,
-        const std::map<std::string, FieldElement> &challenges,
-        const std::function<bool(std::string_view)> &collision_predicate)
+    std::optional<TEdgeDerivedLinearDescriptor> make_t_edge_derived_linear_descriptor(std::string_view name, const TEdgeDescriptorShape &shape,
+                                                                                      const std::map<std::string, FieldElement> &challenges,
+                                                                                      const std::function<bool(std::string_view)> &collision_predicate)
     {
         const auto match = match_name(name, shape);
         if (!match.has_value())
         {
             return std::nullopt;
         }
-        if (collision_sensitive(*match) &&
-            collision_predicate &&
-            collision_predicate(name))
+        if (collision_sensitive(*match) && collision_predicate && collision_predicate(name))
         {
             return std::nullopt;
         }
@@ -127,25 +89,9 @@ namespace gatzk::protocol::internal
         TEdgeDerivedLinearDescriptor descriptor;
         descriptor.target_label = std::string(name);
 
-        const auto add =
-            [&](const std::string &source,
-                const FieldElement &scale)
-        {
-            descriptor.sources.push_back(
-                TEdgeDerivedLinearSource{
-                    .label = source,
-                    .scale = scale});
-        };
-        const auto challenge =
-            [&](std::string_view base)
-        {
-            return challenge_at(
-                challenges,
-                base,
-                match->hidden,
-                match->layer_index,
-                match->head_index);
-        };
+        const auto add = [&](const std::string &source, const FieldElement &scale)
+        { descriptor.sources.push_back(TEdgeDerivedLinearSource{.label = source, .scale = scale}); };
+        const auto challenge = [&](std::string_view base) { return challenge_at(challenges, base, match->hidden, match->layer_index, match->head_index); };
 
         const auto &prefix = match->prefix;
         const auto &suffix = match->suffix;
@@ -211,8 +157,7 @@ namespace gatzk::protocol::internal
         }
         else if (suffix == "Query_src")
         {
-            const auto eta_src = challenge(
-                hidden ? "eta_src_h" : "eta_src_out");
+            const auto eta_src = challenge(hidden ? "eta_src_h" : "eta_src_out");
             add("P_src", FieldElement::one());
             add(prefix + "E_src_edge", eta_src);
             if (hidden)
@@ -223,13 +168,11 @@ namespace gatzk::protocol::internal
         else if (suffix == "Query_t")
         {
             add("P_dst", FieldElement::one());
-            add(prefix + (hidden ? "T_psq_edge" : "T_edge"), challenge(
-                                                                   hidden ? "eta_t_h" : "eta_t_out"));
+            add(prefix + (hidden ? "T_psq_edge" : "T_edge"), challenge(hidden ? "eta_t_h" : "eta_t_out"));
         }
         else if (suffix == "Query_dst")
         {
-            const auto eta_dst = challenge(
-                hidden ? "eta_dst_h" : "eta_dst_out");
+            const auto eta_dst = challenge(hidden ? "eta_dst_h" : "eta_dst_out");
             const auto eta_dst_sq = eta_dst * eta_dst;
             const auto eta_dst_cu = eta_dst_sq * eta_dst;
             const auto eta_dst_4 = eta_dst_cu * eta_dst;
@@ -258,11 +201,8 @@ namespace gatzk::protocol::internal
         return descriptor;
     }
 
-    TEdgeDerivedLinearFlattenResult
-    flatten_t_edge_derived_linear_sources(
-        const TEdgeDerivedLinearDescriptor &descriptor,
-        const TEdgeDescriptorLookup &lookup,
-        const TEdgeRegisteredSourcePredicate &is_registered_source)
+    TEdgeDerivedLinearFlattenResult flatten_t_edge_derived_linear_sources(const TEdgeDerivedLinearDescriptor &descriptor, const TEdgeDescriptorLookup &lookup,
+                                                                          const TEdgeRegisteredSourcePredicate &is_registered_source)
     {
         constexpr std::size_t kMaximumDepth = 64;
         TEdgeDerivedLinearFlattenResult result;
@@ -270,9 +210,7 @@ namespace gatzk::protocol::internal
         std::unordered_map<std::string, std::size_t> positions;
 
         std::function<void(const std::string &, const FieldElement &, std::size_t)> visit;
-        visit = [&](const std::string &label,
-                    const FieldElement &scale,
-                    std::size_t depth)
+        visit = [&](const std::string &label, const FieldElement &scale, std::size_t depth)
         {
             if (result.status != TEdgeDerivedLinearFlattenStatus::Success)
             {
@@ -284,8 +222,7 @@ namespace gatzk::protocol::internal
             }
             if (depth > kMaximumDepth)
             {
-                result.status =
-                    TEdgeDerivedLinearFlattenStatus::DepthExceeded;
+                result.status = TEdgeDerivedLinearFlattenStatus::DepthExceeded;
                 return;
             }
 
@@ -294,18 +231,13 @@ namespace gatzk::protocol::internal
             {
                 if (!active.insert(label).second)
                 {
-                    result.status =
-                        TEdgeDerivedLinearFlattenStatus::Cycle;
+                    result.status = TEdgeDerivedLinearFlattenStatus::Cycle;
                     return;
                 }
                 for (const auto &source : nested->sources)
                 {
-                    visit(
-                        source.label,
-                        scale * source.scale,
-                        depth + 1);
-                    if (result.status !=
-                        TEdgeDerivedLinearFlattenStatus::Success)
+                    visit(source.label, scale * source.scale, depth + 1);
+                    if (result.status != TEdgeDerivedLinearFlattenStatus::Success)
                     {
                         break;
                     }
@@ -316,8 +248,7 @@ namespace gatzk::protocol::internal
 
             if (!is_registered_source || !is_registered_source(label))
             {
-                result.status =
-                    TEdgeDerivedLinearFlattenStatus::UnknownSource;
+                result.status = TEdgeDerivedLinearFlattenStatus::UnknownSource;
                 return;
             }
 
@@ -325,10 +256,7 @@ namespace gatzk::protocol::internal
             if (position == positions.end())
             {
                 positions.emplace(label, result.sources.size());
-                result.sources.push_back(
-                    TEdgeDerivedLinearSource{
-                        .label = label,
-                        .scale = scale});
+                result.sources.push_back(TEdgeDerivedLinearSource{.label = label, .scale = scale});
             }
             else
             {
@@ -352,13 +280,8 @@ namespace gatzk::protocol::internal
         }
         active.erase(descriptor.target_label);
 
-        result.sources.erase(
-            std::remove_if(
-                result.sources.begin(),
-                result.sources.end(),
-                [](const auto &source)
-                { return source.scale.is_zero(); }),
-            result.sources.end());
+        result.sources.erase(std::remove_if(result.sources.begin(), result.sources.end(), [](const auto &source) { return source.scale.is_zero(); }),
+                             result.sources.end());
         return result;
     }
 

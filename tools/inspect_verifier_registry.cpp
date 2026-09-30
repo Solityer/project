@@ -15,8 +15,7 @@
 
 namespace
 {
-    std::string require_value(int &index, int argc, char **argv,
-                              const std::string &option)
+    std::string require_value(int &index, int argc, char **argv, const std::string &option)
     {
         if (index + 1 >= argc)
             throw std::runtime_error("missing value for " + option);
@@ -28,22 +27,15 @@ namespace
 
     bool is_lower_hex_256(const std::string &value)
     {
-        return value.size() == SHA256_DIGEST_LENGTH * 2
-            && std::all_of(
-                value.begin(), value.end(),
-                [](unsigned char ch)
-                {
-                    return (ch >= '0' && ch <= '9')
-                        || (ch >= 'a' && ch <= 'f');
-                });
+        return value.size() == SHA256_DIGEST_LENGTH * 2 &&
+               std::all_of(value.begin(), value.end(), [](unsigned char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
     }
 
     std::string sha256_file(const std::filesystem::path &path)
     {
         std::ifstream input(path, std::ios::binary);
         if (!input)
-            throw std::runtime_error(
-                "failed to open verifier registry: " + path.string());
+            throw std::runtime_error("failed to open verifier registry: " + path.string());
         SHA256_CTX context{};
         SHA256_Init(&context);
         std::array<char, 1U << 16U> buffer{};
@@ -55,8 +47,7 @@ namespace
                 SHA256_Update(&context, buffer.data(), static_cast<std::size_t>(count));
         }
         if (input.bad())
-            throw std::runtime_error(
-                "failed while reading verifier registry: " + path.string());
+            throw std::runtime_error("failed while reading verifier registry: " + path.string());
         std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
         SHA256_Final(digest.data(), &context);
         std::ostringstream out;
@@ -74,11 +65,21 @@ namespace
         {
             switch (ch)
             {
-            case '\\': out += "\\\\"; break;
-            case '"': out += "\\\""; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
             default:
                 if (static_cast<unsigned char>(ch) < 0x20U)
                     throw std::runtime_error("registry metadata contains a control character");
@@ -131,48 +132,34 @@ int main(int argc, char **argv)
                 throw std::runtime_error("unknown option: " + option);
         }
         if (registry_path.empty() || !is_lower_hex_256(trusted_digest))
-            throw std::runtime_error(
-                "usage: gatzk_registry_inspect --registry <artifact> "
-                "--trusted-digest <lowercase-sha256>");
+            throw std::runtime_error("usage: gatzk_registry_inspect --registry <artifact> "
+                                     "--trusted-digest <lowercase-sha256>");
 
         const auto path = std::filesystem::path(registry_path);
         std::error_code status_error;
         const auto status = std::filesystem::symlink_status(path, status_error);
-        if (status_error || std::filesystem::is_symlink(status)
-            || !std::filesystem::is_regular_file(status))
-            throw std::runtime_error(
-                "verifier registry must be a regular non-symlink file: "
-                + path.string());
+        if (status_error || std::filesystem::is_symlink(status) || !std::filesystem::is_regular_file(status))
+            throw std::runtime_error("verifier registry must be a regular non-symlink file: " + path.string());
         const auto file_digest = sha256_file(path);
         if (file_digest != trusted_digest)
-            throw std::runtime_error(
-                "verifier registry file digest does not match trusted digest");
+            throw std::runtime_error("verifier registry file digest does not match trusted digest");
 
         // The formal loader performs the complete canonical parse, digest
         // check, compiler-artifact validation, IntegerBoundLedger validation,
         // static-table validation, SecurityBudgetLedger reconstruction, and
         // model/static registry shape checks.  This utility deliberately uses
         // that independent loader instead of trusting a metadata sidecar.
-        const auto verifier_context =
-            gatzk::protocol::load_verifier_context_from_registry(
-                path.string(), trusted_digest);
+        const auto verifier_context = gatzk::protocol::load_verifier_context_from_registry(path.string(), trusted_digest);
         if (!gatzk::protocol::validate_verifier_context(verifier_context))
-            throw std::runtime_error(
-                "verifier registry independent context validation failed");
+            throw std::runtime_error("verifier registry independent context validation failed");
         if (verifier_context.compiler_artifact == nullptr)
-            throw std::runtime_error(
-                "verifier registry has no compiler artifact");
+            throw std::runtime_error("verifier registry has no compiler artifact");
 
         const auto &registry = verifier_context.registry;
         const auto &compiler = *verifier_context.compiler_artifact;
-        const auto budget = gatzk::protocol::evaluate_security_budget(
-            gatzk::protocol::detail::make_verifier_execution_context(verifier_context),
-            compiler);
-        if (!budget.passed
-            || budget.ledger_digest != registry.security_budget_ledger_digest
-            || budget.exact_budget != registry.security_budget_exact)
-            throw std::runtime_error(
-                "verifier registry SecurityBudgetLedger reconstruction mismatch");
+        const auto budget = gatzk::protocol::evaluate_security_budget(gatzk::protocol::detail::make_verifier_execution_context(verifier_context), compiler);
+        if (!budget.passed || budget.ledger_digest != registry.security_budget_ledger_digest || budget.exact_budget != registry.security_budget_exact)
+            throw std::runtime_error("verifier registry SecurityBudgetLedger reconstruction mismatch");
 
         bool first = true;
         std::cout << '{';

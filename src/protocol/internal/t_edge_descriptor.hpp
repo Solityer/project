@@ -50,32 +50,24 @@ namespace gatzk::protocol::internal
 
     struct TEdgeDerivedLinearFlattenResult
     {
-        TEdgeDerivedLinearFlattenStatus status =
-            TEdgeDerivedLinearFlattenStatus::Success;
+        TEdgeDerivedLinearFlattenStatus status = TEdgeDerivedLinearFlattenStatus::Success;
         std::vector<TEdgeDerivedLinearSource> sources;
     };
 
     // The challenge map is the already replayed canonical challenge set.  The
     // mapper only derives the challenge namespace from the shape coordinates;
     // it never constructs a transcript or changes challenge values.
-    std::optional<TEdgeDerivedLinearDescriptor>
-    make_t_edge_derived_linear_descriptor(
-        std::string_view name,
-        const TEdgeDescriptorShape &shape,
-        const std::map<std::string, algebra::FieldElement> &challenges,
-        const std::function<bool(std::string_view)> &collision_predicate = {});
+    std::optional<TEdgeDerivedLinearDescriptor> make_t_edge_derived_linear_descriptor(std::string_view name, const TEdgeDescriptorShape &shape,
+                                                                                      const std::map<std::string, algebra::FieldElement> &challenges,
+                                                                                      const std::function<bool(std::string_view)> &collision_predicate = {});
 
-    using TEdgeDescriptorLookup = std::function<
-        std::optional<TEdgeDerivedLinearDescriptor>(std::string_view)>;
+    using TEdgeDescriptorLookup = std::function<std::optional<TEdgeDerivedLinearDescriptor>(std::string_view)>;
     using TEdgeRegisteredSourcePredicate = std::function<bool(std::string_view)>;
 
     // Flatten nested derived views into registered leaves.  The callbacks are
     // deliberately supplied by the caller so trace/spill ownership remains in
     // the production wrapper and cannot leak into this internal pure helper.
-    TEdgeDerivedLinearFlattenResult
-    flatten_t_edge_derived_linear_sources(
-        const TEdgeDerivedLinearDescriptor &descriptor,
-        const TEdgeDescriptorLookup &lookup,
-        const TEdgeRegisteredSourcePredicate &is_registered_source);
+    TEdgeDerivedLinearFlattenResult flatten_t_edge_derived_linear_sources(const TEdgeDerivedLinearDescriptor &descriptor, const TEdgeDescriptorLookup &lookup,
+                                                                          const TEdgeRegisteredSourcePredicate &is_registered_source);
 
 } // namespace gatzk::protocol::internal

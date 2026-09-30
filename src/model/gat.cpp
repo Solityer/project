@@ -34,40 +34,39 @@ namespace gatzk::model
             stream << input.rdbuf();
             return stream.str();
         }
-        constexpr std::array<std::string_view, 31>
-            kCanonicalCheckpointManifestFields = {
-                "checkpoint_prefix",
-                "dataset",
-                "family_schema",
-                "output_average_rule",
-                "L",
-                "d_in_profile",
-                "hidden_profile",
-                "hidden_layers",
-                "hidden_head_specs",
-                "K_out",
-                "output_head_specs",
-                "C",
-                "task_type",
-                "report_unit",
-                "selection_metric",
-                "tensor_count",
-                "model_arch_id",
-                "model_param_id",
-                "input_preprocess_id",
-                "quant_cfg_id",
-                "quantization_scale_chain",
-                "static_table_id",
-                "degree_bound_id",
-                "batching_rule",
-                "subgraph_rule",
-                "self_loop_rule",
-                "edge_sort_rule",
-                "label_format",
-                "loss",
-                "split_format",
-                "tensor_index",
-            };
+        constexpr std::array<std::string_view, 31> kCanonicalCheckpointManifestFields = {
+            "checkpoint_prefix",
+            "dataset",
+            "family_schema",
+            "output_average_rule",
+            "L",
+            "d_in_profile",
+            "hidden_profile",
+            "hidden_layers",
+            "hidden_head_specs",
+            "K_out",
+            "output_head_specs",
+            "C",
+            "task_type",
+            "report_unit",
+            "selection_metric",
+            "tensor_count",
+            "model_arch_id",
+            "model_param_id",
+            "input_preprocess_id",
+            "quant_cfg_id",
+            "quantization_scale_chain",
+            "static_table_id",
+            "degree_bound_id",
+            "batching_rule",
+            "subgraph_rule",
+            "self_loop_rule",
+            "edge_sort_rule",
+            "label_format",
+            "loss",
+            "split_format",
+            "tensor_index",
+        };
 
         // The checkpoint manifest is a small, self-contained JSON document.
         // Parsing it as an AST makes duplicate keys and nested type/shape
@@ -114,8 +113,7 @@ namespace gatzk::model
 
             void skip_whitespace()
             {
-                while (position_ < text_.size()
-                       && std::isspace(static_cast<unsigned char>(text_[position_])))
+                while (position_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[position_])))
                     ++position_;
             }
 
@@ -200,14 +198,30 @@ namespace gatzk::model
                     const char escaped = text_[position_++];
                     switch (escaped)
                     {
-                    case '"': result.push_back('"'); break;
-                    case '\\': result.push_back('\\'); break;
-                    case '/': result.push_back('/'); break;
-                    case 'b': result.push_back('\b'); break;
-                    case 'f': result.push_back('\f'); break;
-                    case 'n': result.push_back('\n'); break;
-                    case 'r': result.push_back('\r'); break;
-                    case 't': result.push_back('\t'); break;
+                    case '"':
+                        result.push_back('"');
+                        break;
+                    case '\\':
+                        result.push_back('\\');
+                        break;
+                    case '/':
+                        result.push_back('/');
+                        break;
+                    case 'b':
+                        result.push_back('\b');
+                        break;
+                    case 'f':
+                        result.push_back('\f');
+                        break;
+                    case 'n':
+                        result.push_back('\n');
+                        break;
+                    case 'r':
+                        result.push_back('\r');
+                        break;
+                    case 't':
+                        result.push_back('\t');
+                        break;
                     case 'u':
                     {
                         if (position_ + 4 > text_.size())
@@ -217,10 +231,14 @@ namespace gatzk::model
                         {
                             const char digit = text_[position_++];
                             value <<= 4;
-                            if (digit >= '0' && digit <= '9') value |= static_cast<unsigned>(digit - '0');
-                            else if (digit >= 'a' && digit <= 'f') value |= static_cast<unsigned>(digit - 'a' + 10);
-                            else if (digit >= 'A' && digit <= 'F') value |= static_cast<unsigned>(digit - 'A' + 10);
-                            else fail("malformed checkpoint manifest unicode escape");
+                            if (digit >= '0' && digit <= '9')
+                                value |= static_cast<unsigned>(digit - '0');
+                            else if (digit >= 'a' && digit <= 'f')
+                                value |= static_cast<unsigned>(digit - 'a' + 10);
+                            else if (digit >= 'A' && digit <= 'F')
+                                value |= static_cast<unsigned>(digit - 'A' + 10);
+                            else
+                                fail("malformed checkpoint manifest unicode escape");
                         }
                         if (value > 0x7f)
                             fail("checkpoint manifest must use ASCII canonical strings");
@@ -342,10 +360,7 @@ namespace gatzk::model
             std::size_t object_depth_ = 0;
         };
 
-        const JsonValue &require_object_field(
-            const JsonValue &object,
-            const std::string &key,
-            const std::string &label)
+        const JsonValue &require_object_field(const JsonValue &object, const std::string &key, const std::string &label)
         {
             if (object.kind != JsonKind::Object)
                 throw std::runtime_error(label + " must be an object");
@@ -355,10 +370,7 @@ namespace gatzk::model
             throw std::runtime_error(label + " is missing canonical field: " + key);
         }
 
-        void require_exact_object_fields(
-            const JsonValue &object,
-            std::initializer_list<std::string_view> allowed,
-            const std::string &label)
+        void require_exact_object_fields(const JsonValue &object, std::initializer_list<std::string_view> allowed, const std::string &label)
         {
             if (object.kind != JsonKind::Object)
                 throw std::runtime_error(label + " must be an object");
@@ -368,13 +380,11 @@ namespace gatzk::model
             {
                 if (!allowed_set.contains(entry.first))
                 {
-                    if ((entry.first == "attn_dst_bias" || entry.first == "attn_src_bias")
-                        && label.find("head_specs") != std::string::npos)
+                    if ((entry.first == "attn_dst_bias" || entry.first == "attn_src_bias") && label.find("head_specs") != std::string::npos)
                         throw std::runtime_error("bias-enabled attention field is not accepted in " + label);
                     if (entry.first == "output_bias" && label.find("hidden_head_specs") != std::string::npos)
                         throw std::runtime_error("hidden attention head must not carry output_bias manifest field");
-                    throw std::runtime_error(
-                        label + " contains unknown/non-canonical field: " + entry.first);
+                    throw std::runtime_error(label + " contains unknown/non-canonical field: " + entry.first);
                 }
                 present.insert(entry.first);
             }
@@ -387,29 +397,29 @@ namespace gatzk::model
         {
             if (root.kind != JsonKind::Object)
                 throw std::runtime_error("checkpoint manifest must be a JSON object");
-            std::unordered_set<std::string_view> allowed(
-                kCanonicalCheckpointManifestFields.begin(),
-                kCanonicalCheckpointManifestFields.end());
+            std::unordered_set<std::string_view> allowed(kCanonicalCheckpointManifestFields.begin(), kCanonicalCheckpointManifestFields.end());
             std::unordered_set<std::string> present;
             for (const auto &entry : root.object)
             {
                 if (!allowed.contains(entry.first))
-                    throw std::runtime_error(
-                        "checkpoint manifest contains unknown/non-canonical manifest field: "
-                        + entry.first);
+                    throw std::runtime_error("checkpoint manifest contains unknown/non-canonical manifest field: " + entry.first);
                 present.insert(entry.first);
             }
             for (const auto field : kCanonicalCheckpointManifestFields)
                 if (!present.contains(std::string(field)))
-                    throw std::runtime_error(
-                        "checkpoint manifest is missing canonical field: " + std::string(field));
+                    throw std::runtime_error("checkpoint manifest is missing canonical field: " + std::string(field));
 
-            for (const auto field : {"checkpoint_prefix", "dataset", "family_schema", "output_average_rule",
-                                     "task_type", "report_unit", "selection_metric", "model_arch_id",
-                                     "model_param_id", "input_preprocess_id", "quant_cfg_id",
-                                     "quantization_scale_chain", "static_table_id", "degree_bound_id",
-                                     "batching_rule", "subgraph_rule", "self_loop_rule", "edge_sort_rule",
-                                     "label_format", "loss", "split_format"})
+            for (const auto field : {"checkpoint_prefix", "dataset",
+                                     "family_schema",     "output_average_rule",
+                                     "task_type",         "report_unit",
+                                     "selection_metric",  "model_arch_id",
+                                     "model_param_id",    "input_preprocess_id",
+                                     "quant_cfg_id",      "quantization_scale_chain",
+                                     "static_table_id",   "degree_bound_id",
+                                     "batching_rule",     "subgraph_rule",
+                                     "self_loop_rule",    "edge_sort_rule",
+                                     "label_format",      "loss",
+                                     "split_format"})
             {
                 if (require_object_field(root, field, "checkpoint manifest").kind != JsonKind::String)
                     throw std::runtime_error("checkpoint manifest field must be a string: " + std::string(field));
@@ -429,9 +439,8 @@ namespace gatzk::model
                     throw std::runtime_error(std::string("checkpoint manifest ") + key + " must be a non-empty array");
                 for (std::size_t index = 0; index < value.array.size(); ++index)
                 {
-                    require_exact_object_fields(
-                        value.array[index], {"head_count", "head_dim"},
-                        std::string("checkpoint manifest ") + key + "[" + std::to_string(index) + "]");
+                    require_exact_object_fields(value.array[index], {"head_count", "head_dim"},
+                                                std::string("checkpoint manifest ") + key + "[" + std::to_string(index) + "]");
                     for (const auto field : {"head_count", "head_dim"})
                     {
                         const auto member = require_object_field(value.array[index], field, key);
@@ -447,9 +456,8 @@ namespace gatzk::model
                 throw std::runtime_error("checkpoint manifest hidden_layers must be a non-empty array");
             for (std::size_t index = 0; index < layers.array.size(); ++index)
             {
-                require_exact_object_fields(
-                    layers.array[index], {"layer_index", "input_dim", "head_count", "head_dim"},
-                    "checkpoint manifest hidden_layers[" + std::to_string(index) + "]");
+                require_exact_object_fields(layers.array[index], {"layer_index", "input_dim", "head_count", "head_dim"},
+                                            "checkpoint manifest hidden_layers[" + std::to_string(index) + "]");
                 for (const auto field : {"layer_index", "input_dim", "head_count", "head_dim"})
                 {
                     const auto member = require_object_field(layers.array[index], field, "checkpoint manifest hidden_layers");
@@ -465,9 +473,7 @@ namespace gatzk::model
                     throw std::runtime_error(std::string("checkpoint manifest ") + key + " must be a non-empty array");
                 for (std::size_t index = 0; index < heads.array.size(); ++index)
                 {
-                    require_exact_object_fields(
-                        heads.array[index], fields,
-                        "checkpoint manifest " + std::string(key) + "[" + std::to_string(index) + "]");
+                    require_exact_object_fields(heads.array[index], fields, "checkpoint manifest " + std::string(key) + "[" + std::to_string(index) + "]");
                     for (const auto &entry : heads.array[index].object)
                     {
                         if (entry.first == "layer_index" || entry.first == "local_head_index" || entry.first == "head_index")
@@ -480,12 +486,8 @@ namespace gatzk::model
                     }
                 }
             };
-            validate_head_array(
-                "hidden_head_specs",
-                {"layer_index", "local_head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel"});
-            validate_head_array(
-                "output_head_specs",
-                {"head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel", "output_bias"});
+            validate_head_array("hidden_head_specs", {"layer_index", "local_head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel"});
+            validate_head_array("output_head_specs", {"head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel", "output_bias"});
 
             const auto tensor_index = require_object_field(root, "tensor_index", "checkpoint manifest");
             if (tensor_index.kind != JsonKind::Object)
@@ -494,9 +496,7 @@ namespace gatzk::model
             {
                 if (entry.first.empty())
                     throw std::runtime_error("checkpoint manifest tensor_index has an empty logical tensor name");
-                require_exact_object_fields(
-                    entry.second, {"archive_key", "dtype", "shape"},
-                    "checkpoint manifest tensor_index[" + entry.first + "]");
+                require_exact_object_fields(entry.second, {"archive_key", "dtype", "shape"}, "checkpoint manifest tensor_index[" + entry.first + "]");
                 for (const auto field : {"archive_key", "dtype"})
                 {
                     const auto member = require_object_field(entry.second, field, "checkpoint manifest tensor_index");
@@ -520,18 +520,15 @@ namespace gatzk::model
             validate_checkpoint_manifest_fields(root);
         }
 
-        const JsonValue &json_field(
-            const JsonValue &root,
-            const std::string &key)
+        const JsonValue &json_field(const JsonValue &root, const std::string &key)
         {
             return require_object_field(root, key, "checkpoint manifest");
         }
 
         std::size_t json_unsigned(const JsonValue &value, const std::string &label)
         {
-            if (value.kind != JsonKind::Number || value.scalar.empty()
-                || value.scalar.front() == '-'
-                || value.scalar.find_first_not_of("0123456789") != std::string::npos)
+            if (value.kind != JsonKind::Number || value.scalar.empty() || value.scalar.front() == '-' ||
+                value.scalar.find_first_not_of("0123456789") != std::string::npos)
                 throw std::runtime_error(label + " must be an unsigned integer");
             try
             {
@@ -571,15 +568,15 @@ namespace gatzk::model
 
         CheckpointLayerInfo parse_checkpoint_layer_info(const JsonValue &entry, const std::string &label)
         {
-            require_exact_object_fields(
-                entry, {"layer_index", "input_dim", "head_count", "head_dim"}, label);
+            require_exact_object_fields(entry, {"layer_index", "input_dim", "head_count", "head_dim"}, label);
             return CheckpointLayerInfo{
                 .layer_index = json_unsigned(require_object_field(entry, "layer_index", label), label + ".layer_index"),
                 .input_dim = json_unsigned(require_object_field(entry, "input_dim", label), label + ".input_dim"),
-                .shape = HiddenLayerShape{
-                    .head_count = json_unsigned(require_object_field(entry, "head_count", label), label + ".head_count"),
-                    .head_dim = json_unsigned(require_object_field(entry, "head_dim", label), label + ".head_dim"),
-                },
+                .shape =
+                    HiddenLayerShape{
+                        .head_count = json_unsigned(require_object_field(entry, "head_count", label), label + ".head_count"),
+                        .head_dim = json_unsigned(require_object_field(entry, "head_dim", label), label + ".head_dim"),
+                    },
             };
         }
 
@@ -594,8 +591,7 @@ namespace gatzk::model
 
         CheckpointHeadSpec parse_checkpoint_head_spec(const JsonValue &entry, const std::string &label)
         {
-            require_exact_object_fields(
-                entry, {"layer_index", "local_head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel"}, label);
+            require_exact_object_fields(entry, {"layer_index", "local_head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel"}, label);
             return CheckpointHeadSpec{
                 .layer_index = json_unsigned(require_object_field(entry, "layer_index", label), label + ".layer_index"),
                 .local_head_index = json_unsigned(require_object_field(entry, "local_head_index", label), label + ".local_head_index"),
@@ -607,8 +603,7 @@ namespace gatzk::model
 
         CheckpointOutputHeadSpec parse_checkpoint_output_head_spec(const JsonValue &entry, const std::string &label)
         {
-            require_exact_object_fields(
-                entry, {"head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel", "output_bias"}, label);
+            require_exact_object_fields(entry, {"head_index", "seq_kernel", "attn_dst_kernel", "attn_src_kernel", "output_bias"}, label);
             return CheckpointOutputHeadSpec{
                 .head_index = json_unsigned(require_object_field(entry, "head_index", label), label + ".head_index"),
                 .seq_kernel = json_string(require_object_field(entry, "seq_kernel", label), label + ".seq_kernel"),
@@ -690,9 +685,7 @@ namespace gatzk::model
         }
 
         // 取一个必须存在的张量，没找到就直接报错
-        const DenseTensor &require_tensor(
-            const std::unordered_map<std::string, DenseTensor> &tensors,
-            const std::string &name)
+        const DenseTensor &require_tensor(const std::unordered_map<std::string, DenseTensor> &tensors, const std::string &name)
         {
             const auto it = tensors.find(name);
             if (it == tensors.end())
@@ -742,12 +735,9 @@ namespace gatzk::model
         }
 
         // 按张量名字把一个注意力头需要的浮点参数封装起来
-        AttentionHeadParameters load_head_parameters(
-            const std::unordered_map<std::string, DenseTensor> &tensors,
-            const std::string &seq_kernel_name,
-            const std::string &attn_dst_kernel_name,
-            const std::string &attn_src_kernel_name,
-            const std::string *output_bias_name)
+        AttentionHeadParameters load_head_parameters(const std::unordered_map<std::string, DenseTensor> &tensors, const std::string &seq_kernel_name,
+                                                     const std::string &attn_dst_kernel_name, const std::string &attn_src_kernel_name,
+                                                     const std::string *output_bias_name)
         {
             AttentionHeadParameters out;
             out.seq_kernel_fp = reshape_seq_kernel(require_tensor(tensors, seq_kernel_name));
@@ -773,59 +763,33 @@ namespace gatzk::model
 
         constexpr std::size_t kMaxForwardWorkerCount = 32;
 
-        std::size_t forward_worker_budget(
-            std::size_t requested_worker_count = 0)
+        std::size_t forward_worker_budget(std::size_t requested_worker_count = 0)
         {
-            const auto hardware_workers =
-                std::max<std::size_t>(
-                    1,
-                    std::thread::hardware_concurrency());
+            const auto hardware_workers = std::max<std::size_t>(1, std::thread::hardware_concurrency());
 
-            const auto requested =
-                requested_worker_count == 0
-                    ? hardware_workers
-                    : std::min(
-                          requested_worker_count,
-                          hardware_workers);
+            const auto requested = requested_worker_count == 0 ? hardware_workers : std::min(requested_worker_count, hardware_workers);
 
-            return std::max<std::size_t>(
-                1,
-                std::min<std::size_t>(
-                    kMaxForwardWorkerCount,
-                    requested));
+            return std::max<std::size_t>(1, std::min<std::size_t>(kMaxForwardWorkerCount, requested));
         }
 
-        template <typename Fn>
-        void parallel_for_forward_ranges(
-            std::size_t item_count,
-            std::size_t min_items_per_worker,
-            std::size_t max_worker_count,
-            Fn &&fn)
+        template <typename Fn> void parallel_for_forward_ranges(std::size_t item_count, std::size_t min_items_per_worker, std::size_t max_worker_count, Fn &&fn)
         {
             if (item_count == 0)
             {
                 return;
             }
 
-            const auto worker_budget =
-                forward_worker_budget(max_worker_count);
+            const auto worker_budget = forward_worker_budget(max_worker_count);
 
-            const auto safe_min_items =
-                std::max<std::size_t>(
-                    1,
-                    min_items_per_worker);
+            const auto safe_min_items = std::max<std::size_t>(1, min_items_per_worker);
 
-            const auto workers_by_work =
-                (item_count + safe_min_items - 1) / safe_min_items;
+            const auto workers_by_work = (item_count + safe_min_items - 1) / safe_min_items;
 
-            const auto worker_count =
-                std::max<std::size_t>(
-                    1,
-                    std::min({
-                        worker_budget,
-                        item_count,
-                        workers_by_work,
-                    }));
+            const auto worker_count = std::max<std::size_t>(1, std::min({
+                                                                   worker_budget,
+                                                                   item_count,
+                                                                   workers_by_work,
+                                                               }));
 
             if (worker_count <= 1)
             {
@@ -833,36 +797,23 @@ namespace gatzk::model
                 return;
             }
 
-            const auto chunk_size =
-                (item_count + worker_count - 1) / worker_count;
+            const auto chunk_size = (item_count + worker_count - 1) / worker_count;
 
             std::vector<std::future<void>> futures;
             futures.reserve(worker_count);
 
-            for (std::size_t worker = 0;
-                 worker < worker_count;
-                 ++worker)
+            for (std::size_t worker = 0; worker < worker_count; ++worker)
             {
-                const auto begin =
-                    worker * chunk_size;
+                const auto begin = worker * chunk_size;
 
-                const auto end =
-                    std::min(
-                        item_count,
-                        begin + chunk_size);
+                const auto end = std::min(item_count, begin + chunk_size);
 
                 if (begin >= end)
                 {
                     break;
                 }
 
-                futures.push_back(
-                    std::async(
-                        std::launch::async,
-                        [&fn, begin, end]()
-                        {
-                            fn(begin, end);
-                        }));
+                futures.push_back(std::async(std::launch::async, [&fn, begin, end]() { fn(begin, end); }));
             }
 
             for (auto &future : futures)
@@ -881,36 +832,24 @@ namespace gatzk::model
             std::vector<std::size_t> edge_incoming_positions;
         };
 
-        ForwardGraphLayout build_forward_graph_layout(
-            std::size_t node_count,
-            const std::vector<data::Edge> &edges)
+        ForwardGraphLayout build_forward_graph_layout(std::size_t node_count, const std::vector<data::Edge> &edges)
         {
             ForwardGraphLayout layout;
 
-            layout.incoming_offsets.assign(
-                node_count + 1,
-                0);
+            layout.incoming_offsets.assign(node_count + 1, 0);
 
-            layout.edge_incoming_positions.resize(
-                edges.size());
+            layout.edge_incoming_positions.resize(edges.size());
 
-            std::vector<std::size_t>
-                incoming_count(
-                    node_count,
-                    0);
+            std::vector<std::size_t> incoming_count(node_count, 0);
 
-            std::vector<unsigned char>
-                has_self_loop(
-                    node_count,
-                    0);
+            std::vector<unsigned char> has_self_loop(node_count, 0);
 
             // First pass validates the graph and computes exact CSR sizes.
             for (const auto &edge : edges)
             {
                 if (edge.src >= node_count || edge.dst >= node_count)
                 {
-                    throw std::runtime_error(
-                        "edge out of bounds while running attention head forward");
+                    throw std::runtime_error("edge out of bounds while running attention head forward");
                 }
 
                 ++incoming_count[edge.dst];
@@ -921,60 +860,42 @@ namespace gatzk::model
                 }
             }
 
-            for (std::size_t dst = 0;
-                 dst < node_count;
-                 ++dst)
+            for (std::size_t dst = 0; dst < node_count; ++dst)
             {
-                const auto synthetic_self =
-                    has_self_loop[dst] == 0
-                        ? std::size_t{1}
-                        : std::size_t{0};
+                const auto synthetic_self = has_self_loop[dst] == 0 ? std::size_t{1} : std::size_t{0};
 
-                layout.incoming_offsets[dst + 1] =
-                    layout.incoming_offsets[dst] + incoming_count[dst] + synthetic_self;
+                layout.incoming_offsets[dst + 1] = layout.incoming_offsets[dst] + incoming_count[dst] + synthetic_self;
             }
 
-            layout.incoming_sources.resize(
-                layout.incoming_offsets.back());
+            layout.incoming_sources.resize(layout.incoming_offsets.back());
 
-            auto cursor =
-                layout.incoming_offsets;
+            auto cursor = layout.incoming_offsets;
 
             // Preserve the original edge order inside every destination
             // group exactly.
-            for (std::size_t edge_index = 0;
-                 edge_index < edges.size();
-                 ++edge_index)
+            for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index)
             {
-                const auto &edge =
-                    edges[edge_index];
+                const auto &edge = edges[edge_index];
 
-                const auto position =
-                    cursor[edge.dst]++;
+                const auto position = cursor[edge.dst]++;
 
-                layout.incoming_sources[position] =
-                    edge.src;
+                layout.incoming_sources[position] = edge.src;
 
-                layout.edge_incoming_positions[edge_index] =
-                    position;
+                layout.edge_incoming_positions[edge_index] = position;
             }
 
             // Append each required self loop after the real incoming edges;
             // this is the canonical incoming-edge ordering.
-            for (std::size_t dst = 0;
-                 dst < node_count;
-                 ++dst)
+            for (std::size_t dst = 0; dst < node_count; ++dst)
             {
                 if (has_self_loop[dst] == 0)
                 {
-                    layout.incoming_sources[cursor[dst]++] =
-                        dst;
+                    layout.incoming_sources[cursor[dst]++] = dst;
                 }
 
                 if (cursor[dst] != layout.incoming_offsets[dst + 1])
                 {
-                    throw std::runtime_error(
-                        "forward incoming-edge layout construction mismatch");
+                    throw std::runtime_error("forward incoming-edge layout construction mismatch");
                 }
             }
 
@@ -987,12 +908,9 @@ namespace gatzk::model
             std::size_t inner_workers = 1;
         };
 
-        ForwardHeadExecutionPlan
-        forward_head_execution_plan(
-            std::size_t head_count)
+        ForwardHeadExecutionPlan forward_head_execution_plan(std::size_t head_count)
         {
-            const auto hardware_workers =
-                forward_worker_budget();
+            const auto hardware_workers = forward_worker_budget();
 
             // Workload-class scheduling only.  For many independent heads,
             // parallelize heads and keep each head internally serial.  For a
@@ -1003,18 +921,14 @@ namespace gatzk::model
             if (head_count >= 4 && hardware_workers >= 4)
             {
                 return ForwardHeadExecutionPlan{
-                    .outer_head_workers =
-                        std::min(
-                            head_count,
-                            hardware_workers),
+                    .outer_head_workers = std::min(head_count, hardware_workers),
                     .inner_workers = 1,
                 };
             }
 
             return ForwardHeadExecutionPlan{
                 .outer_head_workers = 1,
-                .inner_workers =
-                    hardware_workers,
+                .inner_workers = hardware_workers,
             };
         }
 
@@ -1022,80 +936,55 @@ namespace gatzk::model
         //
         // Parallelism is only across independent output rows. The k/j
         // accumulation order of every output scalar is unchanged.
-        FloatMatrix matmul(
-            const FloatMatrix &left,
-            const FloatMatrix &right,
-            std::size_t max_worker_count = 1)
+        FloatMatrix matmul(const FloatMatrix &left, const FloatMatrix &right, std::size_t max_worker_count = 1)
         {
             if (left.empty() || right.empty())
             {
                 return {};
             }
 
-            const auto shared =
-                left.front().size();
+            const auto shared = left.front().size();
 
             if (right.size() != shared)
             {
-                throw std::runtime_error(
-                    "float matrix multiply dimension mismatch");
+                throw std::runtime_error("float matrix multiply dimension mismatch");
             }
 
-            const auto rows =
-                left.size();
+            const auto rows = left.size();
 
-            const auto cols =
-                right.front().size();
+            const auto cols = right.front().size();
 
-            FloatMatrix out(
-                rows,
-                std::vector<double>(
-                    cols,
-                    0.0));
+            FloatMatrix out(rows, std::vector<double>(cols, 0.0));
 
-            parallel_for_forward_ranges(
-                rows,
-                64,
-                max_worker_count,
-                [&](std::size_t begin,
-                    std::size_t end)
-                {
-                    for (std::size_t i = begin;
-                         i < end;
-                         ++i)
-                    {
-                        for (std::size_t k = 0;
-                             k < shared;
-                             ++k)
-                        {
-                            const auto lhs =
-                                left[i][k];
+            parallel_for_forward_ranges(rows, 64, max_worker_count,
+                                        [&](std::size_t begin, std::size_t end)
+                                        {
+                                            for (std::size_t i = begin; i < end; ++i)
+                                            {
+                                                for (std::size_t k = 0; k < shared; ++k)
+                                                {
+                                                    const auto lhs = left[i][k];
 
-                            for (std::size_t j = 0;
-                                 j < cols;
-                                 ++j)
-                            {
-                                out[i][j] +=
-                                    lhs * right[k][j];
-                            }
-                        }
-                    }
-                });
+                                                    for (std::size_t j = 0; j < cols; ++j)
+                                                    {
+                                                        out[i][j] += lhs * right[k][j];
+                                                    }
+                                                }
+                                            }
+                                        });
 
             return out;
         }
 
         // Concatenate one hidden layer's head outputs in canonical head order.
-        FloatMatrix concatenate_columns(
-            const std::vector<FloatMatrix> &matrices)
+        FloatMatrix concatenate_columns(const std::vector<FloatMatrix> &matrices)
         {
             if (matrices.empty())
             {
                 return {};
             }
 
-            const auto rows =
-                matrices.front().size();
+            const auto rows = matrices.front().size();
 
             std::size_t cols = 0;
 
@@ -1103,41 +992,23 @@ namespace gatzk::model
             {
                 if (matrix.size() != rows)
                 {
-                    throw std::runtime_error(
-                        "cannot concatenate matrices with different row counts");
+                    throw std::runtime_error("cannot concatenate matrices with different row counts");
                 }
 
-                cols +=
-                    matrix.empty()
-                        ? 0
-                        : matrix.front().size();
+                cols += matrix.empty() ? 0 : matrix.front().size();
             }
 
-            FloatMatrix out(
-                rows,
-                std::vector<double>(
-                    cols,
-                    0.0));
+            FloatMatrix out(rows, std::vector<double>(cols, 0.0));
 
             std::size_t offset = 0;
 
             for (const auto &matrix : matrices)
             {
-                const auto width =
-                    matrix.empty()
-                        ? 0
-                        : matrix.front().size();
+                const auto width = matrix.empty() ? 0 : matrix.front().size();
 
-                for (std::size_t row = 0;
-                     row < rows;
-                     ++row)
+                for (std::size_t row = 0; row < rows; ++row)
                 {
-                    std::copy(
-                        matrix[row].begin(),
-                        matrix[row].end(),
-                        out[row].begin() + static_cast<
-                                               std::ptrdiff_t>(
-                                               offset));
+                    std::copy(matrix[row].begin(), matrix[row].end(), out[row].begin() + static_cast<std::ptrdiff_t>(offset));
                 }
 
                 offset += width;
@@ -1146,184 +1017,104 @@ namespace gatzk::model
             return out;
         }
 
-        FloatMatrix concatenate_head_outputs(
-            const std::vector<HeadForwardTrace> &heads,
-            std::size_t max_worker_count)
+        FloatMatrix concatenate_head_outputs(const std::vector<HeadForwardTrace> &heads, std::size_t max_worker_count)
         {
             if (heads.empty())
             {
                 return {};
             }
 
-            const auto rows =
-                heads.front().H_agg.size();
+            const auto rows = heads.front().H_agg.size();
 
-            std::vector<std::size_t>
-                offsets(
-                    heads.size() + 1,
-                    0);
+            std::vector<std::size_t> offsets(heads.size() + 1, 0);
 
-            for (std::size_t head = 0;
-                 head < heads.size();
-                 ++head)
+            for (std::size_t head = 0; head < heads.size(); ++head)
             {
                 if (heads[head].H_agg.size() != rows)
                 {
-                    throw std::runtime_error(
-                        "cannot concatenate head outputs with different row counts");
+                    throw std::runtime_error("cannot concatenate head outputs with different row counts");
                 }
 
-                const auto width =
-                    heads[head].H_agg.empty()
-                        ? 0
-                        : heads[head]
-                              .H_agg.front()
-                              .size();
+                const auto width = heads[head].H_agg.empty() ? 0 : heads[head].H_agg.front().size();
 
-                offsets[head + 1] =
-                    offsets[head] + width;
+                offsets[head + 1] = offsets[head] + width;
             }
 
-            FloatMatrix out(
-                rows,
-                std::vector<double>(
-                    offsets.back(),
-                    0.0));
+            FloatMatrix out(rows, std::vector<double>(offsets.back(), 0.0));
 
-            parallel_for_forward_ranges(
-                rows,
-                128,
-                max_worker_count,
-                [&](std::size_t begin,
-                    std::size_t end)
-                {
-                    for (std::size_t row = begin;
-                         row < end;
-                         ++row)
-                    {
-                        for (std::size_t head = 0;
-                             head < heads.size();
-                             ++head)
-                        {
-                            const auto &source =
-                                heads[head]
-                                    .H_agg[row];
+            parallel_for_forward_ranges(rows, 128, max_worker_count,
+                                        [&](std::size_t begin, std::size_t end)
+                                        {
+                                            for (std::size_t row = begin; row < end; ++row)
+                                            {
+                                                for (std::size_t head = 0; head < heads.size(); ++head)
+                                                {
+                                                    const auto &source = heads[head].H_agg[row];
 
-                            const auto expected_width =
-                                offsets[head + 1] - offsets[head];
+                                                    const auto expected_width = offsets[head + 1] - offsets[head];
 
-                            if (source.size() != expected_width)
-                            {
-                                throw std::runtime_error(
-                                    "head output row width mismatch");
-                            }
+                                                    if (source.size() != expected_width)
+                                                    {
+                                                        throw std::runtime_error("head output row width mismatch");
+                                                    }
 
-                            std::copy(
-                                source.begin(),
-                                source.end(),
-                                out[row].begin() + static_cast<
-                                                       std::ptrdiff_t>(
-                                                       offsets[head]));
-                        }
-                    }
-                });
+                                                    std::copy(source.begin(), source.end(), out[row].begin() + static_cast<std::ptrdiff_t>(offsets[head]));
+                                                }
+                                            }
+                                        });
 
             return out;
         }
 
-        FloatMatrix average_head_outputs(
-            const std::vector<HeadForwardTrace> &heads,
-            bool pre_bias,
-            std::size_t max_worker_count)
+        FloatMatrix average_head_outputs(const std::vector<HeadForwardTrace> &heads, bool pre_bias, std::size_t max_worker_count)
         {
             if (heads.empty())
             {
                 return {};
             }
 
-            const auto &first =
-                pre_bias
-                    ? heads.front()
-                          .H_agg_pre_bias
-                    : heads.front().H_agg;
+            const auto &first = pre_bias ? heads.front().H_agg_pre_bias : heads.front().H_agg;
 
-            const auto rows =
-                first.size();
+            const auto rows = first.size();
 
-            const auto cols =
-                first.empty()
-                    ? 0
-                    : first.front().size();
+            const auto cols = first.empty() ? 0 : first.front().size();
 
             for (const auto &head : heads)
             {
-                const auto &matrix =
-                    pre_bias
-                        ? head.H_agg_pre_bias
-                        : head.H_agg;
+                const auto &matrix = pre_bias ? head.H_agg_pre_bias : head.H_agg;
 
                 if (matrix.size() != rows || (!matrix.empty() && matrix.front().size() != cols))
                 {
-                    throw std::runtime_error(
-                        "cannot average head outputs with different shapes");
+                    throw std::runtime_error("cannot average head outputs with different shapes");
                 }
             }
 
-            FloatMatrix out(
-                rows,
-                std::vector<double>(
-                    cols,
-                    0.0));
+            FloatMatrix out(rows, std::vector<double>(cols, 0.0));
 
-            const auto scale =
-                1.0 / static_cast<double>(
-                          heads.size());
+            const auto scale = 1.0 / static_cast<double>(heads.size());
 
-            parallel_for_forward_ranges(
-                rows,
-                128,
-                max_worker_count,
-                [&](std::size_t begin,
-                    std::size_t end)
-                {
-                    for (std::size_t row = begin;
-                         row < end;
-                         ++row)
-                    {
-                        for (std::size_t col = 0;
-                             col < cols;
-                             ++col)
-                        {
-                            const auto &first_matrix =
-                                pre_bias
-                                    ? heads.front()
-                                          .H_agg_pre_bias
-                                    : heads.front()
-                                          .H_agg;
+            parallel_for_forward_ranges(rows, 128, max_worker_count,
+                                        [&](std::size_t begin, std::size_t end)
+                                        {
+                                            for (std::size_t row = begin; row < end; ++row)
+                                            {
+                                                for (std::size_t col = 0; col < cols; ++col)
+                                                {
+                                                    const auto &first_matrix = pre_bias ? heads.front().H_agg_pre_bias : heads.front().H_agg;
 
-                            double value =
-                                first_matrix[row][col];
+                                                    double value = first_matrix[row][col];
 
-                            for (std::size_t head = 1;
-                                 head < heads.size();
-                                 ++head)
-                            {
-                                const auto &matrix =
-                                    pre_bias
-                                        ? heads[head]
-                                              .H_agg_pre_bias
-                                        : heads[head]
-                                              .H_agg;
+                                                    for (std::size_t head = 1; head < heads.size(); ++head)
+                                                    {
+                                                        const auto &matrix = pre_bias ? heads[head].H_agg_pre_bias : heads[head].H_agg;
 
-                                value +=
-                                    matrix[row][col];
-                            }
+                                                        value += matrix[row][col];
+                                                    }
 
-                            out[row][col] =
-                                value * scale;
-                        }
-                    }
-                });
+                                                    out[row][col] = value * scale;
+                                                }
+                                            }
+                                        });
 
             return out;
         }
@@ -1332,78 +1123,50 @@ namespace gatzk::model
         //
         // The prepared graph layout and worker placement are execution-only.
         // Every scalar keeps the same arithmetic/reduction ordering.
-        HeadForwardTrace attention_head_forward_impl(
-            const FloatMatrix &features,
-            const std::vector<data::Edge> &edges,
-            const AttentionHeadParameters &parameters,
-            bool apply_output_bias,
-            bool apply_activation,
-            HeadForwardProfile *profile,
-            const ForwardGraphLayout *prepared_graph = nullptr,
-            std::size_t max_worker_count = 1)
+        HeadForwardTrace attention_head_forward_impl(const FloatMatrix &features, const std::vector<data::Edge> &edges,
+                                                     const AttentionHeadParameters &parameters, bool apply_output_bias, bool apply_activation,
+                                                     HeadForwardProfile *profile, const ForwardGraphLayout *prepared_graph = nullptr,
+                                                     std::size_t max_worker_count = 1)
         {
-            using Clock =
-                std::chrono::steady_clock;
+            using Clock = std::chrono::steady_clock;
 
-            auto stage_start =
-                Clock::now();
+            auto stage_start = Clock::now();
 
             if (features.empty())
             {
                 return {};
             }
 
-            const auto node_count =
-                features.size();
+            const auto node_count = features.size();
 
-            const auto width =
-                attention_head_output_width(
-                    parameters);
+            const auto width = attention_head_output_width(parameters);
 
             ForwardGraphLayout local_graph;
 
-            const ForwardGraphLayout *graph =
-                prepared_graph;
+            const ForwardGraphLayout *graph = prepared_graph;
 
             if (graph == nullptr)
             {
-                local_graph =
-                    build_forward_graph_layout(
-                        node_count,
-                        edges);
+                local_graph = build_forward_graph_layout(node_count, edges);
 
                 graph = &local_graph;
             }
-            else if (
-                graph->incoming_offsets.size() != node_count + 1 || graph
-                                                                            ->edge_incoming_positions
-                                                                            .size() != edges.size())
+            else if (graph->incoming_offsets.size() != node_count + 1 || graph->edge_incoming_positions.size() != edges.size())
             {
-                throw std::runtime_error(
-                    "prepared forward graph layout shape mismatch");
+                throw std::runtime_error("prepared forward graph layout shape mismatch");
             }
 
             HeadForwardTrace trace;
 
             // 1. H' = H * W_seq.
-            trace.H_prime =
-                matmul(
-                    features,
-                    parameters.seq_kernel_fp,
-                    max_worker_count);
+            trace.H_prime = matmul(features, parameters.seq_kernel_fp, max_worker_count);
 
             if (profile != nullptr)
             {
-                profile->projection_ms +=
-                    std::chrono::duration<
-                        double,
-                        std::milli>(
-                        Clock::now() - stage_start)
-                        .count();
+                profile->projection_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage_start).count();
             }
 
-            stage_start =
-                Clock::now();
+            stage_start = Clock::now();
 
             // 2. E_dst / E_src.
             //
@@ -1412,326 +1175,179 @@ namespace gatzk::model
             trace.E_dst.assign(node_count, 0.0);
             trace.E_src.assign(node_count, 0.0);
 
-            parallel_for_forward_ranges(
-                node_count,
-                256,
-                max_worker_count,
-                [&](std::size_t begin,
-                    std::size_t end)
-                {
-                    for (std::size_t row = begin;
-                         row < end;
-                         ++row)
-                    {
-                        for (std::size_t col = 0;
-                             col < parameters
-                                       .attn_dst_kernel_fp
-                                       .size();
-                             ++col)
-                        {
-                            trace.E_dst[row] +=
-                                trace.H_prime[row][col] * parameters
-                                                              .attn_dst_kernel_fp[col];
-                        }
+            parallel_for_forward_ranges(node_count, 256, max_worker_count,
+                                        [&](std::size_t begin, std::size_t end)
+                                        {
+                                            for (std::size_t row = begin; row < end; ++row)
+                                            {
+                                                for (std::size_t col = 0; col < parameters.attn_dst_kernel_fp.size(); ++col)
+                                                {
+                                                    trace.E_dst[row] += trace.H_prime[row][col] * parameters.attn_dst_kernel_fp[col];
+                                                }
 
-                        for (std::size_t col = 0;
-                             col < parameters
-                                       .attn_src_kernel_fp
-                                       .size();
-                             ++col)
-                        {
-                            trace.E_src[row] +=
-                                trace.H_prime[row][col] * parameters
-                                                              .attn_src_kernel_fp[col];
-                        }
-                    }
-                });
+                                                for (std::size_t col = 0; col < parameters.attn_src_kernel_fp.size(); ++col)
+                                                {
+                                                    trace.E_src[row] += trace.H_prime[row][col] * parameters.attn_src_kernel_fp[col];
+                                                }
+                                            }
+                                        });
 
-            trace.S.assign(
-                edges.size(),
-                0.0);
+            trace.S.assign(edges.size(), 0.0);
 
-            trace.Z.assign(
-                edges.size(),
-                0.0);
+            trace.Z.assign(edges.size(), 0.0);
 
-            trace.M.assign(
-                node_count,
-                0.0);
+            trace.M.assign(node_count, 0.0);
 
-            trace.Delta.assign(
-                edges.size(),
-                0.0);
+            trace.Delta.assign(edges.size(), 0.0);
 
-            trace.U.assign(
-                edges.size(),
-                0.0);
+            trace.U.assign(edges.size(), 0.0);
 
-            trace.Sum.assign(
-                node_count,
-                0.0);
+            trace.Sum.assign(node_count, 0.0);
 
-            trace.inv.assign(
-                node_count,
-                0.0);
+            trace.inv.assign(node_count, 0.0);
 
-            trace.alpha.assign(
-                edges.size(),
-                0.0);
+            trace.alpha.assign(edges.size(), 0.0);
 
-            trace.H_agg_pre_bias.assign(
-                node_count,
-                std::vector<double>(
-                    width,
-                    0.0));
+            trace.H_agg_pre_bias.assign(node_count, std::vector<double>(width, 0.0));
 
-            trace.H_agg.assign(
-                node_count,
-                std::vector<double>(
-                    width,
-                    0.0));
+            trace.H_agg.assign(node_count, std::vector<double>(width, 0.0));
 
             // One temporary value per real-or-synthetic incoming edge.
             // Reuse one exp() value in Sum, aggregation and edge
             // materialization.
-            std::vector<double>
-                incoming_exp(
-                    graph->incoming_sources.size(),
-                    0.0);
+            std::vector<double> incoming_exp(graph->incoming_sources.size(), 0.0);
 
             // 3. Stable softmax maximum.
-            parallel_for_forward_ranges(
-                node_count,
-                256,
-                max_worker_count,
-                [&](std::size_t begin,
-                    std::size_t end)
-                {
-                    for (std::size_t dst = begin;
-                         dst < end;
-                         ++dst)
-                    {
-                        auto maximum =
-                            -std::numeric_limits<
-                                double>::infinity();
+            parallel_for_forward_ranges(node_count, 256, max_worker_count,
+                                        [&](std::size_t begin, std::size_t end)
+                                        {
+                                            for (std::size_t dst = begin; dst < end; ++dst)
+                                            {
+                                                auto maximum = -std::numeric_limits<double>::infinity();
 
-                        const auto incoming_begin =
-                            graph->incoming_offsets[dst];
+                                                const auto incoming_begin = graph->incoming_offsets[dst];
 
-                        const auto incoming_end =
-                            graph->incoming_offsets[dst + 1];
+                                                const auto incoming_end = graph->incoming_offsets[dst + 1];
 
-                        for (std::size_t position =
-                                 incoming_begin;
-                             position < incoming_end;
-                             ++position)
-                        {
-                            const auto src =
-                                graph->incoming_sources[position];
+                                                for (std::size_t position = incoming_begin; position < incoming_end; ++position)
+                                                {
+                                                    const auto src = graph->incoming_sources[position];
 
-                            maximum =
-                                std::max(
-                                    maximum,
-                                    leaky_relu(
-                                        trace.E_dst[dst] + trace.E_src[src]));
-                        }
+                                                    maximum = std::max(maximum, leaky_relu(trace.E_dst[dst] + trace.E_src[src]));
+                                                }
 
-                        trace.M[dst] =
-                            maximum;
-                    }
-                });
+                                                trace.M[dst] = maximum;
+                                            }
+                                        });
 
             // 4/5. Evaluate every softmax numerator once, accumulate the
             // denominator in the original incoming-edge order, then invert.
-            parallel_for_forward_ranges(
-                node_count,
-                256,
-                max_worker_count,
-                [&](std::size_t begin,
-                    std::size_t end)
-                {
-                    for (std::size_t dst = begin;
-                         dst < end;
-                         ++dst)
-                    {
-                        double sum = 0.0;
+            parallel_for_forward_ranges(node_count, 256, max_worker_count,
+                                        [&](std::size_t begin, std::size_t end)
+                                        {
+                                            for (std::size_t dst = begin; dst < end; ++dst)
+                                            {
+                                                double sum = 0.0;
 
-                        const auto incoming_begin =
-                            graph->incoming_offsets[dst];
+                                                const auto incoming_begin = graph->incoming_offsets[dst];
 
-                        const auto incoming_end =
-                            graph->incoming_offsets[dst + 1];
+                                                const auto incoming_end = graph->incoming_offsets[dst + 1];
 
-                        for (std::size_t position =
-                                 incoming_begin;
-                             position < incoming_end;
-                             ++position)
-                        {
-                            const auto src =
-                                graph->incoming_sources[position];
+                                                for (std::size_t position = incoming_begin; position < incoming_end; ++position)
+                                                {
+                                                    const auto src = graph->incoming_sources[position];
 
-                            const auto value =
-                                std::exp(
-                                    leaky_relu(
-                                        trace.E_dst[dst] + trace.E_src[src]) -
-                                    trace.M[dst]);
+                                                    const auto value = std::exp(leaky_relu(trace.E_dst[dst] + trace.E_src[src]) - trace.M[dst]);
 
-                            incoming_exp[position] =
-                                value;
+                                                    incoming_exp[position] = value;
 
-                            sum += value;
-                        }
+                                                    sum += value;
+                                                }
 
-                        trace.Sum[dst] =
-                            sum;
+                                                trace.Sum[dst] = sum;
 
-                        trace.inv[dst] =
-                            1.0 / sum;
-                    }
-                });
+                                                trace.inv[dst] = 1.0 / sum;
+                                            }
+                                        });
 
             // 6. Neighbor aggregation. Each destination row is independent;
             // source order and per-column accumulation order are unchanged.
-            parallel_for_forward_ranges(
-                node_count,
-                128,
-                max_worker_count,
-                [&](std::size_t begin,
-                    std::size_t end)
-                {
-                    for (std::size_t dst = begin;
-                         dst < end;
-                         ++dst)
-                    {
-                        const auto incoming_begin =
-                            graph->incoming_offsets[dst];
+            parallel_for_forward_ranges(node_count, 128, max_worker_count,
+                                        [&](std::size_t begin, std::size_t end)
+                                        {
+                                            for (std::size_t dst = begin; dst < end; ++dst)
+                                            {
+                                                const auto incoming_begin = graph->incoming_offsets[dst];
 
-                        const auto incoming_end =
-                            graph->incoming_offsets[dst + 1];
+                                                const auto incoming_end = graph->incoming_offsets[dst + 1];
 
-                        for (std::size_t position =
-                                 incoming_begin;
-                             position < incoming_end;
-                             ++position)
-                        {
-                            const auto src =
-                                graph->incoming_sources[position];
+                                                for (std::size_t position = incoming_begin; position < incoming_end; ++position)
+                                                {
+                                                    const auto src = graph->incoming_sources[position];
 
-                            const auto alpha =
-                                incoming_exp[position] * trace.inv[dst];
+                                                    const auto alpha = incoming_exp[position] * trace.inv[dst];
 
-                            for (std::size_t col = 0;
-                                 col < width;
-                                 ++col)
-                            {
-                                trace
-                                    .H_agg_pre_bias
-                                        [dst][col] += alpha * trace
-                                                                  .H_prime
-                                                                      [src][col];
-                            }
-                        }
-                    }
-                });
+                                                    for (std::size_t col = 0; col < width; ++col)
+                                                    {
+                                                        trace.H_agg_pre_bias[dst][col] += alpha * trace.H_prime[src][col];
+                                                    }
+                                                }
+                                            }
+                                        });
 
             // Materialize the protocol-visible real-edge intermediates.
             // U and alpha reuse the already-computed identical exp value.
-            parallel_for_forward_ranges(
-                edges.size(),
-                4096,
-                max_worker_count,
-                [&](std::size_t begin,
-                    std::size_t end)
-                {
-                    for (std::size_t edge_index =
-                             begin;
-                         edge_index < end;
-                         ++edge_index)
-                    {
-                        const auto &edge =
-                            edges[edge_index];
+            parallel_for_forward_ranges(edges.size(), 4096, max_worker_count,
+                                        [&](std::size_t begin, std::size_t end)
+                                        {
+                                            for (std::size_t edge_index = begin; edge_index < end; ++edge_index)
+                                            {
+                                                const auto &edge = edges[edge_index];
 
-                        trace.S[edge_index] =
-                            trace.E_dst[edge.dst] + trace.E_src[edge.src];
+                                                trace.S[edge_index] = trace.E_dst[edge.dst] + trace.E_src[edge.src];
 
-                        trace.Z[edge_index] =
-                            leaky_relu(
-                                trace.S[edge_index]);
+                                                trace.Z[edge_index] = leaky_relu(trace.S[edge_index]);
 
-                        trace.Delta[edge_index] =
-                            trace.M[edge.dst] - trace.Z[edge_index];
+                                                trace.Delta[edge_index] = trace.M[edge.dst] - trace.Z[edge_index];
 
-                        const auto incoming_position =
-                            graph
-                                ->edge_incoming_positions[edge_index];
+                                                const auto incoming_position = graph->edge_incoming_positions[edge_index];
 
-                        trace.U[edge_index] =
-                            incoming_exp[incoming_position];
+                                                trace.U[edge_index] = incoming_exp[incoming_position];
 
-                        trace.alpha[edge_index] =
-                            trace.U[edge_index] * trace.inv[edge.dst];
-                    }
-                });
+                                                trace.alpha[edge_index] = trace.U[edge_index] * trace.inv[edge.dst];
+                                            }
+                                        });
 
             if (profile != nullptr)
             {
-                profile->attention_ms +=
-                    std::chrono::duration<
-                        double,
-                        std::milli>(
-                        Clock::now() - stage_start)
-                        .count();
+                profile->attention_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage_start).count();
             }
 
-            stage_start =
-                Clock::now();
+            stage_start = Clock::now();
 
             // 7. Bias + ELU. Rows are independent.
-            parallel_for_forward_ranges(
-                node_count,
-                256,
-                max_worker_count,
-                [&](std::size_t begin,
-                    std::size_t end)
-                {
-                    for (std::size_t dst = begin;
-                         dst < end;
-                         ++dst)
-                    {
-                        for (std::size_t col = 0;
-                             col < width;
-                             ++col)
-                        {
-                            auto value =
-                                trace
-                                    .H_agg_pre_bias
-                                        [dst][col];
+            parallel_for_forward_ranges(node_count, 256, max_worker_count,
+                                        [&](std::size_t begin, std::size_t end)
+                                        {
+                                            for (std::size_t dst = begin; dst < end; ++dst)
+                                            {
+                                                for (std::size_t col = 0; col < width; ++col)
+                                                {
+                                                    auto value = trace.H_agg_pre_bias[dst][col];
 
-                            if (apply_output_bias && col < parameters
-                                                               .output_bias_fp
-                                                               .size())
-                            {
-                                value +=
-                                    parameters
-                                        .output_bias_fp[col];
-                            }
+                                                    if (apply_output_bias && col < parameters.output_bias_fp.size())
+                                                    {
+                                                        value += parameters.output_bias_fp[col];
+                                                    }
 
-                            trace.H_agg[dst][col] =
-                                apply_activation
-                                    ? elu(value)
-                                    : value;
-                        }
-                    }
-                });
+                                                    trace.H_agg[dst][col] = apply_activation ? elu(value) : value;
+                                                }
+                                            }
+                                        });
 
             if (profile != nullptr)
             {
-                profile->activation_ms +=
-                    std::chrono::duration<
-                        double,
-                        std::milli>(
-                        Clock::now() - stage_start)
-                        .count();
+                profile->activation_ms += std::chrono::duration<double, std::milli>(Clock::now() - stage_start).count();
             }
 
             return trace;
@@ -1761,8 +1377,7 @@ namespace gatzk::model
         info.family_schema = json_string(json_field(root, "family_schema"), "checkpoint manifest.family_schema");
         if (info.family_schema != "multi_layer_multi_head")
         {
-            throw std::runtime_error(
-                "checkpoint manifest family_schema is not canonical");
+            throw std::runtime_error("checkpoint manifest family_schema is not canonical");
         }
         info.output_average_rule = json_string(json_field(root, "output_average_rule"), "checkpoint manifest.output_average_rule");
         info.model_arch_id = json_string(json_field(root, "model_arch_id"), "checkpoint manifest.model_arch_id");
@@ -1780,27 +1395,25 @@ namespace gatzk::model
 
         const auto layers = json_field(root, "hidden_layers");
         for (std::size_t index = 0; index < layers.array.size(); ++index)
-            info.hidden_layers.push_back(parse_checkpoint_layer_info(
-                layers.array[index], "checkpoint manifest.hidden_layers[" + std::to_string(index) + "]"));
+            info.hidden_layers.push_back(parse_checkpoint_layer_info(layers.array[index], "checkpoint manifest.hidden_layers[" + std::to_string(index) + "]"));
         const auto profile = json_field(root, "hidden_profile");
         for (std::size_t index = 0; index < profile.array.size(); ++index)
-            info.hidden_profile.push_back(parse_checkpoint_layer_shape(
-                profile.array[index], "checkpoint manifest.hidden_profile[" + std::to_string(index) + "]"));
+            info.hidden_profile.push_back(
+                parse_checkpoint_layer_shape(profile.array[index], "checkpoint manifest.hidden_profile[" + std::to_string(index) + "]"));
         const auto hidden_heads = json_field(root, "hidden_head_specs");
         for (std::size_t index = 0; index < hidden_heads.array.size(); ++index)
-            info.hidden_head_specs.push_back(parse_checkpoint_head_spec(
-                hidden_heads.array[index], "checkpoint manifest.hidden_head_specs[" + std::to_string(index) + "]"));
+            info.hidden_head_specs.push_back(
+                parse_checkpoint_head_spec(hidden_heads.array[index], "checkpoint manifest.hidden_head_specs[" + std::to_string(index) + "]"));
         const auto output_heads = json_field(root, "output_head_specs");
         for (std::size_t index = 0; index < output_heads.array.size(); ++index)
-            info.output_head_specs.push_back(parse_checkpoint_output_head_spec(
-                output_heads.array[index], "checkpoint manifest.output_head_specs[" + std::to_string(index) + "]"));
+            info.output_head_specs.push_back(
+                parse_checkpoint_output_head_spec(output_heads.array[index], "checkpoint manifest.output_head_specs[" + std::to_string(index) + "]"));
 
         const auto tensor_index = json_field(root, "tensor_index");
         std::unordered_set<std::string> archive_keys;
         for (const auto &entry : tensor_index.object)
         {
-            auto tensor_info = parse_checkpoint_tensor_info(
-                entry.second, "checkpoint manifest.tensor_index[" + entry.first + "]");
+            auto tensor_info = parse_checkpoint_tensor_info(entry.second, "checkpoint manifest.tensor_index[" + entry.first + "]");
             if (!archive_keys.insert(tensor_info.archive_key).second)
                 throw std::runtime_error("checkpoint manifest tensor_index archive_key is not unique: " + tensor_info.archive_key);
             info.tensor_index.emplace(entry.first, std::move(tensor_info));
@@ -1812,9 +1425,7 @@ namespace gatzk::model
     }
 
     // 这里检查的只是 formal 主线真正依赖的结构约束
-    bool checkpoint_bundle_matches_formal_proof_shape(
-        const CheckpointBundleInfo &info,
-        std::string *reason)
+    bool checkpoint_bundle_matches_formal_proof_shape(const CheckpointBundleInfo &info, std::string *reason)
     {
         std::vector<std::string> failures;
         if (info.layer_count < 2)
@@ -1823,13 +1434,11 @@ namespace gatzk::model
         }
         if (info.family_schema != "multi_layer_multi_head")
         {
-            failures.push_back(
-                "checkpoint manifest family_schema must be multi_layer_multi_head");
+            failures.push_back("checkpoint manifest family_schema must be multi_layer_multi_head");
         }
         if (info.output_average_rule != "per_head_bias_then_arithmetic_mean")
         {
-            failures.push_back(
-                "checkpoint manifest output_average_rule=" + info.output_average_rule + " but expected per_head_bias_then_arithmetic_mean");
+            failures.push_back("checkpoint manifest output_average_rule=" + info.output_average_rule + " but expected per_head_bias_then_arithmetic_mean");
         }
         if (info.hidden_layers.empty())
         {
@@ -1837,33 +1446,31 @@ namespace gatzk::model
         }
         if (info.hidden_profile.empty())
         {
-            failures.push_back(
-                "hidden_profile size=" + std::to_string(info.hidden_profile.size()) + " but the checkpoint manifest must expose a non-empty hidden_profile");
+            failures.push_back("hidden_profile size=" + std::to_string(info.hidden_profile.size()) +
+                               " but the checkpoint manifest must expose a non-empty hidden_profile");
         }
         if (info.layer_count != info.hidden_layers.size() + 1)
         {
-            failures.push_back(
-                "L=" + std::to_string(info.layer_count) + " conflicts with hidden_layers size=" + std::to_string(info.hidden_layers.size()));
+            failures.push_back("L=" + std::to_string(info.layer_count) + " conflicts with hidden_layers size=" + std::to_string(info.hidden_layers.size()));
         }
         if (info.hidden_profile.size() != info.hidden_layers.size())
         {
-            failures.push_back(
-                "hidden_profile size=" + std::to_string(info.hidden_profile.size()) + " conflicts with hidden_layers size=" + std::to_string(info.hidden_layers.size()));
+            failures.push_back("hidden_profile size=" + std::to_string(info.hidden_profile.size()) +
+                               " conflicts with hidden_layers size=" + std::to_string(info.hidden_layers.size()));
         }
         if (info.output_head_count == 0)
         {
-            failures.push_back(
-                "K_out=" + std::to_string(info.output_head_count) + " but checkpoint manifest must expose at least one output attention head");
+            failures.push_back("K_out=" + std::to_string(info.output_head_count) + " but checkpoint manifest must expose at least one output attention head");
         }
         if (info.output_head_specs.size() != info.output_head_count)
         {
-            failures.push_back(
-                "output_head_specs size=" + std::to_string(info.output_head_specs.size()) + " conflicts with K_out=" + std::to_string(info.output_head_count));
+            failures.push_back("output_head_specs size=" + std::to_string(info.output_head_specs.size()) +
+                               " conflicts with K_out=" + std::to_string(info.output_head_count));
         }
         if (info.d_in_profile.size() != info.hidden_profile.size())
         {
-            failures.push_back(
-                "d_in_profile size=" + std::to_string(info.d_in_profile.size()) + " conflicts with hidden_profile size=" + std::to_string(info.hidden_profile.size()));
+            failures.push_back("d_in_profile size=" + std::to_string(info.d_in_profile.size()) +
+                               " conflicts with hidden_profile size=" + std::to_string(info.hidden_profile.size()));
         }
         if (info.model_arch_id.empty())
         {
@@ -1883,8 +1490,7 @@ namespace gatzk::model
         }
         if (info.input_preprocess_id.empty())
         {
-            failures.push_back(
-                "checkpoint manifest must expose input_preprocess_id");
+            failures.push_back("checkpoint manifest must expose input_preprocess_id");
         }
         else
         {
@@ -1892,19 +1498,16 @@ namespace gatzk::model
             {
                 const auto expected = util::canonical_input_preprocess_id(info.dataset);
                 if (info.input_preprocess_id != expected)
-                    failures.push_back(
-                        "checkpoint manifest input_preprocess_id does not match dataset");
+                    failures.push_back("checkpoint manifest input_preprocess_id does not match dataset");
             }
             catch (const std::exception &)
             {
-                failures.push_back(
-                    "checkpoint manifest dataset is not a supported formal dataset");
+                failures.push_back("checkpoint manifest dataset is not a supported formal dataset");
             }
         }
         if (info.quantization_scale_chain.empty())
         {
-            failures.push_back(
-                "checkpoint manifest must expose complete quantization_scale_chain");
+            failures.push_back("checkpoint manifest must expose complete quantization_scale_chain");
         }
         std::size_t hidden_head_total = 0;
         for (std::size_t layer_index = 0; layer_index < info.hidden_layers.size(); ++layer_index)
@@ -1917,28 +1520,24 @@ namespace gatzk::model
             }
             if (layer.input_dim == 0 || layer.shape.head_count == 0 || layer.shape.head_dim == 0)
             {
-                failures.push_back(
-                    "hidden_layers[" + std::to_string(layer_index) + "] dimensions must be non-zero");
+                failures.push_back("hidden_layers[" + std::to_string(layer_index) + "] dimensions must be non-zero");
             }
             if (layer_index < info.d_in_profile.size() && info.d_in_profile[layer_index] != layer.input_dim)
             {
-                failures.push_back(
-                    "hidden_layers[" + std::to_string(layer_index) + "].input_dim conflicts with d_in_profile");
+                failures.push_back("hidden_layers[" + std::to_string(layer_index) + "].input_dim conflicts with d_in_profile");
             }
-            if (layer_index < info.hidden_profile.size() && (info.hidden_profile[layer_index].head_count != layer.shape.head_count || info.hidden_profile[layer_index].head_dim != layer.shape.head_dim))
+            if (layer_index < info.hidden_profile.size() &&
+                (info.hidden_profile[layer_index].head_count != layer.shape.head_count || info.hidden_profile[layer_index].head_dim != layer.shape.head_dim))
             {
-                failures.push_back(
-                    "hidden_layers[" + std::to_string(layer_index) + "] conflicts with hidden_profile");
+                failures.push_back("hidden_layers[" + std::to_string(layer_index) + "] conflicts with hidden_profile");
             }
             if (layer_index != 0)
             {
                 const auto &previous = info.hidden_layers[layer_index - 1];
-                const auto expected_input =
-                    previous.shape.head_count * previous.shape.head_dim;
+                const auto expected_input = previous.shape.head_count * previous.shape.head_dim;
                 if (layer.input_dim != expected_input)
                 {
-                    failures.push_back(
-                        "hidden_layers[" + std::to_string(layer_index) + "].input_dim conflicts with previous concat width");
+                    failures.push_back("hidden_layers[" + std::to_string(layer_index) + "].input_dim conflicts with previous concat width");
                 }
             }
             hidden_head_total += layer.shape.head_count;
@@ -1951,37 +1550,29 @@ namespace gatzk::model
                 {
                     continue;
                 }
-                if (head.local_head_index >= layer.shape.head_count
-                    || seen_local_heads[head.local_head_index])
+                if (head.local_head_index >= layer.shape.head_count || seen_local_heads[head.local_head_index])
                 {
-                    failures.push_back(
-                        "hidden_head_specs must use unique layer-local head indices");
+                    failures.push_back("hidden_head_specs must use unique layer-local head indices");
                     break;
                 }
                 seen_local_heads[head.local_head_index] = true;
                 ++local_head_count;
             }
-            if (local_head_count != layer.shape.head_count
-                || std::any_of(
-                    seen_local_heads.begin(), seen_local_heads.end(),
-                    [](bool seen) { return !seen; }))
+            if (local_head_count != layer.shape.head_count || std::any_of(seen_local_heads.begin(), seen_local_heads.end(), [](bool seen) { return !seen; }))
             {
-                failures.push_back(
-                    "hidden_head_specs layer-local count conflicts with hidden_layers[" + std::to_string(layer_index) + "].head_count");
+                failures.push_back("hidden_head_specs layer-local count conflicts with hidden_layers[" + std::to_string(layer_index) + "].head_count");
             }
         }
         if (hidden_head_total != info.hidden_head_specs.size())
         {
-            failures.push_back(
-                "hidden_head_specs size=" + std::to_string(info.hidden_head_specs.size()) + " conflicts with hidden_layers head counts=" + std::to_string(hidden_head_total));
+            failures.push_back("hidden_head_specs size=" + std::to_string(info.hidden_head_specs.size()) +
+                               " conflicts with hidden_layers head counts=" + std::to_string(hidden_head_total));
         }
-        for (std::size_t head_index = 0;
-             head_index < info.output_head_specs.size(); ++head_index)
+        for (std::size_t head_index = 0; head_index < info.output_head_specs.size(); ++head_index)
         {
             if (info.output_head_specs[head_index].head_index != head_index)
             {
-                failures.push_back(
-                    "output_head_specs must use contiguous head_index values");
+                failures.push_back("output_head_specs must use contiguous head_index values");
                 break;
             }
         }
@@ -2023,15 +1614,10 @@ namespace gatzk::model
                 .head_dim = layer.head_dim,
             });
         }
-        const auto canonical_chain = util::canonical_quantization_scale_chain(
-            manifest_info.quant_cfg_id,
-            hidden_profile,
-            manifest_info.output_head_count);
-        if (manifest_info.quantization_scale_chain
-            != canonical_chain.canonical_serialization())
+        const auto canonical_chain = util::canonical_quantization_scale_chain(manifest_info.quant_cfg_id, hidden_profile, manifest_info.output_head_count);
+        if (manifest_info.quantization_scale_chain != canonical_chain.canonical_serialization())
         {
-            throw std::runtime_error(
-                "checkpoint manifest quantization_scale_chain does not match the canonical source");
+            throw std::runtime_error("checkpoint manifest quantization_scale_chain does not match the canonical source");
         }
         const auto tensor_path = std::filesystem::path(bundle_root) / "tensors.txt";
         if (!std::filesystem::exists(tensor_path))
@@ -2041,18 +1627,15 @@ namespace gatzk::model
         const auto tensors = load_text_tensors(tensor_path);
         if (tensors.size() != manifest_info.tensor_count)
         {
-            throw std::runtime_error(
-                "checkpoint tensor dump count conflicts with manifest tensor_count; "
-                "checkpoint tensor dump contains an unreferenced tensor or missing record");
+            throw std::runtime_error("checkpoint tensor dump count conflicts with manifest tensor_count; "
+                                     "checkpoint tensor dump contains an unreferenced tensor or missing record");
         }
         std::unordered_set<std::string> referenced_tensor_names;
-        const auto register_tensor_name =
-            [&referenced_tensor_names](const std::string &name)
+        const auto register_tensor_name = [&referenced_tensor_names](const std::string &name)
         {
             if (!referenced_tensor_names.insert(name).second)
             {
-                throw std::runtime_error(
-                    "checkpoint manifest references the same tensor more than once: " + name);
+                throw std::runtime_error("checkpoint manifest references the same tensor more than once: " + name);
             }
         };
         for (const auto &head_spec : manifest_info.hidden_head_specs)
@@ -2070,35 +1653,28 @@ namespace gatzk::model
         }
         if (manifest_info.tensor_index.size() != referenced_tensor_names.size())
         {
-            throw std::runtime_error(
-                "checkpoint manifest tensor_index count does not match referenced tensors");
+            throw std::runtime_error("checkpoint manifest tensor_index count does not match referenced tensors");
         }
         for (const auto &name : referenced_tensor_names)
         {
             const auto metadata_it = manifest_info.tensor_index.find(name);
             if (metadata_it == manifest_info.tensor_index.end())
-                throw std::runtime_error(
-                    "checkpoint manifest tensor_index is missing referenced tensor: " + name);
+                throw std::runtime_error("checkpoint manifest tensor_index is missing referenced tensor: " + name);
             const auto tensor_it = tensors.find(name);
             if (tensor_it == tensors.end())
-                throw std::runtime_error(
-                    "checkpoint tensor dump is missing indexed tensor: " + name);
+                throw std::runtime_error("checkpoint tensor dump is missing indexed tensor: " + name);
             if (tensor_it->second.shape != metadata_it->second.shape)
-                throw std::runtime_error(
-                    "checkpoint tensor dump shape conflicts with tensor_index: " + name);
+                throw std::runtime_error("checkpoint tensor dump shape conflicts with tensor_index: " + name);
         }
         for (const auto &[name, tensor] : tensors)
         {
             (void)tensor;
             if (!referenced_tensor_names.contains(name))
             {
-                throw std::runtime_error(
-                    "checkpoint tensor dump contains an unreferenced tensor; formal loader rejects hidden/extra parameters: " +
-                    name);
+                throw std::runtime_error("checkpoint tensor dump contains an unreferenced tensor; formal loader rejects hidden/extra parameters: " + name);
             }
             if (!manifest_info.tensor_index.contains(name))
-                throw std::runtime_error(
-                    "checkpoint tensor dump contains an unindexed tensor: " + name);
+                throw std::runtime_error("checkpoint tensor dump contains an unindexed tensor: " + name);
         }
 
         ModelParameters out;
@@ -2123,40 +1699,26 @@ namespace gatzk::model
             layer.input_dim = layer_info.input_dim;
             layer.shape = layer_info.shape;
             layer.heads.reserve(layer.shape.head_count);
-            for (std::size_t local_head_index = 0;
-                 local_head_index < layer.shape.head_count;
-                 ++local_head_index)
+            for (std::size_t local_head_index = 0; local_head_index < layer.shape.head_count; ++local_head_index)
             {
-                const auto head_spec_it = std::find_if(
-                    manifest_info.hidden_head_specs.begin(),
-                    manifest_info.hidden_head_specs.end(),
-                    [&](const CheckpointHeadSpec &candidate)
-                    {
-                        return candidate.layer_index == layer.layer_index
-                            && candidate.local_head_index == local_head_index;
-                    });
+                const auto head_spec_it =
+                    std::find_if(manifest_info.hidden_head_specs.begin(), manifest_info.hidden_head_specs.end(), [&](const CheckpointHeadSpec &candidate)
+                                 { return candidate.layer_index == layer.layer_index && candidate.local_head_index == local_head_index; });
                 if (head_spec_it == manifest_info.hidden_head_specs.end())
                 {
-                    throw std::runtime_error(
-                        "checkpoint manifest is missing a layer/local hidden head pair");
+                    throw std::runtime_error("checkpoint manifest is missing a layer/local hidden head pair");
                 }
                 const auto &head_spec = *head_spec_it;
-                layer.heads.push_back(load_head_parameters(
-                    tensors,
-                    head_spec.seq_kernel,
-                    head_spec.attn_dst_kernel,
-                    head_spec.attn_src_kernel,
-                    nullptr));
+                layer.heads.push_back(load_head_parameters(tensors, head_spec.seq_kernel, head_spec.attn_dst_kernel, head_spec.attn_src_kernel, nullptr));
                 if (!layer.heads.back().output_bias_fp.empty())
                 {
-                    throw std::runtime_error(
-                        "hidden attention head must not carry output_bias");
+                    throw std::runtime_error("hidden attention head must not carry output_bias");
                 }
             }
             if (layer.heads.size() != layer.shape.head_count)
             {
-                throw std::runtime_error(
-                    "checkpoint manifest hidden_head_specs do not match hidden_layers head_count for layer " + std::to_string(layer.layer_index));
+                throw std::runtime_error("checkpoint manifest hidden_head_specs do not match hidden_layers head_count for layer " +
+                                         std::to_string(layer.layer_index));
             }
             out.hidden_layers.push_back(std::move(layer));
         }
@@ -2170,12 +1732,8 @@ namespace gatzk::model
             {
                 throw std::runtime_error("checkpoint manifest output_head_specs must use contiguous head_index values");
             }
-            out.output_layer.heads.push_back(load_head_parameters(
-                tensors,
-                head_spec.seq_kernel,
-                head_spec.attn_dst_kernel,
-                head_spec.attn_src_kernel,
-                &head_spec.output_bias));
+            out.output_layer.heads.push_back(
+                load_head_parameters(tensors, head_spec.seq_kernel, head_spec.attn_dst_kernel, head_spec.attn_src_kernel, &head_spec.output_bias));
         }
         if (out.hidden_layers.empty())
         {
@@ -2210,11 +1768,8 @@ namespace gatzk::model
         return parameters.output_bias_fp.size();
     }
     // 真正的主线前向实现
-    MultiHeadForwardTrace forward_note_style(
-        const FloatMatrix &features,
-        const std::vector<data::Edge> &edges,
-        const ModelParameters &parameters,
-        ForwardProfile *profile)
+    MultiHeadForwardTrace forward_note_style(const FloatMatrix &features, const std::vector<data::Edge> &edges, const ModelParameters &parameters,
+                                             ForwardProfile *profile)
     {
         MultiHeadForwardTrace trace;
 
@@ -2224,209 +1779,101 @@ namespace gatzk::model
         {
             // The graph is identical for every hidden/output head. Build its
             // destination-grouped execution layout exactly once.
-            graph_layout =
-                build_forward_graph_layout(
-                    features.size(),
-                    edges);
+            graph_layout = build_forward_graph_layout(features.size(), edges);
         }
 
-        trace.hidden_layer_traces.reserve(
-            parameters.hidden_layers.size());
+        trace.hidden_layer_traces.reserve(parameters.hidden_layers.size());
 
-        const FloatMatrix *layer_input =
-            &features;
+        const FloatMatrix *layer_input = &features;
 
         // 1. Hidden layers.
-        for (const auto &layer :
-             parameters.hidden_layers)
+        for (const auto &layer : parameters.hidden_layers)
         {
-            HiddenLayerForwardTrace
-                layer_trace;
+            HiddenLayerForwardTrace layer_trace;
 
-            layer_trace.head_traces.resize(
-                layer.heads.size());
+            layer_trace.head_traces.resize(layer.heads.size());
 
-            std::vector<HeadForwardProfile>
-                head_profiles(
-                    layer.heads.size());
+            std::vector<HeadForwardProfile> head_profiles(layer.heads.size());
 
-            const auto execution_plan =
-                forward_head_execution_plan(
-                    layer.heads.size());
+            const auto execution_plan = forward_head_execution_plan(layer.heads.size());
 
-            parallel_for_forward_ranges(
-                layer.heads.size(),
-                1,
-                execution_plan
-                    .outer_head_workers,
-                [&](std::size_t begin,
-                    std::size_t end)
-                {
-                    for (std::size_t head_index =
-                             begin;
-                         head_index < end;
-                         ++head_index)
-                    {
-                        layer_trace
-                            .head_traces[head_index] =
-                            attention_head_forward_impl(
-                                *layer_input,
-                                edges,
-                                layer.heads[head_index],
-                                false,
-                                true,
-                                &head_profiles[head_index],
-                                &graph_layout,
-                                execution_plan
-                                    .inner_workers);
-                    }
-                });
+            parallel_for_forward_ranges(layer.heads.size(), 1, execution_plan.outer_head_workers,
+                                        [&](std::size_t begin, std::size_t end)
+                                        {
+                                            for (std::size_t head_index = begin; head_index < end; ++head_index)
+                                            {
+                                                layer_trace.head_traces[head_index] =
+                                                    attention_head_forward_impl(*layer_input, edges, layer.heads[head_index], false, true,
+                                                                                &head_profiles[head_index], &graph_layout, execution_plan.inner_workers);
+                                            }
+                                        });
 
             if (profile != nullptr)
             {
-                for (const auto &head_profile :
-                     head_profiles)
+                for (const auto &head_profile : head_profiles)
                 {
-                    profile
-                        ->hidden_projection_ms +=
-                        head_profile
-                            .projection_ms;
+                    profile->hidden_projection_ms += head_profile.projection_ms;
 
-                    profile
-                        ->hidden_attention_ms +=
-                        head_profile
-                            .attention_ms;
+                    profile->hidden_attention_ms += head_profile.attention_ms;
 
-                    profile
-                        ->hidden_activation_ms +=
-                        head_profile
-                            .activation_ms;
+                    profile->hidden_activation_ms += head_profile.activation_ms;
                 }
             }
 
             if (profile != nullptr)
             {
-                const auto concat_start =
-                    std::chrono::
-                        steady_clock::now();
+                const auto concat_start = std::chrono::steady_clock::now();
 
-                layer_trace.concat =
-                    concatenate_head_outputs(
-                        layer_trace
-                            .head_traces,
-                        forward_worker_budget());
+                layer_trace.concat = concatenate_head_outputs(layer_trace.head_traces, forward_worker_budget());
 
-                profile->hidden_concat_ms +=
-                    std::chrono::duration<
-                        double,
-                        std::milli>(
-                        std::chrono::
-                            steady_clock::now() -
-                        concat_start)
-                        .count();
+                profile->hidden_concat_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - concat_start).count();
             }
             else
             {
-                layer_trace.concat =
-                    concatenate_head_outputs(
-                        layer_trace
-                            .head_traces,
-                        forward_worker_budget());
+                layer_trace.concat = concatenate_head_outputs(layer_trace.head_traces, forward_worker_budget());
             }
 
-            trace.hidden_layer_traces
-                .push_back(
-                    std::move(
-                        layer_trace));
+            trace.hidden_layer_traces.push_back(std::move(layer_trace));
 
             // hidden_layer_traces was reserved to its final size above, so
             // the stored concat address remains stable for the next layer.
-            layer_input =
-                &trace
-                     .hidden_layer_traces
-                     .back()
-                     .concat;
+            layer_input = &trace.hidden_layer_traces.back().concat;
         }
 
         // 2. Output heads.
-        trace.output_head_traces.resize(
-            parameters.output_layer
-                .heads.size());
+        trace.output_head_traces.resize(parameters.output_layer.heads.size());
 
-        std::vector<HeadForwardProfile>
-            output_profiles(
-                parameters.output_layer
-                    .heads.size());
+        std::vector<HeadForwardProfile> output_profiles(parameters.output_layer.heads.size());
 
-        const auto output_execution_plan =
-            forward_head_execution_plan(
-                parameters.output_layer
-                    .heads.size());
+        const auto output_execution_plan = forward_head_execution_plan(parameters.output_layer.heads.size());
 
-        parallel_for_forward_ranges(
-            parameters.output_layer
-                .heads.size(),
-            1,
-            output_execution_plan
-                .outer_head_workers,
-            [&](std::size_t begin,
-                std::size_t end)
-            {
-                for (std::size_t head_index =
-                         begin;
-                     head_index < end;
-                     ++head_index)
-                {
-                    trace.output_head_traces[head_index] =
-                        attention_head_forward_impl(
-                            *layer_input,
-                            edges,
-                            parameters
-                                .output_layer
-                                .heads[head_index],
-                            true,
-                            false,
-                            &output_profiles[head_index],
-                            &graph_layout,
-                            output_execution_plan
-                                .inner_workers);
-                }
-            });
+        parallel_for_forward_ranges(parameters.output_layer.heads.size(), 1, output_execution_plan.outer_head_workers,
+                                    [&](std::size_t begin, std::size_t end)
+                                    {
+                                        for (std::size_t head_index = begin; head_index < end; ++head_index)
+                                        {
+                                            trace.output_head_traces[head_index] =
+                                                attention_head_forward_impl(*layer_input, edges, parameters.output_layer.heads[head_index], true, false,
+                                                                            &output_profiles[head_index], &graph_layout, output_execution_plan.inner_workers);
+                                        }
+                                    });
 
         if (profile != nullptr)
         {
-            for (const auto &output_profile :
-                 output_profiles)
+            for (const auto &output_profile : output_profiles)
             {
-                profile
-                    ->output_projection_ms +=
-                    output_profile
-                        .projection_ms;
+                profile->output_projection_ms += output_profile.projection_ms;
 
-                profile
-                    ->output_attention_ms +=
-                    output_profile
-                        .attention_ms;
+                profile->output_attention_ms += output_profile.attention_ms;
 
-                profile
-                    ->output_activation_ms +=
-                    output_profile
-                        .activation_ms;
+                profile->output_activation_ms += output_profile.activation_ms;
             }
         }
 
         // Same head order and same per-element arithmetic as before.
-        trace.Y_lin =
-            average_head_outputs(
-                trace.output_head_traces,
-                true,
-                forward_worker_budget());
+        trace.Y_lin = average_head_outputs(trace.output_head_traces, true, forward_worker_budget());
 
-        trace.Y =
-            average_head_outputs(
-                trace.output_head_traces,
-                false,
-                forward_worker_budget());
+        trace.Y = average_head_outputs(trace.output_head_traces, false, forward_worker_budget());
 
         return trace;
     }
@@ -2472,15 +1919,12 @@ namespace gatzk::model
             }
             if (layer.heads.size() != layer.shape.head_count)
             {
-                failures.push_back(
-                    "hidden layer " + std::to_string(layer_index) + " head_count conflicts with heads.size()");
+                failures.push_back("hidden layer " + std::to_string(layer_index) + " head_count conflicts with heads.size()");
             }
-            const auto configured_input =
-                !parameters.d_in_profile.empty() ? parameters.d_in_profile[layer_index] : layer.input_dim;
+            const auto configured_input = !parameters.d_in_profile.empty() ? parameters.d_in_profile[layer_index] : layer.input_dim;
             if (layer.input_dim != configured_input)
             {
-                failures.push_back(
-                    "hidden layer " + std::to_string(layer_index) + " input_dim conflicts with d_in_profile");
+                failures.push_back("hidden layer " + std::to_string(layer_index) + " input_dim conflicts with d_in_profile");
             }
 
             // 第0层输入就是配置里给的输入宽度，后面每一层输入都应该等于上一层拼接后的总宽度。
@@ -2490,8 +1934,8 @@ namespace gatzk::model
             }
             else if (layer.input_dim != expected_input_dim)
             {
-                failures.push_back(
-                    "hidden layer " + std::to_string(layer_index) + " input_dim=" + std::to_string(layer.input_dim) + " conflicts with previous concat width=" + std::to_string(expected_input_dim));
+                failures.push_back("hidden layer " + std::to_string(layer_index) + " input_dim=" + std::to_string(layer.input_dim) +
+                                   " conflicts with previous concat width=" + std::to_string(expected_input_dim));
             }
 
             // 每个头的参数宽度需要和这一层的输入输出对齐
@@ -2499,14 +1943,12 @@ namespace gatzk::model
             {
                 if (head.seq_kernel_fp.size() != layer.input_dim)
                 {
-                    failures.push_back(
-                        "hidden layer " + std::to_string(layer_index) + " seq kernel row count conflicts with layer input_dim");
+                    failures.push_back("hidden layer " + std::to_string(layer_index) + " seq kernel row count conflicts with layer input_dim");
                     break;
                 }
                 if (attention_head_output_width(head) != layer.shape.head_dim)
                 {
-                    failures.push_back(
-                        "hidden layer " + std::to_string(layer_index) + " head output width conflicts with head_dim");
+                    failures.push_back("hidden layer " + std::to_string(layer_index) + " head output width conflicts with head_dim");
                     break;
                 }
             }
@@ -2528,8 +1970,8 @@ namespace gatzk::model
         }
         if (!parameters.hidden_layers.empty() && parameters.output_layer.input_dim != expected_input_dim)
         {
-            failures.push_back(
-                "output_layer input_dim=" + std::to_string(parameters.output_layer.input_dim) + " conflicts with final hidden concat width=" + std::to_string(expected_input_dim));
+            failures.push_back("output_layer input_dim=" + std::to_string(parameters.output_layer.input_dim) +
+                               " conflicts with final hidden concat width=" + std::to_string(expected_input_dim));
         }
         for (const auto &head : parameters.output_layer.heads)
         {

@@ -18,15 +18,10 @@ namespace gatzk::protocol::internal
         std::vector<algebra::FieldElement> dst;
     };
 
-    AggregationMultiplicityCache build_aggregation_multiplicity_cache(
-        const data::LocalGraph &local,
-        std::size_t n_domain_size);
+    AggregationMultiplicityCache build_aggregation_multiplicity_cache(const data::LocalGraph &local, std::size_t n_domain_size);
 
-    algebra::FieldElement evaluate_deterministic_public_polynomial(
-        const ProtocolContext &context,
-        const VerifierPublicPolynomialDescriptor &descriptor,
-        const algebra::FieldElement &point,
-        const AggregationMultiplicityCache &multiplicity,
-        algebra::DomainEvaluationWeightCache &weight_cache);
+    algebra::FieldElement evaluate_deterministic_public_polynomial(const ProtocolContext &context, const VerifierPublicPolynomialDescriptor &descriptor,
+                                                                   const algebra::FieldElement &point, const AggregationMultiplicityCache &multiplicity,
+                                                                   algebra::DomainEvaluationWeightCache &weight_cache);
 
 } // namespace gatzk::protocol::internal

@@ -60,10 +60,7 @@ namespace gatzk::protocol
         std::string sha256_hex(std::string_view text)
         {
             std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
-            SHA256(
-                reinterpret_cast<const unsigned char *>(text.data()),
-                text.size(),
-                digest.data());
+            SHA256(reinterpret_cast<const unsigned char *>(text.data()), text.size(), digest.data());
             std::ostringstream out;
             out << std::hex << std::setfill('0');
             for (const auto byte : digest)
@@ -98,8 +95,7 @@ namespace gatzk::protocol
             std::ifstream input(path, std::ios::binary);
             if (!input)
             {
-                throw std::runtime_error(
-                    "failed to open artifact for SHA-256: " + path.string());
+                throw std::runtime_error("failed to open artifact for SHA-256: " + path.string());
             }
             SHA256_CTX context{};
             SHA256_Init(&context);
@@ -110,16 +106,12 @@ namespace gatzk::protocol
                 const auto count = input.gcount();
                 if (count > 0)
                 {
-                    SHA256_Update(
-                        &context,
-                        buffer.data(),
-                        static_cast<std::size_t>(count));
+                    SHA256_Update(&context, buffer.data(), static_cast<std::size_t>(count));
                 }
             }
             if (input.bad())
             {
-                throw std::runtime_error(
-                    "failed while reading artifact for SHA-256: " + path.string());
+                throw std::runtime_error("failed while reading artifact for SHA-256: " + path.string());
             }
             std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
             SHA256_Final(digest.data(), &context);
@@ -132,43 +124,32 @@ namespace gatzk::protocol
             return out.str();
         }
 
-        std::vector<std::uint8_t> read_binary_file(
-            const std::filesystem::path &path)
+        std::vector<std::uint8_t> read_binary_file(const std::filesystem::path &path)
         {
             std::ifstream input(path, std::ios::binary);
             if (!input)
             {
-                throw std::runtime_error(
-                    "failed to open artifact for byte comparison: " + path.string());
+                throw std::runtime_error("failed to open artifact for byte comparison: " + path.string());
             }
             input.seekg(0, std::ios::end);
             const auto end = input.tellg();
             if (end < 0)
-                throw std::runtime_error(
-                    "failed to seek artifact for byte comparison: " + path.string());
+                throw std::runtime_error("failed to seek artifact for byte comparison: " + path.string());
             input.seekg(0, std::ios::beg);
             std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
-            if (!bytes.empty() && !input.read(
-                                      reinterpret_cast<char *>(bytes.data()),
-                                      static_cast<std::streamsize>(bytes.size())))
+            if (!bytes.empty() && !input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
             {
-                throw std::runtime_error(
-                    "failed to read artifact for byte comparison: " + path.string());
+                throw std::runtime_error("failed to read artifact for byte comparison: " + path.string());
             }
             return bytes;
         }
 
-        void write_exact_file(
-            const std::filesystem::path &path,
-            std::string_view bytes)
+        void write_exact_file(const std::filesystem::path &path, std::string_view bytes)
         {
             std::ofstream output(path, std::ios::binary | std::ios::trunc);
-            if (!output || (!bytes.empty() && !output.write(
-                                                  bytes.data(),
-                                                  static_cast<std::streamsize>(bytes.size()))))
+            if (!output || (!bytes.empty() && !output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()))))
             {
-                throw std::runtime_error(
-                    "failed to write artifact: " + path.string());
+                throw std::runtime_error("failed to write artifact: " + path.string());
             }
         }
 
@@ -184,9 +165,7 @@ namespace gatzk::protocol
             out->append(value.data(), value.size());
         }
 
-        std::string build_identity(
-            const std::string &source_tree_hash,
-            const std::string &binary_hash)
+        std::string build_identity(const std::string &source_tree_hash, const std::string &binary_hash)
         {
             std::string bytes;
             append_string(&bytes, gatzk::build_provenance::kBuildIdentityAlgorithm);
@@ -209,15 +188,8 @@ namespace gatzk::protocol
         return serialize_proof(proof).size();
     }
 
-    void export_run_artifacts(
-        const ProtocolContext &context,
-        const TraceArtifacts &trace,
-        const Proof &proof,
-        const VerifierContext &verifier_context,
-        const Proof &parsed_proof,
-        RunMetrics metrics,
-        bool verifier_accepted,
-        bool final_accepted)
+    void export_run_artifacts(const ProtocolContext &context, const TraceArtifacts &trace, const Proof &proof, const VerifierContext &verifier_context,
+                              const Proof &parsed_proof, RunMetrics metrics, bool verifier_accepted, bool final_accepted)
     {
         const auto export_start = Clock::now();
         const auto export_root = (std::filesystem::path(context.config.project_root) / context.config.export_dir).string();
@@ -225,19 +197,13 @@ namespace gatzk::protocol
         const auto proof_bytes = serialize_proof(proof);
         if (proof_bytes.size() != metrics.proof_size_bytes)
         {
-            throw std::runtime_error(
-                "exported canonical proof size differs from measured proof size");
+            throw std::runtime_error("exported canonical proof size differs from measured proof size");
         }
         {
             const auto proof_path = std::filesystem::path(export_root) / "proof.bin";
-            write_exact_file(
-                proof_path,
-                std::string_view(
-                    reinterpret_cast<const char *>(proof_bytes.data()),
-                    proof_bytes.size()));
+            write_exact_file(proof_path, std::string_view(reinterpret_cast<const char *>(proof_bytes.data()), proof_bytes.size()));
             if (read_binary_file(proof_path) != proof_bytes)
-                throw std::runtime_error(
-                    "canonical proof artifact is not byte-identical to serialized proof");
+                throw std::runtime_error("canonical proof artifact is not byte-identical to serialized proof");
         }
 
         std::map<std::string, std::string> challenge_strings;
@@ -296,10 +262,7 @@ namespace gatzk::protocol
             out.push_back('"');
             return out;
         };
-        auto bool_string = [](bool value)
-        {
-            return value ? std::string("true") : std::string("false");
-        };
+        auto bool_string = [](bool value) { return value ? std::string("true") : std::string("false"); };
         auto resolve_project_path = [&](const std::string &configured)
         {
             const auto path = std::filesystem::path(configured);
@@ -309,19 +272,15 @@ namespace gatzk::protocol
             }
             return std::filesystem::path(context.config.project_root) / path;
         };
-        const auto srs_manifest_path =
-            resolve_project_path(context.config.srs_path) / "srs_manifest.json";
-        const auto srs_manifest_sha256 =
-            sha256_file_hex(srs_manifest_path);
+        const auto srs_manifest_path = resolve_project_path(context.config.srs_path) / "srs_manifest.json";
+        const auto srs_manifest_sha256 = sha256_file_hex(srs_manifest_path);
         if (srs_manifest_sha256 != context.kzg.manifest.manifest_hash)
         {
-            throw std::runtime_error(
-                "SRS manifest changed after authenticated context load");
+            throw std::runtime_error("SRS manifest changed after authenticated context load");
         }
         if (proof.public_metadata.input_preprocess_id.empty() || proof.public_metadata.input_preprocess_id != context.config.input_preprocess_id)
         {
-            throw std::runtime_error(
-                "artifact export input_preprocess_id is not config-bound");
+            throw std::runtime_error("artifact export input_preprocess_id is not config-bound");
         }
         auto append_public_metadata = [&](std::map<std::string, std::string> &entries)
         {
@@ -354,42 +313,28 @@ namespace gatzk::protocol
                 {"public_output", proof.public_metadata.public_output},
             });
         };
-        auto benchmark_backend_label = [&]()
-        {
-            return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu");
-        };
-        if (!validate_verifier_context(verifier_context) || verifier_context.trusted_registry_digest.empty() || verifier_context.authenticated_registry_digest != verifier_context.trusted_registry_digest)
-            throw std::runtime_error(
-                "artifact export requires the independently loaded authenticated verifier context");
+        auto benchmark_backend_label = [&]() { return metrics.compute_backend_name == "cuda_hotspots" ? std::string("gpu") : std::string("cpu"); };
+        if (!validate_verifier_context(verifier_context) || verifier_context.trusted_registry_digest.empty() ||
+            verifier_context.authenticated_registry_digest != verifier_context.trusted_registry_digest)
+            throw std::runtime_error("artifact export requires the independently loaded authenticated verifier context");
         if (serialize_proof(parsed_proof) != proof_bytes)
-            throw std::runtime_error(
-                "artifact export parsed proof is not byte-identical to proof.bin");
-        const auto parsed_output_hash = canonical_output_digest(
-            parsed_proof.public_logits,
-            verifier_context.local.num_nodes,
-            verifier_context.local.num_classes);
+            throw std::runtime_error("artifact export parsed proof is not byte-identical to proof.bin");
+        const auto parsed_output_hash =
+            canonical_output_digest(parsed_proof.public_logits, verifier_context.local.num_nodes, verifier_context.local.num_classes);
         if (trace.proof_public_output_hash.empty() || trace.proof_public_output_hash != parsed_output_hash)
-            throw std::runtime_error(
-                "artifact export proof_public_output_hash is not derived from parsed proof output");
-        const auto source_tree_hash = std::string(
-            gatzk::build_provenance::kSourceTreeHash);
-        if (source_tree_hash.size() != 64 || !std::all_of(
-                                                 source_tree_hash.begin(), source_tree_hash.end(),
-                                                 [](unsigned char ch)
-                                                 {
-                                                     return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-                                                 }))
+            throw std::runtime_error("artifact export proof_public_output_hash is not derived from parsed proof output");
+        const auto source_tree_hash = std::string(gatzk::build_provenance::kSourceTreeHash);
+        if (source_tree_hash.size() != 64 || !std::all_of(source_tree_hash.begin(), source_tree_hash.end(),
+                                                          [](unsigned char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); }))
             throw std::runtime_error("embedded build source inventory hash is invalid");
         std::error_code binary_error;
-        const auto binary_target = std::filesystem::read_symlink(
-            "/proc/self/exe", binary_error);
+        const auto binary_target = std::filesystem::read_symlink("/proc/self/exe", binary_error);
         if (binary_error || binary_target.empty())
-            throw std::runtime_error(
-                "formal artifact requires the actual executable bytes via /proc/self/exe");
+            throw std::runtime_error("formal artifact requires the actual executable bytes via /proc/self/exe");
         const auto binary_path = std::filesystem::absolute(binary_target).lexically_normal();
-        if (binary_path.empty() || std::filesystem::is_symlink(std::filesystem::symlink_status(binary_path, binary_error)) || binary_error || !std::filesystem::is_regular_file(binary_path, binary_error))
-            throw std::runtime_error(
-                "formal artifact executable target is not a regular non-symlink file");
+        if (binary_path.empty() || std::filesystem::is_symlink(std::filesystem::symlink_status(binary_path, binary_error)) || binary_error ||
+            !std::filesystem::is_regular_file(binary_path, binary_error))
+            throw std::runtime_error("formal artifact executable target is not a regular non-symlink file");
         const auto binary_hash = sha256_file_hex(binary_path);
         const auto build_identity_value = build_identity(source_tree_hash, binary_hash);
         auto table_endpoint_string = [](const std::vector<FieldElement> &values)
@@ -398,8 +343,7 @@ namespace gatzk::protocol
             out << "size=" << values.size();
             if (!values.empty())
             {
-                out << ";first=" << values.front().to_string()
-                    << ";last=" << values.back().to_string();
+                out << ";first=" << values.front().to_string() << ";last=" << values.back().to_string();
             }
             return out.str();
         };
@@ -409,23 +353,21 @@ namespace gatzk::protocol
             out << "size=" << values.size();
             if (!values.empty())
             {
-                out << ";first_left=" << values.front().first.to_string()
-                    << ";first_right=" << values.front().second.to_string()
-                    << ";last_left=" << values.back().first.to_string()
-                    << ";last_right=" << values.back().second.to_string();
+                out << ";first_left=" << values.front().first.to_string() << ";first_right=" << values.front().second.to_string()
+                    << ";last_left=" << values.back().first.to_string() << ";last_right=" << values.back().second.to_string();
             }
             return out.str();
         };
-        const bool full_feature_identity =
-            context.local.num_nodes == context.dataset.num_nodes && context.local.num_features == context.dataset.num_features && std::all_of(context.local.absolute_ids.begin(), context.local.absolute_ids.end(), [index = std::size_t{0}](std::size_t value) mutable
-                                                                                                                                              { return value == index++; });
+        const bool full_feature_identity = context.local.num_nodes == context.dataset.num_nodes && context.local.num_features == context.dataset.num_features &&
+                                           std::all_of(context.local.absolute_ids.begin(), context.local.absolute_ids.end(),
+                                                       [index = std::size_t{0}](std::size_t value) mutable { return value == index++; });
         const bool large_whole_graph_gat =
-            context.config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes && (context.local.edges.size() >= (1ULL << 18) || context.dataset.num_nodes * context.dataset.num_features >= (1ULL << 24));
-        const auto table_endpoint_hash = sha256_hex(
-            table_endpoint_string(context.tables.range) + "|" + pair_table_endpoint_string(context.tables.lrelu) + "|" + pair_table_endpoint_string(context.tables.exp) + "|" + pair_table_endpoint_string(context.tables.elu));
+            context.config.batching_rule == "whole_graph_single" && context.local.num_nodes == context.dataset.num_nodes &&
+            (context.local.edges.size() >= (1ULL << 18) || context.dataset.num_nodes * context.dataset.num_features >= (1ULL << 24));
+        const auto table_endpoint_hash = sha256_hex(table_endpoint_string(context.tables.range) + "|" + pair_table_endpoint_string(context.tables.lrelu) + "|" +
+                                                    pair_table_endpoint_string(context.tables.exp) + "|" + pair_table_endpoint_string(context.tables.elu));
         const auto audit_start = Clock::now();
-        const auto audited_private_plain_value_count =
-            private_plain_value_count(verifier_context, parsed_proof);
+        const auto audited_private_plain_value_count = private_plain_value_count(verifier_context, parsed_proof);
         if (metrics.payload_audit_ms <= 0.0)
         {
             metrics.payload_audit_ms = elapsed_ms(audit_start, Clock::now());
@@ -437,13 +379,9 @@ namespace gatzk::protocol
         const auto proof_hash = sha256_hex(proof_bytes);
         const auto config_id =
             context.config.model_arch_id + ":" + context.config.quant_cfg_id + ":" + context.config.static_table_id + ":" + context.config.degree_bound_id;
-        const auto verifier_registry_digest =
-            verifier_context.authenticated_registry_digest;
-        const auto source_manifest_path =
-            std::filesystem::path(export_root) / "source_manifest.json";
-        write_exact_file(
-            source_manifest_path,
-            gatzk::build_provenance::kSourceManifestJson);
+        const auto verifier_registry_digest = verifier_context.authenticated_registry_digest;
+        const auto source_manifest_path = std::filesystem::path(export_root) / "source_manifest.json";
+        write_exact_file(source_manifest_path, gatzk::build_provenance::kSourceManifestJson);
         const auto source_manifest_hash = sha256_file_hex(source_manifest_path);
         const std::map<std::string, std::string> build_receipt = {
             {"format", "zkgat_build_receipt"},
@@ -461,8 +399,7 @@ namespace gatzk::protocol
             {"build_identity", build_identity_value},
         };
         util::write_json_object(export_root + "/build_receipt.json", build_receipt);
-        const auto build_receipt_hash = sha256_file_hex(
-            std::filesystem::path(export_root) / "build_receipt.json");
+        const auto build_receipt_hash = sha256_file_hex(std::filesystem::path(export_root) / "build_receipt.json");
         // This report is the independent, binary-produced acceptance record
         // consumed by the aggregate gate.  The formal production run does not
         // execute the test-only tamper suite: these fields deliberately record
@@ -492,8 +429,7 @@ namespace gatzk::protocol
             {"build_identity", build_identity_value},
         };
         util::write_json_object(export_root + "/verifier_report.json", verifier_report);
-        const auto verifier_report_hash = sha256_file_hex(
-            std::filesystem::path(export_root) / "verifier_report.json");
+        const auto verifier_report_hash = sha256_file_hex(std::filesystem::path(export_root) / "verifier_report.json");
         util::write_key_values(export_root + "/metadata.txt", metadata);
         util::write_lines(export_root + "/proof_block_order.txt", proof.block_order);
 
@@ -519,7 +455,10 @@ namespace gatzk::protocol
         {
             const auto profile_start = Clock::now();
             std::vector<std::string> profile_lines = {
-                "label,dataset,domain,basis,vector_length,domain_size,nonzero_scalar_count,effective_scalar_count,zero_scalar_ratio,padding_ratio,classification,materialization_ms,msm_ms,total_commitment_ms,duplicates_another,duplicate_of,reused_shared,shared_or_borrowed,compact,ownership,category,optimization_opportunity,zero_scalar_skipping,sparse_compaction,constant_tail_folding,multithreaded_msm,commitment_fingerprint",
+                "label,dataset,domain,basis,vector_length,domain_size,nonzero_scalar_count,effective_scalar_count,zero_scalar_ratio,padding_ratio,"
+                "classification,materialization_ms,msm_ms,total_commitment_ms,duplicates_another,duplicate_of,reused_shared,shared_or_borrowed,compact,"
+                "ownership,category,optimization_opportunity,zero_scalar_skipping,sparse_compaction,constant_tail_folding,multithreaded_msm,commitment_"
+                "fingerprint",
             };
             profile_lines.reserve(metrics.dynamic_commitment_profiles.size() + 1);
             for (const auto &item : metrics.dynamic_commitment_profiles)
@@ -528,7 +467,15 @@ namespace gatzk::protocol
                 dynamic_profile_time_by_domain[item.domain] += item.total_commitment_ms;
                 dynamic_profile_time_by_category[item.ownership + "/" + item.category] += item.total_commitment_ms;
                 profile_lines.push_back(
-                    csv_escape(item.label) + "," + csv_escape(item.dataset) + "," + csv_escape(item.domain) + "," + csv_escape(item.basis) + "," + std::to_string(item.vector_length) + "," + std::to_string(item.domain_size) + "," + std::to_string(item.nonzero_scalar_count) + "," + std::to_string(item.effective_scalar_count) + "," + format_double(item.zero_scalar_ratio) + "," + format_double(item.padding_ratio) + "," + csv_escape(item.classification) + "," + format_double(item.materialization_ms) + "," + format_double(item.msm_ms) + "," + format_double(item.total_commitment_ms) + "," + bool_string(item.duplicates_another) + "," + csv_escape(item.duplicate_of) + "," + bool_string(item.reused_shared) + "," + bool_string(item.shared_or_borrowed) + "," + bool_string(item.compact) + "," + csv_escape(item.ownership) + "," + csv_escape(item.category) + "," + csv_escape(item.optimization_opportunity) + "," + bool_string(item.zero_scalar_skipping) + "," + bool_string(item.sparse_compaction) + "," + bool_string(item.constant_tail_folding) + "," + bool_string(item.multithreaded_msm) + "," + csv_escape(item.commitment_fingerprint));
+                    csv_escape(item.label) + "," + csv_escape(item.dataset) + "," + csv_escape(item.domain) + "," + csv_escape(item.basis) + "," +
+                    std::to_string(item.vector_length) + "," + std::to_string(item.domain_size) + "," + std::to_string(item.nonzero_scalar_count) + "," +
+                    std::to_string(item.effective_scalar_count) + "," + format_double(item.zero_scalar_ratio) + "," + format_double(item.padding_ratio) + "," +
+                    csv_escape(item.classification) + "," + format_double(item.materialization_ms) + "," + format_double(item.msm_ms) + "," +
+                    format_double(item.total_commitment_ms) + "," + bool_string(item.duplicates_another) + "," + csv_escape(item.duplicate_of) + "," +
+                    bool_string(item.reused_shared) + "," + bool_string(item.shared_or_borrowed) + "," + bool_string(item.compact) + "," +
+                    csv_escape(item.ownership) + "," + csv_escape(item.category) + "," + csv_escape(item.optimization_opportunity) + "," +
+                    bool_string(item.zero_scalar_skipping) + "," + bool_string(item.sparse_compaction) + "," + bool_string(item.constant_tail_folding) + "," +
+                    bool_string(item.multithreaded_msm) + "," + csv_escape(item.commitment_fingerprint));
             }
             util::write_lines(export_root + "/dynamic_commitment_object_profile.csv", profile_lines);
             metrics.profile_logging_overhead_ms += elapsed_ms(profile_start, Clock::now());
@@ -566,11 +513,8 @@ namespace gatzk::protocol
 
         metrics.export_artifact_ms = elapsed_ms(export_start, Clock::now());
         metrics.total_wall_clock_ms += metrics.export_artifact_ms;
-        metrics.formal_time_sum_ms =
-            metrics.commitment_time_ms + metrics.prove_time_ms + metrics.verify_time_ms;
-        metrics.non_formal_overhead_ms = std::max(
-            0.0,
-            metrics.total_wall_clock_ms - metrics.formal_time_sum_ms);
+        metrics.formal_time_sum_ms = metrics.commitment_time_ms + metrics.prove_time_ms + metrics.verify_time_ms;
+        metrics.non_formal_overhead_ms = std::max(0.0, metrics.total_wall_clock_ms - metrics.formal_time_sum_ms);
         // `run_manifest.json` is public.  Keep only opaque identifiers and
         // execution results here; checkpoint/tensor/source provenance belongs
         // to the private setup environment and must never enter the aggregate.
@@ -635,7 +579,8 @@ namespace gatzk::protocol
             {"stale_result", "false"},
             {"activation_table_policy", large_whole_graph_gat ? "public_large_whole_graph_shape_bound" : "public_default_shape_bound"},
             {"large_graph_table_policy_triggered", large_whole_graph_gat ? "true" : "false"},
-            {"feature_lookup_identity_predicate", full_feature_identity ? "full_public_shape_and_absolute_id_identity" : "general_public_shape_and_absolute_ids"},
+            {"feature_lookup_identity_predicate",
+             full_feature_identity ? "full_public_shape_and_absolute_id_identity" : "general_public_shape_and_absolute_ids"},
             {"static_table_endpoint_hash", table_endpoint_hash},
             {"range_table_endpoint", table_endpoint_string(context.tables.range)},
             {"lrelu_table_endpoint", pair_table_endpoint_string(context.tables.lrelu)},

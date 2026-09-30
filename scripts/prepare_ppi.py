@@ -34,13 +34,9 @@ def main() -> None:
 
     node_count = len(id_map)
     if features.ndim != 2 or features.shape[0] != node_count or features.shape[1] != 50:
-        raise ValueError(
-            f"PPI features must have shape ({node_count}, 50), got {features.shape}"
-        )
+        raise ValueError(f"PPI features must have shape ({node_count}, 50), got {features.shape}")
     if len(class_map) != node_count:
-        raise ValueError(
-            f"PPI class map must cover {node_count} nodes, got {len(class_map)}"
-        )
+        raise ValueError(f"PPI class map must cover {node_count} nodes, got {len(class_map)}")
     adjacency: list[list[int]] = [[] for _ in range(node_count)]
     edge_pairs: list[tuple[int, int]] = []
     for link in graph["links"]:
@@ -72,9 +68,7 @@ def main() -> None:
     inverse = {original_node: new for new, original_node in enumerate(permutation)}
     features_permuted = features[permutation]
 
-    class_vectors = np.zeros(
-        (node_count, len(next(iter(class_map.values())))), dtype=np.int64
-    )
+    class_vectors = np.zeros((node_count, len(next(iter(class_map.values())))), dtype=np.int64)
     for raw_node, vector in class_map.items():
         class_index = int(id_map[raw_node])
         raw_class_vector = np.asarray(vector)
@@ -88,11 +82,7 @@ def main() -> None:
     # The GraphSAGE PPI release stores split membership on each raw node.  Keep
     # the masks in the same permutation as features/edges; labels remain the
     # original 121-dimensional multi-hot vectors for BCEWithLogitsLoss.
-    split_masks = {
-        "train": np.ones(node_count, dtype=bool),
-        "val": np.zeros(node_count, dtype=bool),
-        "test": np.zeros(node_count, dtype=bool),
-    }
+    split_masks = {"train": np.ones(node_count, dtype=bool), "val": np.zeros(node_count, dtype=bool), "test": np.zeros(node_count, dtype=bool)}
     for node in graph["nodes"]:
         raw_node = str(node["id"])
         node_index = int(id_map[raw_node])
@@ -104,15 +94,10 @@ def main() -> None:
         split_masks["test"][node_index] = is_test
         split_masks["train"][node_index] = not (is_val or is_test)
     if len(graph["nodes"]) != node_count:
-        raise ValueError(
-            f"PPI graph node list must cover {node_count} nodes, got {len(graph['nodes'])}"
-        )
+        raise ValueError(f"PPI graph node list must cover {node_count} nodes, got {len(graph['nodes'])}")
 
     labels_multi_permuted = class_vectors[permutation].astype(np.float32, copy=False)
-    split_masks_permuted = {
-        name: mask[np.asarray(permutation, dtype=np.int64)]
-        for name, mask in split_masks.items()
-    }
+    split_masks_permuted = {name: mask[np.asarray(permutation, dtype=np.int64)] for name, mask in split_masks.items()}
 
     node_ptr = [0]
     for component in components:

@@ -5,6 +5,7 @@ The values are deliberately loaded from the same small, checked-in source
 file consumed by the C++ formal runtime.  Training, checkpoint metadata and
 bundle export must never carry a second scale table or a scale-only default.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -12,7 +13,6 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 import numpy as np
-
 
 _SOURCE_PATH = pathlib.Path(__file__).resolve().parents[1] / "configs" / "quantization_scale_chain.cfg"
 CANONICAL_QUANT_CFG_ID = "gat_l3_scale_chain"
@@ -45,9 +45,7 @@ def _read_source() -> dict[str, str]:
     if not _SOURCE_PATH.is_file():
         raise ValueError(f"canonical quantization scale-chain source is missing: {_SOURCE_PATH}")
     values: dict[str, str] = {}
-    for line_number, raw_line in enumerate(
-        _SOURCE_PATH.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    for line_number, raw_line in enumerate(_SOURCE_PATH.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.split("#", 1)[0].strip()
         if not line:
             continue
@@ -113,9 +111,7 @@ class QuantizationScaleChain:
 
     def canonical_serialization(self) -> str:
         vector = lambda name, value: f"{name}=[{','.join(str(item) for item in value)}]"
-        matrix = lambda name, value: (
-            f"{name}=[{';'.join('[' + ','.join(str(item) for item in row) + ']' for row in value)}]"
-        )
+        matrix = lambda name, value: (f"{name}=[{';'.join('[' + ','.join(str(item) for item in row) + ']' for row in value)}]")
         return (
             f"schema={self.schema}"
             f"|S_input={self.s_input}"
@@ -175,20 +171,13 @@ class QuantizationScaleChain:
 
 
 def canonical_quantization_scale_chain(
-    quant_cfg_id: str = CANONICAL_QUANT_CFG_ID,
-    hidden_profile: Sequence[Mapping[str, object]] | None = None,
-    k_out: int = 2,
+    quant_cfg_id: str = CANONICAL_QUANT_CFG_ID, hidden_profile: Sequence[Mapping[str, object]] | None = None, k_out: int = 2
 ) -> QuantizationScaleChain:
     values = _read_source()
     if quant_cfg_id != values.get("quant_cfg_id") or quant_cfg_id != CANONICAL_QUANT_CFG_ID:
-        raise ValueError(
-            "unsupported quant_cfg_id; formal training requires the registered canonical scale chain"
-        )
+        raise ValueError("unsupported quant_cfg_id; formal training requires the registered canonical scale chain")
     if hidden_profile is not None:
-        shape = tuple(
-            (int(entry["head_count"]), int(entry["head_dim"]))
-            for entry in hidden_profile
-        )
+        shape = tuple((int(entry["head_count"]), int(entry["head_dim"])) for entry in hidden_profile)
         if shape != ((8, 8), (8, 8)):
             raise ValueError("canonical quantization scale chain requires hidden_profile=[8x8,8x8]")
     if int(k_out) != 2:
@@ -298,11 +287,7 @@ def canonical_row_normalize(values: np.ndarray) -> np.ndarray:
     return normalized
 
 
-def canonical_input_preprocess(
-    values: np.ndarray,
-    dataset: str,
-    input_preprocess_id: str | None = None,
-) -> np.ndarray:
+def canonical_input_preprocess(values: np.ndarray, dataset: str, input_preprocess_id: str | None = None) -> np.ndarray:
     """Materialize the canonical floating-point input view.
 
     ``ogbn_arxiv_raw_float32`` intentionally casts through float32 before
@@ -313,10 +298,7 @@ def canonical_input_preprocess(
     expected_id = canonical_input_preprocess_id(dataset)
     actual_id = expected_id if input_preprocess_id is None else str(input_preprocess_id)
     if actual_id != expected_id:
-        raise ValueError(
-            f"input_preprocess_id {actual_id!r} does not match dataset {dataset!r}; "
-            f"expected {expected_id!r}"
-        )
+        raise ValueError(f"input_preprocess_id {actual_id!r} does not match dataset {dataset!r}; " f"expected {expected_id!r}")
     raw = np.asarray(values)
     if raw.ndim != 2:
         raise ValueError("canonical input preprocessing expects a rank-2 matrix")

@@ -8,6 +8,7 @@ the exact source manifest that was built.  Runtime code adds the hash of the
 actual ``/proc/self/exe`` bytes to the build receipt; environment variables
 and user supplied binary hashes are never provenance sources.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -17,7 +18,6 @@ import pathlib
 import struct
 import subprocess
 from typing import Any
-
 
 SOURCE_INVENTORY_ID = "zkgat:source-inventory"
 SOURCE_MANIFEST_FORMAT = "zkgat_source_manifest"
@@ -37,11 +37,7 @@ def _excluded(path: pathlib.PurePosixPath) -> bool:
     # included in the inventory because changing it changes the generated
     # compiler header and manifest.
     final_index = len(path.parts) - 1
-    return any(
-        component in EXCLUDED_COMPONENTS
-        or (index != final_index and component.startswith("build"))
-        for index, component in enumerate(path.parts)
-    )
+    return any(component in EXCLUDED_COMPONENTS or (index != final_index and component.startswith("build")) for index, component in enumerate(path.parts))
 
 
 def append_bytes(out: bytearray, value: bytes) -> None:
@@ -53,27 +49,14 @@ def inventory_paths(root: pathlib.Path) -> list[str]:
     """Return canonical relative files, including new non-ignored sources."""
     try:
         result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(root),
-                "ls-files",
-                "--cached",
-                "--others",
-                "--exclude-standard",
-                "-z",
-            ],
+            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
         candidates = result.stdout.decode("utf-8").split("\0")
     except (OSError, UnicodeDecodeError, subprocess.CalledProcessError):
-        candidates = [
-            path.relative_to(root).as_posix()
-            for path in root.rglob("*")
-            if path.is_file() or path.is_symlink()
-        ]
+        candidates = [path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file() or path.is_symlink()]
 
     paths: list[str] = []
     for candidate in candidates:
@@ -113,21 +96,12 @@ def source_manifest_document(root: pathlib.Path) -> dict[str, Any]:
     files = []
     for relative in inventory_paths(root):
         path = root / pathlib.Path(*relative.split("/"))
-        files.append(
-            {
-                "path": relative,
-                "size": path.stat().st_size,
-                "sha256": _file_sha256(path),
-            }
-        )
+        files.append({"path": relative, "size": path.stat().st_size, "sha256": _file_sha256(path)})
     canonical = bytearray()
     append_bytes(canonical, SOURCE_INVENTORY_ID.encode("utf-8"))
     for entry in files:
         append_bytes(canonical, entry["path"].encode("utf-8"))
-        append_bytes(
-            canonical,
-            (root / pathlib.Path(*entry["path"].split("/"))).read_bytes(),
-        )
+        append_bytes(canonical, (root / pathlib.Path(*entry["path"].split("/"))).read_bytes())
     return {
         "algorithm": SOURCE_MANIFEST_ALGORITHM,
         "file_count": len(files),
@@ -140,42 +114,19 @@ def source_manifest_document(root: pathlib.Path) -> dict[str, Any]:
 
 def canonical_json_bytes(value: Any) -> bytes:
     """Canonical JSON bytes used for source manifest publication and hashing."""
-    return json.dumps(
-        value,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
-def build_identity(
-    source_hash: str,
-    compiler_id: str,
-    compiler_version: str,
-    build_type: str,
-    flags: str,
-    binary_hash: str,
-) -> str:
+def build_identity(source_hash: str, compiler_id: str, compiler_version: str, build_type: str, flags: str, binary_hash: str) -> str:
     canonical = bytearray()
     append_bytes(canonical, BUILD_IDENTITY_ALGORITHM.encode("utf-8"))
-    for value in (
-        source_hash,
-        compiler_id,
-        compiler_version,
-        build_type,
-        flags,
-        binary_hash,
-    ):
+    for value in (source_hash, compiler_id, compiler_version, build_type, flags, binary_hash):
         append_bytes(canonical, value.encode("utf-8"))
     return hashlib.sha256(canonical).hexdigest()
 
 
 def cxx_string(value: str) -> str:
-    return (
-        '"'
-        + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        + '"'
-    )
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
 def write_source_manifest(path: pathlib.Path, document: dict[str, Any]) -> None:

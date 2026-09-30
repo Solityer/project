@@ -3,7 +3,6 @@ import pathlib
 import sys
 import argparse
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
@@ -36,14 +35,7 @@ def blocked_patterns():
 
 
 def scan_paths():
-    include_roots = [
-    ROOT / "include" / "gatzk",
-    ROOT / "src",
-    ROOT / "configs",
-    ROOT / "scripts",
-    ROOT / "tools" / "security",
-    ROOT / "docs" / "security",
-]
+    include_roots = [ROOT / "include" / "gatzk", ROOT / "src", ROOT / "configs", ROOT / "scripts", ROOT / "tools" / "security", ROOT / "docs" / "security"]
     files = [ROOT / "README.md", ROOT / "CMakeLists.txt"]
     for root in include_roots:
         if root.exists():
@@ -80,12 +72,8 @@ def sha256_file(path):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Scan formal sources and every currently materialized configured SRS.")
-    parser.add_argument(
-        "--require-all-configured-srs",
-        action="store_true",
-        help="also fail when a configured dataset SRS has not been generated")
+    parser = argparse.ArgumentParser(description="Scan formal sources and every currently materialized configured SRS.")
+    parser.add_argument("--require-all-configured-srs", action="store_true", help="also fail when a configured dataset SRS has not been generated")
     args = parser.parse_args()
     patterns = blocked_patterns()
     failures = []
@@ -99,27 +87,17 @@ def main():
                 if pattern in line:
                     failures.append((path.relative_to(ROOT), line_no, pattern))
         if path.name != "static_scan_no_tau.py":
-            for forbidden_api_marker in (
-                "KZG::open_batch(",
-                "KZG::verify_batch(",
-                "KZG::open_external_fold(",
-                "KZG::verify_external_fold(",
-                "external_proof",
-            ):
+            for forbidden_api_marker in ("KZG::open_batch(", "KZG::verify_batch(", "KZG::open_external_fold(", "KZG::verify_external_fold(", "external_proof"):
                 if forbidden_api_marker in text:
-                    line_no = text.count(
-                        "\n", 0, text.index(forbidden_api_marker)
-                    ) + 1
-                    failures.append(
-                        (path.relative_to(ROOT), line_no, forbidden_api_marker)
-                    )
+                    line_no = text.count("\n", 0, text.index(forbidden_api_marker)) + 1
+                    failures.append((path.relative_to(ROOT), line_no, forbidden_api_marker))
             for marker in ("KZG::verify_point_group(",):
                 pos = 0
                 while True:
                     pos = text.find(marker, pos)
                     if pos == -1:
                         break
-                    window = text[pos:pos + 320]
+                    window = text[pos : pos + 320]
                     line_no = text.count("\n", 0, pos) + 1
                     if "context.kzg))" in window or "context.kzg);" in window:
                         failures.append((path.relative_to(ROOT), line_no, "verifier must use context.kzg.vk"))
@@ -166,11 +144,7 @@ def main():
         for key in (aux + "_path", aux + "_hash"):
             if data.get(key):
                 failures.append((manifest.relative_to(ROOT), 1, f"forbidden {key}"))
-        for path_key, hash_key in (
-            ("pk_coef_path", "pk_coef_hash"),
-            ("vk_path", "vk_hash"),
-            ("srs_audit_report_path", "srs_audit_report_hash"),
-        ):
+        for path_key, hash_key in (("pk_coef_path", "pk_coef_hash"), ("vk_path", "vk_hash"), ("srs_audit_report_path", "srs_audit_report_hash")):
             rel = data.get(path_key)
             expected = data.get(hash_key)
             if not rel or not expected:

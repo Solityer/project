@@ -9,6 +9,7 @@ The structured torch state layout is part of the checkpoint contract:
 Every output head applies its own post-aggregation bias and the final logits
 are the arithmetic mean of all biased output heads.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,16 +26,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from checkpoint_bundle import (
-    canonical_checkpoint_semantics,
-    validate_checkpoint_metadata,
-)
-from planetoid_utils import (
-    build_sorted_edge_index,
-    labels_to_int,
-    load_canonical_planetoid_features,
-    load_planetoid_dataset_with_masks,
-)
+from checkpoint_bundle import canonical_checkpoint_semantics, validate_checkpoint_metadata
+from planetoid_utils import build_sorted_edge_index, labels_to_int, load_canonical_planetoid_features, load_planetoid_dataset_with_masks
 from quantization_scale_chain import (
     CANONICAL_QUANT_CFG_ID,
     QuantizationScaleChain,
@@ -43,7 +36,6 @@ from quantization_scale_chain import (
     canonical_input_preprocess_id,
     quantize_array_ties_away,
 )
-
 
 HiddenProfile = List[Dict[str, int]]
 OUTPUT_AVERAGE_RULE = "per_head_bias_then_arithmetic_mean"
@@ -59,9 +51,7 @@ CANONICAL_MODEL_SPECS = {
 
 def parse_cfg(path: pathlib.Path) -> Dict[str, str]:
     values: Dict[str, str] = {}
-    for line_number, raw_line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -72,9 +62,7 @@ def parse_cfg(path: pathlib.Path) -> Dict[str, str]:
         if not key:
             raise ValueError(f"{path}:{line_number}: empty config key")
         if key in values:
-            raise ValueError(
-                f"{path}:{line_number}: duplicate config key {key!r}"
-            )
+            raise ValueError(f"{path}:{line_number}: duplicate config key {key!r}")
         values[key] = value.strip()
     return values
 
@@ -99,12 +87,7 @@ def cfg_bool(cfg: Mapping[str, str], key: str, default: bool) -> bool:
     raise ValueError(f"config {key} must be boolean, got {value!r}")
 
 
-def input_quantization_diagnostic(
-    values: torch.Tensor | np.ndarray,
-    *,
-    scale: int | None = None,
-    range_bits: int | None = None,
-) -> Dict[str, object]:
+def input_quantization_diagnostic(values: torch.Tensor | np.ndarray, *, scale: int | None = None, range_bits: int | None = None) -> Dict[str, object]:
     """Return a lightweight provenance diagnostic for input quantization.
 
     This helper does not alter the registered chain or clip values; it reports
@@ -137,10 +120,7 @@ def input_quantization_diagnostic(
         "non_integer_ratio": float(np.mean(non_integer)),
         "max_abs_input": float(np.max(np.abs(raw))),
         "max_abs_quantized": float(np.max(np.abs(quantized))),
-        "abs_input_quantiles": {
-            str(q): float(np.quantile(np.abs(raw), q))
-            for q in (0.0, 0.5, 0.9, 0.99, 1.0)
-        },
+        "abs_input_quantiles": {str(q): float(np.quantile(np.abs(raw), q)) for q in (0.0, 0.5, 0.9, 0.99, 1.0)},
         "max_abs_error": float(np.max(np.abs(quantized - raw))),
         # S_input quantization has no clipping/saturation branch.  Exposing
         # both fields makes that fact explicit and still reports values which
@@ -172,30 +152,19 @@ def quantize_torch_ste(values: torch.Tensor, scale: int) -> torch.Tensor:
     if scale <= 0:
         raise ValueError("quantization scale must be positive")
     scaled = values * float(scale)
-    rounded = torch.where(
-        scaled >= 0.0,
-        torch.floor(scaled + 0.5),
-        torch.ceil(scaled - 0.5),
-    )
+    rounded = torch.where(scaled >= 0.0, torch.floor(scaled + 0.5), torch.ceil(scaled - 0.5))
     quantized = rounded / float(scale)
     return values + (quantized - values).detach()
 
 
 def quantized_input_features(
-    input_features: np.ndarray,
-    chain: QuantizationScaleChain,
-    *,
-    range_bits: int | None = None,
+    input_features: np.ndarray, chain: QuantizationScaleChain, *, range_bits: int | None = None
 ) -> tuple[np.ndarray, Dict[str, object]]:
     """Materialize the formal public input q/S view for training."""
     input_view = np.asarray(input_features, dtype=np.float64)
     quantized_raw = quantize_array_ties_away(input_view, chain.s_input)
     quantized = quantized_raw.astype(np.float64) / float(chain.s_input)
-    diagnostic = input_quantization_diagnostic(
-        input_view,
-        scale=chain.s_input,
-        range_bits=range_bits,
-    )
+    diagnostic = input_quantization_diagnostic(input_view, scale=chain.s_input, range_bits=range_bits)
     return quantized, diagnostic
 
 
@@ -210,45 +179,29 @@ def parse_hidden_profile_expr(raw: str) -> HiddenProfile:
         if len(parts) != 2:
             raise ValueError(f"invalid hidden_profile entry: {entry}")
         head_count, head_dim = (int(part.strip()) for part in parts)
-        if (
-            type(head_count) is not int
-            or type(head_dim) is not int
-            or head_count <= 0
-            or head_dim <= 0
-        ):
-            raise ValueError(
-                "hidden_profile head counts and dimensions must be positive"
-            )
+        if type(head_count) is not int or type(head_dim) is not int or head_count <= 0 or head_dim <= 0:
+            raise ValueError("hidden_profile head counts and dimensions must be positive")
         profile.append({"head_count": head_count, "head_dim": head_dim})
     if not profile:
         raise ValueError("hidden_profile must be non-empty")
     return profile
 
 
-def require_canonical_model_config(
-    cfg: Mapping[str, str], dataset: str
-) -> HiddenProfile:
+def require_canonical_model_config(cfg: Mapping[str, str], dataset: str) -> HiddenProfile:
     """Require the one architecture used by every registered formal dataset."""
     if dataset not in CANONICAL_MODEL_SPECS:
         raise ValueError(f"unsupported formal dataset: {dataset}")
-    expected_d_in, expected_classes, expected_arch, expected_param = CANONICAL_MODEL_SPECS[
-        dataset
-    ]
+    expected_d_in, expected_classes, expected_arch, expected_param = CANONICAL_MODEL_SPECS[dataset]
     try:
         hidden_profile = parse_hidden_profile_expr(cfg["hidden_profile"])
         raw_d_in = cfg["d_in_profile"].strip().strip("[]")
         d_in_profile = [int(value.strip()) for value in raw_d_in.split(",") if value.strip()]
     except (KeyError, ValueError) as error:
         raise ValueError(f"{dataset} formal config must expose canonical model shape") from error
-    if hidden_profile != [
-        {"head_count": 8, "head_dim": 8},
-        {"head_count": 8, "head_dim": 8},
-    ]:
+    if hidden_profile != [{"head_count": 8, "head_dim": 8}, {"head_count": 8, "head_dim": 8}]:
         raise ValueError(f"{dataset} formal training requires hidden_profile=[8x8,8x8]")
     if d_in_profile != expected_d_in:
-        raise ValueError(
-            f"{dataset} formal training requires d_in_profile={expected_d_in}"
-        )
+        raise ValueError(f"{dataset} formal training requires d_in_profile={expected_d_in}")
     if cfg_int(cfg, "L", 0) != 3 or cfg_int(cfg, "K_out", 0) != 2:
         raise ValueError(f"{dataset} formal training requires L=3 and K_out=2")
     if cfg_int(cfg, "num_classes", 0) != expected_classes:
@@ -259,12 +212,8 @@ def require_canonical_model_config(
         raise ValueError(f"{dataset} formal config has an unexpected model_param_id")
     expected_preprocess_id = canonical_input_preprocess_id(dataset)
     if cfg.get("input_preprocess_id") != expected_preprocess_id:
-        raise ValueError(
-            f"{dataset} formal config requires input_preprocess_id={expected_preprocess_id}"
-        )
-    canonical_quantization_scale_chain(
-        cfg.get("quant_cfg_id", ""), hidden_profile, 2
-    )
+        raise ValueError(f"{dataset} formal config requires input_preprocess_id={expected_preprocess_id}")
+    canonical_quantization_scale_chain(cfg.get("quant_cfg_id", ""), hidden_profile, 2)
     return hidden_profile
 
 
@@ -275,13 +224,9 @@ def normalize_hidden_profile(raw: Sequence[Mapping[str, object]]) -> HiddenProfi
             head_count = entry["head_count"]
             head_dim = entry["head_dim"]
         except (KeyError, TypeError, ValueError) as error:
-            raise ValueError(
-                f"invalid hidden_profile layer {layer_index}"
-            ) from error
+            raise ValueError(f"invalid hidden_profile layer {layer_index}") from error
         if head_count <= 0 or head_dim <= 0:
-            raise ValueError(
-                f"hidden_profile layer {layer_index} must have positive shape"
-            )
+            raise ValueError(f"hidden_profile layer {layer_index} must have positive shape")
         profile.append({"head_count": head_count, "head_dim": head_dim})
     if not profile:
         raise ValueError("hidden_profile must contain at least one hidden layer")
@@ -298,19 +243,10 @@ def derive_d_in_profile(in_dim: int, hidden_profile: Sequence[Mapping[str, objec
     return d_in_profile
 
 
-def architecture_id(
-    hidden_profile: Sequence[Mapping[str, object]],
-    k_out: int,
-    num_classes: int,
-) -> str:
+def architecture_id(hidden_profile: Sequence[Mapping[str, object]], k_out: int, num_classes: int) -> str:
     profile = normalize_hidden_profile(hidden_profile)
-    hidden_label = "-".join(
-        f"{layer['head_count']}x{layer['head_dim']}" for layer in profile
-    )
-    return (
-        f"gat_family_L{len(profile) + 1}_hid{hidden_label}"
-        f"_kout{k_out}_c{num_classes}"
-    )
+    hidden_label = "-".join(f"{layer['head_count']}x{layer['head_dim']}" for layer in profile)
+    return f"gat_family_L{len(profile) + 1}_hid{hidden_label}" f"_kout{k_out}_c{num_classes}"
 
 
 def set_seed(seed: int) -> None:
@@ -345,33 +281,16 @@ def load_dataset(
     chain: QuantizationScaleChain | None = None,
     range_bits: int | None = None,
 ) -> DatasetTensors:
-    (
-        sparse_features,
-        labels,
-        adjacency,
-        train_mask,
-        val_mask,
-        test_mask,
-    ) = load_planetoid_dataset_with_masks(data_root, dataset)
+    sparse_features, labels, adjacency, train_mask, val_mask, test_mask = load_planetoid_dataset_with_masks(data_root, dataset)
     chain = chain or canonical_quantization_scale_chain()
     cache_base = cache_root if cache_root is not None else data_root / "cache"
     input_features = load_canonical_planetoid_features(cache_base, dataset)
     if input_features.shape != sparse_features.shape:
-        raise ValueError(
-            "canonical Planetoid cache feature shape does not match dataset masks"
-        )
-    input_features = canonical_input_preprocess(
-        input_features, dataset, canonical_input_preprocess_id(dataset)
-    )
-    features, input_diagnostic = quantized_input_features(
-        input_features,
-        chain,
-        range_bits=range_bits,
-    )
+        raise ValueError("canonical Planetoid cache feature shape does not match dataset masks")
+    input_features = canonical_input_preprocess(input_features, dataset, canonical_input_preprocess_id(dataset))
+    features, input_diagnostic = quantized_input_features(input_features, chain, range_bits=range_bits)
     label_ids = labels_to_int(labels)
-    edge_src, edge_dst = build_sorted_edge_index(
-        adjacency, features.shape[0], add_self_loops=True
-    )
+    edge_src, edge_dst = build_sorted_edge_index(adjacency, features.shape[0], add_self_loops=True)
     return DatasetTensors(
         # q/S is exactly representable for the canonical power-of-two S_input;
         # keep the preprocessing itself float64 before this device transfer.
@@ -415,11 +334,7 @@ class AttentionHead(nn.Module):
         return_trace: bool = False,
         quantization: Mapping[str, int] | None = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor] | None]:
-        working_inputs = (
-            F.dropout(inputs, p=dropout, training=training)
-            if dropout > 0.0
-            else inputs
-        )
+        working_inputs = F.dropout(inputs, p=dropout, training=training) if dropout > 0.0 else inputs
         if quantization is None:
             h_prime = self.seq(working_inputs)
             e_dst = self.attn_dst(h_prime).squeeze(-1)
@@ -433,52 +348,31 @@ class AttentionHead(nn.Module):
             # quantization semantics as the formal trace.
             working_inputs = quantize_torch_ste(working_inputs, quantization["input"])
             seq_weight = quantize_torch_ste(self.seq.weight, quantization["weight"])
-            attn_dst_weight = quantize_torch_ste(
-                self.attn_dst.weight, quantization["a_dst"]
-            )
-            attn_src_weight = quantize_torch_ste(
-                self.attn_src.weight, quantization["a_src"]
-            )
+            attn_dst_weight = quantize_torch_ste(self.attn_dst.weight, quantization["a_dst"])
+            attn_src_weight = quantize_torch_ste(self.attn_src.weight, quantization["a_src"])
             h_prime = F.linear(working_inputs, seq_weight)
             h_prime = quantize_torch_ste(h_prime, quantization["h_prime"])
             e_dst = F.linear(h_prime, attn_dst_weight).squeeze(-1)
             e_src = F.linear(h_prime, attn_src_weight).squeeze(-1)
             e_dst = quantize_torch_ste(e_dst, quantization["delta"])
             e_src = quantize_torch_ste(e_src, quantization["delta"])
-            linear_scores = quantize_torch_ste(
-                e_dst[edge_dst] + e_src[edge_src], quantization["delta"]
-            )
-            scores = quantize_torch_ste(
-                F.leaky_relu(linear_scores, negative_slope=0.2),
-                quantization["delta"],
-            )
+            linear_scores = quantize_torch_ste(e_dst[edge_dst] + e_src[edge_src], quantization["delta"])
+            scores = quantize_torch_ste(F.leaky_relu(linear_scores, negative_slope=0.2), quantization["delta"])
 
-        max_per_dst = torch.full(
-            (num_nodes,), -torch.inf, device=inputs.device, dtype=inputs.dtype
-        )
-        max_per_dst.scatter_reduce_(
-            0, edge_dst, scores, reduce="amax", include_self=True
-        )
+        max_per_dst = torch.full((num_nodes,), -torch.inf, device=inputs.device, dtype=inputs.dtype)
+        max_per_dst.scatter_reduce_(0, edge_dst, scores, reduce="amax", include_self=True)
         shifted = scores - max_per_dst[edge_dst]
         if quantization is None:
             exp_scores = torch.exp(shifted)
         else:
-            delta = quantize_torch_ste(
-                max_per_dst[edge_dst] - scores, quantization["delta"]
-            )
-            exp_scores = quantize_torch_ste(
-                torch.exp(-delta), quantization["exp"]
-            )
+            delta = quantize_torch_ste(max_per_dst[edge_dst] - scores, quantization["delta"])
+            exp_scores = quantize_torch_ste(torch.exp(-delta), quantization["exp"])
             # The formal ExpMap table is defined on exp(-Delta) with a
             # positive unit entry at Delta=0.  Keep QAT on that same
             # registered support when a floating-point exp underflows to a
             # value which would quantize to zero.
-            exp_scores = torch.clamp(
-                exp_scores, min=1.0 / float(quantization["exp"])
-            )
-        sum_per_dst = torch.zeros(
-            (num_nodes,), device=inputs.device, dtype=inputs.dtype
-        )
+            exp_scores = torch.clamp(exp_scores, min=1.0 / float(quantization["exp"]))
+        sum_per_dst = torch.zeros((num_nodes,), device=inputs.device, dtype=inputs.dtype)
         sum_per_dst.index_add_(0, edge_dst, exp_scores)
         if quantization is not None:
             sum_per_dst = quantize_torch_ste(sum_per_dst, quantization["exp"])
@@ -487,19 +381,9 @@ class AttentionHead(nn.Module):
         if dropout > 0.0:
             alpha = F.dropout(alpha, p=dropout, training=training)
 
-        message_inputs = (
-            F.dropout(h_prime, p=dropout, training=training)
-            if dropout > 0.0
-            else h_prime
-        )
-        aggregated = torch.zeros(
-            (num_nodes, h_prime.shape[1]),
-            device=inputs.device,
-            dtype=inputs.dtype,
-        )
-        aggregated.index_add_(
-            0, edge_dst, message_inputs[edge_src] * alpha.unsqueeze(-1)
-        )
+        message_inputs = F.dropout(h_prime, p=dropout, training=training) if dropout > 0.0 else h_prime
+        aggregated = torch.zeros((num_nodes, h_prime.shape[1]), device=inputs.device, dtype=inputs.dtype)
+        aggregated.index_add_(0, edge_dst, message_inputs[edge_src] * alpha.unsqueeze(-1))
         if quantization is not None:
             aggregated = quantize_torch_ste(aggregated, quantization["agg_pre"])
         if apply_activation:
@@ -510,9 +394,7 @@ class AttentionHead(nn.Module):
             if quantization is None:
                 output = aggregated + self.output_bias
             else:
-                output = aggregated + quantize_torch_ste(
-                    self.output_bias, quantization["bias"]
-                )
+                output = aggregated + quantize_torch_ste(self.output_bias, quantization["bias"])
                 output = quantize_torch_ste(output, quantization["out"])
         else:
             output = aggregated
@@ -539,9 +421,7 @@ class AttentionHead(nn.Module):
 class HiddenAttentionLayer(nn.Module):
     def __init__(self, in_dim: int, head_count: int, head_dim: int) -> None:
         super().__init__()
-        self.heads = nn.ModuleList(
-            [AttentionHead(in_dim, head_dim) for _ in range(head_count)]
-        )
+        self.heads = nn.ModuleList([AttentionHead(in_dim, head_dim) for _ in range(head_count)])
 
 
 class PlanetoidGAT(nn.Module):
@@ -566,36 +446,15 @@ class PlanetoidGAT(nn.Module):
         d_in_profile = derive_d_in_profile(in_dim, self.hidden_profile)
         self.hidden_layers = nn.ModuleList(
             [
-                HiddenAttentionLayer(
-                    d_in_profile[layer_index],
-                    int(layer["head_count"]),
-                    int(layer["head_dim"]),
-                )
+                HiddenAttentionLayer(d_in_profile[layer_index], int(layer["head_count"]), int(layer["head_dim"]))
                 for layer_index, layer in enumerate(self.hidden_profile)
             ]
         )
-        output_input_dim = (
-            int(self.hidden_profile[-1]["head_count"])
-            * int(self.hidden_profile[-1]["head_dim"])
-        )
-        self.output_heads = nn.ModuleList(
-            [
-                AttentionHead(
-                    output_input_dim, self.num_classes, output_bias=True
-                )
-                for _ in range(self.k_out)
-            ]
-        )
+        output_input_dim = int(self.hidden_profile[-1]["head_count"]) * int(self.hidden_profile[-1]["head_dim"])
+        self.output_heads = nn.ModuleList([AttentionHead(output_input_dim, self.num_classes, output_bias=True) for _ in range(self.k_out)])
 
     def forward(
-        self,
-        features: torch.Tensor,
-        edge_src: torch.Tensor,
-        edge_dst: torch.Tensor,
-        *,
-        dropout: float,
-        training: bool,
-        return_trace: bool = False,
+        self, features: torch.Tensor, edge_src: torch.Tensor, edge_dst: torch.Tensor, *, dropout: float, training: bool, return_trace: bool = False
     ) -> Tuple[torch.Tensor, Dict[str, object] | None]:
         layer_input = features
         hidden_layer_traces: List[Dict[str, object]] = []
@@ -603,11 +462,7 @@ class PlanetoidGAT(nn.Module):
             head_outputs: List[torch.Tensor] = []
             head_traces: List[Dict[str, torch.Tensor]] = []
             for local_head_index, head in enumerate(layer.heads):
-                head_quantization = (
-                    self.quantization.hidden_head(layer_index, local_head_index)
-                    if self.quantization is not None
-                    else None
-                )
+                head_quantization = self.quantization.hidden_head(layer_index, local_head_index) if self.quantization is not None else None
                 output, trace = head(
                     layer_input,
                     edge_src,
@@ -624,22 +479,12 @@ class PlanetoidGAT(nn.Module):
                     head_traces.append(trace)
             layer_input = torch.cat(head_outputs, dim=-1)
             if return_trace:
-                hidden_layer_traces.append(
-                    {
-                        "layer_index": layer_index,
-                        "concat": layer_input.detach().cpu(),
-                        "heads": head_traces,
-                    }
-                )
+                hidden_layer_traces.append({"layer_index": layer_index, "concat": layer_input.detach().cpu(), "heads": head_traces})
 
         output_values: List[torch.Tensor] = []
         output_traces: List[Dict[str, torch.Tensor]] = []
         for head_index, head in enumerate(self.output_heads):
-            head_quantization = (
-                self.quantization.output_head(head_index)
-                if self.quantization is not None
-                else None
-            )
+            head_quantization = self.quantization.output_head(head_index) if self.quantization is not None else None
             output, trace = head(
                 layer_input,
                 edge_src,
@@ -659,19 +504,11 @@ class PlanetoidGAT(nn.Module):
             logits = quantize_torch_ste(logits, self.quantization.s_out)
         if not return_trace:
             return logits, None
-        trace: Dict[str, object] = {
-            "hidden_layers": hidden_layer_traces,
-            "output_heads": output_traces,
-            "logits": logits.detach().cpu(),
-        }
+        trace: Dict[str, object] = {"hidden_layers": hidden_layer_traces, "output_heads": output_traces, "logits": logits.detach().cpu()}
         return logits, trace
 
 
-def build_optimizer(
-    model: nn.Module,
-    learning_rate: float,
-    weight_decay: float,
-) -> torch.optim.Optimizer:
+def build_optimizer(model: nn.Module, learning_rate: float, weight_decay: float) -> torch.optim.Optimizer:
     decay_params = []
     nodecay_params = []
     for name, parameter in model.named_parameters():
@@ -681,29 +518,15 @@ def build_optimizer(
             nodecay_params.append(parameter)
         else:
             decay_params.append(parameter)
-    return torch.optim.Adam(
-        [
-            {"params": decay_params, "weight_decay": weight_decay},
-            {"params": nodecay_params, "weight_decay": 0.0},
-        ],
-        lr=learning_rate,
-    )
+    return torch.optim.Adam([{"params": decay_params, "weight_decay": weight_decay}, {"params": nodecay_params, "weight_decay": 0.0}], lr=learning_rate)
 
 
-def masked_accuracy(
-    logits: torch.Tensor,
-    labels: torch.Tensor,
-    mask: torch.Tensor,
-) -> float:
+def masked_accuracy(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> float:
     predictions = torch.argmax(logits[mask], dim=-1)
     return float((predictions == labels[mask]).float().mean().item())
 
 
-def masked_loss(
-    logits: torch.Tensor,
-    labels: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
+def masked_loss(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return F.cross_entropy(logits[mask], labels[mask])
 
 
@@ -722,11 +545,7 @@ def checkpoint_metadata(
     extra: Mapping[str, object] | None = None,
 ) -> Dict[str, object]:
     profile = normalize_hidden_profile(hidden_profile)
-    chain = canonical_quantization_scale_chain(
-        CANONICAL_QUANT_CFG_ID,
-        profile,
-        k_out,
-    )
+    chain = canonical_quantization_scale_chain(CANONICAL_QUANT_CFG_ID, profile, k_out)
     metadata: Dict[str, object] = {
         "dataset": dataset,
         "family_schema": "multi_layer_multi_head",
@@ -761,10 +580,7 @@ def checkpoint_metadata(
 
 
 def load_checkpoint(
-    path: Union[str, pathlib.Path],
-    device: torch.device | str | None = None,
-    *,
-    map_location: torch.device | str | None = None,
+    path: Union[str, pathlib.Path], device: torch.device | str | None = None, *, map_location: torch.device | str | None = None
 ) -> Dict[str, object]:
     """Load one canonical structured formal checkpoint."""
     if device is not None and map_location is not None:
@@ -772,9 +588,7 @@ def load_checkpoint(
     location = map_location if map_location is not None else device
     if location is None:
         location = torch.device("cpu")
-    checkpoint = torch.load(
-        str(path), map_location=location, weights_only=False
-    )
+    checkpoint = torch.load(str(path), map_location=location, weights_only=False)
     if not isinstance(checkpoint, dict):
         raise ValueError(f"checkpoint at {path} must be a dict")
     if "bundle" not in checkpoint or not isinstance(checkpoint["bundle"], dict):
@@ -783,14 +597,8 @@ def load_checkpoint(
         raise ValueError(f"checkpoint at {path} is missing state_dict")
     state = checkpoint["state_dict"]
     for key in state:
-        if (
-            ("attn_src" in str(key) or "attn_dst" in str(key))
-            and (str(key).endswith(".bias") or str(key).endswith("_bias"))
-        ):
-            raise ValueError(
-                "bias-enabled attention checkpoint is not accepted by the formal loader: "
-                + str(key)
-            )
+        if ("attn_src" in str(key) or "attn_dst" in str(key)) and (str(key).endswith(".bias") or str(key).endswith("_bias")):
+            raise ValueError("bias-enabled attention checkpoint is not accepted by the formal loader: " + str(key))
     bundle = checkpoint["bundle"]
     validate_checkpoint_metadata(bundle)
     if bundle["family_schema"] != "multi_layer_multi_head":
@@ -799,29 +607,18 @@ def load_checkpoint(
         raise ValueError("checkpoint must declare the canonical L=3 and K_out=2")
     bundle_chain = bundle["quantization_scale_chain"]
     if not isinstance(bundle_chain, str) or not bundle_chain:
-        raise ValueError(
-            "checkpoint is missing the complete quantization_scale_chain; "
-            "quant_cfg_id alone is not a formal identity"
-        )
+        raise ValueError("checkpoint is missing the complete quantization_scale_chain; " "quant_cfg_id alone is not a formal identity")
     try:
         profile = checkpoint_hidden_profile(bundle)
-        chain = canonical_quantization_scale_chain(
-            bundle["quant_cfg_id"],
-            profile,
-            bundle["K_out"],
-        )
+        chain = canonical_quantization_scale_chain(bundle["quant_cfg_id"], profile, bundle["K_out"])
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("checkpoint quantization metadata is not canonical") from error
     dataset = bundle["dataset"]
     expected_preprocess_id = canonical_input_preprocess_id(dataset)
     if bundle["input_preprocess_id"] != expected_preprocess_id:
-        raise ValueError(
-            "checkpoint input_preprocess_id does not match its formal dataset"
-        )
+        raise ValueError("checkpoint input_preprocess_id does not match its formal dataset")
     if bundle_chain != chain.canonical_serialization():
-        raise ValueError(
-            "checkpoint quantization_scale_chain does not match the canonical source"
-        )
+        raise ValueError("checkpoint quantization_scale_chain does not match the canonical source")
     return checkpoint
 
 
@@ -832,21 +629,10 @@ def checkpoint_hidden_profile(bundle: Mapping[str, object]) -> HiddenProfile:
     raise ValueError("checkpoint metadata must expose a non-empty hidden_profile")
 
 
-def _resolve_output_dir(
-    project_root: pathlib.Path,
-    cfg: Mapping[str, str],
-    dataset: str,
-    cli_output_dir: str | None,
-) -> pathlib.Path:
+def _resolve_output_dir(project_root: pathlib.Path, cfg: Mapping[str, str], dataset: str, cli_output_dir: str | None) -> pathlib.Path:
     if cli_output_dir is not None:
         return pathlib.Path(cli_output_dir).expanduser().resolve()
-    return (
-        project_root
-        / cfg.get(
-            "checkpoint_bundle",
-            f"artifacts/checkpoints/{dataset}_gat",
-        )
-    ).resolve()
+    return (project_root / cfg.get("checkpoint_bundle", f"artifacts/checkpoints/{dataset}_gat")).resolve()
 
 
 def _override(value: object | None, fallback: object) -> object:
@@ -855,26 +641,15 @@ def _override(value: object | None, fallback: object) -> object:
 
 def add_training_cli(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", required=True)
-    parser.add_argument(
-        "--output-dir",
-        help="canonical checkpoint destination (defaults to checkpoint_bundle)",
-    )
+    parser.add_argument("--output-dir", help="canonical checkpoint destination (defaults to checkpoint_bundle)")
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--patience", type=int)
     parser.add_argument("--learning-rate", type=float)
     parser.add_argument("--weight-decay", type=float)
     parser.add_argument("--dropout", type=float)
     parser.add_argument("--seed", type=int)
-    parser.add_argument(
-        "--use-cuda",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="allow replacing best_model.pt in the selected output directory",
-    )
+    parser.add_argument("--use-cuda", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--overwrite", action="store_true", help="allow replacing best_model.pt in the selected output directory")
 
 
 def main() -> None:
@@ -889,76 +664,41 @@ def main() -> None:
         raise ValueError("Planetoid trainer supports cora/citeseer/pubmed")
     project_root = cfg_path.parent.parent.resolve()
     data_root = (project_root / cfg.get("data_root", "data")).resolve()
-    output_dir = _resolve_output_dir(
-        project_root, cfg, dataset, args.output_dir
-    )
+    output_dir = _resolve_output_dir(project_root, cfg, dataset, args.output_dir)
     checkpoint_path = output_dir / "best_model.pt"
     if checkpoint_path.exists() and not args.overwrite:
-        raise FileExistsError(
-            f"refusing to overwrite {checkpoint_path}; pass a fresh --output-dir "
-            "or explicitly use --overwrite"
-        )
+        raise FileExistsError(f"refusing to overwrite {checkpoint_path}; pass a fresh --output-dir " "or explicitly use --overwrite")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     hidden_profile = require_canonical_model_config(cfg, dataset)
     k_out = 2
-    chain = canonical_quantization_scale_chain(
-        cfg["quant_cfg_id"], hidden_profile, k_out
-    )
+    chain = canonical_quantization_scale_chain(cfg["quant_cfg_id"], hidden_profile, k_out)
     epochs = int(_override(args.epochs, cfg_int(cfg, "epochs", 500)))
     patience = int(_override(args.patience, cfg_int(cfg, "patience", 100)))
-    learning_rate = float(
-        _override(args.learning_rate, cfg_float(cfg, "learning_rate", 0.005))
-    )
-    weight_decay = float(
-        _override(args.weight_decay, cfg_float(cfg, "weight_decay", 0.0005))
-    )
+    learning_rate = float(_override(args.learning_rate, cfg_float(cfg, "learning_rate", 0.005)))
+    weight_decay = float(_override(args.weight_decay, cfg_float(cfg, "weight_decay", 0.0005)))
     dropout = float(_override(args.dropout, cfg_float(cfg, "dropout", 0.6)))
     seed = int(_override(args.seed, cfg_int(cfg, "seed", 11)))
     use_cuda = bool(_override(args.use_cuda, True))
-    expected_training = {
-        "cora": (500, 100, 0.005, 0.0005, 0.6),
-        "citeseer": (500, 100, 0.005, 0.0005, 0.6),
-        "pubmed": (500, 100, 0.01, 0.001, 0.6),
-    }[dataset]
+    expected_training = {"cora": (500, 100, 0.005, 0.0005, 0.6), "citeseer": (500, 100, 0.005, 0.0005, 0.6), "pubmed": (500, 100, 0.01, 0.001, 0.6)}[dataset]
     actual_training = (epochs, patience, learning_rate, weight_decay, dropout)
     if actual_training != expected_training or seed != 11:
-        raise ValueError(
-            f"{dataset} formal training requires epochs/patience/lr/weight_decay/"
-            f"dropout={expected_training} and seed=11"
-        )
+        raise ValueError(f"{dataset} formal training requires epochs/patience/lr/weight_decay/" f"dropout={expected_training} and seed=11")
     if epochs <= 0 or patience <= 0:
         raise ValueError("epochs and patience must be positive")
     if not 0.0 <= dropout < 1.0:
         raise ValueError("dropout must be in [0, 1)")
     if not use_cuda:
-        raise RuntimeError(
-            "formal training requires CUDA; refusing to create a CPU checkpoint"
-        )
+        raise RuntimeError("formal training requires CUDA; refusing to create a CPU checkpoint")
     if not torch.cuda.is_available():
-        raise RuntimeError(
-            "CUDA training is required but torch.cuda.is_available() is false"
-        )
+        raise RuntimeError("CUDA training is required but torch.cuda.is_available() is false")
 
     device = torch.device("cuda" if use_cuda else "cpu")
     set_seed(seed)
     cache_root = (project_root / cfg.get("cache_root", "data/cache")).resolve()
-    tensors = load_dataset(
-        data_root,
-        dataset,
-        device,
-        cache_root=cache_root,
-        chain=chain,
-        range_bits=cfg_int(cfg, "range_bits", 12),
-    )
+    tensors = load_dataset(data_root, dataset, device, cache_root=cache_root, chain=chain, range_bits=cfg_int(cfg, "range_bits", 12))
     input_quantization = tensors.input_quantization_diagnostic
-    model = PlanetoidGAT(
-        tensors.num_features,
-        num_classes=tensors.num_classes,
-        hidden_profile=hidden_profile,
-        k_out=k_out,
-        quantization=chain,
-    ).to(device)
+    model = PlanetoidGAT(tensors.num_features, num_classes=tensors.num_classes, hidden_profile=hidden_profile, k_out=k_out, quantization=chain).to(device)
     optimizer = build_optimizer(model, learning_rate, weight_decay)
     metadata = checkpoint_metadata(
         dataset=dataset,
@@ -982,35 +722,17 @@ def main() -> None:
     for epoch in range(epochs):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        logits, _ = model(
-            tensors.features,
-            tensors.edge_src,
-            tensors.edge_dst,
-            dropout=dropout,
-            training=True,
-        )
+        logits, _ = model(tensors.features, tensors.edge_src, tensors.edge_dst, dropout=dropout, training=True)
         loss = masked_loss(logits, tensors.labels, tensors.train_mask)
         loss.backward()
         optimizer.step()
 
         model.eval()
         with torch.no_grad():
-            eval_logits, _ = model(
-                tensors.features,
-                tensors.edge_src,
-                tensors.edge_dst,
-                dropout=0.0,
-                training=False,
-            )
-            train_accuracy = masked_accuracy(
-                eval_logits, tensors.labels, tensors.train_mask
-            )
-            validation_loss = float(
-                masked_loss(eval_logits, tensors.labels, tensors.val_mask).item()
-            )
-            validation_accuracy = masked_accuracy(
-                eval_logits, tensors.labels, tensors.val_mask
-            )
+            eval_logits, _ = model(tensors.features, tensors.edge_src, tensors.edge_dst, dropout=0.0, training=False)
+            train_accuracy = masked_accuracy(eval_logits, tensors.labels, tensors.train_mask)
+            validation_loss = float(masked_loss(eval_logits, tensors.labels, tensors.val_mask).item())
+            validation_accuracy = masked_accuracy(eval_logits, tensors.labels, tensors.val_mask)
         epoch_metrics = {
             "epoch": float(epoch),
             "train_loss": float(loss.item()),
@@ -1027,10 +749,7 @@ def main() -> None:
         )
         if validation_loss < best_val_loss:
             best_val_loss = validation_loss
-            best_state = {
-                key: value.detach().cpu().clone()
-                for key, value in model.state_dict().items()
-            }
+            best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
             best_metrics = {
                 "best_epoch": epoch,
                 "train_loss": float(loss.item()),
@@ -1038,10 +757,7 @@ def main() -> None:
                 "val_loss": validation_loss,
                 "val_acc": validation_accuracy,
             }
-            torch.save(
-                {"bundle": metadata, "state_dict": best_state},
-                checkpoint_path,
-            )
+            torch.save({"bundle": metadata, "state_dict": best_state}, checkpoint_path)
             bad_epochs = 0
         else:
             bad_epochs += 1
@@ -1054,23 +770,10 @@ def main() -> None:
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
-        best_logits, _ = model(
-            tensors.features,
-            tensors.edge_src,
-            tensors.edge_dst,
-            dropout=0.0,
-            training=False,
-        )
-        final_test_accuracy = masked_accuracy(
-            best_logits, tensors.labels, tensors.test_mask
-        )
-        final_test_loss = float(
-            masked_loss(best_logits, tensors.labels, tensors.test_mask).item()
-        )
-    np.save(
-        output_dir / "qat_best_logits.npy",
-        best_logits.detach().cpu().numpy().astype(np.float32, copy=False),
-    )
+        best_logits, _ = model(tensors.features, tensors.edge_src, tensors.edge_dst, dropout=0.0, training=False)
+        final_test_accuracy = masked_accuracy(best_logits, tensors.labels, tensors.test_mask)
+        final_test_loss = float(masked_loss(best_logits, tensors.labels, tensors.test_mask).item())
+    np.save(output_dir / "qat_best_logits.npy", best_logits.detach().cpu().numpy().astype(np.float32, copy=False))
     (output_dir / "training_summary.json").write_text(
         json.dumps(
             {
@@ -1079,10 +782,7 @@ def main() -> None:
                 "device": str(device),
                 "wall_time_sec": time.perf_counter() - start,
                 "best_metrics": best_metrics,
-                "final_test_metrics": {
-                    "test_loss": final_test_loss,
-                    "test_acc": final_test_accuracy,
-                },
+                "final_test_metrics": {"test_loss": final_test_loss, "test_acc": final_test_accuracy},
                 "input_quantization_diagnostic": input_quantization,
                 "history_tail": history[-10:],
                 "checkpoint_metadata": metadata,

@@ -34,8 +34,7 @@ int main(int argc, char **argv)
                 throw std::runtime_error("unknown option: " + option);
         }
         if (config_path.empty())
-            throw std::runtime_error(
-                "usage: gatzk_registry_register --config <canonical.cfg> [--output <registry.txt>]");
+            throw std::runtime_error("usage: gatzk_registry_register --config <canonical.cfg> [--output <registry.txt>]");
 
         const auto config = gatzk::util::load_config(config_path);
         const auto context = gatzk::protocol::build_context(config, nullptr);
@@ -44,14 +43,11 @@ int main(int argc, char **argv)
         auto registry_path = std::filesystem::path(output_path);
         if (registry_path.is_relative())
             registry_path = std::filesystem::path(config.project_root) / registry_path;
-        const auto candidate_artifact =
-            gatzk::protocol::make_verifier_registration_artifact(context);
+        const auto candidate_artifact = gatzk::protocol::make_verifier_registration_artifact(context);
         gatzk::protocol::write_verifier_registry(context, registry_path.string());
 
-        std::cout << "candidate_registry_path=" << registry_path.string()
-                  << " registry_id=" << candidate_artifact.registry.registry_id
-                  << " candidate_registry_digest="
-                  << candidate_artifact.canonical_digest() << '\n';
+        std::cout << "candidate_registry_path=" << registry_path.string() << " registry_id=" << candidate_artifact.registry.registry_id
+                  << " candidate_registry_digest=" << candidate_artifact.canonical_digest() << '\n';
         std::cout << "The candidate digest must be reviewed and supplied as "
                      "verifier_registry_digest in the formal config before a run.\n";
         return 0;

@@ -36,36 +36,22 @@ namespace gatzk::protocol
             std::size_t size = 0;
         };
 
-        crypto::G1Point decode_canonical_g1(
-            const EncodedG1View encoded)
+        crypto::G1Point decode_canonical_g1(const EncodedG1View encoded)
         {
             if (encoded.data == nullptr || encoded.size == 0 || encoded.size > 256)
             {
-                throw std::runtime_error(
-                    "proof parser invalid G1 length");
+                throw std::runtime_error("proof parser invalid G1 length");
             }
 
-            auto point =
-                crypto::deserialize_g1(
-                    encoded.data,
-                    encoded.size);
+            auto point = crypto::deserialize_g1(encoded.data, encoded.size);
 
-            std::array<std::uint8_t, 256>
-                canonical{};
+            std::array<std::uint8_t, 256> canonical{};
 
-            const auto written =
-                crypto::serialize(
-                    point,
-                    canonical.data(),
-                    canonical.size());
+            const auto written = crypto::serialize(point, canonical.data(), canonical.size());
 
-            if (written != encoded.size || std::memcmp(
-                                               canonical.data(),
-                                               encoded.data,
-                                               encoded.size) != 0)
+            if (written != encoded.size || std::memcmp(canonical.data(), encoded.data, encoded.size) != 0)
             {
-                throw std::runtime_error(
-                    "proof parser rejected non-canonical G1 encoding");
+                throw std::runtime_error("proof parser rejected non-canonical G1 encoding");
             }
 
             return point;
@@ -100,22 +86,14 @@ namespace gatzk::protocol
                 raw(encoded.data(), encoded.size());
             }
 
-            void point(
-                const crypto::G1Point &point)
+            void point(const crypto::G1Point &point)
             {
-                std::array<std::uint8_t, 256>
-                    encoded{};
+                std::array<std::uint8_t, 256> encoded{};
 
-                const auto written =
-                    crypto::serialize(
-                        point,
-                        encoded.data(),
-                        encoded.size());
+                const auto written = crypto::serialize(point, encoded.data(), encoded.size());
 
                 u64(written);
-                raw(
-                    encoded.data(),
-                    written);
+                raw(encoded.data(), written);
             }
 
             void block(const std::string &tag, Writer payload)
@@ -125,7 +103,10 @@ namespace gatzk::protocol
                 raw(payload.bytes_.data(), payload.bytes_.size());
             }
 
-            std::vector<std::uint8_t> take() { return std::move(bytes_); }
+            std::vector<std::uint8_t> take()
+            {
+                return std::move(bytes_);
+            }
 
         private:
             std::vector<std::uint8_t> bytes_;
@@ -162,8 +143,7 @@ namespace gatzk::protocol
                 const auto value = u64();
                 if (value > std::numeric_limits<std::size_t>::max())
                 {
-                    throw std::runtime_error(
-                        std::string("proof parser invalid size: ") + label);
+                    throw std::runtime_error(std::string("proof parser invalid size: ") + label);
                 }
                 return static_cast<std::size_t>(value);
             }
@@ -185,23 +165,17 @@ namespace gatzk::protocol
                 constexpr std::size_t kScalarBytes = 32;
                 require(kScalarBytes);
 
-                const auto *begin =
-                    data_ + offset_;
+                const auto *begin = data_ + offset_;
 
                 algebra::FieldElement value;
 
                 try
                 {
-                    value =
-                        algebra::FieldElement::
-                            from_canonical_little_endian(
-                                begin,
-                                kScalarBytes);
+                    value = algebra::FieldElement::from_canonical_little_endian(begin, kScalarBytes);
                 }
                 catch (...)
                 {
-                    throw std::runtime_error(
-                        "proof parser rejected non-canonical field encoding");
+                    throw std::runtime_error("proof parser rejected non-canonical field encoding");
                 }
 
                 offset_ += kScalarBytes;
@@ -214,13 +188,10 @@ namespace gatzk::protocol
 
                 if (length == 0 || length > 256 || length > remaining())
                 {
-                    throw std::runtime_error(
-                        "proof parser invalid G1 length");
+                    throw std::runtime_error("proof parser invalid G1 length");
                 }
 
-                const auto encoded_size =
-                    static_cast<std::size_t>(
-                        length);
+                const auto encoded_size = static_cast<std::size_t>(length);
 
                 const EncodedG1View encoded{
                     .data = data_ + offset_,
@@ -260,7 +231,10 @@ namespace gatzk::protocol
                 }
             }
 
-            std::size_t remaining() const { return size_ - offset_; }
+            std::size_t remaining() const
+            {
+                return size_ - offset_;
+            }
 
         private:
             void require(std::size_t size)
@@ -276,11 +250,9 @@ namespace gatzk::protocol
             std::size_t offset_ = 0;
         };
 
-        std::vector<crypto::G1Point> decode_canonical_g1_batch(
-            const std::vector<EncodedG1View> &encodings)
+        std::vector<crypto::G1Point> decode_canonical_g1_batch(const std::vector<EncodedG1View> &encodings)
         {
-            std::vector<crypto::G1Point>
-                points(encodings.size());
+            std::vector<crypto::G1Point> points(encodings.size());
 
             if (encodings.empty())
             {
@@ -291,98 +263,56 @@ namespace gatzk::protocol
             // coordination window.  Use coarse bounded ranges so small proof
             // groups stay serial while large commitment blocks amortize
             // worker creation.
-            constexpr std::size_t
-                kMinimumPointsPerWorker = 16;
+            constexpr std::size_t kMinimumPointsPerWorker = 16;
 
-            constexpr std::size_t
-                kMaximumDecodeWorkers = 32;
+            constexpr std::size_t kMaximumDecodeWorkers = 32;
 
-            const auto hardware_workers =
-                std::max<std::size_t>(
-                    1,
-                    std::thread::
-                        hardware_concurrency());
+            const auto hardware_workers = std::max<std::size_t>(1, std::thread::hardware_concurrency());
 
-            const auto size_workers =
-                std::max<std::size_t>(
-                    1,
-                    (encodings.size() +
-                     kMinimumPointsPerWorker -
-                     1) /
-                        kMinimumPointsPerWorker);
+            const auto size_workers = std::max<std::size_t>(1, (encodings.size() + kMinimumPointsPerWorker - 1) / kMinimumPointsPerWorker);
 
-            const auto worker_count =
-                std::min<std::size_t>(
-                    {
-                        hardware_workers,
-                        kMaximumDecodeWorkers,
-                        size_workers,
-                    });
+            const auto worker_count = std::min<std::size_t>({
+                hardware_workers,
+                kMaximumDecodeWorkers,
+                size_workers,
+            });
 
-            const auto decode_range =
-                [&](std::size_t begin,
-                    std::size_t end)
+            const auto decode_range = [&](std::size_t begin, std::size_t end)
             {
-                for (std::size_t index = begin;
-                     index < end;
-                     ++index)
+                for (std::size_t index = begin; index < end; ++index)
                 {
-                    points[index] =
-                        decode_canonical_g1(
-                            encodings[index]);
+                    points[index] = decode_canonical_g1(encodings[index]);
                 }
             };
 
             if (worker_count <= 1)
             {
-                decode_range(
-                    0,
-                    encodings.size());
+                decode_range(0, encodings.size());
 
                 return points;
             }
 
-            const auto chunk_size =
-                (encodings.size() +
-                 worker_count - 1) /
-                worker_count;
+            const auto chunk_size = (encodings.size() + worker_count - 1) / worker_count;
 
-            std::vector<
-                std::future<void>>
-                futures;
+            std::vector<std::future<void>> futures;
 
-            futures.reserve(
-                worker_count);
+            futures.reserve(worker_count);
 
-            for (std::size_t worker = 0;
-                 worker < worker_count;
-                 ++worker)
+            for (std::size_t worker = 0; worker < worker_count; ++worker)
             {
-                const auto begin =
-                    worker *
-                    chunk_size;
+                const auto begin = worker * chunk_size;
 
-                const auto end =
-                    std::min(
-                        encodings.size(),
-                        begin +
-                            chunk_size);
+                const auto end = std::min(encodings.size(), begin + chunk_size);
 
                 if (begin >= end)
                 {
                     break;
                 }
 
-                futures.push_back(
-                    std::async(
-                        std::launch::async,
-                        decode_range,
-                        begin,
-                        end));
+                futures.push_back(std::async(std::launch::async, decode_range, begin, end));
             }
 
-            for (auto &future :
-                 futures)
+            for (auto &future : futures)
             {
                 future.get();
             }
@@ -390,8 +320,7 @@ namespace gatzk::protocol
             return points;
         }
 
-        template <typename Fn>
-        void metadata_fields(PublicMetadata &metadata, Fn &&fn)
+        template <typename Fn> void metadata_fields(PublicMetadata &metadata, Fn &&fn)
         {
             fn(metadata.protocol_name);
             fn(metadata.proof_nonce);
@@ -421,9 +350,7 @@ namespace gatzk::protocol
             fn(metadata.public_output);
         }
 
-        void write_point_group_opening(
-            Writer &writer,
-            const PointGroupOpening &opening)
+        void write_point_group_opening(Writer &writer, const PointGroupOpening &opening)
         {
             writer.string(opening.group_id);
             writer.string(opening.owner_block);
@@ -439,8 +366,7 @@ namespace gatzk::protocol
             EncodedG1View witness_encoding;
         };
 
-        EncodedPointGroupOpening read_encoded_point_group_opening(
-            Reader &reader)
+        EncodedPointGroupOpening read_encoded_point_group_opening(Reader &reader)
         {
             return EncodedPointGroupOpening{
                 .group_id = reader.string(),
@@ -450,8 +376,7 @@ namespace gatzk::protocol
             };
         }
 
-        std::vector<PointGroupOpening> decode_point_group_openings(
-            std::vector<EncodedPointGroupOpening> encoded)
+        std::vector<PointGroupOpening> decode_point_group_openings(std::vector<EncodedPointGroupOpening> encoded)
         {
             std::vector<EncodedG1View> encodings;
             encodings.reserve(encoded.size());
@@ -482,9 +407,7 @@ namespace gatzk::protocol
             return static_cast<PayloadValueKind>(raw);
         }
 
-        void write_named_commitments(
-            Writer &writer,
-            const std::vector<std::pair<std::string, crypto::Commitment>> &commitments)
+        void write_named_commitments(Writer &writer, const std::vector<std::pair<std::string, crypto::Commitment>> &commitments)
         {
             writer.u64(commitments.size());
             for (const auto &[name, commitment] : commitments)
@@ -502,122 +425,74 @@ namespace gatzk::protocol
 
         struct EncodedBindingCommitments
         {
-            std::vector<EncodedG1View>
-                model_reblind_encodings;
+            std::vector<EncodedG1View> model_reblind_encodings;
 
-            EncodedNamedCommitments
-                view_commitments;
+            EncodedNamedCommitments view_commitments;
 
-            EncodedNamedCommitments
-                view_logup_commitments;
+            EncodedNamedCommitments view_logup_commitments;
 
-            EncodedNamedCommitments
-                aggregation_commitments;
+            EncodedNamedCommitments aggregation_commitments;
 
-            EncodedNamedCommitments
-                basis_commitments;
+            EncodedNamedCommitments basis_commitments;
 
-            EncodedNamedCommitments
-                crpc_commitments;
+            EncodedNamedCommitments crpc_commitments;
 
-            EncodedNamedCommitments
-                relation_commitments;
+            EncodedNamedCommitments relation_commitments;
         };
 
-        EncodedNamedCommitments
-        read_encoded_named_commitments(
-            Reader &reader)
+        EncodedNamedCommitments read_encoded_named_commitments(Reader &reader)
         {
-            const auto count =
-                reader.count(
-                    "commitments");
+            const auto count = reader.count("commitments");
 
-            EncodedNamedCommitments
-                encoded;
+            EncodedNamedCommitments encoded;
 
-            encoded.names.reserve(
-                count);
+            encoded.names.reserve(count);
 
-            encoded.encodings.reserve(
-                count);
+            encoded.encodings.reserve(count);
 
-            for (std::size_t i = 0;
-                 i < count;
-                 ++i)
+            for (std::size_t i = 0; i < count; ++i)
             {
-                encoded.names.push_back(
-                    reader.string());
+                encoded.names.push_back(reader.string());
 
-                encoded.encodings.push_back(
-                    reader.point_encoding());
+                encoded.encodings.push_back(reader.point_encoding());
             }
 
             return encoded;
         }
 
-        std::vector<
-            std::pair<
-                std::string,
-                crypto::Commitment>>
-        decode_named_commitments(
-            EncodedNamedCommitments encoded)
+        std::vector<std::pair<std::string, crypto::Commitment>> decode_named_commitments(EncodedNamedCommitments encoded)
         {
-            if (encoded.names.size() !=
-                encoded.encodings.size())
+            if (encoded.names.size() != encoded.encodings.size())
             {
-                throw std::runtime_error(
-                    "proof parser encoded commitment shape mismatch");
+                throw std::runtime_error("proof parser encoded commitment shape mismatch");
             }
 
-            auto points =
-                decode_canonical_g1_batch(
-                    encoded.encodings);
+            auto points = decode_canonical_g1_batch(encoded.encodings);
 
-            std::vector<
-                std::pair<
-                    std::string,
-                    crypto::Commitment>>
-                out;
+            std::vector<std::pair<std::string, crypto::Commitment>> out;
 
-            out.reserve(
-                encoded.names.size());
+            out.reserve(encoded.names.size());
 
-            for (std::size_t i = 0;
-                 i < encoded.names.size();
-                 ++i)
+            for (std::size_t i = 0; i < encoded.names.size(); ++i)
             {
-                crypto::Commitment
-                    commitment;
+                crypto::Commitment commitment;
 
-                commitment.name =
-                    encoded.names[i];
+                commitment.name = encoded.names[i];
 
-                commitment.point =
-                    std::move(
-                        points[i]);
+                commitment.point = std::move(points[i]);
 
-                out.push_back(
-                    {
-                        std::move(
-                            encoded.names[i]),
-                        std::move(
-                            commitment),
-                    });
+                out.push_back({
+                    std::move(encoded.names[i]),
+                    std::move(commitment),
+                });
             }
 
             return out;
         }
 
-        std::vector<
-            std::pair<
-                std::string,
-                crypto::Commitment>>
-        read_named_commitments(
-            Reader &reader)
+        std::vector<std::pair<std::string, crypto::Commitment>> read_named_commitments(Reader &reader)
         {
-            return decode_named_commitments(
-                read_encoded_named_commitments(
-                    reader));
+            return decode_named_commitments(read_encoded_named_commitments(reader));
         }
 
         void write_optional_index(Writer &writer, const std::optional<std::size_t> &value)
@@ -679,8 +554,7 @@ namespace gatzk::protocol
             return out;
         }
 
-        template <typename NamedRange>
-        void require_unique_names(const NamedRange &values, const char *label)
+        template <typename NamedRange> void require_unique_names(const NamedRange &values, const char *label)
         {
             std::unordered_set<std::string> names;
             names.reserve(values.size());
@@ -702,77 +576,58 @@ namespace gatzk::protocol
             {
                 for (const auto &point : bundle.points)
                 {
-                    expected_domain_ids.insert(point_group_id(
-                        "Open_dom:" + domain, point));
+                    expected_domain_ids.insert(point_group_id("Open_dom:" + domain, point));
                 }
             }
-            if (!std::is_sorted(
-                    proof.opening_groups.begin(),
-                    proof.opening_groups.end(),
-                    [](const PointGroupOpening &lhs,
-                       const PointGroupOpening &rhs)
-                    { return lhs.point.to_string() < rhs.point.to_string(); }))
+            if (!std::is_sorted(proof.opening_groups.begin(), proof.opening_groups.end(),
+                                [](const PointGroupOpening &lhs, const PointGroupOpening &rhs) { return lhs.point.to_string() < rhs.point.to_string(); }))
             {
-                throw std::runtime_error(
-                    "proof parser point groups are not in canonical point order");
+                throw std::runtime_error("proof parser point groups are not in canonical point order");
             }
             for (const auto &opening : proof.opening_groups)
             {
-                if (opening.group_id != point_group_id(opening.owner_block, opening.point) || !unique_ids.insert(opening.group_id).second || !unique_points.insert(opening.point.to_string()).second)
+                if (opening.group_id != point_group_id(opening.owner_block, opening.point) || !unique_ids.insert(opening.group_id).second ||
+                    !unique_points.insert(opening.point.to_string()).second)
                 {
-                    throw std::runtime_error(
-                        "proof parser non-canonical or duplicate point group");
+                    throw std::runtime_error("proof parser non-canonical or duplicate point group");
                 }
                 if (opening.owner_block.rfind("Open_dom:", 0) == 0)
                 {
                     if (!expected_domain_ids.contains(opening.group_id))
                     {
-                        throw std::runtime_error(
-                            "proof parser unregistered domain point-group owner");
+                        throw std::runtime_error("proof parser unregistered domain point-group owner");
                     }
                 }
                 else if (opening.owner_block != "W_ext")
                 {
-                    throw std::runtime_error(
-                        "proof parser invalid point-group owner block");
+                    throw std::runtime_error("proof parser invalid point-group owner block");
                 }
             }
             for (const auto &[domain, bundle] : proof.domain_openings)
             {
                 for (const auto &point : bundle.points)
                 {
-                    const auto expected_id = point_group_id(
-                        "Open_dom:" + domain, point);
-                    const auto count = std::count_if(
-                        proof.opening_groups.begin(),
-                        proof.opening_groups.end(),
-                        [&](const PointGroupOpening &opening)
-                        { return opening.group_id == expected_id; });
+                    const auto expected_id = point_group_id("Open_dom:" + domain, point);
+                    const auto count = std::count_if(proof.opening_groups.begin(), proof.opening_groups.end(),
+                                                     [&](const PointGroupOpening &opening) { return opening.group_id == expected_id; });
                     if (count != 1)
                     {
-                        throw std::runtime_error(
-                            "proof parser domain point lacks its unique owner/witness");
+                        throw std::runtime_error("proof parser domain point lacks its unique owner/witness");
                     }
                 }
             }
-            const auto actual_domain_count = static_cast<std::size_t>(std::count_if(
-                proof.opening_groups.begin(),
-                proof.opening_groups.end(),
-                [](const PointGroupOpening &opening)
-                { return opening.owner_block.rfind("Open_dom:", 0) == 0; }));
+            const auto actual_domain_count =
+                static_cast<std::size_t>(std::count_if(proof.opening_groups.begin(), proof.opening_groups.end(),
+                                                       [](const PointGroupOpening &opening) { return opening.owner_block.rfind("Open_dom:", 0) == 0; }));
             if (actual_domain_count != expected_domain_ids.size())
             {
-                throw std::runtime_error(
-                    "proof parser domain point-group owner count mismatch");
+                throw std::runtime_error("proof parser domain point-group owner count mismatch");
             }
         }
 
         bool proof_contains_prover_material(const Proof &proof)
         {
-            const auto has_material = [](const crypto::Commitment &commitment)
-            {
-                return commitment.opening_polynomial != nullptr;
-            };
+            const auto has_material = [](const crypto::Commitment &commitment) { return commitment.opening_polynomial != nullptr; };
             for (const auto &[name, commitment] : proof.dynamic_commitments)
             {
                 (void)name;
@@ -790,13 +645,8 @@ namespace gatzk::protocol
                 for (const auto &reblind : subproof.model_reblinds)
                     if (has_material(reblind.proof_local_commitment) || has_material(reblind.blinder_commitment))
                         return true;
-                for (const auto *group : {
-                         &subproof.view_commitments,
-                         &subproof.view_logup_commitments,
-                         &subproof.aggregation_commitments,
-                         &subproof.basis_commitments,
-                         &subproof.crpc_commitments,
-                         &subproof.relation_commitments})
+                for (const auto *group : {&subproof.view_commitments, &subproof.view_logup_commitments, &subproof.aggregation_commitments,
+                                          &subproof.basis_commitments, &subproof.crpc_commitments, &subproof.relation_commitments})
                     for (const auto &[name, commitment] : *group)
                     {
                         (void)name;
@@ -807,493 +657,309 @@ namespace gatzk::protocol
             return false;
         }
 
-        void require_exact_pi_bind_shape(
-            const ProtocolContext &context,
-            const Proof &proof,
-            const std::vector<BindingRelationMeta> &expected_meta)
+        void require_exact_pi_bind_shape(const ProtocolContext &context, const Proof &proof, const std::vector<BindingRelationMeta> &expected_meta)
         {
             if (proof.pi_bind.subproofs.size() != expected_meta.size())
-                throw std::runtime_error(
-                    "proof parser Pi_bind instance subproof count mismatch");
+                throw std::runtime_error("proof parser Pi_bind instance subproof count mismatch");
 
             for (std::size_t index = 0; index < expected_meta.size(); ++index)
             {
                 const auto &subproof = proof.pi_bind.subproofs[index];
                 const auto &meta = expected_meta[index];
                 if (!(subproof.relation_meta == meta))
-                    throw std::runtime_error(
-                        "proof parser Pi_bind instance RelationMeta mismatch");
+                    throw std::runtime_error("proof parser Pi_bind instance RelationMeta mismatch");
 
                 std::vector<std::pair<std::string, std::string>> expected_models;
                 if (meta.object_kind == "hidden")
                 {
                     const auto layer = meta.layer_id.value() - 1;
                     const auto head = meta.head_id.value();
-                    const auto width =
-                        context.config.hidden_profile.at(layer).head_dim;
+                    const auto width = context.config.hidden_profile.at(layer).head_dim;
                     for (std::size_t column = 0; column < width; ++column)
-                        expected_models.push_back({hidden_weight_column_label(layer, head, column),
-                                                   context.domains.in->name});
-                    expected_models.push_back({hidden_src_label(layer, head),
-                                               context.domains.d->name});
-                    expected_models.push_back({hidden_dst_label(layer, head),
-                                               context.domains.d->name});
+                        expected_models.push_back({hidden_weight_column_label(layer, head, column), context.domains.in->name});
+                    expected_models.push_back({hidden_src_label(layer, head), context.domains.d->name});
+                    expected_models.push_back({hidden_dst_label(layer, head), context.domains.d->name});
                 }
                 else if (meta.object_kind == "output")
                 {
                     const auto head = meta.head_id.value();
-                    for (std::size_t column = 0;
-                         column < context.local.num_classes; ++column)
-                        expected_models.push_back({output_weight_column_label(head, column),
-                                                   context.domains.cat->name});
+                    for (std::size_t column = 0; column < context.local.num_classes; ++column)
+                        expected_models.push_back({output_weight_column_label(head, column), context.domains.cat->name});
                     expected_models.push_back({output_src_label(head), context.domains.c->name});
                     expected_models.push_back({output_dst_label(head), context.domains.c->name});
                     expected_models.push_back({output_bias_label(head), context.domains.c->name});
                 }
                 if (subproof.model_reblinds.size() != expected_models.size())
-                    throw std::runtime_error(
-                        "proof parser Pi_bind model-reblind count mismatch");
-                for (std::size_t model = 0;
-                     model < expected_models.size(); ++model)
+                    throw std::runtime_error("proof parser Pi_bind model-reblind count mismatch");
+                for (std::size_t model = 0; model < expected_models.size(); ++model)
                 {
                     const auto &[anchor, domain] = expected_models[model];
                     const auto &actual = subproof.model_reblinds[model];
-                    if (actual.object_id != anchor || actual.domain != domain || actual.vk_model_anchor.object_id != anchor || actual.proof_local_commitment.name != model_proof_local_label(anchor) || actual.blinder_commitment.name != model_reblind_witness_label(anchor) || actual.blinder_commitment.point == crypto::g1_zero())
+                    if (actual.object_id != anchor || actual.domain != domain || actual.vk_model_anchor.object_id != anchor ||
+                        actual.proof_local_commitment.name != model_proof_local_label(anchor) ||
+                        actual.blinder_commitment.name != model_reblind_witness_label(anchor) || actual.blinder_commitment.point == crypto::g1_zero())
                     {
-                        throw std::runtime_error(
-                            "proof parser Pi_bind model-reblind shape mismatch");
+                        throw std::runtime_error("proof parser Pi_bind model-reblind shape mismatch");
                     }
                 }
 
                 std::vector<std::string> expected_canonical_references;
                 std::vector<std::string> expected_canonical_commitments;
-                std::vector<std::tuple<
-                    std::string, std::string, std::size_t,
-                    PayloadValueKind>>
-                    expected_canonical_evaluations;
+                std::vector<std::tuple<std::string, std::string, std::size_t, PayloadValueKind>> expected_canonical_evaluations;
                 for (const auto &matrix : meta.canonical_matrices)
                 {
-                    expected_canonical_references.push_back(
-                        matrix.matrix_object);
+                    expected_canonical_references.push_back(matrix.matrix_object);
                     for (const auto &column : matrix.column_objects)
                     {
                         expected_canonical_commitments.push_back(column);
-                        expected_canonical_evaluations.push_back({column, "N", 2,
-                                                                  PayloadValueKind::MaskedPrivateValue});
+                        expected_canonical_evaluations.push_back({column, "N", 2, PayloadValueKind::MaskedPrivateValue});
                     }
-                    expected_canonical_commitments.push_back(
-                        matrix.compressed_object);
-                    expected_canonical_evaluations.push_back({matrix.compressed_object, "N", 2,
-                                                              PayloadValueKind::MaskedPrivateValue});
+                    expected_canonical_commitments.push_back(matrix.compressed_object);
+                    expected_canonical_evaluations.push_back({matrix.compressed_object, "N", 2, PayloadValueKind::MaskedPrivateValue});
                 }
                 const auto canonical_references_match = [&]
                 {
-                    return subproof.view_references.size() >= expected_canonical_references.size() && std::equal(
-                                                                                                          subproof.view_references.begin(),
-                                                                                                          subproof.view_references.begin() + static_cast<std::ptrdiff_t>(
-                                                                                                                                                 expected_canonical_references.size()),
-                                                                                                          expected_canonical_references.begin(),
-                                                                                                          [](const MetadataReference &actual,
-                                                                                                             const std::string &expected)
-                                                                                                          { return actual.object_id == expected; });
+                    return subproof.view_references.size() >= expected_canonical_references.size() &&
+                           std::equal(subproof.view_references.begin(),
+                                      subproof.view_references.begin() + static_cast<std::ptrdiff_t>(expected_canonical_references.size()),
+                                      expected_canonical_references.begin(),
+                                      [](const MetadataReference &actual, const std::string &expected) { return actual.object_id == expected; });
                 };
                 const auto canonical_commitments_match = [&]
                 {
-                    return subproof.view_commitments.size() == expected_canonical_commitments.size() && std::equal(
-                                                                                                            subproof.view_commitments.begin(),
-                                                                                                            subproof.view_commitments.end(),
-                                                                                                            expected_canonical_commitments.begin(),
-                                                                                                            [](const auto &actual,
-                                                                                                               const std::string &expected)
-                                                                                                            { return actual.first == expected; });
+                    return subproof.view_commitments.size() == expected_canonical_commitments.size() &&
+                           std::equal(subproof.view_commitments.begin(), subproof.view_commitments.end(), expected_canonical_commitments.begin(),
+                                      [](const auto &actual, const std::string &expected) { return actual.first == expected; });
                 };
                 std::vector<std::string> expected_aggregation_commitments;
-                std::vector<std::tuple<
-                    std::string, std::string, std::size_t,
-                    PayloadValueKind>>
-                    expected_aggregation_relation_evaluations;
+                std::vector<std::tuple<std::string, std::string, std::size_t, PayloadValueKind>> expected_aggregation_relation_evaluations;
                 std::vector<std::string> expected_route_commitments;
                 for (const auto &route : meta.route_terminal_relations)
                 {
-                    expected_route_commitments.push_back(
-                        route.shifted_accumulator_object);
-                    expected_aggregation_relation_evaluations.push_back({route.shifted_accumulator_object + ":u_rel",
-                                                                         "relation", 1,
-                                                                         PayloadValueKind::MaskedPrivateValue});
+                    expected_route_commitments.push_back(route.shifted_accumulator_object);
+                    expected_aggregation_relation_evaluations.push_back(
+                        {route.shifted_accumulator_object + ":u_rel", "relation", 1, PayloadValueKind::MaskedPrivateValue});
                 }
-                std::vector<std::tuple<
-                    std::string, std::string, std::size_t,
-                    PayloadValueKind>>
-                    expected_aggregation_domain_evaluations;
+                std::vector<std::tuple<std::string, std::string, std::size_t, PayloadValueKind>> expected_aggregation_domain_evaluations;
                 std::vector<std::string> expected_aggregation_openings;
-                std::unordered_set<std::string>
-                    expected_aggregation_opening_ids;
+                std::unordered_set<std::string> expected_aggregation_opening_ids;
                 const auto append_aggregation_opening = [&](std::string value)
                 {
-                    if (expected_aggregation_opening_ids
-                            .insert(value)
-                            .second)
+                    if (expected_aggregation_opening_ids.insert(value).second)
                     {
-                        expected_aggregation_openings.push_back(
-                            std::move(value));
+                        expected_aggregation_openings.push_back(std::move(value));
                     }
                 };
                 for (const auto &route : meta.route_terminal_relations)
                 {
-                    const auto challenge = proof.challenges.find(
-                        route.challenge_label);
+                    const auto challenge = proof.challenges.find(route.challenge_label);
                     if (challenge == proof.challenges.end())
-                        throw std::runtime_error(
-                            "proof parser Pi_bind missing route terminal challenge");
-                    append_aggregation_opening(
-                        opening_group_reference(
-                            context, proof.challenges, challenge->second));
-                    append_aggregation_opening(
-                        opening_group_reference(
-                            context,
-                            proof.challenges,
-                            challenge->second + route.terminal_delta));
-                    append_aggregation_opening(
-                        opening_group_reference(
-                            context,
-                            proof.challenges,
-                            route.node_terminal_point));
+                        throw std::runtime_error("proof parser Pi_bind missing route terminal challenge");
+                    append_aggregation_opening(opening_group_reference(context, proof.challenges, challenge->second));
+                    append_aggregation_opening(opening_group_reference(context, proof.challenges, challenge->second + route.terminal_delta));
+                    append_aggregation_opening(opening_group_reference(context, proof.challenges, route.node_terminal_point));
                 }
                 for (const auto &aggregation : meta.aggregation_relations)
                 {
-                    expected_aggregation_commitments.insert(
-                        expected_aggregation_commitments.end(),
-                        aggregation.commitment_order.begin(),
-                        aggregation.commitment_order.end());
-                    for (const auto *route : {
-                             &aggregation.source_route,
-                             &aggregation.target_route})
+                    expected_aggregation_commitments.insert(expected_aggregation_commitments.end(), aggregation.commitment_order.begin(),
+                                                            aggregation.commitment_order.end());
+                    for (const auto *route : {&aggregation.source_route, &aggregation.target_route})
                     {
-                        expected_aggregation_relation_evaluations.push_back({route->shifted_accumulator_object + ":u_rel",
-                                                                             "relation", 1,
-                                                                             PayloadValueKind::MaskedPrivateValue});
-                        const auto challenge = proof.challenges.find(
-                            route->terminal_challenge_label);
+                        expected_aggregation_relation_evaluations.push_back(
+                            {route->shifted_accumulator_object + ":u_rel", "relation", 1, PayloadValueKind::MaskedPrivateValue});
+                        const auto challenge = proof.challenges.find(route->terminal_challenge_label);
                         if (challenge == proof.challenges.end())
-                            throw std::runtime_error(
-                                "proof parser Pi_bind missing aggregation terminal challenge");
-                        append_aggregation_opening(
-                            opening_group_reference(
-                                context,
-                                proof.challenges,
-                                challenge->second));
-                        append_aggregation_opening(
-                            opening_group_reference(
-                                context,
-                                proof.challenges,
-                                challenge->second + route->terminal_delta));
-                        append_aggregation_opening(
-                            opening_group_reference(
-                                context,
-                                proof.challenges,
-                                route->node_terminal_point));
+                            throw std::runtime_error("proof parser Pi_bind missing aggregation terminal challenge");
+                        append_aggregation_opening(opening_group_reference(context, proof.challenges, challenge->second));
+                        append_aggregation_opening(opening_group_reference(context, proof.challenges, challenge->second + route->terminal_delta));
+                        append_aggregation_opening(opening_group_reference(context, proof.challenges, route->node_terminal_point));
                     }
-                    for (const auto *object : {
-                             &aggregation.source_node_object,
-                             &aggregation.target_node_object})
-                        expected_aggregation_domain_evaluations.push_back({*object, aggregation.node_domain, 2,
-                                                                           PayloadValueKind::MaskedPrivateValue});
-                    for (const auto *route : {
-                             &aggregation.source_route,
-                             &aggregation.target_route})
-                        for (const auto *object : {
-                                 &route->table_object,
-                                 &route->node_inverse_object,
-                                 &route->node_accumulator_object})
-                            expected_aggregation_domain_evaluations.push_back({*object, aggregation.node_domain, 2,
-                                                                               PayloadValueKind::MaskedPrivateValue});
-                    for (const auto *object : {
-                             &aggregation.source_edge_object,
-                             &aggregation.target_edge_object,
-                             &aggregation.product_object,
-                             &aggregation.psq_object})
-                        expected_aggregation_domain_evaluations.push_back({*object, aggregation.edge_domain, 2,
-                                                                           PayloadValueKind::MaskedPrivateValue});
-                    for (const auto *route : {
-                             &aggregation.source_route,
-                             &aggregation.target_route})
-                        for (const auto *object : {
-                                 &route->query_object,
-                                 &route->edge_inverse_object,
-                                 &route->edge_accumulator_object})
-                            expected_aggregation_domain_evaluations.push_back({*object, aggregation.edge_domain, 2,
-                                                                               PayloadValueKind::MaskedPrivateValue});
+                    for (const auto *object : {&aggregation.source_node_object, &aggregation.target_node_object})
+                        expected_aggregation_domain_evaluations.push_back({*object, aggregation.node_domain, 2, PayloadValueKind::MaskedPrivateValue});
+                    for (const auto *route : {&aggregation.source_route, &aggregation.target_route})
+                        for (const auto *object : {&route->table_object, &route->node_inverse_object, &route->node_accumulator_object})
+                            expected_aggregation_domain_evaluations.push_back({*object, aggregation.node_domain, 2, PayloadValueKind::MaskedPrivateValue});
+                    for (const auto *object :
+                         {&aggregation.source_edge_object, &aggregation.target_edge_object, &aggregation.product_object, &aggregation.psq_object})
+                        expected_aggregation_domain_evaluations.push_back({*object, aggregation.edge_domain, 2, PayloadValueKind::MaskedPrivateValue});
+                    for (const auto *route : {&aggregation.source_route, &aggregation.target_route})
+                        for (const auto *object : {&route->query_object, &route->edge_inverse_object, &route->edge_accumulator_object})
+                            expected_aggregation_domain_evaluations.push_back({*object, aggregation.edge_domain, 2, PayloadValueKind::MaskedPrivateValue});
                 }
                 const bool aggregation_commitments_match =
-                    subproof.aggregation_commitments.size() == expected_aggregation_commitments.size() && std::equal(
-                                                                                                              subproof.aggregation_commitments.begin(),
-                                                                                                              subproof.aggregation_commitments.end(),
-                                                                                                              expected_aggregation_commitments.begin(),
-                                                                                                              [](const auto &actual, const std::string &expected)
-                                                                                                              { return actual.first == expected; });
+                    subproof.aggregation_commitments.size() == expected_aggregation_commitments.size() &&
+                    std::equal(subproof.aggregation_commitments.begin(), subproof.aggregation_commitments.end(), expected_aggregation_commitments.begin(),
+                               [](const auto &actual, const std::string &expected) { return actual.first == expected; });
                 if (meta.object_kind != "output")
                 {
-                    auto expected_evaluations =
-                        expected_aggregation_relation_evaluations;
-                    expected_evaluations.insert(
-                        expected_evaluations.end(),
-                        expected_canonical_evaluations.begin(),
-                        expected_canonical_evaluations.end());
-                    expected_evaluations.insert(
-                        expected_evaluations.end(),
-                        expected_aggregation_domain_evaluations.begin(),
-                        expected_aggregation_domain_evaluations.end());
-                    const bool evaluations_match =
-                        subproof.evaluations.size() == expected_evaluations.size() && std::equal(
-                                                                                          subproof.evaluations.begin(),
-                                                                                          subproof.evaluations.end(),
-                                                                                          expected_evaluations.begin(),
-                                                                                          [](const BindingEvaluation &actual,
-                                                                                             const auto &expected)
-                                                                                          {
-                                                                                              return actual.object_id == std::get<0>(expected) && actual.domain == std::get<1>(expected) && actual.values.size() == std::get<2>(expected) && actual.kind == std::get<3>(expected);
-                                                                                          });
+                    auto expected_evaluations = expected_aggregation_relation_evaluations;
+                    expected_evaluations.insert(expected_evaluations.end(), expected_canonical_evaluations.begin(), expected_canonical_evaluations.end());
+                    expected_evaluations.insert(expected_evaluations.end(), expected_aggregation_domain_evaluations.begin(),
+                                                expected_aggregation_domain_evaluations.end());
+                    const bool evaluations_match = subproof.evaluations.size() == expected_evaluations.size() &&
+                                                   std::equal(subproof.evaluations.begin(), subproof.evaluations.end(), expected_evaluations.begin(),
+                                                              [](const BindingEvaluation &actual, const auto &expected)
+                                                              {
+                                                                  return actual.object_id == std::get<0>(expected) && actual.domain == std::get<1>(expected) &&
+                                                                         actual.values.size() == std::get<2>(expected) && actual.kind == std::get<3>(expected);
+                                                              });
                     auto expected_openings = expected_aggregation_openings;
                     if (!meta.canonical_matrices.empty())
                     {
                         const auto point = proof.challenges.at("z_N");
-                        expected_openings.push_back(
-                            "Open_dom:N:" + point.to_string());
-                        expected_openings.push_back(
-                            "Open_dom:N:" + (point * context.domains.n->omega).to_string());
+                        expected_openings.push_back("Open_dom:N:" + point.to_string());
+                        expected_openings.push_back("Open_dom:N:" + (point * context.domains.n->omega).to_string());
                     }
                     if (!meta.aggregation_relations.empty())
                     {
                         const auto point = proof.challenges.at("z_edge");
-                        expected_openings.push_back(
-                            "Open_dom:edge:" + point.to_string());
-                        expected_openings.push_back(
-                            "Open_dom:edge:" + (point * context.domains.edge->omega).to_string());
+                        expected_openings.push_back("Open_dom:edge:" + point.to_string());
+                        expected_openings.push_back("Open_dom:edge:" + (point * context.domains.edge->omega).to_string());
                     }
                     const bool opening_references_match =
-                        subproof.opening_references.size() == expected_openings.size() && std::equal(
-                                                                                              subproof.opening_references.begin(),
-                                                                                              subproof.opening_references.end(),
-                                                                                              expected_openings.begin(),
-                                                                                              [](const MetadataReference &actual,
-                                                                                                 const std::string &expected)
-                                                                                              { return actual.object_id == expected; });
-                    if (!canonical_references_match() || subproof.view_references.size() != expected_canonical_references.size() || !canonical_commitments_match() || !subproof.view_logup_commitments.empty() || !aggregation_commitments_match || !subproof.basis_commitments.empty() || !subproof.crpc_commitments.empty() || subproof.relation_commitments.size() != expected_route_commitments.size() || !std::equal(subproof.relation_commitments.begin(), subproof.relation_commitments.end(), expected_route_commitments.begin(), [](const auto &actual, const std::string &expected)
-                                                                                                                                                                                                                                                                                                                                                                                                                          { return actual.first == expected; }) ||
+                        subproof.opening_references.size() == expected_openings.size() &&
+                        std::equal(subproof.opening_references.begin(), subproof.opening_references.end(), expected_openings.begin(),
+                                   [](const MetadataReference &actual, const std::string &expected) { return actual.object_id == expected; });
+                    if (!canonical_references_match() || subproof.view_references.size() != expected_canonical_references.size() ||
+                        !canonical_commitments_match() || !subproof.view_logup_commitments.empty() || !aggregation_commitments_match ||
+                        !subproof.basis_commitments.empty() || !subproof.crpc_commitments.empty() ||
+                        subproof.relation_commitments.size() != expected_route_commitments.size() ||
+                        !std::equal(subproof.relation_commitments.begin(), subproof.relation_commitments.end(), expected_route_commitments.begin(),
+                                    [](const auto &actual, const std::string &expected) { return actual.first == expected; }) ||
                         !evaluations_match || !opening_references_match)
                     {
-                        throw std::runtime_error(
-                            "proof parser Pi_bind unexpected non-output payload");
+                        throw std::runtime_error("proof parser Pi_bind unexpected non-output payload");
                     }
                     continue;
                 }
 
                 const auto head = meta.head_id.value();
                 if (meta.indexed_views.size() != 1)
-                    throw std::runtime_error(
-                        "proof parser Pi_bind output relation shape mismatch");
+                    throw std::runtime_error("proof parser Pi_bind output relation shape mismatch");
                 const auto &view = meta.indexed_views.front();
-                const auto *relation_ptr = find_unique_shift_relation_by_kind(
-                    meta, "output-bias-terminal");
+                const auto *relation_ptr = find_unique_shift_relation_by_kind(meta, "output-bias-terminal");
                 if (relation_ptr == nullptr)
-                    throw std::runtime_error(
-                        "proof parser Pi_bind output bias relation is not unique");
+                    throw std::runtime_error("proof parser Pi_bind output bias relation is not unique");
                 const auto &relation = *relation_ptr;
                 const bool same_point = relation.configured_degrees.empty();
                 if (meta.coefficient_basis_relations.size() != 1)
-                    throw std::runtime_error(
-                        "proof parser Pi_bind coefficient basis relation is not unique");
+                    throw std::runtime_error("proof parser Pi_bind coefficient basis relation is not unique");
                 const auto &basis = meta.coefficient_basis_relations.front();
                 auto expected_view_references = expected_canonical_references;
-                expected_view_references.insert(
-                    expected_view_references.end(),
-                    {
-                        view.canonical_object,
-                        view.view_object,
-                        "public:" + view.canonical_selector_id,
-                        "public:" + view.query_selector_id,
-                    });
-                if (subproof.view_references.size() != expected_view_references.size() || !std::equal(
-                                                                                              subproof.view_references.begin(),
-                                                                                              subproof.view_references.end(),
-                                                                                              expected_view_references.begin(),
-                                                                                              [](const MetadataReference &actual,
-                                                                                                 const std::string &expected)
-                                                                                              { return actual.object_id == expected; }))
+                expected_view_references.insert(expected_view_references.end(), {
+                                                                                    view.canonical_object,
+                                                                                    view.view_object,
+                                                                                    "public:" + view.canonical_selector_id,
+                                                                                    "public:" + view.query_selector_id,
+                                                                                });
+                if (subproof.view_references.size() != expected_view_references.size() ||
+                    !std::equal(subproof.view_references.begin(), subproof.view_references.end(), expected_view_references.begin(),
+                                [](const MetadataReference &actual, const std::string &expected) { return actual.object_id == expected; }))
                 {
-                    throw std::runtime_error(
-                        "proof parser Pi_bind Com_view reference shape mismatch");
+                    throw std::runtime_error("proof parser Pi_bind Com_view reference shape mismatch");
                 }
-                if (!canonical_commitments_match() || !aggregation_commitments_match || !subproof.crpc_commitments.empty() || subproof.basis_commitments.size() != basis.commitment_order.size() || !std::equal(subproof.basis_commitments.begin(), subproof.basis_commitments.end(), basis.commitment_order.begin(), [](const auto &actual, const std::string &expected)
-                                                                                                                                                                                                                { return actual.first == expected; }) ||
-                    subproof.view_logup_commitments.size() != view.commitment_order.size() || !std::equal(subproof.view_logup_commitments.begin(), subproof.view_logup_commitments.end(), view.commitment_order.begin(), [](const auto &actual, const std::string &expected)
-                                                                                                          { return actual.first == expected; }) ||
-                    subproof.relation_commitments.size() != expected_route_commitments.size() + basis.chunks.size() + (same_point ? 0 : 1) || !std::equal(subproof.relation_commitments.begin(), subproof.relation_commitments.begin() + static_cast<std::ptrdiff_t>(expected_route_commitments.size()), expected_route_commitments.begin(), [](const auto &actual, const std::string &expected)
-                                                                                                                                                          { return actual.first == expected; }) ||
-                    (!same_point && subproof.relation_commitments[expected_route_commitments.size()].first != output_bias_view_label(head, "R_shifted")) || !std::equal(subproof.relation_commitments.end() - static_cast<std::ptrdiff_t>(basis.chunks.size()), subproof.relation_commitments.end(), basis.chunks.begin(), [](const auto &actual, const auto &chunk)
-                                                                                                                                                                        { return actual.first == chunk.shifted_accumulator_object; }))
+                if (!canonical_commitments_match() || !aggregation_commitments_match || !subproof.crpc_commitments.empty() ||
+                    subproof.basis_commitments.size() != basis.commitment_order.size() ||
+                    !std::equal(subproof.basis_commitments.begin(), subproof.basis_commitments.end(), basis.commitment_order.begin(),
+                                [](const auto &actual, const std::string &expected) { return actual.first == expected; }) ||
+                    subproof.view_logup_commitments.size() != view.commitment_order.size() ||
+                    !std::equal(subproof.view_logup_commitments.begin(), subproof.view_logup_commitments.end(), view.commitment_order.begin(),
+                                [](const auto &actual, const std::string &expected) { return actual.first == expected; }) ||
+                    subproof.relation_commitments.size() != expected_route_commitments.size() + basis.chunks.size() + (same_point ? 0 : 1) ||
+                    !std::equal(subproof.relation_commitments.begin(),
+                                subproof.relation_commitments.begin() + static_cast<std::ptrdiff_t>(expected_route_commitments.size()),
+                                expected_route_commitments.begin(), [](const auto &actual, const std::string &expected) { return actual.first == expected; }) ||
+                    (!same_point && subproof.relation_commitments[expected_route_commitments.size()].first != output_bias_view_label(head, "R_shifted")) ||
+                    !std::equal(subproof.relation_commitments.end() - static_cast<std::ptrdiff_t>(basis.chunks.size()), subproof.relation_commitments.end(),
+                                basis.chunks.begin(), [](const auto &actual, const auto &chunk) { return actual.first == chunk.shifted_accumulator_object; }))
                 {
-                    throw std::runtime_error(
-                        "proof parser Pi_bind commitment group shape mismatch");
+                    throw std::runtime_error("proof parser Pi_bind commitment group shape mismatch");
                 }
 
-                std::vector<std::tuple<
-                    std::string, std::string, std::size_t, PayloadValueKind>>
-                    expected_evaluations = {
-                        {output_bias_view_label(head, "m_can") + ":public_bind",
-                         "relation", 1, PayloadValueKind::PublicValue},
-                        {model_proof_local_label(output_bias_label(head)),
-                         "C", 2, PayloadValueKind::MaskedPrivateValue},
-                        {output_bias_view_label(head, "Table_can"),
-                         "C", 2, PayloadValueKind::MaskedPrivateValue},
-                        {output_bias_view_label(head, "m_can"),
-                         "C", 2, PayloadValueKind::PublicValue},
-                        {output_bias_view_label(head, "J_can"),
-                         "C", 2, PayloadValueKind::MaskedPrivateValue},
-                        {output_bias_view_label(head, "R_can"),
-                         "C", 2, PayloadValueKind::MaskedPrivateValue},
-                        {output_bias_view_label(head, "Query"),
-                         "edge", 2, PayloadValueKind::MaskedPrivateValue},
-                        {output_bias_view_label(head, "J_qry"),
-                         "edge", 2, PayloadValueKind::MaskedPrivateValue},
-                        {output_bias_view_label(head, "R_qry"),
-                         "edge", 2, PayloadValueKind::MaskedPrivateValue},
+                std::vector<std::tuple<std::string, std::string, std::size_t, PayloadValueKind>> expected_evaluations = {
+                    {output_bias_view_label(head, "m_can") + ":public_bind", "relation", 1, PayloadValueKind::PublicValue},
+                    {model_proof_local_label(output_bias_label(head)), "C", 2, PayloadValueKind::MaskedPrivateValue},
+                    {output_bias_view_label(head, "Table_can"), "C", 2, PayloadValueKind::MaskedPrivateValue},
+                    {output_bias_view_label(head, "m_can"), "C", 2, PayloadValueKind::PublicValue},
+                    {output_bias_view_label(head, "J_can"), "C", 2, PayloadValueKind::MaskedPrivateValue},
+                    {output_bias_view_label(head, "R_can"), "C", 2, PayloadValueKind::MaskedPrivateValue},
+                    {output_bias_view_label(head, "Query"), "edge", 2, PayloadValueKind::MaskedPrivateValue},
+                    {output_bias_view_label(head, "J_qry"), "edge", 2, PayloadValueKind::MaskedPrivateValue},
+                    {output_bias_view_label(head, "R_qry"), "edge", 2, PayloadValueKind::MaskedPrivateValue},
                 };
-                expected_evaluations.insert(
-                    expected_evaluations.begin(),
-                    expected_aggregation_relation_evaluations.begin(),
-                    expected_aggregation_relation_evaluations.end());
+                expected_evaluations.insert(expected_evaluations.begin(), expected_aggregation_relation_evaluations.begin(),
+                                            expected_aggregation_relation_evaluations.end());
                 if (!same_point)
-                    expected_evaluations.insert(
-                        expected_evaluations.begin() + static_cast<std::ptrdiff_t>(
-                                                           expected_aggregation_relation_evaluations.size()),
-                        {output_bias_view_label(head, "R_shifted") + ":u_rel",
-                         "relation", 1,
-                         PayloadValueKind::MaskedPrivateValue});
-                auto basis_eval_position = expected_evaluations.begin() + static_cast<std::ptrdiff_t>(
-                                                                              expected_aggregation_relation_evaluations.size() + (same_point ? 1 : 2));
+                    expected_evaluations.insert(expected_evaluations.begin() + static_cast<std::ptrdiff_t>(expected_aggregation_relation_evaluations.size()),
+                                                {output_bias_view_label(head, "R_shifted") + ":u_rel", "relation", 1, PayloadValueKind::MaskedPrivateValue});
+                auto basis_eval_position =
+                    expected_evaluations.begin() + static_cast<std::ptrdiff_t>(expected_aggregation_relation_evaluations.size() + (same_point ? 1 : 2));
                 for (const auto &chunk : basis.chunks)
-                    basis_eval_position = expected_evaluations.insert(
-                                              basis_eval_position,
-                                              {chunk.shifted_accumulator_object + ":u_rel",
-                                               "relation", 1,
-                                               PayloadValueKind::MaskedPrivateValue}) +
+                    basis_eval_position = expected_evaluations.insert(basis_eval_position, {chunk.shifted_accumulator_object + ":u_rel", "relation", 1,
+                                                                                            PayloadValueKind::MaskedPrivateValue}) +
                                           1;
                 for (const auto &chunk : basis.chunks)
                 {
-                    expected_evaluations.push_back({chunk.object_id, "edge", 2,
-                                                    PayloadValueKind::MaskedPrivateValue});
-                    expected_evaluations.push_back({chunk.accumulator_object, "edge", 2,
-                                                    PayloadValueKind::MaskedPrivateValue});
+                    expected_evaluations.push_back({chunk.object_id, "edge", 2, PayloadValueKind::MaskedPrivateValue});
+                    expected_evaluations.push_back({chunk.accumulator_object, "edge", 2, PayloadValueKind::MaskedPrivateValue});
                 }
-                expected_evaluations.insert(
-                    expected_evaluations.end(),
-                    expected_canonical_evaluations.begin(),
-                    expected_canonical_evaluations.end());
-                expected_evaluations.insert(
-                    expected_evaluations.end(),
-                    expected_aggregation_domain_evaluations.begin(),
-                    expected_aggregation_domain_evaluations.end());
-                if (subproof.evaluations.size() != expected_evaluations.size() || !std::equal(
-                                                                                      subproof.evaluations.begin(),
-                                                                                      subproof.evaluations.end(),
-                                                                                      expected_evaluations.begin(),
-                                                                                      [](const BindingEvaluation &actual, const auto &expected)
-                                                                                      {
-                                                                                          return actual.object_id == std::get<0>(expected) && actual.domain == std::get<1>(expected) && actual.values.size() == std::get<2>(expected) && actual.kind == std::get<3>(expected);
-                                                                                      }))
+                expected_evaluations.insert(expected_evaluations.end(), expected_canonical_evaluations.begin(), expected_canonical_evaluations.end());
+                expected_evaluations.insert(expected_evaluations.end(), expected_aggregation_domain_evaluations.begin(),
+                                            expected_aggregation_domain_evaluations.end());
+                if (subproof.evaluations.size() != expected_evaluations.size() ||
+                    !std::equal(subproof.evaluations.begin(), subproof.evaluations.end(), expected_evaluations.begin(),
+                                [](const BindingEvaluation &actual, const auto &expected)
+                                {
+                                    return actual.object_id == std::get<0>(expected) && actual.domain == std::get<1>(expected) &&
+                                           actual.values.size() == std::get<2>(expected) && actual.kind == std::get<3>(expected);
+                                }))
                 {
-                    throw std::runtime_error(
-                        "proof parser Pi_bind evaluation shape mismatch");
+                    throw std::runtime_error("proof parser Pi_bind evaluation shape mismatch");
                 }
 
-                const auto challenge_it = proof.challenges.find(
-                    relation.challenge_label);
+                const auto challenge_it = proof.challenges.find(relation.challenge_label);
                 if (challenge_it == proof.challenges.end())
-                    throw std::runtime_error(
-                        "proof parser Pi_bind missing relation challenge");
-                std::vector<std::string> expected_opening_references =
-                    expected_aggregation_openings;
+                    throw std::runtime_error("proof parser Pi_bind missing relation challenge");
+                std::vector<std::string> expected_opening_references = expected_aggregation_openings;
                 const auto append_unique = [&](std::string reference)
                 {
-                    if (std::find(
-                            expected_opening_references.begin(),
-                            expected_opening_references.end(), reference) == expected_opening_references.end())
-                        expected_opening_references.push_back(
-                            std::move(reference));
+                    if (std::find(expected_opening_references.begin(), expected_opening_references.end(), reference) == expected_opening_references.end())
+                        expected_opening_references.push_back(std::move(reference));
                 };
                 const auto y_rel = challenge_it->second;
                 if (same_point)
                 {
-                    append_unique(opening_group_reference(
-                        context, proof.challenges, y_rel));
-                    append_unique(
-                        opening_group_reference(
-                            context,
-                            proof.challenges,
-                            relation.canonical_points.front()));
+                    append_unique(opening_group_reference(context, proof.challenges, y_rel));
+                    append_unique(opening_group_reference(context, proof.challenges, relation.canonical_points.front()));
                 }
                 else
                 {
-                    append_unique(opening_group_reference(
-                        context, proof.challenges, y_rel));
-                    append_unique(
-                        opening_group_reference(
-                            context,
-                            proof.challenges,
-                            y_rel + relation.deltas.at(1)));
-                    append_unique(
-                        opening_group_reference(
-                            context,
-                            proof.challenges,
-                            relation.canonical_points.at(0)));
+                    append_unique(opening_group_reference(context, proof.challenges, y_rel));
+                    append_unique(opening_group_reference(context, proof.challenges, y_rel + relation.deltas.at(1)));
+                    append_unique(opening_group_reference(context, proof.challenges, relation.canonical_points.at(0)));
                 }
-                const auto gamma_it = proof.challenges.find(
-                    basis.gamma_challenge_label);
-                const auto basis_y_it = proof.challenges.find(
-                    basis.relation_challenge_label);
+                const auto gamma_it = proof.challenges.find(basis.gamma_challenge_label);
+                const auto basis_y_it = proof.challenges.find(basis.relation_challenge_label);
                 if (gamma_it == proof.challenges.end() || basis_y_it == proof.challenges.end())
-                    throw std::runtime_error(
-                        "proof parser Pi_bind missing coefficient basis challenge");
-                append_unique(
-                    opening_group_reference(
-                        context, proof.challenges, basis_y_it->second));
+                    throw std::runtime_error("proof parser Pi_bind missing coefficient basis challenge");
+                append_unique(opening_group_reference(context, proof.challenges, basis_y_it->second));
                 for (const auto &chunk : basis.chunks)
-                    append_unique(
-                        opening_group_reference(
-                            context,
-                            proof.challenges,
-                            basis_y_it->second + chunk.terminal_point - gamma_it->second));
-                append_unique(opening_group_reference(
-                    context, proof.challenges, gamma_it->second));
-                for (const auto &[domain, point, omega] :
-                     std::vector<std::tuple<std::string,
-                                            algebra::FieldElement, algebra::FieldElement>>{
-                         {"C", proof.challenges.at("z_C"),
-                          context.domains.c->omega},
-                         {"edge", proof.challenges.at("z_edge"),
-                          context.domains.edge->omega}})
+                    append_unique(opening_group_reference(context, proof.challenges, basis_y_it->second + chunk.terminal_point - gamma_it->second));
+                append_unique(opening_group_reference(context, proof.challenges, gamma_it->second));
+                for (const auto &[domain, point, omega] : std::vector<std::tuple<std::string, algebra::FieldElement, algebra::FieldElement>>{
+                         {"C", proof.challenges.at("z_C"), context.domains.c->omega}, {"edge", proof.challenges.at("z_edge"), context.domains.edge->omega}})
                 {
-                    append_unique(
-                        "Open_dom:" + domain + ":" + point.to_string());
-                    append_unique(
-                        "Open_dom:" + domain + ":" + (point * omega).to_string());
+                    append_unique("Open_dom:" + domain + ":" + point.to_string());
+                    append_unique("Open_dom:" + domain + ":" + (point * omega).to_string());
                 }
                 const auto n_point = proof.challenges.at("z_N");
-                append_unique(
-                    "Open_dom:N:" + n_point.to_string());
-                append_unique(
-                    "Open_dom:N:" + (n_point * context.domains.n->omega).to_string());
-                if (subproof.opening_references.size() != expected_opening_references.size() || !std::equal(
-                                                                                                    subproof.opening_references.begin(),
-                                                                                                    subproof.opening_references.end(),
-                                                                                                    expected_opening_references.begin(),
-                                                                                                    [](const MetadataReference &actual,
-                                                                                                       const std::string &expected)
-                                                                                                    { return actual.object_id == expected; }))
+                append_unique("Open_dom:N:" + n_point.to_string());
+                append_unique("Open_dom:N:" + (n_point * context.domains.n->omega).to_string());
+                if (subproof.opening_references.size() != expected_opening_references.size() ||
+                    !std::equal(subproof.opening_references.begin(), subproof.opening_references.end(), expected_opening_references.begin(),
+                                [](const MetadataReference &actual, const std::string &expected) { return actual.object_id == expected; }))
                 {
-                    throw std::runtime_error(
-                        "proof parser Pi_bind opening-reference shape mismatch");
+                    throw std::runtime_error("proof parser Pi_bind opening-reference shape mismatch");
                 }
             }
         }
@@ -1302,15 +968,13 @@ namespace gatzk::protocol
     std::vector<std::uint8_t> serialize_proof(const Proof &proof)
     {
         if (proof_contains_prover_material(proof))
-            throw std::runtime_error(
-                "proof serializer refuses prover-only opening polynomial material");
+            throw std::runtime_error("proof serializer refuses prover-only opening polynomial material");
         require_structural_point_group_layout(proof);
         Writer wire;
         wire.raw(kMagic.data(), kMagic.size());
         Writer m_pub;
         auto metadata = proof.public_metadata;
-        metadata_fields(metadata, [&](const std::string &field)
-                        { m_pub.string(field); });
+        metadata_fields(metadata, [&](const std::string &field) { m_pub.string(field); });
         m_pub.u64(proof.block_order.size());
         for (const auto &tag : proof.block_order)
             m_pub.string(tag);
@@ -1353,10 +1017,8 @@ namespace gatzk::protocol
             eval_dom.u64(bundle.points.size());
             for (const auto &point : bundle.points)
                 eval_dom.scalar(point);
-            const auto transmitted_count = std::count_if(
-                bundle.values.begin(), bundle.values.end(),
-                [&](const auto &entry)
-                { return !pi_bind_domain_evaluations.contains(entry.first); });
+            const auto transmitted_count =
+                std::count_if(bundle.values.begin(), bundle.values.end(), [&](const auto &entry) { return !pi_bind_domain_evaluations.contains(entry.first); });
             eval_dom.u64(transmitted_count);
             for (std::size_t i = 0; i < bundle.values.size(); ++i)
             {
@@ -1383,17 +1045,12 @@ namespace gatzk::protocol
             open_dom.u64(bundle.points.size());
             for (const auto &point : bundle.points)
             {
-                const auto group_id = point_group_id(
-                    "Open_dom:" + name, point);
-                const auto opening = std::find_if(
-                    proof.opening_groups.begin(),
-                    proof.opening_groups.end(),
-                    [&](const PointGroupOpening &candidate)
-                    { return candidate.group_id == group_id; });
+                const auto group_id = point_group_id("Open_dom:" + name, point);
+                const auto opening = std::find_if(proof.opening_groups.begin(), proof.opening_groups.end(),
+                                                  [&](const PointGroupOpening &candidate) { return candidate.group_id == group_id; });
                 if (opening == proof.opening_groups.end())
                 {
-                    throw std::runtime_error(
-                        "proof serializer missing domain point-group witness");
+                    throw std::runtime_error("proof serializer missing domain point-group witness");
                 }
                 write_point_group_opening(open_dom, *opening);
             }
@@ -1401,10 +1058,8 @@ namespace gatzk::protocol
         wire.block("Open_dom", std::move(open_dom));
 
         Writer w_ext;
-        const auto external_count = std::count_if(
-            proof.opening_groups.begin(), proof.opening_groups.end(),
-            [](const PointGroupOpening &opening)
-            { return opening.owner_block == "W_ext"; });
+        const auto external_count = std::count_if(proof.opening_groups.begin(), proof.opening_groups.end(),
+                                                  [](const PointGroupOpening &opening) { return opening.owner_block == "W_ext"; });
         w_ext.u64(external_count);
         for (const auto &opening : proof.opening_groups)
         {
@@ -1441,19 +1096,11 @@ namespace gatzk::protocol
             }
             const auto write_aggregation_route = [&](const auto &route)
             {
-                for (const auto *value : {
-                         &route.relation_id, &route.index_object,
-                         &route.node_value_object, &route.edge_value_object,
-                         &route.table_object, &route.query_object,
-                         &route.multiplicity_object, &route.node_inverse_object,
-                         &route.edge_inverse_object,
-                         &route.node_accumulator_object,
-                         &route.edge_accumulator_object,
-                         &route.shifted_accumulator_object,
-                         &route.relation_virtual_object,
-                         &route.eta_challenge_label,
-                         &route.beta_challenge_label,
-                         &route.terminal_challenge_label})
+                for (const auto *value :
+                     {&route.relation_id, &route.index_object, &route.node_value_object, &route.edge_value_object, &route.table_object, &route.query_object,
+                      &route.multiplicity_object, &route.node_inverse_object, &route.edge_inverse_object, &route.node_accumulator_object,
+                      &route.edge_accumulator_object, &route.shifted_accumulator_object, &route.relation_virtual_object, &route.eta_challenge_label,
+                      &route.beta_challenge_label, &route.terminal_challenge_label})
                     pi_bind.string(*value);
                 pi_bind.scalar(route.node_terminal_point);
                 pi_bind.scalar(route.edge_terminal_point);
@@ -1464,20 +1111,10 @@ namespace gatzk::protocol
             pi_bind.u64(meta.aggregation_relations.size());
             for (const auto &relation : meta.aggregation_relations)
             {
-                for (const auto *value : {
-                         &relation.relation_id,
-                         &relation.source_matrix_object,
-                         &relation.target_matrix_object,
-                         &relation.alpha_object,
-                         &relation.node_domain,
-                         &relation.edge_domain,
-                         &relation.compression_challenge_label,
-                         &relation.source_node_object,
-                         &relation.target_node_object,
-                         &relation.source_edge_object,
-                         &relation.target_edge_object,
-                         &relation.product_object,
-                         &relation.psq_object})
+                for (const auto *value :
+                     {&relation.relation_id, &relation.source_matrix_object, &relation.target_matrix_object, &relation.alpha_object, &relation.node_domain,
+                      &relation.edge_domain, &relation.compression_challenge_label, &relation.source_node_object, &relation.target_node_object,
+                      &relation.source_edge_object, &relation.target_edge_object, &relation.product_object, &relation.psq_object})
                     pi_bind.string(*value);
                 pi_bind.u64(relation.row_count);
                 pi_bind.u64(relation.column_count);
@@ -1488,15 +1125,9 @@ namespace gatzk::protocol
             pi_bind.u64(meta.route_terminal_relations.size());
             for (const auto &relation : meta.route_terminal_relations)
             {
-                for (const auto *value : {
-                         &relation.relation_id,
-                         &relation.node_accumulator_object,
-                         &relation.edge_accumulator_object,
-                         &relation.shifted_accumulator_object,
-                         &relation.relation_virtual_object,
-                         &relation.node_domain,
-                         &relation.edge_domain,
-                         &relation.challenge_label})
+                for (const auto *value :
+                     {&relation.relation_id, &relation.node_accumulator_object, &relation.edge_accumulator_object, &relation.shifted_accumulator_object,
+                      &relation.relation_virtual_object, &relation.node_domain, &relation.edge_domain, &relation.challenge_label})
                     pi_bind.string(*value);
                 pi_bind.scalar(relation.node_terminal_point);
                 pi_bind.scalar(relation.edge_terminal_point);
@@ -1588,13 +1219,8 @@ namespace gatzk::protocol
             pi_bind.u64(subproof.view_references.size());
             for (const auto &reference : subproof.view_references)
                 pi_bind.string(reference.object_id);
-            for (const auto *group : {
-                     &subproof.view_commitments,
-                     &subproof.view_logup_commitments,
-                     &subproof.aggregation_commitments,
-                     &subproof.basis_commitments,
-                     &subproof.crpc_commitments,
-                     &subproof.relation_commitments})
+            for (const auto *group : {&subproof.view_commitments, &subproof.view_logup_commitments, &subproof.aggregation_commitments,
+                                      &subproof.basis_commitments, &subproof.crpc_commitments, &subproof.relation_commitments})
             {
                 write_named_commitments(pi_bind, *group);
             }
@@ -1620,8 +1246,7 @@ namespace gatzk::protocol
     {
         if (context.compiler_artifact == nullptr || context.validated_compiler_artifact_identity != context.compiler_artifact.get())
         {
-            throw std::runtime_error(
-                "proof parser is missing the authenticated ProtocolCompilerArtifact identity");
+            throw std::runtime_error("proof parser is missing the authenticated ProtocolCompilerArtifact identity");
         }
         // Read the fixed magic without accepting a length-delimited alias.
         if (bytes.size() < kMagic.size() || !std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))
@@ -1631,8 +1256,7 @@ namespace gatzk::protocol
         Reader body(bytes.data() + kMagic.size(), bytes.size() - kMagic.size());
         Proof proof;
         auto m_pub = body.block("M_pub");
-        metadata_fields(proof.public_metadata, [&](std::string &field)
-                        { field = m_pub.string(); });
+        metadata_fields(proof.public_metadata, [&](std::string &field) { field = m_pub.string(); });
         const auto block_count = m_pub.count("block order");
         proof.block_order.reserve(block_count);
         for (std::size_t i = 0; i < block_count; ++i)
@@ -1710,20 +1334,17 @@ namespace gatzk::protocol
         {
             if (open_dom.string() != proof.domain_openings[i].first)
                 throw std::runtime_error("proof parser domain opening name mismatch");
-            const auto group_count = open_dom.count(
-                "domain point-group openings");
+            const auto group_count = open_dom.count("domain point-group openings");
             if (group_count != proof.domain_openings[i].second.points.size())
-                throw std::runtime_error(
-                    "proof parser domain point-group count mismatch");
+                throw std::runtime_error("proof parser domain point-group count mismatch");
             for (std::size_t j = 0; j < group_count; ++j)
             {
                 auto encoded = read_encoded_point_group_opening(open_dom);
-                const auto expected_owner =
-                    "Open_dom:" + proof.domain_openings[i].first;
-                if (encoded.owner_block != expected_owner || encoded.point != proof.domain_openings[i].second.points[j] || encoded.group_id != point_group_id(expected_owner, encoded.point))
+                const auto expected_owner = "Open_dom:" + proof.domain_openings[i].first;
+                if (encoded.owner_block != expected_owner || encoded.point != proof.domain_openings[i].second.points[j] ||
+                    encoded.group_id != point_group_id(expected_owner, encoded.point))
                 {
-                    throw std::runtime_error(
-                        "proof parser domain point-group owner/point mismatch");
+                    throw std::runtime_error("proof parser domain point-group owner/point mismatch");
                 }
                 encoded_openings.push_back(std::move(encoded));
             }
@@ -1731,51 +1352,38 @@ namespace gatzk::protocol
         open_dom.finish("Open_dom");
 
         auto w_ext = body.block("W_ext");
-        const auto external_group_count = w_ext.count(
-            "external point-group openings");
+        const auto external_group_count = w_ext.count("external point-group openings");
         std::string previous_external_point;
         for (std::size_t i = 0; i < external_group_count; ++i)
         {
             auto encoded = read_encoded_point_group_opening(w_ext);
             const auto point_text = encoded.point.to_string();
-            if (encoded.owner_block != "W_ext" || encoded.group_id != point_group_id("W_ext", encoded.point) || (i != 0 && !(previous_external_point < point_text)))
+            if (encoded.owner_block != "W_ext" || encoded.group_id != point_group_id("W_ext", encoded.point) ||
+                (i != 0 && !(previous_external_point < point_text)))
             {
-                throw std::runtime_error(
-                    "proof parser non-canonical external point-group order/owner");
+                throw std::runtime_error("proof parser non-canonical external point-group order/owner");
             }
             previous_external_point = point_text;
             encoded_openings.push_back(std::move(encoded));
         }
         w_ext.finish("W_ext");
-        proof.opening_groups = decode_point_group_openings(
-            std::move(encoded_openings));
-        std::sort(
-            proof.opening_groups.begin(), proof.opening_groups.end(),
-            [](const PointGroupOpening &lhs,
-               const PointGroupOpening &rhs)
-            { return lhs.point.to_string() < rhs.point.to_string(); });
+        proof.opening_groups = decode_point_group_openings(std::move(encoded_openings));
+        std::sort(proof.opening_groups.begin(), proof.opening_groups.end(),
+                  [](const PointGroupOpening &lhs, const PointGroupOpening &rhs) { return lhs.point.to_string() < rhs.point.to_string(); });
         require_structural_point_group_layout(proof);
 
         auto pi_bind = body.block("Pi_bind");
-        const auto expected_binding_metadata =
-            build_binding_relation_metadata(context);
+        const auto expected_binding_metadata = build_binding_relation_metadata(context);
         const auto subproof_count = pi_bind.count("Pi_bind subproofs");
         if (subproof_count != expected_binding_metadata.size())
-            throw std::runtime_error(
-                "proof parser Pi_bind subproof count does not match instance schema");
-        proof.pi_bind.subproofs.reserve(
-            subproof_count);
+            throw std::runtime_error("proof parser Pi_bind subproof count does not match instance schema");
+        proof.pi_bind.subproofs.reserve(subproof_count);
 
-        std::vector<
-            EncodedBindingCommitments>
-            encoded_binding_commitments;
+        std::vector<EncodedBindingCommitments> encoded_binding_commitments;
 
-        encoded_binding_commitments.reserve(
-            subproof_count);
+        encoded_binding_commitments.reserve(subproof_count);
 
-        for (std::size_t subproof_index = 0;
-             subproof_index < subproof_count;
-             ++subproof_index)
+        for (std::size_t subproof_index = 0; subproof_index < subproof_count; ++subproof_index)
         {
             BindingSubproof subproof;
             auto &meta = subproof.relation_meta;
@@ -1788,8 +1396,7 @@ namespace gatzk::protocol
             meta.work_domains = read_string_vector(pi_bind, "Pi_bind domains");
             meta.real_lengths = read_size_vector(pi_bind, "Pi_bind real lengths");
             meta.quotient_relations = read_string_vector(pi_bind, "Pi_bind quotient relations");
-            const auto canonical_matrix_count = pi_bind.count(
-                "Pi_bind canonical matrices");
+            const auto canonical_matrix_count = pi_bind.count("Pi_bind canonical matrices");
             meta.canonical_matrices.reserve(canonical_matrix_count);
             for (std::size_t i = 0; i < canonical_matrix_count; ++i)
             {
@@ -1797,12 +1404,9 @@ namespace gatzk::protocol
                 matrix.relation_id = pi_bind.string();
                 matrix.matrix_object = pi_bind.string();
                 matrix.canonical_domain = pi_bind.string();
-                matrix.row_count = pi_bind.size(
-                    "Pi_bind canonical matrix rows");
-                matrix.column_count = pi_bind.size(
-                    "Pi_bind canonical matrix columns");
-                matrix.column_objects = read_string_vector(
-                    pi_bind, "Pi_bind canonical column objects");
+                matrix.row_count = pi_bind.size("Pi_bind canonical matrix rows");
+                matrix.column_count = pi_bind.size("Pi_bind canonical matrix columns");
+                matrix.column_objects = read_string_vector(pi_bind, "Pi_bind canonical column objects");
                 matrix.compressed_object = pi_bind.string();
                 matrix.compression_challenge_label = pi_bind.string();
                 meta.canonical_matrices.push_back(std::move(matrix));
@@ -1829,14 +1433,11 @@ namespace gatzk::protocol
                 route.node_terminal_point = pi_bind.scalar();
                 route.edge_terminal_point = pi_bind.scalar();
                 route.terminal_delta = pi_bind.scalar();
-                route.configured_shift_degree = pi_bind.size(
-                    "Pi_bind aggregation route shift degree");
-                route.shift_domain_size = pi_bind.size(
-                    "Pi_bind aggregation route shift domain");
+                route.configured_shift_degree = pi_bind.size("Pi_bind aggregation route shift degree");
+                route.shift_domain_size = pi_bind.size("Pi_bind aggregation route shift domain");
                 return route;
             };
-            const auto aggregation_relation_count = pi_bind.count(
-                "Pi_bind aggregation relations");
+            const auto aggregation_relation_count = pi_bind.count("Pi_bind aggregation relations");
             meta.aggregation_relations.reserve(aggregation_relation_count);
             for (std::size_t i = 0; i < aggregation_relation_count; ++i)
             {
@@ -1854,18 +1455,14 @@ namespace gatzk::protocol
                 relation.target_edge_object = pi_bind.string();
                 relation.product_object = pi_bind.string();
                 relation.psq_object = pi_bind.string();
-                relation.row_count = pi_bind.size(
-                    "Pi_bind aggregation rows");
-                relation.column_count = pi_bind.size(
-                    "Pi_bind aggregation columns");
+                relation.row_count = pi_bind.size("Pi_bind aggregation rows");
+                relation.column_count = pi_bind.size("Pi_bind aggregation columns");
                 relation.source_route = read_aggregation_route();
                 relation.target_route = read_aggregation_route();
-                relation.commitment_order = read_string_vector(
-                    pi_bind, "Pi_bind aggregation commitment order");
+                relation.commitment_order = read_string_vector(pi_bind, "Pi_bind aggregation commitment order");
                 meta.aggregation_relations.push_back(std::move(relation));
             }
-            const auto route_terminal_count = pi_bind.count(
-                "Pi_bind route terminal relations");
+            const auto route_terminal_count = pi_bind.count("Pi_bind route terminal relations");
             meta.route_terminal_relations.reserve(route_terminal_count);
             for (std::size_t i = 0; i < route_terminal_count; ++i)
             {
@@ -1881,10 +1478,8 @@ namespace gatzk::protocol
                 relation.node_terminal_point = pi_bind.scalar();
                 relation.edge_terminal_point = pi_bind.scalar();
                 relation.terminal_delta = pi_bind.scalar();
-                relation.configured_shift_degree = pi_bind.size(
-                    "Pi_bind route terminal shift degree");
-                relation.shift_domain_size = pi_bind.size(
-                    "Pi_bind route terminal shift domain");
+                relation.configured_shift_degree = pi_bind.size("Pi_bind route terminal shift degree");
+                relation.shift_domain_size = pi_bind.size("Pi_bind route terminal shift domain");
                 meta.route_terminal_relations.push_back(std::move(relation));
             }
             const auto indexed_view_count = pi_bind.count("Pi_bind indexed views");
@@ -1905,12 +1500,10 @@ namespace gatzk::protocol
                 view.multiplicity_id = pi_bind.string();
                 view.eta_challenge_label = pi_bind.string();
                 view.beta_challenge_label = pi_bind.string();
-                view.commitment_order = read_string_vector(
-                    pi_bind, "Pi_bind indexed commitment order");
+                view.commitment_order = read_string_vector(pi_bind, "Pi_bind indexed commitment order");
                 meta.indexed_views.push_back(std::move(view));
             }
-            const auto basis_relation_count = pi_bind.count(
-                "Pi_bind coefficient basis relations");
+            const auto basis_relation_count = pi_bind.count("Pi_bind coefficient basis relations");
             meta.coefficient_basis_relations.reserve(basis_relation_count);
             for (std::size_t i = 0; i < basis_relation_count; ++i)
             {
@@ -1919,16 +1512,11 @@ namespace gatzk::protocol
                 relation.canonical_object = pi_bind.string();
                 relation.coefficient_object = pi_bind.string();
                 relation.carrier_domain = pi_bind.string();
-                relation.low_degree_length = pi_bind.size(
-                    "Pi_bind coefficient basis low degree length");
-                relation.tail_length = pi_bind.size(
-                    "Pi_bind coefficient basis tail length");
-                relation.total_length = pi_bind.size(
-                    "Pi_bind coefficient basis total length");
-                relation.semantic_positions = read_size_vector(
-                    pi_bind, "Pi_bind coefficient basis semantic positions");
-                const auto chunk_count = pi_bind.count(
-                    "Pi_bind coefficient basis chunks");
+                relation.low_degree_length = pi_bind.size("Pi_bind coefficient basis low degree length");
+                relation.tail_length = pi_bind.size("Pi_bind coefficient basis tail length");
+                relation.total_length = pi_bind.size("Pi_bind coefficient basis total length");
+                relation.semantic_positions = read_size_vector(pi_bind, "Pi_bind coefficient basis semantic positions");
+                const auto chunk_count = pi_bind.count("Pi_bind coefficient basis chunks");
                 relation.chunks.reserve(chunk_count);
                 for (std::size_t j = 0; j < chunk_count; ++j)
                 {
@@ -1936,26 +1524,19 @@ namespace gatzk::protocol
                         .object_id = pi_bind.string(),
                         .accumulator_object = pi_bind.string(),
                         .shifted_accumulator_object = pi_bind.string(),
-                        .chunk_index = pi_bind.size(
-                            "Pi_bind coefficient basis chunk index"),
-                        .offset = pi_bind.size(
-                            "Pi_bind coefficient basis chunk offset"),
-                        .length = pi_bind.size(
-                            "Pi_bind coefficient basis chunk length"),
+                        .chunk_index = pi_bind.size("Pi_bind coefficient basis chunk index"),
+                        .offset = pi_bind.size("Pi_bind coefficient basis chunk offset"),
+                        .length = pi_bind.size("Pi_bind coefficient basis chunk length"),
                         .terminal_point = pi_bind.scalar(),
-                        .configured_shift_degree = pi_bind.size(
-                            "Pi_bind coefficient basis chunk shift degree"),
-                        .shift_domain_size = pi_bind.size(
-                            "Pi_bind coefficient basis chunk shift domain size"),
+                        .configured_shift_degree = pi_bind.size("Pi_bind coefficient basis chunk shift degree"),
+                        .shift_domain_size = pi_bind.size("Pi_bind coefficient basis chunk shift domain size"),
                     });
                 }
                 relation.power_object = pi_bind.string();
                 relation.gamma_challenge_label = pi_bind.string();
                 relation.relation_challenge_label = pi_bind.string();
-                relation.commitment_order = read_string_vector(
-                    pi_bind, "Pi_bind coefficient basis commitment order");
-                relation.opening_claim_order = read_string_vector(
-                    pi_bind, "Pi_bind coefficient basis opening order");
+                relation.commitment_order = read_string_vector(pi_bind, "Pi_bind coefficient basis commitment order");
+                relation.opening_claim_order = read_string_vector(pi_bind, "Pi_bind coefficient basis opening order");
                 meta.coefficient_basis_relations.push_back(std::move(relation));
             }
             const auto shift_relation_count = pi_bind.count("Pi_bind shift relations");
@@ -1964,10 +1545,8 @@ namespace gatzk::protocol
             {
                 KZGShiftRelationMeta relation;
                 relation.relation_id = pi_bind.string();
-                relation.source_linear_maps = read_string_vector(
-                    pi_bind, "Pi_bind shift source maps");
-                relation.source_domains = read_string_vector(
-                    pi_bind, "Pi_bind shift source domains");
+                relation.source_linear_maps = read_string_vector(pi_bind, "Pi_bind shift source maps");
+                relation.source_domains = read_string_vector(pi_bind, "Pi_bind shift source domains");
                 const auto point_count = pi_bind.count("Pi_bind shift points");
                 relation.canonical_points.reserve(point_count);
                 for (std::size_t j = 0; j < point_count; ++j)
@@ -1977,150 +1556,77 @@ namespace gatzk::protocol
                 relation.deltas.reserve(delta_count);
                 for (std::size_t j = 0; j < delta_count; ++j)
                     relation.deltas.push_back(pi_bind.scalar());
-                relation.source_value_kinds = read_string_vector(
-                    pi_bind, "Pi_bind shift source kinds");
+                relation.source_value_kinds = read_string_vector(pi_bind, "Pi_bind shift source kinds");
                 relation.challenge_label = pi_bind.string();
                 relation.exclusion_degree = pi_bind.size("Pi_bind shift exclusion degree");
                 relation.max_difference_degree = pi_bind.size("Pi_bind shift max degree");
-                relation.configured_degrees = read_size_vector(
-                    pi_bind, "Pi_bind shift configured degrees");
-                relation.shift_domain_sizes = read_size_vector(
-                    pi_bind, "Pi_bind shift domain sizes");
-                relation.opening_claim_order = read_string_vector(
-                    pi_bind, "Pi_bind shift opening order");
+                relation.configured_degrees = read_size_vector(pi_bind, "Pi_bind shift configured degrees");
+                relation.shift_domain_sizes = read_size_vector(pi_bind, "Pi_bind shift domain sizes");
+                relation.opening_claim_order = read_string_vector(pi_bind, "Pi_bind shift opening order");
                 meta.shift_relations.push_back(std::move(relation));
             }
             if (!(meta == expected_binding_metadata.at(subproof_index)))
-                throw std::runtime_error(
-                    "proof parser Pi_bind RelationMeta does not match instance schema");
+                throw std::runtime_error("proof parser Pi_bind RelationMeta does not match instance schema");
 
-            EncodedBindingCommitments
-                encoded_binding;
+            EncodedBindingCommitments encoded_binding;
 
-            const auto model_count =
-                pi_bind.count(
-                    "Pi_bind model reblinds");
+            const auto model_count = pi_bind.count("Pi_bind model reblinds");
 
-            subproof.model_reblinds.resize(
-                model_count);
+            subproof.model_reblinds.resize(model_count);
 
-            encoded_binding
-                .model_reblind_encodings
-                .reserve(
-                    model_count *
-                    2);
+            encoded_binding.model_reblind_encodings.reserve(model_count * 2);
 
-            for (std::size_t i = 0;
-                 i < model_count;
-                 ++i)
+            for (std::size_t i = 0; i < model_count; ++i)
             {
-                auto &reblind =
-                    subproof
-                        .model_reblinds[i];
+                auto &reblind = subproof.model_reblinds[i];
 
-                reblind.object_id =
-                    pi_bind.string();
+                reblind.object_id = pi_bind.string();
 
-                reblind.domain =
-                    pi_bind.string();
+                reblind.domain = pi_bind.string();
 
-                reblind
-                    .vk_model_anchor
-                    .object_id =
-                    pi_bind.string();
+                reblind.vk_model_anchor.object_id = pi_bind.string();
 
-                reblind
-                    .proof_local_commitment
-                    .name =
-                    pi_bind.string();
+                reblind.proof_local_commitment.name = pi_bind.string();
 
-                encoded_binding
-                    .model_reblind_encodings
-                    .push_back(
-                        pi_bind
-                            .point_encoding());
+                encoded_binding.model_reblind_encodings.push_back(pi_bind.point_encoding());
 
-                reblind
-                    .blinder_commitment
-                    .name =
-                    pi_bind.string();
+                reblind.blinder_commitment.name = pi_bind.string();
 
-                encoded_binding
-                    .model_reblind_encodings
-                    .push_back(
-                        pi_bind
-                            .point_encoding());
+                encoded_binding.model_reblind_encodings.push_back(pi_bind.point_encoding());
             }
 
-            const auto view_reference_count =
-                pi_bind.count(
-                    "Pi_bind Com_view references");
+            const auto view_reference_count = pi_bind.count("Pi_bind Com_view references");
 
-            subproof.view_references.reserve(
-                view_reference_count);
+            subproof.view_references.reserve(view_reference_count);
 
-            for (std::size_t i = 0;
-                 i < view_reference_count;
-                 ++i)
+            for (std::size_t i = 0; i < view_reference_count; ++i)
             {
-                subproof
-                    .view_references
-                    .push_back(
-                        {pi_bind.string()});
+                subproof.view_references.push_back({pi_bind.string()});
             }
 
             {
-                std::unordered_set<
-                    std::string>
-                    references;
+                std::unordered_set<std::string> references;
 
-                for (const auto &reference :
-                     subproof.view_references)
+                for (const auto &reference : subproof.view_references)
                 {
-                    if (reference
-                            .object_id
-                            .empty() ||
-                        !references
-                             .insert(
-                                 reference
-                                     .object_id)
-                             .second)
+                    if (reference.object_id.empty() || !references.insert(reference.object_id).second)
                     {
-                        throw std::runtime_error(
-                            "proof parser duplicate/empty Pi_bind Com_view reference");
+                        throw std::runtime_error("proof parser duplicate/empty Pi_bind Com_view reference");
                     }
                 }
             }
 
-            encoded_binding
-                .view_commitments =
-                read_encoded_named_commitments(
-                    pi_bind);
+            encoded_binding.view_commitments = read_encoded_named_commitments(pi_bind);
 
-            encoded_binding
-                .view_logup_commitments =
-                read_encoded_named_commitments(
-                    pi_bind);
+            encoded_binding.view_logup_commitments = read_encoded_named_commitments(pi_bind);
 
-            encoded_binding
-                .aggregation_commitments =
-                read_encoded_named_commitments(
-                    pi_bind);
+            encoded_binding.aggregation_commitments = read_encoded_named_commitments(pi_bind);
 
-            encoded_binding
-                .basis_commitments =
-                read_encoded_named_commitments(
-                    pi_bind);
+            encoded_binding.basis_commitments = read_encoded_named_commitments(pi_bind);
 
-            encoded_binding
-                .crpc_commitments =
-                read_encoded_named_commitments(
-                    pi_bind);
+            encoded_binding.crpc_commitments = read_encoded_named_commitments(pi_bind);
 
-            encoded_binding
-                .relation_commitments =
-                read_encoded_named_commitments(
-                    pi_bind);
+            encoded_binding.relation_commitments = read_encoded_named_commitments(pi_bind);
 
             const auto evaluation_count = pi_bind.count("Pi_bind evaluations");
             subproof.evaluations.reserve(evaluation_count);
@@ -2142,8 +1648,7 @@ namespace gatzk::protocol
                 {
                     const auto key = evaluation.domain + "\n" + evaluation.object_id;
                     if (evaluation.domain.empty() || evaluation.object_id.empty() || evaluation.values.empty() || !evaluations.insert(key).second)
-                        throw std::runtime_error(
-                            "proof parser duplicate/empty Pi_bind evaluation");
+                        throw std::runtime_error("proof parser duplicate/empty Pi_bind evaluation");
                 }
             }
             const auto reference_count = pi_bind.count("Pi_bind opening references");
@@ -2154,263 +1659,126 @@ namespace gatzk::protocol
                 std::unordered_set<std::string> references;
                 for (const auto &reference : subproof.opening_references)
                     if (reference.object_id.empty() || !references.insert(reference.object_id).second)
-                        throw std::runtime_error(
-                            "proof parser duplicate/empty Pi_bind opening reference");
+                        throw std::runtime_error("proof parser duplicate/empty Pi_bind opening reference");
             }
-            encoded_binding_commitments
-                .push_back(
-                    std::move(
-                        encoded_binding));
+            encoded_binding_commitments.push_back(std::move(encoded_binding));
 
-            proof.pi_bind.subproofs.push_back(
-                std::move(
-                    subproof));
+            proof.pi_bind.subproofs.push_back(std::move(subproof));
         }
 
-        if (encoded_binding_commitments.size() !=
-            proof.pi_bind.subproofs.size())
+        if (encoded_binding_commitments.size() != proof.pi_bind.subproofs.size())
         {
-            throw std::runtime_error(
-                "proof parser Pi_bind deferred G1 shape mismatch");
+            throw std::runtime_error("proof parser Pi_bind deferred G1 shape mismatch");
         }
 
-        std::size_t total_binding_g1 =
-            0;
+        std::size_t total_binding_g1 = 0;
 
-        const auto add_binding_g1_count =
-            [&](std::size_t count)
+        const auto add_binding_g1_count = [&](std::size_t count)
         {
-            if (count >
-                std::numeric_limits<
-                    std::size_t>::max() -
-                    total_binding_g1)
+            if (count > std::numeric_limits<std::size_t>::max() - total_binding_g1)
             {
-                throw std::runtime_error(
-                    "proof parser Pi_bind G1 count overflow");
+                throw std::runtime_error("proof parser Pi_bind G1 count overflow");
             }
 
-            total_binding_g1 +=
-                count;
+            total_binding_g1 += count;
         };
 
-        for (const auto &encoded :
-             encoded_binding_commitments)
+        for (const auto &encoded : encoded_binding_commitments)
         {
-            add_binding_g1_count(
-                encoded
-                    .model_reblind_encodings
-                    .size());
+            add_binding_g1_count(encoded.model_reblind_encodings.size());
 
-            for (const auto *group : {
-                     &encoded.view_commitments,
-                     &encoded.view_logup_commitments,
-                     &encoded.aggregation_commitments,
-                     &encoded.basis_commitments,
-                     &encoded.crpc_commitments,
-                     &encoded.relation_commitments})
+            for (const auto *group : {&encoded.view_commitments, &encoded.view_logup_commitments, &encoded.aggregation_commitments, &encoded.basis_commitments,
+                                      &encoded.crpc_commitments, &encoded.relation_commitments})
             {
-                add_binding_g1_count(
-                    group->encodings.size());
+                add_binding_g1_count(group->encodings.size());
             }
         }
 
-        std::vector<EncodedG1View>
-            all_binding_g1_encodings;
+        std::vector<EncodedG1View> all_binding_g1_encodings;
 
-        all_binding_g1_encodings.reserve(
-            total_binding_g1);
+        all_binding_g1_encodings.reserve(total_binding_g1);
 
-        for (const auto &encoded :
-             encoded_binding_commitments)
+        for (const auto &encoded : encoded_binding_commitments)
         {
-            all_binding_g1_encodings.insert(
-                all_binding_g1_encodings.end(),
-                encoded
-                    .model_reblind_encodings
-                    .begin(),
-                encoded
-                    .model_reblind_encodings
-                    .end());
+            all_binding_g1_encodings.insert(all_binding_g1_encodings.end(), encoded.model_reblind_encodings.begin(), encoded.model_reblind_encodings.end());
 
-            for (const auto *group : {
-                     &encoded.view_commitments,
-                     &encoded.view_logup_commitments,
-                     &encoded.aggregation_commitments,
-                     &encoded.basis_commitments,
-                     &encoded.crpc_commitments,
-                     &encoded.relation_commitments})
+            for (const auto *group : {&encoded.view_commitments, &encoded.view_logup_commitments, &encoded.aggregation_commitments, &encoded.basis_commitments,
+                                      &encoded.crpc_commitments, &encoded.relation_commitments})
             {
-                all_binding_g1_encodings.insert(
-                    all_binding_g1_encodings.end(),
-                    group->encodings.begin(),
-                    group->encodings.end());
+                all_binding_g1_encodings.insert(all_binding_g1_encodings.end(), group->encodings.begin(), group->encodings.end());
             }
         }
 
-        auto decoded_binding_points =
-            decode_canonical_g1_batch(
-                all_binding_g1_encodings);
+        auto decoded_binding_points = decode_canonical_g1_batch(all_binding_g1_encodings);
 
-        std::size_t decoded_position =
-            0;
+        std::size_t decoded_position = 0;
 
-        for (std::size_t subproof_index = 0;
-             subproof_index <
-             proof.pi_bind.subproofs.size();
-             ++subproof_index)
+        for (std::size_t subproof_index = 0; subproof_index < proof.pi_bind.subproofs.size(); ++subproof_index)
         {
-            auto &subproof =
-                proof.pi_bind
-                    .subproofs[subproof_index];
+            auto &subproof = proof.pi_bind.subproofs[subproof_index];
 
-            auto &encoded =
-                encoded_binding_commitments[subproof_index];
+            auto &encoded = encoded_binding_commitments[subproof_index];
 
-            if (encoded
-                    .model_reblind_encodings
-                    .size() !=
-                subproof
-                        .model_reblinds
-                        .size() *
-                    2)
+            if (encoded.model_reblind_encodings.size() != subproof.model_reblinds.size() * 2)
             {
-                throw std::runtime_error(
-                    "proof parser Pi_bind model-reblind deferred G1 shape mismatch");
+                throw std::runtime_error("proof parser Pi_bind model-reblind deferred G1 shape mismatch");
             }
 
-            for (std::size_t model = 0;
-                 model <
-                 subproof
-                     .model_reblinds
-                     .size();
-                 ++model)
+            for (std::size_t model = 0; model < subproof.model_reblinds.size(); ++model)
             {
-                if (decoded_position + 2 >
-                    decoded_binding_points
-                        .size())
+                if (decoded_position + 2 > decoded_binding_points.size())
                 {
-                    throw std::runtime_error(
-                        "proof parser Pi_bind deferred G1 decode underflow");
+                    throw std::runtime_error("proof parser Pi_bind deferred G1 decode underflow");
                 }
 
-                subproof
-                    .model_reblinds[model]
-                    .proof_local_commitment
-                    .point =
-                    std::move(
-                        decoded_binding_points[decoded_position++]);
+                subproof.model_reblinds[model].proof_local_commitment.point = std::move(decoded_binding_points[decoded_position++]);
 
-                subproof
-                    .model_reblinds[model]
-                    .blinder_commitment
-                    .point =
-                    std::move(
-                        decoded_binding_points[decoded_position++]);
+                subproof.model_reblinds[model].blinder_commitment.point = std::move(decoded_binding_points[decoded_position++]);
             }
 
-            const auto decode_group =
-                [&](auto &group,
-                    EncodedNamedCommitments
-                        &encoded_group,
-                    const char *label)
+            const auto decode_group = [&](auto &group, EncodedNamedCommitments &encoded_group, const char *label)
             {
-                if (encoded_group.names.size() !=
-                        encoded_group
-                            .encodings.size() ||
-                    decoded_position +
-                            encoded_group
-                                .names.size() >
-                        decoded_binding_points
-                            .size())
+                if (encoded_group.names.size() != encoded_group.encodings.size() ||
+                    decoded_position + encoded_group.names.size() > decoded_binding_points.size())
                 {
-                    throw std::runtime_error(
-                        std::string(
-                            "proof parser Pi_bind deferred G1 decode shape mismatch: ") +
-                        label);
+                    throw std::runtime_error(std::string("proof parser Pi_bind deferred G1 decode shape mismatch: ") + label);
                 }
 
-                group.reserve(
-                    encoded_group
-                        .names.size());
+                group.reserve(encoded_group.names.size());
 
-                for (std::size_t i = 0;
-                     i <
-                     encoded_group
-                         .names.size();
-                     ++i)
+                for (std::size_t i = 0; i < encoded_group.names.size(); ++i)
                 {
-                    crypto::Commitment
-                        commitment;
+                    crypto::Commitment commitment;
 
-                    commitment.name =
-                        encoded_group
-                            .names[i];
+                    commitment.name = encoded_group.names[i];
 
-                    commitment.point =
-                        std::move(
-                            decoded_binding_points[decoded_position++]);
+                    commitment.point = std::move(decoded_binding_points[decoded_position++]);
 
-                    group.push_back(
-                        {
-                            std::move(
-                                encoded_group
-                                    .names[i]),
-                            std::move(
-                                commitment),
-                        });
+                    group.push_back({
+                        std::move(encoded_group.names[i]),
+                        std::move(commitment),
+                    });
                 }
 
-                require_unique_names(
-                    group,
-                    label);
+                require_unique_names(group, label);
             };
 
-            decode_group(
-                subproof.view_commitments,
-                encoded.view_commitments,
-                "Pi_bind Com_view");
+            decode_group(subproof.view_commitments, encoded.view_commitments, "Pi_bind Com_view");
 
-            decode_group(
-                subproof
-                    .view_logup_commitments,
-                encoded
-                    .view_logup_commitments,
-                "Pi_bind Com_viewLogUp");
+            decode_group(subproof.view_logup_commitments, encoded.view_logup_commitments, "Pi_bind Com_viewLogUp");
 
-            decode_group(
-                subproof
-                    .aggregation_commitments,
-                encoded
-                    .aggregation_commitments,
-                "Pi_bind Com_agg");
+            decode_group(subproof.aggregation_commitments, encoded.aggregation_commitments, "Pi_bind Com_agg");
 
-            decode_group(
-                subproof
-                    .basis_commitments,
-                encoded
-                    .basis_commitments,
-                "Pi_bind Com_basis");
+            decode_group(subproof.basis_commitments, encoded.basis_commitments, "Pi_bind Com_basis");
 
-            decode_group(
-                subproof
-                    .crpc_commitments,
-                encoded
-                    .crpc_commitments,
-                "Pi_bind Com_CRPC");
+            decode_group(subproof.crpc_commitments, encoded.crpc_commitments, "Pi_bind Com_CRPC");
 
-            decode_group(
-                subproof
-                    .relation_commitments,
-                encoded
-                    .relation_commitments,
-                "Pi_bind Com_rel");
+            decode_group(subproof.relation_commitments, encoded.relation_commitments, "Pi_bind Com_rel");
         }
 
-        if (decoded_position !=
-            decoded_binding_points.size())
+        if (decoded_position != decoded_binding_points.size())
         {
-            throw std::runtime_error(
-                "proof parser Pi_bind deferred G1 decode left unconsumed points");
+            throw std::runtime_error("proof parser Pi_bind deferred G1 decode left unconsumed points");
         }
 
         pi_bind.finish("Pi_bind");
@@ -2419,40 +1787,27 @@ namespace gatzk::protocol
         // Reconstruct the in-memory global point groups after all physical
         // blocks have been parsed.  Eval_bind owns these values on the wire;
         // Open_dom owns their single folded witness.
-        std::unordered_map<std::string, std::size_t>
-            domain_opening_index;
+        std::unordered_map<std::string, std::size_t> domain_opening_index;
 
-        domain_opening_index.reserve(
-            proof.domain_openings.size());
+        domain_opening_index.reserve(proof.domain_openings.size());
 
-        std::vector<std::unordered_set<std::string>>
-            domain_opening_value_ids(
-                proof.domain_openings.size());
+        std::vector<std::unordered_set<std::string>> domain_opening_value_ids(proof.domain_openings.size());
 
-        for (std::size_t bundle_index = 0;
-             bundle_index < proof.domain_openings.size();
-             ++bundle_index)
+        for (std::size_t bundle_index = 0; bundle_index < proof.domain_openings.size(); ++bundle_index)
         {
-            const auto &[bundle_name, bundle] =
-                proof.domain_openings[bundle_index];
+            const auto &[bundle_name, bundle] = proof.domain_openings[bundle_index];
 
-            domain_opening_index.try_emplace(
-                bundle_name,
-                bundle_index);
+            domain_opening_index.try_emplace(bundle_name, bundle_index);
 
-            auto &value_ids =
-                domain_opening_value_ids[bundle_index];
+            auto &value_ids = domain_opening_value_ids[bundle_index];
 
-            value_ids.reserve(
-                bundle.values.size());
+            value_ids.reserve(bundle.values.size());
 
-            for (const auto &[name, values] :
-                 bundle.values)
+            for (const auto &[name, values] : bundle.values)
             {
                 (void)values;
 
-                value_ids.insert(
-                    name);
+                value_ids.insert(name);
             }
         }
 
@@ -2463,49 +1818,34 @@ namespace gatzk::protocol
                 if (evaluation.domain == "relation")
                     continue;
 
-                const auto bundle_position =
-                    domain_opening_index.find(
-                        evaluation.domain);
+                const auto bundle_position = domain_opening_index.find(evaluation.domain);
 
-                if (bundle_position ==
-                    domain_opening_index.end())
+                if (bundle_position == domain_opening_index.end())
                 {
-                    throw std::runtime_error(
-                        "proof parser Pi_bind evaluation references unknown domain");
+                    throw std::runtime_error("proof parser Pi_bind evaluation references unknown domain");
                 }
 
-                const auto bundle_index =
-                    bundle_position->second;
+                const auto bundle_index = bundle_position->second;
 
-                auto &bundle =
-                    proof.domain_openings[bundle_index]
-                        .second;
+                auto &bundle = proof.domain_openings[bundle_index].second;
 
-                auto &value_ids =
-                    domain_opening_value_ids[bundle_index];
+                auto &value_ids = domain_opening_value_ids[bundle_index];
 
-                if (!value_ids.insert(
-                                  evaluation.object_id)
-                         .second)
+                if (!value_ids.insert(evaluation.object_id).second)
                 {
-                    throw std::runtime_error(
-                        "proof parser duplicate Eval_dom/Eval_bind claim owner");
+                    throw std::runtime_error("proof parser duplicate Eval_dom/Eval_bind claim owner");
                 }
 
-                bundle.values.push_back(
-                    {evaluation.object_id, evaluation.values});
+                bundle.values.push_back({evaluation.object_id, evaluation.values});
 
-                bundle.value_kinds.push_back(
-                    evaluation.kind);
+                bundle.value_kinds.push_back(evaluation.kind);
             }
         }
         // Eval_dom omits values whose unique wire owner is Eval_bind.  Restore
         // the canonical global point-group order after merging both blocks;
         // appending Eval_bind values would place them after t_D/R_t_D and make
         // the parser disagree with the shared prover/verifier schema.
-        const auto opening_label_registry =
-            build_domain_opening_label_registry(
-                context);
+        const auto opening_label_registry = build_domain_opening_label_registry(context);
 
         for (auto &[bundle_name, bundle] : proof.domain_openings)
         {
@@ -2548,45 +1888,32 @@ namespace gatzk::protocol
             }
             else
             {
-                throw std::runtime_error(
-                    "proof parser encountered unknown domain bundle: " + bundle_name);
+                throw std::runtime_error("proof parser encountered unknown domain bundle: " + bundle_name);
             }
 
-            const auto registered_labels =
-                opening_label_registry.find(
-                    trace_domain);
+            const auto registered_labels = opening_label_registry.find(trace_domain);
 
-            if (registered_labels ==
-                opening_label_registry.end())
+            if (registered_labels == opening_label_registry.end())
             {
-                throw std::runtime_error(
-                    "proof parser has no opening-label registry for domain: " +
-                    trace_domain);
+                throw std::runtime_error("proof parser has no opening-label registry for domain: " + trace_domain);
             }
 
-            auto expected_labels =
-                registered_labels->second;
+            auto expected_labels = registered_labels->second;
 
-            expected_labels.push_back(
-                quotient_name);
+            expected_labels.push_back(quotient_name);
 
-            expected_labels.push_back(
-                quotient_mask_label(
-                    quotient_name));
+            expected_labels.push_back(quotient_mask_label(quotient_name));
 
             if (bundle.values.size() != expected_labels.size() || bundle.value_kinds.size() != bundle.values.size())
-                throw std::runtime_error(
-                    "proof parser reconstructed domain bundle shape mismatch: " + bundle_name);
+                throw std::runtime_error("proof parser reconstructed domain bundle shape mismatch: " + bundle_name);
 
             std::unordered_map<std::string, std::size_t> positions;
             positions.reserve(bundle.values.size());
             for (std::size_t i = 0; i < bundle.values.size(); ++i)
                 if (!positions.emplace(bundle.values[i].first, i).second)
-                    throw std::runtime_error(
-                        "proof parser reconstructed duplicate domain value: " + bundle.values[i].first);
+                    throw std::runtime_error("proof parser reconstructed duplicate domain value: " + bundle.values[i].first);
 
-            std::vector<std::pair<std::string, std::vector<algebra::FieldElement>>>
-                ordered_values;
+            std::vector<std::pair<std::string, std::vector<algebra::FieldElement>>> ordered_values;
             std::vector<PayloadValueKind> ordered_kinds;
             ordered_values.reserve(expected_labels.size());
             ordered_kinds.reserve(expected_labels.size());
@@ -2594,10 +1921,8 @@ namespace gatzk::protocol
             {
                 const auto position = positions.find(label);
                 if (position == positions.end())
-                    throw std::runtime_error(
-                        "proof parser reconstructed domain bundle is missing: " + label);
-                ordered_values.push_back(
-                    std::move(bundle.values[position->second]));
+                    throw std::runtime_error("proof parser reconstructed domain bundle is missing: " + label);
+                ordered_values.push_back(std::move(bundle.values[position->second]));
                 ordered_kinds.push_back(bundle.value_kinds[position->second]);
             }
             bundle.values = std::move(ordered_values);
@@ -2607,12 +1932,9 @@ namespace gatzk::protocol
         std::unordered_map<std::string, crypto::Commitment> dynamic;
         std::unordered_map<std::string, crypto::Commitment> quotient;
 
-        dynamic.reserve(
-            proof.dynamic_commitments.size() +
-            total_binding_g1);
+        dynamic.reserve(proof.dynamic_commitments.size() + total_binding_g1);
 
-        quotient.reserve(
-            proof.quotient_commitments.size());
+        quotient.reserve(proof.quotient_commitments.size());
 
         for (const auto &[name, commitment] : proof.dynamic_commitments)
             dynamic.emplace(name, commitment);
@@ -2620,33 +1942,20 @@ namespace gatzk::protocol
         {
             for (const auto &reblind : subproof.model_reblinds)
             {
-                if (!dynamic.emplace(
-                                reblind.proof_local_commitment.name,
-                                reblind.proof_local_commitment)
-                         .second ||
-                    !dynamic.emplace(
-                                reblind.blinder_commitment.name,
-                                reblind.blinder_commitment)
-                         .second)
+                if (!dynamic.emplace(reblind.proof_local_commitment.name, reblind.proof_local_commitment).second ||
+                    !dynamic.emplace(reblind.blinder_commitment.name, reblind.blinder_commitment).second)
                 {
-                    throw std::runtime_error(
-                        "proof parser duplicate Pi_bind model commitment reference");
+                    throw std::runtime_error("proof parser duplicate Pi_bind model commitment reference");
                 }
             }
-            for (const auto *group : {
-                     &subproof.view_commitments,
-                     &subproof.view_logup_commitments,
-                     &subproof.aggregation_commitments,
-                     &subproof.basis_commitments,
-                     &subproof.crpc_commitments,
-                     &subproof.relation_commitments})
+            for (const auto *group : {&subproof.view_commitments, &subproof.view_logup_commitments, &subproof.aggregation_commitments,
+                                      &subproof.basis_commitments, &subproof.crpc_commitments, &subproof.relation_commitments})
             {
                 for (const auto &[name, commitment] : *group)
                 {
                     if (name != commitment.name || !dynamic.emplace(name, commitment).second)
                     {
-                        throw std::runtime_error(
-                            "proof parser duplicate or inconsistent Pi_bind commitment owner: " + name);
+                        throw std::runtime_error("proof parser duplicate or inconsistent Pi_bind commitment owner: " + name);
                     }
                 }
             }
@@ -2654,64 +1963,39 @@ namespace gatzk::protocol
         for (const auto &[name, commitment] : proof.quotient_commitments)
             quotient.emplace(name, commitment);
         proof.challenges = replay_challenges(context, dynamic, quotient, &proof.public_metadata);
-        const auto expected_route_references =
-            route_opening_references(context, proof.challenges);
+        const auto expected_route_references = route_opening_references(context, proof.challenges);
         if (proof.route_references != expected_route_references)
-            throw std::runtime_error(
-                "proof parser S_route reference registry mismatch");
-        require_exact_pi_bind_shape(
-            context,
-            proof,
-            expected_binding_metadata);
+            throw std::runtime_error("proof parser S_route reference registry mismatch");
+        require_exact_pi_bind_shape(context, proof, expected_binding_metadata);
         return proof;
     }
 
-    Proof parse_proof(
-        const VerifierContext &context,
-        const std::vector<std::uint8_t> &bytes)
+    Proof parse_proof(const VerifierContext &context, const std::vector<std::uint8_t> &bytes)
     {
-        if (const auto *execution_context =
-                detail::
-                    validated_verifier_execution_context(
-                        context);
-            execution_context != nullptr)
+        if (const auto *execution_context = detail::validated_verifier_execution_context(context); execution_context != nullptr)
         {
-            auto proof =
-                parse_proof_internal(
-                    *execution_context,
-                    bytes);
+            auto proof = parse_proof_internal(*execution_context, bytes);
 
-            if (proof_contains_prover_material(
-                    proof))
+            if (proof_contains_prover_material(proof))
             {
-                throw std::runtime_error(
-                    "proof parser rejected non-null prover-only opening polynomial");
+                throw std::runtime_error("proof parser rejected non-null prover-only opening polynomial");
             }
 
             return proof;
         }
 
-        if (context.compiler_artifact == nullptr ||
-            !validate_verifier_context(context))
+        if (context.compiler_artifact == nullptr || !validate_verifier_context(context))
         {
-            throw std::runtime_error(
-                "proof parser requires an authenticated point-only verifier registry");
+            throw std::runtime_error("proof parser requires an authenticated point-only verifier registry");
         }
 
-        auto execution_context =
-            detail::make_verifier_execution_context(
-                context);
+        auto execution_context = detail::make_verifier_execution_context(context);
 
-        auto proof =
-            parse_proof_internal(
-                execution_context,
-                bytes);
+        auto proof = parse_proof_internal(execution_context, bytes);
 
-        if (proof_contains_prover_material(
-                proof))
+        if (proof_contains_prover_material(proof))
         {
-            throw std::runtime_error(
-                "proof parser rejected non-null prover-only opening polynomial");
+            throw std::runtime_error("proof parser rejected non-null prover-only opening polynomial");
         }
 
         return proof;

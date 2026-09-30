@@ -56,8 +56,7 @@ namespace gatzk::algebra
     {
         std::shared_ptr<void> allocation;
 
-        const std::uint64_t *device_montgomery_limbs =
-            nullptr;
+        const std::uint64_t *device_montgomery_limbs = nullptr;
 
         std::size_t capacity = 0;
 
@@ -69,9 +68,7 @@ namespace gatzk::algebra
 
         int device = -1;
 
-        std::shared_ptr<
-            const CudaHostTransferGuard>
-            host_transfer;
+        std::shared_ptr<const CudaHostTransferGuard> host_transfer;
     };
 
     enum class PolynomialBasis
@@ -104,19 +101,12 @@ namespace gatzk::algebra
         // host polynomial storage so its transfer guard is destroyed first.
         // This sidecar is excluded from serialization, transcript construction
         // and polynomial semantics.
-        std::shared_ptr<
-            const CudaResidentCoefficientBuffer>
-            cuda_resident_coefficients;
+        std::shared_ptr<const CudaResidentCoefficientBuffer> cuda_resident_coefficients;
 
         static Polynomial from_coefficients(const std::string &name, std::vector<FieldElement> coefficients);
-        static Polynomial from_evaluations(
-            const std::string &name,
-            std::vector<FieldElement> evaluations,
-            const std::shared_ptr<RootOfUnityDomain> &domain);
-        static Polynomial from_shared_evaluations(
-            const std::string &name,
-            std::shared_ptr<const std::vector<FieldElement>> evaluations,
-            const std::shared_ptr<RootOfUnityDomain> &domain);
+        static Polynomial from_evaluations(const std::string &name, std::vector<FieldElement> evaluations, const std::shared_ptr<RootOfUnityDomain> &domain);
+        static Polynomial from_shared_evaluations(const std::string &name, std::shared_ptr<const std::vector<FieldElement>> evaluations,
+                                                  const std::shared_ptr<RootOfUnityDomain> &domain);
 
         const std::vector<FieldElement> &values() const;
         std::size_t size() const;
@@ -131,25 +121,17 @@ namespace gatzk::algebra
     };
 
     FieldElement horner(const std::vector<FieldElement> &coefficients, const FieldElement &x);
-    FieldElement interpolate_at(
-        const std::vector<FieldElement> &points,
-        const std::vector<FieldElement> &values,
-        const FieldElement &x);
+    FieldElement interpolate_at(const std::vector<FieldElement> &points, const std::vector<FieldElement> &values, const FieldElement &x);
 
     // Materialize the exact blinded coefficient vector used by a KZG
     // commitment. The result has configured_degree + 1 entries and is never
     // trimmed according to witness-dependent high zero coefficients.
-    std::vector<FieldElement> materialize_blinded_coefficients(
-        const Polynomial &polynomial,
-        std::size_t configured_degree);
+    std::vector<FieldElement> materialize_blinded_coefficients(const Polynomial &polynomial, std::size_t configured_degree);
 
     // Canonical coefficient Taylor shift fixed by the protocol compiler.
     // Computes F(X + delta) with the registered radix-2 convolution size while
     // preserving the public configured coefficient length.
-    std::vector<FieldElement> coefficient_taylor_shift(
-        const std::vector<FieldElement> &coefficients,
-        std::size_t configured_degree,
-        const FieldElement &delta);
+    std::vector<FieldElement> coefficient_taylor_shift(const std::vector<FieldElement> &coefficients, std::size_t configured_degree, const FieldElement &delta);
 
     // Execution-only cache; live callers retain their immutable shared owners.
     void release_taylor_shift_cache();

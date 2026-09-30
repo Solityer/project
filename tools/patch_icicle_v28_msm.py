@@ -6,18 +6,11 @@ import argparse
 from pathlib import Path
 
 
-def replace_once(
-    text: str,
-    old: str,
-    new: str,
-    label: str,
-) -> str:
+def replace_once(text: str, old: str, new: str, label: str) -> str:
     count = text.count(old)
 
     if count != 1:
-        raise RuntimeError(
-            f"{label}: expected exactly one source match, found {count}"
-        )
+        raise RuntimeError(f"{label}: expected exactly one source match, found {count}")
 
     return text.replace(old, new, 1)
 
@@ -25,24 +18,16 @@ def replace_once(
 def main() -> None:
     parser = argparse.ArgumentParser()
 
-    parser.add_argument(
-        "--input",
-        required=True,
-    )
+    parser.add_argument("--input", required=True)
 
-    parser.add_argument(
-        "--output",
-        required=True,
-    )
+    parser.add_argument("--output", required=True)
 
     args = parser.parse_args()
 
     source = Path(args.input)
     output = Path(args.output)
 
-    text = source.read_text(
-        encoding="utf-8"
-    )
+    text = source.read_text(encoding="utf-8")
 
     old = """      // removing zero bucket, if it exists
       unsigned smallest_bucket_index;
@@ -78,12 +63,7 @@ def main() -> None:
       h_nof_buckets_to_compute -= zero_bucket_offset;
 """
 
-    text = replace_once(
-        text,
-        old,
-        new,
-        "bucket host-control synchronization",
-    )
+    text = replace_once(text, old, new, "bucket host-control synchronization")
 
     old = """      unsigned h_nof_large_buckets;
       CHK_IF_RETURN(
@@ -98,12 +78,7 @@ def main() -> None:
       CHK_IF_RETURN(cudaFreeAsync(nof_large_buckets, stream));
 """
 
-    text = replace_once(
-        text,
-        old,
-        new,
-        "large-bucket count synchronization",
-    )
+    text = replace_once(text, old, new, "large-bucket count synchronization")
 
     old = """        unsigned h_nof_pts_in_large_buckets;
         CHK_IF_RETURN(cudaMemcpyAsync(
@@ -124,12 +99,7 @@ def main() -> None:
         CHK_IF_RETURN(cudaStreamSynchronize(stream_large_buckets));
 """
 
-    text = replace_once(
-        text,
-        old,
-        new,
-        "large-bucket metadata synchronization",
-    )
+    text = replace_once(text, old, new, "large-bucket metadata synchronization")
 
     # large_bucket_indices is consumed and released exclusively by
     # stream_large_buckets.  Allocating it on the main stream leaves a
@@ -144,12 +114,7 @@ def main() -> None:
           &large_bucket_indices, sizeof(unsigned) * large_buckets_nof_threads, stream_large_buckets));
 """
 
-    text = replace_once(
-        text,
-        old,
-        new,
-        "large-bucket allocation stream ownership",
-    )
+    text = replace_once(text, old, new, "large-bucket allocation stream ownership")
 
     # The large-bucket stream reads all four sorted arrays below.  In the
     # original v2.8.0 code the main stream queues cudaFreeAsync() for those
@@ -183,12 +148,7 @@ def main() -> None:
       }
 """
 
-    text = replace_once(
-        text,
-        old,
-        new,
-        "large-bucket metadata lifetime ordering",
-    )
+    text = replace_once(text, old, new, "large-bucket metadata lifetime ordering")
 
     # Iterative reduction uses allocations created on the main MSM stream from
     # stream_reduction as well.  v2.8.0 only establishes the reverse
@@ -210,12 +170,7 @@ def main() -> None:
         CHK_IF_RETURN(cudaEventCreateWithFlags(&event_main_reduction_ready, cudaEventDisableTiming));
 """
 
-    text = replace_once(
-        text,
-        old,
-        new,
-        "iterative-reduction bidirectional event declaration",
-    )
+    text = replace_once(text, old, new, "iterative-reduction bidirectional event declaration")
 
     old = """          initialize_buckets_kernel<<<(target_buckets_count * batch_size + 255) / 256, 256>>>(
             target_buckets, target_buckets_count * batch_size); // initialization is needed for the odd c case
@@ -236,12 +191,7 @@ def main() -> None:
           for (unsigned j = 0; j < target_bits_count; j++) {
 """
 
-    text = replace_once(
-        text,
-        old,
-        new,
-        "iterative-reduction main-to-secondary dependency",
-    )
+    text = replace_once(text, old, new, "iterative-reduction main-to-secondary dependency")
 
     old = """            CHK_IF_RETURN(cudaStreamDestroy(stream_reduction));
             break;
@@ -253,22 +203,11 @@ def main() -> None:
             break;
 """
 
-    text = replace_once(
-        text,
-        old,
-        new,
-        "iterative-reduction event lifetime",
-    )
+    text = replace_once(text, old, new, "iterative-reduction event lifetime")
 
-    output.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    output.parent.mkdir(parents=True, exist_ok=True)
 
-    output.write_text(
-        text,
-        encoding="utf-8",
-    )
+    output.write_text(text, encoding="utf-8")
 
 
 if __name__ == "__main__":

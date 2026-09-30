@@ -19,20 +19,15 @@ namespace gatzk::util
     {
         if (dataset == "ogbn_arxiv")
             return "ogbn_arxiv_raw_float32";
-        if (dataset == "cora" || dataset == "citeseer"
-            || dataset == "pubmed" || dataset == "ppi")
+        if (dataset == "cora" || dataset == "citeseer" || dataset == "pubmed" || dataset == "ppi")
             return "row_normalize";
-        throw std::runtime_error(
-            "unsupported formal dataset for input preprocessing: "
-            + std::string(dataset));
+        throw std::runtime_error("unsupported formal dataset for input preprocessing: " + std::string(dataset));
     }
 
     namespace
     {
 
-        std::string serialize_scale_vector(
-            std::string_view name,
-            const std::vector<std::uint64_t> &values)
+        std::string serialize_scale_vector(std::string_view name, const std::vector<std::uint64_t> &values)
         {
             std::ostringstream out;
             out << name << "=[";
@@ -48,9 +43,7 @@ namespace gatzk::util
             return out.str();
         }
 
-        std::string serialize_scale_matrix(
-            std::string_view name,
-            const std::vector<std::vector<std::uint64_t>> &values)
+        std::string serialize_scale_matrix(std::string_view name, const std::vector<std::vector<std::uint64_t>> &values)
         {
             std::ostringstream out;
             out << name << "=[";
@@ -79,47 +72,32 @@ namespace gatzk::util
         {
             if (value == 0)
             {
-                throw std::runtime_error(
-                    "registered quantization scale must be positive: " +
-                    std::string(name));
+                throw std::runtime_error("registered quantization scale must be positive: " + std::string(name));
             }
         }
 
-        void validate_scale_chain_shape(
-            const QuantizationScaleChain &chain,
-            const std::vector<HiddenLayerProfile> &hidden_profile,
-            std::size_t K_out)
+        void validate_scale_chain_shape(const QuantizationScaleChain &chain, const std::vector<HiddenLayerProfile> &hidden_profile, std::size_t K_out)
         {
             if (hidden_profile.size() != 2 || K_out != 2)
             {
-                throw std::runtime_error(
-                    "registered quantization scale chain only supports canonical L3/K_out=2");
+                throw std::runtime_error("registered quantization scale chain only supports canonical L3/K_out=2");
             }
             const auto expected_heads = std::vector<std::size_t>{8, 8};
             // S_H carries the input scale of every hidden layer plus the
             // final hidden-concat/output input scale.  Keeping the terminal
             // entry explicit lets validation enforce every protocol
             // transition S_H^(l+1) = S_cat^(l), including the output input.
-            if (chain.s_h.size() != hidden_profile.size() + 1 ||
-                chain.s_agg_pre.size() != hidden_profile.size() ||
-                chain.s_agg.size() != hidden_profile.size() ||
-                chain.s_cat.size() != hidden_profile.size() ||
-                chain.s_w_hidden.size() != hidden_profile.size() ||
-                chain.s_h_prime.size() != hidden_profile.size() ||
-                chain.s_a_src_hidden.size() != hidden_profile.size() ||
-                chain.s_a_dst_hidden.size() != hidden_profile.size())
+            if (chain.s_h.size() != hidden_profile.size() + 1 || chain.s_agg_pre.size() != hidden_profile.size() ||
+                chain.s_agg.size() != hidden_profile.size() || chain.s_cat.size() != hidden_profile.size() ||
+                chain.s_w_hidden.size() != hidden_profile.size() || chain.s_h_prime.size() != hidden_profile.size() ||
+                chain.s_a_src_hidden.size() != hidden_profile.size() || chain.s_a_dst_hidden.size() != hidden_profile.size())
             {
-                throw std::runtime_error(
-                    "registered quantization scale chain hidden layer count mismatch");
+                throw std::runtime_error("registered quantization scale chain hidden layer count mismatch");
             }
-            if (chain.s_w_output.size() != K_out ||
-                chain.s_y_prime.size() != K_out ||
-                chain.s_a_src_output.size() != K_out ||
-                chain.s_a_dst_output.size() != K_out ||
-                chain.s_b_output.size() != K_out)
+            if (chain.s_w_output.size() != K_out || chain.s_y_prime.size() != K_out || chain.s_a_src_output.size() != K_out ||
+                chain.s_a_dst_output.size() != K_out || chain.s_b_output.size() != K_out)
             {
-                throw std::runtime_error(
-                    "registered quantization scale chain output head count mismatch");
+                throw std::runtime_error("registered quantization scale chain output head count mismatch");
             }
             require_positive_scale(chain.s_input, "S_input");
             require_positive_scale(chain.s_delta, "S_Delta");
@@ -130,23 +108,16 @@ namespace gatzk::util
             // The canonical output protocol fixes S_out_pre=S_out_head=S_out;
             // its pre-bias alignment SignedRoundDiv is therefore an identity
             // and cannot hide an implicit rescale in the production trace.
-            if (chain.s_h.front() != chain.s_input ||
-                chain.s_cat != chain.s_agg ||
-                chain.s_out != chain.s_out_head ||
-                chain.s_out_pre != chain.s_out_head)
+            if (chain.s_h.front() != chain.s_input || chain.s_cat != chain.s_agg || chain.s_out != chain.s_out_head || chain.s_out_pre != chain.s_out_head)
             {
                 throw std::runtime_error(
                     "registered quantization scale chain violates H/cat/output equalities; canonical output alignment requires S_out_pre=S_out_head=S_out");
             }
-            for (std::size_t layer = 0;
-                 layer < hidden_profile.size();
-                 ++layer)
+            for (std::size_t layer = 0; layer < hidden_profile.size(); ++layer)
             {
                 if (chain.s_h[layer + 1] != chain.s_cat[layer])
                 {
-                    throw std::runtime_error(
-                        "registered quantization scale chain violates S_H[l+1]=S_cat[l] at layer " +
-                        std::to_string(layer));
+                    throw std::runtime_error("registered quantization scale chain violates S_H[l+1]=S_cat[l] at layer " + std::to_string(layer));
                 }
             }
             // StaticTables owns one shared authenticated ELU table.  The
@@ -156,35 +127,25 @@ namespace gatzk::util
             // formal table commitment and is intentionally not accepted.
             const auto elu_input_scale = chain.s_agg_pre.front();
             const auto elu_output_scale = chain.s_agg.front();
-            for (std::size_t layer = 0;
-                 layer < hidden_profile.size();
-                 ++layer)
+            for (std::size_t layer = 0; layer < hidden_profile.size(); ++layer)
             {
-                if (chain.s_agg_pre[layer] != elu_input_scale ||
-                    chain.s_agg[layer] != elu_output_scale)
+                if (chain.s_agg_pre[layer] != elu_input_scale || chain.s_agg[layer] != elu_output_scale)
                 {
-                    throw std::runtime_error(
-                        "registered quantization scale chain violates shared ELU table scale equality");
+                    throw std::runtime_error("registered quantization scale chain violates shared ELU table scale equality");
                 }
             }
             for (std::size_t layer = 0; layer < hidden_profile.size(); ++layer)
             {
                 if (hidden_profile[layer].head_count != expected_heads[layer])
                 {
-                    throw std::runtime_error(
-                        "registered quantization scale chain hidden head count mismatch");
+                    throw std::runtime_error("registered quantization scale chain hidden head count mismatch");
                 }
                 const auto head_count = hidden_profile[layer].head_count;
-                for (const auto *family : {
-                         &chain.s_w_hidden[layer],
-                         &chain.s_h_prime[layer],
-                         &chain.s_a_src_hidden[layer],
-                         &chain.s_a_dst_hidden[layer]})
+                for (const auto *family : {&chain.s_w_hidden[layer], &chain.s_h_prime[layer], &chain.s_a_src_hidden[layer], &chain.s_a_dst_hidden[layer]})
                 {
                     if (family->size() != head_count)
                     {
-                        throw std::runtime_error(
-                            "registered quantization scale chain hidden head count mismatch");
+                        throw std::runtime_error("registered quantization scale chain hidden head count mismatch");
                     }
                 }
                 for (std::size_t head = 0; head < head_count; ++head)
@@ -193,13 +154,11 @@ namespace gatzk::util
                     require_positive_scale(chain.s_h_prime[layer][head], "S_H_prime_hidden");
                     require_positive_scale(chain.s_a_src_hidden[layer][head], "S_a_src_hidden");
                     require_positive_scale(chain.s_a_dst_hidden[layer][head], "S_a_dst_hidden");
-                    if (chain.s_h_prime[layer][head] !=
-                            chain.s_h[layer] * chain.s_w_hidden[layer][head] ||
+                    if (chain.s_h_prime[layer][head] != chain.s_h[layer] * chain.s_w_hidden[layer][head] ||
                         chain.s_h_prime[layer][head] * chain.s_a_src_hidden[layer][head] != chain.s_delta ||
                         chain.s_h_prime[layer][head] * chain.s_a_dst_hidden[layer][head] != chain.s_delta)
                     {
-                        throw std::runtime_error(
-                            "registered quantization scale chain violates hidden H/W/a equations");
+                        throw std::runtime_error("registered quantization scale chain violates hidden H/W/a equations");
                     }
                 }
                 require_positive_scale(chain.s_agg_pre[layer], "S_agg_pre");
@@ -218,26 +177,19 @@ namespace gatzk::util
                 // final S_cat transition rather than silently selecting a
                 // different input scale.
                 const auto output_input_scale = chain.s_cat.back();
-                if (chain.s_h.back() != output_input_scale ||
-                    chain.s_y_prime[head] != output_input_scale * chain.s_w_output[head] ||
+                if (chain.s_h.back() != output_input_scale || chain.s_y_prime[head] != output_input_scale * chain.s_w_output[head] ||
                     chain.s_y_prime[head] * chain.s_a_src_output[head] != chain.s_delta ||
-                    chain.s_y_prime[head] * chain.s_a_dst_output[head] != chain.s_delta ||
-                    chain.s_b_output[head] != chain.s_out_head)
+                    chain.s_y_prime[head] * chain.s_a_dst_output[head] != chain.s_delta || chain.s_b_output[head] != chain.s_out_head)
                 {
-                    throw std::runtime_error(
-                        "registered quantization scale chain violates output H/W/a/b equations");
+                    throw std::runtime_error("registered quantization scale chain violates output H/W/a/b equations");
                 }
             }
         }
 
         std::string trim(std::string value)
         {
-            value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch)
-                                                    { return !std::isspace(ch); }));
-            value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char ch)
-                                     { return !std::isspace(ch); })
-                            .base(),
-                        value.end());
+            value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+            value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), value.end());
             return value;
         }
 
@@ -248,8 +200,8 @@ namespace gatzk::util
 
         std::string strip_wrappers(std::string value)
         {
-            value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char ch)
-                                       { return std::isspace(ch) || ch == '[' || ch == ']' || ch == '(' || ch == ')'; }),
+            value.erase(std::remove_if(value.begin(), value.end(),
+                                       [](unsigned char ch) { return std::isspace(ch) || ch == '[' || ch == ']' || ch == '(' || ch == ')'; }),
                         value.end());
             return value;
         }
@@ -293,8 +245,7 @@ namespace gatzk::util
             return out;
         }
 
-        std::unordered_map<std::string, std::string>
-        read_canonical_scale_chain_source(std::string_view source_path)
+        std::unordered_map<std::string, std::string> read_canonical_scale_chain_source(std::string_view source_path)
         {
             std::filesystem::path path;
             if (source_path.empty())
@@ -302,8 +253,7 @@ namespace gatzk::util
 #ifdef GATZK_CANONICAL_SCALE_CHAIN_PATH
                 path = GATZK_CANONICAL_SCALE_CHAIN_PATH;
 #else
-                throw std::runtime_error(
-                    "canonical quantization scale-chain path is missing from the build");
+                throw std::runtime_error("canonical quantization scale-chain path is missing from the build");
 #endif
             }
             else
@@ -313,9 +263,7 @@ namespace gatzk::util
             std::ifstream input(path);
             if (!input)
             {
-                throw std::runtime_error(
-                    "canonical quantization scale-chain source not found: " +
-                    path.string());
+                throw std::runtime_error("canonical quantization scale-chain source not found: " + path.string());
             }
             std::unordered_map<std::string, std::string> entries;
             std::string line;
@@ -334,59 +282,44 @@ namespace gatzk::util
                 const auto equal = line.find('=');
                 if (equal == std::string::npos)
                 {
-                    throw std::runtime_error(
-                        "malformed canonical quantization scale-chain source line");
+                    throw std::runtime_error("malformed canonical quantization scale-chain source line");
                 }
                 const auto key = trim(line.substr(0, equal));
                 const auto value = trim(line.substr(equal + 1));
-                if (key.empty() || value.empty()
-                    || !entries.emplace(key, value).second)
+                if (key.empty() || value.empty() || !entries.emplace(key, value).second)
                 {
-                    throw std::runtime_error(
-                        "malformed or duplicate canonical quantization scale-chain source key");
+                    throw std::runtime_error("malformed or duplicate canonical quantization scale-chain source key");
                 }
             }
             return entries;
         }
 
-        std::uint64_t parse_scale_value(
-            const std::unordered_map<std::string, std::string> &entries,
-            std::string_view key)
+        std::uint64_t parse_scale_value(const std::unordered_map<std::string, std::string> &entries, std::string_view key)
         {
             const auto it = entries.find(std::string(key));
             if (it == entries.end())
             {
-                throw std::runtime_error(
-                    "canonical quantization scale-chain source is missing " +
-                    std::string(key));
+                throw std::runtime_error("canonical quantization scale-chain source is missing " + std::string(key));
             }
             const auto value = std::stoull(it->second);
             if (value == 0)
             {
-                throw std::runtime_error(
-                    "canonical quantization scale-chain source requires positive " +
-                    std::string(key));
+                throw std::runtime_error("canonical quantization scale-chain source requires positive " + std::string(key));
             }
             return static_cast<std::uint64_t>(value);
         }
 
-        std::vector<std::uint64_t> parse_scale_vector(
-            const std::unordered_map<std::string, std::string> &entries,
-            std::string_view key)
+        std::vector<std::uint64_t> parse_scale_vector(const std::unordered_map<std::string, std::string> &entries, std::string_view key)
         {
             const auto it = entries.find(std::string(key));
             if (it == entries.end())
             {
-                throw std::runtime_error(
-                    "canonical quantization scale-chain source is missing " +
-                    std::string(key));
+                throw std::runtime_error("canonical quantization scale-chain source is missing " + std::string(key));
             }
             const auto parsed = parse_size_list(it->second);
             if (parsed.empty())
             {
-                throw std::runtime_error(
-                    "canonical quantization scale-chain source has an empty vector " +
-                    std::string(key));
+                throw std::runtime_error("canonical quantization scale-chain source has an empty vector " + std::string(key));
             }
             std::vector<std::uint64_t> out;
             out.reserve(parsed.size());
@@ -394,9 +327,7 @@ namespace gatzk::util
             {
                 if (value == 0)
                 {
-                    throw std::runtime_error(
-                        "canonical quantization scale-chain source requires positive vector entries " +
-                        std::string(key));
+                    throw std::runtime_error("canonical quantization scale-chain source requires positive vector entries " + std::string(key));
                 }
                 out.push_back(static_cast<std::uint64_t>(value));
             }
@@ -426,9 +357,7 @@ namespace gatzk::util
             return out;
         }
 
-        void fail_if_present(
-            const std::unordered_map<std::string, std::string> &entries,
-            const std::set<std::string> &keys)
+        void fail_if_present(const std::unordered_map<std::string, std::string> &entries, const std::set<std::string> &keys)
         {
             for (const auto &key : keys)
             {
@@ -495,15 +424,13 @@ namespace gatzk::util
             }
         }
 
-        void require_explicit_family_shape_fields(
-            const std::unordered_map<std::string, std::string> &entries)
+        void require_explicit_family_shape_fields(const std::unordered_map<std::string, std::string> &entries)
         {
             for (const auto *key : {"L", "hidden_profile", "d_in_profile", "K_out"})
             {
                 if (!entries.contains(key))
                 {
-                    throw std::runtime_error(
-                        "formal config must set family shape field explicitly: " + std::string(key));
+                    throw std::runtime_error("formal config must set family shape field explicitly: " + std::string(key));
                 }
             }
         }
@@ -511,114 +438,78 @@ namespace gatzk::util
         {
             if (config.dataset.empty())
             {
-                throw std::runtime_error(
-                    "formal config must set dataset explicitly");
+                throw std::runtime_error("formal config must set dataset explicitly");
             }
 
-            if (config.srs_id.empty() ||
-                config.srs_path.empty())
+            if (config.srs_id.empty() || config.srs_path.empty())
             {
-                throw std::runtime_error(
-                    "formal config must set srs_id and srs_path explicitly");
+                throw std::runtime_error("formal config must set srs_id and srs_path explicitly");
             }
 
             if (config.checkpoint_bundle.empty())
             {
-                throw std::runtime_error(
-                    "formal config must set checkpoint_bundle explicitly");
+                throw std::runtime_error("formal config must set checkpoint_bundle explicitly");
             }
 
-            const auto expected_input_preprocess_id =
-                canonical_input_preprocess_id(config.dataset);
-            if (config.input_preprocess_id.empty()
-                || config.input_preprocess_id != expected_input_preprocess_id)
+            const auto expected_input_preprocess_id = canonical_input_preprocess_id(config.dataset);
+            if (config.input_preprocess_id.empty() || config.input_preprocess_id != expected_input_preprocess_id)
             {
-                throw std::runtime_error(
-                    "formal config input_preprocess_id does not match dataset; expected "
-                    + expected_input_preprocess_id);
+                throw std::runtime_error("formal config input_preprocess_id does not match dataset; expected " + expected_input_preprocess_id);
             }
 
-            if (!config.verifier_registry_digest.empty()
-                && (config.verifier_registry_digest.size() != 64
-                    || !std::all_of(
-                        config.verifier_registry_digest.begin(),
-                        config.verifier_registry_digest.end(),
-                        [](unsigned char ch)
-                        {
-                            return (ch >= '0' && ch <= '9')
-                                || (ch >= 'a' && ch <= 'f');
-                        })))
+            if (!config.verifier_registry_digest.empty() &&
+                (config.verifier_registry_digest.size() != 64 ||
+                 !std::all_of(config.verifier_registry_digest.begin(), config.verifier_registry_digest.end(),
+                              [](unsigned char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); })))
             {
-                throw std::runtime_error(
-                    "verifier_registry_digest must be lowercase SHA-256");
+                throw std::runtime_error("verifier_registry_digest must be lowercase SHA-256");
             }
 
             if (config.subgraph_rule != "whole_graph")
             {
-                throw std::runtime_error(
-                    "formal mainline only supports subgraph_rule=whole_graph");
+                throw std::runtime_error("formal mainline only supports subgraph_rule=whole_graph");
             }
 
             if (config.hidden_profile.empty())
             {
-                throw std::runtime_error(
-                    "hidden_profile must be set explicitly");
+                throw std::runtime_error("hidden_profile must be set explicitly");
             }
 
             if (config.layer_count == 0)
             {
-                throw std::runtime_error(
-                    "L must be set explicitly and be >= 2");
+                throw std::runtime_error("L must be set explicitly and be >= 2");
             }
 
-            if (config.layer_count !=
-                config.hidden_profile.size() + 1)
+            if (config.layer_count != config.hidden_profile.size() + 1)
             {
-                throw std::runtime_error(
-                    "L=" +
-                    std::to_string(config.layer_count) +
-                    " conflicts with hidden_profile size=" +
-                    std::to_string(config.hidden_profile.size()));
+                throw std::runtime_error("L=" + std::to_string(config.layer_count) +
+                                         " conflicts with hidden_profile size=" + std::to_string(config.hidden_profile.size()));
             }
 
             if (config.d_in_profile.empty())
             {
-                throw std::runtime_error(
-                    "d_in_profile must be set explicitly");
+                throw std::runtime_error("d_in_profile must be set explicitly");
             }
 
-            if (config.d_in_profile.size() !=
-                config.hidden_profile.size())
+            if (config.d_in_profile.size() != config.hidden_profile.size())
             {
-                throw std::runtime_error(
-                    "d_in_profile size=" +
-                    std::to_string(config.d_in_profile.size()) +
-                    " conflicts with hidden_profile size=" +
-                    std::to_string(config.hidden_profile.size()));
+                throw std::runtime_error("d_in_profile size=" + std::to_string(config.d_in_profile.size()) +
+                                         " conflicts with hidden_profile size=" + std::to_string(config.hidden_profile.size()));
             }
 
-            if (std::any_of(
-                    config.d_in_profile.begin(),
-                    config.d_in_profile.end(),
-                    [](std::size_t value)
-                    {
-                        return value == 0;
-                    }))
+            if (std::any_of(config.d_in_profile.begin(), config.d_in_profile.end(), [](std::size_t value) { return value == 0; }))
             {
-                throw std::runtime_error(
-                    "d_in_profile entries must be non-zero");
+                throw std::runtime_error("d_in_profile entries must be non-zero");
             }
 
             if (config.K_out == 0)
             {
-                throw std::runtime_error(
-                    "K_out must be >= 1");
+                throw std::runtime_error("K_out must be >= 1");
             }
 
             if (config.num_classes == 0)
             {
-                throw std::runtime_error(
-                    "C/num_classes must be >= 1");
+                throw std::runtime_error("C/num_classes must be >= 1");
             }
 
             // Registry range certificates are signed 64-bit bounds.  Reject
@@ -626,89 +517,63 @@ namespace gatzk::util
             // `1 << range_bits` is only defined for the canonical 1..62 range.
             if (config.range_bits < 1 || config.range_bits > 62)
             {
-                throw std::runtime_error(
-                    "range_bits must be between 1 and 62 for signed certificates");
+                throw std::runtime_error("range_bits must be between 1 and 62 for signed certificates");
             }
 
             if (config.srs_type != "trusted_srs")
             {
-                throw std::runtime_error(
-                    "secure mainline requires srs_type=trusted_srs");
+                throw std::runtime_error("secure mainline requires srs_type=trusted_srs");
             }
 
-            if (config.privacy_policy !=
-                "model_and_trace_hidden")
+            if (config.privacy_policy != "model_and_trace_hidden")
             {
-                throw std::runtime_error(
-                    "secure mainline requires privacy_policy=model_and_trace_hidden");
+                throw std::runtime_error("secure mainline requires privacy_policy=model_and_trace_hidden");
             }
 
-            if (config.input_privacy !=
-                "public_graph_public_features")
+            if (config.input_privacy != "public_graph_public_features")
             {
-                throw std::runtime_error(
-                    "secure mainline requires input_privacy=public_graph_public_features");
+                throw std::runtime_error("secure mainline requires input_privacy=public_graph_public_features");
             }
 
             if (config.output_mode != "public_logits")
             {
-                throw std::runtime_error(
-                    "secure mainline requires output_mode=public_logits");
+                throw std::runtime_error("secure mainline requires output_mode=public_logits");
             }
 
-            if (config.opening_mode !=
-                "point_grouped_batch_opening")
+            if (config.opening_mode != "point_grouped_batch_opening")
             {
-                throw std::runtime_error(
-                    "secure mainline requires opening_mode=point_grouped_batch_opening");
+                throw std::runtime_error("secure mainline requires opening_mode=point_grouped_batch_opening");
             }
 
-            if (config.binding_mode !=
-                "zk_subproof_for_crpc")
+            if (config.binding_mode != "zk_subproof_for_crpc")
             {
-                throw std::runtime_error(
-                    "secure mainline requires binding_mode=zk_subproof_for_crpc");
+                throw std::runtime_error("secure mainline requires binding_mode=zk_subproof_for_crpc");
             }
 
-            if (config.proof_task !=
-                "node_classification_full_gat")
+            if (config.proof_task != "node_classification_full_gat")
             {
-                throw std::runtime_error(
-                    "secure mainline requires proof_task=node_classification_full_gat");
+                throw std::runtime_error("secure mainline requires proof_task=node_classification_full_gat");
             }
 
-            for (std::size_t layer_index = 0;
-                 layer_index < config.hidden_profile.size();
-                 ++layer_index)
+            for (std::size_t layer_index = 0; layer_index < config.hidden_profile.size(); ++layer_index)
             {
-                const auto &layer =
-                    config.hidden_profile[layer_index];
+                const auto &layer = config.hidden_profile[layer_index];
 
-                if (layer.head_count == 0 ||
-                    layer.head_dim == 0)
+                if (layer.head_count == 0 || layer.head_dim == 0)
                 {
-                    throw std::runtime_error(
-                        "hidden_profile entries must have non-zero head_count and head_dim");
+                    throw std::runtime_error("hidden_profile entries must have non-zero head_count and head_dim");
                 }
 
-                if (layer_index + 1 <
-                    config.hidden_profile.size())
+                if (layer_index + 1 < config.hidden_profile.size())
                 {
-                    const auto expected =
-                        layer.head_count * layer.head_dim;
+                    const auto expected = layer.head_count * layer.head_dim;
 
-                    const auto actual =
-                        config.d_in_profile[layer_index + 1];
+                    const auto actual = config.d_in_profile[layer_index + 1];
 
                     if (expected != actual)
                     {
-                        throw std::runtime_error(
-                            "d_in_profile[" +
-                            std::to_string(layer_index + 1) +
-                            "]=" +
-                            std::to_string(actual) +
-                            " conflicts with previous hidden concat width=" +
-                            std::to_string(expected));
+                        throw std::runtime_error("d_in_profile[" + std::to_string(layer_index + 1) + "]=" + std::to_string(actual) +
+                                                 " conflicts with previous hidden concat width=" + std::to_string(expected));
                     }
                 }
             }
@@ -724,16 +589,11 @@ namespace gatzk::util
                 const char *model_arch_id;
             };
             const CanonicalShape *expected = nullptr;
-            static const CanonicalShape cora{
-                {1433, 64}, 7, 12, "gat_family_L3_hid8x8-8x8_kout2_c7"};
-            static const CanonicalShape citeseer{
-                {3703, 64}, 6, 12, "gat_family_L3_hid8x8-8x8_kout2_c6"};
-            static const CanonicalShape pubmed{
-                {500, 64}, 3, 12, "gat_family_L3_hid8x8-8x8_kout2_c3"};
-            static const CanonicalShape ppi{
-                {50, 64}, 121, 14, "gat_family_L3_hid8x8-8x8_kout2_c121"};
-            static const CanonicalShape ogbn_arxiv{
-                {128, 64}, 40, 21, "gat_family_L3_hid8x8-8x8_kout2_c40"};
+            static const CanonicalShape cora{{1433, 64}, 7, 12, "gat_family_L3_hid8x8-8x8_kout2_c7"};
+            static const CanonicalShape citeseer{{3703, 64}, 6, 12, "gat_family_L3_hid8x8-8x8_kout2_c6"};
+            static const CanonicalShape pubmed{{500, 64}, 3, 12, "gat_family_L3_hid8x8-8x8_kout2_c3"};
+            static const CanonicalShape ppi{{50, 64}, 121, 14, "gat_family_L3_hid8x8-8x8_kout2_c121"};
+            static const CanonicalShape ogbn_arxiv{{128, 64}, 40, 21, "gat_family_L3_hid8x8-8x8_kout2_c40"};
             if (config.dataset == "cora")
                 expected = &cora;
             else if (config.dataset == "citeseer")
@@ -746,23 +606,14 @@ namespace gatzk::util
                 expected = &ogbn_arxiv;
             if (expected != nullptr)
             {
-                const bool profile_matches =
-                    config.hidden_profile.size() == 2 &&
-                    std::all_of(
-                        config.hidden_profile.begin(),
-                        config.hidden_profile.end(),
-                        [](const HiddenLayerProfile &layer)
-                        {
-                            return layer.head_count == 8 && layer.head_dim == 8;
-                        });
-                if (config.layer_count != 3 || !profile_matches ||
-                    config.d_in_profile != expected->d_in || config.K_out != 2 ||
-                    config.num_classes != expected->classes ||
-                    config.range_bits != expected->range_bits ||
-                    config.model_arch_id != expected->model_arch_id)
+                const bool profile_matches = config.hidden_profile.size() == 2 &&
+                                             std::all_of(config.hidden_profile.begin(), config.hidden_profile.end(),
+                                                         [](const HiddenLayerProfile &layer) { return layer.head_count == 8 && layer.head_dim == 8; });
+                if (config.layer_count != 3 || !profile_matches || config.d_in_profile != expected->d_in || config.K_out != 2 ||
+                    config.num_classes != expected->classes || config.range_bits != expected->range_bits || config.model_arch_id != expected->model_arch_id)
                 {
-                    throw std::runtime_error(
-                        "registered dataset requires canonical L=3 hidden_profile=[8x8,8x8], K_out=2 shape and metadata: " + config.dataset);
+                    throw std::runtime_error("registered dataset requires canonical L=3 hidden_profile=[8x8,8x8], K_out=2 shape and metadata: " +
+                                             config.dataset);
                 }
             }
         }
@@ -773,54 +624,33 @@ namespace gatzk::util
     {
         std::ostringstream out;
         out << "schema=gat_l3_scale_chain"
-            << "|S_input=" << s_input
-            << "|S_Delta=" << s_delta
-            << "|S_exp=" << s_exp
-            << '|' << serialize_scale_vector("S_H", s_h)
-            << '|' << serialize_scale_matrix("S_W_hidden", s_w_hidden)
-            << '|' << serialize_scale_matrix("S_H_prime_hidden", s_h_prime)
-            << '|' << serialize_scale_matrix("S_a_src_hidden", s_a_src_hidden)
-            << '|' << serialize_scale_matrix("S_a_dst_hidden", s_a_dst_hidden)
-            << '|' << serialize_scale_vector("S_agg_pre", s_agg_pre)
-            << '|' << serialize_scale_vector("S_agg", s_agg)
-            << '|' << serialize_scale_vector("S_cat", s_cat)
-            << "|S_out_pre=" << s_out_pre
-            << "|S_out_head=" << s_out_head
-            << "|S_out=" << s_out
-            << '|' << serialize_scale_vector("S_W_output", s_w_output)
-            << '|' << serialize_scale_vector("S_Y_prime_output", s_y_prime)
-            << '|' << serialize_scale_vector("S_a_src_output", s_a_src_output)
-            << '|' << serialize_scale_vector("S_a_dst_output", s_a_dst_output)
-            << '|' << serialize_scale_vector("S_b_output", s_b_output)
+            << "|S_input=" << s_input << "|S_Delta=" << s_delta << "|S_exp=" << s_exp << '|' << serialize_scale_vector("S_H", s_h) << '|'
+            << serialize_scale_matrix("S_W_hidden", s_w_hidden) << '|' << serialize_scale_matrix("S_H_prime_hidden", s_h_prime) << '|'
+            << serialize_scale_matrix("S_a_src_hidden", s_a_src_hidden) << '|' << serialize_scale_matrix("S_a_dst_hidden", s_a_dst_hidden) << '|'
+            << serialize_scale_vector("S_agg_pre", s_agg_pre) << '|' << serialize_scale_vector("S_agg", s_agg) << '|' << serialize_scale_vector("S_cat", s_cat)
+            << "|S_out_pre=" << s_out_pre << "|S_out_head=" << s_out_head << "|S_out=" << s_out << '|' << serialize_scale_vector("S_W_output", s_w_output)
+            << '|' << serialize_scale_vector("S_Y_prime_output", s_y_prime) << '|' << serialize_scale_vector("S_a_src_output", s_a_src_output) << '|'
+            << serialize_scale_vector("S_a_dst_output", s_a_dst_output) << '|' << serialize_scale_vector("S_b_output", s_b_output)
             << "|S_inv=field_exact|S_alpha=field_exact"
             << "|round=nearest_ties_away|rescale=none|output_average=signed_round_div";
         return out.str();
     }
 
-    QuantizationScaleChain canonical_quantization_scale_chain(
-        std::string_view quant_cfg_id,
-        const std::vector<HiddenLayerProfile> &hidden_profile,
-        std::size_t K_out,
-        std::string_view source_path)
+    QuantizationScaleChain canonical_quantization_scale_chain(std::string_view quant_cfg_id, const std::vector<HiddenLayerProfile> &hidden_profile,
+                                                              std::size_t K_out, std::string_view source_path)
     {
         const auto source = read_canonical_scale_chain_source(source_path);
         const auto source_id_it = source.find("quant_cfg_id");
         const auto source_schema_it = source.find("schema");
-        if (source_id_it == source.end() || source_schema_it == source.end()
-            || source_schema_it->second != "gat_l3_scale_chain"
-            || source_id_it->second != quant_cfg_id)
+        if (source_id_it == source.end() || source_schema_it == source.end() || source_schema_it->second != "gat_l3_scale_chain" ||
+            source_id_it->second != quant_cfg_id)
         {
-            throw std::runtime_error(
-                "unsupported quant_cfg_id; formal runtime requires the registered canonical scale chain: " +
-                std::string(quant_cfg_id));
+            throw std::runtime_error("unsupported quant_cfg_id; formal runtime requires the registered canonical scale chain: " + std::string(quant_cfg_id));
         }
-        if (hidden_profile.size() != 2 ||
-            hidden_profile[0].head_count != 8 || hidden_profile[0].head_dim != 8 ||
-            hidden_profile[1].head_count != 8 || hidden_profile[1].head_dim != 8 ||
-            K_out != 2)
+        if (hidden_profile.size() != 2 || hidden_profile[0].head_count != 8 || hidden_profile[0].head_dim != 8 || hidden_profile[1].head_count != 8 ||
+            hidden_profile[1].head_dim != 8 || K_out != 2)
         {
-            throw std::runtime_error(
-                "canonical quantization scale chain requires hidden_profile=[8x8,8x8], K_out=2");
+            throw std::runtime_error("canonical quantization scale chain requires hidden_profile=[8x8,8x8], K_out=2");
         }
 
         // All numerical values come from the checked-in canonical source file;
@@ -832,14 +662,10 @@ namespace gatzk::util
         chain.s_h = parse_scale_vector(source, "s_h");
         for (std::size_t layer = 0; layer < hidden_profile.size(); ++layer)
         {
-            chain.s_w_hidden.push_back(
-                parse_scale_vector(source, "s_w_hidden_" + std::to_string(layer)));
-            chain.s_h_prime.push_back(
-                parse_scale_vector(source, "s_h_prime_hidden_" + std::to_string(layer)));
-            chain.s_a_src_hidden.push_back(
-                parse_scale_vector(source, "s_a_src_hidden_" + std::to_string(layer)));
-            chain.s_a_dst_hidden.push_back(
-                parse_scale_vector(source, "s_a_dst_hidden_" + std::to_string(layer)));
+            chain.s_w_hidden.push_back(parse_scale_vector(source, "s_w_hidden_" + std::to_string(layer)));
+            chain.s_h_prime.push_back(parse_scale_vector(source, "s_h_prime_hidden_" + std::to_string(layer)));
+            chain.s_a_src_hidden.push_back(parse_scale_vector(source, "s_a_src_hidden_" + std::to_string(layer)));
+            chain.s_a_dst_hidden.push_back(parse_scale_vector(source, "s_a_dst_hidden_" + std::to_string(layer)));
         }
         chain.s_agg_pre = parse_scale_vector(source, "s_agg_pre");
         chain.s_agg = parse_scale_vector(source, "s_agg");
@@ -855,14 +681,10 @@ namespace gatzk::util
         const auto round_it = source.find("round");
         const auto rescale_it = source.find("rescale");
         const auto average_it = source.find("output_average");
-        if (round_it == source.end() || rescale_it == source.end()
-            || average_it == source.end()
-            || round_it->second != "nearest_ties_away"
-            || rescale_it->second != "none"
-            || average_it->second != "signed_round_div")
+        if (round_it == source.end() || rescale_it == source.end() || average_it == source.end() || round_it->second != "nearest_ties_away" ||
+            rescale_it->second != "none" || average_it->second != "signed_round_div")
         {
-            throw std::runtime_error(
-                "canonical quantization scale-chain source rounding policy mismatch");
+            throw std::runtime_error("canonical quantization scale-chain source rounding policy mismatch");
         }
         validate_scale_chain_shape(chain, hidden_profile, K_out);
         return chain;
@@ -915,17 +737,13 @@ namespace gatzk::util
 #ifdef GATZK_CANONICAL_SCALE_CHAIN_PATH
         canonical_scale_chain_path = GATZK_CANONICAL_SCALE_CHAIN_PATH;
 #else
-        throw std::runtime_error(
-            "canonical quantization scale-chain path is missing from the build");
+        throw std::runtime_error("canonical quantization scale-chain path is missing from the build");
 #endif
-        if (!canonical_scale_chain_path.is_absolute()
-            || canonical_scale_chain_path.parent_path().filename() != "configs")
+        if (!canonical_scale_chain_path.is_absolute() || canonical_scale_chain_path.parent_path().filename() != "configs")
         {
-            throw std::runtime_error(
-                "canonical quantization scale-chain path must be an absolute file under configs");
+            throw std::runtime_error("canonical quantization scale-chain path must be an absolute file under configs");
         }
-        config.project_root =
-            canonical_scale_chain_path.parent_path().parent_path().string();
+        config.project_root = canonical_scale_chain_path.parent_path().parent_path().string();
         if (entries.contains("dataset"))
             config.dataset = entries["dataset"];
         if (entries.contains("data_root"))
@@ -1010,8 +828,7 @@ namespace gatzk::util
             config.d_in_profile = parse_size_list(entries["d_in_profile"]);
         if (config.quant_cfg_id.empty())
         {
-            throw std::runtime_error(
-                "formal config must set the registered quant_cfg_id explicitly");
+            throw std::runtime_error("formal config must set the registered quant_cfg_id explicitly");
         }
         if (config.static_table_id.empty())
         {
@@ -1021,11 +838,7 @@ namespace gatzk::util
         {
             config.degree_bound_id = "auto";
         }
-        config.quantization = canonical_quantization_scale_chain(
-            config.quant_cfg_id,
-            config.hidden_profile,
-            config.K_out,
-            canonical_scale_chain_path.string());
+        config.quantization = canonical_quantization_scale_chain(config.quant_cfg_id, config.hidden_profile, config.K_out, canonical_scale_chain_path.string());
         // 这里最后做一次 shape 和 formal 约束校验，保证 prover / verifier 看到的是同一套配置含义。
         validate_config(config);
         return config;

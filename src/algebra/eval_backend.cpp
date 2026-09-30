@@ -33,9 +33,7 @@ namespace gatzk::algebra
         }
 
         // 返回针对特定域和行数应该使用的子集物化阈值
-        std::size_t subset_cache_threshold_for(
-            const std::shared_ptr<RootOfUnityDomain> &domain,
-            std::size_t row_count)
+        std::size_t subset_cache_threshold_for(const std::shared_ptr<RootOfUnityDomain> &domain, std::size_t row_count)
         {
             constexpr std::size_t kDefaultThreshold = 1U << 21U;
             if (domain != nullptr && domain->name == "edge" && domain->size <= (1U << 21U) && row_count >= 24)
@@ -45,14 +43,9 @@ namespace gatzk::algebra
             return kDefaultThreshold;
         }
 
-        bool checked_size_mul(
-            std::size_t lhs,
-            std::size_t rhs,
-            std::size_t *result)
+        bool checked_size_mul(std::size_t lhs, std::size_t rhs, std::size_t *result)
         {
-            if (result == nullptr ||
-                (rhs != 0 &&
-                 lhs > std::numeric_limits<std::size_t>::max() / rhs))
+            if (result == nullptr || (rhs != 0 && lhs > std::numeric_limits<std::size_t>::max() / rhs))
             {
                 return false;
             }
@@ -82,9 +75,8 @@ namespace gatzk::algebra
 
     // 校验同域多项式并建立标签到索引的映射；数值从 canonical 列直接
     // 读取，只有命中的小标签子集才会按阈值惰性物化交织布局。
-    PackedEvaluationBackend::PackedEvaluationBackend(
-        std::shared_ptr<RootOfUnityDomain> domain,
-        std::vector<std::pair<std::string, const Polynomial *>> polynomials)
+    PackedEvaluationBackend::PackedEvaluationBackend(std::shared_ptr<RootOfUnityDomain> domain,
+                                                     std::vector<std::pair<std::string, const Polynomial *>> polynomials)
         : domain_(std::move(domain)), polynomials_(std::move(polynomials)), subset_cache_state_(std::make_shared<SubsetCacheState>())
     {
         if (domain_ == nullptr)
@@ -103,21 +95,14 @@ namespace gatzk::algebra
         }
     }
 
-    const mcl::Fr &PackedEvaluationBackend::native_value_at(
-        std::size_t polynomial_index,
-        std::size_t column) const
+    const mcl::Fr &PackedEvaluationBackend::native_value_at(std::size_t polynomial_index, std::size_t column) const
     {
         static const FieldElement zero = FieldElement::zero();
-        const auto &values =
-            polynomials_.at(polynomial_index).second->values();
-        return column < values.size()
-                   ? values[column].native()
-                   : zero.native();
+        const auto &values = polynomials_.at(polynomial_index).second->values();
+        return column < values.size() ? values[column].native() : zero.native();
     }
 
-    PackedEvaluationBackend::SubsetView PackedEvaluationBackend::build_subset_view(
-        const std::vector<std::string> &labels,
-        bool materialize_interleaved) const
+    PackedEvaluationBackend::SubsetView PackedEvaluationBackend::build_subset_view(const std::vector<std::string> &labels, bool materialize_interleaved) const
     {
         SubsetView subset;
         subset.row_indices.reserve(labels.size());
@@ -141,19 +126,9 @@ namespace gatzk::algebra
         std::size_t interleaved_term_count = 0;
         std::size_t interleaved_bytes = 0;
         const auto subset_cache_threshold = subset_cache_threshold_for(domain_, row_count);
-        const bool cache_size_valid =
-            checked_size_mul(
-                domain_->size,
-                row_count,
-                &interleaved_term_count) &&
-            checked_size_mul(
-                interleaved_term_count,
-                sizeof(mcl::Fr),
-                &interleaved_bytes);
-        if (materialize_interleaved &&
-            cache_size_valid &&
-            interleaved_term_count <= subset_cache_threshold &&
-            row_count > 1)
+        const bool cache_size_valid = checked_size_mul(domain_->size, row_count, &interleaved_term_count) &&
+                                      checked_size_mul(interleaved_term_count, sizeof(mcl::Fr), &interleaved_bytes);
+        if (materialize_interleaved && cache_size_valid && interleaved_term_count <= subset_cache_threshold && row_count > 1)
         {
             subset.interleaved_values.resize(interleaved_term_count);
             for (std::size_t column = 0; column < domain_->size; ++column)
@@ -161,8 +136,7 @@ namespace gatzk::algebra
                 auto *subset_row = &subset.interleaved_values[column * row_count];
                 for (std::size_t row = 0; row < row_count; ++row)
                 {
-                    subset_row[row] = native_value_at(
-                        subset.row_indices[row], column);
+                    subset_row[row] = native_value_at(subset.row_indices[row], column);
                 }
             }
         }
@@ -176,8 +150,7 @@ namespace gatzk::algebra
         const auto key = subset_cache_key(labels);
         {
             std::lock_guard<std::mutex> lock(subset_cache_state_->mutex);
-            if (const auto it = subset_cache_state_->subset_cache.find(key);
-                it != subset_cache_state_->subset_cache.end())
+            if (const auto it = subset_cache_state_->subset_cache.find(key); it != subset_cache_state_->subset_cache.end())
             {
                 return it->second;
             }
@@ -198,23 +171,19 @@ namespace gatzk::algebra
     }
 
     // 返回标签子集的行索引
-    const std::vector<std::size_t> &PackedEvaluationBackend::subset_row_indices(
-        const std::vector<std::string> &labels) const
+    const std::vector<std::size_t> &PackedEvaluationBackend::subset_row_indices(const std::vector<std::string> &labels) const
     {
         return subset_for(labels).row_indices;
     }
 
     // 返回标签子集的行索引
-    const std::vector<std::uint32_t> &PackedEvaluationBackend::subset_row_indices_u32(
-        const std::vector<std::string> &labels) const
+    const std::vector<std::uint32_t> &PackedEvaluationBackend::subset_row_indices_u32(const std::vector<std::string> &labels) const
     {
         return subset_for(labels).row_indices_u32;
     }
 
     // 直接返回指定标签在给定列索引上的多项式值（每个多项式在该点的求值）
-    std::vector<FieldElement> PackedEvaluationBackend::values_at_direct_index(
-        const std::vector<std::string> &labels,
-        std::size_t index) const
+    std::vector<FieldElement> PackedEvaluationBackend::values_at_direct_index(const std::vector<std::string> &labels, std::size_t index) const
     {
         std::vector<FieldElement> out;
         out.reserve(labels.size());
@@ -227,9 +196,8 @@ namespace gatzk::algebra
     }
 
     // 使用普通权重（域元素）计算加权和：先转换为原生权重，再调用原生版本
-    std::vector<FieldElement> PackedEvaluationBackend::evaluate_with_weights(
-        const std::vector<std::string> &labels,
-        const std::vector<FieldElement> &weights) const
+    std::vector<FieldElement> PackedEvaluationBackend::evaluate_with_weights(const std::vector<std::string> &labels,
+                                                                             const std::vector<FieldElement> &weights) const
     {
         std::vector<mcl::Fr> native_weights(weights.size());
         for (std::size_t i = 0; i < weights.size(); ++i)
@@ -240,9 +208,8 @@ namespace gatzk::algebra
     }
 
     // 使用原生权重（mcl::Fr）计算加权和（--parallel-fft on）
-    std::vector<FieldElement> PackedEvaluationBackend::evaluate_with_native_weights(
-        const std::vector<std::string> &labels,
-        const std::vector<mcl::Fr> &weights) const
+    std::vector<FieldElement> PackedEvaluationBackend::evaluate_with_native_weights(const std::vector<std::string> &labels,
+                                                                                    const std::vector<mcl::Fr> &weights) const
     {
         if (weights.size() != domain_->size)
         {
@@ -269,28 +236,21 @@ namespace gatzk::algebra
                 const auto label_it = label_to_index_.find(label);
                 if (label_it == label_to_index_.end())
                 {
-                    throw std::runtime_error(
-                        "domain evaluation backend is missing label: " + label);
+                    throw std::runtime_error("domain evaluation backend is missing label: " + label);
                 }
                 const auto &values = polynomials_[label_it->second].second->values();
-                direct_column_ptrs.push_back(reinterpret_cast<const uint64_t *>(
-                    FieldElement::native_array_data(values.data())));
+                direct_column_ptrs.push_back(reinterpret_cast<const uint64_t *>(FieldElement::native_array_data(values.data())));
                 direct_column_lengths.push_back(std::min(values.size(), domain_->size));
             }
             std::vector<mcl::Fr> gpu_results(row_count);
             for (auto &value : gpu_results)
                 value.clear();
-            const bool gpu_ok = weighted_poly_eval_gpu_multi(
-                reinterpret_cast<const uint64_t *>(weights.data()),
-                direct_column_ptrs.data(),
-                reinterpret_cast<uint64_t *>(gpu_results.data()),
-                domain_->size,
-                row_count,
-                direct_column_lengths.data());
+            const bool gpu_ok =
+                weighted_poly_eval_gpu_multi(reinterpret_cast<const uint64_t *>(weights.data()), direct_column_ptrs.data(),
+                                             reinterpret_cast<uint64_t *>(gpu_results.data()), domain_->size, row_count, direct_column_lengths.data());
             if (!gpu_ok)
             {
-                throw std::runtime_error(
-                    "CUDA direct columnar evaluation kernel failed; refusing silent CPU fallback");
+                throw std::runtime_error("CUDA direct columnar evaluation kernel failed; refusing silent CPU fallback");
             }
             std::vector<FieldElement> out;
             out.reserve(row_count);
@@ -313,12 +273,9 @@ namespace gatzk::algebra
                 {
                     value.clear();
                 }
-                const bool gpu_ok = weighted_poly_eval_gpu(
-                    reinterpret_cast<const uint64_t *>(weights.data()),
-                    reinterpret_cast<const uint64_t *>(subset.interleaved_values.data()),
-                    reinterpret_cast<uint64_t *>(gpu_results.data()),
-                    domain_->size,
-                    row_count);
+                const bool gpu_ok = weighted_poly_eval_gpu(reinterpret_cast<const uint64_t *>(weights.data()),
+                                                           reinterpret_cast<const uint64_t *>(subset.interleaved_values.data()),
+                                                           reinterpret_cast<uint64_t *>(gpu_results.data()), domain_->size, row_count);
                 if (gpu_ok)
                 {
                     std::vector<FieldElement> out;
@@ -350,8 +307,7 @@ namespace gatzk::algebra
                     const auto global_row = subset.row_indices[r];
                     for (std::size_t col = 0; col < domain_->size; ++col)
                     {
-                        col_buffers[r][col] =
-                            native_value_at(global_row, col);
+                        col_buffers[r][col] = native_value_at(global_row, col);
                     }
                 }
                 col_ptrs[r] = reinterpret_cast<const uint64_t *>(col_buffers[r].data());
@@ -361,12 +317,8 @@ namespace gatzk::algebra
             for (auto &v : gpu_results)
                 v.clear();
 
-            const bool gpu_ok = weighted_poly_eval_gpu_multi(
-                reinterpret_cast<const uint64_t *>(weights.data()),
-                col_ptrs.data(),
-                reinterpret_cast<uint64_t *>(gpu_results.data()),
-                domain_->size,
-                row_count);
+            const bool gpu_ok = weighted_poly_eval_gpu_multi(reinterpret_cast<const uint64_t *>(weights.data()), col_ptrs.data(),
+                                                             reinterpret_cast<uint64_t *>(gpu_results.data()), domain_->size, row_count);
 
             if (gpu_ok)
             {
@@ -406,32 +358,28 @@ namespace gatzk::algebra
                     {
                         break;
                     }
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&, begin, end, row_count]()
-                        {
-                            std::vector<mcl::Fr> partial(row_count);
-                            for (auto &value : partial)
-                            {
-                                value.clear();
-                            }
-                            for (std::size_t column = begin; column < end; ++column)
-                            {
-                                const auto &weight = weights[column];
-                                for (std::size_t row = 0; row < row_count; ++row)
-                                {
-                                    mcl::Fr term;
-                                    const auto &value = use_cached_subset
-                                                            ? subset.interleaved_values[column * row_count + row]
-                                                            : native_value_at(
-                                                                  subset.row_indices[row],
-                                                                  column);
-                                    mcl::Fr::mul(term, value, weight);
-                                    mcl::Fr::add(partial[row], partial[row], term);
-                                }
-                            }
-                            return partial;
-                        }));
+                    futures.push_back(std::async(std::launch::async,
+                                                 [&, begin, end, row_count]()
+                                                 {
+                                                     std::vector<mcl::Fr> partial(row_count);
+                                                     for (auto &value : partial)
+                                                     {
+                                                         value.clear();
+                                                     }
+                                                     for (std::size_t column = begin; column < end; ++column)
+                                                     {
+                                                         const auto &weight = weights[column];
+                                                         for (std::size_t row = 0; row < row_count; ++row)
+                                                         {
+                                                             mcl::Fr term;
+                                                             const auto &value = use_cached_subset ? subset.interleaved_values[column * row_count + row]
+                                                                                                   : native_value_at(subset.row_indices[row], column);
+                                                             mcl::Fr::mul(term, value, weight);
+                                                             mcl::Fr::add(partial[row], partial[row], term);
+                                                         }
+                                                     }
+                                                     return partial;
+                                                 }));
                 }
                 for (auto &future : futures)
                 {
@@ -458,11 +406,7 @@ namespace gatzk::algebra
             for (std::size_t row = 0; row < row_count; ++row)
             {
                 mcl::Fr term;
-                const auto &value = use_cached_subset
-                                        ? subset.interleaved_values[column * row_count + row]
-                                        : native_value_at(
-                                              subset.row_indices[row],
-                                              column);
+                const auto &value = use_cached_subset ? subset.interleaved_values[column * row_count + row] : native_value_at(subset.row_indices[row], column);
                 mcl::Fr::mul(term, value, weight);
                 mcl::Fr::add(native_out[row], native_out[row], term);
             }
@@ -478,10 +422,9 @@ namespace gatzk::algebra
     }
 
     // 使用原生权重的旋转求值
-    std::vector<std::vector<FieldElement>> PackedEvaluationBackend::evaluate_with_weight_rotations(
-        const std::vector<std::string> &labels,
-        const std::vector<FieldElement> &representative_weights,
-        const std::vector<std::size_t> &rotations) const
+    std::vector<std::vector<FieldElement>> PackedEvaluationBackend::evaluate_with_weight_rotations(const std::vector<std::string> &labels,
+                                                                                                   const std::vector<FieldElement> &representative_weights,
+                                                                                                   const std::vector<std::size_t> &rotations) const
     {
         std::vector<mcl::Fr> native_weights(representative_weights.size());
         for (std::size_t i = 0; i < representative_weights.size(); ++i)
@@ -492,11 +435,10 @@ namespace gatzk::algebra
     }
 
     // CPU 实现的带权重旋转求值（核心算法）（--parallel-fft on）（--rotated-fft-kernel on）
-    std::vector<std::vector<FieldElement>> PackedEvaluationBackend::evaluate_with_native_weight_rotations(
-        const std::vector<std::string> &labels,
-        const std::vector<mcl::Fr> &representative_weights,
-        const std::vector<std::size_t> &rotations,
-        EvaluationExecutionPolicy execution_policy) const
+    std::vector<std::vector<FieldElement>> PackedEvaluationBackend::evaluate_with_native_weight_rotations(const std::vector<std::string> &labels,
+                                                                                                          const std::vector<mcl::Fr> &representative_weights,
+                                                                                                          const std::vector<std::size_t> &rotations,
+                                                                                                          EvaluationExecutionPolicy execution_policy) const
     {
         if (representative_weights.size() != domain_->size)
         {
@@ -518,11 +460,9 @@ namespace gatzk::algebra
 
         const auto &route2 = util::route2_options();
         const bool try_gpu =
-            execution_policy == EvaluationExecutionPolicy::Automatic && should_use_cuda_weighted_evaluation(
-                                                                            domain_->size, row_count, point_count);
+            execution_policy == EvaluationExecutionPolicy::Automatic && should_use_cuda_weighted_evaluation(domain_->size, row_count, point_count);
 
-        const bool unified_addressing =
-            cuda_backend_unified_addressing_available();
+        const bool unified_addressing = cuda_backend_unified_addressing_available();
 
         // Establish the cache policy and all host-side sizes before asking
         // subset_for() to materialize the interleaved cache.  Overflow or a
@@ -531,107 +471,53 @@ namespace gatzk::algebra
         // peak violation afterwards.
         std::size_t interleaved_term_count = 0;
         std::size_t subset_cache_bytes = 0;
-        const bool cache_policy_eligible =
-            row_count > 1 &&
-            checked_size_mul(
-                domain_->size,
-                row_count,
-                &interleaved_term_count) &&
-            checked_size_mul(
-                interleaved_term_count,
-                sizeof(mcl::Fr),
-                &subset_cache_bytes) &&
-            interleaved_term_count <=
-                subset_cache_threshold_for(domain_, row_count);
+        const bool cache_policy_eligible = row_count > 1 && checked_size_mul(domain_->size, row_count, &interleaved_term_count) &&
+                                           checked_size_mul(interleaved_term_count, sizeof(mcl::Fr), &subset_cache_bytes) &&
+                                           interleaved_term_count <= subset_cache_threshold_for(domain_, row_count);
 
         const bool cache_admission =
-            try_gpu &&
-            cache_policy_eligible &&
-            cuda_interleaved_multi_rotation_admissible(
-                domain_->size,
-                row_count,
-                point_count,
-                subset_cache_bytes);
+            try_gpu && cache_policy_eligible && cuda_interleaved_multi_rotation_admissible(domain_->size, row_count, point_count, subset_cache_bytes);
 
         SubsetView uncached_subset;
         const SubsetView *subset_ptr = nullptr;
 
-        if (try_gpu &&
-            unified_addressing)
+        if (try_gpu && unified_addressing)
         {
             // GB10/UVA can consume canonical column storage directly.  Do not
             // build or retain a second domain_size * column_count interleaved
             // host copy merely to feed the GPU.
-            uncached_subset =
-                build_subset_view(
-                    labels,
-                    false);
+            uncached_subset = build_subset_view(labels, false);
 
-            subset_ptr =
-                &uncached_subset;
+            subset_ptr = &uncached_subset;
         }
-        else if (!try_gpu ||
-                 !cache_policy_eligible ||
-                 cache_admission)
+        else if (!try_gpu || !cache_policy_eligible || cache_admission)
         {
-            subset_ptr =
-                &subset_for(labels);
+            subset_ptr = &subset_for(labels);
         }
         else
         {
-            uncached_subset =
-                build_subset_view(
-                    labels,
-                    false);
+            uncached_subset = build_subset_view(labels, false);
 
-            subset_ptr =
-                &uncached_subset;
+            subset_ptr = &uncached_subset;
         }
 
-        const bool use_cached_subset =
-            subset_ptr != nullptr &&
-            !subset_ptr->interleaved_values.empty();
+        const bool use_cached_subset = subset_ptr != nullptr && !subset_ptr->interleaved_values.empty();
 
-        const bool candidate_shape =
-            try_gpu &&
-            !unified_addressing &&
-            cached_subset_multi_rotation_candidate_enabled() &&
-            point_count > 1 &&
-            rotations.size() == point_count &&
-            cache_policy_eligible &&
-            cache_admission &&
-            use_cached_subset;
+        const bool candidate_shape = try_gpu && !unified_addressing && cached_subset_multi_rotation_candidate_enabled() && point_count > 1 &&
+                                     rotations.size() == point_count && cache_policy_eligible && cache_admission && use_cached_subset;
         if (candidate_shape)
         {
-            const bool candidate_ok =
-                weighted_poly_eval_gpu_interleaved_multi_rotations(
-                    reinterpret_cast<const uint64_t *>(
-                        representative_weights.data()),
-                    reinterpret_cast<const uint64_t *>(
-                        subset_ptr->interleaved_values.data()),
-                    reinterpret_cast<uint64_t *>(native_out.data()),
-                    domain_->size,
-                    row_count,
-                    rotations.data(),
-                    point_count);
+            const bool candidate_ok = weighted_poly_eval_gpu_interleaved_multi_rotations(
+                reinterpret_cast<const uint64_t *>(representative_weights.data()), reinterpret_cast<const uint64_t *>(subset_ptr->interleaved_values.data()),
+                reinterpret_cast<uint64_t *>(native_out.data()), domain_->size, row_count, rotations.data(), point_count);
             if (candidate_ok)
             {
-                std::vector<std::vector<FieldElement>> out(
-                    point_count,
-                    std::vector<FieldElement>(
-                        row_count,
-                        FieldElement::zero()));
-                for (std::size_t point_index = 0;
-                     point_index < point_count;
-                     ++point_index)
+                std::vector<std::vector<FieldElement>> out(point_count, std::vector<FieldElement>(row_count, FieldElement::zero()));
+                for (std::size_t point_index = 0; point_index < point_count; ++point_index)
                 {
-                    for (std::size_t row = 0;
-                         row < row_count;
-                         ++row)
+                    for (std::size_t row = 0; row < row_count; ++row)
                     {
-                        out[point_index][row] =
-                            FieldElement::from_native(
-                                native_out[point_index * row_count + row]);
+                        out[point_index][row] = FieldElement::from_native(native_out[point_index * row_count + row]);
                     }
                 }
                 return out;
@@ -655,68 +541,39 @@ namespace gatzk::algebra
                 const auto label_it = label_to_index_.find(label);
                 if (label_it == label_to_index_.end())
                 {
-                    throw std::runtime_error(
-                        "domain evaluation backend is missing label: " + label);
+                    throw std::runtime_error("domain evaluation backend is missing label: " + label);
                 }
                 const auto &values = polynomials_[label_it->second].second->values();
-                direct_column_ptrs.push_back(reinterpret_cast<const uint64_t *>(
-                    FieldElement::native_array_data(values.data())));
-                direct_column_lengths.push_back(
-                    std::min(values.size(), domain_->size));
+                direct_column_ptrs.push_back(reinterpret_cast<const uint64_t *>(FieldElement::native_array_data(values.data())));
+                direct_column_lengths.push_back(std::min(values.size(), domain_->size));
             }
 
-            constexpr std::size_t kMaxRotationPartialBytes =
-                256ULL * 1024ULL * 1024ULL;
+            constexpr std::size_t kMaxRotationPartialBytes = 256ULL * 1024ULL * 1024ULL;
             constexpr std::size_t kCudaReductionBlockSize = 256;
-            const auto partial_blocks =
-                (domain_->size + kCudaReductionBlockSize - 1) / kCudaReductionBlockSize;
-            const auto partial_bytes_per_point =
-                static_cast<unsigned __int128>(partial_blocks) * static_cast<unsigned __int128>(row_count) * sizeof(mcl::Fr);
-            const auto rotations_per_launch =
-                partial_bytes_per_point > static_cast<unsigned __int128>(
-                                              kMaxRotationPartialBytes)
-                    ? std::size_t{1}
-                    : std::max<std::size_t>(
-                          1,
-                          kMaxRotationPartialBytes / static_cast<std::size_t>(
-                                                         partial_bytes_per_point));
-            for (std::size_t rotation_begin = 0;
-                 rotation_begin < point_count;
-                 rotation_begin += rotations_per_launch)
+            const auto partial_blocks = (domain_->size + kCudaReductionBlockSize - 1) / kCudaReductionBlockSize;
+            const auto partial_bytes_per_point = static_cast<unsigned __int128>(partial_blocks) * static_cast<unsigned __int128>(row_count) * sizeof(mcl::Fr);
+            const auto rotations_per_launch = partial_bytes_per_point > static_cast<unsigned __int128>(kMaxRotationPartialBytes)
+                                                  ? std::size_t{1}
+                                                  : std::max<std::size_t>(1, kMaxRotationPartialBytes / static_cast<std::size_t>(partial_bytes_per_point));
+            for (std::size_t rotation_begin = 0; rotation_begin < point_count; rotation_begin += rotations_per_launch)
             {
-                const auto launch_count = std::min(
-                    rotations_per_launch,
-                    point_count - rotation_begin);
+                const auto launch_count = std::min(rotations_per_launch, point_count - rotation_begin);
                 const bool gpu_ok =
-                    weighted_poly_eval_gpu_multi_rotations(
-                        reinterpret_cast<const uint64_t *>(
-                            representative_weights.data()),
-                        direct_column_ptrs.data(),
-                        reinterpret_cast<uint64_t *>(
-                            native_out.data() + rotation_begin * row_count),
-                        domain_->size,
-                        row_count,
-                        rotations.data() + rotation_begin,
-                        launch_count,
-                        direct_column_lengths.data());
+                    weighted_poly_eval_gpu_multi_rotations(reinterpret_cast<const uint64_t *>(representative_weights.data()), direct_column_ptrs.data(),
+                                                           reinterpret_cast<uint64_t *>(native_out.data() + rotation_begin * row_count), domain_->size,
+                                                           row_count, rotations.data() + rotation_begin, launch_count, direct_column_lengths.data());
                 if (!gpu_ok)
                 {
-                    throw std::runtime_error(
-                        "CUDA direct batched rotated columnar evaluation kernel failed; refusing silent CPU fallback");
+                    throw std::runtime_error("CUDA direct batched rotated columnar evaluation kernel failed; refusing silent CPU fallback");
                 }
             }
 
-            std::vector<std::vector<FieldElement>> out(
-                point_count,
-                std::vector<FieldElement>(row_count, FieldElement::zero()));
-            for (std::size_t point_index = 0;
-                 point_index < point_count;
-                 ++point_index)
+            std::vector<std::vector<FieldElement>> out(point_count, std::vector<FieldElement>(row_count, FieldElement::zero()));
+            for (std::size_t point_index = 0; point_index < point_count; ++point_index)
             {
                 for (std::size_t row = 0; row < row_count; ++row)
                 {
-                    out[point_index][row] = FieldElement::from_native(
-                        native_out[point_index * row_count + row]);
+                    out[point_index][row] = FieldElement::from_native(native_out[point_index * row_count + row]);
                 }
             }
             return out;
@@ -731,27 +588,13 @@ namespace gatzk::algebra
         // ---- GPU path for rotated evaluations ----
         if (try_gpu)
         {
-            constexpr std::size_t kMaxRotationPartialBytes =
-                256ULL * 1024ULL * 1024ULL;
+            constexpr std::size_t kMaxRotationPartialBytes = 256ULL * 1024ULL * 1024ULL;
             constexpr std::size_t kCudaReductionBlockSize = 256;
-            const auto partial_blocks =
-                domain_->size / kCudaReductionBlockSize +
-                (domain_->size % kCudaReductionBlockSize == 0 ? 0 : 1);
-            const auto partial_bytes_per_point =
-                static_cast<unsigned __int128>(partial_blocks) *
-                static_cast<unsigned __int128>(row_count) *
-                sizeof(mcl::Fr);
-            const auto rotations_per_launch =
-                partial_bytes_per_point == 0 ||
-                        partial_bytes_per_point >
-                            static_cast<unsigned __int128>(
-                                kMaxRotationPartialBytes)
-                    ? std::size_t{1}
-                    : std::max<std::size_t>(
-                          1,
-                          kMaxRotationPartialBytes /
-                              static_cast<std::size_t>(
-                                  partial_bytes_per_point));
+            const auto partial_blocks = domain_->size / kCudaReductionBlockSize + (domain_->size % kCudaReductionBlockSize == 0 ? 0 : 1);
+            const auto partial_bytes_per_point = static_cast<unsigned __int128>(partial_blocks) * static_cast<unsigned __int128>(row_count) * sizeof(mcl::Fr);
+            const auto rotations_per_launch = partial_bytes_per_point == 0 || partial_bytes_per_point > static_cast<unsigned __int128>(kMaxRotationPartialBytes)
+                                                  ? std::size_t{1}
+                                                  : std::max<std::size_t>(1, kMaxRotationPartialBytes / static_cast<std::size_t>(partial_bytes_per_point));
 
             // For a genuine multi-rotation launch, upload the representative
             // weights once and preserve the canonical `[rotation][column]`
@@ -762,8 +605,7 @@ namespace gatzk::algebra
             // would duplicate a potentially multi-GiB host buffer.  The
             // canonical polynomial values below are already contiguous and
             // can be passed directly with their true lengths.
-            if (point_count > 1 && rotations_per_launch > 1 &&
-                !use_cached_subset)
+            if (point_count > 1 && rotations_per_launch > 1 && !use_cached_subset)
             {
                 std::vector<const uint64_t *> col_ptrs(row_count);
                 std::vector<std::size_t> column_lengths(row_count);
@@ -772,59 +614,32 @@ namespace gatzk::algebra
                     const auto label_it = label_to_index_.find(labels[r]);
                     if (label_it == label_to_index_.end())
                     {
-                        throw std::runtime_error(
-                            "domain evaluation backend is missing label: " +
-                            labels[r]);
+                        throw std::runtime_error("domain evaluation backend is missing label: " + labels[r]);
                     }
-                    const auto &values =
-                        polynomials_[label_it->second].second->values();
-                    col_ptrs[r] = reinterpret_cast<const uint64_t *>(
-                        FieldElement::native_array_data(values.data()));
-                    column_lengths[r] = std::min(
-                        values.size(),
-                        domain_->size);
+                    const auto &values = polynomials_[label_it->second].second->values();
+                    col_ptrs[r] = reinterpret_cast<const uint64_t *>(FieldElement::native_array_data(values.data()));
+                    column_lengths[r] = std::min(values.size(), domain_->size);
                 }
 
-                for (std::size_t rotation_begin = 0;
-                     rotation_begin < point_count;
-                     rotation_begin += rotations_per_launch)
+                for (std::size_t rotation_begin = 0; rotation_begin < point_count; rotation_begin += rotations_per_launch)
                 {
-                    const auto launch_count = std::min(
-                        rotations_per_launch,
-                        point_count - rotation_begin);
+                    const auto launch_count = std::min(rotations_per_launch, point_count - rotation_begin);
                     const bool gpu_ok =
-                        weighted_poly_eval_gpu_multi_rotations(
-                            reinterpret_cast<const uint64_t *>(
-                                representative_weights.data()),
-                            col_ptrs.data(),
-                            reinterpret_cast<uint64_t *>(
-                                native_out.data() +
-                                rotation_begin * row_count),
-                            domain_->size,
-                            row_count,
-                            rotations.data() + rotation_begin,
-                            launch_count,
-                            column_lengths.data());
+                        weighted_poly_eval_gpu_multi_rotations(reinterpret_cast<const uint64_t *>(representative_weights.data()), col_ptrs.data(),
+                                                               reinterpret_cast<uint64_t *>(native_out.data() + rotation_begin * row_count), domain_->size,
+                                                               row_count, rotations.data() + rotation_begin, launch_count, column_lengths.data());
                     if (!gpu_ok)
                     {
-                        throw std::runtime_error(
-                            "CUDA batched rotated evaluation kernel failed; refusing silent CPU fallback");
+                        throw std::runtime_error("CUDA batched rotated evaluation kernel failed; refusing silent CPU fallback");
                     }
                 }
 
-                std::vector<std::vector<FieldElement>> out(
-                    point_count,
-                    std::vector<FieldElement>(
-                        row_count,
-                        FieldElement::zero()));
-                for (std::size_t point_index = 0;
-                     point_index < point_count;
-                     ++point_index)
+                std::vector<std::vector<FieldElement>> out(point_count, std::vector<FieldElement>(row_count, FieldElement::zero()));
+                for (std::size_t point_index = 0; point_index < point_count; ++point_index)
                 {
                     for (std::size_t row = 0; row < row_count; ++row)
                     {
-                        out[point_index][row] = FieldElement::from_native(
-                            native_out[point_index * row_count + row]);
+                        out[point_index][row] = FieldElement::from_native(native_out[point_index * row_count + row]);
                     }
                 }
                 return out;
@@ -848,12 +663,9 @@ namespace gatzk::algebra
                         value.clear();
                     }
 
-                    const bool gpu_ok = weighted_poly_eval_gpu(
-                        reinterpret_cast<const uint64_t *>(rotated_weights.data()),
-                        reinterpret_cast<const uint64_t *>(subset.interleaved_values.data()),
-                        reinterpret_cast<uint64_t *>(gpu_results.data()),
-                        domain_->size,
-                        row_count);
+                    const bool gpu_ok = weighted_poly_eval_gpu(reinterpret_cast<const uint64_t *>(rotated_weights.data()),
+                                                               reinterpret_cast<const uint64_t *>(subset.interleaved_values.data()),
+                                                               reinterpret_cast<uint64_t *>(gpu_results.data()), domain_->size, row_count);
                     if (!gpu_ok)
                     {
                         all_ok = false;
@@ -890,17 +702,11 @@ namespace gatzk::algebra
                 const auto label_it = label_to_index_.find(labels[r]);
                 if (label_it == label_to_index_.end())
                 {
-                    throw std::runtime_error(
-                        "domain evaluation backend is missing label: " +
-                        labels[r]);
+                    throw std::runtime_error("domain evaluation backend is missing label: " + labels[r]);
                 }
-                const auto &values =
-                    polynomials_[label_it->second].second->values();
-                col_ptrs[r] = reinterpret_cast<const uint64_t *>(
-                    FieldElement::native_array_data(values.data()));
-                column_lengths[r] = std::min(
-                    values.size(),
-                    domain_->size);
+                const auto &values = polynomials_[label_it->second].second->values();
+                col_ptrs[r] = reinterpret_cast<const uint64_t *>(FieldElement::native_array_data(values.data()));
+                column_lengths[r] = std::min(values.size(), domain_->size);
             }
 
             bool all_ok = true;
@@ -918,13 +724,9 @@ namespace gatzk::algebra
                 for (auto &v : gpu_results)
                     v.clear();
 
-                const bool gpu_ok = weighted_poly_eval_gpu_multi(
-                    reinterpret_cast<const uint64_t *>(rotated_weights.data()),
-                    col_ptrs.data(),
-                    reinterpret_cast<uint64_t *>(gpu_results.data()),
-                    domain_->size,
-                    row_count,
-                    column_lengths.data());
+                const bool gpu_ok =
+                    weighted_poly_eval_gpu_multi(reinterpret_cast<const uint64_t *>(rotated_weights.data()), col_ptrs.data(),
+                                                 reinterpret_cast<uint64_t *>(gpu_results.data()), domain_->size, row_count, column_lengths.data());
 
                 if (!gpu_ok)
                 {
@@ -970,37 +772,34 @@ namespace gatzk::algebra
                     {
                         break;
                     }
-                    futures.push_back(std::async(
-                        std::launch::async,
-                        [&, begin, end, row_count, point_count, domain_mask]()
-                        {
-                            std::vector<mcl::Fr> partial(point_count * row_count);
-                            for (auto &value : partial)
-                            {
-                                value.clear();
-                            }
-                            for (std::size_t column = begin; column < end; ++column)
-                            {
-                                const auto &weight = representative_weights[column];
-                                for (std::size_t point_index = 0; point_index < point_count; ++point_index)
-                                {
-                                    const auto rotated_column = (column + rotations[point_index]) & domain_mask;
-                                    auto *partial_row = &partial[point_index * row_count];
-                                    for (std::size_t row = 0; row < row_count; ++row)
-                                    {
-                                        mcl::Fr term;
-                                        const auto &value = use_cached_subset
-                                                                ? subset.interleaved_values[rotated_column * row_count + row]
-                                                                : native_value_at(
-                                                                      subset.row_indices[row],
-                                                                      rotated_column);
-                                        mcl::Fr::mul(term, value, weight);
-                                        mcl::Fr::add(partial_row[row], partial_row[row], term);
-                                    }
-                                }
-                            }
-                            return partial;
-                        }));
+                    futures.push_back(std::async(std::launch::async,
+                                                 [&, begin, end, row_count, point_count, domain_mask]()
+                                                 {
+                                                     std::vector<mcl::Fr> partial(point_count * row_count);
+                                                     for (auto &value : partial)
+                                                     {
+                                                         value.clear();
+                                                     }
+                                                     for (std::size_t column = begin; column < end; ++column)
+                                                     {
+                                                         const auto &weight = representative_weights[column];
+                                                         for (std::size_t point_index = 0; point_index < point_count; ++point_index)
+                                                         {
+                                                             const auto rotated_column = (column + rotations[point_index]) & domain_mask;
+                                                             auto *partial_row = &partial[point_index * row_count];
+                                                             for (std::size_t row = 0; row < row_count; ++row)
+                                                             {
+                                                                 mcl::Fr term;
+                                                                 const auto &value = use_cached_subset
+                                                                                         ? subset.interleaved_values[rotated_column * row_count + row]
+                                                                                         : native_value_at(subset.row_indices[row], rotated_column);
+                                                                 mcl::Fr::mul(term, value, weight);
+                                                                 mcl::Fr::add(partial_row[row], partial_row[row], term);
+                                                             }
+                                                         }
+                                                     }
+                                                     return partial;
+                                                 }));
                 }
                 for (auto &future : futures)
                 {
@@ -1023,11 +822,8 @@ namespace gatzk::algebra
                         for (std::size_t row = 0; row < row_count; ++row)
                         {
                             mcl::Fr term;
-                            const auto &value = use_cached_subset
-                                                    ? subset.interleaved_values[rotated_column * row_count + row]
-                                                    : native_value_at(
-                                                          subset.row_indices[row],
-                                                          rotated_column);
+                            const auto &value = use_cached_subset ? subset.interleaved_values[rotated_column * row_count + row]
+                                                                  : native_value_at(subset.row_indices[row], rotated_column);
                             mcl::Fr::mul(term, value, weight);
                             mcl::Fr::add(native_row[row], native_row[row], term);
                         }
@@ -1047,11 +843,8 @@ namespace gatzk::algebra
                     for (std::size_t row = 0; row < row_count; ++row)
                     {
                         mcl::Fr term;
-                        const auto &value = use_cached_subset
-                                                ? subset.interleaved_values[rotated_column * row_count + row]
-                                                : native_value_at(
-                                                      subset.row_indices[row],
-                                                      rotated_column);
+                        const auto &value = use_cached_subset ? subset.interleaved_values[rotated_column * row_count + row]
+                                                              : native_value_at(subset.row_indices[row], rotated_column);
                         mcl::Fr::mul(term, value, weight);
                         mcl::Fr::add(native_row[row], native_row[row], term);
                     }

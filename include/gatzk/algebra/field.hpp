@@ -19,8 +19,7 @@ namespace gatzk::algebra
     inline void ensure_mcl_field_ready()
     {
         static std::once_flag once;
-        std::call_once(once, []()
-                       { mcl::bn::initPairing(mcl::BLS12_381); });
+        std::call_once(once, []() { mcl::bn::initPairing(mcl::BLS12_381); });
     }
 
     // Fr 域元素包装。formal 主线中的挑战、系数、查表值与 witness 标量都通过它传递。
@@ -87,14 +86,11 @@ namespace gatzk::algebra
         // Unlike from_little_endian_mod(), this path does not reduce modulo p.
         // It is intended only for authenticated/canonical wire formats where
         // encodings >= p must be rejected.
-        static FieldElement from_canonical_little_endian(
-            const std::uint8_t *bytes,
-            std::size_t size)
+        static FieldElement from_canonical_little_endian(const std::uint8_t *bytes, std::size_t size)
         {
             if (bytes == nullptr || size == 0)
             {
-                throw std::runtime_error(
-                    "canonical field decoder received empty input");
+                throw std::runtime_error("canonical field decoder received empty input");
             }
 
             ensure_mcl_field_ready();
@@ -102,15 +98,11 @@ namespace gatzk::algebra
             FieldElement out;
             bool valid = false;
 
-            out.value_.setArray(
-                &valid,
-                bytes,
-                size);
+            out.value_.setArray(&valid, bytes, size);
 
             if (!valid)
             {
-                throw std::runtime_error(
-                    "non-canonical little-endian field encoding");
+                throw std::runtime_error("non-canonical little-endian field encoding");
             }
 
             return out;
@@ -336,10 +328,7 @@ namespace gatzk::algebra
                 throw std::runtime_error("batch_invert_in_place encountered zero");
             }
             prefixes[i] = accumulator;
-            mcl::Fr::mul(
-                accumulator,
-                accumulator,
-                (*values)[i].native());
+            mcl::Fr::mul(accumulator, accumulator, (*values)[i].native());
         }
 
         mcl::Fr suffix_inverse;

@@ -14,18 +14,11 @@ namespace gatzk::protocol
         return false;
     }
 
-    std::unique_ptr<CudaTFHExecutor> create_cuda_t_fh_executor(
-        std::size_t,
-        std::size_t,
-        const algebra::FieldElement &,
-        const algebra::FieldElement &,
-        const CudaTFHParameters &,
-        std::size_t)
+    std::unique_ptr<CudaTFHExecutor> create_cuda_t_fh_executor(std::size_t, std::size_t, const algebra::FieldElement &, const algebra::FieldElement &,
+                                                               const CudaTFHParameters &, std::size_t)
     {
         throw std::runtime_error("CUDA t_FH executor is unavailable in this build");
     }
 
-    void release_cuda_t_fh_executor_cache()
-    {
-    }
+    void release_cuda_t_fh_executor_cache() {}
 }

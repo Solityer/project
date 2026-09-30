@@ -2,13 +2,8 @@
 
 namespace gatzk::protocol
 {
-    std::unique_ptr<CudaTEdgeExecutor>
-    create_cuda_t_edge_executor(
-        std::size_t,
-        std::size_t,
-        const algebra::FieldElement &,
-        const algebra::FieldElement &,
-        std::size_t)
+    std::unique_ptr<CudaTEdgeExecutor> create_cuda_t_edge_executor(std::size_t, std::size_t, const algebra::FieldElement &, const algebra::FieldElement &,
+                                                                   std::size_t)
     {
         return nullptr;
     }
@@ -18,29 +13,20 @@ namespace gatzk::protocol
         return false;
     }
 
-    bool cuda_t_edge_leaf_exact_ntt_supported(
-        std::size_t)
+    bool cuda_t_edge_leaf_exact_ntt_supported(std::size_t)
     {
         return false;
     }
 
-    bool cuda_t_edge_executor_can_admit(
-        std::size_t,
-        std::size_t,
-        bool)
+    bool cuda_t_edge_executor_can_admit(std::size_t, std::size_t, bool)
     {
         return false;
     }
 
-    bool cuda_t_edge_executor_can_admit(
-        std::size_t,
-        std::size_t,
-        bool,
-        const CudaTEdgeExecutorAdmissionShape &)
+    bool cuda_t_edge_executor_can_admit(std::size_t, std::size_t, bool, const CudaTEdgeExecutorAdmissionShape &)
     {
         return false;
     }
 
-    void release_cuda_t_edge_executor_cache()
-    {}
+    void release_cuda_t_edge_executor_cache() {}
 }

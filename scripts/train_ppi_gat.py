@@ -5,6 +5,7 @@ PPI keeps one 121-dimensional multi-hot target per node.  The trainer uses
 ``BCEWithLogitsLoss`` and selects the checkpoint from validation loss only;
 the test mask is never used during optimization or checkpoint selection.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,11 +35,7 @@ from train_planetoid_gat import (
     set_seed,
     quantized_input_features,
 )
-from quantization_scale_chain import (
-    canonical_input_preprocess,
-    canonical_input_preprocess_id,
-    canonical_quantization_scale_chain,
-)
+from quantization_scale_chain import canonical_input_preprocess, canonical_input_preprocess_id, canonical_quantization_scale_chain
 
 
 @dataclass
@@ -56,11 +53,7 @@ class PPIData:
     input_quantization_diagnostic: Dict[str, object]
 
 
-def _ensure_cache(
-    project_root: pathlib.Path,
-    data_root: pathlib.Path,
-    cache_root: pathlib.Path,
-) -> pathlib.Path:
+def _ensure_cache(project_root: pathlib.Path, data_root: pathlib.Path, cache_root: pathlib.Path) -> pathlib.Path:
     required = (
         "meta.cfg",
         "features.npy",
@@ -73,27 +66,12 @@ def _ensure_cache(
         "edges.txt",
     )
     if (cache_root / "labels.txt").exists():
-        raise ValueError(
-            "PPI cache contains unsupported single-label labels.txt; regenerate the cache"
-        )
+        raise ValueError("PPI cache contains unsupported single-label labels.txt; regenerate the cache")
     if not all((cache_root / name).exists() for name in required):
         script = pathlib.Path(__file__).with_name("prepare_ppi.py")
-        subprocess.run(
-            [
-                sys.executable,
-                str(script),
-                "--data-root",
-                str(data_root / "ppi"),
-                "--output-root",
-                str(cache_root),
-            ],
-            cwd=project_root,
-            check=True,
-        )
+        subprocess.run([sys.executable, str(script), "--data-root", str(data_root / "ppi"), "--output-root", str(cache_root)], cwd=project_root, check=True)
         if (cache_root / "labels.txt").exists():
-            raise ValueError(
-                "PPI cache contains unsupported single-label labels.txt after preparation"
-            )
+            raise ValueError("PPI cache contains unsupported single-label labels.txt after preparation")
     return cache_root
 
 
@@ -111,9 +89,7 @@ def _read_cache_metadata(path: pathlib.Path) -> Dict[str, str]:
     if not path.is_file():
         raise FileNotFoundError(f"PPI cache metadata is missing: {path}")
     metadata: Dict[str, str] = {}
-    for line_number, raw_line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.split("#", 1)[0].strip()
         if not line:
             continue
@@ -126,11 +102,7 @@ def _read_cache_metadata(path: pathlib.Path) -> Dict[str, str]:
     return metadata
 
 
-def _load_sorted_edges(
-    path: pathlib.Path,
-    node_ptr: np.ndarray,
-    num_nodes: int,
-) -> tuple[np.ndarray, np.ndarray]:
+def _load_sorted_edges(path: pathlib.Path, node_ptr: np.ndarray, num_nodes: int) -> tuple[np.ndarray, np.ndarray]:
     raw = np.loadtxt(path, dtype=np.int64)
     rows = np.asarray(raw, dtype=np.int64).reshape(-1, 3)
     graph_count = int(node_ptr.size - 1)
@@ -147,9 +119,7 @@ def _load_sorted_edges(
             seen.add(key)
             kept.append((int(graph_id), int(src), int(dst), len(kept)))
 
-    graph_for_node = np.repeat(
-        np.arange(graph_count, dtype=np.int64), np.diff(node_ptr)
-    )
+    graph_for_node = np.repeat(np.arange(graph_count, dtype=np.int64), np.diff(node_ptr))
     if graph_for_node.size != num_nodes:
         raise ValueError("PPI node_ptr does not cover all feature rows")
     for node, graph_id in enumerate(graph_for_node.tolist()):
@@ -171,33 +141,19 @@ def _load_sorted_edges(
 
 
 def load_ppi_dataset(
-    project_root: pathlib.Path,
-    data_root: pathlib.Path,
-    cache_root: pathlib.Path,
-    device: torch.device,
-    *,
-    chain=None,
-    range_bits: int | None = None,
+    project_root: pathlib.Path, data_root: pathlib.Path, cache_root: pathlib.Path, device: torch.device, *, chain=None, range_bits: int | None = None
 ) -> PPIData:
     cache = _ensure_cache(project_root, data_root, cache_root)
     metadata = _read_cache_metadata(cache / "meta.cfg")
     expected_preprocess_id = canonical_input_preprocess_id("ppi")
     if metadata.get("name") != "ppi" or metadata.get("input_preprocess_id") != expected_preprocess_id:
-        raise ValueError(
-            "PPI cache is missing the canonical row_normalize producer identity"
-        )
+        raise ValueError("PPI cache is missing the canonical row_normalize producer identity")
     features = np.asarray(np.load(cache / "features.npy"), dtype=np.float32)
     labels_multi = np.asarray(np.load(cache / "labels_multi.npy"), dtype=np.float32)
-    if (
-        features.ndim != 2
-        or labels_multi.ndim != 2
-        or features.shape[0] != labels_multi.shape[0]
-    ):
+    if features.ndim != 2 or labels_multi.ndim != 2 or features.shape[0] != labels_multi.shape[0]:
         raise ValueError("PPI features and labels_multi must be aligned matrices")
     if labels_multi.shape[1] != 121:
-        raise ValueError(
-            f"PPI multi-label target must have 121 columns, got {labels_multi.shape[1]}"
-        )
+        raise ValueError(f"PPI multi-label target must have 121 columns, got {labels_multi.shape[1]}")
     if not np.all((labels_multi == 0.0) | (labels_multi == 1.0)):
         raise ValueError("PPI multi-label target must contain only 0/1 values")
 
@@ -215,18 +171,10 @@ def load_ppi_dataset(
     node_ptr = _load_size_vector(cache / "node_ptr.txt")
     if int(node_ptr[-1]) != features.shape[0]:
         raise ValueError("PPI node_ptr and feature row count disagree")
-    edge_src, edge_dst = _load_sorted_edges(
-        cache / "edges.txt", node_ptr, int(features.shape[0])
-    )
+    edge_src, edge_dst = _load_sorted_edges(cache / "edges.txt", node_ptr, int(features.shape[0]))
     chain = chain or canonical_quantization_scale_chain()
-    normalized_features = canonical_input_preprocess(
-        features, "ppi", expected_preprocess_id
-    )
-    quantized_features, input_diagnostic = quantized_input_features(
-        normalized_features,
-        chain,
-        range_bits=range_bits,
-    )
+    normalized_features = canonical_input_preprocess(features, "ppi", expected_preprocess_id)
+    quantized_features, input_diagnostic = quantized_input_features(normalized_features, chain, range_bits=range_bits)
     return PPIData(
         features=torch.tensor(quantized_features, dtype=torch.float32, device=device),
         labels_multi=torch.tensor(labels_multi, dtype=torch.float32, device=device),
@@ -242,11 +190,7 @@ def load_ppi_dataset(
     )
 
 
-def masked_bce_with_logits(
-    logits: torch.Tensor,
-    labels: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
+def masked_bce_with_logits(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     if int(mask.sum().item()) == 0:
         raise ValueError("PPI split mask must contain at least one node")
     return F.binary_cross_entropy_with_logits(logits[mask], labels[mask])
@@ -271,16 +215,12 @@ def main() -> None:
     )
     checkpoint_path = output_dir / "best_model.pt"
     if checkpoint_path.exists() and not args.overwrite:
-        raise FileExistsError(
-            f"refusing to overwrite {checkpoint_path}; pass --overwrite for the canonical retraining"
-        )
+        raise FileExistsError(f"refusing to overwrite {checkpoint_path}; pass --overwrite for the canonical retraining")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     hidden_profile = require_canonical_model_config(cfg, "ppi")
     k_out = 2
-    chain = canonical_quantization_scale_chain(
-        cfg["quant_cfg_id"], hidden_profile, k_out
-    )
+    chain = canonical_quantization_scale_chain(cfg["quant_cfg_id"], hidden_profile, k_out)
 
     epochs = int(_override(args.epochs, cfg_int(cfg, "epochs", 500)))
     patience = int(_override(args.patience, cfg_int(cfg, "patience", 100)))
@@ -289,17 +229,8 @@ def main() -> None:
     dropout = float(_override(args.dropout, cfg_float(cfg, "dropout", 0.0)))
     seed = int(_override(args.seed, cfg_int(cfg, "seed", 11)))
     use_cuda = bool(_override(args.use_cuda, True))
-    if (epochs, patience, learning_rate, weight_decay, dropout) != (
-        500,
-        100,
-        0.005,
-        0.0,
-        0.0,
-    ) or seed != 11:
-        raise ValueError(
-            "PPI formal training requires epochs=500, patience=100, lr=0.005, "
-            "weight_decay=0, dropout=0, seed=11"
-        )
+    if (epochs, patience, learning_rate, weight_decay, dropout) != (500, 100, 0.005, 0.0, 0.0) or seed != 11:
+        raise ValueError("PPI formal training requires epochs=500, patience=100, lr=0.005, " "weight_decay=0, dropout=0, seed=11")
     if not use_cuda:
         raise RuntimeError("formal training requires CUDA; refusing to create a CPU checkpoint")
     if not torch.cuda.is_available():
@@ -307,24 +238,11 @@ def main() -> None:
 
     device = torch.device("cuda")
     set_seed(seed)
-    data = load_ppi_dataset(
-        project_root,
-        data_root,
-        cache_root,
-        device,
-        chain=chain,
-        range_bits=cfg_int(cfg, "range_bits", 14),
-    )
+    data = load_ppi_dataset(project_root, data_root, cache_root, device, chain=chain, range_bits=cfg_int(cfg, "range_bits", 14))
     input_quantization = data.input_quantization_diagnostic
     if data.num_features != 50:
         raise ValueError(f"PPI formal feature width must be 50, got {data.num_features}")
-    model = PlanetoidGAT(
-        data.num_features,
-        num_classes=data.num_classes,
-        hidden_profile=hidden_profile,
-        k_out=k_out,
-        quantization=chain,
-    ).to(device)
+    model = PlanetoidGAT(data.num_features, num_classes=data.num_classes, hidden_profile=hidden_profile, k_out=k_out, quantization=chain).to(device)
     optimizer = build_optimizer(model, learning_rate, weight_decay)
     metadata = checkpoint_metadata(
         dataset="ppi",
@@ -360,58 +278,22 @@ def main() -> None:
     for epoch in range(epochs):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        logits, _ = model(
-            data.features,
-            data.edge_src,
-            data.edge_dst,
-            dropout=dropout,
-            training=True,
-            return_trace=False,
-        )
+        logits, _ = model(data.features, data.edge_src, data.edge_dst, dropout=dropout, training=True, return_trace=False)
         loss = masked_bce_with_logits(logits, data.labels_multi, data.train_mask)
         loss.backward()
         optimizer.step()
 
         model.eval()
         with torch.no_grad():
-            eval_logits, _ = model(
-                data.features,
-                data.edge_src,
-                data.edge_dst,
-                dropout=0.0,
-                training=False,
-                return_trace=False,
-            )
-            validation_loss = float(
-                masked_bce_with_logits(eval_logits, data.labels_multi, data.val_mask).item()
-            )
-        history.append(
-            {
-                "epoch": float(epoch),
-                "train_loss": float(loss.item()),
-                "val_loss": validation_loss,
-            }
-        )
-        print(
-            f"[ppi] epoch={epoch:04d} train_loss={loss.item():.6f} "
-            f"val_loss={validation_loss:.6f}",
-            flush=True,
-        )
+            eval_logits, _ = model(data.features, data.edge_src, data.edge_dst, dropout=0.0, training=False, return_trace=False)
+            validation_loss = float(masked_bce_with_logits(eval_logits, data.labels_multi, data.val_mask).item())
+        history.append({"epoch": float(epoch), "train_loss": float(loss.item()), "val_loss": validation_loss})
+        print(f"[ppi] epoch={epoch:04d} train_loss={loss.item():.6f} " f"val_loss={validation_loss:.6f}", flush=True)
         if validation_loss < best_val_loss:
             best_val_loss = validation_loss
-            best_state = {
-                key: value.detach().cpu().clone()
-                for key, value in model.state_dict().items()
-            }
-            best_metrics = {
-                "best_epoch": epoch,
-                "train_loss": float(loss.item()),
-                "val_loss": validation_loss,
-            }
-            torch.save(
-                {"bundle": metadata, "state_dict": best_state},
-                checkpoint_path,
-            )
+            best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+            best_metrics = {"best_epoch": epoch, "train_loss": float(loss.item()), "val_loss": validation_loss}
+            torch.save({"bundle": metadata, "state_dict": best_state}, checkpoint_path)
             bad_epochs = 0
         else:
             bad_epochs += 1
@@ -423,18 +305,8 @@ def main() -> None:
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
-        best_logits, _ = model(
-            data.features,
-            data.edge_src,
-            data.edge_dst,
-            dropout=0.0,
-            training=False,
-            return_trace=False,
-        )
-    np.save(
-        output_dir / "qat_best_logits.npy",
-        best_logits.detach().cpu().numpy().astype(np.float32, copy=False),
-    )
+        best_logits, _ = model(data.features, data.edge_src, data.edge_dst, dropout=0.0, training=False, return_trace=False)
+    np.save(output_dir / "qat_best_logits.npy", best_logits.detach().cpu().numpy().astype(np.float32, copy=False))
     (output_dir / "training_summary.json").write_text(
         json.dumps(
             {

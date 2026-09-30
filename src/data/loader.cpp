@@ -20,8 +20,7 @@ namespace gatzk::data
     namespace
     {
         using algebra::FieldElement;
-        std::vector<std::vector<double>> row_normalize(
-            const std::vector<std::vector<double>> &raw_features)
+        std::vector<std::vector<double>> row_normalize(const std::vector<std::vector<double>> &raw_features)
         {
             // 先按行归一化输入特征，让数据进入参考前向时保持稳定的节点内尺度。
             std::vector<std::vector<double>> normalized = raw_features;
@@ -31,13 +30,11 @@ namespace gatzk::data
                 for (const auto value : row)
                 {
                     if (!std::isfinite(value))
-                        throw std::runtime_error(
-                            "input feature contains NaN or Inf");
+                        throw std::runtime_error("input feature contains NaN or Inf");
                     sum += value;
                 }
                 if (!std::isfinite(sum))
-                    throw std::runtime_error(
-                        "input feature normalization sum is not finite");
+                    throw std::runtime_error("input feature normalization sum is not finite");
                 if (sum == 0.0)
                 {
                     continue;
@@ -46,8 +43,7 @@ namespace gatzk::data
                 {
                     value /= sum;
                     if (!std::isfinite(value))
-                        throw std::runtime_error(
-                            "input feature normalization produced NaN or Inf");
+                        throw std::runtime_error("input feature normalization produced NaN or Inf");
                 }
             }
             return normalized;
@@ -77,12 +73,8 @@ namespace gatzk::data
                 auto key = line.substr(0, eq);
                 auto value = line.substr(eq + 1);
                 key.erase(std::remove_if(key.begin(), key.end(), ::isspace), key.end());
-                value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch)
-                                                        { return !std::isspace(ch); }));
-                value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char ch)
-                                         { return !std::isspace(ch); })
-                                .base(),
-                            value.end());
+                value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+                value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), value.end());
                 out[key] = value;
             }
             return out;
@@ -201,11 +193,7 @@ namespace gatzk::data
             return out;
         }
 
-        std::vector<std::vector<double>> load_features_matrix(
-            const std::filesystem::path &root,
-            std::size_t rows,
-            std::size_t cols,
-            bool *npy_float32)
+        std::vector<std::vector<double>> load_features_matrix(const std::filesystem::path &root, std::size_t rows, std::size_t cols, bool *npy_float32)
         {
             if (npy_float32 != nullptr)
                 *npy_float32 = false;
@@ -286,10 +274,7 @@ namespace gatzk::data
             return labels;
         }
 
-        std::vector<std::vector<int>> load_multi_labels(
-            const std::filesystem::path &root,
-            std::size_t rows,
-            std::size_t cols)
+        std::vector<std::vector<int>> load_multi_labels(const std::filesystem::path &root, std::size_t rows, std::size_t cols)
         {
             const auto path = root / "labels_multi.txt";
             std::ifstream input(path);
@@ -341,27 +326,18 @@ namespace gatzk::data
             return out;
         }
 
-        GraphDataset load_cached_dataset(
-            const std::filesystem::path &root,
-            std::uint64_t input_scale,
-            std::string_view input_preprocess_id)
+        GraphDataset load_cached_dataset(const std::filesystem::path &root, std::uint64_t input_scale, std::string_view input_preprocess_id)
         {
             if (input_scale == 0)
-                throw std::runtime_error(
-                    "formal dataset loading requires a positive S_input");
+                throw std::runtime_error("formal dataset loading requires a positive S_input");
             const auto meta = read_meta(root / "meta.cfg");
             GraphDataset dataset;
             dataset.name = meta.at("name");
-            const auto expected_preprocess_id =
-                util::canonical_input_preprocess_id(dataset.name);
-            if (input_preprocess_id.empty()
-                || input_preprocess_id != expected_preprocess_id
-                || !meta.contains("input_preprocess_id")
-                || meta.at("input_preprocess_id") != expected_preprocess_id)
+            const auto expected_preprocess_id = util::canonical_input_preprocess_id(dataset.name);
+            if (input_preprocess_id.empty() || input_preprocess_id != expected_preprocess_id || !meta.contains("input_preprocess_id") ||
+                meta.at("input_preprocess_id") != expected_preprocess_id)
             {
-                throw std::runtime_error(
-                    "dataset cache input_preprocess_id is missing or not canonical for "
-                    + dataset.name);
+                throw std::runtime_error("dataset cache input_preprocess_id is missing or not canonical for " + dataset.name);
             }
             dataset.input_preprocess_id = meta.at("input_preprocess_id");
             dataset.num_nodes = std::stoull(meta.at("num_nodes"));
@@ -381,41 +357,28 @@ namespace gatzk::data
             }
             if (dataset.name == "ppi")
             {
-                if (!meta.contains("label_format") ||
-                    !meta.contains("split_format") ||
-                    meta.at("label_format") != "multi_hot" ||
-                    meta.at("split_format") != "node_masks" ||
-                    dataset.num_classes != 121)
+                if (!meta.contains("label_format") || !meta.contains("split_format") || meta.at("label_format") != "multi_hot" ||
+                    meta.at("split_format") != "node_masks" || dataset.num_classes != 121)
                 {
-                    throw std::runtime_error(
-                        "PPI cache must declare the canonical 121-column multi-hot label format");
+                    throw std::runtime_error("PPI cache must declare the canonical 121-column multi-hot label format");
                 }
             }
 
             // 先恢复浮点特征，再量化成 formal 主线真正消费的域元素矩阵。
             bool npy_float32 = false;
-            const auto raw_features = load_features_matrix(
-                root, dataset.num_nodes, dataset.num_features, &npy_float32);
-            if (dataset.input_preprocess_id == "ogbn_arxiv_raw_float32"
-                && (!std::filesystem::exists(root / "features.npy")
-                    || !npy_float32
-                    || std::filesystem::exists(root / "features.txt")))
+            const auto raw_features = load_features_matrix(root, dataset.num_nodes, dataset.num_features, &npy_float32);
+            if (dataset.input_preprocess_id == "ogbn_arxiv_raw_float32" &&
+                (!std::filesystem::exists(root / "features.npy") || !npy_float32 || std::filesystem::exists(root / "features.txt")))
             {
-                throw std::runtime_error(
-                    "ogbn_arxiv raw_float32 requires an unnormalized float32 features.npy cache");
+                throw std::runtime_error("ogbn_arxiv raw_float32 requires an unnormalized float32 features.npy cache");
             }
-            dataset.features_fp = preprocess_input_features(
-                raw_features,
-                dataset.name,
-                dataset.input_preprocess_id);
+            dataset.features_fp = preprocess_input_features(raw_features, dataset.name, dataset.input_preprocess_id);
             dataset.features.assign(dataset.num_nodes, std::vector<FieldElement>(dataset.num_features, FieldElement::zero()));
             for (std::size_t row = 0; row < dataset.num_nodes; ++row)
             {
                 for (std::size_t col = 0; col < dataset.num_features; ++col)
                 {
-                    dataset.features[row][col] = quantize_field_at_scale(
-                        dataset.features_fp[row][col],
-                        input_scale);
+                    dataset.features[row][col] = quantize_field_at_scale(dataset.features_fp[row][col], input_scale);
                 }
             }
             if (dataset.name == "ppi")
@@ -507,13 +470,10 @@ namespace gatzk::data
                 return;
             }
             const std::filesystem::path project_root(config.project_root);
-            const auto python = std::filesystem::exists(project_root / ".venv/bin/python")
-                                    ? (project_root / ".venv/bin/python").string()
-                                    : std::string("python3");
+            const auto python =
+                std::filesystem::exists(project_root / ".venv/bin/python") ? (project_root / ".venv/bin/python").string() : std::string("python3");
             const auto script = (project_root / "scripts/prepare_planetoid.py").string();
-            const auto command = python + " " + script +
-                                 " --data-root " + (project_root / config.data_root).string() +
-                                 " --dataset " + config.dataset +
+            const auto command = python + " " + script + " --data-root " + (project_root / config.data_root).string() + " --dataset " + config.dataset +
                                  " --cache-root " + (project_root / config.cache_root).string();
             if (std::system(command.c_str()) != 0)
             {
@@ -524,29 +484,21 @@ namespace gatzk::data
         // PPI 多图 batch 同样先落缓存，再进入正式 proving 主线。
         void maybe_prepare_ppi_cache(const util::AppConfig &config, const std::filesystem::path &cache_root)
         {
-            const bool canonical_cache =
-                std::filesystem::exists(cache_root / "meta.cfg") &&
-                std::filesystem::exists(cache_root / "features.npy") &&
-                std::filesystem::exists(cache_root / "edges.txt") &&
-                std::filesystem::exists(cache_root / "node_ptr.txt") &&
-                std::filesystem::exists(cache_root / "labels_multi.npy") &&
-                std::filesystem::exists(cache_root / "labels_multi.txt") &&
-                std::filesystem::exists(cache_root / "train_mask.npy") &&
-                std::filesystem::exists(cache_root / "val_mask.npy") &&
-                std::filesystem::exists(cache_root / "test_mask.npy") &&
-                !std::filesystem::exists(cache_root / "labels.txt");
+            const bool canonical_cache = std::filesystem::exists(cache_root / "meta.cfg") && std::filesystem::exists(cache_root / "features.npy") &&
+                                         std::filesystem::exists(cache_root / "edges.txt") && std::filesystem::exists(cache_root / "node_ptr.txt") &&
+                                         std::filesystem::exists(cache_root / "labels_multi.npy") && std::filesystem::exists(cache_root / "labels_multi.txt") &&
+                                         std::filesystem::exists(cache_root / "train_mask.npy") && std::filesystem::exists(cache_root / "val_mask.npy") &&
+                                         std::filesystem::exists(cache_root / "test_mask.npy") && !std::filesystem::exists(cache_root / "labels.txt");
             if (!config.auto_prepare_dataset || canonical_cache)
             {
                 return;
             }
             const std::filesystem::path project_root(config.project_root);
-            const auto python = std::filesystem::exists(project_root / ".venv/bin/python")
-                                    ? (project_root / ".venv/bin/python").string()
-                                    : std::string("python3");
+            const auto python =
+                std::filesystem::exists(project_root / ".venv/bin/python") ? (project_root / ".venv/bin/python").string() : std::string("python3");
             const auto script = (project_root / "scripts/prepare_ppi.py").string();
-            const auto command = python + " " + script +
-                                 " --data-root " + (project_root / config.data_root / "ppi").string() +
-                                 " --output-root " + (project_root / config.cache_root / "ppi").string();
+            const auto command = python + " " + script + " --data-root " + (project_root / config.data_root / "ppi").string() + " --output-root " +
+                                 (project_root / config.cache_root / "ppi").string();
             if (std::system(command.c_str()) != 0)
             {
                 throw std::runtime_error("failed to prepare PPI cache");
@@ -561,13 +513,10 @@ namespace gatzk::data
                 return;
             }
             const std::filesystem::path project_root(config.project_root);
-            const auto python = std::filesystem::exists(project_root / ".venv/bin/python")
-                                    ? (project_root / ".venv/bin/python").string()
-                                    : std::string("python3");
+            const auto python =
+                std::filesystem::exists(project_root / ".venv/bin/python") ? (project_root / ".venv/bin/python").string() : std::string("python3");
             const auto script = (project_root / "scripts/prepare_ogbn_arxiv.py").string();
-            const auto command = python + " " + script +
-                                 " --project-root " + project_root.string() +
-                                 " --data-root " + config.data_root;
+            const auto command = python + " " + script + " --project-root " + project_root.string() + " --data-root " + config.data_root;
             if (std::system(command.c_str()) != 0)
             {
                 throw std::runtime_error("failed to prepare ogbn_arxiv cache");
@@ -583,10 +532,7 @@ namespace gatzk::data
             return out;
         }
 
-        void fill_local_features(
-            const GraphDataset &dataset,
-            const std::vector<std::size_t> &absolute_ids,
-            LocalGraph *local)
+        void fill_local_features(const GraphDataset &dataset, const std::vector<std::size_t> &absolute_ids, LocalGraph *local)
         {
             local->features_fp.reserve(local->features_fp.size() + absolute_ids.size());
             local->features.reserve(local->features.size() + absolute_ids.size());
@@ -618,15 +564,12 @@ namespace gatzk::data
 
     } // namespace
 
-    std::vector<std::vector<double>> preprocess_input_features(
-        const std::vector<std::vector<double>> &raw_features,
-        std::string_view dataset,
-        std::string_view input_preprocess_id)
+    std::vector<std::vector<double>> preprocess_input_features(const std::vector<std::vector<double>> &raw_features, std::string_view dataset,
+                                                               std::string_view input_preprocess_id)
     {
         const auto expected_id = util::canonical_input_preprocess_id(dataset);
         if (input_preprocess_id != expected_id)
-            throw std::runtime_error(
-                "input_preprocess_id does not match dataset preprocessing contract");
+            throw std::runtime_error("input_preprocess_id does not match dataset preprocessing contract");
         if (raw_features.empty())
             throw std::runtime_error("input feature matrix must not be empty");
         const auto width = raw_features.front().size();
@@ -643,47 +586,34 @@ namespace gatzk::data
                 {
                     value = static_cast<double>(static_cast<float>(value));
                     if (!std::isfinite(value))
-                        throw std::runtime_error(
-                            "raw float32 input preprocessing rejects NaN/Inf");
+                        throw std::runtime_error("raw float32 input preprocessing rejects NaN/Inf");
                 }
             return raw_float32;
         }
         return row_normalize(raw_features);
     }
 
-    std::int64_t quantize_raw_at_scale(
-        double value,
-        std::uint64_t scale)
+    std::int64_t quantize_raw_at_scale(double value, std::uint64_t scale)
     {
         // Keep the multiplication and rounding in a wider accumulator.  A
         // double comparison against INT64_MAX is insufficient because that
         // endpoint rounds to 2^63 in binary64, which could otherwise permit an
         // out-of-range conversion to int64_t.
         if (scale == 0 || !std::isfinite(value))
-            throw std::runtime_error(
-                "registered quantizer requires a positive scale and finite input");
-        const auto scaled =
-            static_cast<long double>(value) * static_cast<long double>(scale);
+            throw std::runtime_error("registered quantizer requires a positive scale and finite input");
+        const auto scaled = static_cast<long double>(value) * static_cast<long double>(scale);
         if (!std::isfinite(scaled))
-            throw std::runtime_error(
-                "registered quantizer input scaling overflow");
-        const auto rounded = scaled >= 0.0L
-                                 ? std::floor(scaled + 0.5L)
-                                 : std::ceil(scaled - 0.5L);
-        if (!std::isfinite(rounded)
-            || rounded > static_cast<long double>(std::numeric_limits<std::int64_t>::max())
-            || rounded < static_cast<long double>(std::numeric_limits<std::int64_t>::min()))
-            throw std::runtime_error(
-                "registered quantizer rounded value exceeds int64");
+            throw std::runtime_error("registered quantizer input scaling overflow");
+        const auto rounded = scaled >= 0.0L ? std::floor(scaled + 0.5L) : std::ceil(scaled - 0.5L);
+        if (!std::isfinite(rounded) || rounded > static_cast<long double>(std::numeric_limits<std::int64_t>::max()) ||
+            rounded < static_cast<long double>(std::numeric_limits<std::int64_t>::min()))
+            throw std::runtime_error("registered quantizer rounded value exceeds int64");
         return static_cast<std::int64_t>(rounded);
     }
 
-    algebra::FieldElement quantize_field_at_scale(
-        double value,
-        std::uint64_t scale)
+    algebra::FieldElement quantize_field_at_scale(double value, std::uint64_t scale)
     {
-        return algebra::FieldElement::from_signed(
-            quantize_raw_at_scale(value, scale));
+        return algebra::FieldElement::from_signed(quantize_raw_at_scale(value, scale));
     }
 
     GraphDataset load_dataset(const util::AppConfig &config)
@@ -702,29 +632,16 @@ namespace gatzk::data
         {
             maybe_prepare_planetoid_cache(config, cache_root);
         }
-        return load_cached_dataset(
-            cache_root,
-            config.quantization.s_input,
-            config.input_preprocess_id);
+        return load_cached_dataset(cache_root, config.quantization.s_input, config.input_preprocess_id);
     }
 
-    void validate_input_feature_views(
-        const GraphDataset &dataset,
-        const LocalGraph &local,
-        std::uint64_t input_scale,
-        std::string_view input_preprocess_id)
+    void validate_input_feature_views(const GraphDataset &dataset, const LocalGraph &local, std::uint64_t input_scale, std::string_view input_preprocess_id)
     {
-        const auto expected_preprocess_id =
-            util::canonical_input_preprocess_id(dataset.name);
-        const auto requested_preprocess_id = input_preprocess_id.empty()
-                                                 ? dataset.input_preprocess_id
-                                                 : std::string(input_preprocess_id);
-        if (!requested_preprocess_id.empty()
-            && (requested_preprocess_id != expected_preprocess_id
-                || dataset.input_preprocess_id != requested_preprocess_id
-                || local.input_preprocess_id != requested_preprocess_id))
-            throw std::runtime_error(
-                "input feature preprocessing identity mismatch");
+        const auto expected_preprocess_id = util::canonical_input_preprocess_id(dataset.name);
+        const auto requested_preprocess_id = input_preprocess_id.empty() ? dataset.input_preprocess_id : std::string(input_preprocess_id);
+        if (!requested_preprocess_id.empty() && (requested_preprocess_id != expected_preprocess_id || dataset.input_preprocess_id != requested_preprocess_id ||
+                                                 local.input_preprocess_id != requested_preprocess_id))
+            throw std::runtime_error("input feature preprocessing identity mismatch");
         const bool dataset_raw_present = !dataset.features_fp.empty();
         const bool dataset_quantized_present = !dataset.features.empty();
         // A full-graph proving context may deliberately drop the duplicated
@@ -732,50 +649,29 @@ namespace gatzk::data
         // them; LocalGraph remains the sole owned witness view in that case.
         // Never accept a partially redacted dataset, and never allow a
         // partial-batch local view to stand in for the missing dataset source.
-        if (dataset_raw_present != dataset_quantized_present
-            || (dataset_raw_present
-                && (dataset.features_fp.size() != dataset.num_nodes
-                    || dataset.features.size() != dataset.num_nodes)))
-            throw std::runtime_error(
-                "dataset input feature views are partially present or malformed");
+        if (dataset_raw_present != dataset_quantized_present ||
+            (dataset_raw_present && (dataset.features_fp.size() != dataset.num_nodes || dataset.features.size() != dataset.num_nodes)))
+            throw std::runtime_error("dataset input feature views are partially present or malformed");
 
-        const bool dataset_views_present =
-            dataset_raw_present && dataset_quantized_present;
-        if (input_scale == 0
-            || dataset.num_nodes == 0
-            || dataset.num_features == 0
-            || local.num_nodes == 0
-            || local.num_features != dataset.num_features
-            || local.absolute_ids.size() != local.num_nodes
-            || local.features_fp.size() != local.num_nodes
-            || local.features.size() != local.num_nodes)
-            throw std::runtime_error(
-                "input feature raw/quantized view shape mismatch");
+        const bool dataset_views_present = dataset_raw_present && dataset_quantized_present;
+        if (input_scale == 0 || dataset.num_nodes == 0 || dataset.num_features == 0 || local.num_nodes == 0 || local.num_features != dataset.num_features ||
+            local.absolute_ids.size() != local.num_nodes || local.features_fp.size() != local.num_nodes || local.features.size() != local.num_nodes)
+            throw std::runtime_error("input feature raw/quantized view shape mismatch");
 
-        if (!dataset_views_present
-            && (local.num_nodes != dataset.num_nodes
-                || local.absolute_ids.size() != dataset.num_nodes))
-            throw std::runtime_error(
-                "redacted dataset input views require the complete local feature view");
+        if (!dataset_views_present && (local.num_nodes != dataset.num_nodes || local.absolute_ids.size() != dataset.num_nodes))
+            throw std::runtime_error("redacted dataset input views require the complete local feature view");
 
         if (dataset_views_present)
         {
             for (std::size_t row = 0; row < dataset.num_nodes; ++row)
             {
-                if (dataset.features_fp[row].size() != dataset.num_features
-                    || dataset.features[row].size() != dataset.num_features)
-                    throw std::runtime_error(
-                        "dataset input feature raw/quantized view shape mismatch");
-                for (std::size_t column = 0;
-                     column < dataset.num_features;
-                     ++column)
+                if (dataset.features_fp[row].size() != dataset.num_features || dataset.features[row].size() != dataset.num_features)
+                    throw std::runtime_error("dataset input feature raw/quantized view shape mismatch");
+                for (std::size_t column = 0; column < dataset.num_features; ++column)
                 {
-                    const auto expected = quantize_field_at_scale(
-                        dataset.features_fp[row][column],
-                        input_scale);
+                    const auto expected = quantize_field_at_scale(dataset.features_fp[row][column], input_scale);
                     if (dataset.features[row][column] != expected)
-                        throw std::runtime_error(
-                            "dataset input feature quantization does not match S_input");
+                        throw std::runtime_error("dataset input feature quantization does not match S_input");
                 }
             }
         }
@@ -785,28 +681,16 @@ namespace gatzk::data
         for (std::size_t row = 0; row < local.num_nodes; ++row)
         {
             const auto absolute_id = local.absolute_ids[row];
-            if (absolute_id >= dataset.num_nodes
-                || !seen_ids.insert(absolute_id).second
-                || (!dataset_views_present && absolute_id != row)
-                || local.features_fp[row].size() != local.num_features
-                || local.features[row].size() != local.num_features)
-                throw std::runtime_error(
-                    "local input feature raw/quantized view shape mismatch");
-            for (std::size_t column = 0;
-                 column < local.num_features;
-                 ++column)
+            if (absolute_id >= dataset.num_nodes || !seen_ids.insert(absolute_id).second || (!dataset_views_present && absolute_id != row) ||
+                local.features_fp[row].size() != local.num_features || local.features[row].size() != local.num_features)
+                throw std::runtime_error("local input feature raw/quantized view shape mismatch");
+            for (std::size_t column = 0; column < local.num_features; ++column)
             {
-                const auto expected = quantize_field_at_scale(
-                    local.features_fp[row][column],
-                    input_scale);
-                if (local.features[row][column] != expected
-                    || (dataset_views_present
-                        && (local.features[row][column]
-                                != dataset.features[absolute_id][column]
-                            || local.features_fp[row][column]
-                                   != dataset.features_fp[absolute_id][column])))
-                    throw std::runtime_error(
-                        "local input feature views are not bound to dataset views");
+                const auto expected = quantize_field_at_scale(local.features_fp[row][column], input_scale);
+                if (local.features[row][column] != expected ||
+                    (dataset_views_present && (local.features[row][column] != dataset.features[absolute_id][column] ||
+                                               local.features_fp[row][column] != dataset.features_fp[absolute_id][column])))
+                    throw std::runtime_error("local input feature views are not bound to dataset views");
             }
         }
     }
@@ -818,11 +702,14 @@ namespace gatzk::data
         {
             throw std::runtime_error("normalized graph size metadata mismatch");
         }
-        if (public_input.N_total < public_input.N || public_input.I.size() != public_input.N || public_input.src.size() != public_input.E || public_input.dst.size() != public_input.E)
+        if (public_input.N_total < public_input.N || public_input.I.size() != public_input.N || public_input.src.size() != public_input.E ||
+            public_input.dst.size() != public_input.E)
         {
             throw std::runtime_error("normalized graph public vector size mismatch");
         }
-        if (public_input.G_batch == 0 || public_input.node_ptr.size() != public_input.G_batch + 1 || public_input.edge_ptr.size() != public_input.G_batch + 1 || public_input.node_ptr.front() != 0 || public_input.edge_ptr.front() != 0 || public_input.node_ptr.back() != public_input.N || public_input.edge_ptr.back() != public_input.E)
+        if (public_input.G_batch == 0 || public_input.node_ptr.size() != public_input.G_batch + 1 || public_input.edge_ptr.size() != public_input.G_batch + 1 ||
+            public_input.node_ptr.front() != 0 || public_input.edge_ptr.front() != 0 || public_input.node_ptr.back() != public_input.N ||
+            public_input.edge_ptr.back() != public_input.E)
         {
             throw std::runtime_error("normalized graph batch pointer shape mismatch");
         }
@@ -876,8 +763,7 @@ namespace gatzk::data
                 ++indegree[dst];
             }
         }
-        if (std::any_of(indegree.begin(), indegree.end(), [](std::size_t value)
-                        { return value == 0; }))
+        if (std::any_of(indegree.begin(), indegree.end(), [](std::size_t value) { return value == 0; }))
         {
             throw std::runtime_error("normalized graph contains a zero-indegree node");
         }
@@ -893,12 +779,9 @@ namespace gatzk::data
 
         LocalGraph local;
         local.name = dataset.name + "_normalized";
-        if (config.input_preprocess_id.empty()
-            || dataset.input_preprocess_id.empty()
-            || config.input_preprocess_id != dataset.input_preprocess_id)
+        if (config.input_preprocess_id.empty() || dataset.input_preprocess_id.empty() || config.input_preprocess_id != dataset.input_preprocess_id)
         {
-            throw std::runtime_error(
-                "normalized graph input preprocessing identity mismatch");
+            throw std::runtime_error("normalized graph input preprocessing identity mismatch");
         }
         local.input_preprocess_id = dataset.input_preprocess_id;
         local.num_features = dataset.num_features;
@@ -996,15 +879,19 @@ namespace gatzk::data
             }
 
             // 最终边序固定为“先 graph_id，再 dst，再稳定索引”，与笔记里的公开排序约定对齐。
-            std::stable_sort(graph_edges.begin(), graph_edges.end(), [](const Edge &lhs, const Edge &rhs)
+            std::stable_sort(graph_edges.begin(), graph_edges.end(),
+                             [](const Edge &lhs, const Edge &rhs)
                              {
-            if (lhs.graph_id != rhs.graph_id) {
-                return lhs.graph_id < rhs.graph_id;
-            }
-            if (lhs.dst != rhs.dst) {
-                return lhs.dst < rhs.dst;
-            }
-            return lhs.stable_index < rhs.stable_index; });
+                                 if (lhs.graph_id != rhs.graph_id)
+                                 {
+                                     return lhs.graph_id < rhs.graph_id;
+                                 }
+                                 if (lhs.dst != rhs.dst)
+                                 {
+                                     return lhs.dst < rhs.dst;
+                                 }
+                                 return lhs.stable_index < rhs.stable_index;
+                             });
             batch_edge_ptr.push_back(batch_edge_ptr.back() + graph_edges.size());
             batch_edges.insert(batch_edges.end(), graph_edges.begin(), graph_edges.end());
         }

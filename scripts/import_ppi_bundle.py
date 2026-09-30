@@ -19,10 +19,7 @@ from checkpoint_bundle import (
     write_text_tensor_dump,
 )
 from export_torch_gat_bundle import build_tensors_and_manifest_spec
-from quantization_scale_chain import (
-    canonical_input_preprocess_id,
-    canonical_quantization_scale_chain,
-)
+from quantization_scale_chain import canonical_input_preprocess_id, canonical_quantization_scale_chain
 
 
 def require(condition: bool, message: str) -> None:
@@ -90,11 +87,7 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     require((bundle_dir / "tensors.npz").exists(), f"缺少 tensors.npz: {bundle_dir}")
     require(manifest["family_schema"] == "multi_layer_multi_head", "family_schema 不受支持")
     require(manifest["dataset"] == "ppi", "PPI bundle dataset identity 不匹配")
-    require(
-        manifest["input_preprocess_id"]
-        == canonical_input_preprocess_id("ppi"),
-        "PPI bundle input_preprocess_id 不匹配",
-    )
+    require(manifest["input_preprocess_id"] == canonical_input_preprocess_id("ppi"), "PPI bundle input_preprocess_id 不匹配")
     require(manifest["L"] == 3, "PPI 正式配置要求 L=3")
     require(parse_hidden_profile(manifest) == "8x8,8x8", "PPI 正式配置要求 hidden_profile=[8x8,8x8]")
     d_in_profile = manifest["d_in_profile"]
@@ -104,16 +97,8 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     require(manifest["model_arch_id"] == "gat_family_L3_hid8x8-8x8_kout2_c121", "PPI bundle 的 model_arch_id 不匹配")
     require(manifest["model_param_id"] == "ppi_gat_seed11", "PPI bundle 的 model_param_id 不匹配")
     require(manifest["quant_cfg_id"] == "gat_l3_scale_chain", "PPI bundle 必须声明 canonical scale chain")
-    expected_chain = canonical_quantization_scale_chain(
-        manifest["quant_cfg_id"],
-        manifest["hidden_profile"],
-        manifest["K_out"],
-    )
-    require(
-        manifest["quantization_scale_chain"]
-        == expected_chain.canonical_serialization(),
-        "PPI bundle quantization_scale_chain metadata is malformed",
-    )
+    expected_chain = canonical_quantization_scale_chain(manifest["quant_cfg_id"], manifest["hidden_profile"], manifest["K_out"])
+    require(manifest["quantization_scale_chain"] == expected_chain.canonical_serialization(), "PPI bundle quantization_scale_chain metadata is malformed")
     require(manifest["task_type"] == "inductive_multi_graph_node_classification", "PPI bundle 的 task_type 不匹配")
     require(manifest["report_unit"] == "graph", "PPI bundle 的 report_unit 不匹配")
     require(manifest["batching_rule"] == "multi_graph_batch", "PPI bundle 的 batching_rule 不匹配")
@@ -130,12 +115,7 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     require(isinstance(hidden_layers, list) and len(hidden_layers) == 2, "PPI bundle 必须包含两个 hidden layer")
     require(all(isinstance(layer, dict) for layer in hidden_layers), "PPI hidden_layers 每项必须是对象")
     require(
-        [
-            (layer["input_dim"], layer["head_count"], layer["head_dim"])
-            for layer in hidden_layers
-        ]
-        == [(50, 8, 8), (64, 8, 8)],
-        "PPI hidden_layers shape 不匹配",
+        [(layer["input_dim"], layer["head_count"], layer["head_dim"]) for layer in hidden_layers] == [(50, 8, 8), (64, 8, 8)], "PPI hidden_layers shape 不匹配"
     )
     hidden_specs = manifest["hidden_head_specs"]
     output_specs = manifest["output_head_specs"]
@@ -161,15 +141,8 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
         require(isinstance(entry, dict) and isinstance(entry["shape"], list), f"PPI tensor shape 缺失: {name}")
         return tuple(entry["shape"])
 
-    def validate_head(
-        spec: Dict[str, object],
-        input_dim: int,
-        output_dim: int,
-        *,
-        require_output_bias: bool,
-    ) -> None:
-        require("attn_dst_bias" not in spec and "attn_src_bias" not in spec,
-                "PPI head must reject attention scalar bias fields")
+    def validate_head(spec: Dict[str, object], input_dim: int, output_dim: int, *, require_output_bias: bool) -> None:
+        require("attn_dst_bias" not in spec and "attn_src_bias" not in spec, "PPI head must reject attention scalar bias fields")
         keys = ("seq_kernel", "attn_dst_kernel", "attn_src_kernel")
         if require_output_bias:
             keys += ("output_bias",)
@@ -190,11 +163,7 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
             validate_head(spec, input_dim, 8, require_output_bias=False)
     for spec in output_specs:
         validate_head(spec, 64, 121, require_output_bias=True)
-    validate_tensor_encodings(
-        manifest,
-        bundle_dir / "tensors.npz",
-        bundle_dir / "tensors.txt",
-    )
+    validate_tensor_encodings(manifest, bundle_dir / "tensors.npz", bundle_dir / "tensors.txt")
 
 
 def install_bundle(source_dir: pathlib.Path, output_dir: pathlib.Path) -> None:
@@ -213,15 +182,7 @@ def install_bundle(source_dir: pathlib.Path, output_dir: pathlib.Path) -> None:
 
 
 def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir: pathlib.Path) -> None:
-    (
-        tensors,
-        d_in_profile,
-        hidden_layers,
-        hidden_head_specs,
-        output_head_specs,
-        num_classes,
-        bundle,
-    ) = build_tensors_and_manifest_spec(checkpoint_path)
+    tensors, d_in_profile, hidden_layers, hidden_head_specs, output_head_specs, num_classes, bundle = build_tensors_and_manifest_spec(checkpoint_path)
     manifest = build_family_manifest(
         tensors,
         str(checkpoint_path),
@@ -246,15 +207,8 @@ def write_bundle_from_torch_checkpoint(checkpoint_path: pathlib.Path, bundle_dir
     arrays = {archive_key(name): tensor for name, tensor in tensors.items()}
     np.savez_compressed(bundle_dir / "tensors.npz", **arrays)
     write_text_tensor_dump(bundle_dir / "tensors.txt", tensors)
-    (bundle_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True),
-        encoding="utf-8",
-    )
-    validate_tensor_encodings(
-        manifest,
-        bundle_dir / "tensors.npz",
-        bundle_dir / "tensors.txt",
-    )
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    validate_tensor_encodings(manifest, bundle_dir / "tensors.npz", bundle_dir / "tensors.txt")
 
 
 def main() -> None:

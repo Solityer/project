@@ -83,9 +83,7 @@ namespace gatzk::util
     // 统一的控制台输出前缀，方便 formal suite 与 benchmark 日志定位来源
     void info(const std::string &message)
     {
-        if (message.rfind("cuda_msm ", 0) == 0 &&
-            std::getenv("GATZK_RUN_PROGRESS") == nullptr &&
-            std::getenv("GATZK_DETAILED_PROFILE") == nullptr &&
+        if (message.rfind("cuda_msm ", 0) == 0 && std::getenv("GATZK_RUN_PROGRESS") == nullptr && std::getenv("GATZK_DETAILED_PROFILE") == nullptr &&
             std::getenv("GATZK_ALLOW_TIMED_PROGRESS") == nullptr)
         {
             return;

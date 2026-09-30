@@ -15,10 +15,7 @@ def parse_index_file(path: pathlib.Path) -> List[int]:
     return [int(line.strip()) for line in path.read_text().splitlines() if line.strip()]
 
 
-def load_raw_planetoid_dataset(
-    root: pathlib.Path,
-    name: str,
-) -> Tuple[sp.csr_matrix, np.ndarray, Dict[int, List[int]], List[int]]:
+def load_raw_planetoid_dataset(root: pathlib.Path, name: str) -> Tuple[sp.csr_matrix, np.ndarray, Dict[int, List[int]], List[int]]:
     base = root / name
     names = ["x", "y", "tx", "ty", "allx", "ally", "graph"]
     objects = []
@@ -48,8 +45,7 @@ def load_raw_planetoid_dataset(
 
 
 def load_planetoid_dataset_with_masks(
-    root: pathlib.Path,
-    name: str,
+    root: pathlib.Path, name: str
 ) -> Tuple[sp.csr_matrix, np.ndarray, Dict[int, List[int]], np.ndarray, np.ndarray, np.ndarray]:
     base = root / name
     names = ["x", "y", "tx", "ty", "allx", "ally", "graph"]
@@ -90,9 +86,7 @@ def _read_cache_metadata(path: pathlib.Path) -> Dict[str, str]:
     if not path.is_file():
         raise FileNotFoundError(f"canonical Planetoid cache metadata is missing: {path}")
     values: Dict[str, str] = {}
-    for line_number, raw_line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.split("#", 1)[0].strip()
         if not line:
             continue
@@ -105,10 +99,7 @@ def _read_cache_metadata(path: pathlib.Path) -> Dict[str, str]:
     return values
 
 
-def load_canonical_planetoid_features(
-    cache_root: pathlib.Path,
-    dataset: str,
-) -> np.ndarray:
+def load_canonical_planetoid_features(cache_root: pathlib.Path, dataset: str) -> np.ndarray:
     """Read the exact sparse decimal feature producer consumed by C++.
 
     The formal loader reads ``features.txt`` and parses each value as binary64
@@ -118,18 +109,12 @@ def load_canonical_planetoid_features(
     cache = cache_root / dataset
     metadata = _read_cache_metadata(cache / "meta.cfg")
     if metadata.get("name") != dataset:
-        raise ValueError(
-            f"canonical Planetoid cache name mismatch: {metadata.get('name')!r}"
-        )
+        raise ValueError(f"canonical Planetoid cache name mismatch: {metadata.get('name')!r}")
     if metadata.get("input_preprocess_id") != ROW_NORMALIZE_INPUT_PREPROCESS_ID:
-        raise ValueError(
-            "canonical Planetoid cache is missing row_normalize producer identity"
-        )
+        raise ValueError("canonical Planetoid cache is missing row_normalize producer identity")
     features_path = cache / "features.txt"
     if not features_path.is_file():
-        raise FileNotFoundError(
-            f"canonical Planetoid cache features.txt is missing: {features_path}"
-        )
+        raise FileNotFoundError(f"canonical Planetoid cache features.txt is missing: {features_path}")
     lines = features_path.read_text(encoding="utf-8").splitlines()
     if not lines:
         raise ValueError(f"canonical Planetoid feature cache is empty: {features_path}")
@@ -157,17 +142,11 @@ def load_canonical_planetoid_features(
                 column = int(column_text)
                 value = float(value_text)
             except ValueError as error:
-                raise ValueError(
-                    f"{features_path}:{row_index + 2}: malformed sparse value"
-                ) from error
+                raise ValueError(f"{features_path}:{row_index + 2}: malformed sparse value") from error
             if not 0 <= column < cols or not np.isfinite(value):
-                raise ValueError(
-                    f"{features_path}:{row_index + 2}: sparse entry is out of bounds or non-finite"
-                )
+                raise ValueError(f"{features_path}:{row_index + 2}: sparse entry is out of bounds or non-finite")
             if column in seen_columns:
-                raise ValueError(
-                    f"{features_path}:{row_index + 2}: duplicate sparse column"
-                )
+                raise ValueError(f"{features_path}:{row_index + 2}: duplicate sparse column")
             seen_columns.add(column)
             dense[row_index, column] = value
     return dense
@@ -181,11 +160,7 @@ def build_dense_adjacency(adjacency: Dict[int, Iterable[int]], num_nodes: int) -
     return dense
 
 
-def build_sorted_edge_index(
-    adjacency: Dict[int, Iterable[int]],
-    num_nodes: int,
-    add_self_loops: bool = True,
-) -> Tuple[np.ndarray, np.ndarray]:
+def build_sorted_edge_index(adjacency: Dict[int, Iterable[int]], num_nodes: int, add_self_loops: bool = True) -> Tuple[np.ndarray, np.ndarray]:
     edges: List[Tuple[int, int]] = []
     for src in sorted(adjacency):
         for dst in adjacency[src]:
@@ -221,10 +196,7 @@ def write_sparse_features(path: pathlib.Path, features: sp.csr_matrix) -> None:
         for row in range(features.shape[0]):
             start = features.indptr[row]
             end = features.indptr[row + 1]
-            entries = [
-                f"{int(col)}:{float(val):.12g}"
-                for col, val in zip(features.indices[start:end], features.data[start:end])
-            ]
+            entries = [f"{int(col)}:{float(val):.12g}" for col, val in zip(features.indices[start:end], features.data[start:end])]
             handle.write(" ".join(entries))
             handle.write("\n")
 

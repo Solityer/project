@@ -42,14 +42,8 @@ namespace gatzk::protocol
             return out;
         }
 
-        __global__ void prepare_boundary_denominator_kernel(
-            GpuFr *denominators,
-            std::size_t logical_begin,
-            std::size_t count,
-            GpuFr shift,
-            GpuFr last_point,
-            const GpuFr *lane_root_powers,
-            const GpuFr *block_root_powers)
+        __global__ void prepare_boundary_denominator_kernel(GpuFr *denominators, std::size_t logical_begin, std::size_t count, GpuFr shift, GpuFr last_point,
+                                                            const GpuFr *lane_root_powers, const GpuFr *block_root_powers)
         {
             const auto local = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
             if (local >= count)
@@ -64,38 +58,14 @@ namespace gatzk::protocol
             denominators[local] = algebra::gpu::fr_mul(first_denominator, last_denominator);
         }
 
-        __global__ void evaluate_t_fh_kernel(
-            GpuFr *quotient,
-            std::size_t logical_begin,
-            std::size_t count,
-            std::size_t cycle_size,
-            GpuFr shift,
-            GpuFr last_point,
-            GpuFr inv_domain_size,
-            GpuFr alpha_quot,
-            GpuFr beta_feat,
-            GpuFr eta_feat,
-            const GpuFr *lane_root_powers,
-            const GpuFr *block_root_powers,
-            const GpuFr *zero_cycle,
-            const GpuFr *zero_inverse_cycle,
-            const GpuFr *boundary_inverse_products,
-            const GpuFr *q_table,
-            const GpuFr *q_query,
-            const GpuFr *table,
-            const GpuFr *query,
-            const GpuFr *multiplicity,
-            const GpuFr *j_table,
-            const GpuFr *j_query,
-            const GpuFr *accumulator,
-            const GpuFr *accumulator_next,
-            const GpuFr *table_row,
-            const GpuFr *table_column,
-            const GpuFr *table_feature,
-            const GpuFr *query_row,
-            const GpuFr *query_column,
-            const GpuFr *query_feature,
-            bool feature_encoding_terms_enabled)
+        __global__ void evaluate_t_fh_kernel(GpuFr *quotient, std::size_t logical_begin, std::size_t count, std::size_t cycle_size, GpuFr shift,
+                                             GpuFr last_point, GpuFr inv_domain_size, GpuFr alpha_quot, GpuFr beta_feat, GpuFr eta_feat,
+                                             const GpuFr *lane_root_powers, const GpuFr *block_root_powers, const GpuFr *zero_cycle,
+                                             const GpuFr *zero_inverse_cycle, const GpuFr *boundary_inverse_products, const GpuFr *q_table,
+                                             const GpuFr *q_query, const GpuFr *table, const GpuFr *query, const GpuFr *multiplicity, const GpuFr *j_table,
+                                             const GpuFr *j_query, const GpuFr *accumulator, const GpuFr *accumulator_next, const GpuFr *table_row,
+                                             const GpuFr *table_column, const GpuFr *table_feature, const GpuFr *query_row, const GpuFr *query_column,
+                                             const GpuFr *query_feature, bool feature_encoding_terms_enabled)
         {
             const auto local = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
             if (local >= count)
@@ -121,9 +91,13 @@ namespace gatzk::protocol
             recurrence = algebra::gpu::fr_add(recurrence, algebra::gpu::fr_mul(q_query[local], j_query[local]));
             const auto term1 = algebra::gpu::fr_mul(not_last, recurrence);
             const auto term2 = algebra::gpu::fr_mul(last, accumulator[local]);
-            const auto term3 = algebra::gpu::fr_mul(q_table[local], algebra::gpu::fr_sub(algebra::gpu::fr_mul(algebra::gpu::fr_add(table[local], beta_feat), j_table[local]), algebra::gpu::fr_one()));
+            const auto term3 =
+                algebra::gpu::fr_mul(q_table[local], algebra::gpu::fr_sub(algebra::gpu::fr_mul(algebra::gpu::fr_add(table[local], beta_feat), j_table[local]),
+                                                                          algebra::gpu::fr_one()));
             const auto term4 = algebra::gpu::fr_mul(algebra::gpu::fr_sub(algebra::gpu::fr_one(), q_table[local]), j_table[local]);
-            const auto term5 = algebra::gpu::fr_mul(q_query[local], algebra::gpu::fr_sub(algebra::gpu::fr_mul(algebra::gpu::fr_add(query[local], beta_feat), j_query[local]), algebra::gpu::fr_one()));
+            const auto term5 =
+                algebra::gpu::fr_mul(q_query[local], algebra::gpu::fr_sub(algebra::gpu::fr_mul(algebra::gpu::fr_add(query[local], beta_feat), j_query[local]),
+                                                                          algebra::gpu::fr_one()));
             const auto term6 = algebra::gpu::fr_mul(algebra::gpu::fr_sub(algebra::gpu::fr_one(), q_query[local]), j_query[local]);
 
             GpuFr numerator;
@@ -164,17 +138,9 @@ namespace gatzk::protocol
         class CudaTFHExecutorImpl final : public CudaTFHExecutor
         {
         public:
-            CudaTFHExecutorImpl(
-                std::size_t domain_size,
-                std::size_t target_size,
-                const algebra::FieldElement &shift,
-                const algebra::FieldElement &domain_omega,
-                const CudaTFHParameters &parameters,
-                std::size_t requested_tile_size)
-                : domain_size_(domain_size),
-                  target_size_(target_size),
-                  shift_(shift),
-                  parameters_(parameters),
+            CudaTFHExecutorImpl(std::size_t domain_size, std::size_t target_size, const algebra::FieldElement &shift, const algebra::FieldElement &domain_omega,
+                                const CudaTFHParameters &parameters, std::size_t requested_tile_size)
+                : domain_size_(domain_size), target_size_(target_size), shift_(shift), parameters_(parameters),
                   tile_capacity_(std::clamp(requested_tile_size, kMinimumTileSize, kMaximumTileSize))
             {
                 if (domain_size_ == 0 || target_size_ == 0 || target_size_ % domain_size_ != 0)
@@ -197,7 +163,8 @@ namespace gatzk::protocol
                 std::vector<algebra::FieldElement> zero_cycle(cycle_size);
                 std::vector<algebra::FieldElement> zero_inverse_cycle(cycle_size);
                 algebra::geometric_powers_native(algebra::FieldElement::mutable_native_array_data(lane_root_powers.data()), lane_root_powers.size(), root);
-                algebra::geometric_powers_native(algebra::FieldElement::mutable_native_array_data(block_root_powers.data()), block_root_powers.size(), root.pow(kBlockSize));
+                algebra::geometric_powers_native(algebra::FieldElement::mutable_native_array_data(block_root_powers.data()), block_root_powers.size(),
+                                                 root.pow(kBlockSize));
 
                 auto zero_power = shift_.pow(domain_size_);
                 const auto zero_step = root.pow(domain_size_);
@@ -222,52 +189,27 @@ namespace gatzk::protocol
                 auto status = cudaMalloc(reinterpret_cast<void **>(&device_quotient_), quotient_bytes);
                 if (status != cudaSuccess)
                     throw_cuda_t_fh_error("quotient allocation", status);
-                for (std::size_t slot = 0;
-                     slot < kPipelineSlotCount;
-                     ++slot)
+                for (std::size_t slot = 0; slot < kPipelineSlotCount; ++slot)
                 {
-                    inverse_sessions_[slot] =
-                        algebra::
-                            create_cuda_batch_inverse_session(
-                                tile_capacity_);
+                    inverse_sessions_[slot] = algebra::create_cuda_batch_inverse_session(tile_capacity_);
 
-                    if (inverse_sessions_[slot] ==
-                        nullptr)
+                    if (inverse_sessions_[slot] == nullptr)
                     {
-                        throw std::runtime_error(
-                            "CUDA t_FH failed to create an asynchronous batch inverse session");
+                        throw std::runtime_error("CUDA t_FH failed to create an asynchronous batch inverse session");
                     }
 
-                    status =
-                        cudaMalloc(
-                            reinterpret_cast<
-                                void **>(
-                                &device_boundary_products_[slot]),
-                            tile_capacity_ *
-                                sizeof(GpuFr));
+                    status = cudaMalloc(reinterpret_cast<void **>(&device_boundary_products_[slot]), tile_capacity_ * sizeof(GpuFr));
 
-                    if (status !=
-                        cudaSuccess)
+                    if (status != cudaSuccess)
                     {
-                        throw_cuda_t_fh_error(
-                            "boundary product allocation",
-                            status);
+                        throw_cuda_t_fh_error("boundary product allocation", status);
                     }
 
-                    status =
-                        cudaMalloc(
-                            reinterpret_cast<
-                                void **>(
-                                &device_boundary_inverse_products_[slot]),
-                            tile_capacity_ *
-                                sizeof(GpuFr));
+                    status = cudaMalloc(reinterpret_cast<void **>(&device_boundary_inverse_products_[slot]), tile_capacity_ * sizeof(GpuFr));
 
-                    if (status !=
-                        cudaSuccess)
+                    if (status != cudaSuccess)
                     {
-                        throw_cuda_t_fh_error(
-                            "boundary inverse allocation",
-                            status);
+                        throw_cuda_t_fh_error("boundary inverse allocation", status);
                     }
                 }
             }
@@ -287,14 +229,11 @@ namespace gatzk::protocol
                 return kPipelineSlotCount;
             }
 
-            void wait_for_slot(
-                std::size_t slot) override
+            void wait_for_slot(std::size_t slot) override
             {
-                if (slot >=
-                    kPipelineSlotCount)
+                if (slot >= kPipelineSlotCount)
                 {
-                    throw std::runtime_error(
-                        "invalid CUDA t_FH pipeline slot");
+                    throw std::runtime_error("invalid CUDA t_FH pipeline slot");
                 }
 
                 if (!slot_in_flight_[slot])
@@ -302,209 +241,93 @@ namespace gatzk::protocol
                     return;
                 }
 
-                if (inverse_sessions_[slot] ==
-                    nullptr)
+                if (inverse_sessions_[slot] == nullptr)
                 {
-                    throw std::runtime_error(
-                        "CUDA t_FH pipeline slot has no inverse session");
+                    throw std::runtime_error("CUDA t_FH pipeline slot has no inverse session");
                 }
 
-                inverse_sessions_[slot]
-                    ->wait();
+                inverse_sessions_[slot]->wait();
 
-                slot_in_flight_[slot] =
-                    false;
+                slot_in_flight_[slot] = false;
             }
 
-            void evaluate_tile(
-                const CudaTFHTile &tile,
-                std::size_t slot) override
+            void evaluate_tile(const CudaTFHTile &tile, std::size_t slot) override
             {
-                validate_tile(
-                    tile);
+                validate_tile(tile);
 
-                if (slot >=
-                    kPipelineSlotCount)
+                if (slot >= kPipelineSlotCount)
                 {
-                    throw std::runtime_error(
-                        "invalid CUDA t_FH pipeline slot");
+                    throw std::runtime_error("invalid CUDA t_FH pipeline slot");
                 }
 
                 if (slot_in_flight_[slot])
                 {
-                    throw std::runtime_error(
-                        "CUDA t_FH pipeline slot reused before completion");
+                    throw std::runtime_error("CUDA t_FH pipeline slot reused before completion");
                 }
 
-                if (inverse_sessions_[slot] ==
-                    nullptr)
+                if (inverse_sessions_[slot] == nullptr)
                 {
-                    throw std::runtime_error(
-                        "CUDA t_FH pipeline slot has no inverse session");
+                    throw std::runtime_error("CUDA t_FH pipeline slot has no inverse session");
                 }
 
-                const auto blocks =
-                    static_cast<unsigned>(
-                        (tile.count +
-                         kBlockSize - 1U) /
-                        kBlockSize);
+                const auto blocks = static_cast<unsigned>((tile.count + kBlockSize - 1U) / kBlockSize);
 
-                const auto stream =
-                    reinterpret_cast<
-                        cudaStream_t>(
-                        inverse_sessions_[slot]
-                            ->native_stream_handle());
+                const auto stream = reinterpret_cast<cudaStream_t>(inverse_sessions_[slot]->native_stream_handle());
 
                 if (stream == nullptr)
                 {
-                    throw std::runtime_error(
-                        "CUDA t_FH inverse session returned a null stream");
+                    throw std::runtime_error("CUDA t_FH inverse session returned a null stream");
                 }
 
-                prepare_boundary_denominator_kernel<<<
-                    blocks,
-                    kBlockSize,
-                    0,
-                    stream>>>(
-                    device_boundary_products_[slot],
-                    tile.logical_begin,
-                    tile.count,
-                    gpu_field(shift_),
-                    gpu_field(last_point_),
-                    device_lane_root_powers_,
-                    device_block_root_powers_);
+                prepare_boundary_denominator_kernel<<<blocks, kBlockSize, 0, stream>>>(device_boundary_products_[slot], tile.logical_begin, tile.count,
+                                                                                       gpu_field(shift_), gpu_field(last_point_), device_lane_root_powers_,
+                                                                                       device_block_root_powers_);
 
-                auto status =
-                    cudaGetLastError();
+                auto status = cudaGetLastError();
 
-                if (status !=
-                    cudaSuccess)
+                if (status != cudaSuccess)
                 {
-                    throw_cuda_t_fh_error(
-                        "boundary denominator launch",
-                        status);
+                    throw_cuda_t_fh_error("boundary denominator launch", status);
                 }
 
-                algebra::
-                    record_cuda_kernel_invocations(
-                        1);
+                algebra::record_cuda_kernel_invocations(1);
 
-                inverse_sessions_[slot]
-                    ->enqueue(
-                        reinterpret_cast<
-                            const mcl::Fr *>(
-                            device_boundary_products_[slot]),
-                        reinterpret_cast<
-                            mcl::Fr *>(
-                            device_boundary_inverse_products_[slot]),
-                        tile.count);
+                inverse_sessions_[slot]->enqueue(reinterpret_cast<const mcl::Fr *>(device_boundary_products_[slot]),
+                                                 reinterpret_cast<mcl::Fr *>(device_boundary_inverse_products_[slot]), tile.count);
 
-                evaluate_t_fh_kernel<<<
-                    blocks,
-                    kBlockSize,
-                    0,
-                    stream>>>(
-                    device_quotient_,
-                    tile.logical_begin,
-                    tile.count,
-                    target_size_ /
-                        domain_size_,
-                    gpu_field(shift_),
-                    gpu_field(last_point_),
-                    gpu_field(inv_domain_size_),
-                    gpu_field(
-                        parameters_
-                            .alpha_quot),
-                    gpu_field(
-                        parameters_
-                            .beta_feat),
-                    gpu_field(
-                        parameters_
-                            .eta_feat),
-                    device_lane_root_powers_,
-                    device_block_root_powers_,
-                    device_zero_cycle_,
-                    device_zero_inverse_cycle_,
-                    device_boundary_inverse_products_[slot],
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.q_table),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.q_query),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.table),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.query),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.multiplicity),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.j_table),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.j_query),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.accumulator),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.accumulator_next),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.table_row),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.table_column),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.table_feature),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.query_row),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.query_column),
-                    reinterpret_cast<
-                        const GpuFr *>(
-                        tile.query_feature),
-                    parameters_
-                        .feature_encoding_terms_enabled);
+                evaluate_t_fh_kernel<<<blocks, kBlockSize, 0, stream>>>(
+                    device_quotient_, tile.logical_begin, tile.count, target_size_ / domain_size_, gpu_field(shift_), gpu_field(last_point_),
+                    gpu_field(inv_domain_size_), gpu_field(parameters_.alpha_quot), gpu_field(parameters_.beta_feat), gpu_field(parameters_.eta_feat),
+                    device_lane_root_powers_, device_block_root_powers_, device_zero_cycle_, device_zero_inverse_cycle_,
+                    device_boundary_inverse_products_[slot], reinterpret_cast<const GpuFr *>(tile.q_table), reinterpret_cast<const GpuFr *>(tile.q_query),
+                    reinterpret_cast<const GpuFr *>(tile.table), reinterpret_cast<const GpuFr *>(tile.query),
+                    reinterpret_cast<const GpuFr *>(tile.multiplicity), reinterpret_cast<const GpuFr *>(tile.j_table),
+                    reinterpret_cast<const GpuFr *>(tile.j_query), reinterpret_cast<const GpuFr *>(tile.accumulator),
+                    reinterpret_cast<const GpuFr *>(tile.accumulator_next), reinterpret_cast<const GpuFr *>(tile.table_row),
+                    reinterpret_cast<const GpuFr *>(tile.table_column), reinterpret_cast<const GpuFr *>(tile.table_feature),
+                    reinterpret_cast<const GpuFr *>(tile.query_row), reinterpret_cast<const GpuFr *>(tile.query_column),
+                    reinterpret_cast<const GpuFr *>(tile.query_feature), parameters_.feature_encoding_terms_enabled);
 
-                status =
-                    cudaGetLastError();
+                status = cudaGetLastError();
 
-                if (status !=
-                    cudaSuccess)
+                if (status != cudaSuccess)
                 {
-                    throw_cuda_t_fh_error(
-                        "quotient evaluation launch",
-                        status);
+                    throw_cuda_t_fh_error("quotient evaluation launch", status);
                 }
 
-                algebra::
-                    record_cuda_kernel_invocations(
-                        1);
+                algebra::record_cuda_kernel_invocations(1);
 
-                slot_in_flight_[slot] =
-                    true;
+                slot_in_flight_[slot] = true;
             }
-            std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> finalize_coefficients(
-                algebra::FieldElement *host_coefficients,
-                std::size_t host_capacity) override
+            std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> finalize_coefficients(algebra::FieldElement *host_coefficients,
+                                                                                                std::size_t host_capacity) override
             {
                 if (host_coefficients == nullptr || host_capacity < target_size_)
                     throw std::runtime_error("CUDA t_FH coefficient output is too small");
 
-                for (std::size_t slot = 0;
-                     slot < kPipelineSlotCount;
-                     ++slot)
+                for (std::size_t slot = 0; slot < kPipelineSlotCount; ++slot)
                 {
-                    wait_for_slot(
-                        slot);
+                    wait_for_slot(slot);
                 }
 
                 release_boundary_buffers();
@@ -517,16 +340,10 @@ namespace gatzk::protocol
                 std::shared_ptr<const algebra::CudaHostTransferGuard> host_transfer;
                 std::size_t logical_count = 0;
                 std::size_t nonzero_count = 0;
-                const bool executed = algebra::cuda_coset_device_to_coefficients_exact(
-                    reinterpret_cast<const mcl::Fr *>(device_quotient_),
-                    target_size_,
-                    shift_,
-                    algebra::FieldElement::mutable_native_array_data(host_coefficients),
-                    true,
-                    device_coefficients,
-                    &host_transfer,
-                    &logical_count,
-                    &nonzero_count);
+                const bool executed =
+                    algebra::cuda_coset_device_to_coefficients_exact(reinterpret_cast<const mcl::Fr *>(device_quotient_), target_size_, shift_,
+                                                                     algebra::FieldElement::mutable_native_array_data(host_coefficients), true,
+                                                                     device_coefficients, &host_transfer, &logical_count, &nonzero_count);
 
                 if (!executed)
                 {
@@ -542,14 +359,20 @@ namespace gatzk::protocol
                     throw_cuda_t_fh_error("resident coefficient device lookup", status);
                 }
 
-                std::shared_ptr<void> allocation(device_coefficients, [device](void *pointer) noexcept
+                std::shared_ptr<void> allocation(device_coefficients,
+                                                 [device](void *pointer) noexcept
                                                  {
-                    if (pointer == nullptr) return;
-                    int previous = -1;
-                    if (cudaGetDevice(&previous) != cudaSuccess) return;
-                    if (previous != device && cudaSetDevice(device) != cudaSuccess) return;
-                    (void)cudaFree(pointer);
-                    if (previous != device) (void)cudaSetDevice(previous); });
+                                                     if (pointer == nullptr)
+                                                         return;
+                                                     int previous = -1;
+                                                     if (cudaGetDevice(&previous) != cudaSuccess)
+                                                         return;
+                                                     if (previous != device && cudaSetDevice(device) != cudaSuccess)
+                                                         return;
+                                                     (void)cudaFree(pointer);
+                                                     if (previous != device)
+                                                         (void)cudaSetDevice(previous);
+                                                 });
 
                 auto descriptor = std::make_shared<algebra::CudaResidentCoefficientBuffer>();
                 descriptor->allocation = std::move(allocation);
@@ -584,39 +407,35 @@ namespace gatzk::protocol
                     throw std::runtime_error("CUDA t_FH tile exceeds target");
                 if ((tile.logical_begin & (kBlockSize - 1U)) != 0U)
                     throw std::runtime_error("CUDA t_FH tile begin must be block aligned");
-                if (tile.q_table == nullptr || tile.q_query == nullptr || tile.table == nullptr || tile.query == nullptr || tile.multiplicity == nullptr || tile.j_table == nullptr || tile.j_query == nullptr || tile.accumulator == nullptr || tile.accumulator_next == nullptr)
+                if (tile.q_table == nullptr || tile.q_query == nullptr || tile.table == nullptr || tile.query == nullptr || tile.multiplicity == nullptr ||
+                    tile.j_table == nullptr || tile.j_query == nullptr || tile.accumulator == nullptr || tile.accumulator_next == nullptr)
                     throw std::runtime_error("CUDA t_FH tile is missing a required source");
-                if (parameters_.feature_encoding_terms_enabled && (tile.table_row == nullptr || tile.table_column == nullptr || tile.table_feature == nullptr || tile.query_row == nullptr || tile.query_column == nullptr || tile.query_feature == nullptr))
+                if (parameters_.feature_encoding_terms_enabled && (tile.table_row == nullptr || tile.table_column == nullptr || tile.table_feature == nullptr ||
+                                                                   tile.query_row == nullptr || tile.query_column == nullptr || tile.query_feature == nullptr))
                     throw std::runtime_error("CUDA t_FH tile is missing feature-encoding sources");
             }
 
             void release_boundary_buffers() noexcept
             {
-                for (std::size_t slot = 0;
-                     slot < kPipelineSlotCount;
-                     ++slot)
+                for (std::size_t slot = 0; slot < kPipelineSlotCount; ++slot)
                 {
-                    inverse_sessions_[slot]
-                        .reset();
+                    inverse_sessions_[slot].reset();
 
                     if (device_boundary_products_[slot] != nullptr)
                     {
-                        (void)cudaFree(
-                            device_boundary_products_[slot]);
+                        (void)cudaFree(device_boundary_products_[slot]);
 
                         device_boundary_products_[slot] = nullptr;
                     }
 
                     if (device_boundary_inverse_products_[slot] != nullptr)
                     {
-                        (void)cudaFree(
-                            device_boundary_inverse_products_[slot]);
+                        (void)cudaFree(device_boundary_inverse_products_[slot]);
 
                         device_boundary_inverse_products_[slot] = nullptr;
                     }
 
-                    slot_in_flight_[slot] =
-                        false;
+                    slot_in_flight_[slot] = false;
                 }
             }
 
@@ -649,33 +468,13 @@ namespace gatzk::protocol
             std::size_t tile_capacity_ = kDefaultTileSize;
             GpuFr *device_quotient_ = nullptr;
 
-            std::array<
-                GpuFr *,
-                kPipelineSlotCount>
-                device_boundary_products_{
-                    nullptr,
-                    nullptr};
+            std::array<GpuFr *, kPipelineSlotCount> device_boundary_products_{nullptr, nullptr};
 
-            std::array<
-                GpuFr *,
-                kPipelineSlotCount>
-                device_boundary_inverse_products_{
-                    nullptr,
-                    nullptr};
+            std::array<GpuFr *, kPipelineSlotCount> device_boundary_inverse_products_{nullptr, nullptr};
 
-            std::array<
-                std::unique_ptr<
-                    algebra::
-                        CudaBatchInverseSession>,
-                kPipelineSlotCount>
-                inverse_sessions_{};
+            std::array<std::unique_ptr<algebra::CudaBatchInverseSession>, kPipelineSlotCount> inverse_sessions_{};
 
-            std::array<
-                bool,
-                kPipelineSlotCount>
-                slot_in_flight_{
-                    false,
-                    false};
+            std::array<bool, kPipelineSlotCount> slot_in_flight_{false, false};
 
             GpuFr *device_lane_root_powers_ = nullptr;
             GpuFr *device_block_root_powers_ = nullptr;
@@ -701,35 +500,23 @@ namespace gatzk::protocol
         if (!host.effective_available_known)
             return false;
 
-        const auto quotient_bytes =
-            target_size *
-            sizeof(GpuFr);
+        const auto quotient_bytes = target_size * sizeof(GpuFr);
 
-        const auto tile_scratch_bytes =
-            kPipelineSlotCount *
-            4 *
-            tile_size *
-            sizeof(GpuFr);
+        const auto tile_scratch_bytes = kPipelineSlotCount * 4 * tile_size * sizeof(GpuFr);
         const auto reserve = std::max<std::size_t>(std::size_t{16} << 30, host.effective_total_known ? host.effective_total_bytes / 8 : std::size_t{16} << 30);
         if (host.effective_available_bytes <= reserve)
             return false;
         return quotient_bytes + tile_scratch_bytes <= host.effective_available_bytes - reserve;
     }
 
-    std::unique_ptr<CudaTFHExecutor> create_cuda_t_fh_executor(
-        std::size_t domain_size,
-        std::size_t target_size,
-        const algebra::FieldElement &shift,
-        const algebra::FieldElement &domain_omega,
-        const CudaTFHParameters &parameters,
-        std::size_t requested_tile_size)
+    std::unique_ptr<CudaTFHExecutor> create_cuda_t_fh_executor(std::size_t domain_size, std::size_t target_size, const algebra::FieldElement &shift,
+                                                               const algebra::FieldElement &domain_omega, const CudaTFHParameters &parameters,
+                                                               std::size_t requested_tile_size)
     {
         if (!cuda_t_fh_executor_can_admit(domain_size, target_size, requested_tile_size))
             throw std::runtime_error("CUDA t_FH executor admission failed");
         return std::make_unique<CudaTFHExecutorImpl>(domain_size, target_size, shift, domain_omega, parameters, requested_tile_size);
     }
 
-    void release_cuda_t_fh_executor_cache()
-    {
-    }
+    void release_cuda_t_fh_executor_cache() {}
 }
