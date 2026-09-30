@@ -2,8 +2,6 @@
 
 #include <mutex>
 
-// 保存一次运行生效的 route2 选项，并把开关压缩成 manifest / benchmark 可读标签。
-
 namespace gatzk::util
 {
     namespace
@@ -23,19 +21,14 @@ namespace gatzk::util
 
     }
 
-    const Route2Options &route2_options()
-    {
-        return mutable_options();
-    }
+    const Route2Options &route2_options() { return mutable_options(); }
 
-    // 全局路由选项只在 run 启动阶段设置一次，后续 proving / verifying 只读
     void set_route2_options(const Route2Options &options)
     {
         std::lock_guard<std::mutex> lock(options_mutex());
         mutable_options() = options;
     }
 
-    // 生成精简标签，帮助 README / latest / summary 快速区分执行策略
     std::string route2_feature_label(const Route2Options &options)
     {
         std::string label;
@@ -102,7 +95,6 @@ namespace gatzk::util
         return label.empty() ? "baseline" : label;
     }
 
-    // 生成更完整的布尔开关串，写入 notes 以便回溯正式 benchmark 配置。
     std::string route2_feature_notes(const Route2Options &options)
     {
         return "enabled_fast_msm=" + std::string(options.fast_msm ? "true" : "false") +

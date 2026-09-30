@@ -44,10 +44,7 @@ namespace gatzk::protocol
             Registry = 12,
         };
 
-        void append_u8(std::vector<std::uint8_t> *out, std::uint8_t value)
-        {
-            out->push_back(value);
-        }
+        void append_u8(std::vector<std::uint8_t> *out, std::uint8_t value) { out->push_back(value); }
 
         void append_u32(std::vector<std::uint8_t> *out, std::uint32_t value)
         {
@@ -61,16 +58,9 @@ namespace gatzk::protocol
                 out->push_back(static_cast<std::uint8_t>((value >> (8U * i)) & 0xffU));
         }
 
-        void append_bytes(
-            std::vector<std::uint8_t> *out,
-            std::span<const std::uint8_t> bytes)
-        {
-            out->insert(out->end(), bytes.begin(), bytes.end());
-        }
+        void append_bytes(std::vector<std::uint8_t> *out, std::span<const std::uint8_t> bytes) { out->insert(out->end(), bytes.begin(), bytes.end()); }
 
-        void append_string(
-            std::vector<std::uint8_t> *out,
-            std::string_view value)
+        void append_string(std::vector<std::uint8_t> *out, std::string_view value)
         {
             if (value.size() > kMaxStringBytes)
                 throw std::runtime_error("verifier registration string exceeds cap");
@@ -78,31 +68,21 @@ namespace gatzk::protocol
             out->insert(out->end(), value.begin(), value.end());
         }
 
-        void append_blob(
-            std::vector<std::uint8_t> *out,
-            std::string_view value)
+        void append_blob(std::vector<std::uint8_t> *out, std::string_view value)
         {
             append_u64(out, value.size());
             out->insert(out->end(), value.begin(), value.end());
         }
 
-        void append_field(
-            std::vector<std::uint8_t> *out,
-            const algebra::FieldElement &value)
+        void append_field(std::vector<std::uint8_t> *out, const algebra::FieldElement &value)
         {
             std::array<std::uint8_t, kFieldBytes> bytes{};
-            // mcl reports the number of significant bytes written, which may
-            // be smaller than the fixed field width for values with leading
-            // zero limbs.  The buffer is zero-filled before writing, so the
-            // complete 32-byte representation remains canonical.
             if (value.write_little_endian(bytes.data(), bytes.size()) > bytes.size())
                 throw std::runtime_error("failed to encode canonical field element");
             append_bytes(out, bytes);
         }
 
-        void append_point(
-            std::vector<std::uint8_t> *out,
-            const crypto::G1Point &point)
+        void append_point(std::vector<std::uint8_t> *out, const crypto::G1Point &point)
         {
             const auto bytes = crypto::serialize(point);
             if (bytes.empty() || bytes.size() > kMaxPointBytes)
@@ -111,9 +91,7 @@ namespace gatzk::protocol
             append_bytes(out, bytes);
         }
 
-        void append_point(
-            std::vector<std::uint8_t> *out,
-            const crypto::G2Point &point)
+        void append_point(std::vector<std::uint8_t> *out, const crypto::G2Point &point)
         {
             const auto bytes = crypto::serialize(point);
             if (bytes.empty() || bytes.size() > kMaxPointBytes)
@@ -122,25 +100,16 @@ namespace gatzk::protocol
             append_bytes(out, bytes);
         }
 
-        void append_bool(std::vector<std::uint8_t> *out, bool value)
-        {
-            append_u8(out, value ? 1 : 0);
-        }
+        void append_bool(std::vector<std::uint8_t> *out, bool value) { append_u8(out, value ? 1 : 0); }
 
-        void append_size(
-            std::vector<std::uint8_t> *out,
-            std::size_t value)
+        void append_size(std::vector<std::uint8_t> *out, std::size_t value)
         {
             if (value > std::numeric_limits<std::uint64_t>::max())
                 throw std::runtime_error("size does not fit canonical u64");
             append_u64(out, static_cast<std::uint64_t>(value));
         }
 
-        template <typename T, typename Fn>
-        void append_vector(
-            std::vector<std::uint8_t> *out,
-            const std::vector<T> &values,
-            Fn &&append_value)
+        template <typename T, typename Fn> void append_vector(std::vector<std::uint8_t> *out, const std::vector<T> &values, Fn &&append_value)
         {
             if (values.size() > kMaxVectorEntries)
                 throw std::runtime_error("verifier registration vector exceeds cap");
@@ -149,37 +118,21 @@ namespace gatzk::protocol
                 append_value(value);
         }
 
-        void append_string_vector(
-            std::vector<std::uint8_t> *out,
-            const std::vector<std::string> &values)
+        void append_string_vector(std::vector<std::uint8_t> *out, const std::vector<std::string> &values)
         {
-            append_vector(out, values, [&](const std::string &value)
-                          { append_string(out, value); });
+            append_vector(out, values, [&](const std::string &value) { append_string(out, value); });
         }
 
-        template <typename T, typename Fn>
-        std::vector<T> read_vector(
-            class Reader &reader,
-            std::size_t maximum,
-            Fn &&read_value);
+        template <typename T, typename Fn> std::vector<T> read_vector(class Reader &reader, std::size_t maximum, Fn &&read_value);
 
         class Reader
         {
         public:
-            explicit Reader(std::span<const std::uint8_t> bytes)
-                : bytes_(bytes)
-            {
-            }
+            explicit Reader(std::span<const std::uint8_t> bytes) : bytes_(bytes) {}
 
-            std::size_t remaining() const
-            {
-                return bytes_.size() - position_;
-            }
+            std::size_t remaining() const { return bytes_.size() - position_; }
 
-            bool empty() const
-            {
-                return position_ == bytes_.size();
-            }
+            bool empty() const { return position_ == bytes_.size(); }
 
             std::uint8_t u8(std::string_view what)
             {
@@ -219,29 +172,23 @@ namespace gatzk::protocol
                 if (length > kMaxStringBytes)
                     throw std::runtime_error("verifier registration string exceeds cap: " + std::string(what));
                 const auto bytes = take(length, what);
-                return std::string(
-                    reinterpret_cast<const char *>(bytes.data()), bytes.size());
+                return std::string(reinterpret_cast<const char *>(bytes.data()), bytes.size());
             }
 
             std::string blob(std::string_view what)
             {
                 const auto length = size(std::string(what) + ".length");
                 const auto bytes = take(length, what);
-                return std::string(
-                    reinterpret_cast<const char *>(bytes.data()), bytes.size());
+                return std::string(reinterpret_cast<const char *>(bytes.data()), bytes.size());
             }
 
-            std::vector<std::uint8_t> bytes(
-                std::size_t length,
-                std::string_view what)
+            std::vector<std::uint8_t> bytes(std::size_t length, std::string_view what)
             {
                 const auto value = take(length, what);
                 return std::vector<std::uint8_t>(value.begin(), value.end());
             }
 
-            std::span<const std::uint8_t> take(
-                std::size_t length,
-                std::string_view what)
+            std::span<const std::uint8_t> take(std::size_t length, std::string_view what)
             {
                 if (length > remaining())
                     throw std::runtime_error("truncated verifier registration " + std::string(what));
@@ -267,11 +214,7 @@ namespace gatzk::protocol
             std::size_t position_ = 0;
         };
 
-        template <typename T, typename Fn>
-        std::vector<T> read_vector(
-            Reader &reader,
-            std::size_t maximum,
-            Fn &&read_value)
+        template <typename T, typename Fn> std::vector<T> read_vector(Reader &reader, std::size_t maximum, Fn &&read_value)
         {
             const auto count = reader.size("vector.count");
             if (count > maximum || count > kMaxVectorEntries)
@@ -300,14 +243,11 @@ namespace gatzk::protocol
 
         bool lower_hex_256(std::string_view value)
         {
-            return value.size() == SHA256_DIGEST_LENGTH * 2
-                && std::all_of(
-                    value.begin(), value.end(), [](unsigned char ch)
-                    { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
+            return value.size() == SHA256_DIGEST_LENGTH * 2 &&
+                   std::all_of(value.begin(), value.end(), [](unsigned char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); });
         }
 
-        std::array<std::uint8_t, SHA256_DIGEST_LENGTH> sha256_raw(
-            std::span<const std::uint8_t> bytes)
+        std::array<std::uint8_t, SHA256_DIGEST_LENGTH> sha256_raw(std::span<const std::uint8_t> bytes)
         {
             std::array<std::uint8_t, SHA256_DIGEST_LENGTH> digest{};
             SHA256(bytes.data(), bytes.size(), digest.data());
@@ -317,11 +257,9 @@ namespace gatzk::protocol
         algebra::FieldElement read_field(Reader &reader, std::string_view what)
         {
             const auto bytes = reader.take(kFieldBytes, what);
-            const auto value = algebra::FieldElement::from_little_endian_mod(
-                bytes.data(), bytes.size());
+            const auto value = algebra::FieldElement::from_little_endian_mod(bytes.data(), bytes.size());
             std::array<std::uint8_t, kFieldBytes> canonical{};
-            if (value.write_little_endian(canonical.data(), canonical.size()) > canonical.size()
-                || !std::equal(bytes.begin(), bytes.end(), canonical.begin()))
+            if (value.write_little_endian(canonical.data(), canonical.size()) > canonical.size() || !std::equal(bytes.begin(), bytes.end(), canonical.begin()))
                 throw std::runtime_error("non-canonical field element in verifier registration");
             return value;
         }
@@ -350,27 +288,17 @@ namespace gatzk::protocol
             return point;
         }
 
-        void append_size_vector(
-            std::vector<std::uint8_t> *out,
-            const std::vector<std::size_t> &values)
+        void append_size_vector(std::vector<std::uint8_t> *out, const std::vector<std::size_t> &values)
         {
-            append_vector(out, values, [&](std::size_t value)
-                          { append_size(out, value); });
+            append_vector(out, values, [&](std::size_t value) { append_size(out, value); });
         }
 
         std::vector<std::size_t> read_size_vector(Reader &reader)
         {
-            return read_vector<std::size_t>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner)
-                {
-                    return inner.size("size-vector.value");
-                });
+            return read_vector<std::size_t>(reader, kMaxVectorEntries, [](Reader &inner) { return inner.size("size-vector.value"); });
         }
 
-        void append_string_map(
-            std::vector<std::uint8_t> *out,
-            const std::unordered_map<std::string, std::string> &values)
+        void append_string_map(std::vector<std::uint8_t> *out, const std::unordered_map<std::string, std::string> &values)
         {
             std::vector<std::string> keys;
             keys.reserve(values.size());
@@ -390,9 +318,7 @@ namespace gatzk::protocol
             }
         }
 
-        std::unordered_map<std::string, std::string> read_string_map(
-            Reader &reader,
-            std::string_view what)
+        std::unordered_map<std::string, std::string> read_string_map(Reader &reader, std::string_view what)
         {
             const auto count = reader.size(std::string(what) + ".count");
             if (count > kMaxVectorEntries)
@@ -413,9 +339,7 @@ namespace gatzk::protocol
             return out;
         }
 
-        void append_size_map(
-            std::vector<std::uint8_t> *out,
-            const std::unordered_map<std::string, std::size_t> &values)
+        void append_size_map(std::vector<std::uint8_t> *out, const std::unordered_map<std::string, std::size_t> &values)
         {
             std::vector<std::string> keys;
             keys.reserve(values.size());
@@ -435,9 +359,7 @@ namespace gatzk::protocol
             }
         }
 
-        std::unordered_map<std::string, std::size_t> read_size_map(
-            Reader &reader,
-            std::string_view what)
+        std::unordered_map<std::string, std::size_t> read_size_map(Reader &reader, std::string_view what)
         {
             const auto count = reader.size(std::string(what) + ".count");
             if (count > kMaxVectorEntries)
@@ -457,18 +379,13 @@ namespace gatzk::protocol
             return out;
         }
 
-        void append_field_vector(
-            std::vector<std::uint8_t> *out,
-            const std::vector<algebra::FieldElement> &values)
+        void append_field_vector(std::vector<std::uint8_t> *out, const std::vector<algebra::FieldElement> &values)
         {
-            append_vector(out, values, [&](const auto &value)
-                          { append_field(out, value); });
+            append_vector(out, values, [&](const auto &value) { append_field(out, value); });
         }
 
         std::vector<algebra::FieldElement> read_field_vector(Reader &reader)
         {
-            // A 32-byte lower bound makes the allocation cap independent of
-            // malformed short payloads.
             const auto count = reader.size("field-vector.count");
             if (count > kMaxVectorEntries || count > reader.remaining() / kFieldBytes)
                 throw std::runtime_error("verifier registration field vector exceeds cap");
@@ -479,12 +396,9 @@ namespace gatzk::protocol
             return out;
         }
 
-        void append_field_matrix(
-            std::vector<std::uint8_t> *out,
-            const std::vector<std::vector<algebra::FieldElement>> &rows)
+        void append_field_matrix(std::vector<std::uint8_t> *out, const std::vector<std::vector<algebra::FieldElement>> &rows)
         {
-            append_vector(out, rows, [&](const auto &row)
-                          { append_field_vector(out, row); });
+            append_vector(out, rows, [&](const auto &row) { append_field_vector(out, row); });
         }
 
         std::vector<std::vector<algebra::FieldElement>> read_field_matrix(Reader &reader)
@@ -499,9 +413,7 @@ namespace gatzk::protocol
             return out;
         }
 
-        void append_edge(
-            std::vector<std::uint8_t> *out,
-            const data::Edge &edge)
+        void append_edge(std::vector<std::uint8_t> *out, const data::Edge &edge)
         {
             append_size(out, edge.src);
             append_size(out, edge.dst);
@@ -511,16 +423,13 @@ namespace gatzk::protocol
 
         data::Edge read_edge(Reader &reader)
         {
-            return data::Edge{
-                .src = reader.size("edge.src"),
-                .dst = reader.size("edge.dst"),
-                .graph_id = reader.size("edge.graph_id"),
-                .stable_index = reader.size("edge.stable_index")};
+            return data::Edge{.src = reader.size("edge.src"),
+                              .dst = reader.size("edge.dst"),
+                              .graph_id = reader.size("edge.graph_id"),
+                              .stable_index = reader.size("edge.stable_index")};
         }
 
-        void append_normalized_input(
-            std::vector<std::uint8_t> *out,
-            const data::NormalizedGraphInput &input)
+        void append_normalized_input(std::vector<std::uint8_t> *out, const data::NormalizedGraphInput &input)
         {
             append_size(out, input.N_total);
             append_size(out, input.N);
@@ -535,21 +444,18 @@ namespace gatzk::protocol
 
         data::NormalizedGraphInput read_normalized_input(Reader &reader)
         {
-            return data::NormalizedGraphInput{
-                .N_total = reader.size("public-input.N_total"),
-                .N = reader.size("public-input.N"),
-                .E = reader.size("public-input.E"),
-                .G_batch = reader.size("public-input.G_batch"),
-                .I = read_size_vector(reader),
-                .src = read_size_vector(reader),
-                .dst = read_size_vector(reader),
-                .node_ptr = read_size_vector(reader),
-                .edge_ptr = read_size_vector(reader)};
+            return data::NormalizedGraphInput{.N_total = reader.size("public-input.N_total"),
+                                              .N = reader.size("public-input.N"),
+                                              .E = reader.size("public-input.E"),
+                                              .G_batch = reader.size("public-input.G_batch"),
+                                              .I = read_size_vector(reader),
+                                              .src = read_size_vector(reader),
+                                              .dst = read_size_vector(reader),
+                                              .node_ptr = read_size_vector(reader),
+                                              .edge_ptr = read_size_vector(reader)};
         }
 
-        void append_config(
-            std::vector<std::uint8_t> *out,
-            const VerifierConfig &config)
+        void append_config(std::vector<std::uint8_t> *out, const VerifierConfig &config)
         {
             append_string(out, config.dataset);
             append_string(out, config.task_type);
@@ -599,7 +505,8 @@ namespace gatzk::protocol
             append_size(out, config.layer_count);
             append_size(out, config.K_out);
             append_size(out, config.batch_graphs);
-            append_vector(out, config.hidden_profile, [&](const auto &profile)
+            append_vector(out, config.hidden_profile,
+                          [&](const auto &profile)
                           {
                               append_size(out, profile.head_count);
                               append_size(out, profile.head_dim);
@@ -609,16 +516,12 @@ namespace gatzk::protocol
 
         std::vector<std::uint64_t> read_u64_vector(Reader &reader)
         {
-            return read_vector<std::uint64_t>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return inner.u64("u64-vector.value"); });
+            return read_vector<std::uint64_t>(reader, kMaxVectorEntries, [](Reader &inner) { return inner.u64("u64-vector.value"); });
         }
 
         std::vector<std::vector<std::uint64_t>> read_u64_matrix(Reader &reader)
         {
-            return read_vector<std::vector<std::uint64_t>>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_u64_vector(inner); });
+            return read_vector<std::vector<std::uint64_t>>(reader, kMaxVectorEntries, [](Reader &inner) { return read_u64_vector(inner); });
         }
 
         VerifierConfig read_config(Reader &reader)
@@ -673,24 +576,14 @@ namespace gatzk::protocol
             config.K_out = reader.size("config.K_out");
             config.batch_graphs = reader.size("config.batch_graphs");
             config.hidden_profile = read_vector<util::HiddenLayerProfile>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner)
-                {
-                    return util::HiddenLayerProfile{
-                        .head_count = inner.size("hidden-profile.head-count"),
-                        .head_dim = inner.size("hidden-profile.head-dim")};
-                });
+                reader, kMaxVectorEntries, [](Reader &inner)
+                { return util::HiddenLayerProfile{.head_count = inner.size("hidden-profile.head-count"), .head_dim = inner.size("hidden-profile.head-dim")}; });
             config.d_in_profile = read_size_vector(reader);
             return config;
         }
 
-        void append_dataset(
-            std::vector<std::uint8_t> *out,
-            const data::GraphDataset &dataset)
+        void append_dataset(std::vector<std::uint8_t> *out, const data::GraphDataset &dataset)
         {
-            // The candidate writer intentionally excludes labels and floating
-            // point/raw feature storage. Quantized public features live only in
-            // the LocalGraph section and are consumed directly by the verifier.
             if (!dataset.features_fp.empty() || !dataset.labels.empty() || !dataset.labels_multi.empty())
                 throw std::runtime_error("verifier registration cannot contain private dataset material");
             append_string(out, dataset.name);
@@ -715,9 +608,7 @@ namespace gatzk::protocol
             dataset.num_features = reader.size("dataset.num_features");
             dataset.num_classes = reader.size("dataset.num_classes");
             dataset.graph_count = reader.size("dataset.graph_count");
-            dataset.edges = read_vector<data::Edge>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_edge(inner); });
+            dataset.edges = read_vector<data::Edge>(reader, kMaxVectorEntries, [](Reader &inner) { return read_edge(inner); });
             dataset.node_ptr = read_size_vector(reader);
             dataset.edge_ptr = read_size_vector(reader);
             dataset.task_type = reader.string("dataset.task_type");
@@ -725,9 +616,7 @@ namespace gatzk::protocol
             return dataset;
         }
 
-        void append_local(
-            std::vector<std::uint8_t> *out,
-            const data::LocalGraph &local)
+        void append_local(std::vector<std::uint8_t> *out, const data::LocalGraph &local)
         {
             if (!local.features_fp.empty() || !local.labels.empty() || !local.labels_multi.empty())
                 throw std::runtime_error("verifier registration cannot contain raw local model/data material");
@@ -762,9 +651,7 @@ namespace gatzk::protocol
             local.num_classes = reader.size("local.num_classes");
             local.absolute_ids = read_size_vector(reader);
             local.features = read_field_matrix(reader);
-            local.edges = read_vector<data::Edge>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_edge(inner); });
+            local.edges = read_vector<data::Edge>(reader, kMaxVectorEntries, [](Reader &inner) { return read_edge(inner); });
             local.public_input = read_normalized_input(reader);
             local.graph_count = reader.size("local.graph_count");
             local.node_ptr = read_size_vector(reader);
@@ -779,9 +666,7 @@ namespace gatzk::protocol
             return local;
         }
 
-        void append_model_shape(
-            std::vector<std::uint8_t> *out,
-            const VerifierModelShape &model)
+        void append_model_shape(std::vector<std::uint8_t> *out, const VerifierModelShape &model)
         {
             append_string(out, model.model_arch_id);
             append_string(out, model.model_param_id);
@@ -791,14 +676,16 @@ namespace gatzk::protocol
             append_string(out, model.degree_bound_id);
             append_size(out, model.L);
             append_size_vector(out, model.d_in_profile);
-            append_vector(out, model.hidden_profile, [&](const auto &shape)
+            append_vector(out, model.hidden_profile,
+                          [&](const auto &shape)
                           {
                               append_size(out, shape.head_count);
                               append_size(out, shape.head_dim);
                           });
             append_size(out, model.K_out);
             append_size(out, model.C);
-            append_vector(out, model.hidden_layers, [&](const auto &layer)
+            append_vector(out, model.hidden_layers,
+                          [&](const auto &layer)
                           {
                               append_size(out, layer.layer_index);
                               append_size(out, layer.input_dim);
@@ -823,31 +710,28 @@ namespace gatzk::protocol
             model.degree_bound_id = reader.string("model.degree_bound_id");
             model.L = reader.size("model.L");
             model.d_in_profile = read_size_vector(reader);
-            model.hidden_profile = read_vector<model::HiddenLayerShape>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner)
-                {
-                    return model::HiddenLayerShape{
-                        .head_count = inner.size("model.hidden-profile.head-count"),
-                        .head_dim = inner.size("model.hidden-profile.head-dim")};
-                });
+            model.hidden_profile =
+                read_vector<model::HiddenLayerShape>(reader, kMaxVectorEntries,
+                                                     [](Reader &inner) {
+                                                         return model::HiddenLayerShape{.head_count = inner.size("model.hidden-profile.head-count"),
+                                                                                        .head_dim = inner.size("model.hidden-profile.head-dim")};
+                                                     });
             model.K_out = reader.size("model.K_out");
             model.C = reader.size("model.C");
-            model.hidden_layers = read_vector<VerifierHiddenLayerShape>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner)
-                {
-                    VerifierHiddenLayerShape layer;
-                    layer.layer_index = inner.size("model.layer.index");
-                    layer.input_dim = inner.size("model.layer.input-dim");
-                    layer.shape.head_count = inner.size("model.layer.head-count");
-                    layer.shape.head_dim = inner.size("model.layer.head-dim");
-                    const auto head_count = inner.size("model.layer.head-vector");
-                    if (head_count > kMaxVectorEntries)
-                        throw std::runtime_error("model head vector exceeds cap");
-                    layer.heads.resize(head_count);
-                    return layer;
-                });
+            model.hidden_layers = read_vector<VerifierHiddenLayerShape>(reader, kMaxVectorEntries,
+                                                                        [](Reader &inner)
+                                                                        {
+                                                                            VerifierHiddenLayerShape layer;
+                                                                            layer.layer_index = inner.size("model.layer.index");
+                                                                            layer.input_dim = inner.size("model.layer.input-dim");
+                                                                            layer.shape.head_count = inner.size("model.layer.head-count");
+                                                                            layer.shape.head_dim = inner.size("model.layer.head-dim");
+                                                                            const auto head_count = inner.size("model.layer.head-vector");
+                                                                            if (head_count > kMaxVectorEntries)
+                                                                                throw std::runtime_error("model head vector exceeds cap");
+                                                                            layer.heads.resize(head_count);
+                                                                            return layer;
+                                                                        });
             model.output_layer.input_dim = reader.size("model.output.input-dim");
             model.output_layer.output_dim = reader.size("model.output.output-dim");
             model.output_layer.head_count = reader.size("model.output.head-count");
@@ -858,13 +742,10 @@ namespace gatzk::protocol
             return model;
         }
 
-        constexpr std::string_view kCanonicalStaticTableShapeMarker =
-            "canonical_static_table_shape";
+        constexpr std::string_view kCanonicalStaticTableShapeMarker = "canonical_static_table_shape";
 
-        CanonicalStaticTableShapeInputs static_table_shape_inputs(
-            const VerifierConfig &config,
-            const data::GraphDataset &dataset,
-            const data::LocalGraph &local)
+        CanonicalStaticTableShapeInputs static_table_shape_inputs(const VerifierConfig &config, const data::GraphDataset &dataset,
+                                                                  const data::LocalGraph &local)
         {
             return CanonicalStaticTableShapeInputs{
                 .range_bits = config.range_bits,
@@ -877,9 +758,7 @@ namespace gatzk::protocol
             };
         }
 
-        void append_static_table_shape(
-            std::vector<std::uint8_t> *out,
-            const CanonicalStaticTableShape &shape)
+        void append_static_table_shape(std::vector<std::uint8_t> *out, const CanonicalStaticTableShape &shape)
         {
             append_string(out, kCanonicalStaticTableShapeMarker);
             append_size(out, shape.range_table_size);
@@ -898,14 +777,11 @@ namespace gatzk::protocol
         CanonicalStaticTableShape read_static_table_shape(Reader &reader)
         {
             if (reader.string("tables.marker") != kCanonicalStaticTableShapeMarker)
-                throw std::runtime_error(
-                    "unknown verifier registration static-table representation");
+                throw std::runtime_error("unknown verifier registration static-table representation");
             CanonicalStaticTableShape shape;
             shape.range_table_size = reader.size("tables.shape.range-size");
-            shape.lrelu_min_raw = static_cast<std::int64_t>(
-                reader.u64("tables.shape.lrelu-min"));
-            shape.lrelu_max_raw = static_cast<std::int64_t>(
-                reader.u64("tables.shape.lrelu-max"));
+            shape.lrelu_min_raw = static_cast<std::int64_t>(reader.u64("tables.shape.lrelu-min"));
+            shape.lrelu_max_raw = static_cast<std::int64_t>(reader.u64("tables.shape.lrelu-max"));
             shape.lrelu_table_size = reader.size("tables.shape.lrelu-size");
             shape.elu_bound = reader.size("tables.shape.elu-bound");
             shape.elu_table_size = reader.size("tables.shape.elu-size");
@@ -915,49 +791,30 @@ namespace gatzk::protocol
             shape.table_edge_domain_size = reader.size("tables.shape.edge-domain-size");
             const auto large_whole_graph = reader.u64("tables.shape.large-whole-graph");
             if (large_whole_graph > 1U)
-                throw std::runtime_error(
-                    "non-canonical verifier registration static-table shape flag");
+                throw std::runtime_error("non-canonical verifier registration static-table shape flag");
             shape.large_whole_graph = large_whole_graph != 0U;
             return shape;
         }
 
-        void append_tables(
-            std::vector<std::uint8_t> *out,
-            const StaticTables &tables,
-            const CanonicalStaticTableShape &shape)
+        void append_tables(std::vector<std::uint8_t> *out, const StaticTables &tables, const CanonicalStaticTableShape &shape)
         {
-            // The concrete rows remain available in memory for the prover and
-            // verifier execution contexts, but the registration wire carries
-            // only the public shape.  The canonical generator is the sole
-            // source of the rows on the independent parser side.
-            if (tables.range.size() != shape.range_table_size
-                || tables.lrelu.size() != shape.lrelu_table_size
-                || tables.elu.size() != shape.elu_table_size
-                || tables.exp.size() != shape.exp_table_size)
-                throw std::runtime_error(
-                    "verifier registration static-table cardinality is not canonical");
+            if (tables.range.size() != shape.range_table_size || tables.lrelu.size() != shape.lrelu_table_size || tables.elu.size() != shape.elu_table_size ||
+                tables.exp.size() != shape.exp_table_size)
+                throw std::runtime_error("verifier registration static-table cardinality is not canonical");
             append_static_table_shape(out, shape);
         }
 
-        StaticTables read_tables(
-            Reader &reader,
-            const CanonicalStaticTableShapeInputs &inputs)
+        StaticTables read_tables(Reader &reader, const CanonicalStaticTableShapeInputs &inputs)
         {
             const auto encoded_shape = read_static_table_shape(reader);
             const auto expected_shape = plan_canonical_static_table_shape(inputs);
             if (encoded_shape != expected_shape)
-                throw std::runtime_error(
-                    "verifier registration static-table shape does not match canonical planner");
+                throw std::runtime_error("verifier registration static-table shape does not match canonical planner");
             reader.require_empty("static-table section");
-            // Rebuild the complete in-memory tables from public configuration
-            // and graph metadata.  This intentionally retains StaticTables' full
-            // canonical rows for all downstream digest/commitment/KZG consumers.
             return build_canonical_static_tables(inputs);
         }
 
-        void append_domain(
-            std::vector<std::uint8_t> *out,
-            const algebra::RootOfUnityDomain &domain)
+        void append_domain(std::vector<std::uint8_t> *out, const algebra::RootOfUnityDomain &domain)
         {
             append_string(out, domain.name);
             append_size(out, domain.size);
@@ -974,15 +831,13 @@ namespace gatzk::protocol
             const auto omega = read_field(reader, "domain.omega");
             const auto inv_size = read_field(reader, "domain.inv_size");
             auto expected = algebra::RootOfUnityDomain::create(name, size);
-            if (expected->omega != omega || expected->inv_size != inv_size
-                || expected->name != name || expected->size != size)
+            if (expected->omega != omega || expected->inv_size != inv_size || expected->name != name || expected->size != size)
                 throw std::runtime_error("domain data is not canonical");
             return expected;
         }
 
-        std::shared_ptr<algebra::RootOfUnityDomain> domain_ref(
-            const std::unordered_map<std::string, std::shared_ptr<algebra::RootOfUnityDomain>> &domains,
-            const std::string &name)
+        std::shared_ptr<algebra::RootOfUnityDomain> domain_ref(const std::unordered_map<std::string, std::shared_ptr<algebra::RootOfUnityDomain>> &domains,
+                                                               const std::string &name)
         {
             const auto it = domains.find(name);
             if (it == domains.end())
@@ -990,28 +845,25 @@ namespace gatzk::protocol
             return it->second;
         }
 
-        void append_domains(
-            std::vector<std::uint8_t> *out,
-            const WorkDomains &domains)
+        void append_domains(std::vector<std::uint8_t> *out, const WorkDomains &domains)
         {
-            const std::array<const std::shared_ptr<algebra::RootOfUnityDomain> *, 7> top = {
-                &domains.fh, &domains.edge, &domains.in, &domains.d,
-                &domains.cat, &domains.c, &domains.n};
-            const std::array<std::string_view, 7> names = {
-                "FH", "edge", "in", "d", "cat", "C", "N"};
+            const std::array<const std::shared_ptr<algebra::RootOfUnityDomain> *, 7> top = {&domains.fh,  &domains.edge, &domains.in, &domains.d,
+                                                                                            &domains.cat, &domains.c,    &domains.n};
+            const std::array<std::string_view, 7> names = {"FH", "edge", "in", "d", "cat", "C", "N"};
             for (std::size_t index = 0; index < top.size(); ++index)
             {
                 const auto *domain = top[index];
                 if (*domain == nullptr)
                     throw std::runtime_error("verifier registration has a missing work domain");
                 if ((*domain)->name != names[index])
-                    throw std::runtime_error(
-                        "verifier registration has a non-canonical work domain name");
+                    throw std::runtime_error("verifier registration has a non-canonical work domain name");
                 append_domain(out, **domain);
             }
-            append_vector(out, domains.hidden_layers, [&](const auto &layer)
+            append_vector(out, domains.hidden_layers,
+                          [&](const auto &layer)
                           {
-                              append_vector(out, layer, [&](const auto &head)
+                              append_vector(out, layer,
+                                            [&](const auto &head)
                                             {
                                                 if (head.in == nullptr || head.d == nullptr)
                                                     throw std::runtime_error("verifier registration has a missing head domain");
@@ -1032,15 +884,13 @@ namespace gatzk::protocol
         WorkDomains read_domains(Reader &reader)
         {
             std::array<std::shared_ptr<algebra::RootOfUnityDomain>, 7> top;
-            const std::array<std::string_view, 7> names = {
-                "FH", "edge", "in", "d", "cat", "C", "N"};
+            const std::array<std::string_view, 7> names = {"FH", "edge", "in", "d", "cat", "C", "N"};
             std::unordered_map<std::string, std::shared_ptr<algebra::RootOfUnityDomain>> by_name;
             for (std::size_t i = 0; i < top.size(); ++i)
             {
                 top[i] = read_domain(reader);
                 if (top[i]->name != names[i])
-                    throw std::runtime_error(
-                        "verifier registration work-domain order/name mismatch");
+                    throw std::runtime_error("verifier registration work-domain order/name mismatch");
                 if (!by_name.emplace(top[i]->name, top[i]).second)
                     throw std::runtime_error("duplicate top-level verifier registration domain");
             }
@@ -1056,31 +906,25 @@ namespace gatzk::protocol
                 reader, kMaxVectorEntries,
                 [&](Reader &inner)
                 {
-                    return read_vector<AttentionHeadDomains>(
-                        inner, kMaxVectorEntries,
-                        [&](Reader &head_reader)
-                        {
-                            return AttentionHeadDomains{
-                                .in = domain_ref(by_name, head_reader.string("head-domain.in")),
-                                .d = domain_ref(by_name, head_reader.string("head-domain.d"))};
-                        });
+                    return read_vector<AttentionHeadDomains>(inner, kMaxVectorEntries,
+                                                             [&](Reader &head_reader)
+                                                             {
+                                                                 return AttentionHeadDomains{.in = domain_ref(by_name, head_reader.string("head-domain.in")),
+                                                                                             .d = domain_ref(by_name, head_reader.string("head-domain.d"))};
+                                                             });
                 });
             const auto has_output = reader.u8("output-domain.present");
             if (has_output > 1)
                 throw std::runtime_error("non-canonical output domain presence");
             if (has_output != 0)
             {
-                domains.output_head = AttentionHeadDomains{
-                    .in = domain_ref(by_name, reader.string("output-domain.in")),
-                    .d = domain_ref(by_name, reader.string("output-domain.d"))};
+                domains.output_head = AttentionHeadDomains{.in = domain_ref(by_name, reader.string("output-domain.in")),
+                                                           .d = domain_ref(by_name, reader.string("output-domain.d"))};
             }
             return domains;
         }
 
-        void append_srs(
-            std::vector<std::uint8_t> *out,
-            const VerifierSRSMetadata &srs,
-            const crypto::KZGVerifierKey &vk)
+        void append_srs(std::vector<std::uint8_t> *out, const VerifierSRSMetadata &srs, const crypto::KZGVerifierKey &vk)
         {
             append_string(out, srs.manifest_format);
             append_string(out, srs.srs_id);
@@ -1138,10 +982,7 @@ namespace gatzk::protocol
             append_string(out, vk.manifest_hash);
         }
 
-        void read_srs(
-            Reader &reader,
-            VerifierSRSMetadata *srs,
-            crypto::KZGVerifierKey *vk)
+        void read_srs(Reader &reader, VerifierSRSMetadata *srs, crypto::KZGVerifierKey *vk)
         {
             srs->manifest_format = reader.string("srs.manifest_format");
             srs->srs_id = reader.string("srs.srs_id");
@@ -1200,32 +1041,26 @@ namespace gatzk::protocol
             vk->g2_tau_prepared = std::make_shared<crypto::PreparedG2>(crypto::prepare_g2(vk->g2_tau));
         }
 
-        std::vector<std::pair<std::string, VerifierPublicPolynomialDescriptor>> sorted_polynomial_descriptors(
-            const std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> &descriptors)
+        std::vector<std::pair<std::string, VerifierPublicPolynomialDescriptor>>
+        sorted_polynomial_descriptors(const std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> &descriptors)
         {
             std::vector<std::pair<std::string, VerifierPublicPolynomialDescriptor>> sorted;
             sorted.reserve(descriptors.size());
             for (const auto &[key, descriptor] : descriptors)
                 sorted.emplace_back(key, descriptor);
-            std::sort(sorted.begin(), sorted.end(), [](const auto &lhs, const auto &rhs)
-                      { return lhs.first < rhs.first; });
+            std::sort(sorted.begin(), sorted.end(), [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
             return sorted;
         }
 
-        void append_polynomial_descriptors(
-            std::vector<std::uint8_t> *out,
-            const std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> &descriptors,
-            const WorkDomains &domains)
+        void append_polynomial_descriptors(std::vector<std::uint8_t> *out,
+                                           const std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> &descriptors, const WorkDomains &domains)
         {
             auto sorted = sorted_polynomial_descriptors(descriptors);
             append_size(out, sorted.size());
             std::string previous;
-            const auto domain_size = [&](const std::string &name)
-                -> std::optional<std::size_t>
+            const auto domain_size = [&](const std::string &name) -> std::optional<std::size_t>
             {
-                for (const auto &domain : {
-                         domains.fh, domains.edge, domains.in, domains.d,
-                         domains.cat, domains.c, domains.n})
+                for (const auto &domain : {domains.fh, domains.edge, domains.in, domains.d, domains.cat, domains.c, domains.n})
                 {
                     if (domain != nullptr && domain->name == name)
                         return domain->size;
@@ -1234,15 +1069,13 @@ namespace gatzk::protocol
             };
             for (const auto &[key, descriptor] : sorted)
             {
-                if (key.empty() || (!previous.empty() && key <= previous)
-                    || descriptor.name != key || descriptor.size == 0)
+                if (key.empty() || (!previous.empty() && key <= previous) || descriptor.name != key || descriptor.size == 0)
                     throw std::runtime_error("public polynomial descriptor order/name mismatch");
                 if (descriptor.basis == algebra::PolynomialBasis::Evaluation)
                 {
                     const auto size = domain_size(descriptor.domain);
                     if (!size.has_value() || descriptor.size != *size)
-                        throw std::runtime_error(
-                            "public polynomial descriptor has unknown domain or size mismatch");
+                        throw std::runtime_error("public polynomial descriptor has unknown domain or size mismatch");
                 }
                 else if (!descriptor.domain.empty())
                 {
@@ -1256,15 +1089,11 @@ namespace gatzk::protocol
             }
         }
 
-        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> read_polynomial_descriptors(
-            Reader &reader,
-            const WorkDomains &domains)
+        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> read_polynomial_descriptors(Reader &reader, const WorkDomains &domains)
         {
             std::unordered_map<std::string, std::shared_ptr<algebra::RootOfUnityDomain>> by_name = {
-                {domains.fh->name, domains.fh}, {domains.edge->name, domains.edge},
-                {domains.in->name, domains.in}, {domains.d->name, domains.d},
-                {domains.cat->name, domains.cat}, {domains.c->name, domains.c},
-                {domains.n->name, domains.n}};
+                {domains.fh->name, domains.fh},   {domains.edge->name, domains.edge}, {domains.in->name, domains.in}, {domains.d->name, domains.d},
+                {domains.cat->name, domains.cat}, {domains.c->name, domains.c},       {domains.n->name, domains.n}};
             const auto count = reader.size("public-polynomials.count");
             if (count > kMaxVectorEntries)
                 throw std::runtime_error("public polynomial count exceeds cap");
@@ -1298,19 +1127,14 @@ namespace gatzk::protocol
                 if (domain != nullptr && size != domain->size)
                     throw std::runtime_error("public polynomial descriptor size/domain mismatch");
                 VerifierPublicPolynomialDescriptor descriptor{
-                    .name = key,
-                    .basis = static_cast<algebra::PolynomialBasis>(basis),
-                    .domain = domain_name,
-                    .size = size};
+                    .name = key, .basis = static_cast<algebra::PolynomialBasis>(basis), .domain = domain_name, .size = size};
                 if (!out.emplace(key, std::move(descriptor)).second)
                     throw std::runtime_error("duplicate public polynomial");
             }
             return out;
         }
 
-        void append_point_map(
-            std::vector<std::uint8_t> *out,
-            const std::unordered_map<std::string, VerifierPointCommitment> &commitments)
+        void append_point_map(std::vector<std::uint8_t> *out, const std::unordered_map<std::string, VerifierPointCommitment> &commitments)
         {
             std::vector<std::string> keys;
             keys.reserve(commitments.size());
@@ -1350,9 +1174,7 @@ namespace gatzk::protocol
             return out;
         }
 
-        void append_proof_schema_entry(
-            std::vector<std::uint8_t> *out,
-            const ProofSchemaEntry &entry)
+        void append_proof_schema_entry(std::vector<std::uint8_t> *out, const ProofSchemaEntry &entry)
         {
             append_string(out, entry.tag);
             append_string(out, entry.domain);
@@ -1400,9 +1222,7 @@ namespace gatzk::protocol
             return entry;
         }
 
-        void append_ledger_entry(
-            std::vector<std::uint8_t> *out,
-            const CompilerLedgerEntry &entry)
+        void append_ledger_entry(std::vector<std::uint8_t> *out, const CompilerLedgerEntry &entry)
         {
             append_string(out, entry.id);
             append_string(out, entry.object_or_challenge);
@@ -1417,21 +1237,18 @@ namespace gatzk::protocol
 
         CompilerLedgerEntry read_ledger_entry(Reader &reader)
         {
-            return CompilerLedgerEntry{
-                .id = reader.string("ledger.id"),
-                .object_or_challenge = reader.string("ledger.object"),
-                .domain = reader.string("ledger.domain"),
-                .transcript_stage = reader.string("ledger.stage"),
-                .expression_or_certificate = reader.string("ledger.expression"),
-                .degree_bound = reader.size("ledger.degree-bound"),
-                .query_bound = reader.size("ledger.query-bound"),
-                .exclusion_degree = reader.size("ledger.exclusion-degree"),
-                .multiplicity = reader.size("ledger.multiplicity")};
+            return CompilerLedgerEntry{.id = reader.string("ledger.id"),
+                                       .object_or_challenge = reader.string("ledger.object"),
+                                       .domain = reader.string("ledger.domain"),
+                                       .transcript_stage = reader.string("ledger.stage"),
+                                       .expression_or_certificate = reader.string("ledger.expression"),
+                                       .degree_bound = reader.size("ledger.degree-bound"),
+                                       .query_bound = reader.size("ledger.query-bound"),
+                                       .exclusion_degree = reader.size("ledger.exclusion-degree"),
+                                       .multiplicity = reader.size("ledger.multiplicity")};
         }
 
-        void append_integer_bound(
-            std::vector<std::uint8_t> *out,
-            const IntegerBoundLedgerEntry &entry)
+        void append_integer_bound(std::vector<std::uint8_t> *out, const IntegerBoundLedgerEntry &entry)
         {
             append_string(out, entry.id);
             append_string(out, entry.stage);
@@ -1442,17 +1259,14 @@ namespace gatzk::protocol
 
         IntegerBoundLedgerEntry read_integer_bound(Reader &reader)
         {
-            return IntegerBoundLedgerEntry{
-                .id = reader.string("integer-bound.id"),
-                .stage = reader.string("integer-bound.stage"),
-                .source = reader.string("integer-bound.source"),
-                .absolute_bound = reader.u64("integer-bound.absolute-bound"),
-                .limb_count = reader.size("integer-bound.limb-count")};
+            return IntegerBoundLedgerEntry{.id = reader.string("integer-bound.id"),
+                                           .stage = reader.string("integer-bound.stage"),
+                                           .source = reader.string("integer-bound.source"),
+                                           .absolute_bound = reader.u64("integer-bound.absolute-bound"),
+                                           .limb_count = reader.size("integer-bound.limb-count")};
         }
 
-        void append_observation_edge(
-            std::vector<std::uint8_t> *out,
-            const ObservationDependencyEdge &edge)
+        void append_observation_edge(std::vector<std::uint8_t> *out, const ObservationDependencyEdge &edge)
         {
             append_string(out, edge.id);
             append_string(out, edge.derived_object);
@@ -1469,12 +1283,9 @@ namespace gatzk::protocol
             ObservationDependencyEdge edge;
             edge.id = id;
             edge.derived_object = reader.string("observation-edge.derived-object");
-            edge.source_objects = read_vector<std::string>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return inner.string("observation-edge.source"); });
-            edge.serialized_observations = read_vector<std::string>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return inner.string("observation-edge.observation"); });
+            edge.source_objects = read_vector<std::string>(reader, kMaxVectorEntries, [](Reader &inner) { return inner.string("observation-edge.source"); });
+            edge.serialized_observations =
+                read_vector<std::string>(reader, kMaxVectorEntries, [](Reader &inner) { return inner.string("observation-edge.observation"); });
             edge.transcript_stage = reader.string("observation-edge.stage");
             edge.propagation_rule = reader.string("observation-edge.rule");
             const auto random = reader.u8("observation-edge.randomness");
@@ -1484,17 +1295,11 @@ namespace gatzk::protocol
             return edge;
         }
 
-        void append_compiler(
-            std::vector<std::uint8_t> *out,
-            const ProtocolCompilerArtifact &artifact)
+        void append_compiler(std::vector<std::uint8_t> *out, const ProtocolCompilerArtifact &artifact)
         {
-            append_vector(out, artifact.proof_schema.entries, [&](const auto &entry)
-                          { append_proof_schema_entry(out, entry); });
+            append_vector(out, artifact.proof_schema.entries, [&](const auto &entry) { append_proof_schema_entry(out, entry); });
             append_size(out, artifact.proof_schema.private_plain_value_count);
-            auto append_string_vec = [&](const auto &values)
-            {
-                append_string_vector(out, values);
-            };
+            auto append_string_vec = [&](const auto &values) { append_string_vector(out, values); };
             append_string_vec(artifact.binding_relation_registry);
             append_string_vec(artifact.proof_blocks);
             append_string_vec(artifact.serializer_tag_table);
@@ -1506,16 +1311,11 @@ namespace gatzk::protocol
             append_string_vec(artifact.point_group_registry_template);
             append_string_vec(artifact.degree_registry);
             append_string_vec(artifact.padding_registry);
-            append_vector(out, artifact.observation_dependency_dag, [&](const auto &edge)
-                          { append_observation_edge(out, edge); });
-            append_vector(out, artifact.observation_ledger, [&](const auto &entry)
-                          { append_ledger_entry(out, entry); });
-            append_vector(out, artifact.random_identity_ledger, [&](const auto &entry)
-                          { append_ledger_entry(out, entry); });
-            append_vector(out, artifact.security_budget_ledger, [&](const auto &entry)
-                          { append_ledger_entry(out, entry); });
-            append_vector(out, artifact.integer_bound_ledger, [&](const auto &entry)
-                          { append_integer_bound(out, entry); });
+            append_vector(out, artifact.observation_dependency_dag, [&](const auto &edge) { append_observation_edge(out, edge); });
+            append_vector(out, artifact.observation_ledger, [&](const auto &entry) { append_ledger_entry(out, entry); });
+            append_vector(out, artifact.random_identity_ledger, [&](const auto &entry) { append_ledger_entry(out, entry); });
+            append_vector(out, artifact.security_budget_ledger, [&](const auto &entry) { append_ledger_entry(out, entry); });
+            append_vector(out, artifact.integer_bound_ledger, [&](const auto &entry) { append_integer_bound(out, entry); });
             append_string(out, artifact.kzg_assumption_profile);
             append_string(out, artifact.shift_algorithm_id);
             append_string(out, artifact.shift_algorithm_spec);
@@ -1526,16 +1326,11 @@ namespace gatzk::protocol
         ProtocolCompilerArtifact read_compiler(Reader &reader)
         {
             ProtocolCompilerArtifact artifact;
-            artifact.proof_schema.entries = read_vector<ProofSchemaEntry>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_proof_schema_entry(inner); });
+            artifact.proof_schema.entries =
+                read_vector<ProofSchemaEntry>(reader, kMaxVectorEntries, [](Reader &inner) { return read_proof_schema_entry(inner); });
             artifact.proof_schema.private_plain_value_count = reader.size("compiler.private-plain-count");
             auto read_string_vec = [&](std::string_view what)
-            {
-                return read_vector<std::string>(
-                    reader, kMaxVectorEntries,
-                    [&](Reader &inner) { return inner.string(what); });
-            };
+            { return read_vector<std::string>(reader, kMaxVectorEntries, [&](Reader &inner) { return inner.string(what); }); };
             artifact.binding_relation_registry = read_string_vec("compiler.binding-relation");
             artifact.proof_blocks = read_string_vec("compiler.proof-block");
             artifact.serializer_tag_table = read_string_vec("compiler.serializer-tag");
@@ -1547,21 +1342,15 @@ namespace gatzk::protocol
             artifact.point_group_registry_template = read_string_vec("compiler.point-group");
             artifact.degree_registry = read_string_vec("compiler.degree");
             artifact.padding_registry = read_string_vec("compiler.padding");
-            artifact.observation_dependency_dag = read_vector<ObservationDependencyEdge>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_observation_edge(inner); });
-            artifact.observation_ledger = read_vector<CompilerLedgerEntry>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_ledger_entry(inner); });
-            artifact.random_identity_ledger = read_vector<CompilerLedgerEntry>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_ledger_entry(inner); });
-            artifact.security_budget_ledger = read_vector<CompilerLedgerEntry>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_ledger_entry(inner); });
-            artifact.integer_bound_ledger = read_vector<IntegerBoundLedgerEntry>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_integer_bound(inner); });
+            artifact.observation_dependency_dag =
+                read_vector<ObservationDependencyEdge>(reader, kMaxVectorEntries, [](Reader &inner) { return read_observation_edge(inner); });
+            artifact.observation_ledger = read_vector<CompilerLedgerEntry>(reader, kMaxVectorEntries, [](Reader &inner) { return read_ledger_entry(inner); });
+            artifact.random_identity_ledger =
+                read_vector<CompilerLedgerEntry>(reader, kMaxVectorEntries, [](Reader &inner) { return read_ledger_entry(inner); });
+            artifact.security_budget_ledger =
+                read_vector<CompilerLedgerEntry>(reader, kMaxVectorEntries, [](Reader &inner) { return read_ledger_entry(inner); });
+            artifact.integer_bound_ledger =
+                read_vector<IntegerBoundLedgerEntry>(reader, kMaxVectorEntries, [](Reader &inner) { return read_integer_bound(inner); });
             artifact.kzg_assumption_profile = reader.string("compiler.kzg-profile");
             artifact.shift_algorithm_id = reader.string("compiler.shift-id");
             artifact.shift_algorithm_spec = reader.string("compiler.shift-spec");
@@ -1570,9 +1359,7 @@ namespace gatzk::protocol
             return artifact;
         }
 
-        void append_registry_entry(
-            std::vector<std::uint8_t> *out,
-            const VerifierRegistryEntry &entry)
+        void append_registry_entry(std::vector<std::uint8_t> *out, const VerifierRegistryEntry &entry)
         {
             append_string(out, entry.label);
             append_string(out, entry.domain);
@@ -1597,43 +1384,31 @@ namespace gatzk::protocol
 
         VerifierRegistryEntry read_registry_entry(Reader &reader)
         {
-            VerifierRegistryEntry entry{
-                .label = reader.string("registry-entry.label"),
-                .domain = reader.string("registry-entry.domain"),
-                .degree_bound = reader.size("registry-entry.degree-bound"),
-                .scale = reader.u64("registry-entry.scale"),
-                .range_min = static_cast<std::int64_t>(reader.u64("registry-entry.range-min")),
-                .range_max = static_cast<std::int64_t>(reader.u64("registry-entry.range-max")),
-                .point = read_g1(reader, "registry-entry.point")};
-            const auto bound_present =
-                reader.u8("registry-entry.bound-present");
+            VerifierRegistryEntry entry{.label = reader.string("registry-entry.label"),
+                                        .domain = reader.string("registry-entry.domain"),
+                                        .degree_bound = reader.size("registry-entry.degree-bound"),
+                                        .scale = reader.u64("registry-entry.scale"),
+                                        .range_min = static_cast<std::int64_t>(reader.u64("registry-entry.range-min")),
+                                        .range_max = static_cast<std::int64_t>(reader.u64("registry-entry.range-max")),
+                                        .point = read_g1(reader, "registry-entry.point")};
+            const auto bound_present = reader.u8("registry-entry.bound-present");
             if (bound_present > 1U)
-                throw std::runtime_error(
-                    "non-canonical model-bound certificate presence flag");
+                throw std::runtime_error("non-canonical model-bound certificate presence flag");
             entry.bound_certificate.present = bound_present != 0U;
             if (entry.bound_certificate.present)
             {
-                entry.bound_certificate.label =
-                    reader.string("registry-entry.bound-label");
-                entry.bound_certificate.layer_index =
-                    reader.size("registry-entry.bound-layer");
-                entry.bound_certificate.local_head_index =
-                    reader.size("registry-entry.bound-head");
-                entry.bound_certificate.domain =
-                    reader.string("registry-entry.bound-domain");
-                entry.bound_certificate.degree_bound =
-                    reader.size("registry-entry.bound-degree");
-                entry.bound_certificate.scale =
-                    reader.u64("registry-entry.bound-scale");
-                entry.bound_certificate.absolute_bound =
-                    reader.u64("registry-entry.bound-absolute");
+                entry.bound_certificate.label = reader.string("registry-entry.bound-label");
+                entry.bound_certificate.layer_index = reader.size("registry-entry.bound-layer");
+                entry.bound_certificate.local_head_index = reader.size("registry-entry.bound-head");
+                entry.bound_certificate.domain = reader.string("registry-entry.bound-domain");
+                entry.bound_certificate.degree_bound = reader.size("registry-entry.bound-degree");
+                entry.bound_certificate.scale = reader.u64("registry-entry.bound-scale");
+                entry.bound_certificate.absolute_bound = reader.u64("registry-entry.bound-absolute");
             }
             return entry;
         }
 
-        void append_registry(
-            std::vector<std::uint8_t> *out,
-            const AuthenticatedVerifierRegistry &registry)
+        void append_registry(std::vector<std::uint8_t> *out, const AuthenticatedVerifierRegistry &registry)
         {
             append_string(out, registry.format);
             append_string(out, registry.registry_id);
@@ -1651,10 +1426,6 @@ namespace gatzk::protocol
             append_string(out, registry.srs_generator_id);
             append_string(out, registry.srs_encoding);
             append_string(out, registry.srs_spec_id);
-            // Keep the SRS ceremony's compiler-artifact hash as a distinct
-            // authenticated field.  It binds this registry to the exact
-            // protocol compiler file copied into the SRS directory; it must
-            // not be conflated with the per-instance typed artifact digest.
             append_string(out, registry.srs_protocol_compiler_artifact_hash);
             append_string(out, registry.compiler_artifact_digest);
             append_string(out, registry.model_layout_digest);
@@ -1668,12 +1439,9 @@ namespace gatzk::protocol
             append_string(out, registry.topology_digest);
             append_string(out, registry.security_budget_ledger_digest);
             append_string(out, registry.security_budget_exact);
-            append_vector(out, registry.integer_bound_ledger, [&](const auto &entry)
-                          { append_integer_bound(out, entry); });
-            append_vector(out, registry.model_entries, [&](const auto &entry)
-                          { append_registry_entry(out, entry); });
-            append_vector(out, registry.static_entries, [&](const auto &entry)
-                          { append_registry_entry(out, entry); });
+            append_vector(out, registry.integer_bound_ledger, [&](const auto &entry) { append_integer_bound(out, entry); });
+            append_vector(out, registry.model_entries, [&](const auto &entry) { append_registry_entry(out, entry); });
+            append_vector(out, registry.static_entries, [&](const auto &entry) { append_registry_entry(out, entry); });
         }
 
         AuthenticatedVerifierRegistry read_registry(Reader &reader)
@@ -1695,8 +1463,7 @@ namespace gatzk::protocol
             registry.srs_generator_id = reader.string("registry.generator-id");
             registry.srs_encoding = reader.string("registry.encoding");
             registry.srs_spec_id = reader.string("registry.spec-id");
-            registry.srs_protocol_compiler_artifact_hash =
-                reader.string("registry.srs-protocol-compiler-artifact-hash");
+            registry.srs_protocol_compiler_artifact_hash = reader.string("registry.srs-protocol-compiler-artifact-hash");
             registry.compiler_artifact_digest = reader.string("registry.compiler-digest");
             registry.model_layout_digest = reader.string("registry.model-layout-digest");
             registry.quant_chain_digest = reader.string("registry.quant-digest");
@@ -1709,21 +1476,14 @@ namespace gatzk::protocol
             registry.topology_digest = reader.string("registry.topology-digest");
             registry.security_budget_ledger_digest = reader.string("registry.security-digest");
             registry.security_budget_exact = reader.string("registry.security-exact");
-            registry.integer_bound_ledger = read_vector<IntegerBoundLedgerEntry>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_integer_bound(inner); });
-            registry.model_entries = read_vector<VerifierRegistryEntry>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_registry_entry(inner); });
-            registry.static_entries = read_vector<VerifierRegistryEntry>(
-                reader, kMaxVectorEntries,
-                [](Reader &inner) { return read_registry_entry(inner); });
+            registry.integer_bound_ledger =
+                read_vector<IntegerBoundLedgerEntry>(reader, kMaxVectorEntries, [](Reader &inner) { return read_integer_bound(inner); });
+            registry.model_entries = read_vector<VerifierRegistryEntry>(reader, kMaxVectorEntries, [](Reader &inner) { return read_registry_entry(inner); });
+            registry.static_entries = read_vector<VerifierRegistryEntry>(reader, kMaxVectorEntries, [](Reader &inner) { return read_registry_entry(inner); });
             return registry;
         }
 
-        std::vector<std::uint8_t> make_section(
-            Section section,
-            const std::function<void(std::vector<std::uint8_t> *)> &writer)
+        std::vector<std::uint8_t> make_section(Section section, const std::function<void(std::vector<std::uint8_t> *)> &writer)
         {
             std::vector<std::uint8_t> payload;
             writer(&payload);
@@ -1736,30 +1496,46 @@ namespace gatzk::protocol
             return out;
         }
 
-        void parse_section(
-            Reader &section,
-            Section expected,
-            VerifierRegistrationArtifact *artifact)
+        void parse_section(Reader &section, Section expected, VerifierRegistrationArtifact *artifact)
         {
             switch (expected)
             {
-            case Section::Config: artifact->config = read_config(section); break;
-            case Section::Dataset: artifact->dataset = read_dataset(section); break;
-            case Section::LocalGraph: artifact->local = read_local(section); break;
-            case Section::ModelShape: artifact->model = read_model_shape(section); break;
-            case Section::StaticTables:
-                artifact->tables = read_tables(
-                    section,
-                    static_table_shape_inputs(
-                        artifact->config, artifact->dataset, artifact->local));
-                break;
-            case Section::Domains: artifact->domains = read_domains(section); break;
-            case Section::SrsAndVk: read_srs(section, &artifact->srs, &artifact->kzg_vk); break;
-            case Section::PublicPolynomials: artifact->public_polynomial_descriptors = read_polynomial_descriptors(section, artifact->domains); break;
-            case Section::PublicCommitments: artifact->public_commitments = read_point_map(section); break;
-            case Section::StaticCommitments: artifact->static_commitments = read_point_map(section); break;
-            case Section::CompilerArtifact: artifact->compiler_artifact = read_compiler(section); break;
-            case Section::Registry: artifact->registry = read_registry(section); break;
+                case Section::Config:
+                    artifact->config = read_config(section);
+                    break;
+                case Section::Dataset:
+                    artifact->dataset = read_dataset(section);
+                    break;
+                case Section::LocalGraph:
+                    artifact->local = read_local(section);
+                    break;
+                case Section::ModelShape:
+                    artifact->model = read_model_shape(section);
+                    break;
+                case Section::StaticTables:
+                    artifact->tables = read_tables(section, static_table_shape_inputs(artifact->config, artifact->dataset, artifact->local));
+                    break;
+                case Section::Domains:
+                    artifact->domains = read_domains(section);
+                    break;
+                case Section::SrsAndVk:
+                    read_srs(section, &artifact->srs, &artifact->kzg_vk);
+                    break;
+                case Section::PublicPolynomials:
+                    artifact->public_polynomial_descriptors = read_polynomial_descriptors(section, artifact->domains);
+                    break;
+                case Section::PublicCommitments:
+                    artifact->public_commitments = read_point_map(section);
+                    break;
+                case Section::StaticCommitments:
+                    artifact->static_commitments = read_point_map(section);
+                    break;
+                case Section::CompilerArtifact:
+                    artifact->compiler_artifact = read_compiler(section);
+                    break;
+                case Section::Registry:
+                    artifact->registry = read_registry(section);
+                    break;
             }
             section.require_empty("section");
         }
@@ -1770,8 +1546,7 @@ namespace gatzk::protocol
         std::vector<std::uint8_t> out;
         out.insert(out.end(), kMagic.begin(), kMagic.end());
         append_u32(&out, kSectionCount);
-        const auto static_table_shape = plan_canonical_static_table_shape(
-            static_table_shape_inputs(config, dataset, local));
+        const auto static_table_shape = plan_canonical_static_table_shape(static_table_shape_inputs(config, dataset, local));
         const std::array<std::vector<std::uint8_t>, kSectionCount> sections = {
             make_section(Section::Config, [&](auto *payload) { append_config(payload, config); }),
             make_section(Section::Dataset, [&](auto *payload) { append_dataset(payload, dataset); }),
@@ -1801,35 +1576,20 @@ namespace gatzk::protocol
         return sha256_hex(bytes);
     }
 
-    std::vector<std::uint8_t> serialize_verifier_registration_artifact(
-        const VerifierRegistrationArtifact &artifact)
-    {
-        return artifact.canonical_bytes();
-    }
+    std::vector<std::uint8_t> serialize_verifier_registration_artifact(const VerifierRegistrationArtifact &artifact) { return artifact.canonical_bytes(); }
 
-    VerifierRegistrationArtifact parse_verifier_registration_artifact(
-        const std::vector<std::uint8_t> &bytes,
-        const std::string &trusted_registry_digest)
+    VerifierRegistrationArtifact parse_verifier_registration_artifact(const std::vector<std::uint8_t> &bytes, const std::string &trusted_registry_digest)
     {
-        // Authenticate the complete wire artifact before constructing a Reader
-        // or materializing any decoded section.  The plain parser below still
-        // verifies the internal trailer and canonical re-encoding, so this
-        // overload adds an out-of-band root check without changing the codec.
         if (!lower_hex_256(trusted_registry_digest))
-            throw std::runtime_error(
-                "formal verifier registry load requires an out-of-band trusted SHA-256 digest");
-        if (sha256_hex(std::span<const std::uint8_t>(bytes.data(), bytes.size()))
-            != trusted_registry_digest)
-            throw std::runtime_error(
-                "verifier registration artifact digest does not match the trusted registry root");
+            throw std::runtime_error("formal verifier registry load requires an out-of-band trusted SHA-256 digest");
+        if (sha256_hex(std::span<const std::uint8_t>(bytes.data(), bytes.size())) != trusted_registry_digest)
+            throw std::runtime_error("verifier registration artifact digest does not match the trusted registry root");
         return parse_verifier_registration_artifact(bytes);
     }
 
-    VerifierRegistrationArtifact parse_verifier_registration_artifact(
-        const std::vector<std::uint8_t> &bytes)
+    VerifierRegistrationArtifact parse_verifier_registration_artifact(const std::vector<std::uint8_t> &bytes)
     {
-        if (bytes.size() < kMagic.size() + sizeof(std::uint32_t) + SHA256_DIGEST_LENGTH
-            || bytes.size() > kMaxArtifactBytes)
+        if (bytes.size() < kMagic.size() + sizeof(std::uint32_t) + SHA256_DIGEST_LENGTH || bytes.size() > kMaxArtifactBytes)
             throw std::runtime_error("verifier registration artifact size is invalid");
         const auto body_size = bytes.size() - SHA256_DIGEST_LENGTH;
         if (!std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))

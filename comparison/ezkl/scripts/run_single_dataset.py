@@ -55,7 +55,6 @@ from formal_common import (
     validate_resources,
 )
 
-
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 
 
@@ -306,9 +305,7 @@ def main(args: argparse.Namespace) -> int:
     compiled = ensure_relative_arg(args.compiled_circuit, "compiled-circuit", default_path(output, "compiled.circuit"))
     vk = ensure_relative_arg(args.vk, "vk", default_path(output, "vk.key"))
     pk = ensure_relative_arg(args.pk, "pk", default_path(output, "pk.key"))
-    artifact_manifest = ensure_relative_arg(
-        args.artifact_manifest, "artifact-manifest", default_path(output, "artifact_manifest.json")
-    )
+    artifact_manifest = ensure_relative_arg(args.artifact_manifest, "artifact-manifest", default_path(output, "artifact_manifest.json"))
     generated_artifact_manifest = output / "artifact_manifest.json"
     if artifact_manifest != generated_artifact_manifest:
         abort("artifact-manifest must be the native gat-prepare artifact_manifest.json")
@@ -447,7 +444,7 @@ def main(args: argparse.Namespace) -> int:
             cli_path(statement, "public statement"),
             "--output",
             cli_path(witness, "witness"),
-            *( ["--gpu"] if args.backend == "gpu" else [] ),
+            *(["--gpu"] if args.backend == "gpu" else []),
         ],
         logs / "witness.log",
         phase="GAT witness generation",

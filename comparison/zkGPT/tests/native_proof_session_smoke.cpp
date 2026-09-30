@@ -12,25 +12,18 @@ int main() {
     initPairing(mcl::BN254);
     const std::string path = "/tmp/zkgpt-native-proof-session-smoke.bin";
     NativeProofStatement statement{
-        "0000000000000000000000000000000000000000000000000000000000000001",
-        "mcl-bn254-fr-v1",
-        "0000000000000000000000000000000000000000000000000000000000000002",
-        "0000000000000000000000000000000000000000000000000000000000000003",
-        "0000000000000000000000000000000000000000000000000000000000000004",
-        "0000000000000000000000000000000000000000000000000000000000000005",
-        "0000000000000000000000000000000000000000000000000000000000000006",
-        "0000000000000000000000000000000000000000000000000000000000000007",
-        "0000000000000000000000000000000000000000000000000000000000000008",
-        4,
+        "0000000000000000000000000000000000000000000000000000000000000001", "mcl-bn254-fr-v1",
+        "0000000000000000000000000000000000000000000000000000000000000002", "0000000000000000000000000000000000000000000000000000000000000003",
+        "0000000000000000000000000000000000000000000000000000000000000004", "0000000000000000000000000000000000000000000000000000000000000005",
+        "0000000000000000000000000000000000000000000000000000000000000006", "0000000000000000000000000000000000000000000000000000000000000007",
+        "0000000000000000000000000000000000000000000000000000000000000008", 4,
         "0000000000000000000000000000000000000000000000000000000000000001"};
     NativeProofStatement invalid_statement = statement;
     invalid_statement.plan_digest = "arbitrary-nonempty-label";
     bool invalid_rejected = false;
     try {
         NativeProofSession invalid("native-session-smoke-v1", invalid_statement);
-    } catch (...) {
-        invalid_rejected = true;
-    }
+    } catch (...) { invalid_rejected = true; }
     if (!invalid_rejected) {
         std::cerr << "unstructured statement identity was accepted\n";
         return 1;
@@ -47,10 +40,8 @@ int main() {
         return 1;
     }
     NativeProofSession restored;
-    if (!NativeProofSession::read(path, restored, &reason) ||
-        restored.digest() != produced.digest() ||
-        restored.messages().size() != produced.messages().size() ||
-        !restored.replay(&reason)) {
+    if (!NativeProofSession::read(path, restored, &reason) || restored.digest() != produced.digest() ||
+        restored.messages().size() != produced.messages().size() || !restored.replay(&reason)) {
         std::cerr << "round-trip failed: " << reason << '\n';
         std::remove(path.c_str());
         return 2;
@@ -70,7 +61,6 @@ int main() {
         return 4;
     }
     std::remove(path.c_str());
-    std::cout << "native_proof_session_smoke: PASS first=" << first.getStr(16)
-              << " second=" << second.getStr(16) << '\n';
+    std::cout << "native_proof_session_smoke: PASS first=" << first.getStr(16) << " second=" << second.getStr(16) << '\n';
     return 0;
 }

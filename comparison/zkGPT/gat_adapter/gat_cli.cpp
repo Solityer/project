@@ -88,30 +88,25 @@ struct Record {
     double serialize_ms = 0.0;
 };
 
-double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end) {
+double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) {
     return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(end - start).count();
 }
 
-bool absolute_path(const std::string &path) {
-    return !path.empty() && (path[0] == '/' || path[0] == '\\');
-}
+bool absolute_path(const std::string& path) { return !path.empty() && (path[0] == '/' || path[0] == '\\'); }
 
 std::string without_trailing_slash(std::string path) {
     while (path.size() > 1 && (path.back() == '/' || path.back() == '\\')) path.pop_back();
     return path;
 }
 
-std::string join_path(const std::string &left, const std::string &right) {
+std::string join_path(const std::string& left, const std::string& right) {
     if (right.empty()) return left;
     if (left.empty() || left == ".") return right;
     return without_trailing_slash(left) + "/" + right;
 }
 
-std::string local_path(const std::string &root, const std::string &relative,
-                       const char *what) {
-    if (relative.empty() || absolute_path(relative)) {
-        throw std::runtime_error(std::string("baseline-local ") + what + " must be a relative path");
-    }
+std::string local_path(const std::string& root, const std::string& relative, const char* what) {
+    if (relative.empty() || absolute_path(relative)) { throw std::runtime_error(std::string("baseline-local ") + what + " must be a relative path"); }
     std::size_t begin = 0;
     while (begin <= relative.size()) {
         const std::size_t slash = relative.find('/', begin);
@@ -123,7 +118,7 @@ std::string local_path(const std::string &root, const std::string &relative,
     return join_path(root, relative);
 }
 
-void make_directory(const std::string &path) {
+void make_directory(const std::string& path) {
     if (path.empty() || path == ".") return;
     std::string current;
     if (path[0] == '/') current = "/";
@@ -134,33 +129,43 @@ void make_directory(const std::string &path) {
         if (!part.empty() && part != ".") {
             if (!current.empty() && current.back() != '/') current.push_back('/');
             current += part;
-            if (::mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) {
-                throw std::runtime_error("cannot create baseline output directory: " + current);
-            }
+            if (::mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) { throw std::runtime_error("cannot create baseline output directory: " + current); }
         }
         if (slash == std::string::npos) break;
         begin = slash + 1;
     }
 }
 
-std::string json_escape(const std::string &value) {
+std::string json_escape(const std::string& value) {
     std::ostringstream out;
     for (unsigned char ch : value) {
         switch (ch) {
-            case '\\': out << "\\\\"; break;
-            case '"': out << "\\\""; break;
-            case '\n': out << "\\n"; break;
-            case '\r': out << "\\r"; break;
-            case '\t': out << "\\t"; break;
-            default:
-                if (ch < 0x20) out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<unsigned>(ch) << std::dec;
-                else out << static_cast<char>(ch);
+        case '\\':
+            out << "\\\\";
+            break;
+        case '"':
+            out << "\\\"";
+            break;
+        case '\n':
+            out << "\\n";
+            break;
+        case '\r':
+            out << "\\r";
+            break;
+        case '\t':
+            out << "\\t";
+            break;
+        default:
+            if (ch < 0x20)
+                out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<unsigned>(ch) << std::dec;
+            else
+                out << static_cast<char>(ch);
         }
     }
     return out.str();
 }
 
-void write_text(const std::string &path, const std::string &content) {
+void write_text(const std::string& path, const std::string& content) {
     const std::string temporary = path + ".partial";
     {
         std::ofstream out(temporary.c_str(), std::ios::binary | std::ios::trunc);
@@ -174,11 +179,9 @@ void write_text(const std::string &path, const std::string &content) {
     }
 }
 
-std::string read_regular_text(const std::string &path, const char *description,
-                              std::size_t limit = 4U * 1024U * 1024U) {
-    struct stat info {};
-    if (::lstat(path.c_str(), &info) != 0 || S_ISLNK(info.st_mode) ||
-        !S_ISREG(info.st_mode) || info.st_nlink != 1) {
+std::string read_regular_text(const std::string& path, const char* description, std::size_t limit = 4U * 1024U * 1024U) {
+    struct stat info{};
+    if (::lstat(path.c_str(), &info) != 0 || S_ISLNK(info.st_mode) || !S_ISREG(info.st_mode) || info.st_nlink != 1) {
         throw std::runtime_error(std::string("invalid ") + description + ": " + path);
     }
     if (info.st_size < 0 || static_cast<std::uint64_t>(info.st_size) > limit) {
@@ -192,24 +195,18 @@ std::string read_regular_text(const std::string &path, const char *description,
     return out.str();
 }
 
-// The native producer emits a deliberately small canonical JSON object.  The
-// prover uses this parser only to recover public registration metadata; the
-// private blinder is always read through read_prover_commitment_secret().
-bool json_string_field(const std::string &json, const std::string &key,
-                       std::string &value) {
+bool json_string_field(const std::string& json, const std::string& key, std::string& value) {
     const std::string needle = "\"" + key + "\"";
     std::size_t cursor = 0;
     while ((cursor = json.find(needle, cursor)) != std::string::npos) {
         std::size_t colon = cursor + needle.size();
-        while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' ||
-                                       json[colon] == '\r' || json[colon] == '\t')) ++colon;
+        while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' || json[colon] == '\r' || json[colon] == '\t')) ++colon;
         if (colon >= json.size() || json[colon] != ':') {
             cursor += needle.size();
             continue;
         }
         ++colon;
-        while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' ||
-                                       json[colon] == '\r' || json[colon] == '\t')) ++colon;
+        while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' || json[colon] == '\r' || json[colon] == '\t')) ++colon;
         if (colon >= json.size() || json[colon] != '"') return false;
         ++colon;
         std::ostringstream decoded;
@@ -218,13 +215,26 @@ bool json_string_field(const std::string &json, const std::string &key,
             const char ch = json[colon];
             if (escaped) {
                 switch (ch) {
-                    case '"': decoded << '"'; break;
-                    case '\\': decoded << '\\'; break;
-                    case '/': decoded << '/'; break;
-                    case 'n': decoded << '\n'; break;
-                    case 'r': decoded << '\r'; break;
-                    case 't': decoded << '\t'; break;
-                    default: return false;
+                case '"':
+                    decoded << '"';
+                    break;
+                case '\\':
+                    decoded << '\\';
+                    break;
+                case '/':
+                    decoded << '/';
+                    break;
+                case 'n':
+                    decoded << '\n';
+                    break;
+                case 'r':
+                    decoded << '\r';
+                    break;
+                case 't':
+                    decoded << '\t';
+                    break;
+                default:
+                    return false;
                 }
                 escaped = false;
             } else if (ch == '\\') {
@@ -241,85 +251,63 @@ bool json_string_field(const std::string &json, const std::string &key,
     return false;
 }
 
-bool json_size_field(const std::string &json, const std::string &key,
-                     std::size_t &value, std::size_t search_from = 0) {
+bool json_size_field(const std::string& json, const std::string& key, std::size_t& value, std::size_t search_from = 0) {
     const std::string needle = "\"" + key + "\"";
     const std::size_t cursor = json.find(needle, search_from);
     if (cursor == std::string::npos) return false;
     std::size_t colon = cursor + needle.size();
-    while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' ||
-                                   json[colon] == '\r' || json[colon] == '\t')) ++colon;
+    while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' || json[colon] == '\r' || json[colon] == '\t')) ++colon;
     if (colon >= json.size() || json[colon] != ':') return false;
     ++colon;
-    while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' ||
-                                   json[colon] == '\r' || json[colon] == '\t')) ++colon;
+    while (colon < json.size() && (json[colon] == ' ' || json[colon] == '\n' || json[colon] == '\r' || json[colon] == '\t')) ++colon;
     if (colon >= json.size() || json[colon] < '0' || json[colon] > '9') return false;
     const std::size_t begin = colon;
     while (colon < json.size() && json[colon] >= '0' && json[colon] <= '9') ++colon;
-    if (colon < json.size() && json[colon] != ',' && json[colon] != '}' &&
-        json[colon] != ' ' && json[colon] != '\n' && json[colon] != '\r' &&
-        json[colon] != '\t') return false;
+    if (colon < json.size() && json[colon] != ',' && json[colon] != '}' && json[colon] != ' ' && json[colon] != '\n' && json[colon] != '\r' &&
+        json[colon] != '\t')
+        return false;
     try {
         const unsigned long long parsed = std::stoull(json.substr(begin, colon - begin));
         if (parsed > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max())) return false;
         value = static_cast<std::size_t>(parsed);
         return true;
-    } catch (...) {
-        return false;
-    }
+    } catch (...) { return false; }
 }
 
-ModelRegistration read_registration(const std::string &path,
-                                    const std::string &dataset) {
+ModelRegistration read_registration(const std::string& path, const std::string& dataset) {
     const std::string json = read_regular_text(path, "model registration");
     ModelRegistration registration;
     std::string schema;
     std::string commitment_scheme;
-    if (!json_string_field(json, "schema", schema) ||
-        schema != "zkgpt-gat-model-registration-v1" ||
-        !json_string_field(json, "dataset", registration.dataset) ||
-        !json_string_field(json, "status", registration.status) ||
-        !json_string_field(json, "model_arch_id", registration.model_arch_id) ||
-        !json_string_field(json, "quant_cfg_id", registration.quant_cfg_id) ||
-        !json_string_field(json, "static_tables_id", registration.static_tables_id) ||
-        !json_string_field(json, "field_id", registration.field_id) ||
-        !json_string_field(json, "field_modulus", registration.field_modulus) ||
-        !json_string_field(json, "manifest_digest", registration.manifest_digest) ||
-        !json_string_field(json, "model_digest", registration.model_digest) ||
-        !json_string_field(json, "bounds_digest", registration.bounds_digest) ||
-        !json_string_field(json, "quant_digest", registration.quant_digest) ||
-        !json_string_field(json, "layout_digest", registration.layout_digest) ||
-        !json_string_field(json, "selector", registration.selector) ||
-        !json_string_field(json, "opening_policy", registration.opening_policy) ||
+    if (!json_string_field(json, "schema", schema) || schema != "zkgpt-gat-model-registration-v1" ||
+        !json_string_field(json, "dataset", registration.dataset) || !json_string_field(json, "status", registration.status) ||
+        !json_string_field(json, "model_arch_id", registration.model_arch_id) || !json_string_field(json, "quant_cfg_id", registration.quant_cfg_id) ||
+        !json_string_field(json, "static_tables_id", registration.static_tables_id) || !json_string_field(json, "field_id", registration.field_id) ||
+        !json_string_field(json, "field_modulus", registration.field_modulus) || !json_string_field(json, "manifest_digest", registration.manifest_digest) ||
+        !json_string_field(json, "model_digest", registration.model_digest) || !json_string_field(json, "bounds_digest", registration.bounds_digest) ||
+        !json_string_field(json, "quant_digest", registration.quant_digest) || !json_string_field(json, "layout_digest", registration.layout_digest) ||
+        !json_string_field(json, "selector", registration.selector) || !json_string_field(json, "opening_policy", registration.opening_policy) ||
         !json_string_field(json, "binding_digest", registration.binding_digest) ||
-        !json_string_field(json, "registration_digest", registration.registration_digest) ||
-        !json_string_field(json, "commitment_scheme", commitment_scheme) ||
-        !json_string_field(json, "basis_id", registration.com_W.basis_id) ||
-        !json_string_field(json, "point_hex", registration.com_W.point_hex)) {
+        !json_string_field(json, "registration_digest", registration.registration_digest) || !json_string_field(json, "commitment_scheme", commitment_scheme) ||
+        !json_string_field(json, "basis_id", registration.com_W.basis_id) || !json_string_field(json, "point_hex", registration.com_W.point_hex)) {
         throw std::runtime_error("model registration artifact is incomplete");
     }
     registration.com_W.scheme = commitment_scheme;
-    if (registration.dataset != dataset) {
-        throw std::runtime_error("model registration dataset mismatch");
-    }
-    if (!json_size_field(json, "n_raw", registration.n_raw) ||
-        !json_size_field(json, "n_in", registration.n_in) ||
-        !json_size_field(json, "logical_size", registration.com_W.logical_size) ||
-        !json_size_field(json, "padded_size", registration.com_W.padded_size)) {
+    if (registration.dataset != dataset) { throw std::runtime_error("model registration dataset mismatch"); }
+    if (!json_size_field(json, "n_raw", registration.n_raw) || !json_size_field(json, "n_in", registration.n_in) ||
+        !json_size_field(json, "logical_size", registration.com_W.logical_size) || !json_size_field(json, "padded_size", registration.com_W.padded_size)) {
         throw std::runtime_error("model registration numeric fields are incomplete");
     }
     const std::string segment_marker = "\"input_segments\"";
     std::size_t cursor = json.find(segment_marker);
     cursor = cursor == std::string::npos ? cursor : json.find('[', cursor + segment_marker.size());
     if (cursor == std::string::npos) throw std::runtime_error("model registration input segments are missing");
-    const char *const names[] = {"X_pub", "W", "Aux", "L_qry"};
-    for (const char *name : names) {
+    const char* const names[] = {"X_pub", "W", "Aux", "L_qry"};
+    for (const char* name : names) {
         InputSegment segment;
         const std::size_t name_key = json.find("\"name\"", cursor);
-        if (name_key == std::string::npos ||
-            !json_string_field(json.substr(name_key), "name", segment.name) || segment.name != name ||
-            !json_size_field(json, "offset", segment.offset, cursor) ||
-            !json_size_field(json, "logical_length", segment.logical_length, cursor) ||
+        if (name_key == std::string::npos || !json_string_field(json.substr(name_key), "name", segment.name) || segment.name != name ||
+            !json_size_field(json, "offset", segment.offset, cursor) || !json_size_field(json, "logical_length", segment.logical_length, cursor) ||
             !json_size_field(json, "padded_length", segment.padded_length, cursor)) {
             throw std::runtime_error("model registration input segment is malformed");
         }
@@ -329,29 +317,26 @@ ModelRegistration read_registration(const std::string &path,
         cursor = object_end + 1;
     }
     registration.has_private_padding_mask = false;
-    if (registration.status != "registered_long_lived_com_W" ||
-        registration.input_segments.size() != 4 || !registration.com_W.valid()) {
+    if (registration.status != "registered_long_lived_com_W" || registration.input_segments.size() != 4 || !registration.com_W.valid()) {
         throw std::runtime_error("model registration wire failed canonical validation");
     }
     return registration;
 }
 
-void require_owner_secret_file(const std::string &path) {
-    struct stat info {};
-    if (::lstat(path.c_str(), &info) != 0 || S_ISLNK(info.st_mode) ||
-        !S_ISREG(info.st_mode) || info.st_nlink != 1 ||
-        (info.st_mode & 07777) != (S_IRUSR | S_IWUSR) ||
-        info.st_uid != ::geteuid()) {
+void require_owner_secret_file(const std::string& path) {
+    struct stat info{};
+    if (::lstat(path.c_str(), &info) != 0 || S_ISLNK(info.st_mode) || !S_ISREG(info.st_mode) || info.st_nlink != 1 ||
+        (info.st_mode & 07777) != (S_IRUSR | S_IWUSR) || info.st_uid != ::geteuid()) {
         throw std::runtime_error("com_W prover secret must be an owner-only 0600 regular file");
     }
 }
 
-bool path_exists(const std::string &path) {
-    struct stat info {};
+bool path_exists(const std::string& path) {
+    struct stat info{};
     return ::lstat(path.c_str(), &info) == 0;
 }
 
-std::string rel_display(const std::string &root, const std::string &path) {
+std::string rel_display(const std::string& root, const std::string& path) {
     const std::string clean_root = without_trailing_slash(root);
     if (clean_root == ".") return path;
     const std::string prefix = clean_root + "/";
@@ -360,20 +345,19 @@ std::string rel_display(const std::string &root, const std::string &path) {
 
 std::string bool_json(bool value) { return value ? "true" : "false"; }
 
-void json_string(std::ostringstream &out, const char *key, const std::string &value,
-                 bool comma = true) {
+void json_string(std::ostringstream& out, const char* key, const std::string& value, bool comma = true) {
     out << "  \"" << key << "\": \"" << json_escape(value) << "\"" << (comma ? ",\n" : "\n");
 }
 
-void json_bool(std::ostringstream &out, const char *key, bool value, bool comma = true) {
+void json_bool(std::ostringstream& out, const char* key, bool value, bool comma = true) {
     out << "  \"" << key << "\": " << bool_json(value) << (comma ? ",\n" : "\n");
 }
 
-void json_number(std::ostringstream &out, const char *key, double value, bool comma = true) {
+void json_number(std::ostringstream& out, const char* key, double value, bool comma = true) {
     out << "  \"" << key << "\": " << std::fixed << std::setprecision(3) << value << (comma ? ",\n" : "\n");
 }
 
-void write_result(const std::string &path, const Record &record) {
+void write_result(const std::string& path, const Record& record) {
     std::ostringstream out;
     out << "{\n";
     json_string(out, "schema", record.schema);
@@ -435,7 +419,7 @@ void write_result(const std::string &path, const Record &record) {
     write_text(path, out.str());
 }
 
-void write_logits(const std::string &path, const Tensor2D &logits) {
+void write_logits(const std::string& path, const Tensor2D& logits) {
     std::ostringstream out;
     out << logits.rows << ' ' << logits.cols << '\n';
     for (std::size_t row = 0; row < logits.rows; ++row) {
@@ -448,16 +432,13 @@ void write_logits(const std::string &path, const Tensor2D &logits) {
     write_text(path, out.str());
 }
 
-void write_registration(const std::string &path, const ModelRegistration &registration,
-                        const std::string &root, const std::string &dataset) {
+void write_registration(const std::string& path, const ModelRegistration& registration, const std::string& root, const std::string& dataset) {
     std::ostringstream out;
     out << "{\n";
     json_string(out, "schema", "zkgpt-gat-model-registration-v1");
     json_string(out, "dataset", dataset);
     json_string(out, "status", registration.status);
-    // Audit flags make it explicit that this artifact was built from
-    // authenticated metadata/layout sizing only.  They are additive to the
-    // v1 registration wire and are ignored by the strict legacy reader.
+
     json_bool(out, "registration_only", true);
     json_bool(out, "forward_executed", false);
     json_bool(out, "plan_materialized", false);
@@ -480,7 +461,7 @@ void write_registration(const std::string &path, const ModelRegistration &regist
     out << "  \"n_in\": " << registration.n_in << ",\n";
     out << "  \"input_segments\": [\n";
     for (std::size_t index = 0; index < registration.input_segments.size(); ++index) {
-        const InputSegment &segment = registration.input_segments[index];
+        const InputSegment& segment = registration.input_segments[index];
         out << "    {\n";
         json_string(out, "name", segment.name);
         out << "      \"offset\": " << segment.offset << ",\n";
@@ -499,12 +480,8 @@ void write_registration(const std::string &path, const ModelRegistration &regist
     write_text(path, out.str());
 }
 
-void write_capacity_report(const GatCapacityReport &report,
-                           const std::string &dataset,
-                           const std::string &backend,
-                           const std::string &quant_cfg_id,
-                           const std::string &cache_identity,
-                           const std::string &checkpoint_identity) {
+void write_capacity_report(const GatCapacityReport& report, const std::string& dataset, const std::string& backend, const std::string& quant_cfg_id,
+                           const std::string& cache_identity, const std::string& checkpoint_identity) {
     std::ostringstream out;
     out << "{\n";
     json_string(out, "schema", report.schema);
@@ -527,8 +504,7 @@ void write_capacity_report(const GatCapacityReport &report,
     out << "  \"n_raw\": " << report.input_layout.n_raw << ",\n";
     out << "  \"n_in\": " << report.input_layout.n_in << ",\n";
     out << "  \"fconn_count\": " << report.fconn_count << ",\n";
-    json_bool(out, "explicit_matmul_gate_expansion",
-              report.explicit_matmul_gate_expansion);
+    json_bool(out, "explicit_matmul_gate_expansion", report.explicit_matmul_gate_expansion);
     out << "  \"max_materialized_gate\": " << report.max_materialized_gate << ",\n";
     out << "  \"max_materialized_vector\": " << report.max_materialized_vector << ",\n";
     out << "  \"attention_relation_count\": " << report.attention_relation_count << ",\n";
@@ -544,10 +520,8 @@ void write_capacity_report(const GatCapacityReport &report,
     std::cout << out.str();
 }
 
-void write_public_statement(const std::string &path, const Record &record,
-                            const Graph &graph, const Tensor2D &features,
-                            const QuantConfig &quant, const StaticTables &tables,
-                            const GatCircuitPlan &plan) {
+void write_public_statement(const std::string& path, const Record& record, const Graph& graph, const Tensor2D& features, const QuantConfig& quant,
+                            const StaticTables& tables, const GatCircuitPlan& plan) {
     std::ostringstream out;
     out << "{\n";
     json_string(out, "schema", "zkgpt-gat-public-statement-v1");
@@ -579,16 +553,14 @@ void write_public_statement(const std::string &path, const Record &record,
     write_text(path, out.str());
 }
 
-void write_verifier_context(const std::string &path,
-                            const VerifierContext &context) {
+void write_verifier_context(const std::string& path, const VerifierContext& context) {
     std::string reason;
     if (!zkgpt::gat::write_verifier_context(context, path, &reason)) {
-        throw std::runtime_error("cannot write verifier context v4: " +
-                                 (reason.empty() ? std::string("unknown error") : reason));
+        throw std::runtime_error("cannot write verifier context v4: " + (reason.empty() ? std::string("unknown error") : reason));
     }
 }
 
-Options parse_options(int argc, char **argv) {
+Options parse_options(int argc, char** argv) {
     Options options;
     for (int i = 1; i < argc; ++i) {
         const std::string arg(argv[i]);
@@ -617,7 +589,8 @@ Options parse_options(int argc, char **argv) {
     if (options.help) return options;
     const std::vector<std::string> datasets = {"cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"};
     bool known_dataset = false;
-    for (const std::string &dataset : datasets) if (options.dataset == dataset) known_dataset = true;
+    for (const std::string& dataset : datasets)
+        if (options.dataset == dataset) known_dataset = true;
     if (!known_dataset) throw std::runtime_error("--dataset must be one of cora,citeseer,pubmed,ppi,ogbn_arxiv");
     if (options.backend != "cpu" && options.backend != "gpu") throw std::runtime_error("--backend must be cpu or gpu");
     if (options.baseline_root.empty()) throw std::runtime_error("--baseline-root is empty");
@@ -635,9 +608,9 @@ void print_help() {
                  "--register-only writes the long-lived public model registration and its prover-only 0600 secret.\n";
 }
 
-} // namespace
+}
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
     Record record;
     std::string result_file;
     try {
@@ -650,10 +623,6 @@ int main(int argc, char **argv) {
         record.backend = options.backend;
         record.native_backend = options.backend == "gpu" ? "cuda_formal_masked_full" : "cpu_native_zkgpt";
         if (options.backend == "gpu") {
-            // The CUDA bridge is intentionally only a component-evidence
-            // implementation.  It is not a complete masked_full zkGPT
-            // prover, so a GPU request must never continue into the CPU
-            // witness/prove path.
             record.capability_status = "UNSUPPORTED_FORMAL_MASKED_FULL_GPU";
             record.formal_backend_supported = false;
 #if defined(ZKGPT_HAS_CUDA) && ZKGPT_HAS_CUDA
@@ -670,10 +639,8 @@ int main(int argc, char **argv) {
         const std::string config_path = local_path(root, options.config, "config");
         const CanonicalConfig config = CanonicalConfig::load(config_path);
         if (config.get("dataset") != options.dataset) throw std::runtime_error("dataset/config identity mismatch");
-        if (config.get("privacy_policy") != record.privacy_policy ||
-            config.get("input_privacy") != record.input_privacy ||
-            config.get("output_mode") != record.output_mode ||
-            config.get("proof_task") != "node_classification_full_gat") {
+        if (config.get("privacy_policy") != record.privacy_policy || config.get("input_privacy") != record.input_privacy ||
+            config.get("output_mode") != record.output_mode || config.get("proof_task") != "node_classification_full_gat") {
             throw std::runtime_error("config does not declare the strict full-GAT privacy/proof boundary");
         }
         const std::string configured_run = config.get("export_dir");
@@ -684,30 +651,18 @@ int main(int argc, char **argv) {
         }
         record.run_dir = run_rel;
         result_file = run_dir + "/result.json";
-        const std::string registration_rel = options.registration.empty()
-            ? run_rel + "/model_registration.json" : options.registration;
-        const std::string com_w_secret_rel = options.com_w_secret.empty()
-            ? run_rel + "/com_W.prover.secret" : options.com_w_secret;
-        const std::string registration_file = local_path(
-            root, registration_rel, "model registration");
-        const std::string com_w_secret_file = local_path(
-            root, com_w_secret_rel, "com_W prover secret");
-        if (registration_file != run_dir + "/model_registration.json" ||
-            com_w_secret_file != run_dir + "/com_W.prover.secret") {
-            throw std::runtime_error(
-                "registration and com_W secret must remain in the formal run directory");
+        const std::string registration_rel = options.registration.empty() ? run_rel + "/model_registration.json" : options.registration;
+        const std::string com_w_secret_rel = options.com_w_secret.empty() ? run_rel + "/com_W.prover.secret" : options.com_w_secret;
+        const std::string registration_file = local_path(root, registration_rel, "model registration");
+        const std::string com_w_secret_file = local_path(root, com_w_secret_rel, "com_W prover secret");
+        if (registration_file != run_dir + "/model_registration.json" || com_w_secret_file != run_dir + "/com_W.prover.secret") {
+            throw std::runtime_error("registration and com_W secret must remain in the formal run directory");
         }
 
         if (options.backend == "gpu" && !options.register_only) {
-            // Do not run even the partial CUDA relation bridge here.  That
-            // bridge cannot produce the complete masked_full artifact and
-            // must not be followed by CPU forward/prove work.  Emit a
-            // baseline-local structured failure so the caller can distinguish
-            // an intentionally unsupported formal backend from a failed proof.
             record.status = "UNSUPPORTED";
             record.verification_status = "UNSUPPORTED";
-            record.failure_reason =
-                "formal masked_full GPU path is unsupported; no CUDA evidence or CPU proof fallback is permitted";
+            record.failure_reason = "formal masked_full GPU path is unsupported; no CUDA evidence or CPU proof fallback is permitted";
             write_result(result_file, record);
             std::cerr << record.status << ": " << record.failure_reason << '\n';
             return 2;
@@ -723,41 +678,30 @@ int main(int argc, char **argv) {
 
         if (options.capacity_only) {
             if (options.backend != "cpu") {
-                write_capacity_report(GatCapacityReport{}, options.dataset,
-                                      options.backend,
-                                      quant.quant_cfg_id,
-                                      rel_display(root, cache_dir + "/integrity.sha256"),
-                                      rel_display(root, bundle_dir + "/integrity.sha256"));
+                write_capacity_report(GatCapacityReport{}, options.dataset, options.backend, quant.quant_cfg_id,
+                                      rel_display(root, cache_dir + "/integrity.sha256"), rel_display(root, bundle_dir + "/integrity.sha256"));
                 return 1;
             }
-            // Capacity mode authenticates and consumes only graph/checkpoint
-            // metadata.  No public features, labels, tensor values, forward
-            // trace, layered circuit, witness, proof or verifier is built.
+
             const Graph graph = load_graph(cache_dir, config);
             const Model shape_model = Model::load_shape_only(bundle_dir);
             shape_model.validate_identity(config);
             const GatCapacityReport report = inspect_gat_capacity(graph, shape_model, quant);
-            write_capacity_report(report, options.dataset, options.backend,
-                                  quant.quant_cfg_id,
-                                  rel_display(root, cache_dir + "/integrity.sha256"),
+            write_capacity_report(report, options.dataset, options.backend, quant.quant_cfg_id, rel_display(root, cache_dir + "/integrity.sha256"),
                                   rel_display(root, bundle_dir + "/integrity.sha256"));
             return report.ready ? 0 : 1;
         }
 
         if (options.register_only) {
             if (path_exists(registration_file) || path_exists(com_w_secret_file)) {
-                throw std::runtime_error(
-                    "refusing to overwrite an existing model registration or com_W prover secret");
+                throw std::runtime_error("refusing to overwrite an existing model registration or com_W prover secret");
             }
             const auto registration_begin = Clock::now();
             const Graph graph = load_graph(cache_dir, config);
             const Model shape_model = Model::load_shape_only(bundle_dir);
             shape_model.validate_identity(config);
             const InputLayout layout = build_gat_input_layout(graph, shape_model, quant);
-            // The commitment still binds the authenticated private tensor
-            // values, but registration itself never runs a forward pass or
-            // materializes a proof circuit.  The shared metadata layout above
-            // is reused verbatim for the commitment sizing.
+
             const Model model = Model::load(bundle_dir);
             model.validate_identity(config);
             const ModelRegistration registration = register_model(model, quant, layout, model.manifest.model_arch_id);
@@ -770,15 +714,11 @@ int main(int argc, char **argv) {
             record.checkpoint_identity = "baseline-local/checkpoints/" + options.dataset + "_gat/integrity.sha256";
             write_registration(registration_file, registration, root, options.dataset);
             std::string secret_reason;
-            if (!write_prover_commitment_secret(registration, com_w_secret_file,
-                                                &secret_reason)) {
-                throw std::runtime_error("cannot persist com_W prover secret: " +
-                                         secret_reason);
+            if (!write_prover_commitment_secret(registration, com_w_secret_file, &secret_reason)) {
+                throw std::runtime_error("cannot persist com_W prover secret: " + secret_reason);
             }
             require_owner_secret_file(com_w_secret_file);
-            std::cout << "REGISTERED dataset=" << options.dataset
-                      << " backend=" << options.backend
-                      << " registration=" << record.registration_path << '\n';
+            std::cout << "REGISTERED dataset=" << options.dataset << " backend=" << options.backend << " registration=" << record.registration_path << '\n';
             return 0;
         }
 
@@ -802,15 +742,12 @@ int main(int argc, char **argv) {
         record.witness_ms = elapsed_ms(witness_begin, Clock::now());
 
         const auto registration_begin = Clock::now();
-        ModelRegistration registration = read_registration(registration_file,
-                                                           options.dataset);
+        ModelRegistration registration = read_registration(registration_file, options.dataset);
         require_owner_secret_file(com_w_secret_file);
         Fr com_w_blinder;
         std::string secret_reason;
-        if (!read_prover_commitment_secret(registration, com_w_secret_file,
-                                           com_w_blinder, &secret_reason)) {
-            throw std::runtime_error("cannot load com_W prover secret: " +
-                                     secret_reason);
+        if (!read_prover_commitment_secret(registration, com_w_secret_file, com_w_blinder, &secret_reason)) {
+            throw std::runtime_error("cannot load com_W prover secret: " + secret_reason);
         }
         registration.com_W_padding_mask = com_w_blinder;
         registration.has_private_padding_mask = true;
@@ -822,12 +759,8 @@ int main(int argc, char **argv) {
         record.registration_path = run_rel + "/model_registration.json";
         record.prover_secret_path = run_rel + "/com_W.prover.secret";
 
-        VerifierContext context = make_verifier_context(
-            graph, features, quant, tables, forward.logits, registration,
-            plan, record.privacy_profile);
-        // These identities are part of the v4 public context, so the
-        // independent verifier can report the same tuple without opening
-        // the checkpoint/cache or trusting a path-derived dataset name.
+        VerifierContext context = make_verifier_context(graph, features, quant, tables, forward.logits, registration, plan, record.privacy_profile);
+
         context.backend = options.backend;
         context.full_dataset_identity = record.full_dataset_identity;
         context.checkpoint_identity = record.checkpoint_identity;
@@ -843,8 +776,7 @@ int main(int argc, char **argv) {
         write_verifier_context(run_dir + "/verifier_context.bin", context);
 
         const auto prove_begin = Clock::now();
-        const ProveResult proved = prove_gat(plan, graph, features, model, quant, forward,
-                                             registration, record.privacy_profile);
+        const ProveResult proved = prove_gat(plan, graph, features, model, quant, forward, registration, record.privacy_profile);
         record.prove_ms = elapsed_ms(prove_begin, Clock::now());
         if (proved.status != ProveStatus::GENERATED || !proved.has_artifact) {
             record.status = proved.status == ProveStatus::UNSUPPORTED_PRIVACY_PROFILE ? "UNSUPPORTED" : "FAILED";
@@ -860,13 +792,14 @@ int main(int argc, char **argv) {
         std::string artifact_reason;
         if (!proved.artifact.write(artifact_file, &artifact_reason)) throw std::runtime_error("proof artifact serialization failed: " + artifact_reason);
         GatProofArtifact artifact;
-        if (!GatProofArtifact::read(artifact_file, artifact, &artifact_reason)) throw std::runtime_error("serialized proof artifact cannot be read: " + artifact_reason);
+        if (!GatProofArtifact::read(artifact_file, artifact, &artifact_reason))
+            throw std::runtime_error("serialized proof artifact cannot be read: " + artifact_reason);
         record.serialize_ms = elapsed_ms(serialize_begin, Clock::now());
         record.artifact_path = run_rel + "/proof.artifact";
         record.proof_generated = true;
         record.proof_digest = canonical_digest64(artifact.transcript_digest);
-        for (const ProofSection *section : {&artifact.Pi_Lasso, &artifact.Pi_MatMul, &artifact.Pi_GKR, &artifact.Pi_combine, &artifact.Pi_open}) {
-            for (const TranscriptMessage &message : section->messages) {
+        for (const ProofSection* section : {&artifact.Pi_Lasso, &artifact.Pi_MatMul, &artifact.Pi_GKR, &artifact.Pi_combine, &artifact.Pi_open}) {
+            for (const TranscriptMessage& message : section->messages) {
                 record.proof_message_bytes += static_cast<std::uint64_t>(message.label.size() + message.payload.size());
             }
         }
@@ -891,22 +824,16 @@ int main(int argc, char **argv) {
             record.verification_status = "VERIFY_OK";
         }
         write_result(result_file, record);
-        std::cout << record.status << " dataset=" << record.dataset << " backend=" << record.backend
-                  << " result=" << record.run_dir + "/result.json" << '\n';
+        std::cout << record.status << " dataset=" << record.dataset << " backend=" << record.backend << " result=" << record.run_dir + "/result.json" << '\n';
         return record.status == "VERIFY_OK" ? 0 : 1;
-    } catch (const std::exception &error) {
+    } catch (const std::exception& error) {
         record.status = record.status == "UNSUPPORTED" ? "UNSUPPORTED" : "FAILED";
         record.verification_status = record.status;
         record.failure_reason = error.what();
         if (!result_file.empty()) {
             try {
-                // The record contains only public identities and diagnostics;
-                // the owner-only com_W secret is never read into the result.
                 write_result(result_file, record);
-            } catch (...) {
-                // Preserve the original nonzero failure even if the output
-                // directory became unavailable while handling the error.
-            }
+            } catch (...) {}
         }
         std::cerr << record.status << ": " << record.failure_reason << '\n';
         return record.status == "UNSUPPORTED" ? 2 : 1;

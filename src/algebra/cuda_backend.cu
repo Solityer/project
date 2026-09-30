@@ -19,15 +19,8 @@
 #include "gatzk/util/effective_memory.hpp"
 #include "gatzk/util/route2.hpp"
 
-// 实现四个GPU加速组件，均为工程优化:
-//   1. 重心权重构造 (barycentric_weights_gpu)
-//   2. 批量加权多项式求值 (weighted_poly_eval_gpu*)
-//   3. Lookup 直方图统计 (lookup_histogram_indices_cuda)
-//   4. 超大 opening evaluation source 的 scaled accumulate
-
 namespace gatzk::algebra
 {
-    // 检查 CUDA 运行时是否有可用设备
     bool cuda_backend_runtime_available()
     {
         int device_count = 0;
@@ -170,20 +163,11 @@ namespace gatzk::algebra
                 return true;
             }
 
-            gpu::GpuFr *first_target()
-            {
-                return first_target_;
-            }
+            gpu::GpuFr *first_target() { return first_target_; }
 
-            gpu::GpuFr *second_target()
-            {
-                return second_target_;
-            }
+            gpu::GpuFr *second_target() { return second_target_; }
 
-            gpu::GpuFr *source()
-            {
-                return source_;
-            }
+            gpu::GpuFr *source() { return source_; }
 
             void release() noexcept
             {
@@ -202,10 +186,7 @@ namespace gatzk::algebra
                 }
             }
 
-            ~ScaledAccumulateCudaWorkspace()
-            {
-                release();
-            }
+            ~ScaledAccumulateCudaWorkspace() { release(); }
 
         private:
             void release_buffers() noexcept
@@ -290,10 +271,7 @@ namespace gatzk::algebra
                 next_stream_ = 0;
             }
 
-            ~ScaledAccumulateStreamPool()
-            {
-                release();
-            }
+            ~ScaledAccumulateStreamPool() { release(); }
 
         private:
             std::array<cudaStream_t, 4> streams_{};
@@ -317,10 +295,7 @@ namespace gatzk::algebra
 
             EphemeralScaledAccumulateSourceStaging &operator=(const EphemeralScaledAccumulateSourceStaging &) = delete;
 
-            ~EphemeralScaledAccumulateSourceStaging()
-            {
-                release_noexcept();
-            }
+            ~EphemeralScaledAccumulateSourceStaging() { release_noexcept(); }
 
             const gpu::GpuFr *enqueue(gpu::GpuFr *device_source, const mcl::Fr *source, std::size_t element_count, cudaStream_t stream)
             {
@@ -489,8 +464,8 @@ namespace gatzk::algebra
         class CudaScaledAccumulateSessionImpl final : public CudaScaledAccumulateSession
         {
         public:
-            CudaScaledAccumulateSessionImpl(mcl::Fr *host_target, std::size_t element_count, bool target_is_zero)
-                : host_target_(host_target), element_count_(element_count), zero_copy_target_(cuda_backend_unified_addressing_available())
+            CudaScaledAccumulateSessionImpl(mcl::Fr *host_target, std::size_t element_count, bool target_is_zero) :
+                host_target_(host_target), element_count_(element_count), zero_copy_target_(cuda_backend_unified_addressing_available())
             {
                 if (host_target_ == nullptr || element_count_ == 0)
                 {
@@ -815,9 +790,9 @@ namespace gatzk::algebra
         {
         public:
             CudaScaledAccumulatePairSessionImpl(mcl::Fr *first_host_target, mcl::Fr *second_host_target, std::size_t element_count, bool first_target_is_zero,
-                                                bool second_target_is_zero)
-                : first_host_target_(first_host_target), second_host_target_(second_host_target), element_count_(element_count),
-                  zero_copy_targets_(cuda_backend_unified_addressing_available())
+                                                bool second_target_is_zero) :
+                first_host_target_(first_host_target), second_host_target_(second_host_target), element_count_(element_count),
+                zero_copy_targets_(cuda_backend_unified_addressing_available())
             {
                 if (first_host_target_ == nullptr || second_host_target_ == nullptr || first_host_target_ == second_host_target_ || element_count_ == 0)
                 {
@@ -1054,10 +1029,7 @@ namespace gatzk::algebra
                 finished_ = true;
             }
 
-            bool finished() const noexcept override
-            {
-                return finished_;
-            }
+            bool finished() const noexcept override { return finished_; }
 
         private:
             void release_noexcept() noexcept
@@ -1451,7 +1423,6 @@ namespace gatzk::algebra
         record_cuda_stream_sync();
     }
 
-    // 重心插值权重计算(用于在单个挑战点x上快速评估多项式)
     namespace
     {
         constexpr unsigned kBarycentricScanBlockSize = 256;
@@ -1747,60 +1718,27 @@ namespace gatzk::algebra
                 return stream_;
             }
 
-            bool ensure_product(std::size_t count)
-            {
-                return ensure(count, true, false, false, true, true);
-            }
+            bool ensure_product(std::size_t count) { return ensure(count, true, false, false, true, true); }
 
-            bool ensure_sum(std::size_t count, bool need_error)
-            {
-                return ensure(count, false, true, false, false, need_error);
-            }
+            bool ensure_sum(std::size_t count, bool need_error) { return ensure(count, false, true, false, false, need_error); }
 
-            bool ensure_logup(std::size_t count)
-            {
-                return ensure(count, true, true, false, true, true);
-            }
+            bool ensure_logup(std::size_t count) { return ensure(count, true, true, false, true, true); }
 
-            bool ensure_barycentric(std::size_t count)
-            {
-                return ensure(count, true, true, true, true, false);
-            }
+            bool ensure_barycentric(std::size_t count) { return ensure(count, true, true, true, true, false); }
 
-            gpu::GpuFr *prefixes()
-            {
-                return prefixes_;
-            }
+            gpu::GpuFr *prefixes() { return prefixes_; }
 
-            gpu::GpuFr *suffixes()
-            {
-                return suffixes_;
-            }
+            gpu::GpuFr *suffixes() { return suffixes_; }
 
-            gpu::GpuFr *scratch_a()
-            {
-                return scratch_a_;
-            }
+            gpu::GpuFr *scratch_a() { return scratch_a_; }
 
-            gpu::GpuFr *scratch_b()
-            {
-                return scratch_b_;
-            }
+            gpu::GpuFr *scratch_b() { return scratch_b_; }
 
-            gpu::GpuFr *global_inverse()
-            {
-                return global_inverse_;
-            }
+            gpu::GpuFr *global_inverse() { return global_inverse_; }
 
-            unsigned int *error()
-            {
-                return error_;
-            }
+            unsigned int *error() { return error_; }
 
-            std::vector<BarycentricScanLevel> &scan_levels()
-            {
-                return scan_levels_;
-            }
+            std::vector<BarycentricScanLevel> &scan_levels() { return scan_levels_; }
 
             void release() noexcept
             {
@@ -1838,10 +1776,7 @@ namespace gatzk::algebra
                 }
             }
 
-            ~PersistentScanWorkspace()
-            {
-                release();
-            }
+            ~PersistentScanWorkspace() { release(); }
 
         private:
             static bool needs_growth(const gpu::GpuFr *pointer, std::size_t capacity, std::size_t required)
@@ -2524,10 +2459,7 @@ namespace gatzk::algebra
                 }
             }
 
-            void *native_stream_handle() override
-            {
-                return reinterpret_cast<void *>(workspace_.stream());
-            }
+            void *native_stream_handle() override { return reinterpret_cast<void *>(workspace_.stream()); }
 
             void enqueue(const mcl::Fr *input, mcl::Fr *output, std::size_t element_count) override
             {
@@ -2671,12 +2603,9 @@ namespace gatzk::algebra
             bool pending_ = false;
         };
 
-    } // namespace
-
-    void release_cuda_scan_workspace()
-    {
-        persistent_scan_workspace().release();
     }
+
+    void release_cuda_scan_workspace() { persistent_scan_workspace().release(); }
 
     std::unique_ptr<CudaBatchInverseSession> create_cuda_batch_inverse_session(std::size_t maximum_element_count)
     {
@@ -4102,11 +4031,6 @@ namespace gatzk::algebra
 
         return true;
     }
-    // =========================================================================
-    // CUDA 侧批量加权求值
-    // =========================================================================
-    // 这里计算 `result[j] = sum_i weights[i] * values[i * row_count + j]`，
-    // 对应 proving / verifying 在固定点评估多列 evaluation 多项式的热路径。
 
     namespace
     {
@@ -4216,10 +4140,6 @@ namespace gatzk::algebra
                 return false;
             }
 
-            // A single column must fit under the hard per-chunk cap.  Keep
-            // this check explicit so a future row-count/grid limit cannot
-            // silently turn an overflowing denominator into one oversized
-            // allocation.
             plan->bytes_per_column = plan->result_bytes;
             if (plan->bytes_per_column == 0 || plan->bytes_per_column > kMaxGpuValueBytes)
             {
@@ -4234,13 +4154,8 @@ namespace gatzk::algebra
             return plan->cols_per_chunk != 0;
         }
 
-        // ---- Columnar kernel: reads polynomial data via array of column pointers ----
-        // 每个线程处理一个域元素，对每个多项式累加 `w[col] * values[row][col]`，
-        // 再在 block 内用共享内存做归约。
-        __global__ void weighted_eval_columnar_kernel(const gpu::GpuFr *__restrict__ weights,         // 主机/统一地址空间中的 `[domain_size]`
-                                                      const gpu::GpuFr *const *__restrict__ columns,  // 每列一个指针，均指向 `[domain_size]`
-                                                      const std::size_t *__restrict__ column_lengths, // 可选的每列真实长度，尾部按零处理
-                                                      gpu::GpuFr *__restrict__ partial_results,       // `[num_blocks * row_count]`
+        __global__ void weighted_eval_columnar_kernel(const gpu::GpuFr *__restrict__ weights, const gpu::GpuFr *const *__restrict__ columns,
+                                                      const std::size_t *__restrict__ column_lengths, gpu::GpuFr *__restrict__ partial_results,
                                                       std::size_t domain_size, std::size_t row_count, std::size_t weight_rotation)
         {
 
@@ -4314,11 +4229,6 @@ namespace gatzk::algebra
             }
         }
 
-        // Transpose the cached subset from its canonical interleaved layout
-        // `[domain][polynomial]` to the column-major device layout consumed
-        // by weighted_eval_columnar_rotations_kernel.  The 32x8 tile gives
-        // coalesced reads from the interleaved rows and coalesced writes to
-        // each output polynomial column without creating a host-side copy.
         __global__ void transpose_interleaved_to_columnar_kernel(const gpu::GpuFr *__restrict__ interleaved, gpu::GpuFr *__restrict__ columnar,
                                                                  std::size_t domain_size, std::size_t poly_count)
         {
@@ -4382,10 +4292,6 @@ namespace gatzk::algebra
             final_results[output_index] = gpu::fr_add(final_results[output_index], chunk_results[point]);
         }
 
-        // Shared device-column implementation for both the existing
-        // columnar multi-rotation API and the cached-subset transpose route.
-        // `d_columns` and `d_weights` are already device-resident; only the
-        // compact rotation metadata and final result cross the host boundary.
         bool weighted_poly_eval_gpu_multi_rotations_device_columns(const gpu::GpuFr *d_weights, const gpu::GpuFr *const *d_columns, uint64_t *output_limbs,
                                                                    std::size_t domain_size, std::size_t poly_count, const std::size_t *rotations,
                                                                    std::size_t rotation_count)
@@ -4488,12 +4394,9 @@ namespace gatzk::algebra
             return true;
         }
 
-        // 分块加权求值 kernel。
-        // 每个 block 负责域上的一个连续片段，并为全部多项式写出局部和。
-        __global__ void weighted_eval_kernel(const gpu::GpuFr *__restrict__ weights,   // `[domain_size]`
-                                             const gpu::GpuFr *__restrict__ values,    // 交织布局 `[domain_size * row_count]`
-                                             gpu::GpuFr *__restrict__ partial_results, // `[num_chunks * row_count]`
-                                             std::size_t domain_size, std::size_t row_count, std::size_t chunk_start, std::size_t chunk_end)
+        __global__ void weighted_eval_kernel(const gpu::GpuFr *__restrict__ weights, const gpu::GpuFr *__restrict__ values,
+                                             gpu::GpuFr *__restrict__ partial_results, std::size_t domain_size, std::size_t row_count, std::size_t chunk_start,
+                                             std::size_t chunk_end)
         {
 
             const auto tid = threadIdx.x;
@@ -4509,12 +4412,10 @@ namespace gatzk::algebra
             gpu::GpuFr acc = gpu::fr_zero();
             if (col < chunk_end && col < domain_size)
             {
-                // 本次上传的数据从 `chunk_start` 开始，因此这里使用 chunk 内偏移。
                 const auto local_col = col - chunk_start;
                 acc = gpu::fr_mul(weights[col], values[local_col * row_count + row]);
             }
 
-            // block 内共享内存归约。
             extern __shared__ gpu::GpuFr smem[];
             smem[tid] = acc;
             __syncthreads();
@@ -4534,10 +4435,8 @@ namespace gatzk::algebra
             }
         }
 
-        // 对所有 chunk 的局部结果做最终归约。
-        __global__ void reduce_partials_kernel(const gpu::GpuFr *__restrict__ partial_results, // [num_chunks * row_count]
-                                               gpu::GpuFr *__restrict__ final_results,         // [row_count]
-                                               std::size_t num_chunks, std::size_t row_count)
+        __global__ void reduce_partials_kernel(const gpu::GpuFr *__restrict__ partial_results, gpu::GpuFr *__restrict__ final_results, std::size_t num_chunks,
+                                               std::size_t row_count)
         {
             const auto row = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
             if (row >= row_count)
@@ -4558,9 +4457,8 @@ namespace gatzk::algebra
             final_results[row] = gpu::fr_add(final_results[row], chunk_results[row]);
         }
 
-    } // namespace
+    }
 
-    // 主机侧包装：以 `mcl::Fr` 兼容布局触发批量加权求值。
     bool weighted_poly_eval_gpu(const uint64_t *weight_limbs, const uint64_t *interleaved_value_limbs, uint64_t *output_limbs, std::size_t domain_size,
                                 std::size_t row_count)
     {
@@ -4625,7 +4523,6 @@ namespace gatzk::algebra
         }
         std::size_t kernel_launches = 0;
 
-        // 分块处理域元素，统一管理设备内存占用。
         for (std::size_t chunk_start = 0; chunk_start < domain_size;)
         {
             const auto chunk_cols = std::min(domain_size - chunk_start, cols_per_chunk);
@@ -4679,7 +4576,6 @@ namespace gatzk::algebra
             }
             const auto num_domain_blocks = static_cast<unsigned>(num_domain_blocks_size);
 
-            // 为当前 chunk 准备局部结果缓冲区。
             gpu::GpuFr *d_partials = nullptr;
             std::size_t partial_elements = 0;
             std::size_t partial_bytes = 0;
@@ -4707,11 +4603,9 @@ namespace gatzk::algebra
             dim3 grid(num_domain_blocks, grid_y);
             const auto smem_bytes = kBlockDim * sizeof(gpu::GpuFr);
 
-            // kernel 读取的是 chunk 相对索引，因为本轮上传的数据从 `d_values[0]` 开始。
             weighted_eval_kernel<<<grid, kBlockDim, smem_bytes>>>(weight_ptr, chunk_values, d_partials, domain_size, row_count, chunk_start, chunk_end);
             ++kernel_launches;
 
-            // 把当前 chunk 的局部结果并入全局输出。
             {
                 constexpr unsigned rBlock = 256;
                 std::size_t r_grid_size = 0;
@@ -4722,7 +4616,6 @@ namespace gatzk::algebra
                     return false;
                 }
                 const auto rGrid = static_cast<unsigned>(r_grid_size);
-                // 先把本 chunk 内的局部结果折叠成单列结果。
                 gpu::GpuFr *d_chunk_result = nullptr;
                 if (cudaMalloc(&d_chunk_result, result_bytes) != cudaSuccess)
                 {
@@ -4746,7 +4639,6 @@ namespace gatzk::algebra
             chunk_start = chunk_end;
         }
 
-        // 下载最终结果。
         if (cudaDeviceSynchronize() != cudaSuccess)
         {
             cleanup();
@@ -4804,10 +4696,7 @@ namespace gatzk::algebra
             std::size_t partial_capacity = 0;
             std::size_t final_capacity = 0;
 
-            bool has_allocations() const
-            {
-                return columns != nullptr || lengths != nullptr || partials != nullptr || final_values != nullptr;
-            }
+            bool has_allocations() const { return columns != nullptr || lengths != nullptr || partials != nullptr || final_values != nullptr; }
 
             bool ensure_stream()
             {
@@ -5029,11 +4918,8 @@ namespace gatzk::algebra
         record_cuda_kernel_invocations(2);
         return true;
     }
-    // ---- 共享权重的多列求值入口 ----
-    // 统一地址空间设备走单次列式 kernel，离散显卡则复用权重并顺序处理每一列。
-    bool weighted_poly_eval_gpu_multi(const uint64_t *weight_limbs, const uint64_t *const *column_value_ptrs,
-                                      uint64_t *output_limbs, // `poly_count × 4 uint64`
-                                      std::size_t domain_size, std::size_t poly_count, const std::size_t *column_lengths, std::size_t weight_rotation)
+    bool weighted_poly_eval_gpu_multi(const uint64_t *weight_limbs, const uint64_t *const *column_value_ptrs, uint64_t *output_limbs, std::size_t domain_size,
+                                      std::size_t poly_count, const std::size_t *column_lengths, std::size_t weight_rotation)
     {
 
         if (domain_size == 0 || poly_count == 0)
@@ -5044,13 +4930,11 @@ namespace gatzk::algebra
             return false;
         }
 
-        // 统一地址空间可用时，优先走零拷贝列式 kernel，一次处理全部多项式。
         if (cuda_backend_unified_addressing_available())
         {
             return weighted_poly_eval_gpu_columnar(weight_limbs, column_value_ptrs, output_limbs, domain_size, poly_count, column_lengths, weight_rotation);
         }
 
-        // ---- Discrete GPU fallback: sequential per-polynomial with weight reuse ----
         std::size_t weight_bytes = 0;
         std::size_t single_val_bytes = 0;
         std::size_t num_blocks_size = 0;
@@ -5225,11 +5109,6 @@ namespace gatzk::algebra
             return false;
         }
 
-        // Discrete devices cannot dereference the host column pointers.  Keep
-        // one device column buffer and accumulate every column into the
-        // rotation-major output, so the batch size is bounded by the same
-        // partial-buffer cap as the unified path without multiplying device
-        // column storage by the number of rotations.
         if (!cuda_backend_unified_addressing_available())
         {
             constexpr unsigned kBlockDim = 256;
@@ -5665,9 +5544,6 @@ namespace gatzk::algebra
         }
         record_cuda_h2d(ptr_bytes);
 
-        // No second full source copy is retained while the multi-rotation
-        // kernel runs.  The shared helper below uses the existing optimized
-        // columnar rotation/reduction kernels over d_columnar.
         cudaFree(d_interleaved);
         d_interleaved = nullptr;
         const bool ok =
@@ -5851,9 +5727,9 @@ namespace gatzk::algebra
         class CudaWeightedDotSessionImpl final : public CudaWeightedDotSession
         {
         public:
-            CudaWeightedDotSessionImpl(const std::vector<const mcl::Fr *> &weight_columns, std::size_t total_count, std::size_t maximum_chunk_size)
-                : total_count_(total_count), column_count_(weight_columns.size()), maximum_chunk_size_(std::min(total_count, maximum_chunk_size)),
-                  weights_(acquire_weighted_dot_weights(weight_columns, total_count))
+            CudaWeightedDotSessionImpl(const std::vector<const mcl::Fr *> &weight_columns, std::size_t total_count, std::size_t maximum_chunk_size) :
+                total_count_(total_count), column_count_(weight_columns.size()), maximum_chunk_size_(std::min(total_count, maximum_chunk_size)),
+                weights_(acquire_weighted_dot_weights(weight_columns, total_count))
             {
                 static_assert(sizeof(gpu::GpuFr) == sizeof(mcl::Fr));
 
@@ -5922,10 +5798,7 @@ namespace gatzk::algebra
                 }
             }
 
-            ~CudaWeightedDotSessionImpl() override
-            {
-                release_noexcept();
-            }
+            ~CudaWeightedDotSessionImpl() override { release_noexcept(); }
 
             void accumulate(const mcl::Fr *values, std::size_t offset, std::size_t count) override
             {
@@ -6082,7 +5955,7 @@ namespace gatzk::algebra
         weighted_dot_cache().clear();
     }
 
-} // namespace gatzk::algebra
+}
 
 namespace gatzk::protocol
 {
@@ -6103,7 +5976,7 @@ namespace gatzk::protocol
             }
         }
 
-    } // namespace
+    }
 
     std::vector<std::size_t> lookup_histogram_indices_cuda(const std::vector<std::size_t> &indices, std::size_t domain_size)
     {
@@ -6246,4 +6119,4 @@ namespace gatzk::protocol
 
         return out;
     }
-} // namespace gatzk::protocol
+}

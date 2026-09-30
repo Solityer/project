@@ -22,7 +22,6 @@ namespace gatzk::model
 {
     namespace
     {
-        // 读取和解析普通文本文件，清单文件和张量文件
         std::string load_text_file(const std::filesystem::path &path)
         {
             std::ifstream input(path);
@@ -68,10 +67,6 @@ namespace gatzk::model
             "tensor_index",
         };
 
-        // The checkpoint manifest is a small, self-contained JSON document.
-        // Parsing it as an AST makes duplicate keys and nested type/shape
-        // mistakes fail before any field is consumed; substring extraction is
-        // deliberately not used for any manifest identity.
         enum class JsonKind
         {
             Null,
@@ -106,10 +101,7 @@ namespace gatzk::model
             }
 
         private:
-            [[noreturn]] void fail(const std::string &message) const
-            {
-                throw std::runtime_error(message + " at byte " + std::to_string(position_));
-            }
+            [[noreturn]] void fail(const std::string &message) const { throw std::runtime_error(message + " at byte " + std::to_string(position_)); }
 
             void skip_whitespace()
             {
@@ -135,35 +127,35 @@ namespace gatzk::model
                     fail("checkpoint manifest value is missing");
                 switch (text_[position_])
                 {
-                case '{':
-                    return parse_object();
-                case '[':
-                    return parse_array();
-                case '"':
-                {
-                    JsonValue value;
-                    value.kind = JsonKind::String;
-                    value.scalar = parse_string();
-                    return value;
-                }
-                case 't':
-                    parse_literal("true");
-                    return JsonValue{.kind = JsonKind::Boolean, .scalar = "true"};
-                case 'f':
-                    parse_literal("false");
-                    return JsonValue{.kind = JsonKind::Boolean, .scalar = "false"};
-                case 'n':
-                    parse_literal("null");
-                    return JsonValue{.kind = JsonKind::Null};
-                default:
-                    if (text_[position_] == '-' || std::isdigit(static_cast<unsigned char>(text_[position_])))
+                    case '{':
+                        return parse_object();
+                    case '[':
+                        return parse_array();
+                    case '"':
                     {
                         JsonValue value;
-                        value.kind = JsonKind::Number;
-                        value.scalar = parse_number();
+                        value.kind = JsonKind::String;
+                        value.scalar = parse_string();
                         return value;
                     }
-                    fail("malformed checkpoint manifest value");
+                    case 't':
+                        parse_literal("true");
+                        return JsonValue{.kind = JsonKind::Boolean, .scalar = "true"};
+                    case 'f':
+                        parse_literal("false");
+                        return JsonValue{.kind = JsonKind::Boolean, .scalar = "false"};
+                    case 'n':
+                        parse_literal("null");
+                        return JsonValue{.kind = JsonKind::Null};
+                    default:
+                        if (text_[position_] == '-' || std::isdigit(static_cast<unsigned char>(text_[position_])))
+                        {
+                            JsonValue value;
+                            value.kind = JsonKind::Number;
+                            value.scalar = parse_number();
+                            return value;
+                        }
+                        fail("malformed checkpoint manifest value");
                 }
             }
 
@@ -198,55 +190,55 @@ namespace gatzk::model
                     const char escaped = text_[position_++];
                     switch (escaped)
                     {
-                    case '"':
-                        result.push_back('"');
-                        break;
-                    case '\\':
-                        result.push_back('\\');
-                        break;
-                    case '/':
-                        result.push_back('/');
-                        break;
-                    case 'b':
-                        result.push_back('\b');
-                        break;
-                    case 'f':
-                        result.push_back('\f');
-                        break;
-                    case 'n':
-                        result.push_back('\n');
-                        break;
-                    case 'r':
-                        result.push_back('\r');
-                        break;
-                    case 't':
-                        result.push_back('\t');
-                        break;
-                    case 'u':
-                    {
-                        if (position_ + 4 > text_.size())
-                            fail("truncated checkpoint manifest unicode escape");
-                        unsigned value = 0;
-                        for (std::size_t index = 0; index < 4; ++index)
+                        case '"':
+                            result.push_back('"');
+                            break;
+                        case '\\':
+                            result.push_back('\\');
+                            break;
+                        case '/':
+                            result.push_back('/');
+                            break;
+                        case 'b':
+                            result.push_back('\b');
+                            break;
+                        case 'f':
+                            result.push_back('\f');
+                            break;
+                        case 'n':
+                            result.push_back('\n');
+                            break;
+                        case 'r':
+                            result.push_back('\r');
+                            break;
+                        case 't':
+                            result.push_back('\t');
+                            break;
+                        case 'u':
                         {
-                            const char digit = text_[position_++];
-                            value <<= 4;
-                            if (digit >= '0' && digit <= '9')
-                                value |= static_cast<unsigned>(digit - '0');
-                            else if (digit >= 'a' && digit <= 'f')
-                                value |= static_cast<unsigned>(digit - 'a' + 10);
-                            else if (digit >= 'A' && digit <= 'F')
-                                value |= static_cast<unsigned>(digit - 'A' + 10);
-                            else
-                                fail("malformed checkpoint manifest unicode escape");
+                            if (position_ + 4 > text_.size())
+                                fail("truncated checkpoint manifest unicode escape");
+                            unsigned value = 0;
+                            for (std::size_t index = 0; index < 4; ++index)
+                            {
+                                const char digit = text_[position_++];
+                                value <<= 4;
+                                if (digit >= '0' && digit <= '9')
+                                    value |= static_cast<unsigned>(digit - '0');
+                                else if (digit >= 'a' && digit <= 'f')
+                                    value |= static_cast<unsigned>(digit - 'a' + 10);
+                                else if (digit >= 'A' && digit <= 'F')
+                                    value |= static_cast<unsigned>(digit - 'A' + 10);
+                                else
+                                    fail("malformed checkpoint manifest unicode escape");
+                            }
+                            if (value > 0x7f)
+                                fail("checkpoint manifest must use ASCII canonical strings");
+                            result.push_back(static_cast<char>(value));
+                            break;
                         }
-                        if (value > 0x7f)
-                            fail("checkpoint manifest must use ASCII canonical strings");
-                        result.push_back(static_cast<char>(value));
-                        break;
-                    }
-                    default:
-                        fail("malformed checkpoint manifest escape");
+                        default:
+                            fail("malformed checkpoint manifest escape");
                     }
                 }
                 fail("unterminated checkpoint manifest string");
@@ -520,10 +512,7 @@ namespace gatzk::model
             validate_checkpoint_manifest_fields(root);
         }
 
-        const JsonValue &json_field(const JsonValue &root, const std::string &key)
-        {
-            return require_object_field(root, key, "checkpoint manifest");
-        }
+        const JsonValue &json_field(const JsonValue &root, const std::string &key) { return require_object_field(root, key, "checkpoint manifest"); }
 
         std::size_t json_unsigned(const JsonValue &value, const std::string &label)
         {
@@ -626,7 +615,6 @@ namespace gatzk::model
             };
         }
 
-        // 把各个维度乘起来
         std::size_t shape_product(const std::vector<std::size_t> &shape)
         {
             std::size_t out = 1;
@@ -637,7 +625,6 @@ namespace gatzk::model
             return out;
         }
 
-        // 读取张量文件，并把每一段张量记录整理成一个稠密张量
         std::unordered_map<std::string, DenseTensor> load_text_tensors(const std::filesystem::path &path)
         {
             std::ifstream input(path);
@@ -684,7 +671,6 @@ namespace gatzk::model
             return out;
         }
 
-        // 取一个必须存在的张量，没找到就直接报错
         const DenseTensor &require_tensor(const std::unordered_map<std::string, DenseTensor> &tensors, const std::string &name)
         {
             const auto it = tensors.find(name);
@@ -695,7 +681,6 @@ namespace gatzk::model
             return it->second;
         }
 
-        // 将 [1, in, out] 的 seq kernel 张量 reshape 成二维矩阵
         FloatMatrix reshape_seq_kernel(const DenseTensor &tensor)
         {
             if (tensor.shape.size() != 3 || tensor.shape[0] != 1)
@@ -715,7 +700,6 @@ namespace gatzk::model
             return out;
         }
 
-        // 将 [1, width, 1] 的注意力 kernel 张量展平成向量
         std::vector<double> reshape_attention_kernel(const DenseTensor &tensor)
         {
             if (tensor.shape.size() != 3 || tensor.shape[0] != 1 || tensor.shape[2] != 1)
@@ -734,7 +718,6 @@ namespace gatzk::model
             return tensor.values;
         }
 
-        // 按张量名字把一个注意力头需要的浮点参数封装起来
         AttentionHeadParameters load_head_parameters(const std::unordered_map<std::string, DenseTensor> &tensors, const std::string &seq_kernel_name,
                                                      const std::string &attn_dst_kernel_name, const std::string &attn_src_kernel_name,
                                                      const std::string *output_bias_name)
@@ -749,17 +732,9 @@ namespace gatzk::model
             }
             return out;
         }
-        // Leaky ReLU激活函数，默认斜率为0.2
-        double leaky_relu(double value, double alpha = 0.2)
-        {
-            return value >= 0.0 ? value : alpha * value;
-        }
+        double leaky_relu(double value, double alpha = 0.2) { return value >= 0.0 ? value : alpha * value; }
 
-        // ELU激活函数
-        double elu(double value)
-        {
-            return value >= 0.0 ? value : std::expm1(value);
-        }
+        double elu(double value) { return value >= 0.0 ? value : std::expm1(value); }
 
         constexpr std::size_t kMaxForwardWorkerCount = 32;
 
@@ -827,8 +802,6 @@ namespace gatzk::model
             std::vector<std::size_t> incoming_offsets;
             std::vector<std::size_t> incoming_sources;
 
-            // Maps every real edge to its position in incoming_sources.
-            // Synthetic self loops are present only in incoming_sources.
             std::vector<std::size_t> edge_incoming_positions;
         };
 
@@ -844,7 +817,6 @@ namespace gatzk::model
 
             std::vector<unsigned char> has_self_loop(node_count, 0);
 
-            // First pass validates the graph and computes exact CSR sizes.
             for (const auto &edge : edges)
             {
                 if (edge.src >= node_count || edge.dst >= node_count)
@@ -871,8 +843,6 @@ namespace gatzk::model
 
             auto cursor = layout.incoming_offsets;
 
-            // Preserve the original edge order inside every destination
-            // group exactly.
             for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index)
             {
                 const auto &edge = edges[edge_index];
@@ -884,8 +854,6 @@ namespace gatzk::model
                 layout.edge_incoming_positions[edge_index] = position;
             }
 
-            // Append each required self loop after the real incoming edges;
-            // this is the canonical incoming-edge ordering.
             for (std::size_t dst = 0; dst < node_count; ++dst)
             {
                 if (has_self_loop[dst] == 0)
@@ -912,12 +880,6 @@ namespace gatzk::model
         {
             const auto hardware_workers = forward_worker_budget();
 
-            // Workload-class scheduling only.  For many independent heads,
-            // parallelize heads and keep each head internally serial.  For a
-            // small head count, keep heads serial and parallelize independent
-            // rows/edges inside each head.  This is a generic non-nested
-            // execution policy; formal model shape validation is handled by
-            // the caller.
             if (head_count >= 4 && hardware_workers >= 4)
             {
                 return ForwardHeadExecutionPlan{
@@ -932,10 +894,6 @@ namespace gatzk::model
             };
         }
 
-        // Floating-point matrix multiplication.
-        //
-        // Parallelism is only across independent output rows. The k/j
-        // accumulation order of every output scalar is unchanged.
         FloatMatrix matmul(const FloatMatrix &left, const FloatMatrix &right, std::size_t max_worker_count = 1)
         {
             if (left.empty() || right.empty())
@@ -976,7 +934,6 @@ namespace gatzk::model
             return out;
         }
 
-        // Concatenate one hidden layer's head outputs in canonical head order.
         FloatMatrix concatenate_columns(const std::vector<FloatMatrix> &matrices)
         {
             if (matrices.empty())
@@ -1119,10 +1076,6 @@ namespace gatzk::model
             return out;
         }
 
-        // Full attention-head forward.
-        //
-        // The prepared graph layout and worker placement are execution-only.
-        // Every scalar keeps the same arithmetic/reduction ordering.
         HeadForwardTrace attention_head_forward_impl(const FloatMatrix &features, const std::vector<data::Edge> &edges,
                                                      const AttentionHeadParameters &parameters, bool apply_output_bias, bool apply_activation,
                                                      HeadForwardProfile *profile, const ForwardGraphLayout *prepared_graph = nullptr,
@@ -1158,7 +1111,6 @@ namespace gatzk::model
 
             HeadForwardTrace trace;
 
-            // 1. H' = H * W_seq.
             trace.H_prime = matmul(features, parameters.seq_kernel_fp, max_worker_count);
 
             if (profile != nullptr)
@@ -1168,10 +1120,6 @@ namespace gatzk::model
 
             stage_start = Clock::now();
 
-            // 2. E_dst / E_src.
-            //
-            // Both vectors scan the same H' row. Their individual summation
-            // order remains identical for both attention-vector reductions.
             trace.E_dst.assign(node_count, 0.0);
             trace.E_src.assign(node_count, 0.0);
 
@@ -1212,12 +1160,8 @@ namespace gatzk::model
 
             trace.H_agg.assign(node_count, std::vector<double>(width, 0.0));
 
-            // One temporary value per real-or-synthetic incoming edge.
-            // Reuse one exp() value in Sum, aggregation and edge
-            // materialization.
             std::vector<double> incoming_exp(graph->incoming_sources.size(), 0.0);
 
-            // 3. Stable softmax maximum.
             parallel_for_forward_ranges(node_count, 256, max_worker_count,
                                         [&](std::size_t begin, std::size_t end)
                                         {
@@ -1240,8 +1184,6 @@ namespace gatzk::model
                                             }
                                         });
 
-            // 4/5. Evaluate every softmax numerator once, accumulate the
-            // denominator in the original incoming-edge order, then invert.
             parallel_for_forward_ranges(node_count, 256, max_worker_count,
                                         [&](std::size_t begin, std::size_t end)
                                         {
@@ -1270,8 +1212,6 @@ namespace gatzk::model
                                             }
                                         });
 
-            // 6. Neighbor aggregation. Each destination row is independent;
-            // source order and per-column accumulation order are unchanged.
             parallel_for_forward_ranges(node_count, 128, max_worker_count,
                                         [&](std::size_t begin, std::size_t end)
                                         {
@@ -1295,8 +1235,6 @@ namespace gatzk::model
                                             }
                                         });
 
-            // Materialize the protocol-visible real-edge intermediates.
-            // U and alpha reuse the already-computed identical exp value.
             parallel_for_forward_ranges(edges.size(), 4096, max_worker_count,
                                         [&](std::size_t begin, std::size_t end)
                                         {
@@ -1325,7 +1263,6 @@ namespace gatzk::model
 
             stage_start = Clock::now();
 
-            // 7. Bias + ELU. Rows are independent.
             parallel_for_forward_ranges(node_count, 256, max_worker_count,
                                         [&](std::size_t begin, std::size_t end)
                                         {
@@ -1354,7 +1291,6 @@ namespace gatzk::model
         }
 
     }
-    // 只读取 manifest 元数据，不触碰权重张量本体
     CheckpointBundleInfo inspect_checkpoint_bundle(const std::string &bundle_root)
     {
         const auto bundle_path = std::filesystem::path(bundle_root);
@@ -1424,7 +1360,6 @@ namespace gatzk::model
         return info;
     }
 
-    // 这里检查的只是 formal 主线真正依赖的结构约束
     bool checkpoint_bundle_matches_formal_proof_shape(const CheckpointBundleInfo &info, std::string *reason)
     {
         std::vector<std::string> failures;
@@ -1596,7 +1531,6 @@ namespace gatzk::model
         return false;
     }
 
-    // 正式 proving 主线的真实模型入口：manifest 校验通过后再加载权重。
     ModelParameters load_checkpoint_bundle_parameters(const std::string &bundle_root)
     {
         const auto manifest_info = inspect_checkpoint_bundle(bundle_root);
@@ -1691,7 +1625,6 @@ namespace gatzk::model
         out.K_out = manifest_info.output_head_count;
         out.hidden_layers.reserve(manifest_info.hidden_layers.size());
 
-        // Reconstruct each layer in canonical layer -> local-head order.
         for (const auto &layer_info : manifest_info.hidden_layers)
         {
             HiddenLayerParameters layer;
@@ -1723,7 +1656,6 @@ namespace gatzk::model
             out.hidden_layers.push_back(std::move(layer));
         }
 
-        // 输出层同样要求索引连续读取，避免顺序混乱
         out.output_layer.head_count = manifest_info.output_head_count;
         out.output_layer.heads.reserve(manifest_info.output_head_specs.size());
         for (const auto &head_spec : manifest_info.output_head_specs)
@@ -1758,7 +1690,6 @@ namespace gatzk::model
         return out;
     }
 
-    // 返回注意力头输出宽度
     std::size_t attention_head_output_width(const AttentionHeadParameters &parameters)
     {
         if (!parameters.seq_kernel_fp.empty())
@@ -1767,7 +1698,6 @@ namespace gatzk::model
         }
         return parameters.output_bias_fp.size();
     }
-    // 真正的主线前向实现
     MultiHeadForwardTrace forward_note_style(const FloatMatrix &features, const std::vector<data::Edge> &edges, const ModelParameters &parameters,
                                              ForwardProfile *profile)
     {
@@ -1777,8 +1707,6 @@ namespace gatzk::model
 
         if (!features.empty())
         {
-            // The graph is identical for every hidden/output head. Build its
-            // destination-grouped execution layout exactly once.
             graph_layout = build_forward_graph_layout(features.size(), edges);
         }
 
@@ -1786,7 +1714,6 @@ namespace gatzk::model
 
         const FloatMatrix *layer_input = &features;
 
-        // 1. Hidden layers.
         for (const auto &layer : parameters.hidden_layers)
         {
             HiddenLayerForwardTrace layer_trace;
@@ -1835,12 +1762,9 @@ namespace gatzk::model
 
             trace.hidden_layer_traces.push_back(std::move(layer_trace));
 
-            // hidden_layer_traces was reserved to its final size above, so
-            // the stored concat address remains stable for the next layer.
             layer_input = &trace.hidden_layer_traces.back().concat;
         }
 
-        // 2. Output heads.
         trace.output_head_traces.resize(parameters.output_layer.heads.size());
 
         std::vector<HeadForwardProfile> output_profiles(parameters.output_layer.heads.size());
@@ -1870,7 +1794,6 @@ namespace gatzk::model
             }
         }
 
-        // Same head order and same per-element arithmetic as before.
         trace.Y_lin = average_head_outputs(trace.output_head_traces, true, forward_worker_budget());
 
         trace.Y = average_head_outputs(trace.output_head_traces, false, forward_worker_budget());
@@ -1884,7 +1807,6 @@ namespace gatzk::model
         return hidden_family_dimension_chain_is_valid(parameters, &reason);
     }
 
-    // 检查多层多头的维度链是不是前后对得上
     bool hidden_family_dimension_chain_is_valid(const ModelParameters &parameters, std::string *reason)
     {
         std::vector<std::string> failures;
@@ -1927,7 +1849,6 @@ namespace gatzk::model
                 failures.push_back("hidden layer " + std::to_string(layer_index) + " input_dim conflicts with d_in_profile");
             }
 
-            // 第0层输入就是配置里给的输入宽度，后面每一层输入都应该等于上一层拼接后的总宽度。
             if (layer_index == 0)
             {
                 expected_input_dim = configured_input;
@@ -1938,7 +1859,6 @@ namespace gatzk::model
                                    " conflicts with previous concat width=" + std::to_string(expected_input_dim));
             }
 
-            // 每个头的参数宽度需要和这一层的输入输出对齐
             for (const auto &head : layer.heads)
             {
                 if (head.seq_kernel_fp.size() != layer.input_dim)
@@ -1955,7 +1875,6 @@ namespace gatzk::model
             expected_input_dim = layer.shape.head_count * layer.shape.head_dim;
         }
 
-        // 输出层也做同样的形状一致性检查
         if (parameters.output_layer.head_count == 0 || parameters.output_layer.heads.empty())
         {
             failures.push_back("output_layer must expose at least one output attention head");
@@ -2010,7 +1929,6 @@ namespace gatzk::model
         return failures.empty();
     }
 
-    // 所有隐藏层里，最大的输入宽度
     std::size_t max_hidden_input_dim(const ModelParameters &parameters)
     {
         std::size_t value = 0;
@@ -2021,7 +1939,6 @@ namespace gatzk::model
         return value;
     }
 
-    // 所有隐藏层里，单个头最大的输出宽度
     std::size_t max_hidden_head_dim(const ModelParameters &parameters)
     {
         std::size_t value = 0;
@@ -2032,7 +1949,6 @@ namespace gatzk::model
         return value;
     }
 
-    // 所有隐藏层里，拼接后的最大总宽度
     std::size_t max_hidden_concat_width(const ModelParameters &parameters)
     {
         std::size_t value = 0;

@@ -10,13 +10,7 @@
 namespace gatzk::crypto
 {
 
-    // The protocol compiler artifact is a single, line-oriented object.  The
-    // parser below is intentionally shared by the ceremony producer and the
-    // runtime loader so neither side can grow a second spelling of this
-    // authenticated format.
     inline constexpr std::string_view kCompilerArtifactMagic = "GATZK-SRS-COMPILER-ARTIFACT\n";
-    // Keep the count marker in the scalar section rather than inferring it
-    // from a prefix scan.  The actual schema has 17 scalar fields.
     inline constexpr std::array<std::string_view, 17> kCompilerArtifactFields = {"protocol_template_hex",
                                                                                  "proof_schema_template_hex",
                                                                                  "observation_ledger_template_hex",
@@ -170,4 +164,4 @@ namespace gatzk::crypto
         return document;
     }
 
-} // namespace gatzk::crypto
+}

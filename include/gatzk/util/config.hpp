@@ -1,6 +1,4 @@
 #pragma once
-// 本文件定义 formal 主线的运行配置对象，
-// 所有 dataset、artifact、batching 与 proof contract 相关参数都从这里进入系统。
 
 #include <cstddef>
 #include <cstdint>
@@ -12,21 +10,14 @@
 namespace gatzk::util
 {
 
-    // Public identity of the dataset feature preprocessing contract.  This is
-    // deliberately separate from quant_cfg_id: changing a raw feature view
-    // must invalidate checkpoints, caches, registries and proof statements.
     std::string canonical_input_preprocess_id(std::string_view dataset);
 
-    // 隐层族形状配置，决定每层头数和单头维度。
     struct HiddenLayerProfile
     {
         std::size_t head_count = 0;
         std::size_t head_dim = 0;
     };
 
-    // Canonical fixed-point scale chain selected solely by quant_cfg_id.  The
-    // vectors retain layer/head coordinates so no consumer can accidentally
-    // reuse a scale from another layer or head.
     struct QuantizationScaleChain
     {
         std::uint64_t s_input = 0;
@@ -49,19 +40,12 @@ namespace gatzk::util
         std::vector<std::uint64_t> s_a_dst_output;
         std::vector<std::uint64_t> s_b_output;
 
-        // Deterministic, complete serialization used in PublicMetadata.
         std::string canonical_serialization() const;
     };
 
-    // Resolve and validate the one registered scale chain for a formal ID.
-    // Unknown IDs and shape mismatches fail closed.
-    QuantizationScaleChain canonical_quantization_scale_chain(
-        std::string_view quant_cfg_id,
-        const std::vector<HiddenLayerProfile> &hidden_profile,
-        std::size_t K_out,
-        std::string_view source_path = {});
+    QuantizationScaleChain canonical_quantization_scale_chain(std::string_view quant_cfg_id, const std::vector<HiddenLayerProfile> &hidden_profile,
+                                                              std::size_t K_out, std::string_view source_path = {});
 
-    // 一次正式运行的统一配置。这里的字段会被 context、metadata 与正式 artifact 共同消费。
     struct AppConfig
     {
         std::string dataset;
@@ -88,13 +72,7 @@ namespace gatzk::util
         std::string srs_type = "trusted_srs";
         std::string srs_id;
         std::string srs_path;
-        // Authenticated point-only verifier registry.  An empty value means
-        // the canonical dataset-local registry path; formal verification
-        // fails closed when that artifact is absent.
         std::string verifier_registry_path;
-        // Trusted root for the registry file.  A registry's self-reported
-        // canonical digest is not an authentication mechanism; formal runs
-        // must provide this expected digest out of band.
         std::string verifier_registry_digest;
         std::string privacy_policy = "model_and_trace_hidden";
         std::string input_privacy = "public_graph_public_features";
@@ -117,7 +95,6 @@ namespace gatzk::util
         std::vector<std::size_t> d_in_profile;
     };
 
-    // 从 `.cfg` 文件解析正式运行配置，并执行字段级约束检查。
     AppConfig load_config(const std::string &path);
 
-} // namespace gatzk::util
+}

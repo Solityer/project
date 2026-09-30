@@ -20,30 +20,18 @@ void ensure_field() {
     std::call_once(field_once, []() { mcl::bn::initPairing(mcl::BN254); });
 }
 
-Int checked_int(Wide value, const char *what) {
-    if (value > static_cast<Wide>(std::numeric_limits<Int>::max()) ||
-        value < static_cast<Wide>(std::numeric_limits<Int>::min())) {
+Int checked_int(Wide value, const char* what) {
+    if (value > static_cast<Wide>(std::numeric_limits<Int>::max()) || value < static_cast<Wide>(std::numeric_limits<Int>::min())) {
         throw std::overflow_error(std::string("GAT integer overflow: ") + what);
     }
     return static_cast<Int>(value);
 }
 
-Wide abs_wide(Int value) {
-    return value < 0 ? -static_cast<Wide>(value) : static_cast<Wide>(value);
-}
+Wide abs_wide(Int value) { return value < 0 ? -static_cast<Wide>(value) : static_cast<Wide>(value); }
 
-const char *bn254_modulus_string() {
-    // This is the scalar modulus of the bundled mcl::BN254 profile
-    // (3rd/mcl's BN254.r), which is the Field used by the native zkGPT
-    // prover.  Keep the ledger bound to that exact native field rather than
-    // silently accepting the Ethereum/alt-BN254 scalar modulus.
-    return "16798108731015832284940804142231733909759579603404752749028378864165570215949";
-}
+const char* bn254_modulus_string() { return "16798108731015832284940804142231733909759579603404752749028378864165570215949"; }
 
-const char *bn254_half_modulus_string() {
-    // floor((r - 1) / 2), where r is the BN254 scalar-field modulus.
-    return "8399054365507916142470402071115866954879789801702376374514189432082785107974";
-}
+const char* bn254_half_modulus_string() { return "8399054365507916142470402071115866954879789801702376374514189432082785107974"; }
 
 std::string wide_decimal(Wide value) {
     if (value == 0) return "0";
@@ -59,7 +47,7 @@ std::string wide_decimal(Wide value) {
     return digits;
 }
 
-bool decimal_nonnegative_leq(Wide value, const char *limit) {
+bool decimal_nonnegative_leq(Wide value, const char* limit) {
     if (value < 0) return false;
     const std::string lhs = wide_decimal(value);
     const std::string rhs(limit);
@@ -72,7 +60,7 @@ bool actual_bn254_field() {
     return Field::getModulo() == bn254_modulus_string();
 }
 
-Wide checked_wide_product(Wide left, Wide right, const char *what) {
+Wide checked_wide_product(Wide left, Wide right, const char* what) {
     if (left < 0 || right < 0) throw std::invalid_argument(std::string("negative bound in ") + what);
     const Wide max_wide = (static_cast<Wide>(1) << 126) - 1;
     if (left != 0 && right > max_wide / left) throw std::overflow_error(std::string("bound overflow in ") + what);
@@ -83,35 +71,29 @@ Int quantize_model_value(double value, Int scale) {
     if (scale <= 0 || !std::isfinite(value)) throw std::invalid_argument("invalid model quantization input");
     const long double scaled = static_cast<long double>(value) * static_cast<long double>(scale);
     const long double rounded = scaled >= 0 ? std::floor(scaled + 0.5L) : std::ceil(scaled - 0.5L);
-    if (rounded > static_cast<long double>(std::numeric_limits<Int>::max()) ||
-        rounded < static_cast<long double>(std::numeric_limits<Int>::min())) {
+    if (rounded > static_cast<long double>(std::numeric_limits<Int>::max()) || rounded < static_cast<long double>(std::numeric_limits<Int>::min())) {
         throw std::overflow_error("model quantization overflow");
     }
     return static_cast<Int>(rounded);
 }
 
-Int tensor_value(const Tensor &tensor, std::size_t row, std::size_t col,
-                 Int scale) {
-    if (tensor.shape.dims.size() != 3 || tensor.shape.dims[0] != 1 ||
-        row >= tensor.shape.dims[1] || col >= tensor.shape.dims[2]) {
+Int tensor_value(const Tensor& tensor, std::size_t row, std::size_t col, Int scale) {
+    if (tensor.shape.dims.size() != 3 || tensor.shape.dims[0] != 1 || row >= tensor.shape.dims[1] || col >= tensor.shape.dims[2]) {
         throw std::invalid_argument("tensor shape does not match GAT access");
     }
     return quantize_model_value(tensor.values[row * tensor.shape.dims[2] + col], scale);
 }
 
-Int vector_tensor_value(const Tensor &tensor, std::size_t index, Int scale) {
-    if (tensor.shape.dims.size() != 3 || tensor.shape.dims[0] != 1 ||
-        tensor.shape.dims[2] != 1 || index >= tensor.shape.dims[1]) {
+Int vector_tensor_value(const Tensor& tensor, std::size_t index, Int scale) {
+    if (tensor.shape.dims.size() != 3 || tensor.shape.dims[0] != 1 || tensor.shape.dims[2] != 1 || index >= tensor.shape.dims[1]) {
         throw std::invalid_argument("attention tensor shape does not match GAT access");
     }
     return quantize_model_value(tensor.values[index], scale);
 }
 
-std::string field_decimal(const Field &value) {
-    return value.getStr(10);
-}
+std::string field_decimal(const Field& value) { return value.getStr(10); }
 
-void append_table_digest(std::ostringstream &out, const StaticTables &tables) {
+void append_table_digest(std::ostringstream& out, const StaticTables& tables) {
     out << tables.table_id << '\n'
         << tables.generator_id << '\n'
         << tables.quant_cfg_id << '\n'
@@ -122,20 +104,18 @@ void append_table_digest(std::ostringstream &out, const StaticTables &tables) {
         << tables.exp_approx_id << '\n'
         << tables.elu_approx_id << '\n'
         << tables.lrelu_slope_num << ':' << tables.lrelu_slope_den << '\n'
-        << tables.s_delta << ':' << tables.s_exp << ':'
-        << tables.s_elu_in << ':' << tables.s_elu_out << '\n'
-        << tables.lrelu_min << ':' << tables.lrelu_max << ':'
-        << tables.exp_min << ':' << tables.exp_max << ':'
-        << tables.elu_min << ':' << tables.elu_max << '\n';
+        << tables.s_delta << ':' << tables.s_exp << ':' << tables.s_elu_in << ':' << tables.s_elu_out << '\n'
+        << tables.lrelu_min << ':' << tables.lrelu_max << ':' << tables.exp_min << ':' << tables.exp_max << ':' << tables.elu_min << ':' << tables.elu_max
+        << '\n';
     out << "lrelu\n";
-    for (const TablePoint &point : tables.lrelu) out << point.x << ',' << point.y << '\n';
+    for (const TablePoint& point : tables.lrelu) out << point.x << ',' << point.y << '\n';
     out << "exp\n";
-    for (const TablePoint &point : tables.exp) out << point.x << ',' << point.y << '\n';
+    for (const TablePoint& point : tables.exp) out << point.x << ',' << point.y << '\n';
     out << "elu\n";
-    for (const TablePoint &point : tables.elu) out << point.x << ',' << point.y << '\n';
+    for (const TablePoint& point : tables.elu) out << point.x << ',' << point.y << '\n';
 }
 
-std::string digest_tables(const StaticTables &tables) {
+std::string digest_tables(const StaticTables& tables) {
     ensure_field();
     std::ostringstream encoded;
     append_table_digest(encoded, tables);
@@ -147,9 +127,7 @@ std::string digest_tables(const StaticTables &tables) {
 
 Int table_lrelu_value(Int x, Int slope_num, Int slope_den) {
     if (x >= 0) return x;
-    return signed_round_div(checked_int(static_cast<Wide>(x) * slope_num,
-                                        "LeakyReLU numerator"),
-                            slope_den, RoundingMode::NEAREST_TIES_AWAY).value;
+    return signed_round_div(checked_int(static_cast<Wide>(x) * slope_num, "LeakyReLU numerator"), slope_den, RoundingMode::NEAREST_TIES_AWAY).value;
 }
 
 Int table_exp_value(Int delta, Int s_delta, Int s_exp) {
@@ -164,34 +142,29 @@ Int table_exp_value(Int delta, Int s_delta, Int s_exp) {
 Int table_elu_value(Int x, Int s_in, Int s_out) {
     if (s_in <= 0 || s_out <= 0) throw std::invalid_argument("invalid ELU table parameters");
     if (x >= 0) return checked_int(static_cast<Wide>(x) * s_out / s_in, "ELU positive branch");
-    const long double value = static_cast<long double>(s_out) *
-                              (std::exp(static_cast<long double>(x) / s_in) - 1.0L);
+    const long double value = static_cast<long double>(s_out) * (std::exp(static_cast<long double>(x) / s_in) - 1.0L);
     const long double rounded = std::ceil(value - 0.5L);
-    if (rounded > static_cast<long double>(std::numeric_limits<Int>::max()) ||
-        rounded < static_cast<long double>(std::numeric_limits<Int>::min())) {
+    if (rounded > static_cast<long double>(std::numeric_limits<Int>::max()) || rounded < static_cast<long double>(std::numeric_limits<Int>::min())) {
         throw std::overflow_error("ELU table overflow");
     }
     return static_cast<Int>(rounded);
 }
 
-std::size_t checked_size(Wide value, const char *what) {
+std::size_t checked_size(Wide value, const char* what) {
     if (value < 0 || value > static_cast<Wide>(std::numeric_limits<std::size_t>::max())) {
         throw std::overflow_error(std::string("GAT size overflow: ") + what);
     }
     return static_cast<std::size_t>(value);
 }
 
-void validate_tensor2d(const Tensor2D &tensor, std::size_t rows,
-                       std::size_t cols, const char *what) {
-    if (tensor.rows != rows || tensor.cols != cols ||
-        tensor.values.size() != rows * cols) {
+void validate_tensor2d(const Tensor2D& tensor, std::size_t rows, std::size_t cols, const char* what) {
+    if (tensor.rows != rows || tensor.cols != cols || tensor.values.size() != rows * cols) {
         throw std::invalid_argument(std::string("invalid ") + what + " shape");
     }
 }
 
-std::vector<std::pair<std::size_t, std::size_t> > incoming_ranges(const Graph &graph) {
-    std::vector<std::pair<std::size_t, std::size_t> > ranges(graph.num_nodes,
-                                                              std::make_pair(graph.edges(), graph.edges()));
+std::vector<std::pair<std::size_t, std::size_t>> incoming_ranges(const Graph& graph) {
+    std::vector<std::pair<std::size_t, std::size_t>> ranges(graph.num_nodes, std::make_pair(graph.edges(), graph.edges()));
     for (std::size_t edge = 0; edge < graph.edges(); ++edge) {
         const std::size_t node = static_cast<std::size_t>(graph.dst[edge]);
         if (ranges[node].first == graph.edges()) ranges[node].first = edge;
@@ -223,8 +196,7 @@ std::string output_family(std::size_t head) {
     return out.str();
 }
 
-void set_field_aggregation(AttentionTrace &trace, const Graph &graph,
-                           std::size_t output_dim) {
+void set_field_aggregation(AttentionTrace& trace, const Graph& graph, std::size_t output_dim) {
     const std::size_t edges = graph.edges();
     trace.field_numerator.assign(trace.integer_numerator.size(), Field(0));
     trace.field_aggregate.assign(trace.integer_numerator.size(), Field(0));
@@ -241,16 +213,12 @@ void set_field_aggregation(AttentionTrace &trace, const Graph &graph,
     (void)edges;
 }
 
-AttentionTrace compute_attention(const Graph &graph, const Tensor2D &input,
-                                 const Model &model, const QuantConfig &quant,
-                                 const StaticTables &tables,
-                                 std::size_t layer, std::size_t head,
-                                 bool output_head,
-                                 const AttentionScales &scales) {
+AttentionTrace compute_attention(const Graph& graph, const Tensor2D& input, const Model& model, const QuantConfig& quant, const StaticTables& tables,
+                                 std::size_t layer, std::size_t head, bool output_head, const AttentionScales& scales) {
     const std::size_t input_dim = input.cols;
-    const Tensor *seq = nullptr;
-    const Tensor *attn_src = nullptr;
-    const Tensor *attn_dst = nullptr;
+    const Tensor* seq = nullptr;
+    const Tensor* attn_src = nullptr;
+    const Tensor* attn_dst = nullptr;
     if (output_head) {
         seq = &model.tensor(output_family(head) + "/seq/kernel");
         attn_src = &model.tensor(output_family(head) + "/attn_src/kernel");
@@ -260,14 +228,12 @@ AttentionTrace compute_attention(const Graph &graph, const Tensor2D &input,
         attn_src = &model.tensor(hidden_family(layer, head) + "/attn_src/kernel");
         attn_dst = &model.tensor(hidden_family(layer, head) + "/attn_dst/kernel");
     }
-    if (seq->shape.dims.size() != 3 || seq->shape.dims[0] != 1 ||
-        seq->shape.dims[1] != input_dim || seq->shape.dims[2] == 0) {
+    if (seq->shape.dims.size() != 3 || seq->shape.dims[0] != 1 || seq->shape.dims[1] != input_dim || seq->shape.dims[2] == 0) {
         throw std::invalid_argument("GAT projection shape mismatch");
     }
     const std::size_t output_dim = seq->shape.dims[2];
-    if (attn_src->shape.dims.size() != 3 || attn_dst->shape.dims.size() != 3 ||
-        attn_src->shape.dims[1] != output_dim || attn_dst->shape.dims[1] != output_dim ||
-        attn_src->shape.dims[2] != 1 || attn_dst->shape.dims[2] != 1) {
+    if (attn_src->shape.dims.size() != 3 || attn_dst->shape.dims.size() != 3 || attn_src->shape.dims[1] != output_dim ||
+        attn_dst->shape.dims[1] != output_dim || attn_src->shape.dims[2] != 1 || attn_dst->shape.dims[2] != 1) {
         throw std::invalid_argument("GAT attention vector shape mismatch");
     }
 
@@ -290,14 +256,13 @@ AttentionTrace compute_attention(const Graph &graph, const Tensor2D &input,
     trace.integer_numerator.assign(graph.num_nodes * output_dim, 0);
     trace.recovered.assign(graph.num_nodes * output_dim, 0);
     trace.relation_ok = true;
-    const std::vector<std::pair<std::size_t, std::size_t> > ranges = incoming_ranges(graph);
+    const std::vector<std::pair<std::size_t, std::size_t>> ranges = incoming_ranges(graph);
 
     for (std::size_t node = 0; node < graph.num_nodes; ++node) {
         for (std::size_t col = 0; col < output_dim; ++col) {
             Wide value = 0;
             for (std::size_t inner = 0; inner < input_dim; ++inner) {
-                const Int weight = tensor_value(*seq, inner, col,
-                                                output_head ? quant.s_w_output[head] : quant.s_w_hidden[layer][head]);
+                const Int weight = tensor_value(*seq, inner, col, output_head ? quant.s_w_output[head] : quant.s_w_hidden[layer][head]);
                 value += static_cast<Wide>(input.at(node, inner)) * weight;
             }
             trace.projection[node * output_dim + col] = checked_int(value, "GAT projection");
@@ -306,10 +271,8 @@ AttentionTrace compute_attention(const Graph &graph, const Tensor2D &input,
         Wide destination = 0;
         for (std::size_t col = 0; col < output_dim; ++col) {
             const Int projected = trace.projection[node * output_dim + col];
-            const Int src_weight = vector_tensor_value(*attn_src, col,
-                                                       output_head ? quant.s_a_src_output[head] : quant.s_a_src_hidden[layer][head]);
-            const Int dst_weight = vector_tensor_value(*attn_dst, col,
-                                                       output_head ? quant.s_a_dst_output[head] : quant.s_a_dst_hidden[layer][head]);
+            const Int src_weight = vector_tensor_value(*attn_src, col, output_head ? quant.s_a_src_output[head] : quant.s_a_src_hidden[layer][head]);
+            const Int dst_weight = vector_tensor_value(*attn_dst, col, output_head ? quant.s_a_dst_output[head] : quant.s_a_dst_hidden[layer][head]);
             source += static_cast<Wide>(projected) * src_weight;
             destination += static_cast<Wide>(projected) * dst_weight;
         }
@@ -320,8 +283,7 @@ AttentionTrace compute_attention(const Graph &graph, const Tensor2D &input,
     for (std::size_t edge = 0; edge < graph.edges(); ++edge) {
         const std::size_t source = static_cast<std::size_t>(graph.src[edge]);
         const std::size_t destination = static_cast<std::size_t>(graph.dst[edge]);
-        const Int score = checked_int(static_cast<Wide>(trace.source_score[source]) +
-                                      trace.destination_score[destination], "GAT raw score");
+        const Int score = checked_int(static_cast<Wide>(trace.source_score[source]) + trace.destination_score[destination], "GAT raw score");
         trace.raw_score[edge] = score;
         trace.leaky_score[edge] = tables.lookup_lrelu(score);
         trace.group_max[destination] = std::max(trace.group_max[destination], trace.leaky_score[edge]);
@@ -345,9 +307,7 @@ AttentionTrace compute_attention(const Graph &graph, const Tensor2D &input,
     for (std::size_t edge = 0; edge < graph.edges(); ++edge) {
         const std::size_t destination = static_cast<std::size_t>(graph.dst[edge]);
         trace.alpha[edge] = Field(trace.exp[edge]) * trace.group_inverse[destination];
-        if (!(trace.alpha[edge] * Field(trace.group_sum[destination]) - Field(trace.exp[edge])).isZero()) {
-            trace.relation_ok = false;
-        }
+        if (!(trace.alpha[edge] * Field(trace.group_sum[destination]) - Field(trace.exp[edge])).isZero()) { trace.relation_ok = false; }
     }
 
     for (std::size_t node = 0; node < graph.num_nodes; ++node) {
@@ -355,8 +315,7 @@ AttentionTrace compute_attention(const Graph &graph, const Tensor2D &input,
             Wide numerator = 0;
             for (std::size_t edge = ranges[node].first; edge < ranges[node].second; ++edge) {
                 const std::size_t source = static_cast<std::size_t>(graph.src[edge]);
-                numerator += static_cast<Wide>(trace.exp[edge]) *
-                             trace.projection[source * output_dim + col];
+                numerator += static_cast<Wide>(trace.exp[edge]) * trace.projection[source * output_dim + col];
             }
             const std::size_t index = node * output_dim + col;
             trace.integer_numerator[index] = checked_int(numerator, "GAT integer aggregation numerator");
@@ -378,16 +337,12 @@ AttentionTrace compute_attention(const Graph &graph, const Tensor2D &input,
     trace.field_integer_consistent = true;
     for (std::size_t node = 0; node < graph.num_nodes; ++node) {
         const Field inverse_sum = Field(1) / Field(trace.group_sum[node]);
-        if (!(Field(trace.group_sum[node]) * trace.group_inverse[node] - Field(1)).isZero()) {
-            trace.field_integer_consistent = false;
-        }
+        if (!(Field(trace.group_sum[node]) * trace.group_inverse[node] - Field(1)).isZero()) { trace.field_integer_consistent = false; }
         for (std::size_t col = 0; col < output_dim; ++col) {
             const std::size_t index = node * output_dim + col;
             const Field expected = Field(trace.integer_numerator[index]) * inverse_sum;
-            if (!(trace.field_numerator[index] - Field(trace.integer_numerator[index])).isZero() ||
-                !(trace.field_aggregate[index] - expected).isZero() ||
-                !(trace.field_aggregate[index] * Field(trace.group_sum[node]) -
-                  trace.field_numerator[index]).isZero()) {
+            if (!(trace.field_numerator[index] - Field(trace.integer_numerator[index])).isZero() || !(trace.field_aggregate[index] - expected).isZero() ||
+                !(trace.field_aggregate[index] * Field(trace.group_sum[node]) - trace.field_numerator[index]).isZero()) {
                 trace.field_integer_consistent = false;
             }
         }
@@ -407,20 +362,17 @@ AttentionTrace compute_attention(const Graph &graph, const Tensor2D &input,
     return trace;
 }
 
-Wide max_abs_values(const std::vector<Int> &values) {
+Wide max_abs_values(const std::vector<Int>& values) {
     Wide maximum = 0;
     for (Int value : values) maximum = std::max(maximum, abs_wide(value));
     return maximum;
 }
 
-void add_tensor_bound(const Tensor &tensor, Int scale, Wide &maximum) {
-    for (double value : tensor.values) {
-        maximum = std::max(maximum, abs_wide(quantize_model_value(value, scale)));
-    }
+void add_tensor_bound(const Tensor& tensor, Int scale, Wide& maximum) {
+    for (double value : tensor.values) { maximum = std::max(maximum, abs_wide(quantize_model_value(value, scale))); }
 }
 
-void family_indices(const std::string &id, bool &output, std::size_t &layer,
-                    std::size_t &head) {
+void family_indices(const std::string& id, bool& output, std::size_t& layer, std::size_t& head) {
     output = false;
     layer = head = 0;
     if (id.compare(0, std::string("hidden/layer").size(), "hidden/layer") == 0) {
@@ -435,16 +387,11 @@ void family_indices(const std::string &id, bool &output, std::size_t &layer,
     } else {
         throw std::invalid_argument("unknown bound family id: " + id);
     }
-    if ((!output && (layer >= 2 || head >= 8)) || (output && head >= 2)) {
-        throw std::invalid_argument("bound family index is outside the canonical model");
-    }
+    if ((!output && (layer >= 2 || head >= 8)) || (output && head >= 2)) { throw std::invalid_argument("bound family index is outside the canonical model"); }
 }
 
-BoundFamily make_bound_family(const std::string &id, const Graph &graph,
-                              const Tensor2D &input, const Model &model,
-                              const QuantConfig &quant, const StaticTables &tables,
-                              const AttentionTrace &trace,
-                              const AttentionScales &scales) {
+BoundFamily make_bound_family(const std::string& id, const Graph& graph, const Tensor2D& input, const Model& model, const QuantConfig& quant,
+                              const StaticTables& tables, const AttentionTrace& trace, const AttentionScales& scales) {
     BoundFamily family;
     family.id = id;
     family.input_dim = static_cast<Wide>(trace.input_dim);
@@ -452,7 +399,8 @@ BoundFamily make_bound_family(const std::string &id, const Graph &graph,
     family.max_in_degree = 0;
     for (std::size_t node = 0; node < graph.num_nodes; ++node) {
         Wide degree = 0;
-        for (std::size_t edge = 0; edge < graph.edges(); ++edge) if (static_cast<std::size_t>(graph.dst[edge]) == node) ++degree;
+        for (std::size_t edge = 0; edge < graph.edges(); ++edge)
+            if (static_cast<std::size_t>(graph.dst[edge]) == node) ++degree;
         family.max_in_degree = std::max(family.max_in_degree, degree);
     }
     bool output = false;
@@ -472,9 +420,7 @@ BoundFamily make_bound_family(const std::string &id, const Graph &graph,
         add_tensor_bound(model.tensor(hidden_family(layer, head) + "/attn_dst/kernel"), quant.s_a_dst_hidden[layer][head], attention_abs);
     }
     model_abs = std::max(model_abs, std::max(weight_abs, attention_abs));
-    for (std::size_t i = 0; i < trace.projection.size(); ++i) {
-        family.projection_abs = std::max(family.projection_abs, abs_wide(trace.projection[i]));
-    }
+    for (std::size_t i = 0; i < trace.projection.size(); ++i) { family.projection_abs = std::max(family.projection_abs, abs_wide(trace.projection[i])); }
     weight_abs = std::max<Wide>(1, model_abs);
     attention_abs = weight_abs;
     family.model_abs = model_abs;
@@ -485,12 +431,12 @@ BoundFamily make_bound_family(const std::string &id, const Graph &graph,
     family.source_score_abs = std::max(max_abs_values(trace.source_score), max_abs_values(trace.destination_score));
     family.destination_score_abs = max_abs_values(trace.destination_score);
     family.score_abs = std::max(max_abs_values(trace.raw_score), max_abs_values(trace.leaky_score));
-    family.table_input_abs = std::max(std::max(abs_wide(tables.lrelu_min), abs_wide(tables.lrelu_max)),
-                                      std::max(abs_wide(tables.exp_min), abs_wide(tables.exp_max)));
+    family.table_input_abs =
+        std::max(std::max(abs_wide(tables.lrelu_min), abs_wide(tables.lrelu_max)), std::max(abs_wide(tables.exp_min), abs_wide(tables.exp_max)));
     family.table_output_abs = 0;
-    for (const TablePoint &point : tables.lrelu) family.table_output_abs = std::max(family.table_output_abs, abs_wide(point.y));
-    for (const TablePoint &point : tables.exp) family.table_output_abs = std::max(family.table_output_abs, abs_wide(point.y));
-    for (const TablePoint &point : tables.elu) family.table_output_abs = std::max(family.table_output_abs, abs_wide(point.y));
+    for (const TablePoint& point : tables.lrelu) family.table_output_abs = std::max(family.table_output_abs, abs_wide(point.y));
+    for (const TablePoint& point : tables.exp) family.table_output_abs = std::max(family.table_output_abs, abs_wide(point.y));
+    for (const TablePoint& point : tables.elu) family.table_output_abs = std::max(family.table_output_abs, abs_wide(point.y));
     family.delta_abs = max_abs_values(trace.delta);
     family.exp_abs = max_abs_values(trace.exp);
     family.sum_abs = max_abs_values(trace.group_sum);
@@ -500,7 +446,7 @@ BoundFamily make_bound_family(const std::string &id, const Graph &graph,
     family.q_abs = family.r_abs = family.delta_aux_abs = 0;
     family.elu_input_abs = max_abs_values(trace.recovered);
     family.product_abs = 0;
-    for (const DivisionWitness &division : trace.divisions) {
+    for (const DivisionWitness& division : trace.divisions) {
         family.division_x_abs = std::max(family.division_x_abs, abs_wide(division.dividend));
         family.division_d_abs = std::max(family.division_d_abs, abs_wide(division.denominator));
         family.q_abs = std::max(family.q_abs, abs_wide(division.q));
@@ -510,64 +456,66 @@ BoundFamily make_bound_family(const std::string &id, const Graph &graph,
     for (std::size_t edge = 0; edge < graph.edges(); ++edge) {
         const std::size_t source = static_cast<std::size_t>(graph.src[edge]);
         for (std::size_t col = 0; col < trace.output_dim; ++col) {
-            family.product_abs = std::max(
-                family.product_abs,
-                checked_wide_product(abs_wide(trace.exp[edge]),
-                                     abs_wide(trace.projection[source * trace.output_dim + col]),
-                                     "attention product"));
+            family.product_abs =
+                std::max(family.product_abs,
+                         checked_wide_product(abs_wide(trace.exp[edge]), abs_wide(trace.projection[source * trace.output_dim + col]), "attention product"));
         }
     }
-    family.packed_tuple_abs = checked_wide_product(
-        family.table_input_abs, 2 * family.table_output_abs + 1, "packed lookup tuple");
+    family.packed_tuple_abs = checked_wide_product(family.table_input_abs, 2 * family.table_output_abs + 1, "packed lookup tuple");
     family.field_modulus = Field::getModulo();
     family.field_half_modulus = bn254_half_modulus_string();
     family.inverse_field_valid = actual_bn254_field();
     for (std::size_t node = 0; node < graph.num_nodes; ++node) {
-        if (trace.group_sum[node] <= 0 ||
-            !(Field(trace.group_sum[node]) * trace.group_inverse[node] - Field(1)).isZero()) {
+        if (trace.group_sum[node] <= 0 || !(Field(trace.group_sum[node]) * trace.group_inverse[node] - Field(1)).isZero()) {
             family.inverse_field_valid = false;
         }
     }
     family.no_wrap = true;
-    const Wide *bounds[] = {
-        &family.model_abs, &family.input_abs, &family.weight_abs,
-        &family.attention_abs, &family.score_abs, &family.table_input_abs,
-        &family.table_output_abs, &family.delta_abs, &family.exp_abs,
-        &family.sum_abs, &family.numerator_abs, &family.division_x_abs,
-        &family.division_d_abs, &family.packed_tuple_abs, &family.q_abs,
-        &family.r_abs, &family.delta_aux_abs, &family.product_abs,
-        &family.projection_abs, &family.source_score_abs,
-        &family.destination_score_abs, &family.elu_input_abs
-    };
-    for (const Wide *bound : bounds) if (!decimal_nonnegative_leq(*bound, bn254_half_modulus_string())) family.no_wrap = false;
+    const Wide* bounds[] = {&family.model_abs,
+                            &family.input_abs,
+                            &family.weight_abs,
+                            &family.attention_abs,
+                            &family.score_abs,
+                            &family.table_input_abs,
+                            &family.table_output_abs,
+                            &family.delta_abs,
+                            &family.exp_abs,
+                            &family.sum_abs,
+                            &family.numerator_abs,
+                            &family.division_x_abs,
+                            &family.division_d_abs,
+                            &family.packed_tuple_abs,
+                            &family.q_abs,
+                            &family.r_abs,
+                            &family.delta_aux_abs,
+                            &family.product_abs,
+                            &family.projection_abs,
+                            &family.source_score_abs,
+                            &family.destination_score_abs,
+                            &family.elu_input_abs};
+    for (const Wide* bound : bounds)
+        if (!decimal_nonnegative_leq(*bound, bn254_half_modulus_string())) family.no_wrap = false;
     (void)scales;
     return family;
 }
 
-void compare_division(const DivisionWitness &witness, Int value,
-                      RoundingMode mode, bool &ok) {
+void compare_division(const DivisionWitness& witness, Int value, RoundingMode mode, bool& ok) {
     if (!witness.valid(mode)) ok = false;
     const DivisionResult expected = signed_round_div(witness.dividend, witness.denominator, mode);
     if (expected.value != value) ok = false;
 }
 
-bool validate_attention(const Graph &graph, const AttentionTrace &trace,
-                        bool output_head) {
-    if (trace.projection.size() != graph.num_nodes * trace.output_dim ||
-        trace.source_score.size() != graph.num_nodes ||
-        trace.destination_score.size() != graph.num_nodes ||
-        trace.raw_score.size() != graph.edges() || trace.leaky_score.size() != graph.edges() ||
-        trace.group_max.size() != graph.num_nodes || trace.delta.size() != graph.edges() ||
-        trace.exp.size() != graph.edges() || trace.group_sum.size() != graph.num_nodes ||
-        trace.group_inverse.size() != graph.num_nodes || trace.max_selector.size() != graph.edges() ||
-        trace.alpha.size() != graph.edges() ||
-        trace.integer_numerator.size() != graph.num_nodes * trace.output_dim ||
-        trace.field_numerator.size() != trace.integer_numerator.size() ||
-        trace.field_aggregate.size() != trace.integer_numerator.size() ||
-        trace.recovered.size() != trace.integer_numerator.size() ||
-        (!output_head && trace.activated.size() != trace.integer_numerator.size()) ||
-        trace.divisions.size() != trace.integer_numerator.size() || !trace.relation_ok) return false;
-    const std::vector<std::pair<std::size_t, std::size_t> > ranges = incoming_ranges(graph);
+bool validate_attention(const Graph& graph, const AttentionTrace& trace, bool output_head) {
+    if (trace.projection.size() != graph.num_nodes * trace.output_dim || trace.source_score.size() != graph.num_nodes ||
+        trace.destination_score.size() != graph.num_nodes || trace.raw_score.size() != graph.edges() || trace.leaky_score.size() != graph.edges() ||
+        trace.group_max.size() != graph.num_nodes || trace.delta.size() != graph.edges() || trace.exp.size() != graph.edges() ||
+        trace.group_sum.size() != graph.num_nodes || trace.group_inverse.size() != graph.num_nodes || trace.max_selector.size() != graph.edges() ||
+        trace.alpha.size() != graph.edges() || trace.integer_numerator.size() != graph.num_nodes * trace.output_dim ||
+        trace.field_numerator.size() != trace.integer_numerator.size() || trace.field_aggregate.size() != trace.integer_numerator.size() ||
+        trace.recovered.size() != trace.integer_numerator.size() || (!output_head && trace.activated.size() != trace.integer_numerator.size()) ||
+        trace.divisions.size() != trace.integer_numerator.size() || !trace.relation_ok)
+        return false;
+    const std::vector<std::pair<std::size_t, std::size_t>> ranges = incoming_ranges(graph);
     bool ok = trace.field_integer_consistent;
     for (std::size_t node = 0; node < graph.num_nodes; ++node) {
         if (trace.group_sum[node] <= 0) ok = false;
@@ -580,91 +528,72 @@ bool validate_attention(const Graph &graph, const AttentionTrace &trace,
         for (std::size_t col = 0; col < trace.output_dim; ++col) {
             const std::size_t index = node * trace.output_dim + col;
             if (!(trace.field_numerator[index] - Field(trace.integer_numerator[index])).isZero()) ok = false;
-            if (!(trace.field_aggregate[index] * Field(trace.group_sum[node]) -
-                  Field(trace.integer_numerator[index])).isZero()) ok = false;
-            compare_division(trace.divisions[index], trace.recovered[index],
-                             RoundingMode::NEAREST_TIES_AWAY, ok);
+            if (!(trace.field_aggregate[index] * Field(trace.group_sum[node]) - Field(trace.integer_numerator[index])).isZero()) ok = false;
+            compare_division(trace.divisions[index], trace.recovered[index], RoundingMode::NEAREST_TIES_AWAY, ok);
         }
     }
     return ok;
 }
 
-bool equal_field(const Field &left, const Field &right) {
-    return (left - right).isZero();
-}
+bool equal_field(const Field& left, const Field& right) { return (left - right).isZero(); }
 
-bool equal_field_vector(const std::vector<Field> &left,
-                        const std::vector<Field> &right) {
+bool equal_field_vector(const std::vector<Field>& left, const std::vector<Field>& right) {
     if (left.size() != right.size()) return false;
-    for (std::size_t i = 0; i < left.size(); ++i) if (!equal_field(left[i], right[i])) return false;
+    for (std::size_t i = 0; i < left.size(); ++i)
+        if (!equal_field(left[i], right[i])) return false;
     return true;
 }
 
-bool equal_division(const DivisionWitness &left, const DivisionWitness &right) {
-    return left.sigma == right.sigma && left.z == right.z && left.a == right.a &&
-           left.q == right.q && left.r == right.r && left.delta == right.delta &&
-           left.dividend == right.dividend && left.denominator == right.denominator &&
-           equal_field(left.a_inverse, right.a_inverse) && equal_field(left.d_inverse, right.d_inverse);
+bool equal_division(const DivisionWitness& left, const DivisionWitness& right) {
+    return left.sigma == right.sigma && left.z == right.z && left.a == right.a && left.q == right.q && left.r == right.r && left.delta == right.delta &&
+           left.dividend == right.dividend && left.denominator == right.denominator && equal_field(left.a_inverse, right.a_inverse) &&
+           equal_field(left.d_inverse, right.d_inverse);
 }
 
-bool equal_divisions(const std::vector<DivisionWitness> &left,
-                     const std::vector<DivisionWitness> &right) {
+bool equal_divisions(const std::vector<DivisionWitness>& left, const std::vector<DivisionWitness>& right) {
     if (left.size() != right.size()) return false;
-    for (std::size_t i = 0; i < left.size(); ++i) if (!equal_division(left[i], right[i])) return false;
+    for (std::size_t i = 0; i < left.size(); ++i)
+        if (!equal_division(left[i], right[i])) return false;
     return true;
 }
 
-bool equal_attention(const AttentionTrace &actual, const AttentionTrace &expected) {
-    return actual.family_id == expected.family_id && actual.input_dim == expected.input_dim &&
-           actual.output_dim == expected.output_dim && actual.projection == expected.projection &&
-           actual.source_score == expected.source_score && actual.destination_score == expected.destination_score &&
-           actual.raw_score == expected.raw_score && actual.leaky_score == expected.leaky_score &&
-           actual.group_max == expected.group_max && actual.delta == expected.delta &&
-           actual.exp == expected.exp && actual.group_sum == expected.group_sum &&
-           equal_field_vector(actual.group_inverse, expected.group_inverse) &&
-           actual.max_selector == expected.max_selector &&
-           equal_field_vector(actual.alpha, expected.alpha) &&
-           actual.integer_numerator == expected.integer_numerator &&
-           equal_field_vector(actual.field_numerator, expected.field_numerator) &&
-           equal_field_vector(actual.field_aggregate, expected.field_aggregate) &&
-           actual.recovered == expected.recovered && actual.activated == expected.activated &&
-           equal_divisions(actual.divisions, expected.divisions) &&
-           actual.field_integer_consistent == expected.field_integer_consistent &&
-           actual.relation_ok == expected.relation_ok;
+bool equal_attention(const AttentionTrace& actual, const AttentionTrace& expected) {
+    return actual.family_id == expected.family_id && actual.input_dim == expected.input_dim && actual.output_dim == expected.output_dim &&
+           actual.projection == expected.projection && actual.source_score == expected.source_score && actual.destination_score == expected.destination_score &&
+           actual.raw_score == expected.raw_score && actual.leaky_score == expected.leaky_score && actual.group_max == expected.group_max &&
+           actual.delta == expected.delta && actual.exp == expected.exp && actual.group_sum == expected.group_sum &&
+           equal_field_vector(actual.group_inverse, expected.group_inverse) && actual.max_selector == expected.max_selector &&
+           equal_field_vector(actual.alpha, expected.alpha) && actual.integer_numerator == expected.integer_numerator &&
+           equal_field_vector(actual.field_numerator, expected.field_numerator) && equal_field_vector(actual.field_aggregate, expected.field_aggregate) &&
+           actual.recovered == expected.recovered && actual.activated == expected.activated && equal_divisions(actual.divisions, expected.divisions) &&
+           actual.field_integer_consistent == expected.field_integer_consistent && actual.relation_ok == expected.relation_ok;
 }
 
-bool equal_ledger(const IntegerBoundLedger &actual,
-                  const IntegerBoundLedger &expected) {
-    if (actual.backend != expected.backend || actual.table_id != expected.table_id ||
-        actual.field_modulus != expected.field_modulus ||
-        actual.field_half_modulus != expected.field_half_modulus ||
-        actual.lrelu_min != expected.lrelu_min || actual.lrelu_max != expected.lrelu_max ||
-        actual.exp_min != expected.exp_min || actual.exp_max != expected.exp_max ||
-        actual.elu_min != expected.elu_min || actual.elu_max != expected.elu_max ||
-        actual.families.size() != expected.families.size()) return false;
-    const auto equal_family = [](const BoundFamily &left, const BoundFamily &right) {
-        return left.id == right.id && left.model_abs == right.model_abs &&
-               left.input_abs == right.input_abs && left.weight_abs == right.weight_abs &&
-               left.attention_abs == right.attention_abs && left.score_abs == right.score_abs &&
-               left.table_input_abs == right.table_input_abs && left.table_output_abs == right.table_output_abs &&
-               left.delta_abs == right.delta_abs && left.exp_abs == right.exp_abs &&
-               left.sum_abs == right.sum_abs && left.numerator_abs == right.numerator_abs &&
-               left.division_x_abs == right.division_x_abs && left.division_d_abs == right.division_d_abs &&
-               left.packed_tuple_abs == right.packed_tuple_abs && left.q_abs == right.q_abs &&
-               left.r_abs == right.r_abs && left.delta_aux_abs == right.delta_aux_abs &&
-               left.product_abs == right.product_abs && left.input_dim == right.input_dim &&
-               left.output_dim == right.output_dim && left.max_in_degree == right.max_in_degree &&
+bool equal_ledger(const IntegerBoundLedger& actual, const IntegerBoundLedger& expected) {
+    if (actual.backend != expected.backend || actual.table_id != expected.table_id || actual.field_modulus != expected.field_modulus ||
+        actual.field_half_modulus != expected.field_half_modulus || actual.lrelu_min != expected.lrelu_min || actual.lrelu_max != expected.lrelu_max ||
+        actual.exp_min != expected.exp_min || actual.exp_max != expected.exp_max || actual.elu_min != expected.elu_min || actual.elu_max != expected.elu_max ||
+        actual.families.size() != expected.families.size())
+        return false;
+    const auto equal_family = [](const BoundFamily& left, const BoundFamily& right) {
+        return left.id == right.id && left.model_abs == right.model_abs && left.input_abs == right.input_abs && left.weight_abs == right.weight_abs &&
+               left.attention_abs == right.attention_abs && left.score_abs == right.score_abs && left.table_input_abs == right.table_input_abs &&
+               left.table_output_abs == right.table_output_abs && left.delta_abs == right.delta_abs && left.exp_abs == right.exp_abs &&
+               left.sum_abs == right.sum_abs && left.numerator_abs == right.numerator_abs && left.division_x_abs == right.division_x_abs &&
+               left.division_d_abs == right.division_d_abs && left.packed_tuple_abs == right.packed_tuple_abs && left.q_abs == right.q_abs &&
+               left.r_abs == right.r_abs && left.delta_aux_abs == right.delta_aux_abs && left.product_abs == right.product_abs &&
+               left.input_dim == right.input_dim && left.output_dim == right.output_dim && left.max_in_degree == right.max_in_degree &&
                left.projection_abs == right.projection_abs && left.source_score_abs == right.source_score_abs &&
                left.destination_score_abs == right.destination_score_abs && left.alignment_x_abs == right.alignment_x_abs &&
-               left.average_x_abs == right.average_x_abs && left.elu_input_abs == right.elu_input_abs &&
-               left.field_modulus == right.field_modulus && left.field_half_modulus == right.field_half_modulus &&
-               left.inverse_field_valid == right.inverse_field_valid && left.no_wrap == right.no_wrap;
+               left.average_x_abs == right.average_x_abs && left.elu_input_abs == right.elu_input_abs && left.field_modulus == right.field_modulus &&
+               left.field_half_modulus == right.field_half_modulus && left.inverse_field_valid == right.inverse_field_valid && left.no_wrap == right.no_wrap;
     };
-    for (std::size_t i = 0; i < actual.families.size(); ++i) if (!equal_family(actual.families[i], expected.families[i])) return false;
+    for (std::size_t i = 0; i < actual.families.size(); ++i)
+        if (!equal_family(actual.families[i], expected.families[i])) return false;
     return true;
 }
 
-} // namespace
+}
 
 DivisionResult signed_round_div(Int dividend, Int denominator, RoundingMode mode) {
     ensure_field();
@@ -703,29 +632,25 @@ DivisionResult signed_round_div(Int dividend, Int denominator, RoundingMode mode
 
 bool DivisionWitness::valid(RoundingMode mode) const {
     ensure_field();
-    if (denominator <= 0 || (sigma != 0 && sigma != 1) || (z != 0 && z != 1) ||
-        a < 0 || q < 0 || r < 0 || delta < 0 ||
-        sigma != (dividend < 0 ? 1 : 0) || z != (a == 0 ? 1 : 0)) return false;
+    if (denominator <= 0 || (sigma != 0 && sigma != 1) || (z != 0 && z != 1) || a < 0 || q < 0 || r < 0 || delta < 0 || sigma != (dividend < 0 ? 1 : 0) ||
+        z != (a == 0 ? 1 : 0))
+        return false;
     const Wide signed_a = sigma == 0 ? static_cast<Wide>(a) : -static_cast<Wide>(a);
     const Wide signed_q = sigma == 0 ? static_cast<Wide>(q) : -static_cast<Wide>(q);
-    if (signed_a != static_cast<Wide>(dividend) ||
-        (a == 0 ? !a_inverse.isZero() : !(Field(a) * a_inverse - Field(1)).isZero()) ||
-        !(Field(denominator) * d_inverse - Field(1)).isZero()) return false;
+    if (signed_a != static_cast<Wide>(dividend) || (a == 0 ? !a_inverse.isZero() : !(Field(a) * a_inverse - Field(1)).isZero()) ||
+        !(Field(denominator) * d_inverse - Field(1)).isZero())
+        return false;
     const Wide d = denominator;
     if (mode == RoundingMode::TOWARD_ZERO) {
         if (static_cast<Wide>(a) != d * q + r || static_cast<Wide>(r) + delta != d - 1) return false;
     } else {
-        if (2 * static_cast<Wide>(a) + d != 2 * d * q + r ||
-            static_cast<Wide>(r) + delta != 2 * d - 1) return false;
+        if (2 * static_cast<Wide>(a) + d != 2 * d * q + r || static_cast<Wide>(r) + delta != 2 * d - 1) return false;
     }
-    const Wide expected_abs_q = mode == RoundingMode::TOWARD_ZERO
-        ? static_cast<Wide>(a) / d
-        : (static_cast<Wide>(a) + d / 2) / d;
-    return expected_abs_q == q && signed_q == static_cast<Wide>(sigma == 0 ? q : -q) &&
-           (z == 1 ? (a == 0 && a_inverse.isZero()) : !a_inverse.isZero());
+    const Wide expected_abs_q = mode == RoundingMode::TOWARD_ZERO ? static_cast<Wide>(a) / d : (static_cast<Wide>(a) + d / 2) / d;
+    return expected_abs_q == q && signed_q == static_cast<Wide>(sigma == 0 ? q : -q) && (z == 1 ? (a == 0 && a_inverse.isZero()) : !a_inverse.isZero());
 }
 
-StaticTables StaticTables::build(const QuantConfig &quant) {
+StaticTables StaticTables::build(const QuantConfig& quant) {
     quant.validate();
     ensure_field();
     StaticTables tables;
@@ -767,8 +692,7 @@ StaticTables StaticTables::build(const QuantConfig &quant) {
     return tables;
 }
 
-StaticTables StaticTables::build(const QuantConfig &quant, Int observed_score_abs,
-                                 Int observed_delta_max, Int observed_elu_abs) {
+StaticTables StaticTables::build(const QuantConfig& quant, Int observed_score_abs, Int observed_delta_max, Int observed_elu_abs) {
     (void)observed_score_abs;
     (void)observed_delta_max;
     (void)observed_elu_abs;
@@ -792,16 +716,16 @@ Int StaticTables::lookup_elu(Int x) const {
 
 bool StaticTables::authenticate() const {
     try {
-        if (table_id != "tables:lrelu+elu+exp+range" || generator_id != "zkgpt-gat-static-tables-v2" ||
-            quant_cfg_id != "gat_l3_scale_chain" || rounding != "nearest_ties_away" ||
-            rescale != "none" || output_average != "signed_round_div" || row_order != "ascending_input" ||
-            exp_approx_id != "exp_neg_quantized" || elu_approx_id != "elu_expm1_quantized" ||
-            lrelu_slope_num <= 0 || lrelu_slope_den <= 0 || lrelu_slope_num >= lrelu_slope_den ||
-            s_delta <= 0 || s_exp <= 0 || s_elu_in <= 0 || s_elu_out <= 0 ||
-            lrelu_min >= lrelu_max || exp_min != 0 || exp_max < exp_min || elu_min >= elu_max) return false;
+        if (table_id != "tables:lrelu+elu+exp+range" || generator_id != "zkgpt-gat-static-tables-v2" || quant_cfg_id != "gat_l3_scale_chain" ||
+            rounding != "nearest_ties_away" || rescale != "none" || output_average != "signed_round_div" || row_order != "ascending_input" ||
+            exp_approx_id != "exp_neg_quantized" || elu_approx_id != "elu_expm1_quantized" || lrelu_slope_num <= 0 || lrelu_slope_den <= 0 ||
+            lrelu_slope_num >= lrelu_slope_den || s_delta <= 0 || s_exp <= 0 || s_elu_in <= 0 || s_elu_out <= 0 || lrelu_min >= lrelu_max || exp_min != 0 ||
+            exp_max < exp_min || elu_min >= elu_max)
+            return false;
         if (lrelu.size() != static_cast<std::size_t>(static_cast<Wide>(lrelu_max) - lrelu_min + 1) ||
             exp.size() != static_cast<std::size_t>(static_cast<Wide>(exp_max) - exp_min + 1) ||
-            elu.size() != static_cast<std::size_t>(static_cast<Wide>(elu_max) - elu_min + 1)) return false;
+            elu.size() != static_cast<std::size_t>(static_cast<Wide>(elu_max) - elu_min + 1))
+            return false;
         for (std::size_t i = 0; i < lrelu.size(); ++i) {
             const Int x = lrelu_min + static_cast<Int>(i);
             if (lrelu[i].x != x || lrelu[i].y != table_lrelu_value(x, lrelu_slope_num, lrelu_slope_den)) return false;
@@ -815,48 +739,61 @@ bool StaticTables::authenticate() const {
             if (elu[i].x != x || elu[i].y != table_elu_value(x, s_elu_in, s_elu_out)) return false;
         }
         return digest == digest_tables(*this);
-    } catch (const std::exception &) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
-void IntegerBoundLedger::add(const BoundFamily &family) {
+void IntegerBoundLedger::add(const BoundFamily& family) {
     if (family.id.empty()) throw std::invalid_argument("integer-bound family id is empty");
     families.push_back(family);
 }
 
 bool IntegerBoundLedger::validate() const {
-    if (!actual_bn254_field() || backend != "BN254" || table_id.empty() ||
-        field_modulus != bn254_modulus_string() || field_half_modulus != bn254_half_modulus_string() ||
-        lrelu_min >= lrelu_max || exp_min < 0 || exp_max < exp_min || elu_min >= elu_max || families.empty()) return false;
+    if (!actual_bn254_field() || backend != "BN254" || table_id.empty() || field_modulus != bn254_modulus_string() ||
+        field_half_modulus != bn254_half_modulus_string() || lrelu_min >= lrelu_max || exp_min < 0 || exp_max < exp_min || elu_min >= elu_max ||
+        families.empty())
+        return false;
     if (lrelu_min > 0 || lrelu_max < 0 || exp_min != 0 || elu_min > 0 || elu_max < 0) return false;
-    for (const BoundFamily &family : families) {
-        if (family.id.empty() || family.input_dim <= 0 || family.output_dim <= 0 ||
-            family.max_in_degree <= 0 || family.table_input_abs < 0 || family.table_output_abs < 0 ||
-            family.delta_abs < 0 || family.exp_abs < 0 || family.sum_abs < 0 ||
-            family.numerator_abs < 0 || family.division_x_abs < 0 || family.division_d_abs <= 0 ||
-            family.q_abs < 0 || family.r_abs < 0 || family.delta_aux_abs < 0 ||
-            family.product_abs < 0 || family.field_modulus != field_modulus ||
-            family.field_half_modulus != field_half_modulus || !family.inverse_field_valid || !family.no_wrap) return false;
-        const Wide *bounds[] = {
-            &family.model_abs, &family.input_abs, &family.weight_abs,
-            &family.attention_abs, &family.score_abs, &family.table_input_abs,
-            &family.table_output_abs, &family.delta_abs, &family.exp_abs,
-            &family.sum_abs, &family.numerator_abs, &family.division_x_abs,
-            &family.division_d_abs, &family.packed_tuple_abs, &family.q_abs,
-            &family.r_abs, &family.delta_aux_abs, &family.product_abs,
-            &family.input_dim, &family.output_dim, &family.max_in_degree,
-            &family.projection_abs, &family.source_score_abs,
-            &family.destination_score_abs, &family.alignment_x_abs,
-            &family.average_x_abs, &family.elu_input_abs
-        };
-        for (const Wide *bound : bounds) if (!decimal_nonnegative_leq(*bound, field_half_modulus.c_str())) return false;
+    for (const BoundFamily& family : families) {
+        if (family.id.empty() || family.input_dim <= 0 || family.output_dim <= 0 || family.max_in_degree <= 0 || family.table_input_abs < 0 ||
+            family.table_output_abs < 0 || family.delta_abs < 0 || family.exp_abs < 0 || family.sum_abs < 0 || family.numerator_abs < 0 ||
+            family.division_x_abs < 0 || family.division_d_abs <= 0 || family.q_abs < 0 || family.r_abs < 0 || family.delta_aux_abs < 0 ||
+            family.product_abs < 0 || family.field_modulus != field_modulus || family.field_half_modulus != field_half_modulus || !family.inverse_field_valid ||
+            !family.no_wrap)
+            return false;
+        const Wide* bounds[] = {&family.model_abs,
+                                &family.input_abs,
+                                &family.weight_abs,
+                                &family.attention_abs,
+                                &family.score_abs,
+                                &family.table_input_abs,
+                                &family.table_output_abs,
+                                &family.delta_abs,
+                                &family.exp_abs,
+                                &family.sum_abs,
+                                &family.numerator_abs,
+                                &family.division_x_abs,
+                                &family.division_d_abs,
+                                &family.packed_tuple_abs,
+                                &family.q_abs,
+                                &family.r_abs,
+                                &family.delta_aux_abs,
+                                &family.product_abs,
+                                &family.input_dim,
+                                &family.output_dim,
+                                &family.max_in_degree,
+                                &family.projection_abs,
+                                &family.source_score_abs,
+                                &family.destination_score_abs,
+                                &family.alignment_x_abs,
+                                &family.average_x_abs,
+                                &family.elu_input_abs};
+        for (const Wide* bound : bounds)
+            if (!decimal_nonnegative_leq(*bound, field_half_modulus.c_str())) return false;
     }
     return true;
 }
 
-ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
-                          const Model &model, const QuantConfig &quant) {
+ForwardResult run_forward(const Graph& graph, const Tensor2D& features, const Model& model, const QuantConfig& quant) {
     ensure_field();
     graph.validate();
     model.validate_schema();
@@ -881,8 +818,7 @@ ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
             scales.attention_dst = quant.s_a_dst_hidden[layer][head];
             scales.aggregate_pre = quant.s_agg_pre[layer];
             scales.aggregate_output = quant.s_agg[layer];
-            AttentionTrace trace = compute_attention(graph, current, model, quant,
-                                                     result.trace.tables, layer, head, false, scales);
+            AttentionTrace trace = compute_attention(graph, current, model, quant, result.trace.tables, layer, head, false, scales);
             if (trace.output_dim != output_dim || !trace.relation_ok) throw std::runtime_error("hidden GAT relation failed");
             hidden.heads.push_back(std::move(trace));
         }
@@ -890,8 +826,7 @@ ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
         for (std::size_t node = 0; node < graph.num_nodes; ++node) {
             for (std::size_t head = 0; head < hidden_heads; ++head) {
                 for (std::size_t col = 0; col < output_dim; ++col) {
-                    hidden.concatenated.at(node, head * output_dim + col) =
-                        hidden.heads[head].activated[node * output_dim + col];
+                    hidden.concatenated.at(node, head * output_dim + col) = hidden.heads[head].activated[node * output_dim + col];
                 }
             }
         }
@@ -910,17 +845,14 @@ ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
         scales.attention_dst = quant.s_a_dst_output[head];
         scales.aggregate_pre = quant.s_out_pre;
         scales.aggregate_output = quant.s_out_head;
-        output.attention = compute_attention(graph, current, model, quant,
-                                             result.trace.tables, 0, head, true, scales);
+        output.attention = compute_attention(graph, current, model, quant, result.trace.tables, 0, head, true, scales);
         output.aggregate = output.attention.recovered;
         output.aligned.assign(output.aggregate.size(), 0);
         output.bias.assign(classes, 0);
-        const Tensor &bias = model.tensor(output_family(head) + "/output_bias");
-        if (bias.shape.dims.size() != 1 || bias.shape.dims[0] != classes ||
-            bias.values.size() != classes) throw std::invalid_argument("output bias shape mismatch");
-        for (std::size_t c = 0; c < classes; ++c) {
-            output.bias[c] = quantize_model_value(bias.values[c], quant.s_b_output[head]);
-        }
+        const Tensor& bias = model.tensor(output_family(head) + "/output_bias");
+        if (bias.shape.dims.size() != 1 || bias.shape.dims[0] != classes || bias.values.size() != classes)
+            throw std::invalid_argument("output bias shape mismatch");
+        for (std::size_t c = 0; c < classes; ++c) { output.bias[c] = quantize_model_value(bias.values[c], quant.s_b_output[head]); }
         output.logits.assign(output.aggregate.size(), 0);
         output.alignment_divisions.reserve(output.aggregate.size());
         for (std::size_t i = 0; i < output.aggregate.size(); ++i) {
@@ -936,14 +868,13 @@ ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
     result.trace.head_sum.assign(graph.num_nodes * classes, 0);
     for (std::size_t i = 0; i < result.trace.head_sum.size(); ++i) {
         Wide sum = 0;
-        for (const OutputHeadTrace &head : result.trace.output_heads) sum += head.logits[i];
+        for (const OutputHeadTrace& head : result.trace.output_heads) sum += head.logits[i];
         result.trace.head_sum[i] = checked_int(sum, "output head sum");
     }
     result.trace.logits = Tensor2D(graph.num_nodes, classes);
     result.trace.final_average_divisions.reserve(result.trace.head_sum.size());
     for (std::size_t i = 0; i < result.trace.head_sum.size(); ++i) {
-        const DivisionResult average = signed_round_div(result.trace.head_sum[i],
-                                                        static_cast<Int>(model.manifest.output_heads));
+        const DivisionResult average = signed_round_div(result.trace.head_sum[i], static_cast<Int>(model.manifest.output_heads));
         result.trace.final_average_divisions.push_back(average.witness);
         result.trace.logits.values[i] = average.value;
     }
@@ -959,33 +890,33 @@ ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
     result.trace.ledger.exp_max = result.trace.tables.exp_max;
     result.trace.ledger.elu_min = result.trace.tables.elu_min;
     result.trace.ledger.elu_max = result.trace.tables.elu_max;
-    for (const HiddenLayerTrace &hidden : result.trace.hidden_layers) for (std::size_t head = 0; head < hidden.heads.size(); ++head) {
-        const AttentionScales scales{quant.s_hprime_hidden[hidden.layer][head], quant.s_a_src_hidden[hidden.layer][head], quant.s_a_dst_hidden[hidden.layer][head], quant.s_agg_pre[hidden.layer], quant.s_agg[hidden.layer]};
-        result.trace.ledger.add(make_bound_family(hidden_family(hidden.layer, head), graph, features, model, quant, result.trace.tables, hidden.heads[head], scales));
-    }
+    for (const HiddenLayerTrace& hidden : result.trace.hidden_layers)
+        for (std::size_t head = 0; head < hidden.heads.size(); ++head) {
+            const AttentionScales scales{quant.s_hprime_hidden[hidden.layer][head], quant.s_a_src_hidden[hidden.layer][head],
+                                         quant.s_a_dst_hidden[hidden.layer][head], quant.s_agg_pre[hidden.layer], quant.s_agg[hidden.layer]};
+            result.trace.ledger.add(
+                make_bound_family(hidden_family(hidden.layer, head), graph, features, model, quant, result.trace.tables, hidden.heads[head], scales));
+        }
     for (std::size_t head = 0; head < result.trace.output_heads.size(); ++head) {
         const AttentionScales scales{quant.s_yprime_output[head], quant.s_a_src_output[head], quant.s_a_dst_output[head], quant.s_out_pre, quant.s_out_head};
-        result.trace.ledger.add(make_bound_family(output_family(head), graph, current, model, quant, result.trace.tables, result.trace.output_heads[head].attention, scales));
+        result.trace.ledger.add(
+            make_bound_family(output_family(head), graph, current, model, quant, result.trace.tables, result.trace.output_heads[head].attention, scales));
     }
     result.trace.relation_ok = result.trace.tables.authenticate() && result.trace.ledger.validate();
-    for (const HiddenLayerTrace &hidden : result.trace.hidden_layers) for (const AttentionTrace &head : hidden.heads) result.trace.relation_ok = result.trace.relation_ok && head.relation_ok;
-    for (const OutputHeadTrace &head : result.trace.output_heads) result.trace.relation_ok = result.trace.relation_ok && head.attention.relation_ok;
+    for (const HiddenLayerTrace& hidden : result.trace.hidden_layers)
+        for (const AttentionTrace& head : hidden.heads) result.trace.relation_ok = result.trace.relation_ok && head.relation_ok;
+    for (const OutputHeadTrace& head : result.trace.output_heads) result.trace.relation_ok = result.trace.relation_ok && head.attention.relation_ok;
     result.trace.relation_ok = result.trace.relation_ok && validate_relation(graph, features, model, quant, result);
     return result;
 }
 
-bool validate_relation(const Graph &graph, const Tensor2D &features,
-                       const Model &model, const QuantConfig &quant,
-                       const ForwardResult &result) {
+bool validate_relation(const Graph& graph, const Tensor2D& features, const Model& model, const QuantConfig& quant, const ForwardResult& result) {
     try {
         graph.validate();
         model.validate_schema();
         quant.validate();
         validate_tensor2d(features, graph.num_nodes, graph.num_features, "public features");
-        // Recompute every private intermediate from the public graph/features
-        // and the canonical model.  Checking only that a supplied trace is
-        // internally self-consistent would allow a prover to choose an
-        // arbitrary witness and merely prove that arbitrary relation.
+
         ForwardResult expected;
         expected.trace.input = features;
         expected.trace.tables = StaticTables::build(quant);
@@ -997,11 +928,9 @@ bool validate_relation(const Graph &graph, const Tensor2D &features,
             const std::size_t hidden_heads = model.hidden_heads();
             hidden.heads.reserve(hidden_heads);
             for (std::size_t head = 0; head < hidden_heads; ++head) {
-                const AttentionScales scales{
-                    quant.s_hprime_hidden[layer][head], quant.s_a_src_hidden[layer][head],
-                    quant.s_a_dst_hidden[layer][head], quant.s_agg_pre[layer], quant.s_agg[layer]};
-                AttentionTrace trace = compute_attention(graph, current, model, quant,
-                                                          expected.trace.tables, layer, head, false, scales);
+                const AttentionScales scales{quant.s_hprime_hidden[layer][head], quant.s_a_src_hidden[layer][head], quant.s_a_dst_hidden[layer][head],
+                                             quant.s_agg_pre[layer], quant.s_agg[layer]};
+                AttentionTrace trace = compute_attention(graph, current, model, quant, expected.trace.tables, layer, head, false, scales);
                 if (trace.output_dim != output_dim) return false;
                 hidden.heads.push_back(std::move(trace));
             }
@@ -1009,8 +938,7 @@ bool validate_relation(const Graph &graph, const Tensor2D &features,
             for (std::size_t node = 0; node < graph.num_nodes; ++node) {
                 for (std::size_t head = 0; head < hidden_heads; ++head) {
                     for (std::size_t col = 0; col < output_dim; ++col) {
-                        hidden.concatenated.at(node, head * output_dim + col) =
-                            hidden.heads[head].activated[node * output_dim + col];
+                        hidden.concatenated.at(node, head * output_dim + col) = hidden.heads[head].activated[node * output_dim + col];
                     }
                 }
             }
@@ -1023,20 +951,15 @@ bool validate_relation(const Graph &graph, const Tensor2D &features,
         for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
             OutputHeadTrace output;
             output.head = head;
-            const AttentionScales scales{
-                quant.s_yprime_output[head], quant.s_a_src_output[head],
-                quant.s_a_dst_output[head], quant.s_out_pre, quant.s_out_head};
-            output.attention = compute_attention(graph, current, model, quant,
-                                                 expected.trace.tables, 0, head, true, scales);
+            const AttentionScales scales{quant.s_yprime_output[head], quant.s_a_src_output[head], quant.s_a_dst_output[head], quant.s_out_pre,
+                                         quant.s_out_head};
+            output.attention = compute_attention(graph, current, model, quant, expected.trace.tables, 0, head, true, scales);
             output.aggregate = output.attention.recovered;
             output.aligned.assign(output.aggregate.size(), 0);
             output.bias.assign(classes, 0);
-            const Tensor &bias = model.tensor(output_family(head) + "/output_bias");
-            if (bias.shape.dims.size() != 1 || bias.shape.dims[0] != classes ||
-                bias.values.size() != classes) return false;
-            for (std::size_t c = 0; c < classes; ++c) {
-                output.bias[c] = quantize_model_value(bias.values[c], quant.s_b_output[head]);
-            }
+            const Tensor& bias = model.tensor(output_family(head) + "/output_bias");
+            if (bias.shape.dims.size() != 1 || bias.shape.dims[0] != classes || bias.values.size() != classes) return false;
+            for (std::size_t c = 0; c < classes; ++c) { output.bias[c] = quantize_model_value(bias.values[c], quant.s_b_output[head]); }
             output.logits.assign(output.aggregate.size(), 0);
             output.alignment_divisions.reserve(output.aggregate.size());
             for (std::size_t i = 0; i < output.aggregate.size(); ++i) {
@@ -1051,14 +974,13 @@ bool validate_relation(const Graph &graph, const Tensor2D &features,
         expected.trace.head_sum.assign(graph.num_nodes * classes, 0);
         for (std::size_t i = 0; i < expected.trace.head_sum.size(); ++i) {
             Wide sum = 0;
-            for (const OutputHeadTrace &head : expected.trace.output_heads) sum += head.logits[i];
+            for (const OutputHeadTrace& head : expected.trace.output_heads) sum += head.logits[i];
             expected.trace.head_sum[i] = checked_int(sum, "validation output head sum");
         }
         expected.trace.final_average_divisions.reserve(expected.trace.head_sum.size());
         expected.trace.logits = Tensor2D(graph.num_nodes, classes);
         for (std::size_t i = 0; i < expected.trace.head_sum.size(); ++i) {
-            const DivisionResult average = signed_round_div(expected.trace.head_sum[i],
-                                                            static_cast<Int>(model.manifest.output_heads));
+            const DivisionResult average = signed_round_div(expected.trace.head_sum[i], static_cast<Int>(model.manifest.output_heads));
             expected.trace.final_average_divisions.push_back(average.witness);
             expected.trace.logits.values[i] = average.value;
         }
@@ -1074,71 +996,62 @@ bool validate_relation(const Graph &graph, const Tensor2D &features,
         expected.trace.ledger.exp_max = expected.trace.tables.exp_max;
         expected.trace.ledger.elu_min = expected.trace.tables.elu_min;
         expected.trace.ledger.elu_max = expected.trace.tables.elu_max;
-        for (const HiddenLayerTrace &hidden : expected.trace.hidden_layers) {
+        for (const HiddenLayerTrace& hidden : expected.trace.hidden_layers) {
             for (std::size_t head = 0; head < hidden.heads.size(); ++head) {
-                const AttentionScales scales{
-                    quant.s_hprime_hidden[hidden.layer][head], quant.s_a_src_hidden[hidden.layer][head],
-                    quant.s_a_dst_hidden[hidden.layer][head], quant.s_agg_pre[hidden.layer], quant.s_agg[hidden.layer]};
-                expected.trace.ledger.add(make_bound_family(hidden_family(hidden.layer, head), graph,
-                                                            features, model, quant, expected.trace.tables,
-                                                            hidden.heads[head], scales));
+                const AttentionScales scales{quant.s_hprime_hidden[hidden.layer][head], quant.s_a_src_hidden[hidden.layer][head],
+                                             quant.s_a_dst_hidden[hidden.layer][head], quant.s_agg_pre[hidden.layer], quant.s_agg[hidden.layer]};
+                expected.trace.ledger.add(
+                    make_bound_family(hidden_family(hidden.layer, head), graph, features, model, quant, expected.trace.tables, hidden.heads[head], scales));
             }
         }
         for (std::size_t head = 0; head < expected.trace.output_heads.size(); ++head) {
-            const AttentionScales scales{
-                quant.s_yprime_output[head], quant.s_a_src_output[head],
-                quant.s_a_dst_output[head], quant.s_out_pre, quant.s_out_head};
-            expected.trace.ledger.add(make_bound_family(output_family(head), graph, current,
-                                                        model, quant, expected.trace.tables,
+            const AttentionScales scales{quant.s_yprime_output[head], quant.s_a_src_output[head], quant.s_a_dst_output[head], quant.s_out_pre,
+                                         quant.s_out_head};
+            expected.trace.ledger.add(make_bound_family(output_family(head), graph, current, model, quant, expected.trace.tables,
                                                         expected.trace.output_heads[head].attention, scales));
         }
         expected.trace.relation_ok = expected.trace.tables.authenticate() && expected.trace.ledger.validate();
-        for (const HiddenLayerTrace &hidden : expected.trace.hidden_layers) {
-            for (const AttentionTrace &head : hidden.heads) expected.trace.relation_ok = expected.trace.relation_ok && head.relation_ok;
+        for (const HiddenLayerTrace& hidden : expected.trace.hidden_layers) {
+            for (const AttentionTrace& head : hidden.heads) expected.trace.relation_ok = expected.trace.relation_ok && head.relation_ok;
         }
-        for (const OutputHeadTrace &head : expected.trace.output_heads) expected.trace.relation_ok = expected.trace.relation_ok && head.attention.relation_ok;
+        for (const OutputHeadTrace& head : expected.trace.output_heads) expected.trace.relation_ok = expected.trace.relation_ok && head.attention.relation_ok;
         if (!expected.trace.relation_ok) return false;
 
         if (result.logits.rows != graph.num_nodes || result.logits.cols != graph.num_classes ||
-            result.logits.values.size() != graph.num_nodes * graph.num_classes ||
-            result.trace.input.rows != graph.num_nodes || result.trace.input.cols != graph.num_features ||
-            result.trace.input.values != features.values || result.logits.values != expected.logits.values ||
-            result.trace.logits.values != expected.trace.logits.values ||
-            result.trace.hidden_layers.size() != expected.trace.hidden_layers.size() ||
-            result.trace.output_heads.size() != expected.trace.output_heads.size() ||
-            result.trace.head_sum != expected.trace.head_sum ||
+            result.logits.values.size() != graph.num_nodes * graph.num_classes || result.trace.input.rows != graph.num_nodes ||
+            result.trace.input.cols != graph.num_features || result.trace.input.values != features.values || result.logits.values != expected.logits.values ||
+            result.trace.logits.values != expected.trace.logits.values || result.trace.hidden_layers.size() != expected.trace.hidden_layers.size() ||
+            result.trace.output_heads.size() != expected.trace.output_heads.size() || result.trace.head_sum != expected.trace.head_sum ||
             !equal_divisions(result.trace.final_average_divisions, expected.trace.final_average_divisions) ||
-            !equal_ledger(result.trace.ledger, expected.trace.ledger)) return false;
-        if (result.trace.tables.table_id != expected.trace.tables.table_id ||
-            result.trace.tables.generator_id != expected.trace.tables.generator_id ||
-            result.trace.tables.digest != expected.trace.tables.digest ||
-            !result.trace.tables.authenticate()) return false;
+            !equal_ledger(result.trace.ledger, expected.trace.ledger))
+            return false;
+        if (result.trace.tables.table_id != expected.trace.tables.table_id || result.trace.tables.generator_id != expected.trace.tables.generator_id ||
+            result.trace.tables.digest != expected.trace.tables.digest || !result.trace.tables.authenticate())
+            return false;
         for (std::size_t layer = 0; layer < expected.trace.hidden_layers.size(); ++layer) {
-            const HiddenLayerTrace &actual_layer = result.trace.hidden_layers[layer];
-            const HiddenLayerTrace &expected_layer = expected.trace.hidden_layers[layer];
+            const HiddenLayerTrace& actual_layer = result.trace.hidden_layers[layer];
+            const HiddenLayerTrace& expected_layer = expected.trace.hidden_layers[layer];
             if (actual_layer.layer != expected_layer.layer || actual_layer.heads.size() != expected_layer.heads.size() ||
-                actual_layer.concatenated.rows != expected_layer.concatenated.rows ||
-                actual_layer.concatenated.cols != expected_layer.concatenated.cols ||
-                actual_layer.concatenated.values != expected_layer.concatenated.values) return false;
+                actual_layer.concatenated.rows != expected_layer.concatenated.rows || actual_layer.concatenated.cols != expected_layer.concatenated.cols ||
+                actual_layer.concatenated.values != expected_layer.concatenated.values)
+                return false;
             for (std::size_t head = 0; head < expected_layer.heads.size(); ++head) {
-                if (!validate_attention(graph, actual_layer.heads[head], false) ||
-                    !equal_attention(actual_layer.heads[head], expected_layer.heads[head])) return false;
+                if (!validate_attention(graph, actual_layer.heads[head], false) || !equal_attention(actual_layer.heads[head], expected_layer.heads[head]))
+                    return false;
             }
         }
         for (std::size_t head = 0; head < expected.trace.output_heads.size(); ++head) {
-            const OutputHeadTrace &actual = result.trace.output_heads[head];
-            const OutputHeadTrace &reference = expected.trace.output_heads[head];
+            const OutputHeadTrace& actual = result.trace.output_heads[head];
+            const OutputHeadTrace& reference = expected.trace.output_heads[head];
             if (actual.head != reference.head || !validate_attention(graph, actual.attention, true) ||
-                !equal_attention(actual.attention, reference.attention) ||
-                actual.bias != reference.bias || actual.aggregate != reference.aggregate ||
+                !equal_attention(actual.attention, reference.attention) || actual.bias != reference.bias || actual.aggregate != reference.aggregate ||
                 actual.aligned != reference.aligned || actual.logits != reference.logits ||
-                !equal_divisions(actual.alignment_divisions, reference.alignment_divisions)) return false;
+                !equal_divisions(actual.alignment_divisions, reference.alignment_divisions))
+                return false;
         }
         return result.trace.relation_ok;
-    } catch (const std::exception &) {
-        return false;
-    }
+    } catch (const std::exception&) { return false; }
 }
 
-} // namespace gat
-} // namespace zkgpt
+}
+}

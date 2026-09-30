@@ -346,8 +346,6 @@ def _audit_assets(root: Path, run_dir: Path, statement: dict[str, str]) -> tuple
     digests = _manifest_files(root, manifest, manifest_path)
     _resource_manifest(root, manifest, manifest_path, digests)
 
-    # These identities must be backed by the exact authenticated files listed
-    # in the manifest.  No formal result may downgrade them to UNAVAILABLE.
     for field in (
         "scale_chain_digest", "static_table_descriptor_digest",
         "integer_bound_ledger_descriptor_digest", "sorted_lookup_descriptor_digest",

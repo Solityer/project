@@ -318,11 +318,7 @@ impl GraphWitness {
 
     /// Convert explicit runtime parameter witnesses to tensors.
     pub fn get_param_tensor(&self) -> Vec<Tensor<Fp>> {
-        self.params
-            .clone()
-            .into_iter()
-            .map(|p| Tensor::from(p.into_iter()))
-            .collect()
+        self.params.clone().into_iter().map(|p| Tensor::from(p.into_iter())).collect()
     }
 
     ///
@@ -1268,9 +1264,6 @@ impl GraphCircuit {
             GraphError::ReadWriteFileError(path.display().to_string(), e.to_string())
         })?;
         let writer = std::io::BufWriter::with_capacity(*EZKL_BUF_CAPACITY, f);
-        // A compiled circuit contains structure and settings only.  Runtime
-        // private parameters are witness data and must never be serialized
-        // into this artifact.
         let mut compiled = self.clone();
         Self::redact_compiled_model_params(&mut compiled.core.model);
         compiled.graph_witness.params.clear();
@@ -1830,8 +1823,7 @@ impl GraphCircuit {
         }
         if let Some(runtime_params) = runtime_params {
             let expected = self.model().graph.param_shapes()?;
-            if expected.len() != 1 || runtime_params.len() != expected[0].iter().product::<usize>()
-            {
+            if expected.len() != 1 || runtime_params.len() != expected[0].iter().product::<usize>() {
                 return Err(GraphError::MisformedParams(
                     "runtime parameter tensor shape does not match canonical graph".into(),
                 ));
@@ -1887,15 +1879,10 @@ impl GraphCircuit {
         }
 
         let mut model_results = if let Some(runtime_params) = runtime_params {
-            self.model().forward_with_runtime_params(
-                inputs,
-                std::slice::from_ref(runtime_params),
-                &self.settings().run_args,
-                region_settings,
-            )?
-        } else {
             self.model()
-                .forward(inputs, &self.settings().run_args, region_settings)?
+                .forward_with_runtime_params(inputs, std::slice::from_ref(runtime_params), &self.settings().run_args, region_settings,)?
+        } else {
+            self.model().forward(inputs, &self.settings().run_args, region_settings)?
         };
 
         if visibility.output.requires_processing() {
@@ -2050,9 +2037,6 @@ impl Circuit<Fp> for GraphCircuit {
     fn without_witnesses(&self) -> Self {
         let mut circuit = self.clone();
         Self::redact_compiled_model_params(&mut circuit.core.model);
-        // Key generation must not retain a caller's runtime model closure.
-        // Keep only shape-correct zero placeholders so synthesis can build
-        // the fixed layout; the real witness is loaded for proving later.
         circuit.graph_witness.params = self
             .model()
             .graph
@@ -2229,11 +2213,6 @@ impl Circuit<Fp> for GraphCircuit {
             )?;
         }
 
-        // Canonical GAT parameters arrive as one flat private input.  First
-        // assign that input once; the Poseidon module and the graph relation
-        // then consume the same `PrevAssigned` advice cells.  This prevents a
-        // hash-only path from leaving the actual parameter relation
-        // unconstrained.
         let mut model = self.model().clone();
         let param_visibility = &self.settings().run_args.param_visibility;
         let mut runtime_param_values: Option<Vec<ValTensor<Fp>>> = None;
@@ -2258,8 +2237,7 @@ impl Circuit<Fp> for GraphCircuit {
                 return Err(PlonkError::Synthesis);
             }
             parameter.set_visibility(param_visibility);
-            let parameter: ValTensor<Fp> =
-                parameter.try_into().map_err(|_| PlonkError::Synthesis)?;
+            let parameter: ValTensor<Fp> = parameter.try_into().map_err(|_| PlonkError::Synthesis)?;
 
             let challenges = if let Some(einsum_config) = &config.model_config.base.einsums {
                 einsum_config
@@ -2271,9 +2249,6 @@ impl Circuit<Fp> for GraphCircuit {
             } else {
                 vec![]
             };
-            // Keep the runtime parameter assignment in the model's module
-            // namespace so its advice allocator does not overlap the module
-            // regions used by the parameter hash.
             layouter.assign_region(|| "_enter_module_2", |_| Ok(()))?;
             let (assigned_parameter, assigned_constants) = layouter.assign_region(
                 || "runtime_parameter_input",
@@ -2317,14 +2292,8 @@ impl Circuit<Fp> for GraphCircuit {
             runtime_param_values = Some(vec![assigned_parameter]);
         }
 
-        // Legacy ONNX models still use the original constant replacement
-        // path.  It is intentionally unreachable for a graph with explicit
-        // runtime parameter inputs.
         trace!("running params module layout");
-        if self.model().graph.num_param_inputs() == 0
-            && !self.model().get_all_params().is_empty()
-            && param_visibility.requires_processing()
-        {
+        if self.model().graph.num_param_inputs() == 0 && !self.model().get_all_params().is_empty() && param_visibility.requires_processing() {
             // now we need to flatten the params
             let consts = self.model().get_all_params();
 

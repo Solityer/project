@@ -36,22 +36,14 @@ namespace gatzk::crypto
     {
         constexpr std::size_t kBaseConversionChunkSize = 1ULL << 20;
 
-        // Existing resident CUDA MSM remains the preferred fast path when the
-        // complete MSM fits safely in the current resource envelope.
-        // Dedicated-memory GPUs retain the existing conservative resident ceiling.
         constexpr std::size_t kMaxDiscreteResidentCudaMsmCount = 1ULL << 25;
 
-        // Integrated UMA devices can admit a larger resident prefix.  Allocation
-        // failure remains fail-closed and falls back to bounded streamed CUDA.
         constexpr std::size_t kMaxIntegratedResidentCudaMsmCount = 1ULL << 26;
 
         constexpr std::size_t kMaxDiscreteResidentCudaMsmBatchSize = 8;
 
         constexpr std::size_t kMaxIntegratedResidentCudaMsmBatchSize = 16;
 
-        // A direct resident batch is only worthwhile while the complete scalar
-        // working set remains bounded.  Larger batches keep the resident SRS
-        // bases but fall through to the bounded chunked/streamed routes.
         constexpr std::size_t kMaxDiscreteResidentBatchScalarCount = 1ULL << 24;
 
         constexpr std::size_t kMaxIntegratedResidentBatchScalarCount = 1ULL << 25;
@@ -59,10 +51,6 @@ namespace gatzk::crypto
         constexpr std::size_t kPreferredStreamMsmChunkSize = 1ULL << 20;
 
         constexpr std::size_t kMinimumStreamMsmChunkSize = 1ULL << 16;
-        // ICICLE v2.8.0 direct resident BLS12-381 MSM is kept within the
-        // validated <= 2^23 execution range.  Larger MSMs remain on CUDA but
-        // are routed through the existing bounded chunked/streamed paths,
-        // avoiding one oversized ICICLE bucket-method invocation.
         constexpr std::size_t kIcicleV28MaximumDirectResidentMsmCount = 1ULL << 23;
 
         constexpr std::size_t kDeviceBaseCacheLimitBytes = 24ULL << 30;
@@ -396,10 +384,7 @@ namespace gatzk::crypto
 
             ScopedDeviceScalarBuffer &operator=(const ScopedDeviceScalarBuffer &) = delete;
 
-            bls12_381::scalar_t *data()
-            {
-                return device_scalars_;
-            }
+            bls12_381::scalar_t *data() { return device_scalars_; }
 
         private:
             bls12_381::scalar_t *device_scalars_ = nullptr;
@@ -551,10 +536,7 @@ namespace gatzk::crypto
             std::size_t capacity = 0;
             std::array<std::string, 3> canonical_anchors;
 
-            bool operator==(const BaseStorageFingerprint &other) const
-            {
-                return capacity == other.capacity && canonical_anchors == other.canonical_anchors;
-            }
+            bool operator==(const BaseStorageFingerprint &other) const { return capacity == other.capacity && canonical_anchors == other.canonical_anchors; }
         };
 
         BaseStorageFingerprint fingerprint_storage(const G1Point *points, std::size_t capacity)
@@ -649,8 +631,6 @@ namespace gatzk::crypto
                 }
             }
 
-            // The caller holds the single CUDA-MSM execution lock, so lookup,
-            // preparation, eviction, and use cannot race with another MSM.
             bls12_381::affine_t *get_or_prepare(const G1Point *points, std::size_t count, std::size_t storage_capacity)
             {
                 const auto fingerprint = fingerprint_storage(points, storage_capacity);
@@ -659,9 +639,6 @@ namespace gatzk::crypto
                 {
                     if (!(found->second.fingerprint == fingerprint))
                     {
-                        // A later context reused the same allocator address.
-                        // Retire the stale device material before admitting
-                        // the new immutable SRS identity.
                         erase_entry(found, "stale base replacement");
                         found = entries_.end();
                     }
@@ -684,9 +661,6 @@ namespace gatzk::crypto
                     }
                     else
                     {
-                        // Only replace the allocation when its reserved
-                        // capacity is genuinely insufficient.  Ordinary
-                        // prefix growth appends only the missing suffix.
                         erase_entry(found, "base-prefix capacity upgrade");
 
                         found = entries_.end();
@@ -847,14 +821,6 @@ namespace gatzk::crypto
                     (batch_index == std::numeric_limits<std::size_t>::max() ? std::string{} : " batch_index=" + std::to_string(batch_index)));
             }
 
-            // ICICLE uses homogeneous projective coordinates:
-            //     x_affine = X / Z
-            //     y_affine = Y / Z
-            //
-            // Import X/Y/Z canonically first and perform only the final
-            // representation-boundary normalization in mcl.  The MSM itself,
-            // bucket accumulation, reduction, SRS residency and batching all
-            // remain on ICICLE/CUDA.
             const auto projective_x = to_mcl_field<mcl::Fp>(input.x);
 
             const auto projective_y = to_mcl_field<mcl::Fp>(input.y);
@@ -907,11 +873,6 @@ namespace gatzk::crypto
 
             const bool integrated = cuda_msm_device_is_integrated();
 
-            // Direct full-width ICICLE resident MSMs above 2^23 have produced
-            // invalid projective results on the pinned v2.8.0 backend.
-            // Keep the immutable base prefix resident on UMA when possible,
-            // but execute the scalar dimension through the bounded chunked
-            // route instead of issuing one oversized MSM.
             if (!bounded_integrated_scalar_staging && count > kIcicleV28MaximumDirectResidentMsmCount)
             {
                 return false;
@@ -970,11 +931,6 @@ namespace gatzk::crypto
             {
                 const auto host = util::cached_effective_memory_snapshot();
 
-                // UMA device memory is the host working set.  A non-zero
-                // fallback byte count is not evidence that MemAvailable (or
-                // a cgroup limit/current pair) was trustworthy; do not let
-                // an unknown host snapshot fail open while cudaMemGetInfo()
-                // is unable to distinguish reclaimable DRAM from page cache.
                 if (!host.effective_available_known)
                 {
                     return false;
@@ -1021,10 +977,6 @@ namespace gatzk::crypto
 
             const auto host = util::cached_effective_memory_snapshot();
 
-            // Device free bytes above are deliberately checked separately
-            // from host staging/reserve admission.  If the host snapshot is
-            // unknown, fail closed for the host portion rather than treating
-            // device free memory as a proxy for host RAM.
             if (!host.effective_available_known)
             {
                 return false;
@@ -1162,10 +1114,6 @@ namespace gatzk::crypto
 
             config.batch_size = static_cast<int>(batch_size);
 
-            // ICICLE v2.8 represents a shared-base batch by keeping
-            // points_size equal to one MSM width while batch_size is greater
-            // than one.  device_points therefore contains exactly one
-            // immutable SRS prefix shared by all scalar vectors.
             config.are_points_on_device = true;
 
             config.are_points_montgomery_form = false;
@@ -1391,10 +1339,6 @@ namespace gatzk::crypto
                 auto config = msm::default_msm_config();
                 config.points_size = static_cast<int>(current_count);
 
-                // The cached device slice contains one SRS chunk.  ICICLE
-                // v2.8 interprets points_size == current_count as one shared
-                // base set even when the scalar batch_size is greater than
-                // one.
                 config.are_points_on_device = true;
 
                 config.are_points_montgomery_form = false;
@@ -1602,10 +1546,7 @@ namespace gatzk::crypto
             return buffers;
         }
 
-        void release_stream_msm_buffers()
-        {
-            stream_msm_buffers().release();
-        }
+        void release_stream_msm_buffers() { stream_msm_buffers().release(); }
         void upload_stream_msm_points(StreamMsmBuffers &buffers, const G1Point *points, std::size_t count)
         {
             static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap exactly one mcl::G1");
@@ -1724,7 +1665,6 @@ namespace gatzk::crypto
 
                     util::info("cuda_msm route=streamed_retry count=" + std::to_string(count) + " chunk=" + std::to_string(chunk_size));
 
-                    // Retry the same mathematical range using the smaller valid buffer.
                     continue;
                 }
 
@@ -1830,9 +1770,6 @@ namespace gatzk::crypto
 
                 config.batch_size = static_cast<int>(batch_size);
 
-                // One SRS chunk is uploaded for the whole scalar batch.
-                // In ICICLE v2.8, points_size == current_count together with
-                // batch_size > 1 is the canonical shared-base batch layout.
                 config.are_points_on_device = true;
 
                 config.are_points_montgomery_form = false;
@@ -1902,7 +1839,7 @@ namespace gatzk::crypto
             }
         }
 
-    } // namespace
+    }
 
     bool cuda_g1_msm_resident_prefix_available(const G1Point *points, std::size_t count, std::size_t stable_srs_capacity)
     {
@@ -2001,13 +1938,11 @@ namespace gatzk::crypto
                          std::size_t stable_srs_capacity, const std::uint64_t *device_montgomery_scalars, std::size_t device_montgomery_scalar_capacity,
                          int device_montgomery_scalar_device)
     {
-        // CPU backend retains the existing canonical CPU MSM.
         if (!util::route2_options().cuda_field_hotspots)
         {
             return false;
         }
 
-        // In cuda_hotspots mode a genuine MSM is GPU-required.
         if (!algebra::cuda_backend_available())
         {
             throw std::runtime_error("CUDA G1 MSM requested but CUDA runtime "
@@ -2041,13 +1976,6 @@ namespace gatzk::crypto
 
         const bool integrated = cuda_msm_device_is_integrated();
 
-        // Primary route: one complete resident MSM.
-        //
-        // Resource pressure in scalar staging must not invalidate an already
-        // prepared immutable SRS base cache.  Base residency and scalar
-        // workspace have independent lifetimes: preserving the former lets
-        // the bounded fallback reuse the expensive normalized/uploaded SRS
-        // instead of paying that cost a second time.
         if (stable_srs_bases && resident_cuda_msm_is_safe(cache, points, count, stable_srs_capacity, 1, false, device_montgomery_scalars != nullptr))
         {
             try
@@ -2064,9 +1992,6 @@ namespace gatzk::crypto
             }
             catch (const CudaMsmResourcePressure &)
             {
-                // The resident base preparation may already have completed.
-                // Drop only scalar workspace and preserve immutable SRS
-                // residency for the bounded fallback below.
                 reusable_scalar_staging().release();
             }
             catch (const std::bad_alloc &)
@@ -2075,10 +2000,6 @@ namespace gatzk::crypto
             }
         }
 
-        // UMA-only fallback: retain the immutable SRS bases while bounding
-        // scalar staging to one chunk.  If this path also encounters scalar
-        // pressure, keep the resident base cache alive; the final streamed
-        // route will evict it only if that memory is genuinely required.
         if (stable_srs_bases && integrated &&
             resident_cuda_msm_is_safe(cache, points, count, stable_srs_capacity, 1, true, device_montgomery_scalars != nullptr))
         {
@@ -2108,9 +2029,6 @@ namespace gatzk::crypto
             }
         }
 
-        // First try bounded streaming while preserving useful resident SRS
-        // material.  Only genuine resource pressure is allowed to evict the
-        // resident cache and retry the same CUDA MSM.
         try
         {
             execute_streamed_cuda_msm(output, points, scalars, count, device_montgomery_scalars, device_montgomery_scalar_capacity,
@@ -2216,8 +2134,6 @@ namespace gatzk::crypto
         auto &cache = DeviceBaseCache::instance();
         const bool integrated = cuda_msm_device_is_integrated();
 
-        // Route 1: one native ICICLE same-base batch while the complete
-        // scalar working set fits the direct resident envelope.
         if (resident_cuda_msm_is_safe(cache, points, max_count, stable_srs_capacity, batch_size, false, resident_scalar_batch))
         {
             try
@@ -2231,8 +2147,6 @@ namespace gatzk::crypto
             }
             catch (const CudaMsmResourcePressure &)
             {
-                // Do not destroy a successfully prepared base prefix merely
-                // because the complete batched scalar staging was too large.
                 reusable_scalar_staging().release();
             }
             catch (const std::bad_alloc &)
@@ -2241,17 +2155,6 @@ namespace gatzk::crypto
             }
         }
 
-        // Route 2: full-width warm-resident wave.
-        //
-        // A large same-base batch can exceed the *aggregate* scalar envelope
-        // even though every individual MSM fits comfortably.  Direct scalar
-        // chunking splits the dimension into 2^20 chunks, turning,
-        // for example, a 50M x 2 batch into roughly fifty ICICLE launches.
-        //
-        // When the SRS prefix is already resident, execute the independent
-        // scalar vectors as full-width MSMs one after another.  The expensive
-        // base normalization/upload is paid zero additional times and scalar
-        // staging is reused between members.
         if (batch_size > 1 && cache.contains_usable_prefix(points, max_count, stable_srs_capacity) &&
             resident_cuda_msm_is_safe(cache, points, max_count, stable_srs_capacity, 1, false, resident_scalar_batch))
         {
@@ -2271,8 +2174,6 @@ namespace gatzk::crypto
             }
             catch (const CudaMsmResourcePressure &)
             {
-                // Preserve the immutable bases.  Only the scalar workspace
-                // needs to be retired before the bounded route is attempted.
                 reusable_scalar_staging().release();
             }
             catch (const std::bad_alloc &)
@@ -2281,13 +2182,6 @@ namespace gatzk::crypto
             }
         }
 
-        // Route 3: on UMA, retain the cached SRS and bound only the scalar
-        // dimension when a full-width resident wave is not admissible.
-        //
-        // Resident device scalar vectors are executed one member at a time
-        // below, so admission must reflect the actual peak batch width of one
-        // instead of conservatively multiplying the bounded staging envelope
-        // by the outer same-base batch size.
         const auto bounded_batch_size = resident_scalar_batch ? std::size_t{1} : batch_size;
 
         if (integrated && resident_cuda_msm_is_safe(cache, points, max_count, stable_srs_capacity, bounded_batch_size, true, resident_scalar_batch))
@@ -2392,9 +2286,6 @@ namespace gatzk::crypto
             }
         }
 
-        // Keep the CUDA execution lock while the shared-base
-        // streamed batch is active.  The point vector is uploaded
-        // once per chunk for the whole batch.
         try
         {
             execute_streamed_cuda_msm_same_bases_batch(outputs, points, scalar_vectors, counts, max_count, batch_size);

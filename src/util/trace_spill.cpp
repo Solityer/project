@@ -43,10 +43,7 @@ namespace gatzk::util
         constexpr char kStagingPrefix[] = ".staging-proof-";
         constexpr std::size_t kMetadataLimit = 1024;
 
-        [[noreturn]] void throw_errno(const char *operation)
-        {
-            throw std::system_error(errno, std::generic_category(), operation);
-        }
+        [[noreturn]] void throw_errno(const char *operation) { throw std::system_error(errno, std::generic_category(), operation); }
 
         void close_noexcept(int *fd) noexcept
         {
@@ -57,10 +54,7 @@ namespace gatzk::util
             }
         }
 
-        bool owner_and_mode(const struct stat &status, mode_t mode)
-        {
-            return status.st_uid == ::geteuid() && (status.st_mode & 0777) == mode;
-        }
+        bool owner_and_mode(const struct stat &status, mode_t mode) { return status.st_uid == ::geteuid() && (status.st_mode & 0777) == mode; }
 
         bool is_directory_component(const std::filesystem::path &component)
         {
@@ -128,7 +122,9 @@ namespace gatzk::util
                         throw_errno("failed to open trace spill directory component");
                     }
 
-                    struct stat status{};
+                    struct stat status
+                    {
+                    };
                     if (::fstat(next, &status) != 0 || !S_ISDIR(status.st_mode))
                     {
                         const auto saved_errno = errno != 0 ? errno : ENOTDIR;
@@ -217,10 +213,7 @@ namespace gatzk::util
             }
         }
 
-        bool hex_lower(char value)
-        {
-            return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
-        }
+        bool hex_lower(char value) { return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f'); }
 
         bool valid_lease_name(std::string_view value)
         {
@@ -469,8 +462,6 @@ namespace gatzk::util
 
             std::istringstream fields(text.substr(close_paren + 2));
             std::string token;
-            // The first token after the command is field 3 (state); field 22
-            // is therefore the twentieth token in this suffix.
             for (int field = 3; field <= 22; ++field)
             {
                 if (!(fields >> token))
@@ -514,7 +505,9 @@ namespace gatzk::util
             {
                 throw_errno("failed to open trace spill root lock");
             }
-            struct stat status{};
+            struct stat status
+            {
+            };
             if (::fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) || !owner_and_mode(status, kPrivateFileMode) || status.st_nlink != 1)
             {
                 const auto saved_errno = errno != 0 ? errno : EACCES;
@@ -602,7 +595,9 @@ namespace gatzk::util
         {
             int fd = -1;
             LeaseMetadata metadata;
-            struct stat status{};
+            struct stat status
+            {
+            };
         };
 
         std::optional<MetadataHandle> open_metadata_handle(int lease_fd, std::string_view expected_name)
@@ -612,7 +607,9 @@ namespace gatzk::util
             {
                 return std::nullopt;
             }
-            struct stat status{};
+            struct stat status
+            {
+            };
             if (::fstat(metadata_fd, &status) != 0 || !valid_private_regular(status) || status.st_size < 0 ||
                 static_cast<std::uintmax_t>(status.st_size) > kMetadataLimit)
             {
@@ -643,7 +640,9 @@ namespace gatzk::util
                 return false;
             }
 
-            struct stat current_directory{};
+            struct stat current_directory
+            {
+            };
             if (::fstatat(root_fd, std::string(name).c_str(), &current_directory, AT_SYMLINK_NOFOLLOW) != 0 ||
                 !same_directory(expected_directory, current_directory))
             {
@@ -662,11 +661,6 @@ namespace gatzk::util
                 metadata->fd = -1;
             };
 
-            // The metadata used to decide that this lease is stale is an
-            // authenticated identity, not merely a hint.  Re-opened content
-            // and inode identity must both match it before anything can be
-            // unlinked.  This closes the replacement window between the
-            // stale-process check and the destructive phase.
             if (!same_metadata_identity(metadata->metadata, expected_metadata) || !same_regular_file(metadata->status, expected_metadata_status))
             {
                 close_metadata();
@@ -686,7 +680,9 @@ namespace gatzk::util
             struct EntrySnapshot
             {
                 std::string name;
-                struct stat status{};
+                struct stat status
+                {
+                };
             };
             std::vector<EntrySnapshot> snapshots;
             snapshots.reserve(entries.size());
@@ -699,7 +695,9 @@ namespace gatzk::util
                     close_metadata();
                     return false;
                 }
-                struct stat status{};
+                struct stat status
+                {
+                };
                 if (::fstatat(lease_fd, entry.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0 || !valid_private_regular(status))
                 {
                     close_metadata();
@@ -718,7 +716,9 @@ namespace gatzk::util
                 return false;
             }
 
-            struct stat lock_status{};
+            struct stat lock_status
+            {
+            };
             if (lock_fd < 0 || ::fstat(lock_fd, &lock_status) != 0 || !valid_private_regular(lock_status))
             {
                 close_metadata();
@@ -733,10 +733,6 @@ namespace gatzk::util
                 return false;
             }
 
-            // Re-scan and compare the complete directory view immediately
-            // before any unlink.  A replacement of metadata, lock, payload,
-            // or a root entry therefore fails closed without changing the
-            // unverifiable directory.
             std::vector<std::string> second_entries;
             try
             {
@@ -757,7 +753,9 @@ namespace gatzk::util
             }
             for (const auto &snapshot : snapshots)
             {
-                struct stat status{};
+                struct stat status
+                {
+                };
                 if (::fstatat(lease_fd, snapshot.name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0 || !same_regular_file(snapshot.status, status))
                 {
                     close_metadata();
@@ -765,7 +763,9 @@ namespace gatzk::util
                 }
             }
 
-            struct stat metadata_after_read{};
+            struct stat metadata_after_read
+            {
+            };
             if (::fstat(metadata->fd, &metadata_after_read) != 0 || !same_regular_file(metadata->status, metadata_after_read) ||
                 !same_regular_file(expected_metadata_status, metadata_after_read))
             {
@@ -773,10 +773,6 @@ namespace gatzk::util
                 return false;
             }
 
-            // Read and parse the bytes again immediately before the final
-            // unlink.  A same-UID writer can change file contents without
-            // changing its stat identity; such a replacement is therefore
-            // fail-closed even when all directory entries still match.
             LeaseMetadata metadata_before_unlink;
             try
             {
@@ -825,7 +821,9 @@ namespace gatzk::util
         bool safe_remove_staging(int root_fd, std::string_view name, int staging_fd, int lock_fd, const struct stat &expected_directory,
                                  const StagingIdentity &identity)
         {
-            struct stat current_directory{};
+            struct stat current_directory
+            {
+            };
             if (::fstatat(root_fd, std::string(name).c_str(), &current_directory, AT_SYMLINK_NOFOLLOW) != 0 ||
                 !same_directory(expected_directory, current_directory))
             {
@@ -867,7 +865,9 @@ namespace gatzk::util
             struct EntrySnapshot
             {
                 std::string name;
-                struct stat status{};
+                struct stat status
+                {
+                };
             };
             std::vector<EntrySnapshot> snapshots;
             snapshots.reserve(entries.size());
@@ -884,7 +884,9 @@ namespace gatzk::util
                     }
                     return false;
                 }
-                struct stat status{};
+                struct stat status
+                {
+                };
                 if (::fstatat(staging_fd, entry.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0 || !valid_private_regular(status))
                 {
                     if (metadata.has_value())
@@ -911,7 +913,9 @@ namespace gatzk::util
                 return false;
             }
 
-            struct stat lock_status{};
+            struct stat lock_status
+            {
+            };
             if (saw_lock && (::fstat(lock_fd, &lock_status) != 0 || !valid_private_regular(lock_status)))
             {
                 if (metadata.has_value())
@@ -971,7 +975,9 @@ namespace gatzk::util
             }
             for (const auto &snapshot : snapshots)
             {
-                struct stat status{};
+                struct stat status
+                {
+                };
                 if (::fstatat(staging_fd, snapshot.name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0 || !same_regular_file(snapshot.status, status))
                 {
                     if (metadata.has_value())
@@ -1030,8 +1036,6 @@ namespace gatzk::util
                 }
                 catch (...)
                 {
-                    // Destruction is best-effort and must never terminate the
-                    // process on a replacement race or allocation failure.
                 }
                 unlock_close(&root_lock_fd);
             }
@@ -1048,7 +1052,9 @@ namespace gatzk::util
             {
                 return std::nullopt;
             }
-            struct stat status{};
+            struct stat status
+            {
+            };
             if (::fstat(metadata_fd, &status) != 0 || !S_ISREG(status.st_mode) || !owner_and_mode(status, kPrivateFileMode) || status.st_nlink != 1 ||
                 status.st_size < 0 || static_cast<std::uintmax_t>(status.st_size) > kMetadataLimit)
             {
@@ -1081,8 +1087,6 @@ namespace gatzk::util
             }
             catch (const std::exception &)
             {
-                // A directory scan failure is fail-closed: no lease is
-                // removed when the complete root view is not available.
                 return;
             }
 
@@ -1100,7 +1104,9 @@ namespace gatzk::util
                     {
                         continue;
                     }
-                    struct stat staging_status{};
+                    struct stat staging_status
+                    {
+                    };
                     if (::fstat(staging_fd, &staging_status) != 0 || !S_ISDIR(staging_status.st_mode) || !owner_and_mode(staging_status, kPrivateDirectoryMode))
                     {
                         (void)::close(staging_fd);
@@ -1118,7 +1124,9 @@ namespace gatzk::util
                     int staging_lock_fd = ::openat(staging_fd, kLeaseLockName, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
                     if (staging_lock_fd >= 0)
                     {
-                        struct stat lock_status{};
+                        struct stat lock_status
+                        {
+                        };
                         if (::fstat(staging_lock_fd, &lock_status) != 0 || !valid_private_regular(lock_status) ||
                             ::flock(staging_lock_fd, LOCK_EX | LOCK_NB) != 0)
                         {
@@ -1143,7 +1151,9 @@ namespace gatzk::util
                     continue;
                 }
 
-                struct stat directory_status{};
+                struct stat directory_status
+                {
+                };
                 if (::fstat(lease_fd, &directory_status) != 0 || !S_ISDIR(directory_status.st_mode) || !owner_and_mode(directory_status, kPrivateDirectoryMode))
                 {
                     (void)::close(lease_fd);
@@ -1153,8 +1163,6 @@ namespace gatzk::util
                 auto metadata = read_valid_metadata(lease_fd, name);
                 if (!metadata.has_value())
                 {
-                    // This is either a legacy directory or an incomplete
-                    // creation.  Never infer staleness from its mtime/PID.
                     (void)::close(lease_fd);
                     continue;
                 }
@@ -1169,7 +1177,9 @@ namespace gatzk::util
                     (void)::close(lease_fd);
                     continue;
                 }
-                struct stat lock_status{};
+                struct stat lock_status
+                {
+                };
                 if (::fstat(lock_fd, &lock_status) != 0 || !valid_private_regular(lock_status) || ::flock(lock_fd, LOCK_EX | LOCK_NB) != 0)
                 {
                     close_noexcept(&metadata->fd);
@@ -1214,8 +1224,8 @@ namespace gatzk::util
         class FdOutputStream final : public std::ostream
         {
         public:
-            explicit FdOutputStream(int fd)
-                : std::ostream(nullptr), buffer_(std::make_unique<__gnu_cxx::stdio_filebuf<char>>(fd, std::ios::binary | std::ios::out | std::ios::app))
+            explicit FdOutputStream(int fd) :
+                std::ostream(nullptr), buffer_(std::make_unique<__gnu_cxx::stdio_filebuf<char>>(fd, std::ios::binary | std::ios::out | std::ios::app))
             {
                 if (!buffer_->is_open())
                 {
@@ -1225,10 +1235,7 @@ namespace gatzk::util
                 rdbuf(buffer_.get());
             }
 
-            bool is_open() const noexcept
-            {
-                return buffer_ != nullptr && buffer_->is_open();
-            }
+            bool is_open() const noexcept { return buffer_ != nullptr && buffer_->is_open(); }
 
         private:
             std::unique_ptr<__gnu_cxx::stdio_filebuf<char>> buffer_;
@@ -1237,8 +1244,8 @@ namespace gatzk::util
         class FdInputStream final : public std::istream
         {
         public:
-            explicit FdInputStream(int fd)
-                : std::istream(nullptr), buffer_(std::make_unique<__gnu_cxx::stdio_filebuf<char>>(fd, std::ios::binary | std::ios::in))
+            explicit FdInputStream(int fd) :
+                std::istream(nullptr), buffer_(std::make_unique<__gnu_cxx::stdio_filebuf<char>>(fd, std::ios::binary | std::ios::in))
             {
                 if (!buffer_->is_open())
                 {
@@ -1248,10 +1255,7 @@ namespace gatzk::util
                 rdbuf(buffer_.get());
             }
 
-            bool is_open() const noexcept
-            {
-                return buffer_ != nullptr && buffer_->is_open();
-            }
+            bool is_open() const noexcept { return buffer_ != nullptr && buffer_->is_open(); }
 
         private:
             std::unique_ptr<__gnu_cxx::stdio_filebuf<char>> buffer_;
@@ -1269,7 +1273,9 @@ namespace gatzk::util
             {
                 throw_errno("failed to create trace spill payload");
             }
-            struct stat status{};
+            struct stat status
+            {
+            };
             if (::fchmod(fd, kPrivateFileMode) != 0 || ::fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) || !owner_and_mode(status, kPrivateFileMode) ||
                 status.st_nlink != 1)
             {
@@ -1294,7 +1300,9 @@ namespace gatzk::util
             {
                 throw_errno("failed to open trace spill payload");
             }
-            struct stat status{};
+            struct stat status
+            {
+            };
             if (::fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) || !owner_and_mode(status, kPrivateFileMode) || status.st_nlink != 1)
             {
                 const auto saved_errno = errno != 0 ? errno : EACCES;
@@ -1305,12 +1313,9 @@ namespace gatzk::util
             return fd;
         }
 
-    } // namespace
-
-    std::filesystem::path TraceSpillLease::default_root()
-    {
-        return (std::filesystem::current_path() / "runs" / ".trace_spill").lexically_normal();
     }
+
+    std::filesystem::path TraceSpillLease::default_root() { return (std::filesystem::current_path() / "runs" / ".trace_spill").lexically_normal(); }
 
     std::shared_ptr<const TraceSpillLease> TraceSpillLease::create(const std::filesystem::path &root)
     {
@@ -1350,7 +1355,9 @@ namespace gatzk::util
                     throw_errno("failed to open trace spill lease directory");
                 }
 
-                struct stat directory_status{};
+                struct stat directory_status
+                {
+                };
                 if (::fstat(lease_fd, &directory_status) != 0 || !owner_and_mode(directory_status, kPrivateDirectoryMode))
                 {
                     (void)::close(lease_fd);
@@ -1365,7 +1372,9 @@ namespace gatzk::util
                     (void)::unlinkat(root_fd, staging_name.c_str(), AT_REMOVEDIR);
                     throw_errno("failed to create trace spill lease lock");
                 }
-                struct stat lock_status{};
+                struct stat lock_status
+                {
+                };
                 if (::fchmod(lock_fd, kPrivateFileMode) != 0 || ::fstat(lock_fd, &lock_status) != 0 || !valid_private_regular(lock_status) ||
                     ::flock(lock_fd, LOCK_EX | LOCK_NB) != 0)
                 {
@@ -1392,7 +1401,9 @@ namespace gatzk::util
                 }
 
                 bool published = false;
-                struct stat metadata_status{};
+                struct stat metadata_status
+                {
+                };
                 try
                 {
                     const auto metadata = std::string("version=1\n") + "name=" + name + "\n" + "pid=" + std::to_string(creator_pid) + "\n" +
@@ -1446,10 +1457,6 @@ namespace gatzk::util
                 }
                 catch (...)
                 {
-                    // Publication preceded the object allocation.  Complete
-                    // the same authenticated cleanup while the root lock is
-                    // still held so a bad_alloc cannot strand an active
-                    // creator record in this process.
                     try
                     {
                         (void)safe_remove_lease(root_fd, name, lease_fd, lock_fd, directory_status, expected_metadata, metadata_status);
@@ -1497,10 +1504,10 @@ namespace gatzk::util
 
     TraceSpillLease::TraceSpillLease(int root_fd, int lease_fd, int lock_fd, std::filesystem::path root, std::filesystem::path path, std::string name,
                                      std::uint64_t device, std::uint64_t inode, std::uint64_t creator_pid, std::uint64_t creator_start_ticks,
-                                     std::string creator_nonce, struct stat metadata_status) noexcept
-        : root_fd_(root_fd), lease_fd_(lease_fd), lock_fd_(lock_fd), root_(std::move(root)), path_(std::move(path)), name_(std::move(name)), device_(device),
-          inode_(inode), creator_pid_(creator_pid), creator_start_ticks_(creator_start_ticks), creator_nonce_(std::move(creator_nonce)),
-          metadata_status_(metadata_status)
+                                     std::string creator_nonce, struct stat metadata_status) noexcept :
+        root_fd_(root_fd), lease_fd_(lease_fd), lock_fd_(lock_fd), root_(std::move(root)), path_(std::move(path)), name_(std::move(name)), device_(device),
+        inode_(inode), creator_pid_(creator_pid), creator_start_ticks_(creator_start_ticks), creator_nonce_(std::move(creator_nonce)),
+        metadata_status_(metadata_status)
     {
     }
 
@@ -1514,7 +1521,9 @@ namespace gatzk::util
                               current_identity.start_ticks == creator_start_ticks_;
             if (creator_process && root_fd_ >= 0 && lease_fd_ >= 0)
             {
-                struct stat expected_directory{};
+                struct stat expected_directory
+                {
+                };
                 expected_directory.st_dev = static_cast<dev_t>(device_);
                 expected_directory.st_ino = static_cast<ino_t>(inode_);
                 expected_directory.st_mode = S_IFDIR | kPrivateDirectoryMode;
@@ -1529,14 +1538,8 @@ namespace gatzk::util
         }
         catch (...)
         {
-            // All cleanup below is descriptor-only and noexcept.  In
-            // particular, a failed process-identity allocation must not turn
-            // a normal destructor into std::terminate.
         }
         close_noexcept(&lease_fd_);
-        // A fork child inherits the parent's open file description.  Calling
-        // flock(LOCK_UN) here would unlock the parent's lease, so a
-        // non-creator process may only close its inherited descriptors.
         if (creator_process)
         {
             unlock_close(&lock_fd_);
@@ -1616,7 +1619,9 @@ namespace gatzk::util
     std::uintmax_t TraceSpillLease::payload_size(std::string_view name) const
     {
         const auto fd = open_payload_fd(lease_fd_, name);
-        struct stat status{};
+        struct stat status
+        {
+        };
         const auto result =
             ::fstat(fd, &status) == 0 && status.st_size >= 0 ? static_cast<std::uintmax_t>(status.st_size) : std::numeric_limits<std::uintmax_t>::max();
         const auto saved_errno = errno;
@@ -1638,7 +1643,9 @@ namespace gatzk::util
                 return;
             }
             const std::string owned_name(name);
-            struct stat status{};
+            struct stat status
+            {
+            };
             if (::fstatat(lease_fd_, owned_name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0 || !valid_private_regular(status))
             {
                 return;
@@ -1647,11 +1654,8 @@ namespace gatzk::util
         }
         catch (...)
         {
-            // Failure to remove a failed payload is intentionally fail-closed;
-            // the authenticated lease destructor remains the sole owner of
-            // final cleanup.
             return;
         }
     }
 
-} // namespace gatzk::util
+}

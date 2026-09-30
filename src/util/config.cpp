@@ -10,9 +10,6 @@
 #include <unordered_map>
 #include <limits>
 
-// 实现正式配置解析与约束检查
-// 负责拦截未声明字段和形状冲突，避免错误配置进入 proving / verifying 主链
-
 namespace gatzk::util
 {
     std::string canonical_input_preprocess_id(std::string_view dataset)
@@ -83,10 +80,6 @@ namespace gatzk::util
                 throw std::runtime_error("registered quantization scale chain only supports canonical L3/K_out=2");
             }
             const auto expected_heads = std::vector<std::size_t>{8, 8};
-            // S_H carries the input scale of every hidden layer plus the
-            // final hidden-concat/output input scale.  Keeping the terminal
-            // entry explicit lets validation enforce every protocol
-            // transition S_H^(l+1) = S_cat^(l), including the output input.
             if (chain.s_h.size() != hidden_profile.size() + 1 || chain.s_agg_pre.size() != hidden_profile.size() ||
                 chain.s_agg.size() != hidden_profile.size() || chain.s_cat.size() != hidden_profile.size() ||
                 chain.s_w_hidden.size() != hidden_profile.size() || chain.s_h_prime.size() != hidden_profile.size() ||
@@ -105,9 +98,6 @@ namespace gatzk::util
             require_positive_scale(chain.s_out_pre, "S_out_pre");
             require_positive_scale(chain.s_out_head, "S_out_head");
             require_positive_scale(chain.s_out, "S_out");
-            // The canonical output protocol fixes S_out_pre=S_out_head=S_out;
-            // its pre-bias alignment SignedRoundDiv is therefore an identity
-            // and cannot hide an implicit rescale in the production trace.
             if (chain.s_h.front() != chain.s_input || chain.s_cat != chain.s_agg || chain.s_out != chain.s_out_head || chain.s_out_pre != chain.s_out_head)
             {
                 throw std::runtime_error(
@@ -120,11 +110,6 @@ namespace gatzk::util
                     throw std::runtime_error("registered quantization scale chain violates S_H[l+1]=S_cat[l] at layer " + std::to_string(layer));
                 }
             }
-            // StaticTables owns one shared authenticated ELU table.  The
-            // canonical runtime therefore requires every hidden layer to use
-            // the same ELU input/output scales before the table is built from
-            // the first entry; a layer-specific table would need a distinct
-            // formal table commitment and is intentionally not accepted.
             const auto elu_input_scale = chain.s_agg_pre.front();
             const auto elu_output_scale = chain.s_agg.front();
             for (std::size_t layer = 0; layer < hidden_profile.size(); ++layer)
@@ -172,10 +157,6 @@ namespace gatzk::util
                 require_positive_scale(chain.s_a_src_output[head], "S_a_src_output");
                 require_positive_scale(chain.s_a_dst_output[head], "S_a_dst_output");
                 require_positive_scale(chain.s_b_output[head], "S_b_output");
-                // Output projection consumes the final hidden concat scale;
-                // require its explicit S_H terminal entry to agree with the
-                // final S_cat transition rather than silently selecting a
-                // different input scale.
                 const auto output_input_scale = chain.s_cat.back();
                 if (chain.s_h.back() != output_input_scale || chain.s_y_prime[head] != output_input_scale * chain.s_w_output[head] ||
                     chain.s_y_prime[head] * chain.s_a_src_output[head] != chain.s_delta ||
@@ -193,10 +174,7 @@ namespace gatzk::util
             return value;
         }
 
-        bool parse_bool(const std::string &value)
-        {
-            return value == "true" || value == "1" || value == "yes";
-        }
+        bool parse_bool(const std::string &value) { return value == "true" || value == "1" || value == "yes"; }
 
         std::string strip_wrappers(std::string value)
         {
@@ -370,7 +348,6 @@ namespace gatzk::util
 
         void validate_supported_keys(const std::unordered_map<std::string, std::string> &entries)
         {
-            // formal 主线显式列出允许字段，未知键直接拒绝进入运行时
             static const std::set<std::string> supported_keys = {
                 "L",
                 "K_out",
@@ -512,9 +489,6 @@ namespace gatzk::util
                 throw std::runtime_error("C/num_classes must be >= 1");
             }
 
-            // Registry range certificates are signed 64-bit bounds.  Reject
-            // zero and oversized shifts before any table/ledger construction;
-            // `1 << range_bits` is only defined for the canonical 1..62 range.
             if (config.range_bits < 1 || config.range_bits > 62)
             {
                 throw std::runtime_error("range_bits must be between 1 and 62 for signed certificates");
@@ -578,9 +552,6 @@ namespace gatzk::util
                 }
             }
 
-            // The five registered experiments intentionally share one formal
-            // model family.  Rejecting a non-canonical shape keeps an invalid
-            // checkpoint/config pair out of the proving path.
             struct CanonicalShape
             {
                 std::vector<std::size_t> d_in;
@@ -623,16 +594,15 @@ namespace gatzk::util
     std::string QuantizationScaleChain::canonical_serialization() const
     {
         std::ostringstream out;
-        out << "schema=gat_l3_scale_chain"
-            << "|S_input=" << s_input << "|S_Delta=" << s_delta << "|S_exp=" << s_exp << '|' << serialize_scale_vector("S_H", s_h) << '|'
-            << serialize_scale_matrix("S_W_hidden", s_w_hidden) << '|' << serialize_scale_matrix("S_H_prime_hidden", s_h_prime) << '|'
-            << serialize_scale_matrix("S_a_src_hidden", s_a_src_hidden) << '|' << serialize_scale_matrix("S_a_dst_hidden", s_a_dst_hidden) << '|'
-            << serialize_scale_vector("S_agg_pre", s_agg_pre) << '|' << serialize_scale_vector("S_agg", s_agg) << '|' << serialize_scale_vector("S_cat", s_cat)
-            << "|S_out_pre=" << s_out_pre << "|S_out_head=" << s_out_head << "|S_out=" << s_out << '|' << serialize_scale_vector("S_W_output", s_w_output)
-            << '|' << serialize_scale_vector("S_Y_prime_output", s_y_prime) << '|' << serialize_scale_vector("S_a_src_output", s_a_src_output) << '|'
+        out << "schema=gat_l3_scale_chain" << "|S_input=" << s_input << "|S_Delta=" << s_delta << "|S_exp=" << s_exp << '|'
+            << serialize_scale_vector("S_H", s_h) << '|' << serialize_scale_matrix("S_W_hidden", s_w_hidden) << '|'
+            << serialize_scale_matrix("S_H_prime_hidden", s_h_prime) << '|' << serialize_scale_matrix("S_a_src_hidden", s_a_src_hidden) << '|'
+            << serialize_scale_matrix("S_a_dst_hidden", s_a_dst_hidden) << '|' << serialize_scale_vector("S_agg_pre", s_agg_pre) << '|'
+            << serialize_scale_vector("S_agg", s_agg) << '|' << serialize_scale_vector("S_cat", s_cat) << "|S_out_pre=" << s_out_pre
+            << "|S_out_head=" << s_out_head << "|S_out=" << s_out << '|' << serialize_scale_vector("S_W_output", s_w_output) << '|'
+            << serialize_scale_vector("S_Y_prime_output", s_y_prime) << '|' << serialize_scale_vector("S_a_src_output", s_a_src_output) << '|'
             << serialize_scale_vector("S_a_dst_output", s_a_dst_output) << '|' << serialize_scale_vector("S_b_output", s_b_output)
-            << "|S_inv=field_exact|S_alpha=field_exact"
-            << "|round=nearest_ties_away|rescale=none|output_average=signed_round_div";
+            << "|S_inv=field_exact|S_alpha=field_exact" << "|round=nearest_ties_away|rescale=none|output_average=signed_round_div";
         return out.str();
     }
 
@@ -653,8 +623,6 @@ namespace gatzk::util
             throw std::runtime_error("canonical quantization scale chain requires hidden_profile=[8x8,8x8], K_out=2");
         }
 
-        // All numerical values come from the checked-in canonical source file;
-        // this function only materializes and validates its typed form.
         QuantizationScaleChain chain;
         chain.s_input = parse_scale_value(source, "s_input");
         chain.s_delta = parse_scale_value(source, "s_delta");
@@ -690,7 +658,6 @@ namespace gatzk::util
         return chain;
     }
 
-    // 解析 `.cfg` 文件并补齐工程根路径等派生字段
     AppConfig load_config(const std::string &path)
     {
         std::ifstream input(path);
@@ -701,7 +668,6 @@ namespace gatzk::util
 
         std::unordered_map<std::string, std::string> entries;
         std::string line;
-        // 配置文件按 `key = value` 读取，注释与空行都在这一层先剔掉。
         while (std::getline(input, line))
         {
             const auto hash = line.find('#');
@@ -839,7 +805,6 @@ namespace gatzk::util
             config.degree_bound_id = "auto";
         }
         config.quantization = canonical_quantization_scale_chain(config.quant_cfg_id, config.hidden_profile, config.K_out, canonical_scale_chain_path.string());
-        // 这里最后做一次 shape 和 formal 约束校验，保证 prover / verifier 看到的是同一套配置含义。
         validate_config(config);
         return config;
     }

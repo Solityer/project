@@ -21,11 +21,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
-BN254_MODULUS = (
-    "21888242871839275222246405745257275088548364400416034343698204186575808495617"
-)
+BN254_MODULUS = ("21888242871839275222246405745257275088548364400416034343698204186575808495617")
 U64_MAX = (1 << 64) - 1
 TABLE_MAGIC = b"EZKL-GAT-TABLES\x00"
 TABLE_FORMAT_VERSION = 1
@@ -161,10 +158,10 @@ def load_tensors(path: Path) -> dict[str, tuple[list[int], list[float]]]:
         name = tokens[cursor + 1]
         rank = int(tokens[cursor + 2])
         shape_start = cursor + 3
-        shape = [int(x) for x in tokens[shape_start : shape_start + rank]]
+        shape = [int(x) for x in tokens[shape_start:shape_start + rank]]
         count = int(tokens[shape_start + rank])
         value_start = shape_start + rank + 1
-        values = [float(x) for x in tokens[value_start : value_start + count]]
+        values = [float(x) for x in tokens[value_start:value_start + count]]
         if len(values) != count or math.prod(shape) != count:
             raise ValueError(f"tensor count mismatch: {name}")
         result[name] = (shape, values)
@@ -368,13 +365,7 @@ def table_canonical_length(table: dict[str, Any]) -> int:
     """Length of ExactTable::canonical_bytes without constructing it."""
     string_fields = ("table_id", "function_id", "domain_id", "generator_id")
     return (
-        len(b"ezkl-gat-exact-table-v1")
-        + sum(8 + len(str(table[field]).encode()) for field in string_fields)
-        + 4
-        + 4
-        + 16
-        + 16
-        + int(table["row_count"]) * 32
+        len(b"ezkl-gat-exact-table-v1") + sum(8 + len(str(table[field]).encode()) for field in string_fields) + 4 + 4 + 16 + 16 + int(table["row_count"]) * 32
     )
 
 
@@ -493,9 +484,7 @@ def build_tables(
     whole_graph_single: bool,
 ) -> dict[str, Any]:
     configured = 1 << range_bits
-    large = whole_graph_single and (
-        edges >= (1 << 18) or nodes * features >= (1 << 24)
-    )
+    large = whole_graph_single and (edges >= (1 << 18) or nodes * features >= (1 << 24))
     if large:
         negative_rows = 3 << 18
         interval_rows = (1 << 23) - 2
@@ -522,9 +511,7 @@ def build_tables(
         abs(table_value(elu_probe, elu_bound)),
     )
     max_relu_bound = max(2 * lrelu_output_bound, degree)
-    domain_id = (
-        f"dataset:{dataset}:range_bits:{range_bits}:large:{str(large).lower()}"
-    )
+    domain_id = (f"dataset:{dataset}:range_bits:{range_bits}:large:{str(large).lower()}")
     generator_id = "ezkl_baseline_local_static_table_generator_v1"
     prefix = f"tables:gat:{dataset}:v1"
     tables = {
@@ -598,9 +585,7 @@ def build_ledger(
         abs(table_value(tables["elu"], tables["elu"]["input_min"])),
         abs(table_value(tables["elu"], tables["elu"]["input_max"])),
     )
-    max_relu_input = max(
-        abs(tables["max_relu"]["input_min"]), abs(tables["max_relu"]["input_max"])
-    )
+    max_relu_input = max(abs(tables["max_relu"]["input_min"]), abs(tables["max_relu"]["input_max"]))
     table_output = max(lrelu_output, elu_output, max_relu_input)
     hidden_layers = checkpoint.get("hidden_layers")
     if not isinstance(hidden_layers, list) or not hidden_layers:
@@ -613,14 +598,8 @@ def build_ledger(
     s_agg_pre = scale_list(scales, "s_agg_pre")
     if len(s_agg_pre) != len(hidden_layers):
         raise ValueError("hidden aggregation scale count does not match checkpoint")
-    s_h_prime = [
-        scale_list(scales, f"s_h_prime_hidden_{layer_idx}")
-        for layer_idx in range(len(hidden_layers))
-    ]
-    if any(
-        len(layer_scales) != int(layer["head_count"])
-        for layer_scales, layer in zip(s_h_prime, hidden_layers)
-    ):
+    s_h_prime = [scale_list(scales, f"s_h_prime_hidden_{layer_idx}") for layer_idx in range(len(hidden_layers))]
+    if any(len(layer_scales) != int(layer["head_count"]) for layer_scales, layer in zip(s_h_prime, hidden_layers)):
         raise ValueError("hidden projection scale count does not match checkpoint")
     s_y_prime = scale_list(scales, "s_y_prime")
     if len(s_y_prime) != output_heads:
@@ -639,9 +618,7 @@ def build_ledger(
         if input_dim != current_dim or head_count <= 0 or head_dim <= 0:
             raise ValueError("checkpoint hidden dimensions are not closed")
         for head in range(head_count):
-            weight = max(
-                1, maxima.get(f"hidden/layer{layer}/head{head}/seq", 1)
-            )
+            weight = max(1, maxima.get(f"hidden/layer{layer}/head{head}/seq", 1))
             attention = max(
                 1,
                 maxima.get(f"hidden/layer{layer}/head{head}/attn_src", 1),
@@ -690,9 +667,6 @@ def build_ledger(
             maxima.get(f"output/head{head}/attn_src", 1),
             maxima.get(f"output/head{head}/attn_dst", 1),
         )
-        # quantized_model() records each tensor maximum under its containing
-        # head prefix (for example ``output/head0``); keep the bias bound
-        # lookup aligned with that authenticated key.
         bias = max(0, maxima.get(f"output/head{head}", 0))
         projected = max(1, current_dim * current_bound * weight)
         score = max(lrelu_input, 2 * projected * attention)
@@ -799,9 +773,7 @@ def write_table_archive(path: Path, tables: dict[str, Any]) -> None:
             stream.write(registry_bytes)
             for key in TABLE_ORDER:
                 table = tables[key]
-                metadata = json.dumps(
-                    table_metadata(table), separators=(",", ":"), sort_keys=True
-                ).encode()
+                metadata = json.dumps(table_metadata(table), separators=(",", ":"), sort_keys=True).encode()
                 stream.write(struct.pack("<Q", len(metadata)))
                 stream.write(metadata)
                 stream.write(struct.pack("<Q", table["row_count"]))
@@ -838,9 +810,7 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
         degree,
         config.get("batching_rule") == "whole_graph_single",
     )
-    ledger = build_ledger(
-        dataset, tables, meta, checkpoint, scales, maxima, feature_max, degree
-    )
+    ledger = build_ledger(dataset, tables, meta, checkpoint, scales, maxima, feature_max, degree)
     table_path = root / "resources/canonical/tables" / dataset / "gat_static_tables.bin"
     ledger_path = root / "resources/canonical/ledgers" / dataset / "gat_integer_ledger.json"
     write_table_archive(table_path, tables)
@@ -850,9 +820,7 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
     write_json(ledger_path, ledger)
     feature_updates: dict[str, str] = {}
     if dataset in {"ppi", "ogbn_arxiv"}:
-        contract = npy_contract(
-            root / "resources/canonical/cache" / dataset / "features.npy"
-        )
+        contract = npy_contract(root / "resources/canonical/cache" / dataset / "features.npy")
         feature_updates = {
             "feature_format": "npy",
             "feature_dtype": contract["dtype"],
@@ -885,9 +853,7 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--root", type=Path, default=Path(__file__).resolve().parents[1]
-    )
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument(
         "--dataset",
         choices=DATASETS,
@@ -897,15 +863,11 @@ def main() -> int:
     baseline_root = Path(__file__).resolve().parents[1]
     root = args.root.resolve()
     if root != baseline_root:
-        raise SystemExit(
-            f"generate_gat_resources: --root must be this ezkl baseline ({baseline_root})"
-        )
+        raise SystemExit(f"generate_gat_resources: --root must be this ezkl baseline ({baseline_root})")
     datasets = args.dataset or list(DATASETS)
     for dataset in datasets:
         table_digest_value, ledger_digest_value = generate_dataset(root, dataset)
-        print(
-            f"{dataset}: static_tables={table_digest_value} ledger={ledger_digest_value}"
-        )
+        print(f"{dataset}: static_tables={table_digest_value} ledger={ledger_digest_value}")
     return 0
 
 

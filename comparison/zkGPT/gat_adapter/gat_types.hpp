@@ -1,9 +1,5 @@
 #pragma once
 
-// The adapter is deliberately kept below the official zkGPT implementation
-// boundary.  It owns canonical GAT data/model decoding and the integer
-// relation trace; proof code consumes the descriptors emitted by this file.
-
 #include "circuit.h"
 
 #include <array>
@@ -24,7 +20,7 @@ using Field = F;
 struct Shape {
     std::vector<std::size_t> dims;
     std::size_t elements() const;
-    bool operator==(const Shape &other) const { return dims == other.dims; }
+    bool operator==(const Shape& other) const { return dims == other.dims; }
 };
 
 struct Tensor2D {
@@ -34,19 +30,19 @@ struct Tensor2D {
 
     Tensor2D() = default;
     Tensor2D(std::size_t r, std::size_t c) : rows(r), cols(c), values(r * c, 0) {}
-    Int &at(std::size_t r, std::size_t c) { return values.at(r * cols + c); }
+    Int& at(std::size_t r, std::size_t c) { return values.at(r * cols + c); }
     Int at(std::size_t r, std::size_t c) const { return values.at(r * cols + c); }
-    bool same_shape(const Tensor2D &other) const { return rows == other.rows && cols == other.cols; }
+    bool same_shape(const Tensor2D& other) const { return rows == other.rows && cols == other.cols; }
 };
 
 struct CanonicalConfig {
     std::map<std::string, std::string> values;
     std::string source_path;
 
-    static CanonicalConfig load(const std::string &path);
-    std::string get(const std::string &key, const std::string &fallback = "") const;
-    Int get_int(const std::string &key, Int fallback = 0) const;
-    std::vector<Int> get_int_list(const std::string &key) const;
+    static CanonicalConfig load(const std::string& path);
+    std::string get(const std::string& key, const std::string& fallback = "") const;
+    Int get_int(const std::string& key, Int fallback = 0) const;
+    std::vector<Int> get_int_list(const std::string& key) const;
 };
 
 struct QuantConfig {
@@ -75,15 +71,8 @@ struct QuantConfig {
     std::string rescale;
     std::string output_average;
 
-    // The canonical table policy is part of the authenticated quantization
-    // chain.  `range_bits` is retained as a public policy input for callers
-    // that load a dataset config separately from the scale-chain file.  The
-    // table intervals below are fixed policy values; they must never be
-    // inferred from a witness trace.
     Int range_bits = 12;
 
-    // Static-table policy is part of the public quantization configuration.
-    // These domains are independent of observed witness values.
     std::string static_tables_id = "tables:lrelu+elu+exp+range";
     std::string static_table_generator_id = "zkgpt-gat-static-tables-v2";
     std::string static_row_order = "ascending_input";
@@ -98,7 +87,7 @@ struct QuantConfig {
     Int lrelu_slope_num = 1;
     Int lrelu_slope_den = 5;
 
-    static QuantConfig load(const std::string &path);
+    static QuantConfig load(const std::string& path);
     void validate() const;
 };
 
@@ -110,8 +99,7 @@ struct Graph {
     std::vector<Int> src;
     std::vector<Int> dst;
     std::vector<Int> edge_gid;
-    // node_ptr[g]..node_ptr[g+1] is the canonical node range for graph g.
-    // edge_ptr[g]..edge_ptr[g+1] is the canonical edge range for graph g.
+
     std::vector<std::size_t> node_ptr;
     std::vector<std::size_t> edge_ptr;
 
@@ -151,34 +139,24 @@ struct Model {
     ModelManifest manifest;
     std::map<std::string, Tensor> tensors;
 
-    static Model load(const std::string &bundle_dir);
-    // Loads and authenticates only manifest/tensor-shape metadata.  Tensor
-    // values are not retained, making this suitable for metadata-only
-    // capacity checks and registration layout construction.
-    static Model load_shape_only(const std::string &bundle_dir);
-    const Tensor &tensor(const std::string &name) const;
+    static Model load(const std::string& bundle_dir);
+
+    static Model load_shape_only(const std::string& bundle_dir);
+    const Tensor& tensor(const std::string& name) const;
     void validate_schema() const;
-    void validate_identity(const CanonicalConfig &config) const;
+    void validate_identity(const CanonicalConfig& config) const;
     std::size_t input_dim() const;
     std::size_t hidden_dim() const;
-    // The canonical L3 schema keeps two hidden layers, while the number of
-    // heads is encoded by the authenticated tensor count.  Production
-    // checkpoints therefore retain the historical 8-head shape, and bounded
-    // protocol fixtures can use a smaller, fully-covered head set.
+
     std::size_t hidden_heads() const;
     std::size_t classes() const;
 };
 
-Tensor2D load_features(const std::string &cache_dir, const CanonicalConfig &config,
-                       const QuantConfig &quant, const Graph &graph);
-std::vector<Int> load_labels(const std::string &cache_dir, const Graph &graph);
-Graph load_graph(const std::string &cache_dir, const CanonicalConfig &config);
+Tensor2D load_features(const std::string& cache_dir, const CanonicalConfig& config, const QuantConfig& quant, const Graph& graph);
+std::vector<Int> load_labels(const std::string& cache_dir, const Graph& graph);
+Graph load_graph(const std::string& cache_dir, const CanonicalConfig& config);
 
-// Authenticated-file digest helper shared by native result/report writers.
-// It is the ordinary SHA-256 of the exact file bytes, rendered as fixed
-// lowercase hexadecimal; callers must not use it to repair an untrusted
-// digest read from a wire.
-std::string sha256_file_digest(const std::string &path);
+std::string sha256_file_digest(const std::string& path);
 
 enum class RoundingMode { TOWARD_ZERO, NEAREST_TIES_AWAY };
 
@@ -202,8 +180,7 @@ struct DivisionResult {
     DivisionWitness witness;
 };
 
-DivisionResult signed_round_div(Int dividend, Int denominator,
-                                RoundingMode mode = RoundingMode::NEAREST_TIES_AWAY);
+DivisionResult signed_round_div(Int dividend, Int denominator, RoundingMode mode = RoundingMode::NEAREST_TIES_AWAY);
 
 struct TablePoint {
     Int x = 0;
@@ -237,12 +214,9 @@ struct StaticTables {
     std::vector<TablePoint> exp;
     std::vector<TablePoint> elu;
 
-    static StaticTables build(const QuantConfig &quant);
-    // Kept source-compatible with early adapter callers.  The three bounds
-    // are deliberately ignored: the authenticated quantization policy owns
-    // the table domain and observed witness ranges must not shape it.
-    static StaticTables build(const QuantConfig &quant, Int observed_score_abs,
-                              Int observed_delta_max, Int observed_elu_abs);
+    static StaticTables build(const QuantConfig& quant);
+
+    static StaticTables build(const QuantConfig& quant, Int observed_score_abs, Int observed_delta_max, Int observed_elu_abs);
     Int lookup_lrelu(Int x) const;
     Int lookup_exp(Int delta) const;
     Int lookup_elu(Int x) const;
@@ -297,7 +271,7 @@ struct IntegerBoundLedger {
     Int elu_max = 0;
     std::vector<BoundFamily> families;
 
-    void add(const BoundFamily &family);
+    void add(const BoundFamily& family);
     bool validate() const;
 };
 
@@ -305,7 +279,7 @@ struct AttentionTrace {
     std::string family_id;
     std::size_t input_dim = 0;
     std::size_t output_dim = 0;
-    std::vector<Int> projection; // node-major H' / Y'
+    std::vector<Int> projection;
     std::vector<Int> source_score;
     std::vector<Int> destination_score;
     std::vector<Int> raw_score;
@@ -360,11 +334,8 @@ struct ForwardResult {
     GatTrace trace;
 };
 
-ForwardResult run_forward(const Graph &graph, const Tensor2D &features,
-                          const Model &model, const QuantConfig &quant);
-bool validate_relation(const Graph &graph, const Tensor2D &features,
-                       const Model &model, const QuantConfig &quant,
-                       const ForwardResult &result);
+ForwardResult run_forward(const Graph& graph, const Tensor2D& features, const Model& model, const QuantConfig& quant);
+bool validate_relation(const Graph& graph, const Tensor2D& features, const Model& model, const QuantConfig& quant, const ForwardResult& result);
 
 struct RelationDescriptor {
     std::string id;
@@ -380,7 +351,7 @@ struct RelationRegistry {
     std::vector<RelationDescriptor> descriptors;
 
     static RelationRegistry canonical();
-    const RelationDescriptor *find(const std::string &id) const;
+    const RelationDescriptor* find(const std::string& id) const;
     bool covers_all_segments() const;
 };
 
@@ -391,9 +362,7 @@ struct OfficialCircuitPlan {
     bool ready_for_official_consumers = false;
 };
 
-OfficialCircuitPlan build_official_circuit_plan(const Graph &graph,
-                                                const Model &model,
-                                                const QuantConfig &quant);
+OfficialCircuitPlan build_official_circuit_plan(const Graph& graph, const Model& model, const QuantConfig& quant);
 
-} // namespace gat
-} // namespace zkgpt
+}
+}

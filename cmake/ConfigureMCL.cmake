@@ -4,60 +4,63 @@ set(GATZK_MCL_INCLUDE_DIRS "")
 set(GATZK_MCL_LIBRARIES "")
 
 function(gatzk_configure_vendored_mcl)
-    set(GATZK_VENDOR_MCL_SOURCE_DIR "${PROJECT_SOURCE_DIR}/third_party/mcl")
-    set(GATZK_VENDOR_MCL_INCLUDE_DIR "${GATZK_VENDOR_MCL_SOURCE_DIR}/include")
-    set(GATZK_VENDOR_MCL_LIBRARY "${GATZK_VENDOR_MCL_SOURCE_DIR}/lib/libmcl.a")
+  set(GATZK_VENDOR_MCL_SOURCE_DIR "${PROJECT_SOURCE_DIR}/third_party/mcl")
+  set(GATZK_VENDOR_MCL_INCLUDE_DIR "${GATZK_VENDOR_MCL_SOURCE_DIR}/include")
+  set(GATZK_VENDOR_MCL_LIBRARY "${GATZK_VENDOR_MCL_SOURCE_DIR}/lib/libmcl.a")
 
-    if(NOT EXISTS "${GATZK_VENDOR_MCL_INCLUDE_DIR}/mcl/bn.hpp")
-        set(GATZK_VENDOR_MCL_FOUND OFF PARENT_SCOPE)
-        return()
-    endif()
+  if(NOT EXISTS "${GATZK_VENDOR_MCL_INCLUDE_DIR}/mcl/bn.hpp")
+    set(GATZK_VENDOR_MCL_FOUND
+        OFF
+        PARENT_SCOPE)
+    return()
+  endif()
 
-    find_program(GATZK_HOST_MAKE NAMES gmake make REQUIRED)
+  find_program(GATZK_HOST_MAKE NAMES gmake make REQUIRED)
 
-    add_custom_command(
-        OUTPUT "${GATZK_VENDOR_MCL_LIBRARY}"
-        COMMAND "${GATZK_HOST_MAKE}" -C "${GATZK_VENDOR_MCL_SOURCE_DIR}"
-        lib/libmcl.a
-        LLVM_VER=-18
-        MCL_USE_LLVM=1
-        MCL_BINT_ASM=1
-        MCL_MSM=0
-        "CFLAGS_USER=-O3 -DNDEBUG"
-        -j4
-        WORKING_DIRECTORY "${GATZK_VENDOR_MCL_SOURCE_DIR}"
-        COMMENT "Building vendored mcl backend"
-        VERBATIM
-    )
-    add_custom_target(gatzk_mcl_build DEPENDS "${GATZK_VENDOR_MCL_LIBRARY}")
+  add_custom_command(
+    OUTPUT "${GATZK_VENDOR_MCL_LIBRARY}"
+    COMMAND
+      "${GATZK_HOST_MAKE}" -C "${GATZK_VENDOR_MCL_SOURCE_DIR}" lib/libmcl.a
+      LLVM_VER=-18 MCL_USE_LLVM=1 MCL_BINT_ASM=1 MCL_MSM=0
+      "CFLAGS_USER=-O3 -DNDEBUG" -j4
+    WORKING_DIRECTORY "${GATZK_VENDOR_MCL_SOURCE_DIR}"
+    COMMENT "Building vendored mcl backend"
+    VERBATIM)
+  add_custom_target(gatzk_mcl_build DEPENDS "${GATZK_VENDOR_MCL_LIBRARY}")
 
-    if(NOT TARGET gatzk_mcl)
-        add_library(gatzk_mcl STATIC IMPORTED GLOBAL)
-        set_target_properties(
-            gatzk_mcl
-            PROPERTIES
-                IMPORTED_LOCATION "${GATZK_VENDOR_MCL_LIBRARY}"
-                INTERFACE_INCLUDE_DIRECTORIES "${GATZK_VENDOR_MCL_INCLUDE_DIR}"
-        )
-        add_dependencies(gatzk_mcl gatzk_mcl_build)
-    endif()
+  if(NOT TARGET gatzk_mcl)
+    add_library(gatzk_mcl STATIC IMPORTED GLOBAL)
+    set_target_properties(
+      gatzk_mcl
+      PROPERTIES IMPORTED_LOCATION "${GATZK_VENDOR_MCL_LIBRARY}"
+                 INTERFACE_INCLUDE_DIRECTORIES
+                 "${GATZK_VENDOR_MCL_INCLUDE_DIR}")
+    add_dependencies(gatzk_mcl gatzk_mcl_build)
+  endif()
 
-    set(GATZK_VENDOR_MCL_FOUND ON PARENT_SCOPE)
-    set(GATZK_VENDOR_MCL_INCLUDE_DIR "${GATZK_VENDOR_MCL_INCLUDE_DIR}" PARENT_SCOPE)
-    set(GATZK_VENDOR_MCL_LIBRARY_TARGET gatzk_mcl PARENT_SCOPE)
+  set(GATZK_VENDOR_MCL_FOUND
+      ON
+      PARENT_SCOPE)
+  set(GATZK_VENDOR_MCL_INCLUDE_DIR
+      "${GATZK_VENDOR_MCL_INCLUDE_DIR}"
+      PARENT_SCOPE)
+  set(GATZK_VENDOR_MCL_LIBRARY_TARGET
+      gatzk_mcl
+      PARENT_SCOPE)
 endfunction()
 
 if(NOT GATZK_CRYPTO_BACKEND STREQUAL "mcl")
-    message(FATAL_ERROR "GAT-ZKML: only -DGATZK_CRYPTO_BACKEND=mcl is supported")
+  message(FATAL_ERROR "GAT-ZKML: only -DGATZK_CRYPTO_BACKEND=mcl is supported")
 endif()
 
 gatzk_configure_vendored_mcl()
 if(GATZK_VENDOR_MCL_FOUND)
-    set(GATZK_MCL_INCLUDE_DIRS "${GATZK_VENDOR_MCL_INCLUDE_DIR}")
-    set(GATZK_MCL_LIBRARIES gatzk_mcl)
-    message(STATUS "GAT-ZKML: using vendored mcl backend from third_party/mcl")
+  set(GATZK_MCL_INCLUDE_DIRS "${GATZK_VENDOR_MCL_INCLUDE_DIR}")
+  set(GATZK_MCL_LIBRARIES gatzk_mcl)
+  message(STATUS "GAT-ZKML: using vendored mcl backend from third_party/mcl")
 else()
-    message(FATAL_ERROR
-        "GAT-ZKML: canonical vendored mcl is missing from third_party/mcl; "
-        "system mcl is not supported")
+  message(
+    FATAL_ERROR
+      "GAT-ZKML: canonical vendored mcl is missing from third_party/mcl; "
+      "system mcl is not supported")
 endif()

@@ -31,15 +31,8 @@ target_include_directories(gat_adapter PUBLIC
 )
 target_link_libraries(gat_adapter PUBLIC gpt_lib mcl mclbn256)
 
-# Single production entry point for one formal cell.  The executable is
-# linked against the official zkGPT library and this adapter; all orchestral
-# matrix/collection logic lives in scripts/ and never replaces the native
-# prover/verifier path.
 add_executable(zkgpt_gat_prover gat_cli.cpp)
 target_link_libraries(zkgpt_gat_prover PRIVATE gat_adapter)
 
-# Independent verifier process.  It has a deliberately smaller input surface
-# than the prover and never links a checkpoint/model loader into its CLI
-# entrypoint; the proof library remains the sole native verification boundary.
 add_executable(zkgpt_gat_verifier gat_verifier_cli.cpp)
 target_link_libraries(zkgpt_gat_verifier PRIVATE gat_adapter)

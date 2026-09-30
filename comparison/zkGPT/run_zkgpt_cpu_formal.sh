@@ -20,8 +20,6 @@ mkdir -p "$ROOT/logs"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 LOG="$ROOT/logs/zkgpt_cpu_formal_${STAMP}.log"
 
-# Keep the complete stage stream visible to the caller while retaining the
-# exact same bytes in the per-run log for postmortem/debugging.
 exec > >(tee -a "$LOG") 2>&1
 
 echo "MAIN_LOG=$LOG"
@@ -73,36 +71,12 @@ echo "cleanup is performed by gat_zkgpt_experiment.py with the run-directory all
 echo
 echo "===== formal execution ====="
 
-run_step \
-    "prepare_resources" \
-    "$PYTHON_BIN" scripts/prepare_resources.py --check \
-    || exit $?
-
-run_step \
-    "build_cpu" \
-    "$ROOT/build.sh" --cpu \
-    || exit $?
-
-run_step \
-    "formal_preflight_cpu" \
-    "$PYTHON_BIN" scripts/formal_preflight.py --backend cpu \
-    || exit $?
-
-run_step \
-    "five_datasets_cpu" \
-    "$PYTHON_BIN" scripts/run_five_datasets.py --backend cpu \
-    || exit $?
-
-run_step \
-    "collect_results_cpu" \
-    "$PYTHON_BIN" scripts/collect_results.py --backends cpu \
-    || exit $?
-
-run_step \
-    "validate_final_results_cpu" \
-    "$PYTHON_BIN" scripts/validate_final_results.py \
-        --input results/collected_results.json --backends cpu \
-    || exit $?
+run_step "prepare_resources" "$PYTHON_BIN" scripts/prepare_resources.py --check || exit $?
+run_step "build_cpu" "$ROOT/build.sh" --cpu || exit $?
+run_step "formal_preflight_cpu" "$PYTHON_BIN" scripts/formal_preflight.py --backend cpu || exit $?
+run_step "five_datasets_cpu" "$PYTHON_BIN" scripts/run_five_datasets.py --backend cpu || exit $?
+run_step "collect_results_cpu" "$PYTHON_BIN" scripts/collect_results.py --backends cpu || exit $?
+run_step "validate_final_results_cpu" "$PYTHON_BIN" scripts/validate_final_results.py --input results/collected_results.json --backends cpu || exit $?
 
 echo
 echo "============================================================"

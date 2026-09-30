@@ -8,9 +8,6 @@
 
 #include <openssl/sha.h>
 
-// 实现 transcript 的状态吸收与挑战派生。
-// prove 与 verify 都依赖相同的标签序列，因此这里只提供纯执行层状态机。
-
 namespace gatzk::crypto
 {
     namespace
@@ -38,14 +35,9 @@ namespace gatzk::crypto
             }
         }
 
-        std::vector<std::uint8_t> canonical_record(
-            std::uint8_t type,
-            const std::string &label,
-            const std::uint8_t *payload,
-            std::size_t payload_size)
+        std::vector<std::uint8_t> canonical_record(std::uint8_t type, const std::string &label, const std::uint8_t *payload, std::size_t payload_size)
         {
-            if (label.size() > std::numeric_limits<std::uint64_t>::max()
-                || payload_size > std::numeric_limits<std::uint64_t>::max())
+            if (label.size() > std::numeric_limits<std::uint64_t>::max() || payload_size > std::numeric_limits<std::uint64_t>::max())
             {
                 throw std::runtime_error("transcript record exceeds canonical u64 length");
             }
@@ -66,34 +58,28 @@ namespace gatzk::crypto
             return out;
         }
 
-        std::array<std::uint8_t, SHA256_DIGEST_LENGTH> sha256(
-            const std::uint8_t *first,
-            std::size_t first_size,
-            const std::uint8_t *second,
-            std::size_t second_size)
+        std::array<std::uint8_t, SHA256_DIGEST_LENGTH> sha256(const std::uint8_t *first, std::size_t first_size, const std::uint8_t *second,
+                                                              std::size_t second_size)
         {
             SHA256_CTX hash;
             SHA256_Init(&hash);
-            if (first_size != 0) SHA256_Update(&hash, first, first_size);
-            if (second_size != 0) SHA256_Update(&hash, second, second_size);
+            if (first_size != 0)
+                SHA256_Update(&hash, first, first_size);
+            if (second_size != 0)
+                SHA256_Update(&hash, second, second_size);
             std::array<std::uint8_t, SHA256_DIGEST_LENGTH> digest{};
             SHA256_Final(digest.data(), &hash);
             return digest;
         }
     }
 
-    // 以协议标签初始化 transcript 状态。
     Transcript::Transcript(std::string label)
     {
         const auto record = canonical_record(kDomainRecord, "domain", reinterpret_cast<const std::uint8_t *>(label.data()), label.size());
         state_ = sha256(nullptr, 0, record.data(), record.size());
     }
 
-    void Transcript::absorb_record(
-        std::uint8_t type,
-        const std::string &label,
-        const std::uint8_t *payload,
-        std::size_t payload_size)
+    void Transcript::absorb_record(std::uint8_t type, const std::string &label, const std::uint8_t *payload, std::size_t payload_size)
     {
         const auto record = canonical_record(type, label, payload, payload_size);
         state_ = sha256(state_.data(), state_.size(), record.data(), record.size());
@@ -101,14 +87,9 @@ namespace gatzk::crypto
 
     void Transcript::absorb_text(const std::string &label, const std::string &value)
     {
-        absorb_record(
-            kTextRecord,
-            label,
-            reinterpret_cast<const std::uint8_t *>(value.data()),
-            value.size());
+        absorb_record(kTextRecord, label, reinterpret_cast<const std::uint8_t *>(value.data()), value.size());
     }
 
-    // 吸收一个标量（域元素）到Transcript中，附带标签
     void Transcript::absorb_scalar(const std::string &label, const algebra::FieldElement &value)
     {
         std::array<std::uint8_t, 32> bytes{};
@@ -116,23 +97,18 @@ namespace gatzk::crypto
         absorb_record(kScalarRecord, label, bytes.data(), bytes.size());
     }
 
-    // 吸收一个G1点（承诺值）到Transcript中，附带标签
     void Transcript::absorb_commitment(const std::string &label, const G1Point &point)
     {
         const auto bytes = serialize(point);
         absorb_record(kCommitmentRecord, label, bytes.data(), bytes.size());
     }
 
-    // 派生挑战后立即回吸，保证后续挑战与前序结果绑定。
     algebra::FieldElement Transcript::challenge(const std::string &label)
     {
-        return challenge_excluding(
-            label, [](const algebra::FieldElement&) { return false; });
+        return challenge_excluding(label, [](const algebra::FieldElement &) { return false; });
     }
 
-    algebra::FieldElement Transcript::challenge_excluding(
-        const std::string &label,
-        const std::function<bool(const algebra::FieldElement&)> &reject)
+    algebra::FieldElement Transcript::challenge_excluding(const std::string &label, const std::function<bool(const algebra::FieldElement &)> &reject)
     {
         if (challenges_.contains(label))
         {
@@ -143,13 +119,8 @@ namespace gatzk::crypto
             std::vector<std::uint8_t> counter_bytes;
             counter_bytes.reserve(4);
             append_u32(counter_bytes, static_cast<std::uint32_t>(counter));
-            const auto candidate_record = canonical_record(
-                kChallengeCandidateRecord,
-                label,
-                counter_bytes.data(),
-                counter_bytes.size());
-            const auto digest = sha256(
-                state_.data(), state_.size(), candidate_record.data(), candidate_record.size());
+            const auto candidate_record = canonical_record(kChallengeCandidateRecord, label, counter_bytes.data(), counter_bytes.size());
+            const auto digest = sha256(state_.data(), state_.size(), candidate_record.data(), candidate_record.size());
 
             mcl::Vint integer;
             integer.setArray(digest.data(), digest.size());
@@ -171,9 +142,5 @@ namespace gatzk::crypto
         throw std::runtime_error("transcript hash-to-field counter exhausted");
     }
 
-    // 返回已发出的挑战，供 proof 持久化和 verifier 重放比对。
-    const std::map<std::string, algebra::FieldElement> &Transcript::issued_challenges() const
-    {
-        return challenges_;
-    }
+    const std::map<std::string, algebra::FieldElement> &Transcript::issued_challenges() const { return challenges_; }
 }

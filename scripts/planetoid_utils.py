@@ -44,9 +44,8 @@ def load_raw_planetoid_dataset(root: pathlib.Path, name: str) -> Tuple[sp.csr_ma
     return features.tocsr(), labels, adjacency, test_idx_reorder
 
 
-def load_planetoid_dataset_with_masks(
-    root: pathlib.Path, name: str
-) -> Tuple[sp.csr_matrix, np.ndarray, Dict[int, List[int]], np.ndarray, np.ndarray, np.ndarray]:
+def load_planetoid_dataset_with_masks(root: pathlib.Path,
+                                      name: str) -> Tuple[sp.csr_matrix, np.ndarray, Dict[int, List[int]], np.ndarray, np.ndarray, np.ndarray]:
     base = root / name
     names = ["x", "y", "tx", "ty", "allx", "ally", "graph"]
     objects = []
@@ -76,8 +75,8 @@ def load_planetoid_dataset_with_masks(
     train_mask = np.zeros(labels.shape[0], dtype=bool)
     val_mask = np.zeros(labels.shape[0], dtype=bool)
     test_mask = np.zeros(labels.shape[0], dtype=bool)
-    train_mask[: y.shape[0]] = True
-    val_mask[y.shape[0] : y.shape[0] + 500] = True
+    train_mask[:y.shape[0]] = True
+    val_mask[y.shape[0]:y.shape[0] + 500] = True
     test_mask[test_idx_range.tolist()] = True
     return features.tocsr(), labels, adjacency, train_mask, val_mask, test_mask
 

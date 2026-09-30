@@ -28,8 +28,6 @@ def preprocess_input_features(
 
 
 def dataset_root(data_root: pathlib.Path) -> pathlib.Path:
-    # The released archive keeps the official PyG/data-directory spelling;
-    # that external boundary never enters formal metadata.
     return data_root / OGBN_ARXIV_EXTERNAL_NAME
 
 
@@ -62,9 +60,8 @@ def load_raw_arrays(data_root: pathlib.Path) -> OgbnArxivData:
     )
 
 
-def build_sorted_edge_index(
-    edge_src: np.ndarray, edge_dst: np.ndarray, num_nodes: int, *, symmetrize: bool, add_self_loops: bool
-) -> tuple[np.ndarray, np.ndarray]:
+def build_sorted_edge_index(edge_src: np.ndarray, edge_dst: np.ndarray, num_nodes: int, *, symmetrize: bool,
+                            add_self_loops: bool) -> tuple[np.ndarray, np.ndarray]:
     src = edge_src.astype(np.int64, copy=False)
     dst = edge_dst.astype(np.int64, copy=False)
     if symmetrize:
@@ -100,11 +97,13 @@ def ensure_cache(project_root: pathlib.Path, data_root: pathlib.Path) -> pathlib
             metadata[key] = value
         cached_name = metadata.get("name")
         if cached_name != OGBN_ARXIV_INTERNAL_NAME:
-            raise ValueError(f"{OGBN_ARXIV_INTERNAL_NAME} cache metadata name is not canonical; " "refusing to consume an externally named cache")
+            raise ValueError(f"{OGBN_ARXIV_INTERNAL_NAME} cache metadata name is not canonical; "
+                             "refusing to consume an externally named cache")
         cached_id = metadata.get("input_preprocess_id")
         if cached_id != OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID:
             raise ValueError(
-                f"{OGBN_ARXIV_INTERNAL_NAME} cache is missing or uses a non-canonical input_preprocess_id; " "refusing to consume normalized features"
+                f"{OGBN_ARXIV_INTERNAL_NAME} cache is missing or uses a non-canonical input_preprocess_id; "
+                "refusing to consume normalized features"
             )
         return output_root
 
@@ -129,8 +128,7 @@ def ensure_cache(project_root: pathlib.Path, data_root: pathlib.Path) -> pathlib
                 "report_unit = node",
                 f"input_preprocess_id = {OGBN_ARXIV_RAW_INPUT_PREPROCESS_ID}",
             ]
-        )
-        + "\n",
+        ) + "\n",
         encoding="utf-8",
     )
     return output_root

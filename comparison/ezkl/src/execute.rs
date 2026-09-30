@@ -2255,10 +2255,6 @@ fn gat_prepare_setup(
     let context_path = output_dir.join(DEFAULT_GAT_SETUP_CONTEXT);
     let context_bytes = serde_json::to_vec_pretty(&setup_context)?;
     std::fs::write(&context_path, context_bytes)?;
-    // This setup-only context exposes identities required by the independent
-    // public-statement producer without exposing private model parameters.
-    // The producer recomputes the canonical model digest and public Y; the
-    // native final phase rebinds the resulting statement to this context.
     let producer_context = expected_producer_context(&loaded, &setup_context);
     std::fs::write(
         output_dir.join("producer_context.json"),
@@ -2512,10 +2508,6 @@ fn validate_external_producer_manifest(
 }
 
 fn formal_run_relative_path(run_dir: &Path, baseline_root: &Path) -> Result<PathBuf, EZKLError> {
-    // Environment-provided run directories may be either baseline-relative
-    // (the normal CLI form) or absolute (the tiny-E2E orchestration form).
-    // First reject lexical traversal/absolute-relative ambiguity, then resolve
-    // the existing path and require canonical containment in this baseline.
     let lexical_relative = if run_dir.is_absolute() {
         let relative = run_dir.strip_prefix(baseline_root).map_err(|_| {
             format!("formal run directory escapes baseline: {}", run_dir.display())
@@ -2967,139 +2959,6 @@ fn gat_produce(
         "gat-produce is a disabled legacy command; use the independent Python public-statement producer"
             .into(),
     );
-    /*
-    enforce_gat_gpu(gpu)?;
-    require_formal_local_path(&resource_manifest, "resource manifest")?;
-    require_formal_local_path(&output_dir, "setup output directory")?;
-    let baseline_root = std::env::current_dir()?;
-    let loaded = load_dataset_with_manifest(&baseline_root, &resource_manifest, &dataset)
-        .map_err(EZKLError::from)?;
-    let settings_path = output_dir.join("settings.json");
-    let compiled_path = output_dir.join("compiled.circuit");
-    let vk_path = output_dir.join("vk.key");
-    let context_path = output_dir.join(DEFAULT_GAT_SETUP_CONTEXT);
-    for (path, label) in [
-        (&settings_path, "settings"),
-        (&compiled_path, "compiled circuit"),
-        (&vk_path, "verification key"),
-        (&context_path, "setup CircuitRef"),
-    ] {
-        require_formal_regular_file(path, label)?;
-    }
-    let setup_context = load_setup_circuit_ref(&context_path)?;
-    let circuit_ref = resolved_circuit_ref(
-        &loaded,
-        get_file_hash(&settings_path)?,
-        get_file_hash(&compiled_path)?,
-        get_file_hash(&vk_path)?,
-    )?;
-    if setup_context.native != circuit_ref {
-        return Err("producer setup CircuitRef does not match native setup artifacts".into());
-    }
-    let mut bound_spec = loaded.spec.clone();
-    bound_spec.circuit_ref = Some(circuit_ref);
-    bound_spec.validate().map_err(EZKLError::from)?;
-    let circuit = GraphCircuit::load(compiled_path)?;
-    assert_native_gat_identity(&circuit, &loaded.spec)?;
-    if !circuit.settings().run_args.input_visibility.is_public()
-        || !circuit.settings().run_args.output_visibility.is_public()
-        || !circuit
-            .settings()
-            .run_args
-            .param_visibility
-            .is_hashed_public()
-    {
-        return Err("prepared GAT circuit does not use public inputs/outputs and native public Hashed parameters".into());
-    }
-    let mut native_inputs = gat_input_tensors(&loaded.spec)?;
-    let native_params = gat_parameter_tensor(&loaded.spec)?;
-    let witness = circuit.forward_with_runtime_params::<KZGCommitmentScheme<Bn256>>(
-        &mut native_inputs,
-        Some(&native_params),
-        None,
-        None,
-        RegionSettings::all_false(
-            circuit.settings().run_args.decomp_base,
-            circuit.settings().run_args.decomp_legs,
-        ),
-    )?;
-    let native_hash = witness
-        .processed_params
-        .as_ref()
-        .and_then(|x| x.poseidon_hash.as_ref())
-        .and_then(|x| (x.len() == 1).then(|| native_hash_string(x[0])))
-        .ok_or_else(|| {
-            "native public Poseidon H(W) was not produced by GraphCircuit::forward".to_string()
-        })?;
-    let native_output = witness
-        .outputs
-        .first()
-        .ok_or_else(|| "native GraphCircuit forward produced no output".to_string())?
-        .iter()
-        .map(|x| crate::fieldutils::felt_to_integer_rep(*x))
-        .collect::<Vec<_>>();
-    let public_output_path = output_dir.join("public_output.json");
-    let statement_path = output_dir.join("statement.json");
-    for (path, label) in [
-        (&public_output_path, "public output"),
-        (&statement_path, "public statement"),
-    ] {
-        if std::fs::symlink_metadata(path).is_ok() {
-            return Err(format!(
-                "statement producer refuses to overwrite existing {}: {}",
-                label,
-                path.display()
-            )
-            .into());
-        }
-    }
-    let public_output = serde_json::json!({
-        "dataset": loaded.dataset.clone(),
-        "Y": native_output,
-    });
-    let public_output_bytes = serde_json::to_vec_pretty(&public_output)?;
-    std::fs::write(&public_output_path, public_output_bytes)?;
-    let statement = PublicStatement {
-        schema_version: 1,
-        relation_id: "R_GAT-ezkl".into(),
-        proof_scope: "full_gat".into(),
-        privacy_policy: "model_and_trace_hidden".into(),
-        public_statement_mode: "external".into(),
-        output_mode: "public_logits".into(),
-        dataset: loaded.dataset.clone(),
-        model_arch_id: bound_spec.model.model_arch_id.clone(),
-        quant_cfg_id: bound_spec.quant_cfg_id.clone(),
-        static_table_id: bound_spec.tables.static_tables_id.clone(),
-        degree_bound_id: bound_spec.ledger.ledger_id.clone(),
-        ezkl_security_profile_id: bound_spec.ezkl_security_profile_id.clone(),
-        public_ezkl: PublicEzkl {
-            topology: bound_spec.topology.clone(),
-            static_tables: DigestIdentity {
-                id: bound_spec.tables.static_tables_id.clone(),
-                digest: bound_spec.tables.static_tables_digest.clone(),
-            },
-            quant: bound_spec.quantization.clone(),
-            ledger: bound_spec.ledger_identity.clone(),
-            circuit: setup_context,
-            model_hash: native_hash,
-            model: bound_spec.model_binding.clone(),
-            feature_table: bound_spec.features.clone(),
-            node_ids: bound_spec.graph.node_ids.clone(),
-            src: bound_spec.graph.src.clone(),
-            dst: bound_spec.graph.dst.clone(),
-            node_ptr: bound_spec.graph.node_ptr.clone(),
-            edge_ptr: bound_spec.graph.edge_ptr.clone(),
-            y: native_output.clone(),
-        },
-        output_digest: output_digest(&native_output).map_err(EZKLError::from)?,
-        public_output_sha256: get_file_hash(&public_output_path)?,
-        statement_digest: String::new(),
-    };
-    let mut statement = statement;
-    statement.statement_digest = statement.digest_without_self().map_err(EZKLError::from)?;
-    statement.save(&statement_path).map_err(EZKLError::from)?;
-    Ok(output_dir.display().to_string())
-    */
 }
 
 fn gat_witness(

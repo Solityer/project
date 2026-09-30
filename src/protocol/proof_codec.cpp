@@ -60,10 +60,7 @@ namespace gatzk::protocol
         class Writer
         {
         public:
-            void raw(const std::uint8_t *data, std::size_t size)
-            {
-                bytes_.insert(bytes_.end(), data, data + static_cast<std::ptrdiff_t>(size));
-            }
+            void raw(const std::uint8_t *data, std::size_t size) { bytes_.insert(bytes_.end(), data, data + static_cast<std::ptrdiff_t>(size)); }
 
             void u64(std::uint64_t value)
             {
@@ -103,10 +100,7 @@ namespace gatzk::protocol
                 raw(payload.bytes_.data(), payload.bytes_.size());
             }
 
-            std::vector<std::uint8_t> take()
-            {
-                return std::move(bytes_);
-            }
+            std::vector<std::uint8_t> take() { return std::move(bytes_); }
 
         private:
             std::vector<std::uint8_t> bytes_;
@@ -202,10 +196,7 @@ namespace gatzk::protocol
                 return encoded;
             }
 
-            crypto::G1Point point()
-            {
-                return decode_canonical_g1(point_encoding());
-            }
+            crypto::G1Point point() { return decode_canonical_g1(point_encoding()); }
 
             Reader block(const std::string &expected_tag)
             {
@@ -231,10 +222,7 @@ namespace gatzk::protocol
                 }
             }
 
-            std::size_t remaining() const
-            {
-                return size_ - offset_;
-            }
+            std::size_t remaining() const { return size_ - offset_; }
 
         private:
             void require(std::size_t size)
@@ -259,10 +247,6 @@ namespace gatzk::protocol
                 return points;
             }
 
-            // G1 wire decoding is CPU work and must not create a CUDA MSM
-            // coordination window.  Use coarse bounded ranges so small proof
-            // groups stay serial while large commitment blocks amortize
-            // worker creation.
             constexpr std::size_t kMinimumPointsPerWorker = 16;
 
             constexpr std::size_t kMaximumDecodeWorkers = 32;
@@ -1248,7 +1232,6 @@ namespace gatzk::protocol
         {
             throw std::runtime_error("proof parser is missing the authenticated ProtocolCompilerArtifact identity");
         }
-        // Read the fixed magic without accepting a length-delimited alias.
         if (bytes.size() < kMagic.size() || !std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))
         {
             throw std::runtime_error("proof parser magic mismatch");
@@ -1784,9 +1767,6 @@ namespace gatzk::protocol
         pi_bind.finish("Pi_bind");
         body.finish("proof");
 
-        // Reconstruct the in-memory global point groups after all physical
-        // blocks have been parsed.  Eval_bind owns these values on the wire;
-        // Open_dom owns their single folded witness.
         std::unordered_map<std::string, std::size_t> domain_opening_index;
 
         domain_opening_index.reserve(proof.domain_openings.size());
@@ -1841,10 +1821,6 @@ namespace gatzk::protocol
                 bundle.value_kinds.push_back(evaluation.kind);
             }
         }
-        // Eval_dom omits values whose unique wire owner is Eval_bind.  Restore
-        // the canonical global point-group order after merging both blocks;
-        // appending Eval_bind values would place them after t_D/R_t_D and make
-        // the parser disagree with the shared prover/verifier schema.
         const auto opening_label_registry = build_domain_opening_label_registry(context);
 
         for (auto &[bundle_name, bundle] : proof.domain_openings)

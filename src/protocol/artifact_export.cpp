@@ -177,16 +177,9 @@ namespace gatzk::protocol
             append_string(&bytes, binary_hash);
             return sha256_hex(bytes);
         }
-    } // namespace
-
-    // `proof_size_bytes` 统计的是 formal proof 的传输口径，
-    // 不是运行目录中文件大小，也不是 C++ 对象在内存中的占用。
-    // 能由 verifier 通过固定 schema 与 transcript 重建的标签、挑战值和 opening 点不计入；
-    // 真正需要随 proof 发送的元数据字符串、承诺点、opening 值、witness 与外点见证才计入。
-    std::size_t proof_size_bytes(const Proof &proof)
-    {
-        return serialize_proof(proof).size();
     }
+
+    std::size_t proof_size_bytes(const Proof &proof) { return serialize_proof(proof).size(); }
 
     void export_run_artifacts(const ProtocolContext &context, const TraceArtifacts &trace, const Proof &proof, const VerifierContext &verifier_context,
                               const Proof &parsed_proof, RunMetrics metrics, bool verifier_accepted, bool final_accepted)
@@ -400,12 +393,6 @@ namespace gatzk::protocol
         };
         util::write_json_object(export_root + "/build_receipt.json", build_receipt);
         const auto build_receipt_hash = sha256_file_hex(std::filesystem::path(export_root) / "build_receipt.json");
-        // This report is the independent, binary-produced acceptance record
-        // consumed by the aggregate gate.  The formal production run does not
-        // execute the test-only tamper suite: these fields deliberately record
-        // the local pending state.  Final tamper coverage is supplied later by
-        // the separately reviewed external attestation emitted under tests/;
-        // neither this report nor the run manifest is a tamper trust root.
         const std::map<std::string, std::string> verifier_report = {
             {"format", "zkgat_verifier_report"},
             {"trusted_registry_digest", verifier_context.trusted_registry_digest},
@@ -434,7 +421,6 @@ namespace gatzk::protocol
         util::write_lines(export_root + "/proof_block_order.txt", proof.block_order);
 
         util::write_lines(export_root + "/commitment_order.txt", trace.commitment_order);
-        // `benchmark.txt` 只保留正式交付面需要的最小结果，避免把内部剖面重新暴露出来。
         const std::map<std::string, std::string> benchmark_summary = {
             {"dataset", metrics.dataset},
             {"config_id", config_id},
@@ -515,9 +501,6 @@ namespace gatzk::protocol
         metrics.total_wall_clock_ms += metrics.export_artifact_ms;
         metrics.formal_time_sum_ms = metrics.commitment_time_ms + metrics.prove_time_ms + metrics.verify_time_ms;
         metrics.non_formal_overhead_ms = std::max(0.0, metrics.total_wall_clock_ms - metrics.formal_time_sum_ms);
-        // `run_manifest.json` is public.  Keep only opaque identifiers and
-        // execution results here; checkpoint/tensor/source provenance belongs
-        // to the private setup environment and must never enter the aggregate.
         std::map<std::string, std::string> run_manifest = {
             {"backend", benchmark_backend_label()},
             {"backend_name", metrics.backend_name},
@@ -796,12 +779,6 @@ namespace gatzk::protocol
         metrics.export_manifest_validation_ms = elapsed_ms(manifest_validation_start, Clock::now());
         run_manifest["export_manifest_validation_ms"] = format_double(metrics.export_manifest_validation_ms);
         util::write_json_object(export_root + "/run_manifest.json", run_manifest);
-
-        // Trace columns/matrices are prover witness material.  `dump_trace`
-        // remains an execution/debug configuration bit, but public formal
-        // artifacts never materialize those values.  A separately managed
-        // private debug export, if needed, must be invoked outside this public
-        // artifact writer.
     }
 
-} // namespace gatzk::protocol
+}

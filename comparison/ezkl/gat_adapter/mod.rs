@@ -24,22 +24,15 @@ pub mod statement;
 pub use builder::{build_model, build_model_for_run_args, PUBLIC_INPUT_NAMES};
 pub use cli::{FormalCliContract, RequiredFlags};
 pub use loader::{
-    load_dataset, load_dataset_with_manifest, load_relation_resources_with_manifest,
-    write_generated_metadata, AuthenticatedRelationResources, LoadedGat,
+    load_dataset, load_dataset_with_manifest, load_relation_resources_with_manifest, write_generated_metadata, AuthenticatedRelationResources, LoadedGat,
 };
 pub use manifest::{
-    artifact_file, ArtifactFile, ArtifactManifest, BoundCircuitRef, CoreRunManifest, GpuEvidence,
-    GpuProvenance, ResourceFile, ResourceManifest, SrsProvenance,
+    artifact_file, ArtifactFile, ArtifactManifest, BoundCircuitRef, CoreRunManifest, GpuEvidence, GpuProvenance, ResourceFile, ResourceManifest, SrsProvenance,
 };
 pub use op::GatOp;
-pub use relation::{
-    evaluate, evaluate_signed_division, AggregationTrace, GatTrace, HiddenTrace, RoundingMode,
-    SignedDivision,
-};
+pub use relation::{evaluate, evaluate_signed_division, AggregationTrace, GatTrace, HiddenTrace, RoundingMode, SignedDivision,};
 pub use schema::{
-    multiplier_to_scale_exponent, scale_exponent_to_multiplier, BoundFamily, CanonicalGat,
-    CanonicalGraph, CanonicalModel, CircuitRef, DigestIdentity, ExactTable, HeadWeights,
-    IntegerBoundLedger, ModelBinding, PublicInstanceBinding, ScaleChain, StaticTables,
-    GAT_SCHEMA_VERSION,
+    multiplier_to_scale_exponent, scale_exponent_to_multiplier, BoundFamily, CanonicalGat, CanonicalGraph, CanonicalModel, CircuitRef, DigestIdentity,
+    ExactTable, HeadWeights, IntegerBoundLedger, ModelBinding, PublicInstanceBinding, ScaleChain, StaticTables, GAT_SCHEMA_VERSION,
 };
 pub use statement::{output_digest, PublicEzkl, PublicStatement};

@@ -13,10 +13,7 @@ namespace zkgpt {
 namespace gat {
 namespace {
 
-__global__ void projection_kernel(const std::int64_t *input,
-                                  const std::int64_t *weights,
-                                  std::int64_t *projection,
-                                  std::size_t rows, std::size_t inner,
+__global__ void projection_kernel(const std::int64_t* input, const std::int64_t* weights, std::int64_t* projection, std::size_t rows, std::size_t inner,
                                   std::size_t cols) {
     const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const std::size_t total = rows * cols;
@@ -24,19 +21,11 @@ __global__ void projection_kernel(const std::int64_t *input,
     const std::size_t row = index / cols;
     const std::size_t col = index % cols;
     std::int64_t value = 0;
-    for (std::size_t k = 0; k < inner; ++k) {
-        // The canonical bound ledger keeps these products inside the signed
-        // field-safe range; the CUDA bridge uses the same int64 representation
-        // as the C++ adapter and does not reinterpret them as floats.
-        value += input[row * inner + k] * weights[k * cols + col];
-    }
+    for (std::size_t k = 0; k < inner; ++k) { value += input[row * inner + k] * weights[k * cols + col]; }
     projection[index] = value;
 }
 
-__global__ void sparse_aggregate_kernel(const std::int64_t *projection,
-                                        const std::int64_t *src,
-                                        const std::int64_t *dst,
-                                        std::int64_t *aggregate,
+__global__ void sparse_aggregate_kernel(const std::int64_t* projection, const std::int64_t* src, const std::int64_t* dst, std::int64_t* aggregate,
                                         std::size_t edges, std::size_t cols) {
     const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const std::size_t total = edges * cols;
@@ -45,11 +34,10 @@ __global__ void sparse_aggregate_kernel(const std::int64_t *projection,
     const std::size_t col = index % cols;
     const std::size_t source = static_cast<std::size_t>(src[edge]);
     const std::size_t destination = static_cast<std::size_t>(dst[edge]);
-    atomicAdd(reinterpret_cast<unsigned long long *>(aggregate + destination * cols + col),
-              static_cast<unsigned long long>(projection[source * cols + col]));
+    atomicAdd(reinterpret_cast<unsigned long long*>(aggregate + destination * cols + col), static_cast<unsigned long long>(projection[source * cols + col]));
 }
 
-bool check_cuda(cudaError_t code, const char *operation, std::string &diagnostic) {
+bool check_cuda(cudaError_t code, const char* operation, std::string& diagnostic) {
     if (code == cudaSuccess) return true;
     std::ostringstream out;
     out << operation << ": " << cudaGetErrorString(code);
@@ -57,9 +45,7 @@ bool check_cuda(cudaError_t code, const char *operation, std::string &diagnostic
     return false;
 }
 
-std::string checksum(const std::vector<std::int64_t> &values) {
-    // This checksum is telemetry only; proof identity remains the native
-    // transcript/artifact digest.  Keep it deterministic and inexpensive.
+std::string checksum(const std::vector<std::int64_t>& values) {
     std::uint64_t state = 1469598103934665603ULL;
     for (std::int64_t value : values) {
         const std::uint64_t bits = static_cast<std::uint64_t>(value);
@@ -73,11 +59,10 @@ std::string checksum(const std::vector<std::int64_t> &values) {
     return out.str();
 }
 
-} // namespace
+}
 
-GpuExecutionEvidence execute_gpu_matmul_aggregation(
-    const Tensor2D &input, const std::vector<Int> &weights,
-    std::size_t weight_rows, std::size_t weight_cols, const Graph &graph) {
+GpuExecutionEvidence execute_gpu_matmul_aggregation(const Tensor2D& input, const std::vector<Int>& weights, std::size_t weight_rows, std::size_t weight_cols,
+                                                    const Graph& graph) {
     GpuExecutionEvidence evidence;
     evidence.compiled = true;
     evidence.matmul_rows = input.rows;
@@ -86,8 +71,7 @@ GpuExecutionEvidence execute_gpu_matmul_aggregation(
     evidence.aggregation_edges = graph.edges();
     try {
         graph.validate();
-        if (input.rows != graph.num_nodes || input.cols != weight_rows ||
-            input.values.size() != input.rows * input.cols ||
+        if (input.rows != graph.num_nodes || input.cols != weight_rows || input.values.size() != input.rows * input.cols ||
             weights.size() != weight_rows * weight_cols || weight_cols == 0) {
             evidence.diagnostic = "CUDA MatMul relation shape mismatch";
             return evidence;
@@ -100,27 +84,31 @@ GpuExecutionEvidence execute_gpu_matmul_aggregation(
         }
         evidence.device_available = true;
 
-        std::int64_t *device_input = nullptr;
-        std::int64_t *device_weights = nullptr;
-        std::int64_t *device_projection = nullptr;
-        std::int64_t *device_src = nullptr;
-        std::int64_t *device_dst = nullptr;
-        std::int64_t *device_aggregate = nullptr;
+        std::int64_t* device_input = nullptr;
+        std::int64_t* device_weights = nullptr;
+        std::int64_t* device_projection = nullptr;
+        std::int64_t* device_src = nullptr;
+        std::int64_t* device_dst = nullptr;
+        std::int64_t* device_aggregate = nullptr;
         const std::size_t input_bytes = input.values.size() * sizeof(std::int64_t);
         const std::size_t weight_bytes = weights.size() * sizeof(std::int64_t);
         const std::size_t projection_count = input.rows * weight_cols;
         const std::size_t projection_bytes = projection_count * sizeof(std::int64_t);
         const std::size_t edge_bytes = graph.edges() * sizeof(std::int64_t);
         const auto release = [&]() {
-            cudaFree(device_input); cudaFree(device_weights); cudaFree(device_projection);
-            cudaFree(device_src); cudaFree(device_dst); cudaFree(device_aggregate);
+            cudaFree(device_input);
+            cudaFree(device_weights);
+            cudaFree(device_projection);
+            cudaFree(device_src);
+            cudaFree(device_dst);
+            cudaFree(device_aggregate);
         };
-        if (!check_cuda(cudaMalloc(reinterpret_cast<void **>(&device_input), input_bytes), "cudaMalloc(input)", evidence.diagnostic) ||
-            !check_cuda(cudaMalloc(reinterpret_cast<void **>(&device_weights), weight_bytes), "cudaMalloc(weights)", evidence.diagnostic) ||
-            !check_cuda(cudaMalloc(reinterpret_cast<void **>(&device_projection), projection_bytes), "cudaMalloc(projection)", evidence.diagnostic) ||
-            !check_cuda(cudaMalloc(reinterpret_cast<void **>(&device_src), edge_bytes), "cudaMalloc(src)", evidence.diagnostic) ||
-            !check_cuda(cudaMalloc(reinterpret_cast<void **>(&device_dst), edge_bytes), "cudaMalloc(dst)", evidence.diagnostic) ||
-            !check_cuda(cudaMalloc(reinterpret_cast<void **>(&device_aggregate), projection_bytes), "cudaMalloc(aggregate)", evidence.diagnostic)) {
+        if (!check_cuda(cudaMalloc(reinterpret_cast<void**>(&device_input), input_bytes), "cudaMalloc(input)", evidence.diagnostic) ||
+            !check_cuda(cudaMalloc(reinterpret_cast<void**>(&device_weights), weight_bytes), "cudaMalloc(weights)", evidence.diagnostic) ||
+            !check_cuda(cudaMalloc(reinterpret_cast<void**>(&device_projection), projection_bytes), "cudaMalloc(projection)", evidence.diagnostic) ||
+            !check_cuda(cudaMalloc(reinterpret_cast<void**>(&device_src), edge_bytes), "cudaMalloc(src)", evidence.diagnostic) ||
+            !check_cuda(cudaMalloc(reinterpret_cast<void**>(&device_dst), edge_bytes), "cudaMalloc(dst)", evidence.diagnostic) ||
+            !check_cuda(cudaMalloc(reinterpret_cast<void**>(&device_aggregate), projection_bytes), "cudaMalloc(aggregate)", evidence.diagnostic)) {
             release();
             return evidence;
         }
@@ -134,9 +122,7 @@ GpuExecutionEvidence execute_gpu_matmul_aggregation(
         }
         const unsigned block = 256;
         const unsigned projection_grid = static_cast<unsigned>((projection_count + block - 1) / block);
-        projection_kernel<<<projection_grid, block>>>(device_input, device_weights,
-                                                       device_projection, input.rows,
-                                                       weight_rows, weight_cols);
+        projection_kernel<<<projection_grid, block>>>(device_input, device_weights, device_projection, input.rows, weight_rows, weight_cols);
         ++evidence.kernel_invocations;
         if (!check_cuda(cudaGetLastError(), "projection_kernel launch", evidence.diagnostic) ||
             !check_cuda(cudaDeviceSynchronize(), "projection_kernel synchronize", evidence.diagnostic)) {
@@ -145,9 +131,7 @@ GpuExecutionEvidence execute_gpu_matmul_aggregation(
         }
         const std::size_t aggregate_count = graph.edges() * weight_cols;
         const unsigned aggregate_grid = static_cast<unsigned>((aggregate_count + block - 1) / block);
-        sparse_aggregate_kernel<<<aggregate_grid, block>>>(device_projection, device_src,
-                                                            device_dst, device_aggregate,
-                                                            graph.edges(), weight_cols);
+        sparse_aggregate_kernel<<<aggregate_grid, block>>>(device_projection, device_src, device_dst, device_aggregate, graph.edges(), weight_cols);
         ++evidence.kernel_invocations;
         if (!check_cuda(cudaGetLastError(), "sparse_aggregate_kernel launch", evidence.diagnostic) ||
             !check_cuda(cudaDeviceSynchronize(), "sparse_aggregate_kernel synchronize", evidence.diagnostic)) {
@@ -155,8 +139,8 @@ GpuExecutionEvidence execute_gpu_matmul_aggregation(
             return evidence;
         }
         std::vector<std::int64_t> host_aggregate(projection_count, 0);
-        if (!check_cuda(cudaMemcpy(host_aggregate.data(), device_aggregate, projection_bytes,
-                                   cudaMemcpyDeviceToHost), "cudaMemcpy(aggregate)", evidence.diagnostic)) {
+        if (!check_cuda(cudaMemcpy(host_aggregate.data(), device_aggregate, projection_bytes, cudaMemcpyDeviceToHost), "cudaMemcpy(aggregate)",
+                        evidence.diagnostic)) {
             release();
             return evidence;
         }
@@ -165,11 +149,11 @@ GpuExecutionEvidence execute_gpu_matmul_aggregation(
         evidence.output_checksum = checksum(host_aggregate);
         if (!evidence.kernel_executed) evidence.diagnostic = "CUDA relation did not execute both kernels";
         return evidence;
-    } catch (const std::exception &error) {
+    } catch (const std::exception& error) {
         evidence.diagnostic = error.what();
         return evidence;
     }
 }
 
-} // namespace gat
-} // namespace zkgpt
+}
+}

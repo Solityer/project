@@ -90,11 +90,7 @@ pub struct BoundCircuitRef {
 impl BoundCircuitRef {
     /// Construct a relation-bound native circuit identity.
     pub fn new(native: CircuitRef) -> Self {
-        Self {
-            relation_id: "R_GAT-ezkl".into(),
-            native,
-        }
-    }
+        Self { relation_id: "R_GAT-ezkl".into(), native,} }
 
     /// Validate the relation and native identities.
     pub fn validate(&self) -> Result<(), String> {
@@ -109,14 +105,8 @@ impl BoundCircuitRef {
             ("model_graph_id", &self.native.model_graph_id),
         ] {
             let lowered = value.to_ascii_lowercase();
-            if ["unbound", "pending", "placeholder", "dummy", "fake"]
-                .iter()
-                .any(|marker| lowered.contains(marker))
-            {
-                return Err(format!(
-                    "circuit_ref {} contains an unbound/placeholder identity",
-                    label
-                ));
+            if ["unbound", "pending", "placeholder", "dummy", "fake"].iter().any(|marker| lowered.contains(marker)) {
+                return Err(format!("circuit_ref {} contains an unbound/placeholder identity", label));
             }
         }
         Ok(())
@@ -298,22 +288,16 @@ fn safe_relative(path: &str) -> Result<PathBuf, String> {
 }
 
 fn ensure_no_symlink(path: &Path, root: &Path) -> Result<(), String> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| format!("path escapes resource root: {}", path.display()))?;
+    let relative = path.strip_prefix(root).map_err(|_| format!("path escapes resource root: {}", path.display()))?;
     let mut current = root.to_path_buf();
     for component in relative.components() {
         let Component::Normal(part) = component else {
             continue;
         };
         current.push(part);
-        let metadata = fs::symlink_metadata(&current)
-            .map_err(|e| format!("cannot inspect {}: {}", current.display(), e))?;
+        let metadata = fs::symlink_metadata(&current).map_err(|e| format!("cannot inspect {}: {}", current.display(), e))?;
         if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "symlink resource path is forbidden: {}",
-                path.display()
-            ));
+            return Err(format!("symlink resource path is forbidden: {}", path.display()));
         }
     }
     Ok(())
@@ -324,68 +308,43 @@ fn hash_file(path: &Path) -> Result<(u64, String), String> {
     let mut size = 0_u64;
     let mut chunk = [0_u8; 1024 * 1024];
     loop {
-        let read = file
-            .read(&mut chunk)
-            .map_err(|e| format!("read {}: {}", path.display(), e))?;
+        let read = file.read(&mut chunk).map_err(|e| format!("read {}: {}", path.display(), e))?;
         if read == 0 {
             break;
         }
-        size = size
-            .checked_add(read as u64)
-            .ok_or_else(|| format!("size overflow while reading {}", path.display()))?;
+        size = size.checked_add(read as u64).ok_or_else(|| format!("size overflow while reading {}", path.display()))?;
     }
-    let digest =
-        sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
+    let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
     Ok((size, digest))
 }
 
 impl ResourceManifest {
     /// Parse a strict manifest from disk without authenticating its files.
     pub fn load(path: &Path) -> Result<Self, String> {
-        let bytes =
-            fs::read(path).map_err(|e| format!("read manifest {}: {}", path.display(), e))?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| format!("parse manifest {}: {}", path.display(), e))
+        let bytes = fs::read(path).map_err(|e| format!("read manifest {}: {}", path.display(), e))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse manifest {}: {}", path.display(), e))
     }
 
     /// Load a manifest only when it is a non-symlink path relative to the
     /// baseline checkout.  CLI callers must not be able to redirect resource
     /// authentication outside the packaged baseline.
     pub fn load_from_baseline(baseline_root: &Path, path: &Path) -> Result<Self, String> {
-        if path.is_absolute()
-            || path.components().any(|component| {
-                matches!(
-                    component,
-                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
-                )
-            })
-        {
-            return Err(format!(
-                "resource manifest path must be baseline-relative: {}",
-                path.display()
-            ));
+        if path.is_absolute() || path.components().any(|component| { matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)) }){
+            return Err(format!("resource manifest path must be baseline-relative: {}", path.display()));
         }
         let resolved = baseline_root.join(path);
         ensure_no_symlink(&resolved, baseline_root)?;
-        let canonical_root = baseline_root
-            .canonicalize()
-            .map_err(|e| format!("canonicalize baseline root: {}", e))?;
-        let canonical = resolved
-            .canonicalize()
-            .map_err(|e| format!("canonicalize manifest {}: {}", resolved.display(), e))?;
+        let canonical_root = baseline_root.canonicalize().map_err(|e| format!("canonicalize baseline root: {}", e))?;
+        let canonical = resolved.canonicalize().map_err(|e| format!("canonicalize manifest {}: {}", resolved.display(), e))?;
         if !canonical.starts_with(&canonical_root) {
-            return Err(format!(
-                "manifest path escapes baseline root: {}",
-                path.display()
-            ));
+            return Err(format!("manifest path escapes baseline root: {}", path.display()));
         }
         Self::load(&resolved)
     }
 
     /// Canonical JSON digest used to bind a run artifact to this manifest.
     pub fn digest(&self) -> Result<String, String> {
-        let bytes =
-            serde_json::to_vec(self).map_err(|e| format!("serialize resource manifest: {}", e))?;
+        let bytes = serde_json::to_vec(self).map_err(|e| format!("serialize resource manifest: {}", e))?;
         sha256_digest(&bytes)
     }
 
@@ -398,46 +357,27 @@ impl ResourceManifest {
         let resource_root = baseline_root.join(&root_rel);
         ensure_no_symlink(&resource_root, baseline_root)?;
         if !resource_root.is_dir() {
-            return Err(format!(
-                "resource root is not a directory: {}",
-                resource_root.display()
-            ));
+            return Err(format!("resource root is not a directory: {}", resource_root.display()));
         }
         if self.files.is_empty() {
             return Err("resource manifest contains no files".into());
         }
         let mut out = Vec::with_capacity(self.files.len());
-        let canonical_root = baseline_root
-            .canonicalize()
-            .map_err(|e| format!("canonicalize baseline root: {}", e))?;
+        let canonical_root = baseline_root.canonicalize().map_err(|e| format!("canonicalize baseline root: {}", e))?;
         for record in &self.files {
             valid_digest("resource sha256", &record.sha256)?;
             valid_digest("source sha256", &record.source_sha256)?;
             let source = Path::new(&record.source_path);
             if !source.is_absolute() {
-                return Err(format!(
-                    "source path is not absolute: {}",
-                    record.source_path
-                ));
+                return Err(format!("source path is not absolute: {}", record.source_path));
             }
             ensure_no_symlink(source, baseline_root)?;
-            let canonical_source = source
-                .canonicalize()
-                .map_err(|e| format!("canonicalize source {}: {}", source.display(), e))?;
+            let canonical_source = source.canonicalize().map_err(|e| format!("canonicalize source {}: {}", source.display(), e))?;
             if !canonical_source.starts_with(&canonical_root) {
-                return Err(format!(
-                    "source path escapes baseline root: {}",
-                    record.source_path
-                ));
+                return Err(format!("source path escapes baseline root: {}", record.source_path));
             }
-            if !fs::metadata(source)
-                .map_err(|e| format!("stat source {}: {}", source.display(), e))?
-                .is_file()
-            {
-                return Err(format!(
-                    "source path is not a regular file: {}",
-                    source.display()
-                ));
+            if !fs::metadata(source).map_err(|e| format!("stat source {}: {}", source.display(), e))?.is_file() {
+                return Err(format!("source path is not a regular file: {}", source.display()));
             }
             let (_, source_digest) = hash_file(source)?;
             if source_digest != record.source_sha256 {
@@ -446,17 +386,11 @@ impl ResourceManifest {
             let path_rel = safe_relative(&record.path)?;
             let path = baseline_root.join(&path_rel);
             ensure_no_symlink(&path, baseline_root)?;
-            let canonical = path
-                .canonicalize()
-                .map_err(|e| format!("canonicalize {}: {}", path.display(), e))?;
+            let canonical = path.canonicalize().map_err(|e| format!("canonicalize {}: {}", path.display(), e))?;
             if !canonical.starts_with(&resource_root) {
-                return Err(format!(
-                    "resource path escapes declared root: {}",
-                    record.path
-                ));
+                return Err(format!("resource path escapes declared root: {}", record.path));
             }
-            let metadata =
-                fs::metadata(&path).map_err(|e| format!("stat {}: {}", path.display(), e))?;
+            let metadata = fs::metadata(&path).map_err(|e| format!("stat {}: {}", path.display(), e))?;
             if !metadata.is_file() {
                 return Err(format!("resource is not a regular file: {}", record.path));
             }
@@ -467,21 +401,14 @@ impl ResourceManifest {
             if size != record.size || digest != record.sha256 {
                 return Err(format!("digest mismatch for {}", record.path));
             }
-            out.push(AuthenticatedResource {
-                record: record.clone(),
-                path,
-            });
+            out.push(AuthenticatedResource { record: record.clone(), path,});
         }
         Ok(out)
     }
 
     /// Resolve and authenticate one named file without opening any path not
     /// present in the manifest.
-    pub fn authenticate_file(
-        &self,
-        baseline_root: &Path,
-        requested: &str,
-    ) -> Result<AuthenticatedResource, String> {
+    pub fn authenticate_file(&self, baseline_root: &Path, requested: &str,) -> Result<AuthenticatedResource, String> {
         let path = safe_relative(requested)?;
         let record = self
             .files
@@ -492,18 +419,10 @@ impl ResourceManifest {
         let resolved = baseline_root.join(safe_relative(&record.path)?);
         ensure_no_symlink(&resource_root, baseline_root)?;
         ensure_no_symlink(&resolved, baseline_root)?;
-        if !resolved
-            .canonicalize()
-            .map_err(|e| e.to_string())?
-            .starts_with(&resource_root)
-        {
-            return Err(format!(
-                "resource path escapes declared root: {}",
-                requested
-            ));
+        if !resolved.canonicalize().map_err(|e| e.to_string())?.starts_with(&resource_root) {
+            return Err(format!("resource path escapes declared root: {}", requested));
         }
-        let metadata =
-            fs::metadata(&resolved).map_err(|e| format!("stat {}: {}", resolved.display(), e))?;
+        let metadata = fs::metadata(&resolved).map_err(|e| format!("stat {}: {}", resolved.display(), e))?;
         if metadata.len() != record.size {
             return Err(format!("size mismatch for {}", requested));
         }
@@ -511,12 +430,7 @@ impl ResourceManifest {
         if digest != record.sha256 {
             return Err(format!("digest mismatch for {}", requested));
         }
-        Ok(AuthenticatedResource {
-            record: record.clone(),
-            path: resolved,
-        })
-    }
-}
+        Ok(AuthenticatedResource { record: record.clone(), path: resolved,}) } }
 
 impl ArtifactManifest {
     /// Save a generated artifact manifest atomically enough for local runs.
@@ -524,23 +438,17 @@ impl ArtifactManifest {
         self.validate()?;
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent).map_err(|e| format!("create {}: {}", parent.display(), e))?;
-        let bytes =
-            serde_json::to_vec_pretty(self).map_err(|e| format!("serialize artifact: {}", e))?;
-        let mut file =
-            File::create(path).map_err(|e| format!("create {}: {}", path.display(), e))?;
-        file.write_all(&bytes)
-            .map_err(|e| format!("write {}: {}", path.display(), e))
+        let bytes = serde_json::to_vec_pretty(self).map_err(|e| format!("serialize artifact: {}", e))?;
+        let mut file = File::create(path).map_err(|e| format!("create {}: {}", path.display(), e))?;
+        file.write_all(&bytes).map_err(|e| format!("write {}: {}", path.display(), e))
     }
 
     /// Load a strict artifact manifest without accepting compatibility fields.
     pub fn load(path: &Path) -> Result<Self, String> {
-        let bytes = fs::read(path)
-            .map_err(|e| format!("read artifact manifest {}: {}", path.display(), e))?;
-        let raw: Value = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("parse artifact manifest {}: {}", path.display(), e))?;
+        let bytes = fs::read(path).map_err(|e| format!("read artifact manifest {}: {}", path.display(), e))?;
+        let raw: Value = serde_json::from_slice(&bytes).map_err(|e| format!("parse artifact manifest {}: {}", path.display(), e))?;
         validate_artifact_json_shape(&raw)?;
-        serde_json::from_value(raw)
-            .map_err(|e| format!("parse artifact manifest {}: {}", path.display(), e))
+        serde_json::from_value(raw).map_err(|e| format!("parse artifact manifest {}: {}", path.display(), e))
     }
 
     /// Validate schema-level identities before native verification.
@@ -565,23 +473,11 @@ impl ArtifactManifest {
         }
         let backend = self.backend.to_ascii_lowercase();
         if backend != "cpu" && backend != "gpu" {
-            return Err(format!(
-                "artifact manifest has unsupported backend: {}",
-                self.backend
-            ));
+            return Err(format!("artifact manifest has unsupported backend: {}", self.backend));
         }
-        if [
-            self.dataset.as_str(),
-            self.quant_cfg_id.as_str(),
-            self.static_tables_id.as_str(),
-            self.ezkl_security_profile_id.as_str(),
-        ]
-        .iter()
-        .any(|value| {
+        if [self.dataset.as_str(), self.quant_cfg_id.as_str(), self.static_tables_id.as_str(), self.ezkl_security_profile_id.as_str(),].iter().any(|value| {
             let lowered = value.to_ascii_lowercase();
-            ["unbound", "pending", "placeholder", "dummy", "fake"]
-                .iter()
-                .any(|marker| lowered.contains(marker))
+            ["unbound", "pending", "placeholder", "dummy", "fake"].iter().any(|marker| lowered.contains(marker))
         }) {
             return Err("artifact manifest contains an unbound/placeholder identity".into());
         }
@@ -613,13 +509,9 @@ impl ArtifactManifest {
             || self.srs_provenance.ceremony_id.is_empty()
             || self.srs_provenance.sha256 != self.srs_sha256
         {
-            return Err(
-                "artifact SRS provenance is not trusted full-size official material".into(),
-            );
+            return Err("artifact SRS provenance is not trusted full-size official material".into(),);
         }
-        if !self.srs_provenance.ceremony_id.starts_with("sha256:")
-            || self.srs_provenance.ceremony_id != format!("sha256:{}", self.srs_sha256)
-        {
+        if !self.srs_provenance.ceremony_id.starts_with("sha256:") || self.srs_provenance.ceremony_id != format!("sha256:{}", self.srs_sha256) {
             return Err("artifact SRS ceremony_id does not bind the selected SRS digest".into());
         }
         if self.files.is_empty() {
@@ -629,27 +521,17 @@ impl ArtifactManifest {
         for file in &self.files {
             let relative = safe_relative(&file.path)?;
             if !paths.insert(relative) {
-                return Err(format!(
-                    "artifact manifest contains duplicate file: {}",
-                    file.path
-                ));
+                return Err(format!("artifact manifest contains duplicate file: {}", file.path));
             }
             if file.size == 0 {
-                return Err(format!(
-                    "artifact manifest contains an empty file: {}",
-                    file.path
-                ));
+                return Err(format!("artifact manifest contains an empty file: {}", file.path));
             }
             valid_digest("artifact file sha256", &file.sha256)?;
         }
         self.validate_required_files(false)?;
         for (label, value) in [
             ("source_snapshot.root", &self.source_snapshot.root),
-            (
-                "source_snapshot.git_commit",
-                &self.source_snapshot.git_commit,
-            ),
-            ("source_snapshot.git_tree", &self.source_snapshot.git_tree),
+            ("source_snapshot.git_commit", &self.source_snapshot.git_commit,),("source_snapshot.git_tree", &self.source_snapshot.git_tree),
         ] {
             if value.is_empty() {
                 return Err(format!("{} must not be empty", label));
@@ -681,10 +563,7 @@ impl ArtifactManifest {
         ];
         for path in required {
             if !names.contains(path) {
-                return Err(format!(
-                    "artifact manifest is missing required file: {}",
-                    path
-                ));
+                return Err(format!("artifact manifest is missing required file: {}", path));
             }
         }
         if require_proof && !names.contains("proof.json") {
@@ -736,13 +615,9 @@ fn validate_artifact_json_shape(value: &Value) -> Result<(), String> {
         ],
         "artifact manifest",
     )?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| "artifact manifest must be a JSON object".to_string())?;
+    let object = value.as_object().ok_or_else(|| "artifact manifest must be a JSON object".to_string())?;
     ensure_json_keys(
-        object
-            .get("circuit_ref")
-            .ok_or_else(|| "artifact circuit_ref is missing".to_string())?,
+        object.get("circuit_ref").ok_or_else(|| "artifact circuit_ref is missing".to_string())?,
         &[
             "relation_id",
             "compiled_circuit_id",
@@ -758,52 +633,26 @@ fn validate_artifact_json_shape(value: &Value) -> Result<(), String> {
         "artifact circuit_ref",
     )?;
     ensure_json_keys(
-        object
-            .get("source_snapshot")
-            .ok_or_else(|| "artifact source_snapshot is missing".to_string())?,
+        object.get("source_snapshot").ok_or_else(|| "artifact source_snapshot is missing".to_string())?,
         &["root", "git_commit", "git_tree"],
         "artifact source_snapshot",
     )?;
     ensure_json_keys(
-        object
-            .get("srs_provenance")
-            .ok_or_else(|| "artifact srs_provenance is missing".to_string())?,
-        &[
-            "source",
-            "trusted",
-            "reduced",
-            "generated",
-            "ceremony_id",
-            "sha256",
-        ],
+        object.get("srs_provenance").ok_or_else(|| "artifact srs_provenance is missing".to_string())?,
+        &["source", "trusted", "reduced", "generated", "ceremony_id", "sha256",],
         "artifact srs_provenance",
     )?;
-    let files = object
-        .get("files")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "artifact files must be an array".to_string())?;
+    let files = object.get("files").and_then(Value::as_array).ok_or_else(|| "artifact files must be an array".to_string())?;
     for (index, file) in files.iter().enumerate() {
-        ensure_json_keys(
-            file,
-            &["path", "size", "sha256"],
-            &format!("artifact files[{}]", index),
-        )?;
+        ensure_json_keys(file, &["path", "size", "sha256"], &format!("artifact files[{}]", index),)?;
     }
     Ok(())
 }
 
 fn ensure_json_keys(value: &Value, expected: &[&str], label: &str) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| format!("{} must be a JSON object", label))?;
-    let actual = object
-        .keys()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let wanted = expected
-        .iter()
-        .map(|key| (*key).to_string())
-        .collect::<std::collections::BTreeSet<_>>();
+    let object = value.as_object().ok_or_else(|| format!("{} must be a JSON object", label))?;
+    let actual = object.keys().cloned().collect::<std::collections::BTreeSet<_>>();
+    let wanted = expected.iter().map(|key| (*key).to_string()).collect::<std::collections::BTreeSet<_>>();
     if actual != wanted {
         return Err(format!(
             "{} schema mismatch; missing={:?}, extra={:?}",
@@ -817,30 +666,15 @@ fn ensure_json_keys(value: &Value, expected: &[&str], label: &str) -> Result<(),
 
 /// Authenticate an artifact file and return its size/digest.
 pub fn artifact_file(path: &Path, display_path: String) -> Result<ArtifactFile, String> {
-    if fs::symlink_metadata(path)
-        .map_err(|e| format!("stat {}: {}", path.display(), e))?
-        .file_type()
-        .is_symlink()
-    {
-        return Err(format!(
-            "artifact file must not be a symlink: {}",
-            path.display()
-        ));
+    if fs::symlink_metadata(path).map_err(|e| format!("stat {}: {}", path.display(), e))?.file_type().is_symlink() {
+        return Err(format!("artifact file must not be a symlink: {}", path.display()));
     }
     let metadata = fs::metadata(path).map_err(|e| format!("stat {}: {}", path.display(), e))?;
     if !metadata.is_file() {
-        return Err(format!(
-            "artifact path is not a regular file: {}",
-            path.display()
-        ));
+        return Err(format!("artifact path is not a regular file: {}", path.display()));
     }
     let (size, sha256) = hash_file(path)?;
     if metadata.len() != size {
         return Err(format!("file changed while hashing {}", path.display()));
     }
-    Ok(ArtifactFile {
-        path: display_path,
-        size,
-        sha256,
-    })
-}
+    Ok(ArtifactFile { path: display_path, size, sha256,}) }

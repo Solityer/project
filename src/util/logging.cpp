@@ -5,8 +5,6 @@
 #include <fstream>
 #include <iostream>
 
-// 实现artifact导出使用的轻量日志工具，只负责把主链结果写成可核对的文本与JSON
-
 namespace gatzk::util
 {
     namespace
@@ -20,18 +18,18 @@ namespace gatzk::util
             {
                 switch (ch)
                 {
-                case '\\':
-                    out += "\\\\";
-                    break;
-                case '"':
-                    out += "\\\"";
-                    break;
-                case '\n':
-                    out += "\\n";
-                    break;
-                default:
-                    out.push_back(ch);
-                    break;
+                    case '\\':
+                        out += "\\\\";
+                        break;
+                    case '"':
+                        out += "\\\"";
+                        break;
+                    case '\n':
+                        out += "\\n";
+                        break;
+                    default:
+                        out.push_back(ch);
+                        break;
                 }
             }
             return out;
@@ -39,10 +37,7 @@ namespace gatzk::util
 
     }
 
-    void ensure_directory(const std::string &path)
-    {
-        std::filesystem::create_directories(path);
-    }
+    void ensure_directory(const std::string &path) { std::filesystem::create_directories(path); }
 
     void write_lines(const std::string &path, const std::vector<std::string> &lines)
     {
@@ -69,8 +64,7 @@ namespace gatzk::util
         std::size_t index = 0;
         for (const auto &[key, value] : entries)
         {
-            output << "  \"" << escape_json(key) << "\": "
-                   << "\"" << escape_json(value) << "\"";
+            output << "  \"" << escape_json(key) << "\": " << "\"" << escape_json(value) << "\"";
             if (++index != entries.size())
             {
                 output << ',';
@@ -80,7 +74,6 @@ namespace gatzk::util
         output << "}\n";
     }
 
-    // 统一的控制台输出前缀，方便 formal suite 与 benchmark 日志定位来源
     void info(const std::string &message)
     {
         if (message.rfind("cuda_msm ", 0) == 0 && std::getenv("GATZK_RUN_PROGRESS") == nullptr && std::getenv("GATZK_DETAILED_PROFILE") == nullptr &&

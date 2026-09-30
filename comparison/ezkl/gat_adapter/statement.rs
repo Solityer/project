@@ -90,10 +90,7 @@ pub struct PublicStatement {
 impl PublicEzkl {
     /// Validate shape/identity fields that can be checked without a witness.
     pub fn validate(&self) -> Result<(), String> {
-        if self.circuit.native.compiled_circuit_id.is_empty()
-            || self.circuit.native.settings_id.is_empty()
-            || self.circuit.native.vk_id.is_empty()
-        {
+        if self.circuit.native.compiled_circuit_id.is_empty() || self.circuit.native.settings_id.is_empty() || self.circuit.native.vk_id.is_empty() {
             return Err("public circuit identity is incomplete".into());
         }
         if self.model_hash.is_empty() {
@@ -103,12 +100,8 @@ impl PublicEzkl {
         self.static_tables.validate("statement.static_tables")?;
         self.quant.validate("statement.quant")?;
         self.ledger.validate("statement.ledger")?;
-        self.circuit
-            .validate()
-            .map_err(|e| format!("statement circuit: {}", e))?;
-        self.model
-            .validate()
-            .map_err(|e| format!("statement model: {}", e))?;
+        self.circuit.validate().map_err(|e| format!("statement circuit: {}", e))?;
+        self.model.validate().map_err(|e| format!("statement model: {}", e))?;
         if self.feature_table.is_empty() || self.node_ids.is_empty() || self.y.is_empty() {
             return Err("statement public feature/node/output arrays must not be empty".into());
         }
@@ -122,15 +115,7 @@ impl PublicEzkl {
         {
             return Err("statement graph pointers do not cover the public graph".into());
         }
-        if self
-            .node_ptr
-            .windows(2)
-            .any(|window| window[0] >= window[1])
-            || self
-                .edge_ptr
-                .windows(2)
-                .any(|window| window[0] >= window[1])
-        {
+        if self.node_ptr.windows(2).any(|window| window[0] >= window[1]) || self.edge_ptr.windows(2).any(|window| window[0] >= window[1]) {
             return Err("statement graph pointers must be strictly increasing".into());
         }
         let mut node_ids = BTreeSet::new();
@@ -188,8 +173,7 @@ impl PublicStatement {
         if self.public_ezkl.model.hash != self.public_ezkl.model_hash {
             return Err("model H(W) disagrees with model binding hash".into());
         }
-        if self.public_ezkl.circuit.native.ezkl_security_profile_id != self.ezkl_security_profile_id
-        {
+        if self.public_ezkl.circuit.native.ezkl_security_profile_id != self.ezkl_security_profile_id {
             return Err("statement security profile mismatch".into());
         }
         if self.public_ezkl.quant.id != self.quant_cfg_id
@@ -214,16 +198,8 @@ impl PublicStatement {
     pub fn digest_without_self(&self) -> Result<String, String> {
         let mut clone = self.clone();
         clone.statement_digest.clear();
-        // Route the digest through serde_json::Value before encoding.  The
-        // setup context is a JSON value while the native verifier reloads a
-        // typed statement (including a flattened CircuitRef); hashing the
-        // typed struct directly would make the cross-language digest depend
-        // on incidental struct/flatten field order.  The default serde_json
-        // map is ordered, so this is a stable recursive canonical encoding.
-        let canonical =
-            serde_json::to_value(&clone).map_err(|e| format!("serialize statement: {}", e))?;
-        let bytes = serde_json::to_vec(&canonical)
-            .map_err(|e| format!("serialize canonical statement: {}", e))?;
+        let canonical = serde_json::to_value(&clone).map_err(|e| format!("serialize statement: {}", e))?;
+        let bytes = serde_json::to_vec(&canonical).map_err(|e| format!("serialize canonical statement: {}", e))?;
         sha256_digest(&bytes)
     }
 
@@ -231,22 +207,18 @@ impl PublicStatement {
     pub fn save(&self, path: &Path) -> Result<(), String> {
         self.validate()?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("create {}: {}", parent.display(), e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("create {}: {}", parent.display(), e))?;
         }
-        let bytes =
-            serde_json::to_vec_pretty(self).map_err(|e| format!("serialize statement: {}", e))?;
+        let bytes = serde_json::to_vec_pretty(self).map_err(|e| format!("serialize statement: {}", e))?;
         fs::write(path, bytes).map_err(|e| format!("write {}: {}", path.display(), e))
     }
 
     /// Load and fully validate an external statement.
     pub fn load(path: &Path) -> Result<Self, String> {
         let bytes = fs::read(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-        let raw: Value = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("parse statement {}: {}", path.display(), e))?;
+        let raw: Value = serde_json::from_slice(&bytes).map_err(|e| format!("parse statement {}: {}", path.display(), e))?;
         validate_json_shape(&raw)?;
-        let value: Self = serde_json::from_value(raw)
-            .map_err(|e| format!("parse statement {}: {}", path.display(), e))?;
+        let value: Self = serde_json::from_value(raw).map_err(|e| format!("parse statement {}: {}", path.display(), e))?;
         value.validate()?;
         Ok(value)
     }
@@ -275,9 +247,7 @@ fn validate_json_shape(value: &Value) -> Result<(), String> {
         ],
         "statement",
     )?;
-    let public = value
-        .get("public_ezkl")
-        .ok_or_else(|| "statement public_ezkl is missing".to_string())?;
+    let public = value.get("public_ezkl").ok_or_else(|| "statement public_ezkl is missing".to_string())?;
     ensure_object_keys(
         public,
         &[
@@ -300,17 +270,13 @@ fn validate_json_shape(value: &Value) -> Result<(), String> {
     )?;
     for key in ["topology", "static_tables", "quant", "ledger"] {
         ensure_object_keys(
-            public
-                .get(key)
-                .ok_or_else(|| format!("statement.public_ezkl.{} is missing", key))?,
+            public.get(key).ok_or_else(|| format!("statement.public_ezkl.{} is missing", key))?,
             &["id", "digest"],
             &format!("statement.public_ezkl.{}", key),
         )?;
     }
     ensure_object_keys(
-        public
-            .get("circuit")
-            .ok_or_else(|| "statement public_ezkl.circuit is missing".to_string())?,
+        public.get("circuit").ok_or_else(|| "statement public_ezkl.circuit is missing".to_string())?,
         &[
             "relation_id",
             "compiled_circuit_id",
@@ -326,9 +292,7 @@ fn validate_json_shape(value: &Value) -> Result<(), String> {
         "statement.public_ezkl.circuit",
     )?;
     ensure_object_keys(
-        public
-            .get("model")
-            .ok_or_else(|| "statement public_ezkl.model is missing".to_string())?,
+        public.get("model").ok_or_else(|| "statement public_ezkl.model is missing".to_string())?,
         &["hash", "hash_domain", "canonical_model_digest"],
         "statement.public_ezkl.model",
     )?;
@@ -336,14 +300,9 @@ fn validate_json_shape(value: &Value) -> Result<(), String> {
 }
 
 fn ensure_object_keys(value: &Value, expected: &[&str], label: &str) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| format!("{} must be a JSON object", label))?;
+    let object = value.as_object().ok_or_else(|| format!("{} must be a JSON object", label))?;
     let actual = object.keys().cloned().collect::<BTreeSet<_>>();
-    let wanted = expected
-        .iter()
-        .map(|key| (*key).to_string())
-        .collect::<BTreeSet<_>>();
+    let wanted = expected.iter().map(|key| (*key).to_string()).collect::<BTreeSet<_>>();
     if actual != wanted {
         return Err(format!(
             "{} schema mismatch; missing={:?}, extra={:?}",

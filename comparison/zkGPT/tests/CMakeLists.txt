@@ -47,10 +47,8 @@ add_executable(masked_core_smoke masked_core_smoke.cpp)
 target_link_libraries(masked_core_smoke PRIVATE gat_adapter)
 add_test(NAME masked_core_smoke COMMAND masked_core_smoke)
 
-
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
-    add_test(NAME gat_script_schema
-             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_scripts_schema.py)
+    add_test(NAME gat_script_schema COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_scripts_schema.py)
     set_tests_properties(gat_script_schema PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()

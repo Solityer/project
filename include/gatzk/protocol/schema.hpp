@@ -1,6 +1,4 @@
 #pragma once
-// 本文件维护正式 proof schema 使用的标签命名规则与 block 顺序，
-// 是 trace、prove、verify 与 artifact 共享的命名真源。
 
 #include <cstdint>
 #include <map>
@@ -22,12 +20,6 @@ namespace gatzk::protocol
     struct KZGShiftRelationMeta;
     struct MetadataReference;
 
-    // Deterministic table-shape plan shared by the canonical producer, domain
-    // planner and verifier registration.  It contains only public dimensions,
-    // the registered fixed-point scales and the canonical large-graph shape
-    // rule; it never materializes table rows.  In particular, `T_range` stays
-    // exactly 2^B rows while `T_exp` is derived from the certified LReLU output
-    // bound and therefore covers every delta in [0, delta_bound].
     struct CanonicalStaticTableShape
     {
         std::size_t range_table_size = 0;
@@ -44,11 +36,6 @@ namespace gatzk::protocol
         bool operator==(const CanonicalStaticTableShape &) const = default;
     };
 
-    // Public, context-neutral inputs for the canonical static-table planner.
-    // The planner consumes only dimensions and the authenticated quantization
-    // chain; it never needs model tensors, a proving key, or opening material.
-    // Both the prover and the point-only verifier feed this same value object,
-    // so neither side has to project or fabricate a ProtocolContext.
     struct CanonicalStaticTableShapeInputs
     {
         std::size_t range_bits = 0;
@@ -114,11 +101,6 @@ namespace gatzk::protocol
         bool operator==(const CompilerLedgerEntry &) const = default;
     };
 
-    // Result of reconstructing the concrete SecurityBudgetLedger.  The
-    // verifier and the run acceptance gate consume this result rather than a
-    // boolean copied from public metadata.  `ledger_digest` authenticates the
-    // complete typed ledger, while `exact_budget` is the canonical reduced
-    // rational epsilon_total string.
     struct SecurityBudgetEvaluation
     {
         bool passed = false;
@@ -127,13 +109,6 @@ namespace gatzk::protocol
         bool operator==(const SecurityBudgetEvaluation &) const = default;
     };
 
-    // Canonical, typed integer no-wrap certificate for the fixed-point
-    // execution chain.  `absolute_bound` is the conservative signed-integer
-    // magnitude (never a field element or a hash), and `limb_count` is the
-    // minimum registered base-2^B representation width required by the
-    // corresponding range object.  The verifier rebuilds these rows from the
-    // public dimensions, quantization chain, static tables and authenticated
-    // model bounds before accepting an instance.
     struct IntegerBoundLedgerEntry
     {
         std::string id;
@@ -144,10 +119,6 @@ namespace gatzk::protocol
         bool operator==(const IntegerBoundLedgerEntry &) const = default;
     };
 
-    // A derived private observation never owns fresh randomness merely because it
-    // is serialized.  These edges are the canonical expression-DAG links used by
-    // the ObservationLedger compiler to trace every derived field back to the
-    // independent base objects that actually own blinder coordinates.
     struct ObservationDependencyEdge
     {
         std::string id;
@@ -233,9 +204,6 @@ namespace gatzk::protocol
     struct ProtocolCompilerArtifact
     {
         ProofSchema proof_schema;
-        // Canonical, length-delimited RelationMeta records for the exact
-        // instance.  This is the authenticated source used by the proof codec and
-        // transcript; labels in the executable alone are not an artifact.
         std::vector<std::string> binding_relation_registry;
         std::vector<std::string> proof_blocks;
         std::vector<std::string> serializer_tag_table;
@@ -259,151 +227,62 @@ namespace gatzk::protocol
         std::string instance_canonical_bytes;
     };
 
-    // 最终 proof 的 block 顺序，任何改变都会影响 serializer / parser 与 verifier。
-    // 它也决定哪些标签会进入 proof 的正式传输形状，因此间接影响 proof_size_bytes。
     const std::vector<std::string> &proof_block_order();
-    // Exact protocol-template bytes consumed by the pre-ceremony SRS compiler.
-    // This object is independent of any dataset, witness, SRS trapdoor or exact
-    // instance dimensions.
     std::string protocol_template_canonical_bytes();
     std::string protocol_proof_schema_template_canonical_bytes();
     std::string protocol_observation_ledger_template_canonical_bytes();
     std::string protocol_random_identity_ledger_template_canonical_bytes();
     std::string protocol_security_budget_ledger_template_canonical_bytes();
-    std::string integer_bound_ledger_canonical_bytes(
-        const std::vector<IntegerBoundLedgerEntry> &ledger);
-    // Rebuild the complete fixed-point no-wrap ledger from public inputs,
-    // authenticated static tables/quantization, shape and point-only model
-    // bound certificates.  This path deliberately does not consume a
-    // ProtocolContext or any raw model tensor.
-    std::vector<IntegerBoundLedgerEntry> rebuild_integer_bound_ledger(
-        const VerifierContext &context);
-    // Compute the canonical static-table row/domain requirements without
-    // allocating or generating any table row.  This is intentionally exposed
-    // for bounded shape/range tests and for the pre-SRS domain planner.
-    CanonicalStaticTableShape plan_canonical_static_table_shape(
-        const ProtocolContext &context);
-    CanonicalStaticTableShape plan_canonical_static_table_shape(
-        const VerifierContext &context);
-    CanonicalStaticTableShape plan_canonical_static_table_shape(
-        const CanonicalStaticTableShapeInputs &inputs);
-    std::size_t canonical_exp_table_size_from_delta_bound(
-        std::uint64_t delta_bound);
-    std::string security_budget_ledger_canonical_bytes(
-        const std::vector<CompilerLedgerEntry> &ledger);
-    SecurityBudgetEvaluation evaluate_security_budget(
-        const ProtocolContext &context,
-        const ProtocolCompilerArtifact &artifact);
-    bool validate_static_tables(
-        const StaticTables &tables,
-        std::size_t range_bits,
-        std::string *reason = nullptr);
-    // Canonical static-table producer shared by the prover and the independent
-    // verifier registration loader.  The table dimensions are derived from the
-    // normalized public graph/configuration, while every row is rebuilt from
-    // the registered fixed-point scales.  Keeping this producer in the schema
-    // module prevents a loader from accepting a table that merely has the
-    // right cardinality or monotonicity.
-    StaticTables build_canonical_static_tables(
-        const CanonicalStaticTableShapeInputs &inputs);
+    std::string integer_bound_ledger_canonical_bytes(const std::vector<IntegerBoundLedgerEntry> &ledger);
+    std::vector<IntegerBoundLedgerEntry> rebuild_integer_bound_ledger(const VerifierContext &context);
+    CanonicalStaticTableShape plan_canonical_static_table_shape(const ProtocolContext &context);
+    CanonicalStaticTableShape plan_canonical_static_table_shape(const VerifierContext &context);
+    CanonicalStaticTableShape plan_canonical_static_table_shape(const CanonicalStaticTableShapeInputs &inputs);
+    std::size_t canonical_exp_table_size_from_delta_bound(std::uint64_t delta_bound);
+    std::string security_budget_ledger_canonical_bytes(const std::vector<CompilerLedgerEntry> &ledger);
+    SecurityBudgetEvaluation evaluate_security_budget(const ProtocolContext &context, const ProtocolCompilerArtifact &artifact);
+    bool validate_static_tables(const StaticTables &tables, std::size_t range_bits, std::string *reason = nullptr);
+    StaticTables build_canonical_static_tables(const CanonicalStaticTableShapeInputs &inputs);
     StaticTables build_canonical_static_tables(const ProtocolContext &context);
-    bool validate_static_tables(
-        const ProtocolContext &context,
-        std::string *reason = nullptr);
-    // Canonical re-encoding of a fully populated concrete compiler artifact;
-    // this is usable by a point-only verifier without rebuilding from model
-    // tensors.
-    std::string protocol_instance_canonical_bytes(
-        const ProtocolCompilerArtifact &artifact);
+    bool validate_static_tables(const ProtocolContext &context, std::string *reason = nullptr);
+    std::string protocol_instance_canonical_bytes(const ProtocolCompilerArtifact &artifact);
     ProofSchema build_proof_schema(const ProtocolContext &context);
     ProtocolCompilerArtifact build_protocol_compiler_artifact(const ProtocolContext &context);
     std::vector<BindingRelationMeta> build_binding_relation_metadata(const ProtocolContext &context);
-    std::vector<BindingRelationMeta> build_binding_relation_metadata(
-        const ProtocolContext &context, const ProtocolCompilerArtifact &artifact);
-    std::vector<MatrixFoldBindingSpec> matrix_fold_binding_specs(
-        const ProtocolContext &context);
+    std::vector<BindingRelationMeta> build_binding_relation_metadata(const ProtocolContext &context, const ProtocolCompilerArtifact &artifact);
+    std::vector<MatrixFoldBindingSpec> matrix_fold_binding_specs(const ProtocolContext &context);
 
-    std::vector<FlatMatrixBindingSpec> flat_matrix_binding_specs(
-        const ProtocolContext &context);
+    std::vector<FlatMatrixBindingSpec> flat_matrix_binding_specs(const ProtocolContext &context);
 
-    std::vector<BroadcastFlatBindingSpec> broadcast_flat_binding_specs(
-        const ProtocolContext &context);
-    // Canonical S_route payload.  Every entry is a reference to the unique
-    // standard point-group owner in Open_dom/W_ext; no route terminal value is
-    // ever materialized in the proof object.
+    std::vector<BroadcastFlatBindingSpec> broadcast_flat_binding_specs(const ProtocolContext &context);
 
-    std::vector<MetadataReference> route_opening_references(
-        const ProtocolContext &context,
-        const std::map<std::string, algebra::FieldElement> &challenges);
+    std::vector<MetadataReference> route_opening_references(const ProtocolContext &context, const std::map<std::string, algebra::FieldElement> &challenges);
 
-    std::string opening_group_reference(
-        const ProtocolContext &context,
-        const std::map<std::string, algebra::FieldElement> &challenges,
-        const algebra::FieldElement &point);
-    const KZGShiftRelationMeta *find_unique_shift_relation_by_kind(
-        const BindingRelationMeta &metadata,
-        std::string_view relation_kind);
-    bool validate_protocol_compiler_artifact(
-        const ProtocolContext &context,
-        const ProtocolCompilerArtifact &artifact,
-        std::string *reason = nullptr);
-    bool instance_within_authenticated_max_envelope(
-        const ProtocolContext &context,
-        std::string *reason = nullptr);
-    // Canonical coefficient carrier layout from section 0.7: every chunk lives on
-    // H_edge, has capacity n_edge-1, and reserves the final row for its terminal.
-    std::vector<CoefficientChunkLayoutEntry> coefficient_chunk_layout(
-        std::size_t total_coefficient_length,
-        std::size_t edge_domain_size);
+    std::string opening_group_reference(const ProtocolContext &context, const std::map<std::string, algebra::FieldElement> &challenges,
+                                        const algebra::FieldElement &point);
+    const KZGShiftRelationMeta *find_unique_shift_relation_by_kind(const BindingRelationMeta &metadata, std::string_view relation_kind);
+    bool validate_protocol_compiler_artifact(const ProtocolContext &context, const ProtocolCompilerArtifact &artifact, std::string *reason = nullptr);
+    bool instance_within_authenticated_max_envelope(const ProtocolContext &context, std::string *reason = nullptr);
+    std::vector<CoefficientChunkLayoutEntry> coefficient_chunk_layout(std::size_t total_coefficient_length, std::size_t edge_domain_size);
 
-    // The edge work domain also carries row-major hidden/output quantization
-    // traces, so topology edge count alone is not a sufficient lower bound.
-    std::size_t minimum_edge_trace_length(
-        std::size_t node_count,
-        std::size_t edge_count,
-        std::size_t hidden_width,
-        std::size_t class_count);
-    // Canonical public partition for a coefficient-tail object.  semantic
-    // positions are strict increasing low-degree offsets; all remaining low
-    // positions are gaps and the unique suffix is the random tail.
-    CoefficientRegionLayout coefficient_region_layout(
-        std::size_t low_degree_length,
-        const std::vector<std::size_t> &semantic_positions,
-        std::size_t tail_length,
-        std::size_t edge_domain_size);
-    std::vector<algebra::FieldElement> materialize_coefficient_tail(
-        const CoefficientRegionLayout &layout,
-        const std::vector<algebra::FieldElement> &low_degree_coefficients,
-        const std::vector<algebra::FieldElement> &tail_randomness);
-    // Returns the compiler-registered prefix length q_O^max for the independent
-    // blinder owned by object_id.  Formal prover code must not choose this length
-    // from the witness or from a local constant.
-    std::size_t registered_blinder_coefficient_count(
-        const ProtocolContext &context,
-        const std::string &object_id);
-    // Single source of truth for payload visibility. In particular, per-head output
-    // objects (for example `P_Y_o0`) remain private even when final `P_Y` is public.
+    std::size_t minimum_edge_trace_length(std::size_t node_count, std::size_t edge_count, std::size_t hidden_width, std::size_t class_count);
+    CoefficientRegionLayout coefficient_region_layout(std::size_t low_degree_length, const std::vector<std::size_t> &semantic_positions,
+                                                      std::size_t tail_length, std::size_t edge_domain_size);
+    std::vector<algebra::FieldElement> materialize_coefficient_tail(const CoefficientRegionLayout &layout,
+                                                                    const std::vector<algebra::FieldElement> &low_degree_coefficients,
+                                                                    const std::vector<algebra::FieldElement> &tail_randomness);
+    std::size_t registered_blinder_coefficient_count(const ProtocolContext &context, const std::string &object_id);
     PolynomialVisibility polynomial_visibility(const ProtocolContext &context, const std::string &label);
     bool schema_accepts_evaluation(PolynomialVisibility visibility, EvaluationKind kind);
-    // 下面这些函数负责生成隐藏层和输出层使用的正式标签。
-    // 它们共同决定 dynamic commitments、opening bundle 与 external evaluation 的命名真源。
-    // Formal hidden objects are identified by the pair (layer, local head).
-    // A flattened head index is intentionally not part of the proof schema.
     std::string hidden_head_prefix(std::size_t layer_index, std::size_t local_head_index);
     std::string hidden_layer_concat_label(std::size_t layer_index);
     std::string hidden_layer_concat_star_label(std::size_t layer_index);
     std::string hidden_layer_cat_prefix(std::size_t layer_index);
     std::string hidden_weight_label(std::size_t layer_index, std::size_t local_head_index);
-    std::string hidden_weight_column_label(
-        std::size_t layer_index,
-        std::size_t local_head_index,
-        std::size_t column_index);
+    std::string hidden_weight_column_label(std::size_t layer_index, std::size_t local_head_index, std::size_t column_index);
     std::string hidden_src_label(std::size_t layer_index, std::size_t local_head_index);
     std::string hidden_dst_label(std::size_t layer_index, std::size_t local_head_index);
-    std::string hidden_challenge_name(
-        std::string_view base,
-        std::size_t layer_index,
-        std::size_t local_head_index);
+    std::string hidden_challenge_name(std::string_view base, std::size_t layer_index, std::size_t local_head_index);
     std::string hidden_q_in_selector_label(std::size_t layer_index);
     std::string hidden_q_d_h_selector_label(std::size_t layer_index);
     std::string hidden_q_cat_selector_label(std::size_t layer_index);
@@ -412,40 +291,21 @@ namespace gatzk::protocol
     std::string output_head_prefix(std::size_t head_index);
     std::string output_y_lin_label(std::size_t head_index);
     std::string output_y_label(std::size_t head_index);
-    std::string canonical_matrix_column_label(
-        const std::string &matrix_object,
-        std::size_t column_index);
-    std::string hidden_aggregation_binding_label(
-        std::size_t layer_index,
-        std::size_t local_head_index,
-        std::string_view suffix);
-    std::string output_aggregation_binding_label(
-        std::size_t head_index,
-        std::string_view suffix);
+    std::string canonical_matrix_column_label(const std::string &matrix_object, std::size_t column_index);
+    std::string hidden_aggregation_binding_label(std::size_t layer_index, std::size_t local_head_index, std::string_view suffix);
+    std::string output_aggregation_binding_label(std::size_t head_index, std::string_view suffix);
     std::string output_weight_label(std::size_t head_index);
     std::string output_weight_column_label(std::size_t head_index, std::size_t column_index);
     std::string output_src_label(std::size_t head_index);
     std::string output_dst_label(std::size_t head_index);
     std::string output_bias_label(std::size_t head_index);
     std::string output_challenge_name(std::string_view base, std::size_t head_index);
-    std::string hidden_model_binding_blinder_label(
-        std::size_t layer_index,
-        std::size_t local_head_index,
-        std::string_view role);
+    std::string hidden_model_binding_blinder_label(std::size_t layer_index, std::size_t local_head_index, std::string_view role);
     std::string output_model_binding_blinder_label(std::size_t head_index, std::string_view role);
-    std::string hidden_score_mask_label(
-        std::size_t layer_index,
-        std::size_t local_head_index,
-        std::string_view role);
+    std::string hidden_score_mask_label(std::size_t layer_index, std::size_t local_head_index, std::string_view role);
     std::string output_score_mask_label(std::size_t head_index, std::string_view role);
-    std::string hidden_score_mask_eval_name(
-        std::size_t layer_index,
-        std::size_t local_head_index,
-        std::string_view role);
+    std::string hidden_score_mask_eval_name(std::size_t layer_index, std::size_t local_head_index, std::string_view role);
     std::string output_score_mask_eval_name(std::size_t head_index, std::string_view role);
-    // A private evaluation-form object is committed as P_sem + Z_D R.  Whenever
-    // an off-domain opening is used as a semantic accumulator target, R is exposed
-    // through this derived commitment and opened at the same challenge point.
     std::string external_mask_label(std::string_view source_label);
     std::string external_mask_eval_name(std::string_view source_eval_name);
     std::string model_proof_local_label(std::string_view vk_model_anchor_label);
@@ -456,48 +316,22 @@ namespace gatzk::protocol
     std::string output_bias_view_beta_label(std::size_t head_index);
     std::string output_bias_view_relation_challenge_label(std::size_t head_index);
     std::string output_bias_basis_prefix(std::size_t head_index);
-    std::string output_bias_basis_label(
-        std::size_t head_index, std::string_view suffix);
-    std::string output_bias_basis_chunk_label(
-        std::size_t head_index, std::size_t chunk_index);
-    std::string output_bias_basis_chunk_accumulator_label(
-        std::size_t head_index, std::size_t chunk_index);
-    std::string output_bias_basis_chunk_shifted_accumulator_label(
-        std::size_t head_index, std::size_t chunk_index);
-    std::string output_bias_basis_region_selector_label(
-        std::size_t head_index, std::size_t chunk_index, std::string_view region);
+    std::string output_bias_basis_label(std::size_t head_index, std::string_view suffix);
+    std::string output_bias_basis_chunk_label(std::size_t head_index, std::size_t chunk_index);
+    std::string output_bias_basis_chunk_accumulator_label(std::size_t head_index, std::size_t chunk_index);
+    std::string output_bias_basis_chunk_shifted_accumulator_label(std::size_t head_index, std::size_t chunk_index);
+    std::string output_bias_basis_region_selector_label(std::size_t head_index, std::size_t chunk_index, std::string_view region);
     std::string output_bias_basis_gamma_label(std::size_t head_index);
     std::string output_bias_basis_relation_challenge_label(std::size_t head_index);
 
-    // Canonical SignedRoundDiv limb/range family naming.  These helpers are shared
-    // by schema expansion, trace construction and transcript replay.
     std::size_t signed_division_limb_count(std::size_t range_bits);
-    std::string signed_division_limb_label(
-        std::string_view division_prefix,
-        std::string_view value_name,
-        std::size_t limb_index);
-    std::string signed_division_range_label(
-        std::string_view division_prefix,
-        std::string_view value_name,
-        std::size_t limb_index,
-        std::string_view column_name);
-    std::string signed_division_beta_name(
-        std::string_view division_prefix,
-        std::string_view value_name,
-        std::size_t limb_index);
-    // Conservative quotient bound for the canonical signed nearest-integer
-    // division used by the fixed-point trace:
-    // q = (abs(numerator) + denominator / 2) / denominator.
-    // The numerator argument is an absolute-magnitude bound and the
-    // denominator is the positive, common factor after any sound cancellation
-    // from the aggregate relation.  Overflow and a non-positive denominator
-    // fail closed so producer and verifier cannot diverge silently.
-    std::uint64_t canonical_signed_round_div_bound(
-        std::uint64_t numerator_bound,
-        std::uint64_t positive_denominator,
-        std::string_view label);
+    std::string signed_division_limb_label(std::string_view division_prefix, std::string_view value_name, std::size_t limb_index);
+    std::string signed_division_range_label(std::string_view division_prefix, std::string_view value_name, std::size_t limb_index,
+                                            std::string_view column_name);
+    std::string signed_division_beta_name(std::string_view division_prefix, std::string_view value_name, std::size_t limb_index);
+    std::uint64_t canonical_signed_round_div_bound(std::uint64_t numerator_bound, std::uint64_t positive_denominator, std::string_view label);
     std::string output_external_eval_name(std::string_view base, std::size_t head_index);
     std::string hidden_concat_xi_name(std::size_t layer_index);
     std::string hidden_concat_y_name(std::size_t layer_index);
 
-} // namespace gatzk::protocol
+}

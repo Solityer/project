@@ -394,12 +394,7 @@ impl ParsedNodes {
     ///
     /// This is intentionally a narrow exposure hook: parsing, layout and
     /// proof generation remain owned by the official ezkl graph machinery.
-    pub fn from_parts(
-        nodes: BTreeMap<usize, NodeType>,
-        inputs: Vec<usize>,
-        outputs: Vec<Outlet>,
-        output_types: Vec<InputType>,
-    ) -> Self {
+    pub fn from_parts(nodes: BTreeMap<usize, NodeType>, inputs: Vec<usize>, outputs: Vec<Outlet>, output_types: Vec<InputType>,) -> Self {
         Self::from_parts_with_param_inputs(nodes, inputs, vec![], outputs, output_types)
     }
 
@@ -445,14 +440,8 @@ impl ParsedNodes {
         self.param_inputs
             .iter()
             .map(|input| {
-                let node = self
-                    .nodes
-                    .get(input)
-                    .ok_or(GraphError::MissingNode(*input))?;
-                node.out_dims()
-                    .first()
-                    .cloned()
-                    .ok_or(GraphError::MissingNode(*input))
+                let node = self.nodes.get(input).ok_or(GraphError::MissingNode(*input))?;
+                node.out_dims().first().cloned().ok_or(GraphError::MissingNode(*input))
             })
             .collect()
     }
@@ -641,10 +630,7 @@ impl Model {
             .iter()
             .map(|shape| {
                 let len = shape.iter().product();
-                let mut tensor: ValTensor<Fp> = (0..len)
-                    .map(|_| ValType::Value(Value::<Fp>::unknown()))
-                    .collect::<Vec<_>>()
-                    .into();
+                let mut tensor: ValTensor<Fp> = (0..len).map(|_| ValType::Value(Value::<Fp>::unknown())).collect::<Vec<_>>().into();
                 tensor.reshape(shape)?;
                 Ok(tensor)
             })
@@ -726,16 +712,8 @@ impl Model {
             .iter()
             .map(|x| x.map(|elem| ValType::Value(Value::known(elem))).into())
             .collect();
-        let valtensor_params: Vec<ValTensor<Fp>> = runtime_params
-            .iter()
-            .map(|x| x.map(|elem| ValType::Value(Value::known(elem))).into())
-            .collect();
-        let res = self.dummy_layout_with_runtime_params(
-            run_args,
-            &valtensor_inputs,
-            &valtensor_params,
-            region_settings,
-        )?;
+        let valtensor_params: Vec<ValTensor<Fp>> = runtime_params.iter().map(|x| x.map(|elem| ValType::Value(Value::known(elem))).into()).collect();
+        let res = self.dummy_layout_with_runtime_params(run_args, &valtensor_inputs, &valtensor_params, region_settings,)?;
         Ok(res.into())
     }
 
@@ -1250,16 +1228,7 @@ impl Model {
         witnessed_outputs: &[ValTensor<Fp>],
         constants: &mut ConstantsMap<Fp>,
     ) -> Result<Vec<ValTensor<Fp>>, GraphError> {
-        self.layout_with_runtime_params(
-            config,
-            layouter,
-            run_args,
-            inputs,
-            &[],
-            vars,
-            witnessed_outputs,
-            constants,
-        )
+        self.layout_with_runtime_params(config, layouter, run_args, inputs, &[], vars, witnessed_outputs, constants,)
     }
 
     /// Layout the graph with explicit runtime parameter advice tensors.
@@ -1655,10 +1624,7 @@ impl Model {
             .iter()
             .map(|shape| {
                 let len = shape.iter().product();
-                let mut tensor: ValTensor<Fp> = (0..len)
-                    .map(|_| ValType::Value(Value::<Fp>::unknown()))
-                    .collect::<Vec<_>>()
-                    .into();
+                let mut tensor: ValTensor<Fp> = (0..len).map(|_| ValType::Value(Value::<Fp>::unknown())).collect::<Vec<_>>().into();
                 tensor.reshape(shape)?;
                 Ok(tensor)
             })

@@ -9,11 +9,7 @@ import pathlib
 from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
-# Only manifests produced with the canonical protocol-verifier timing boundary
-# may enter the official benchmark table.  This keeps the reported timings
-# under one stable measurement definition.
 CANONICAL_TIMING_SCHEMA = "online_trace_commit_prove_protocol_verify_v2"
-
 
 _AGGREGATE_PATH = pathlib.Path(__file__).resolve().with_name("aggregate_secure_results.py")
 _AGGREGATE_SPEC = importlib.util.spec_from_file_location("gatzk_aggregate_secure_results_for_export", _AGGREGATE_PATH)
@@ -29,10 +25,6 @@ class LoadedManifest(dict):
 
     def __init__(self, values: Dict[str, object], manifest_path: pathlib.Path, attestation_path: str, attestation_digest: str):
         super().__init__(values)
-        # A prevalidated dictionary is deliberately not accepted here.  The
-        # exporter rereads the external path and checks its digest/bindings on
-        # every make_success_row call, so a caller cannot bypass that gate by
-        # supplying ``verified=true`` or a shaped mapping.
         if not isinstance(manifest_path, pathlib.Path):
             raise ValueError("loaded manifest requires its regular manifest path")
         if not isinstance(attestation_path, str) or not attestation_path.strip():
@@ -219,13 +211,7 @@ def infer_benchmark_mode(manifest: Dict[str, object]) -> str:
 
 
 def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, object]:
-    # 主表只接收正式 single + full-dataset + complete-acceptance manifest，
-    # 避免仅 protocol verifier 通过的实验 run 混入 accepted truth。
-    # `backend_name` 与 `is_full_dataset` 只保留在 latest.json 这类机器复核产物中，
-    # 不会进入 latest.csv / summary.md 的正式展示面。
     context = f"benchmark export/{dataset}"
-    # The binding helper performs `check_verified_tamper_attestation` from the
-    # external path and digest; no caller-provided verified mapping is trusted.
     if not isinstance(manifest, LoadedManifest):
         raise ValueError(f"{context}: benchmark export requires a manifest loaded with external attestation inputs")
     manifest_path = manifest._manifest_path
@@ -244,11 +230,6 @@ def make_success_row(dataset: str, manifest: Dict[str, object]) -> Dict[str, obj
         raise ValueError(f"official benchmark export only supports full-dataset manifests: {dataset}")
     if _AGGREGATE.as_bool(manifest.get("stale_result"), "stale_result", f"benchmark export/{dataset}") is not False:
         raise ValueError(f"official benchmark export refuses stale manifests: {dataset}")
-    # Keep the benchmark table on the same manifest-level acceptance contract
-    # as aggregate_secure_results.py.  In particular, `verified` alone only
-    # records protocol verifier acceptance and is not final experiment
-    # acceptance.  Timing fields are read below only after this gate; they do
-    # not participate in the acceptance decision.
     _AGGREGATE.check_formal_acceptance_state(manifest, f"benchmark export/{dataset}")
     timing_schema = manifest.get("timing_schema")
     if timing_schema != CANONICAL_TIMING_SCHEMA:
@@ -337,9 +318,6 @@ def status_label(status: object) -> str:
 
 
 def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, object]]) -> None:
-    # latest.json / latest.csv / summary.md 必须从同一批 rows 同步导出，避免真源分叉。
-    # latest.json 保留机器可读的最小内部字段；latest.csv 与 summary.md
-    # 只展示三项正式时间和 canonical proof bytes 大小。
     output_dir.mkdir(parents=True, exist_ok=True)
 
     payload = {"generated_at": datetime.now(timezone.utc).isoformat(), "benchmark_mode": mode, "rows": rows}
@@ -361,8 +339,7 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
     )
     for row in rows:
         lines.append(
-            "| "
-            + " | ".join(
+            "| " + " | ".join(
                 [
                     markdown_cell(row["dataset"]),
                     markdown_cell(status_label(row["status"])),
@@ -372,14 +349,12 @@ def write_outputs(output_dir: pathlib.Path, mode: str, rows: List[Dict[str, obje
                     markdown_cell(row["proof_size_bytes"]),
                     markdown_cell(row["blocker"]),
                 ]
-            )
-            + " |"
+            ) + " |"
         )
     (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main() -> None:
-    # 数据集顺序只影响展示，不允许改变每行来自正式 manifest 的字段定义。
     parser = argparse.ArgumentParser()
     parser.add_argument("--run", action="append", default=[], help="dataset=run_manifest.json_or_dir")
     parser.add_argument("--attestation", action="append", default=[], help="dataset=external tamper attestation path (one per --run)")

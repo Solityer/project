@@ -37,10 +37,6 @@ namespace gatzk::util
         constexpr std::size_t kMinimumHeadroom = 256ULL << 20;
         constexpr std::size_t kMaximumHeadroom = 4ULL << 30;
         constexpr std::size_t kHeadroomDivisor = 20;
-        // Filesystem free-space accounting can move by a few blocks while
-        // the ledger is being atomically rewritten. Keep a bounded mutation
-        // margin so two near-half reservations cannot cross the cap merely
-        // because the ledger rename returned a small amount of space.
         constexpr std::size_t kLedgerMutationHeadroom = 64ULL << 20;
         constexpr std::size_t kLedgerReadLimit = 8ULL << 20;
         constexpr mode_t kPrivateDirectoryMode = S_IRWXU;
@@ -49,10 +45,7 @@ namespace gatzk::util
 
         std::atomic<std::uint64_t> ledger_nonce{0};
 
-        [[noreturn]] void throw_errno(const char *operation)
-        {
-            throw std::system_error(errno, std::generic_category(), operation);
-        }
+        [[noreturn]] void throw_errno(const char *operation) { throw std::system_error(errno, std::generic_category(), operation); }
 
         void close_noexcept(int *fd) noexcept
         {
@@ -73,10 +66,7 @@ namespace gatzk::util
             }
         }
 
-        bool owner_and_mode(const struct stat &status, mode_t mode)
-        {
-            return status.st_uid == ::geteuid() && (status.st_mode & 0777) == mode;
-        }
+        bool owner_and_mode(const struct stat &status, mode_t mode) { return status.st_uid == ::geteuid() && (status.st_mode & 0777) == mode; }
 
         bool valid_private_regular(const struct stat &status)
         {
@@ -243,7 +233,9 @@ namespace gatzk::util
                 throw_errno("failed to open storage root");
             try
             {
-                struct stat status{};
+                struct stat status
+                {
+                };
                 if (::fstat(fd, &status) != 0 || !S_ISDIR(status.st_mode))
                 {
                     const auto saved_errno = errno != 0 ? errno : ENOTDIR;
@@ -251,10 +243,9 @@ namespace gatzk::util
                     throw_errno("storage root is not a directory");
                 }
 
-                // Query the filesystem through the authenticated directory FD
-                // while it remains open.  A path-based space() call after the
-                // close would re-resolve a potentially replaced root.
-                struct statvfs filesystem_status{};
+                struct statvfs filesystem_status
+                {
+                };
                 if (::fstatvfs(fd, &filesystem_status) != 0)
                     throw_errno("failed to inspect storage filesystem");
                 const auto blocks_to_bytes = [&](auto blocks)
@@ -323,10 +314,7 @@ namespace gatzk::util
             std::string nonce;
         };
 
-        std::string ledger_temp_prefix(const LedgerHandles &handles)
-        {
-            return "." + handles.ledger_name + ".tmp-";
-        }
+        std::string ledger_temp_prefix(const LedgerHandles &handles) { return "." + handles.ledger_name + ".tmp-"; }
 
         std::string ledger_random_nonce()
         {
@@ -399,7 +387,9 @@ namespace gatzk::util
             (void)::close(parent_fd);
             if (directory_fd < 0)
                 throw_errno("failed to open storage ledger directory");
-            struct stat status{};
+            struct stat status
+            {
+            };
             if (::fchmod(directory_fd, kPrivateDirectoryMode) != 0 || ::fstat(directory_fd, &status) != 0 || !S_ISDIR(status.st_mode) ||
                 !owner_and_mode(status, kPrivateDirectoryMode))
             {
@@ -465,8 +455,6 @@ namespace gatzk::util
             }
             catch (const std::exception &)
             {
-                // A complete authenticated view is required before cleanup;
-                // leave every staging file untouched when scanning fails.
                 return;
             }
 
@@ -478,7 +466,9 @@ namespace gatzk::util
                 const auto fd = ::openat(handles.directory_fd, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
                 if (fd < 0)
                     continue;
-                struct stat snapshot{};
+                struct stat snapshot
+                {
+                };
                 if (::fstat(fd, &snapshot) != 0 || !valid_private_regular(snapshot))
                 {
                     (void)::close(fd);
@@ -492,10 +482,9 @@ namespace gatzk::util
                     continue;
                 }
 
-                // Revalidate the exact directory entry after process
-                // authentication.  Any replacement, symlink or hardlink is
-                // preserved rather than guessed at.
-                struct stat current{};
+                struct stat current
+                {
+                };
                 const bool unchanged =
                     ::fstatat(handles.directory_fd, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) == 0 && same_regular_file_identity(snapshot, current);
                 (void)::close(fd);
@@ -519,7 +508,9 @@ namespace gatzk::util
                 errno = saved_errno;
                 throw_errno("failed to open storage ledger lock");
             }
-            struct stat lock_status{};
+            struct stat lock_status
+            {
+            };
             if (::fstat(handles.lock_fd, &lock_status) != 0 || !valid_private_regular(lock_status) || ::flock(handles.lock_fd, LOCK_EX) != 0)
             {
                 const auto saved_errno = errno != 0 ? errno : EACCES;
@@ -528,9 +519,6 @@ namespace gatzk::util
                 errno = saved_errno;
                 throw_errno("storage ledger lock is invalid");
             }
-            // The per-device lock is the ledger/root serialization point.
-            // Perform stale staging GC only while it is held, so a crashed
-            // writer's temp cannot be mistaken for a concurrent writer.
             collect_stale_ledger_temps(handles);
             handles.ledger_fd = ::openat(handles.directory_fd, handles.ledger_name.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, kPrivateFileMode);
             if (handles.ledger_fd < 0)
@@ -541,7 +529,9 @@ namespace gatzk::util
                 errno = saved_errno;
                 throw_errno("failed to open storage ledger");
             }
-            struct stat ledger_status{};
+            struct stat ledger_status
+            {
+            };
             if (::fstat(handles.ledger_fd, &ledger_status) != 0 || !valid_private_regular(ledger_status))
             {
                 const auto saved_errno = errno != 0 ? errno : EACCES;
@@ -630,10 +620,6 @@ namespace gatzk::util
 
         void write_ledger(const LedgerHandles &handles, const std::vector<LedgerRecord> &records)
         {
-            // Materialize all potentially-throwing state before publishing
-            // the new ledger entry.  If publication itself reports an error,
-            // callers can rewrite their pre-commit snapshot while retaining
-            // the same per-device lock.
             const auto serialized = serialize_ledger(records);
             const auto creator_pid = static_cast<std::uint64_t>(::getpid());
             const auto creator_start_ticks = current_process_start_ticks();
@@ -652,7 +638,9 @@ namespace gatzk::util
                 bool published = false;
                 try
                 {
-                    struct stat status{};
+                    struct stat status
+                    {
+                    };
                     if (::fstat(fd, &status) != 0 || !valid_private_regular(status))
                         throw std::runtime_error("storage ledger staging permissions are invalid");
                     write_all(fd, serialized, "failed to write storage ledger");
@@ -688,11 +676,6 @@ namespace gatzk::util
             }
             catch (...)
             {
-                // A failure after rename can leave the new snapshot visible
-                // even though the caller cannot finish object construction.
-                // Roll back under the same ledger lock.  If rollback itself
-                // fails, retaining the authenticated old/new ledger is safer
-                // than deleting or guessing at either snapshot.
                 try
                 {
                     write_ledger(handles, committed_records);
@@ -721,7 +704,7 @@ namespace gatzk::util
             return std::to_string(pid) + "-" + std::to_string(start_ticks) + "-" + std::to_string(ledger_nonce.fetch_add(1, std::memory_order_relaxed));
         }
 
-    } // namespace
+    }
 
     std::size_t FilesystemSpaceReservation::available_budget(const std::filesystem::path &root)
     {
@@ -772,9 +755,6 @@ namespace gatzk::util
                 .start_ticks = creator_start_ticks,
                 .bytes = bytes_,
             });
-            // The rewrite is intentionally atomic even when no stale record
-            // was found.  It keeps each reservation update bounded and makes
-            // the ledger a single authoritative cross-process snapshot.
             (void)changed;
             write_ledger_with_rollback(handles, records, committed_records);
             key_ = std::move(canonical_key);
@@ -818,10 +798,7 @@ namespace gatzk::util
         catch (...)
         {
             close_ledger(&handles);
-            // A destructor cannot report failure.  Leaving the authenticated
-            // record is fail-closed; the next process reclaims it after this
-            // process is gone and its PID/start tuple no longer exists.
         }
     }
 
-} // namespace gatzk::util
+}

@@ -89,12 +89,6 @@ void layeredCircuit::initSubset()
             cur.size_v[1] = 0;
             cur.bit_length_v[1] = -1;
         }
-        // Phase 2 is the native sumcheck over every real binary V operand.
-        // Its source may be the input layer (layer id 0) or a preceding
-        // layer; both are part of the unmasked predicate and must not be
-        // silently converted to the fixed-zero-V relation.  Unary-only
-        // layers have no V operand.  Compact native FCONN layers retain
-        // their special metadata path and are validated/proved separately.
         if (cur.ty != layerType::FCONN)
             cur.need_phase2 = has_v_operand;
         cur.updateSize();

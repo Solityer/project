@@ -6,17 +6,9 @@
 namespace gatzk::util
 {
 
-    // Text sources are deliberately injectable so the production parser can
-    // be exercised against malformed, limited and unlimited cgroup values
-    // without changing the process' resource environment.  Empty sources
-    // mean that the corresponding controller/file was not available.
     struct EffectiveMemoryTextSources
     {
         std::string_view meminfo;
-        // The membership-specific controller files take precedence over the
-        // cgroup mount-root files.  The latter are retained as an injectable
-        // fallback so parser tests can model a root `max` plus a finite
-        // nested controller without consulting the host's cgroup tree.
         std::string_view cgroup_v2_limit;
         std::string_view cgroup_v2_current;
         std::string_view cgroup_v1_limit;
@@ -55,8 +47,6 @@ namespace gatzk::util
 
     struct EffectiveMemoryAdmission
     {
-        // `available_bytes` is the effective snapshot value before the
-        // reservation/transient/geometry deductions below.
         std::size_t available_bytes = 0;
         std::size_t reserve_bytes = 0;
         std::size_t transient_bytes = 0;
@@ -82,50 +72,19 @@ namespace gatzk::util
         bool conservative = false;
     };
 
-    EffectiveMemorySnapshot parse_effective_memory_snapshot(
-        const EffectiveMemoryTextSources &sources);
+    EffectiveMemorySnapshot parse_effective_memory_snapshot(const EffectiveMemoryTextSources &sources);
 
-    // Read the host and the current process' cgroup controllers.  This is a
-    // low-frequency snapshot operation; callers on hot paths should use the
-    // cached variant below.
     EffectiveMemorySnapshot read_effective_memory_snapshot();
 
-    // The cache is process-local and expires periodically, so it cannot carry
-    // admission state across independent formal runs in separate processes.
     EffectiveMemorySnapshot cached_effective_memory_snapshot();
 
-    std::size_t recommended_memory_reserve_bytes(
-        const EffectiveMemorySnapshot &snapshot,
-        std::size_t minimum_bytes,
-        std::size_t numerator,
-        std::size_t denominator);
+    std::size_t recommended_memory_reserve_bytes(const EffectiveMemorySnapshot &snapshot, std::size_t minimum_bytes, std::size_t numerator,
+                                                 std::size_t denominator);
 
-    // Unknown effective availability is never converted into a heuristic
-    // budget.  Admission returns zero until a trustworthy available value is
-    // observed (for example, MemAvailable, a finite cgroup current value, or
-    // the bare-metal sysconf available-page fallback).
+    EffectiveMemoryAdmission admit_effective_memory(const EffectiveMemorySnapshot &snapshot, std::size_t transient_bytes, std::size_t geometry_bytes,
+                                                    std::size_t reserve_bytes, std::size_t divisor, std::size_t maximum_budget_bytes);
 
-    // Return the safe budget left after accounting for transient and geometry
-    // working sets.  A zero budget is intentional: callers must reduce
-    // concurrency or select a bounded/streamed route rather than bypassing
-    // admission.
-    EffectiveMemoryAdmission admit_effective_memory(
-        const EffectiveMemorySnapshot &snapshot,
-        std::size_t transient_bytes,
-        std::size_t geometry_bytes,
-        std::size_t reserve_bytes,
-        std::size_t divisor,
-        std::size_t maximum_budget_bytes);
+    OpeningMemoryAdmission admit_opening_memory(const EffectiveMemorySnapshot &snapshot, const OpeningMemoryWorkset *worksets, std::size_t workset_count,
+                                                std::size_t reserve_bytes, std::size_t maximum_parallel_groups);
 
-    // Admission for folded opening groups.  A group is counted by the actual
-    // folded vector, denominator scratch vector and its source working set.
-    // Unknown memory or arithmetic overflow never opens an unbounded
-    // parallel route: the returned cap is serial (one group at a time).
-    OpeningMemoryAdmission admit_opening_memory(
-        const EffectiveMemorySnapshot &snapshot,
-        const OpeningMemoryWorkset *worksets,
-        std::size_t workset_count,
-        std::size_t reserve_bytes,
-        std::size_t maximum_parallel_groups);
-
-} // namespace gatzk::util
+}

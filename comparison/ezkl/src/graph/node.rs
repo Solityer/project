@@ -323,8 +323,6 @@ impl SupportedOp {
     pub fn is_lookup(&self) -> bool {
         match self {
             SupportedOp::Nonlinear(_) => true,
-            // GatOp lays out authenticated LReLU/exp/ELU/max rows through
-            // the official dynamic-lookup backend.
             SupportedOp::Gat(_) => true,
             SupportedOp::RebaseScale(op) => op.inner.is_lookup(),
             _ => false,

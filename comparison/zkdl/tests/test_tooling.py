@@ -35,9 +35,7 @@ class ToolingTests(unittest.TestCase):
             "result.schema.json": "verified_run/run.record",
             "model_registry.schema.json": "model_registry.json",
         }
-        # The result record is the canonical line-oriented artifact.  Convert
-        # it to an object only for schema validation; production collection
-        # keeps the original format unchanged.
+
         for schema_name, fixture_name in pairs.items():
             schema = json.loads((SCHEMAS / schema_name).read_text(encoding="utf-8"))
             fixture_path = FIXTURES / fixture_name
@@ -60,9 +58,7 @@ class ToolingTests(unittest.TestCase):
     def test_collector_and_final_validator(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / "tests") as directory:
             output = Path(directory) / "collected.json"
-            # A metadata-only fixture must never be accepted as a formal row:
-            # the native proof bytes and independent-verification artifacts
-            # are intentionally absent.
+
             self.run_cmd("python3", str(SCRIPTS / "collect_results.py"), "--runs", "tests/fixtures/verified_run", "--output", str(output), expected=1)
         self.run_cmd("python3", str(SCRIPTS / "collect_results.py"), "--runs", "tests/fixtures/blocked_run", expected=1)
         self.run_cmd("python3", str(SCRIPTS / "final_validate.py"), "--runs", "tests/fixtures/verified_run", expected=1)

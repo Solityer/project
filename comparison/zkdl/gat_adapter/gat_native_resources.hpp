@@ -1,10 +1,5 @@
 #pragma once
 
-// Baseline-local authenticated resource loaders for the native GAT bridge.
-// These declarations intentionally expose only canonical wire material.  The
-// proof stack remains responsible for decoding field/curve objects after the
-// resource identity has been authenticated.
-
 #include "gat_adapter.hpp"
 #include "gat_native_abi.hpp"
 
@@ -19,10 +14,7 @@ struct AuthenticatedSrsResource {
     std::string manifest_path;
     std::array<std::uint8_t, 32U> manifest_digest{};
     std::array<std::uint8_t, 32U> generator_digest{};
-    // A manifest may contain one authenticated prefix basis per relation
-    // family/chunk.  `generators` below is only the deterministic common
-    // execution chunk selected for the current request; chunks are never
-    // concatenated into an unbounded global SRS domain.
+
     struct Chunk {
         struct Segment {
             std::uint64_t segment_index = 0U;
@@ -38,8 +30,7 @@ struct AuthenticatedSrsResource {
         std::uint64_t point_offset = 0U;
         std::uint64_t point_count = 0U;
         std::uint64_t domain = 0U;
-        // domain/point_count are the bounded IPA basis domain.  The logical
-        // relation domain is separate and is never expanded into G points.
+
         std::uint64_t logical_domain = 0U;
         std::uint64_t basis_domain = 0U;
         std::uint64_t segment_size = 0U;
@@ -58,8 +49,7 @@ struct AuthenticatedSrsResource {
         std::uint64_t g_bytes = 0U;
         std::uint64_t h_bytes = 0U;
         std::uint64_t u_bytes = 0U;
-        // Canonical digest of the G frame; retained separately so the
-        // selected chunk identity is explicit in resource metadata.
+
         std::string generator_digest;
         std::vector<std::vector<std::uint8_t>> generators;
         std::vector<std::uint8_t> blinding_generator;
@@ -118,31 +108,13 @@ struct AuthenticatedModelBlinders {
     bool authenticated = false;
 };
 
-// All three loaders are fail-closed.  They never create missing files,
-// derive generators, or accept a caller-provided digest in lieu of parsing
-// the authenticated resource itself.
-bool load_authenticated_srs(const Config& config,
-                             AuthenticatedSrsResource* resource,
-                             std::string* error = nullptr);
+bool load_authenticated_srs(const Config &config, AuthenticatedSrsResource *resource, std::string *error = nullptr);
 
-// Select the smallest authenticated prefix chunk that covers one canonical
-// relation-family domain.  The returned pointer remains owned by `resource`.
-// Callers must use the common chunk material exposed by `resource` for the
-// native proof context; this helper authenticates family/chunk choice and
-// materializes its independent authenticated basis.  The caller that binds
-// it to the common proof basis must perform the exact-prefix comparison.
-bool select_authenticated_srs_chunk(AuthenticatedSrsResource* resource,
-                                     const std::string& family_id,
-                                     std::uint64_t required_domain,
-                                     const AuthenticatedSrsResource::Chunk** chunk,
-                                     std::string* error = nullptr);
-bool load_authenticated_model_registry(const Config& config,
-                                       const AuthenticatedSrsResource& srs,
-                                       AuthenticatedModelRegistry* resource,
-                                       std::string* error = nullptr);
-bool load_authenticated_model_blinders(const Config& config,
-                                       const AuthenticatedModelRegistry& registry,
-                                       AuthenticatedModelBlinders* resource,
-                                       std::string* error = nullptr);
+bool select_authenticated_srs_chunk(AuthenticatedSrsResource *resource, const std::string &family_id, std::uint64_t required_domain,
+                                    const AuthenticatedSrsResource::Chunk **chunk, std::string *error = nullptr);
+bool load_authenticated_model_registry(const Config &config, const AuthenticatedSrsResource &srs, AuthenticatedModelRegistry *resource,
+                                       std::string *error = nullptr);
+bool load_authenticated_model_blinders(const Config &config, const AuthenticatedModelRegistry &registry, AuthenticatedModelBlinders *resource,
+                                       std::string *error = nullptr);
 
-}  // namespace zkdl_gat
+}

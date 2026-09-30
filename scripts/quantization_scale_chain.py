@@ -18,13 +18,6 @@ _SOURCE_PATH = pathlib.Path(__file__).resolve().parents[1] / "configs" / "quanti
 CANONICAL_QUANT_CFG_ID = "gat_l3_scale_chain"
 CANONICAL_CHAIN_SCHEMA = "gat_l3_scale_chain"
 
-# Input preprocessing is a public part of the formal instance.  The
-# Planetoid/PPI caches retain their row-normalized semantics, while
-# ogbn-arxiv deliberately keeps the released float32 node features unchanged
-# until the registered fixed-point boundary.  Keep this mapping here so every
-# Python producer (training, trace/reference replay and export validation)
-# selects the same contract instead of carrying a dataset-local normalization
-# switch.
 ROW_NORMALIZE_INPUT_PREPROCESS_ID = "row_normalize"
 OGBN_ARXIV_INTERNAL_NAME = "ogbn_arxiv"
 OGBN_ARXIV_EXTERNAL_NAME = "ogbn-arxiv"
@@ -155,9 +148,6 @@ class QuantizationScaleChain:
         return {
             "input": self.s_h[-1],
             "weight": self.s_w_output[head_index],
-            # AttentionHead consumes the projection boundary under the
-            # layer-neutral name ``h_prime``; retain ``y_prime`` as the
-            # formal output-head terminology in the serialized chain.
             "h_prime": self.s_y_prime[head_index],
             "y_prime": self.s_y_prime[head_index],
             "a_src": self.s_a_src_output[head_index],
@@ -217,8 +207,8 @@ def canonical_quantization_scale_chain(
         raise ValueError("canonical scale-chain output/concat transition mismatch")
     for layer in range(2):
         if not (
-            len(chain.s_w_hidden[layer]) == len(chain.s_h_prime_hidden[layer]) == 8
-            and len(chain.s_a_src_hidden[layer]) == len(chain.s_a_dst_hidden[layer]) == 8
+            len(chain.s_w_hidden[layer]) == len(chain.s_h_prime_hidden[layer]) == 8 and
+            len(chain.s_a_src_hidden[layer]) == len(chain.s_a_dst_hidden[layer]) == 8
         ):
             raise ValueError("canonical scale-chain hidden head count mismatch")
         for head in range(8):
@@ -229,11 +219,8 @@ def canonical_quantization_scale_chain(
             if chain.s_h_prime_hidden[layer][head] * chain.s_a_dst_hidden[layer][head] != chain.s_delta:
                 raise ValueError("canonical scale-chain hidden destination attention equation mismatch")
     if not all(
-        chain.s_y_prime[head] == chain.s_h[-1] * chain.s_w_output[head]
-        and chain.s_y_prime[head] * chain.s_a_src_output[head] == chain.s_delta
-        and chain.s_y_prime[head] * chain.s_a_dst_output[head] == chain.s_delta
-        and chain.s_b_output[head] == chain.s_out_head
-        for head in range(2)
+        chain.s_y_prime[head] == chain.s_h[-1] * chain.s_w_output[head] and chain.s_y_prime[head] * chain.s_a_src_output[head] == chain.s_delta and
+        chain.s_y_prime[head] * chain.s_a_dst_output[head] == chain.s_delta and chain.s_b_output[head] == chain.s_out_head for head in range(2)
     ):
         raise ValueError("canonical scale-chain output equation mismatch")
     if chain.rounding != "nearest_ties_away" or chain.rescale != "none" or chain.output_average != "signed_round_div":
@@ -271,9 +258,6 @@ def canonical_row_normalize(values: np.ndarray) -> np.ndarray:
         raise ValueError("row normalization rejects NaN/Inf")
     normalized = raw.copy()
     for row_index, row in enumerate(raw):
-        # Do not replace this with np.sum: its reduction order is an
-        # implementation detail and can disagree with the C++ scalar loop at
-        # a half-away-from-zero quantization tie.
         rowsum = 0.0
         for value in row:
             rowsum += float(value)
@@ -298,7 +282,8 @@ def canonical_input_preprocess(values: np.ndarray, dataset: str, input_preproces
     expected_id = canonical_input_preprocess_id(dataset)
     actual_id = expected_id if input_preprocess_id is None else str(input_preprocess_id)
     if actual_id != expected_id:
-        raise ValueError(f"input_preprocess_id {actual_id!r} does not match dataset {dataset!r}; " f"expected {expected_id!r}")
+        raise ValueError(f"input_preprocess_id {actual_id!r} does not match dataset {dataset!r}; "
+                         f"expected {expected_id!r}")
     raw = np.asarray(values)
     if raw.ndim != 2:
         raise ValueError("canonical input preprocessing expects a rank-2 matrix")

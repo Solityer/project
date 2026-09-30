@@ -57,9 +57,8 @@ def structured_output_prefix(head_index: int) -> str:
     return f"output/head{head_index}"
 
 
-def export_head_tensors(
-    tensors: Dict[str, np.ndarray], state: Dict[str, torch.Tensor], state_prefix: str, tensor_prefix: str, *, require_output_bias: bool
-) -> Dict[str, str]:
+def export_head_tensors(tensors: Dict[str, np.ndarray], state: Dict[str, torch.Tensor], state_prefix: str, tensor_prefix: str, *,
+                        require_output_bias: bool) -> Dict[str, str]:
     for forbidden_key in (f"{state_prefix}.attn_dst.bias", f"{state_prefix}.attn_src.bias", f"{state_prefix}.attn_dst_bias", f"{state_prefix}.attn_src_bias"):
         if forbidden_key in state:
             raise ValueError(f"attention scalar bias is forbidden in formal checkpoint: {forbidden_key}")
@@ -77,7 +76,6 @@ def export_head_tensors(
     elif require_output_bias:
         raise ValueError(f"output head {state_prefix} must expose output_bias")
     else:
-        # Hidden heads intentionally have no post-aggregation bias tensor.
         pass
     result = {"seq_kernel": seq_name, "attn_dst_kernel": dst_kernel_name, "attn_src_kernel": src_kernel_name}
     if require_output_bias:
@@ -100,13 +98,8 @@ def build_tensors_and_manifest_spec(
         raise ValueError(f"unsupported canonical checkpoint dataset: {dataset}")
     expected_d_in, expected_classes, expected_arch, _ = CANONICAL_MODEL_SPECS[dataset]
     if (
-        bundle["L"] != 3
-        or hidden_profile != [{"head_count": 8, "head_dim": 8}, {"head_count": 8, "head_dim": 8}]
-        or d_in_profile != expected_d_in
-        or k_out != 2
-        or num_classes != expected_classes
-        or bundle["model_arch_id"] != expected_arch
-        or bundle["quant_cfg_id"] != "gat_l3_scale_chain"
+        bundle["L"] != 3 or hidden_profile != [{"head_count": 8, "head_dim": 8}, {"head_count": 8, "head_dim": 8}] or d_in_profile != expected_d_in or
+        k_out != 2 or num_classes != expected_classes or bundle["model_arch_id"] != expected_arch or bundle["quant_cfg_id"] != "gat_l3_scale_chain"
     ):
         raise ValueError("PyTorch checkpoint does not match the canonical L=3 multi-head formal shape")
     expected_preprocess_id = canonical_input_preprocess_id(dataset)
@@ -115,7 +108,8 @@ def build_tensors_and_manifest_spec(
     if dataset == "ppi":
         ppi_semantics = {"label_format": "multi_hot", "loss": "BCEWithLogitsLoss", "selection_metric": "validation_loss", "split_format": "node_masks"}
         if any(bundle[key] != value for key, value in ppi_semantics.items()):
-            raise ValueError("PPI checkpoint must declare multi_hot/BCEWithLogitsLoss/" "validation_loss/node_masks metadata")
+            raise ValueError("PPI checkpoint must declare multi_hot/BCEWithLogitsLoss/"
+                             "validation_loss/node_masks metadata")
     expected_layers = bundle["L"]
     if expected_layers != len(hidden_profile) + 1:
         raise ValueError("bundle L conflicts with hidden_profile")

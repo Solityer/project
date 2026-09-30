@@ -13,16 +13,11 @@ namespace {
 
 NativeProofStatement statement_fixture() {
     return NativeProofStatement{
-        "0000000000000000000000000000000000000000000000000000000000000221",
-        "mcl-bn254-fr-v1",
-        "0000000000000000000000000000000000000000000000000000000000000222",
-        "0000000000000000000000000000000000000000000000000000000000000223",
-        "0000000000000000000000000000000000000000000000000000000000000224",
-        "0000000000000000000000000000000000000000000000000000000000000225",
-        "0000000000000000000000000000000000000000000000000000000000000226",
-        "0000000000000000000000000000000000000000000000000000000000000227",
-        "0000000000000000000000000000000000000000000000000000000000000228",
-        4,
+        "0000000000000000000000000000000000000000000000000000000000000221", "mcl-bn254-fr-v1",
+        "0000000000000000000000000000000000000000000000000000000000000222", "0000000000000000000000000000000000000000000000000000000000000223",
+        "0000000000000000000000000000000000000000000000000000000000000224", "0000000000000000000000000000000000000000000000000000000000000225",
+        "0000000000000000000000000000000000000000000000000000000000000226", "0000000000000000000000000000000000000000000000000000000000000227",
+        "0000000000000000000000000000000000000000000000000000000000000228", 4,
         "0000000000000000000000000000000000000000000000000000000000000221"};
 }
 
@@ -67,9 +62,6 @@ layeredCircuit make_ordinary_phase2_circuit() {
     circuit.circuit[0].zero_start_id = 2;
     circuit.circuit[0].bit_length = 1;
 
-    // A zero-valued two-coordinate binary layer gives a minimal
-    // phase1/phase2 relation.  Both sides read the preceding input layer, so
-    // need_phase2 is genuinely exercised rather than inferred from FCONN.
     circuit.circuit[1].ty = layerType::Sqr;
     circuit.circuit[1].size = 2;
     circuit.circuit[1].zero_start_id = 2;
@@ -83,8 +75,7 @@ layeredCircuit make_ordinary_phase2_circuit() {
 
 NativeLayeredGkrWitness make_witness() {
     NativeLayeredGkrWitness witness;
-    witness.layer_values = {{Fr(3), Fr(5)}, {Fr(11), Fr(27)},
-                            {Fr(11), Fr(27)}};
+    witness.layer_values = {{Fr(3), Fr(5)}, {Fr(11), Fr(27)}, {Fr(11), Fr(27)}};
     NativeGkrMatmulWitness matmul;
     matmul.shape = {1, 2, 2};
     matmul.shape.relation_id = "masked-layered-gkr/fconn0";
@@ -98,12 +89,10 @@ NativeLayeredGkrWitness make_witness() {
     return witness;
 }
 
-bool mutate_input_binding_payload(std::vector<NativeProofMessage> &messages) {
+bool mutate_input_binding_payload(std::vector<NativeProofMessage>& messages) {
     for (auto message_it = messages.rbegin(); message_it != messages.rend(); ++message_it) {
-        NativeProofMessage &message = *message_it;
-        if (message.kind != NativeProofMessageKind::Field ||
-            message.label != "gkr/input/bind/response")
-            continue;
+        NativeProofMessage& message = *message_it;
+        if (message.kind != NativeProofMessageKind::Field || message.label != "gkr/input/bind/response") continue;
         if (message.payload.empty()) return false;
         message.payload.back() = message.payload.back() == '0' ? '1' : '0';
         return true;
@@ -111,73 +100,60 @@ bool mutate_input_binding_payload(std::vector<NativeProofMessage> &messages) {
     return false;
 }
 
-bool mutate_mode_to_zero(std::vector<NativeProofMessage> &messages) {
-    for (NativeProofMessage &message : messages) {
-        if (message.kind != NativeProofMessageKind::Data ||
-            message.label.find("/initial/mode") == std::string::npos)
-            continue;
+bool mutate_mode_to_zero(std::vector<NativeProofMessage>& messages) {
+    for (NativeProofMessage& message : messages) {
+        if (message.kind != NativeProofMessageKind::Data || message.label.find("/initial/mode") == std::string::npos) continue;
         message.payload = "zero-mask-v2";
         return true;
     }
     return false;
 }
 
-bool drop_masked_initial_opening(std::vector<NativeProofMessage> &messages) {
+bool drop_masked_initial_opening(std::vector<NativeProofMessage>& messages) {
     for (std::size_t index = 0; index < messages.size(); ++index) {
         const std::string marker = "/initial/masked/meta";
         if (messages[index].label.size() < marker.size() ||
-            messages[index].label.compare(messages[index].label.size() - marker.size(),
-                                          marker.size(), marker) != 0)
+            messages[index].label.compare(messages[index].label.size() - marker.size(), marker.size(), marker) != 0)
             continue;
         if (index + 4 > messages.size()) return false;
-        messages.erase(messages.begin() + static_cast<std::ptrdiff_t>(index),
-                       messages.begin() + static_cast<std::ptrdiff_t>(index + 4));
-        for (std::size_t sequence = 0; sequence < messages.size(); ++sequence)
-            messages[sequence].sequence = sequence;
+        messages.erase(messages.begin() + static_cast<std::ptrdiff_t>(index), messages.begin() + static_cast<std::ptrdiff_t>(index + 4));
+        for (std::size_t sequence = 0; sequence < messages.size(); ++sequence) messages[sequence].sequence = sequence;
         return true;
     }
     return false;
 }
 
-bool replace_intermediate_claim(std::vector<NativeProofMessage> &messages) {
+bool replace_intermediate_claim(std::vector<NativeProofMessage>& messages) {
     std::string replacement;
-    for (const NativeProofMessage &message : messages) {
+    for (const NativeProofMessage& message : messages) {
         if (message.label.find("/initial/opening/meta") != std::string::npos) {
             replacement = message.payload;
             break;
         }
     }
     if (replacement.empty()) return false;
-    for (NativeProofMessage &message : messages) {
-        if (message.label.find("/next-claim/unmasked/output/meta") ==
-            std::string::npos)
-            continue;
+    for (NativeProofMessage& message : messages) {
+        if (message.label.find("/next-claim/unmasked/output/meta") == std::string::npos) continue;
         message.payload = replacement;
         return true;
     }
     return false;
 }
 
-bool replace_opening_payload(std::vector<NativeProofMessage> &messages,
-                             const std::string &target,
-                             const std::string &source) {
+bool replace_opening_payload(std::vector<NativeProofMessage>& messages, const std::string& target, const std::string& source) {
     std::string replacement;
-    for (const NativeProofMessage &message : messages)
-        if (message.kind == NativeProofMessageKind::Data &&
-            message.label == source)
-            replacement = message.payload;
+    for (const NativeProofMessage& message : messages)
+        if (message.kind == NativeProofMessageKind::Data && message.label == source) replacement = message.payload;
     if (replacement.empty()) return false;
-    for (NativeProofMessage &message : messages) {
-        if (message.kind != NativeProofMessageKind::Data ||
-            message.label != target)
-            continue;
+    for (NativeProofMessage& message : messages) {
+        if (message.kind != NativeProofMessageKind::Data || message.label != target) continue;
         message.payload = replacement;
         return true;
     }
     return false;
 }
 
-} // namespace
+}
 
 int main() {
     initPairing(BN254);
@@ -192,34 +168,26 @@ int main() {
 
     NativeProofSession session("masked-layered-gkr-smoke-v1", statement_fixture());
     const std::size_t messages_before_prover_result = session.messages().size();
-    if (!prove_masked_gkr_transcript(session, circuit, witness, output, &reason,
-                                     &produced_binding, &prover_result)) {
+    if (!prove_masked_gkr_transcript(session, circuit, witness, output, &reason, &produced_binding, &prover_result)) {
         std::cerr << "prove failed: " << reason << '\n';
         return 1;
     }
     assert(session.messages().size() > messages_before_prover_result);
     assert(prover_result.has_unmasked_input_claim_opening);
-    const auto basis = zkgpt::native_pedersen::derive_basis(
-        "zkgpt/masked-sumcheck/v2/" + session.statement_digest());
+    const auto basis = zkgpt::native_pedersen::derive_basis("zkgpt/masked-sumcheck/v2/" + session.statement_digest());
     assert(prover_result.unmasked_input_claim_opening.valid(basis, &reason));
-    assert(prover_result.unmasked_input_claim_opening.commitment.point ==
-           produced_binding.unmasked_claim_commitment.point);
-    assert(prover_result.input_binding.unmasked_claim_commitment.point ==
-           produced_binding.unmasked_claim_commitment.point);
-    if (!verify_masked_gkr_transcript(session, circuit, output, descriptors,
-                                      &reason, &verified_binding)) {
+    assert(prover_result.unmasked_input_claim_opening.commitment.point == produced_binding.unmasked_claim_commitment.point);
+    assert(prover_result.input_binding.unmasked_claim_commitment.point == produced_binding.unmasked_claim_commitment.point);
+    if (!verify_masked_gkr_transcript(session, circuit, output, descriptors, &reason, &verified_binding)) {
         std::cerr << "verify failed: " << reason << '\n';
         return 1;
     }
     assert(produced_binding.point == verified_binding.point);
-    assert(produced_binding.claim_commitment.point ==
-           verified_binding.claim_commitment.point);
-    assert(produced_binding.unmasked_claim_commitment.point ==
-           verified_binding.unmasked_claim_commitment.point);
-    assert(produced_binding.mask_commitment.point ==
-           verified_binding.mask_commitment.point);
+    assert(produced_binding.claim_commitment.point == verified_binding.claim_commitment.point);
+    assert(produced_binding.unmasked_claim_commitment.point == verified_binding.unmasked_claim_commitment.point);
+    assert(produced_binding.mask_commitment.point == verified_binding.mask_commitment.point);
     bool saw_private_scope = false;
-    for (const NativeProofMessage &message : session.messages()) {
+    for (const NativeProofMessage& message : session.messages()) {
         if (message.label.find("/initial/mode") == std::string::npos) continue;
         saw_private_scope = true;
         assert(message.payload == "with-mask-v2");
@@ -228,40 +196,30 @@ int main() {
 
     NativeGkrMatmulShape family_tampered = descriptors.front();
     family_tampered.family_id += ".tampered";
-    NativeProofSession family_session("masked-layered-gkr-smoke-v1",
-                                      statement_fixture());
-    assert(prove_masked_gkr_transcript(family_session, circuit, witness, output,
-                                       &reason));
-    assert(!verify_masked_gkr_transcript(family_session, circuit, output,
-                                         {family_tampered}, &reason));
+    NativeProofSession family_session("masked-layered-gkr-smoke-v1", statement_fixture());
+    assert(prove_masked_gkr_transcript(family_session, circuit, witness, output, &reason));
+    assert(!verify_masked_gkr_transcript(family_session, circuit, output, {family_tampered}, &reason));
     NativeGkrMatmulShape offset_tampered = descriptors.front();
     offset_tampered.output_offset += 1;
-    assert(!verify_masked_gkr_transcript(family_session, circuit, output,
-                                         {offset_tampered}, &reason));
+    assert(!verify_masked_gkr_transcript(family_session, circuit, output, {offset_tampered}, &reason));
 
     const std::string wire = "/tmp/zkgpt-native-masked-layered-gkr.smoke";
     assert(session.write(wire, &reason));
     NativeProofSession serialized;
     assert(NativeProofSession::read(wire, serialized, &reason));
-    assert(verify_masked_gkr_transcript(serialized, circuit, output,
-                                        descriptors, &reason, nullptr));
+    assert(verify_masked_gkr_transcript(serialized, circuit, output, descriptors, &reason, nullptr));
     std::remove(wire.c_str());
 
     std::vector<NativeProofMessage> tampered_messages = session.messages();
     assert(mutate_input_binding_payload(tampered_messages));
     NativeProofSession tampered;
-    assert(NativeProofSession::from_messages(session.domain(), session.statement(),
-                                             tampered_messages, tampered, &reason));
-    assert(!verify_masked_gkr_transcript(tampered, circuit, output,
-                                         descriptors, &reason));
+    assert(NativeProofSession::from_messages(session.domain(), session.statement(), tampered_messages, tampered, &reason));
+    assert(!verify_masked_gkr_transcript(tampered, circuit, output, descriptors, &reason));
 
     auto rejects_tampered_artifact = [&](std::vector<NativeProofMessage> messages) {
         NativeProofSession candidate;
-        if (!NativeProofSession::from_messages(session.domain(), session.statement(),
-                                               messages, candidate, &reason))
-            return true;
-        return !verify_masked_gkr_transcript(candidate, circuit, output,
-                                             descriptors, &reason);
+        if (!NativeProofSession::from_messages(session.domain(), session.statement(), messages, candidate, &reason)) return true;
+        return !verify_masked_gkr_transcript(candidate, circuit, output, descriptors, &reason);
     };
     std::vector<NativeProofMessage> mode_tampered = session.messages();
     assert(mutate_mode_to_zero(mode_tampered));
@@ -273,67 +231,47 @@ int main() {
     assert(replace_intermediate_claim(replaced_claim));
     assert(rejects_tampered_artifact(std::move(replaced_claim)));
     std::vector<NativeProofMessage> final_claim_tampered = session.messages();
-    assert(replace_opening_payload(final_claim_tampered, "gkr/input/claim/meta",
-                                   "gkr/output/public-claim/meta"));
+    assert(replace_opening_payload(final_claim_tampered, "gkr/input/claim/meta", "gkr/output/public-claim/meta"));
     assert(rejects_tampered_artifact(std::move(final_claim_tampered)));
 
     NativeProofSession wrong_output("masked-layered-gkr-smoke-v1", statement_fixture());
     assert(prove_masked_gkr_transcript(wrong_output, circuit, witness, output, &reason));
-    assert(!verify_masked_gkr_transcript(wrong_output, circuit,
-                                         {Fr(11), Fr(28)}, descriptors, &reason));
+    assert(!verify_masked_gkr_transcript(wrong_output, circuit, {Fr(11), Fr(28)}, descriptors, &reason));
 
     NativeProofSession fresh("masked-layered-gkr-smoke-v1", statement_fixture());
     assert(prove_masked_gkr_transcript(fresh, circuit, witness, output, &reason));
     std::string first_commitment, second_commitment;
-    for (const NativeProofMessage &message : session.messages())
-        if (message.label == "gkr/layer/2/phase1/round/0/h/0/meta")
-            first_commitment = message.payload;
-    for (const NativeProofMessage &message : fresh.messages())
-        if (message.label == "gkr/layer/2/phase1/round/0/h/0/meta")
-            second_commitment = message.payload;
+    for (const NativeProofMessage& message : session.messages())
+        if (message.label == "gkr/layer/2/phase1/round/0/h/0/meta") first_commitment = message.payload;
+    for (const NativeProofMessage& message : fresh.messages())
+        if (message.label == "gkr/layer/2/phase1/round/0/h/0/meta") second_commitment = message.payload;
     assert(!first_commitment.empty() && first_commitment != second_commitment);
 
-    // A separate non-FCONN layer exercises ordinary phase2/fixed-U binding;
-    // the main fixture above also covers the need_phase2=false fixed-V path.
     const layeredCircuit ordinary_phase2_circuit = make_ordinary_phase2_circuit();
     NativeLayeredGkrWitness ordinary_witness;
     ordinary_witness.layer_values = {{F_ZERO, F_ZERO}, {F_ZERO, F_ZERO}};
-    NativeProofSession ordinary_phase2(
-        "masked-layered-gkr-phase2-smoke-v1", statement_fixture());
+    NativeProofSession ordinary_phase2("masked-layered-gkr-phase2-smoke-v1", statement_fixture());
     NativeGkrInputBinding ordinary_binding;
-    if (!prove_masked_gkr_transcript(
-            ordinary_phase2, ordinary_phase2_circuit, ordinary_witness,
-            {F_ZERO, F_ZERO}, &reason,
-            &ordinary_binding, nullptr) ||
-        !verify_masked_gkr_transcript(
-            ordinary_phase2, ordinary_phase2_circuit, {F_ZERO, F_ZERO}, {},
-            &reason, nullptr)) {
+    if (!prove_masked_gkr_transcript(ordinary_phase2, ordinary_phase2_circuit, ordinary_witness, {F_ZERO, F_ZERO}, &reason, &ordinary_binding, nullptr) ||
+        !verify_masked_gkr_transcript(ordinary_phase2, ordinary_phase2_circuit, {F_ZERO, F_ZERO}, {}, &reason, nullptr)) {
         std::cerr << "ordinary phase2 fixture failed: " << reason << '\n';
         return 9;
     }
     bool saw_phase2 = false;
-    for (const NativeProofMessage &message : ordinary_phase2.messages())
-        if (message.label == "gkr/layer/1/phase2/terminal/unmasked/fixed/0/meta")
-            saw_phase2 = true;
+    for (const NativeProofMessage& message : ordinary_phase2.messages())
+        if (message.label == "gkr/layer/1/phase2/terminal/unmasked/fixed/0/meta") saw_phase2 = true;
     if (!saw_phase2) {
         std::cerr << "ordinary phase2 fixture did not emit fixed binding\n";
         return 10;
     }
     std::vector<NativeProofMessage> ordinary_tampered = ordinary_phase2.messages();
-    if (!replace_opening_payload(
-            ordinary_tampered,
-            "gkr/layer/1/phase2/terminal/unmasked/fixed/0/meta",
-            "gkr/layer/1/phase2/terminal/unmasked/value/0/meta")) {
+    if (!replace_opening_payload(ordinary_tampered, "gkr/layer/1/phase2/terminal/unmasked/fixed/0/meta", "gkr/layer/1/phase2/terminal/unmasked/value/0/meta")) {
         std::cerr << "ordinary phase2 fixed binding fixture was not found\n";
         return 11;
     }
     NativeProofSession ordinary_tampered_session;
-    if (NativeProofSession::from_messages(
-            ordinary_phase2.domain(), ordinary_phase2.statement(),
-            ordinary_tampered, ordinary_tampered_session, &reason) &&
-        verify_masked_gkr_transcript(
-            ordinary_tampered_session, ordinary_phase2_circuit, {F_ZERO, F_ZERO},
-            {}, &reason, nullptr)) {
+    if (NativeProofSession::from_messages(ordinary_phase2.domain(), ordinary_phase2.statement(), ordinary_tampered, ordinary_tampered_session, &reason) &&
+        verify_masked_gkr_transcript(ordinary_tampered_session, ordinary_phase2_circuit, {F_ZERO, F_ZERO}, {}, &reason, nullptr)) {
         std::cerr << "ordinary phase2 fixed binding tamper was accepted\n";
         return 12;
     }

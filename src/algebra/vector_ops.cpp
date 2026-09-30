@@ -24,9 +24,6 @@
 
 namespace gatzk::algebra
 {
-    // 本文件统一管理 algebra 层的执行路由，
-    // 包括 CPU / CUDA 可用性探测、size-aware 策略与常见向量算子。
-    // 它位于 proving / verifying 的公共热路径上，但任何路由切换都不能改变 formal 结果。
 #if GATZK_ENABLE_CUDA_BACKEND
     bool cuda_backend_runtime_available();
     bool cuda_field_hotspots_available();
@@ -110,15 +107,9 @@ namespace gatzk::algebra
             return util::route2_options().cuda_field_hotspots && cuda_field_hotspots_build_enabled() && cuda_field_hotspots_available();
         }
 
-        bool cuda_trace_route_enabled()
-        {
-            return util::route2_options().cuda_trace_hotspots && cuda_backend_available();
-        }
+        bool cuda_trace_route_enabled() { return util::route2_options().cuda_trace_hotspots && cuda_backend_available(); }
 
-        unsigned __int128 multiply_u128(std::size_t lhs, std::size_t rhs)
-        {
-            return static_cast<unsigned __int128>(lhs) * static_cast<unsigned __int128>(rhs);
-        }
+        unsigned __int128 multiply_u128(std::size_t lhs, std::size_t rhs) { return static_cast<unsigned __int128>(lhs) * static_cast<unsigned __int128>(rhs); }
 
         std::size_t bounded_worker_count(std::size_t max_worker_count)
         {
@@ -137,7 +128,6 @@ namespace gatzk::algebra
             const char *value = std::getenv("GATZK_ALGEBRA_BACKEND");
             if (value == nullptr)
             {
-                // 默认正式后端仍是 CPU；GPU 只能经由 compute-backend/route2 显式启用。
                 return AlgebraBackend::Cpu;
             }
             const std::string backend(value);
@@ -153,7 +143,6 @@ namespace gatzk::algebra
             throw std::runtime_error("unsupported GATZK_ALGEBRA_BACKEND value: " + backend);
         }
 
-        // 串行计算两个域元素向量在区间[begin, end)上的点积（--parallel-fft on）
         FieldElement dot_product_range(const std::vector<FieldElement> &lhs, const std::vector<FieldElement> &rhs, std::size_t begin, std::size_t end)
         {
             mcl::Fr sum;
@@ -167,7 +156,6 @@ namespace gatzk::algebra
             return FieldElement::from_native(sum);
         }
 
-        // 串行计算域元素向量与mcl::Fr向量在区间[begin, end)上的点积
         FieldElement dot_product_native_range(const std::vector<FieldElement> &lhs, const std::vector<mcl::Fr> &rhs, std::size_t begin, std::size_t end)
         {
             mcl::Fr sum;
@@ -183,14 +171,12 @@ namespace gatzk::algebra
 
     }
 
-    // 返回当前进程生效的代数后端选择。
     AlgebraBackend configured_algebra_backend()
     {
         static const auto backend = parse_backend_env();
         return backend;
     }
 
-    // 当前正式主线只暴露 `"cpu"` 名称；CUDA 只是其中的热点执行策略。
     std::string configured_algebra_backend_name()
     {
         (void)configured_algebra_backend();
@@ -768,9 +754,6 @@ namespace gatzk::algebra
             throw std::runtime_error("INTT requires a non-null power-of-two field vector");
         }
 
-        // A one-point inverse transform is the identity.  mcl does not build
-        // an NTT plan for size 1, so handle the mathematically valid boundary
-        // before either the CUDA route selector or the CPU plan cache.
         if (size == 1)
         {
             return;
@@ -798,8 +781,6 @@ namespace gatzk::algebra
             throw std::runtime_error("NTT requires a non-null power-of-two field vector");
         }
 
-        // A one-point forward transform is the identity.  Do not request an
-        // mcl NTT plan (or a CUDA transform) for this degenerate valid domain.
         if (size == 1)
         {
             return;
@@ -937,15 +918,9 @@ namespace gatzk::algebra
 #endif
     }
 
-    std::size_t cuda_kernel_invocation_count()
-    {
-        return cuda_kernel_counter().load(std::memory_order_relaxed);
-    }
+    std::size_t cuda_kernel_invocation_count() { return cuda_kernel_counter().load(std::memory_order_relaxed); }
 
-    void record_cuda_kernel_invocations(std::size_t count)
-    {
-        cuda_kernel_counter().fetch_add(count, std::memory_order_relaxed);
-    }
+    void record_cuda_kernel_invocations(std::size_t count) { cuda_kernel_counter().fetch_add(count, std::memory_order_relaxed); }
 
     CudaExecutionStats cuda_execution_stats_snapshot()
     {
@@ -988,59 +963,26 @@ namespace gatzk::algebra
         counters.d2h_operations.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void record_cuda_stream_sync()
-    {
-        cuda_execution_counters().stream_synchronizations.fetch_add(1, std::memory_order_relaxed);
-    }
+    void record_cuda_stream_sync() { cuda_execution_counters().stream_synchronizations.fetch_add(1, std::memory_order_relaxed); }
 
-    void record_cuda_ntt_call()
-    {
-        cuda_execution_counters().ntt_calls.fetch_add(1, std::memory_order_relaxed);
-    }
+    void record_cuda_ntt_call() { cuda_execution_counters().ntt_calls.fetch_add(1, std::memory_order_relaxed); }
 
-    void record_cuda_intt_call()
-    {
-        cuda_execution_counters().intt_calls.fetch_add(1, std::memory_order_relaxed);
-    }
+    void record_cuda_intt_call() { cuda_execution_counters().intt_calls.fetch_add(1, std::memory_order_relaxed); }
 
-    void record_cuda_quotient_call()
-    {
-        cuda_execution_counters().quotient_calls.fetch_add(1, std::memory_order_relaxed);
-    }
+    void record_cuda_quotient_call() { cuda_execution_counters().quotient_calls.fetch_add(1, std::memory_order_relaxed); }
 
-    void record_cuda_t_edge_call()
-    {
-        cuda_execution_counters().t_edge_calls.fetch_add(1, std::memory_order_relaxed);
-    }
+    void record_cuda_t_edge_call() { cuda_execution_counters().t_edge_calls.fetch_add(1, std::memory_order_relaxed); }
 
-    void record_cuda_t_fh_call()
-    {
-        cuda_execution_counters().t_fh_calls.fetch_add(1, std::memory_order_relaxed);
-    }
+    void record_cuda_t_fh_call() { cuda_execution_counters().t_fh_calls.fetch_add(1, std::memory_order_relaxed); }
 
-    void record_cuda_opening_fold_call()
-    {
-        cuda_execution_counters().opening_fold_calls.fetch_add(1, std::memory_order_relaxed);
-    }
-    void record_cuda_msm_single_call()
-    {
-        cuda_execution_counters().msm_single_calls.fetch_add(1, std::memory_order_relaxed);
-    }
+    void record_cuda_opening_fold_call() { cuda_execution_counters().opening_fold_calls.fetch_add(1, std::memory_order_relaxed); }
+    void record_cuda_msm_single_call() { cuda_execution_counters().msm_single_calls.fetch_add(1, std::memory_order_relaxed); }
 
-    void record_cuda_msm_batch_call()
-    {
-        cuda_execution_counters().msm_batch_calls.fetch_add(1, std::memory_order_relaxed);
-    }
+    void record_cuda_msm_batch_call() { cuda_execution_counters().msm_batch_calls.fetch_add(1, std::memory_order_relaxed); }
 
-    void record_cuda_resident_hit()
-    {
-        cuda_execution_counters().resident_hits.fetch_add(1, std::memory_order_relaxed);
-    }
+    void record_cuda_resident_hit() { cuda_execution_counters().resident_hits.fetch_add(1, std::memory_order_relaxed); }
 
-    void record_cuda_resident_miss()
-    {
-        cuda_execution_counters().resident_misses.fetch_add(1, std::memory_order_relaxed);
-    }
+    void record_cuda_resident_miss() { cuda_execution_counters().resident_misses.fetch_add(1, std::memory_order_relaxed); }
 #if !GATZK_ENABLE_CUDA_BACKEND
 
     bool cuda_coset_evaluations_to_host_exact(const mcl::Fr *, std::size_t, std::size_t, const mcl::Fr *, std::size_t, const FieldElement &, mcl::Fr *,
@@ -1049,15 +991,9 @@ namespace gatzk::algebra
         return false;
     }
 
-    bool cuda_coset_coefficients_to_host_exact(const mcl::Fr *, std::size_t, const FieldElement &, mcl::Fr *, std::size_t, bool)
-    {
-        return false;
-    }
+    bool cuda_coset_coefficients_to_host_exact(const mcl::Fr *, std::size_t, const FieldElement &, mcl::Fr *, std::size_t, bool) { return false; }
 
-    bool cuda_coset_host_to_coefficients_exact(const mcl::Fr *, std::size_t, const FieldElement &, mcl::Fr *)
-    {
-        return false;
-    }
+    bool cuda_coset_host_to_coefficients_exact(const mcl::Fr *, std::size_t, const FieldElement &, mcl::Fr *) { return false; }
 
     bool cuda_coset_host_to_resident_coefficients_exact(const mcl::Fr *, std::size_t, const FieldElement &, mcl::Fr *,
                                                         std::shared_ptr<const CudaResidentCoefficientBuffer> *)
@@ -1073,20 +1009,14 @@ namespace gatzk::algebra
 
     void release_cuda_scan_workspace() {}
 
-    std::unique_ptr<CudaScaledAccumulateSession> create_cuda_scaled_accumulate_session(mcl::Fr *, std::size_t, bool)
-    {
-        return nullptr;
-    }
+    std::unique_ptr<CudaScaledAccumulateSession> create_cuda_scaled_accumulate_session(mcl::Fr *, std::size_t, bool) { return nullptr; }
 
     std::shared_ptr<CudaScaledAccumulatePairSession> create_cuda_scaled_accumulate_pair_session(mcl::Fr *, mcl::Fr *, std::size_t, bool, bool)
     {
         return nullptr;
     }
 
-    std::unique_ptr<CudaWeightedDotSession> create_cuda_weighted_dot_session(const std::vector<const mcl::Fr *> &, std::size_t, std::size_t)
-    {
-        return nullptr;
-    }
+    std::unique_ptr<CudaWeightedDotSession> create_cuda_weighted_dot_session(const std::vector<const mcl::Fr *> &, std::size_t, std::size_t) { return nullptr; }
 
     void release_cuda_weighted_dot_cache() {}
 
@@ -1139,11 +1069,6 @@ namespace gatzk::algebra
             {
                 return false;
             }
-            // UVA alone only gives a common address range.  Likewise,
-            // PageableMemoryAccess permits the runtime to migrate/copy ordinary
-            // host pages, but does not make an arbitrary std::vector pointer a
-            // valid kernel address.  Direct columnar kernels may consume those
-            // pointers only when the device actually walks the host page tables.
             return unified != 0 && pageable_access != 0 && host_page_tables != 0;
         }();
         return available;
@@ -1304,11 +1229,6 @@ namespace gatzk::algebra
 
     bool should_use_cuda_coset_transform(std::size_t target_size)
     {
-        // Quotient cosets use two lanes of target_size / 2 elements.  The
-        // bounded CUDA implementation supports the existing direct range and
-        // staged radix-2/radix-4 extensions up to a 2^26 lane (2^27 target).
-        // Keep the historical lower admission boundary so small transforms do
-        // not pay a CUDA launch and pageable staging cost.
         const std::size_t kMinimumTargetSize = cuda_backend_unified_addressing_available() ? (std::size_t{1} << 20) : (std::size_t{1} << 24);
 
         constexpr std::size_t kMaximumTargetSize = std::size_t{1} << 27;
@@ -1572,10 +1492,6 @@ namespace gatzk::algebra
 
     bool try_cuda_scaled_accumulate_native(mcl::Fr *target, const mcl::Fr *source, const mcl::Fr &scale, std::size_t element_count)
     {
-        // Direct kernel access to std::vector storage is valid only when the
-        // device walks the process host page tables.  Keep smaller vectors on
-        // the existing CPU path so kernel launch and page-fault costs cannot
-        // dominate the opening fold.
         const auto min_cuda_elements = cuda_backend_unified_addressing_available() ? (1ULL << 18) : (1ULL << 22);
 
         if (element_count < min_cuda_elements || !cuda_field_route_enabled())
@@ -1592,7 +1508,6 @@ namespace gatzk::algebra
                                element_count);
         return true;
 #else
-        // cuda_field_route_enabled() is false in non-CUDA builds.
         (void)scale;
         return false;
 #endif
@@ -1634,15 +1549,8 @@ namespace gatzk::algebra
     }
 
 #if !GATZK_ENABLE_CUDA_BACKEND
-    // 非 CUDA 构建下保留同签名桩函数，让上层统一走回退逻辑。
-    bool barycentric_weights_gpu(const uint64_t[4], const uint64_t[4], const uint64_t[4], const uint64_t[4], uint64_t *, std::size_t)
-    {
-        return false;
-    }
-    bool weighted_poly_eval_gpu(const uint64_t *, const uint64_t *, uint64_t *, std::size_t, std::size_t)
-    {
-        return false;
-    }
+    bool barycentric_weights_gpu(const uint64_t[4], const uint64_t[4], const uint64_t[4], const uint64_t[4], uint64_t *, std::size_t) { return false; }
+    bool weighted_poly_eval_gpu(const uint64_t *, const uint64_t *, uint64_t *, std::size_t, std::size_t) { return false; }
     bool weighted_poly_eval_gpu_columnar(const uint64_t *, const uint64_t *const *, uint64_t *, std::size_t, std::size_t, const std::size_t *, std::size_t)
     {
         return false;
@@ -1661,14 +1569,9 @@ namespace gatzk::algebra
     {
         return false;
     }
-    bool cuda_interleaved_multi_rotation_admissible(std::size_t, std::size_t, std::size_t, std::size_t)
-    {
-        return false;
-    }
+    bool cuda_interleaved_multi_rotation_admissible(std::size_t, std::size_t, std::size_t, std::size_t) { return false; }
 #endif
 
-    // 点积是 polynomial / KZG / verifier 会反复调用的基础热路径。
-    // 这里根据规模决定串行、并行或 CUDA 执行，但返回值必须完全一致。
     FieldElement dot_product(const std::vector<FieldElement> &lhs, const std::vector<FieldElement> &rhs)
     {
         if (lhs.size() != rhs.size())
@@ -1693,7 +1596,6 @@ namespace gatzk::algebra
             return dot_product_range(lhs, rhs, 0, lhs.size());
         }
 
-        // 决定并行任务数：最多cpu_count个，每个任务至少处理512个元素
         const auto task_count = std::min<std::size_t>(cpu_count, lhs.size() / 512);
         if (task_count <= 1)
         {
@@ -1722,7 +1624,6 @@ namespace gatzk::algebra
         return sum;
     }
 
-    // 计算左向量（FieldElement）与右向量（mcl::Fr 原生权重）的点积（--parallel-fft on）
     FieldElement dot_product_native_weights(const std::vector<FieldElement> &lhs, const std::vector<mcl::Fr> &rhs)
     {
         if (lhs.size() != rhs.size())

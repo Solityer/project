@@ -103,9 +103,6 @@ namespace gatzk::protocol
         SignedDivisionEvaluationConstants average_division;
 
         std::vector<BindingRelationMeta> binding_metadata;
-        // Formal quotient constants are keyed by (layer, local head).  Keep
-        // the same nested identity as the trace and binding registries; a
-        // flattened planned index is not a formal object identity.
         std::vector<std::vector<HiddenHeadEvaluationConstants>> hidden_head_constants;
         std::vector<OutputHeadEvaluationConstants> output_heads;
     };
@@ -135,17 +132,12 @@ namespace gatzk::protocol
 
         algebra::FieldElement alpha_quot;
 
-        // These registries are immutable for one ProtocolContext.  Building
-        // them once prevents the quotient point loop from reconstructing the
-        // complete binding/schema metadata thousands or millions of times.
         std::vector<BindingRelationMeta> binding_metadata;
         std::vector<MatrixFoldPlan> matrix_fold_plans;
         std::vector<FlatMatrixPlan> flat_matrix_plans;
         std::vector<BroadcastFlatPlan> broadcast_flat_plans;
     };
 
-    // 实现各工作域 quotient 恒等式的求值逻辑，
-    // prove 会在hidden_point或挑战点上构造相应承诺，verify 会按同一公式重算并检查 opening。
     namespace
     {
 
@@ -167,19 +159,11 @@ namespace gatzk::protocol
             return out;
         }
 
-        FieldElement lagrange_first(const algebra::RootOfUnityDomain &domain, const FieldElement &z)
-        {
-            return domain.lagrange_basis_eval(0, z);
-        }
+        FieldElement lagrange_first(const algebra::RootOfUnityDomain &domain, const FieldElement &z) { return domain.lagrange_basis_eval(0, z); }
 
-        FieldElement lagrange_last(const algebra::RootOfUnityDomain &domain, const FieldElement &z)
-        {
-            return domain.lagrange_basis_eval(domain.size - 1, z);
-        }
+        FieldElement lagrange_last(const algebra::RootOfUnityDomain &domain, const FieldElement &z) { return domain.lagrange_basis_eval(domain.size - 1, z); }
 
-        QuotientBoundaryValues boundary_lagrange_values(
-            const algebra::RootOfUnityDomain &domain,
-            const FieldElement &z)
+        QuotientBoundaryValues boundary_lagrange_values(const algebra::RootOfUnityDomain &domain, const FieldElement &z)
         {
             const auto one = FieldElement::one();
             const auto last_point = domain.point_at(domain.size - 1);
@@ -196,8 +180,7 @@ namespace gatzk::protocol
 
             const auto first_denominator = z - one;
             const auto last_denominator = z - last_point;
-            const auto denominator_product_inverse =
-                (first_denominator * last_denominator).inv();
+            const auto denominator_product_inverse = (first_denominator * last_denominator).inv();
             const auto zero_scaled = zero * domain.inv_size;
             return QuotientBoundaryValues{
                 .first = zero_scaled * last_denominator * denominator_product_inverse,
@@ -219,8 +202,6 @@ namespace gatzk::protocol
 
         std::optional<std::string> hidden_head_suffix(const std::string &label)
         {
-            // Formal hidden labels carry both coordinates.  Reject any label
-            // that does not encode the layer and local-head coordinates.
             if (!starts_with(label, "P_h_l"))
             {
                 return std::nullopt;
@@ -278,93 +259,52 @@ namespace gatzk::protocol
             return false;
         }
 
-        std::unordered_map<std::string, std::string>
-        planned_dynamic_label_domains(
-            const ProtocolContext &context)
+        std::unordered_map<std::string, std::string> planned_dynamic_label_domains(const ProtocolContext &context)
         {
-            std::unordered_map<
-                std::string,
-                std::string>
-                domains;
+            std::unordered_map<std::string, std::string> domains;
 
-            const auto add_domain =
-                [&](const std::string &label,
-                    const std::string &domain)
+            const auto add_domain = [&](const std::string &label, const std::string &domain) { domains.try_emplace(label, domain); };
+
+            for (const auto &spec : matrix_fold_binding_specs(context))
             {
-                domains.try_emplace(
-                    label,
-                    domain);
-            };
+                add_domain(spec.source_fold_object, "N");
 
-            for (const auto &spec :
-                 matrix_fold_binding_specs(context))
-            {
-                add_domain(
-                    spec.source_fold_object,
-                    "N");
+                add_domain(spec.source_accumulator_object, "N");
 
-                add_domain(
-                    spec.source_accumulator_object,
-                    "N");
+                add_domain(spec.source_accumulator_object + "_Weight", "N");
 
-                add_domain(
-                    spec.source_accumulator_object +
-                        "_Weight",
-                    "N");
-
-                add_domain(
-                    spec.fold_accumulator_object,
-                    spec.fold_domain);
+                add_domain(spec.fold_accumulator_object, spec.fold_domain);
             }
 
-            for (const auto &spec :
-                 flat_matrix_binding_specs(context))
+            for (const auto &spec : flat_matrix_binding_specs(context))
             {
-                add_domain(
-                    spec.row_fold_object,
-                    "N");
+                add_domain(spec.row_fold_object, "N");
 
-                add_domain(
-                    spec.row_accumulator_object,
-                    "N");
+                add_domain(spec.row_accumulator_object, "N");
 
-                add_domain(
-                    spec.flat_accumulator_object,
-                    "edge");
+                add_domain(spec.flat_accumulator_object, "edge");
             }
 
-            for (const auto &spec :
-                 broadcast_flat_binding_specs(context))
+            for (const auto &spec : broadcast_flat_binding_specs(context))
             {
-                add_domain(
-                    spec.node_accumulator_object,
-                    "N");
+                add_domain(spec.node_accumulator_object, "N");
 
-                add_domain(
-                    spec.flat_accumulator_object,
-                    "edge");
+                add_domain(spec.flat_accumulator_object, "edge");
             }
 
             return domains;
         }
 
-        std::optional<std::string>
-        dynamic_label_domain_name_with_plan_index(
-            const ProtocolContext &context,
-            const std::string &label,
-            const std::unordered_map<
-                std::string,
-                std::string> &planned_domains)
+        std::optional<std::string> dynamic_label_domain_name_with_plan_index(const ProtocolContext &context, const std::string &label,
+                                                                             const std::unordered_map<std::string, std::string> &planned_domains)
         {
-            if (const auto planned =
-                    planned_domains.find(label);
-                planned !=
-                planned_domains.end())
+            if (const auto planned = planned_domains.find(label); planned != planned_domains.end())
             {
                 return planned->second;
             }
 
-            if (label == "P_H" || label == "P_Table_feat" || label == "P_Query_feat" || label == "P_m_feat" || label == "P_J_tbl_feat" || label == "P_J_qry_feat" || label == "P_R_feat")
+            if (label == "P_H" || label == "P_Table_feat" || label == "P_Query_feat" || label == "P_m_feat" || label == "P_J_tbl_feat" ||
+                label == "P_J_qry_feat" || label == "P_R_feat")
             {
                 return std::string("FH");
             }
@@ -394,7 +334,8 @@ namespace gatzk::protocol
                     return std::string("N");
                 }
             }
-            if (hidden_concat_binding_label(context, label, "_a") || hidden_concat_binding_label(context, label, "_b") || hidden_concat_binding_label(context, label, "_Acc"))
+            if (hidden_concat_binding_label(context, label, "_a") || hidden_concat_binding_label(context, label, "_b") ||
+                hidden_concat_binding_label(context, label, "_Acc"))
             {
                 return std::string("cat");
             }
@@ -417,15 +358,26 @@ namespace gatzk::protocol
                     return std::string("cat");
                 if (name == "ModelBind_src_R" || name == "ModelBind_dst_R")
                     return std::string("C");
-                if (name == "a_src" || name == "b_src" || name == "Acc_src" || name == "a_dst" || name == "b_dst" || name == "Acc_dst" || name == "a_y" || name == "b_y" || name == "Acc_y")
+                if (name == "a_src" || name == "b_src" || name == "Acc_src" || name == "a_dst" || name == "b_dst" || name == "Acc_dst" || name == "a_y" ||
+                    name == "b_y" || name == "Acc_y")
                 {
                     return std::string("C");
                 }
-                if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv" || name == "Y_prime_star" || name == "Table_src" || name == "m_src" || name == "J_src_node" || name == "R_src_node" || name == "Y_star" || name == "T" || name == "Table_dst" || name == "m_dst" || name == "J_dst_node" || name == "R_dst_node" || name == "Table_t" || name == "m_t" || name == "J_t_node" || name == "R_t_node")
+                if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv" || name == "Y_prime_star" || name == "Table_src" ||
+                    name == "m_src" || name == "J_src_node" || name == "R_src_node" || name == "Y_star" || name == "T" || name == "Table_dst" ||
+                    name == "m_dst" || name == "J_dst_node" || name == "R_dst_node" || name == "Table_t" || name == "m_t" || name == "J_t_node" ||
+                    name == "R_t_node")
                 {
                     return std::string("N");
                 }
-                if (name.rfind("Div_", 0) == 0 || name.rfind("Bind_", 0) == 0 || name == "Y_pre_flat" || name == "Y_pre_field_flat" || name == "Y_agg_num_flat" || name == "Bias_flat" || name == "Y_flat" || name == "E_src_edge" || name == "E_dst_edge" || name == "Query_src" || name == "J_src_edge" || name == "R_src" || name == "S" || name == "Z" || name == "Table_L" || name == "Query_L" || name == "m_L" || name == "R_L" || name == "M_edge" || name == "Delta" || name == "U" || name == "Sum_flat" || name == "s_max" || name == "C_max" || name == "Table_R" || name == "Query_R" || name == "m_R" || name == "R_R" || name == "Sum_edge" || name == "inv_edge" || name == "alpha" || name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp" || name == "Y_prime_star_edge" || name == "widehat_y_star" || name == "w" || name == "T_edge" || name == "PSQ" || name == "Y_star_edge" || name == "Query_dst" || name == "J_dst_edge" || name == "R_dst" || name == "Query_t" || name == "J_t_edge" || name == "R_t")
+                if (name.rfind("Div_", 0) == 0 || name.rfind("Bind_", 0) == 0 || name == "Y_pre_flat" || name == "Y_pre_field_flat" ||
+                    name == "Y_agg_num_flat" || name == "Bias_flat" || name == "Y_flat" || name == "E_src_edge" || name == "E_dst_edge" ||
+                    name == "Query_src" || name == "J_src_edge" || name == "R_src" || name == "S" || name == "Z" || name == "Table_L" || name == "Query_L" ||
+                    name == "m_L" || name == "R_L" || name == "M_edge" || name == "Delta" || name == "U" || name == "Sum_flat" || name == "s_max" ||
+                    name == "C_max" || name == "Table_R" || name == "Query_R" || name == "m_R" || name == "R_R" || name == "Sum_edge" || name == "inv_edge" ||
+                    name == "alpha" || name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp" || name == "Y_prime_star_edge" ||
+                    name == "widehat_y_star" || name == "w" || name == "T_edge" || name == "PSQ" || name == "Y_star_edge" || name == "Query_dst" ||
+                    name == "J_dst_edge" || name == "R_dst" || name == "Query_t" || name == "J_t_edge" || name == "R_t")
                 {
                     return std::string("edge");
                 }
@@ -449,15 +401,28 @@ namespace gatzk::protocol
                     return std::string("in");
                 if (name == "ModelBind_src_R" || name == "ModelBind_dst_R")
                     return std::string("d");
-                if (name == "a_src" || name == "b_src" || name == "Acc_src" || name == "a_dst" || name == "b_dst" || name == "Acc_dst" || name == "a_star" || name == "b_star" || name == "Acc_star" || name == "a_agg_pre" || name == "b_agg_pre" || name == "Acc_agg_pre" || name == "a_agg" || name == "b_agg" || name == "Acc_agg")
+                if (name == "a_src" || name == "b_src" || name == "Acc_src" || name == "a_dst" || name == "b_dst" || name == "Acc_dst" || name == "a_star" ||
+                    name == "b_star" || name == "Acc_star" || name == "a_agg_pre" || name == "b_agg_pre" || name == "Acc_agg_pre" || name == "a_agg" ||
+                    name == "b_agg" || name == "Acc_agg")
                 {
                     return std::string("d");
                 }
-                if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv" || name == "H_star" || name == "Table_src" || name == "m_src" || name == "J_src_node" || name == "R_src_node" || name == "H_agg_pre_star" || name == "T_psq" || name == "H_agg_star" || name == "Table_dst" || name == "m_dst" || name == "J_dst_node" || name == "R_dst_node" || name == "Table_t" || name == "m_t" || name == "J_t_node" || name == "R_t_node")
+                if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv" || name == "H_star" || name == "Table_src" ||
+                    name == "m_src" || name == "J_src_node" || name == "R_src_node" || name == "H_agg_pre_star" || name == "T_psq" || name == "H_agg_star" ||
+                    name == "Table_dst" || name == "m_dst" || name == "J_dst_node" || name == "R_dst_node" || name == "Table_t" || name == "m_t" ||
+                    name == "J_t_node" || name == "R_t_node")
                 {
                     return std::string("N");
                 }
-                if (name.rfind("Div_", 0) == 0 || name == "E_src_edge" || name == "E_dst_edge" || name == "H_src_star_edge" || name == "Query_src" || name == "J_src_edge" || name == "R_src" || name == "S" || name == "Z" || name == "Table_L" || name == "Query_L" || name == "m_L" || name == "R_L" || name == "M_edge" || name == "Delta" || name == "U" || name == "Sum_flat" || name == "Sum_edge" || name == "s_max" || name == "C_max" || name == "Table_R" || name == "Query_R" || name == "m_R" || name == "R_R" || name == "inv_edge" || name == "alpha" || name == "H_agg_pre_star_edge" || name == "H_agg_pre_flat" || name == "H_agg_num_flat" || name == "H_ELU_in_flat" || name == "H_agg_flat" || name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp" || name == "Table_ELU" || name == "Query_ELU" || name == "m_ELU" || name == "R_ELU" || name == "widehat_v_pre_star" || name == "w_psq" || name == "T_psq_edge" || name == "PSQ" || name == "H_agg_star_edge" || name == "Query_dst" || name == "J_dst_edge" || name == "R_dst" || name == "Query_t" || name == "J_t_edge" || name == "R_t")
+                if (name.rfind("Div_", 0) == 0 || name == "E_src_edge" || name == "E_dst_edge" || name == "H_src_star_edge" || name == "Query_src" ||
+                    name == "J_src_edge" || name == "R_src" || name == "S" || name == "Z" || name == "Table_L" || name == "Query_L" || name == "m_L" ||
+                    name == "R_L" || name == "M_edge" || name == "Delta" || name == "U" || name == "Sum_flat" || name == "Sum_edge" || name == "s_max" ||
+                    name == "C_max" || name == "Table_R" || name == "Query_R" || name == "m_R" || name == "R_R" || name == "inv_edge" || name == "alpha" ||
+                    name == "H_agg_pre_star_edge" || name == "H_agg_pre_flat" || name == "H_agg_num_flat" || name == "H_ELU_in_flat" || name == "H_agg_flat" ||
+                    name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp" || name == "Table_ELU" || name == "Query_ELU" ||
+                    name == "m_ELU" || name == "R_ELU" || name == "widehat_v_pre_star" || name == "w_psq" || name == "T_psq_edge" || name == "PSQ" ||
+                    name == "H_agg_star_edge" || name == "Query_dst" || name == "J_dst_edge" || name == "R_dst" || name == "Query_t" || name == "J_t_edge" ||
+                    name == "R_t")
                 {
                     return std::string("edge");
                 }
@@ -473,32 +438,19 @@ namespace gatzk::protocol
             return std::nullopt;
         }
 
-        std::optional<std::string>
-        dynamic_label_domain_name(
-            const ProtocolContext &context,
-            const std::string &label)
+        std::optional<std::string> dynamic_label_domain_name(const ProtocolContext &context, const std::string &label)
         {
-            const auto planned_domains =
-                planned_dynamic_label_domains(
-                    context);
+            const auto planned_domains = planned_dynamic_label_domains(context);
 
-            return dynamic_label_domain_name_with_plan_index(
-                context,
-                label,
-                planned_domains);
+            return dynamic_label_domain_name_with_plan_index(context, label, planned_domains);
         }
 
-        template <bool UsePrecomputedAlphaPowers>
-        class BasicQuotientAccumulator
+        template <bool UsePrecomputedAlphaPowers> class BasicQuotientAccumulator
         {
         public:
-            explicit BasicQuotientAccumulator(
-                const FieldElement &alpha,
-                bool track_first_nonzero = false,
-                const std::vector<FieldElement> *precomputed_alpha_powers = nullptr)
-                : alpha_(alpha.native()),
-                  track_first_nonzero_(track_first_nonzero),
-                  precomputed_alpha_powers_(precomputed_alpha_powers)
+            explicit BasicQuotientAccumulator(const FieldElement &alpha, bool track_first_nonzero = false,
+                                              const std::vector<FieldElement> *precomputed_alpha_powers = nullptr) :
+                alpha_(alpha.native()), track_first_nonzero_(track_first_nonzero), precomputed_alpha_powers_(precomputed_alpha_powers)
             {
                 power_ = 1;
                 sum_.clear();
@@ -520,9 +472,7 @@ namespace gatzk::protocol
                 }
                 else
                 {
-                    const auto &power = term_count_ < precomputed_alpha_powers_->size()
-                                            ? precomputed_alpha_powers_->at(term_count_).native()
-                                            : power_;
+                    const auto &power = term_count_ < precomputed_alpha_powers_->size() ? precomputed_alpha_powers_->at(term_count_).native() : power_;
                     mcl::Fr::mul(product, power, term.native());
                     mcl::Fr::add(sum_, sum_, product);
                     if (term_count_ + 1 >= precomputed_alpha_powers_->size())
@@ -533,20 +483,11 @@ namespace gatzk::protocol
                 ++term_count_;
             }
 
-            FieldElement value() const
-            {
-                return FieldElement::from_native(sum_);
-            }
+            FieldElement value() const { return FieldElement::from_native(sum_); }
 
-            std::optional<std::size_t> first_nonzero_term() const
-            {
-                return first_nonzero_term_;
-            }
+            std::optional<std::size_t> first_nonzero_term() const { return first_nonzero_term_; }
 
-            const FieldElement &first_nonzero_value() const
-            {
-                return first_nonzero_value_;
-            }
+            const FieldElement &first_nonzero_value() const { return first_nonzero_value_; }
 
         private:
             mcl::Fr alpha_;
@@ -562,76 +503,37 @@ namespace gatzk::protocol
         using QuotientAccumulator = BasicQuotientAccumulator<false>;
 
         template <class Scalar>
-        Scalar route_node_step(
-            const Scalar &next_value,
-            const Scalar &current_value,
-            const Scalar &table_value,
-            const FieldElement &beta,
-            const Scalar &q_valid,
-            const Scalar &multiplicity)
+        Scalar route_node_step(const Scalar &next_value, const Scalar &current_value, const Scalar &table_value, const FieldElement &beta,
+                               const Scalar &q_valid, const Scalar &multiplicity)
         {
-            return (next_value - current_value) *
-                       (table_value + beta) -
-                   q_valid * multiplicity;
+            return (next_value - current_value) * (table_value + beta) - q_valid * multiplicity;
         }
 
         template <class Scalar>
-        Scalar route_edge_step(
-            const Scalar &next_value,
-            const Scalar &current_value,
-            const Scalar &query_value,
-            const FieldElement &beta,
-            const Scalar &q_edge_valid)
+        Scalar route_edge_step(const Scalar &next_value, const Scalar &current_value, const Scalar &query_value, const FieldElement &beta,
+                               const Scalar &q_edge_valid)
         {
-            return (next_value - current_value) *
-                       (query_value + beta) -
-                   q_edge_valid;
+            return (next_value - current_value) * (query_value + beta) - q_edge_valid;
+        }
+
+        template <class Scalar> Scalar acc_step(const Scalar &next_value, const Scalar &current_value, const Scalar &a_value, const Scalar &b_value)
+        {
+            return next_value - current_value - a_value * b_value;
         }
 
         template <class Scalar>
-        Scalar acc_step(
-            const Scalar &next_value,
-            const Scalar &current_value,
-            const Scalar &a_value,
-            const Scalar &b_value)
+        Scalar psq_step(const Scalar &psq_next, const Scalar &psq_current, const Scalar &w_next, const Scalar &q_valid_next, const Scalar &q_new_next)
         {
-            return next_value -
-                   current_value -
-                   a_value * b_value;
+            const Scalar one = FieldElement::one();
+
+            return psq_next - ((one - q_valid_next) * psq_current + q_valid_next * (q_new_next * w_next + (one - q_new_next) * (psq_current + w_next)));
         }
 
-        template <class Scalar>
-        Scalar psq_step(
-            const Scalar &psq_next,
-            const Scalar &psq_current,
-            const Scalar &w_next,
-            const Scalar &q_valid_next,
-            const Scalar &q_new_next)
+        template <class Scalar> Scalar zero_on_unselected(const Scalar &selector, const Scalar &value)
         {
-            const Scalar one =
-                FieldElement::one();
+            const Scalar one = FieldElement::one();
 
-            return psq_next -
-                   ((one - q_valid_next) *
-                        psq_current +
-                    q_valid_next *
-                        (q_new_next *
-                             w_next +
-                         (one - q_new_next) *
-                             (psq_current +
-                              w_next)));
-        }
-
-        template <class Scalar>
-        Scalar zero_on_unselected(
-            const Scalar &selector,
-            const Scalar &value)
-        {
-            const Scalar one =
-                FieldElement::one();
-
-            return (one - selector) *
-                   value;
+            return (one - selector) * value;
         }
 
         struct SignedDivisionLimbLabelPlan
@@ -649,9 +551,7 @@ namespace gatzk::protocol
             std::array<std::vector<SignedDivisionLimbLabelPlan>, 5> decompositions;
         };
 
-        const SignedDivisionLabelPlan &signed_division_label_plan(
-            const std::string &prefix,
-            std::size_t range_bits)
+        const SignedDivisionLabelPlan &signed_division_label_plan(const std::string &prefix, std::size_t range_bits)
         {
             thread_local std::vector<SignedDivisionLabelPlan> cache;
             for (const auto &entry : cache)
@@ -661,33 +561,13 @@ namespace gatzk::protocol
             }
 
             constexpr std::array<std::string_view, 12> value_suffixes = {
-                "Active",
-                "X",
-                "D",
-                "Y",
-                "Sigma",
-                "Zero",
-                "A",
-                "A_inv",
-                "D_inv",
-                "Q",
-                "R",
-                "Delta",
+                "Active", "X", "D", "Y", "Sigma", "Zero", "A", "A_inv", "D_inv", "Q", "R", "Delta",
             };
             constexpr std::array<std::string_view, 5> decomposition_names = {
-                "A",
-                "DMinus1",
-                "Q",
-                "R",
-                "Delta",
+                "A", "DMinus1", "Q", "R", "Delta",
             };
             constexpr std::array<std::string_view, 6> range_columns = {
-                "Table",
-                "Query",
-                "m",
-                "J_tbl",
-                "J_qry",
-                "R",
+                "Table", "Query", "m", "J_tbl", "J_qry", "R",
             };
 
             SignedDivisionLabelPlan plan;
@@ -697,27 +577,19 @@ namespace gatzk::protocol
                 plan.values[index] = prefix + std::string(value_suffixes[index]);
 
             const auto limb_count = signed_division_limb_count(range_bits);
-            for (std::size_t value_index = 0;
-                 value_index < decomposition_names.size(); ++value_index)
+            for (std::size_t value_index = 0; value_index < decomposition_names.size(); ++value_index)
             {
                 auto &limbs = plan.decompositions[value_index];
                 limbs.reserve(limb_count);
                 for (std::size_t limb = 0; limb < limb_count; ++limb)
                 {
                     SignedDivisionLimbLabelPlan limb_plan;
-                    limb_plan.limb = signed_division_limb_label(
-                        prefix, decomposition_names[value_index], limb);
-                    for (std::size_t column = 0;
-                         column < range_columns.size(); ++column)
+                    limb_plan.limb = signed_division_limb_label(prefix, decomposition_names[value_index], limb);
+                    for (std::size_t column = 0; column < range_columns.size(); ++column)
                     {
-                        limb_plan.range[column] = signed_division_range_label(
-                            prefix,
-                            decomposition_names[value_index],
-                            limb,
-                            range_columns[column]);
+                        limb_plan.range[column] = signed_division_range_label(prefix, decomposition_names[value_index], limb, range_columns[column]);
                     }
-                    limb_plan.beta = signed_division_beta_name(
-                        prefix, decomposition_names[value_index], limb);
+                    limb_plan.beta = signed_division_beta_name(prefix, decomposition_names[value_index], limb);
                     limbs.push_back(std::move(limb_plan));
                 }
             }
@@ -725,33 +597,23 @@ namespace gatzk::protocol
             return cache.back();
         }
 
-        SignedDivisionEvaluationConstants
-        bind_signed_division_challenges(
-            const std::string &prefix,
-            std::size_t range_bits,
-            const std::map<std::string, FieldElement> &challenges)
+        SignedDivisionEvaluationConstants bind_signed_division_challenges(const std::string &prefix, std::size_t range_bits,
+                                                                          const std::map<std::string, FieldElement> &challenges)
         {
-            const auto &labels =
-                signed_division_label_plan(
-                    prefix,
-                    range_bits);
+            const auto &labels = signed_division_label_plan(prefix, range_bits);
 
             SignedDivisionEvaluationConstants out;
 
-            for (std::size_t value_index = 0;
-                 value_index < labels.decompositions.size();
-                 ++value_index)
+            for (std::size_t value_index = 0; value_index < labels.decompositions.size(); ++value_index)
             {
-                const auto &limbs =
-                    labels.decompositions[value_index];
+                const auto &limbs = labels.decompositions[value_index];
 
                 auto &betas = out.betas[value_index];
                 betas.reserve(limbs.size());
 
                 for (const auto &limb : limbs)
                 {
-                    betas.push_back(
-                        challenges.at(limb.beta));
+                    betas.push_back(challenges.at(limb.beta));
                 }
             }
 
@@ -759,50 +621,29 @@ namespace gatzk::protocol
         }
         class TEdgeProgramBuilder;
 
-        thread_local TEdgeProgramBuilder
-            *active_t_edge_program_builder =
-                nullptr;
+        thread_local TEdgeProgramBuilder *active_t_edge_program_builder = nullptr;
 
         class TEdgeProgramScalar
         {
         public:
-            TEdgeProgramScalar() =
-                default;
+            TEdgeProgramScalar() = default;
 
-            TEdgeProgramScalar(
-                TEdgeProgramBuilder *builder,
-                std::uint32_t node)
-                : builder_(builder),
-                  node_(node)
-            {
-            }
+            TEdgeProgramScalar(TEdgeProgramBuilder *builder, std::uint32_t node) : builder_(builder), node_(node) {}
 
-            TEdgeProgramScalar(
-                const FieldElement &value);
+            TEdgeProgramScalar(const FieldElement &value);
 
-            std::uint32_t node() const
-            {
-                return node_;
-            }
+            std::uint32_t node() const { return node_; }
 
-            TEdgeProgramBuilder *builder()
-                const
-            {
-                return builder_;
-            }
+            TEdgeProgramBuilder *builder() const { return builder_; }
 
-            TEdgeProgramScalar &operator+=(
-                const TEdgeProgramScalar &rhs);
+            TEdgeProgramScalar &operator+=(const TEdgeProgramScalar &rhs);
 
-            TEdgeProgramScalar &operator-=(
-                const TEdgeProgramScalar &rhs);
+            TEdgeProgramScalar &operator-=(const TEdgeProgramScalar &rhs);
 
-            TEdgeProgramScalar &operator*=(
-                const TEdgeProgramScalar &rhs);
+            TEdgeProgramScalar &operator*=(const TEdgeProgramScalar &rhs);
 
         private:
-            TEdgeProgramBuilder *builder_ =
-                nullptr;
+            TEdgeProgramBuilder *builder_ = nullptr;
 
             std::uint32_t node_ = 0;
         };
@@ -810,238 +651,124 @@ namespace gatzk::protocol
         class TEdgeProgramBuilder
         {
         public:
-            TEdgeProgramScalar constant(
-                const FieldElement &value)
+            TEdgeProgramScalar constant(const FieldElement &value)
             {
-                if (program_.constants.size() >
-                    std::numeric_limits<
-                        std::uint32_t>::max())
+                if (program_.constants.size() > std::numeric_limits<std::uint32_t>::max())
                 {
-                    throw std::runtime_error(
-                        "t_edge program constant "
-                        "index overflow");
+                    throw std::runtime_error("t_edge program constant "
+                                             "index overflow");
                 }
 
-                const auto constant_index =
-                    static_cast<std::uint32_t>(
-                        program_.constants
-                            .size());
+                const auto constant_index = static_cast<std::uint32_t>(program_.constants.size());
 
-                program_.constants.push_back(
-                    value);
+                program_.constants.push_back(value);
 
-                return make_node(
-                    TEdgeProgramOpcode::
-                        LoadConstant,
-                    0,
-                    0,
-                    constant_index);
+                return make_node(TEdgeProgramOpcode::LoadConstant, 0, 0, constant_index);
             }
 
-            TEdgeProgramScalar access(
-                const std::string &label,
-                bool rotated)
+            TEdgeProgramScalar access(const std::string &label, bool rotated)
             {
-                const auto key =
-                    label +
-                    (rotated
-                         ? "#rotated"
-                         : "#current");
+                const auto key = label + (rotated ? "#rotated" : "#current");
 
                 std::uint32_t access_index = 0;
 
-                if (const auto found =
-                        access_indices_.find(
-                            key);
-                    found !=
-                    access_indices_.end())
+                if (const auto found = access_indices_.find(key); found != access_indices_.end())
                 {
-                    access_index =
-                        found->second;
+                    access_index = found->second;
                 }
                 else
                 {
-                    if (program_.accesses.size() >
-                        std::numeric_limits<
-                            std::uint32_t>::max())
+                    if (program_.accesses.size() > std::numeric_limits<std::uint32_t>::max())
                     {
-                        throw std::runtime_error(
-                            "t_edge program access "
-                            "index overflow");
+                        throw std::runtime_error("t_edge program access "
+                                                 "index overflow");
                     }
 
-                    access_index =
-                        static_cast<
-                            std::uint32_t>(
-                            program_.accesses
-                                .size());
+                    access_index = static_cast<std::uint32_t>(program_.accesses.size());
 
-                    program_.accesses.push_back(
-                        TEdgeProgramAccess{
-                            .label = label,
-                            .rotated =
-                                rotated,
-                        });
+                    program_.accesses.push_back(TEdgeProgramAccess{
+                        .label = label,
+                        .rotated = rotated,
+                    });
 
-                    access_indices_.emplace(
-                        key,
-                        access_index);
+                    access_indices_.emplace(key, access_index);
                 }
 
-                return make_node(
-                    TEdgeProgramOpcode::
-                        LoadAccess,
-                    0,
-                    0,
-                    access_index);
+                return make_node(TEdgeProgramOpcode::LoadAccess, 0, 0, access_index);
             }
 
-            TEdgeProgramScalar
-            boundary_first()
+            TEdgeProgramScalar boundary_first() { return access("__t_edge_boundary_l0", false); }
+
+            TEdgeProgramScalar boundary_last() { return access("__t_edge_boundary_l0", true); }
+
+            TEdgeProgramScalar add(const TEdgeProgramScalar &lhs, const TEdgeProgramScalar &rhs)
             {
-                return access(
-                    "__t_edge_boundary_l0",
-                    false);
+                require_same_builder(lhs, rhs);
+
+                return make_node(TEdgeProgramOpcode::Add, lhs.node(), rhs.node(), 0);
             }
 
-            TEdgeProgramScalar
-            boundary_last()
+            TEdgeProgramScalar subtract(const TEdgeProgramScalar &lhs, const TEdgeProgramScalar &rhs)
             {
-                return access(
-                    "__t_edge_boundary_l0",
-                    true);
+                require_same_builder(lhs, rhs);
+
+                return make_node(TEdgeProgramOpcode::Subtract, lhs.node(), rhs.node(), 0);
             }
 
-            TEdgeProgramScalar add(
-                const TEdgeProgramScalar &lhs,
-                const TEdgeProgramScalar &rhs)
+            TEdgeProgramScalar multiply(const TEdgeProgramScalar &lhs, const TEdgeProgramScalar &rhs)
             {
-                require_same_builder(
-                    lhs,
-                    rhs);
+                require_same_builder(lhs, rhs);
 
-                return make_node(
-                    TEdgeProgramOpcode::Add,
-                    lhs.node(),
-                    rhs.node(),
-                    0);
+                return make_node(TEdgeProgramOpcode::Multiply, lhs.node(), rhs.node(), 0);
             }
 
-            TEdgeProgramScalar subtract(
-                const TEdgeProgramScalar &lhs,
-                const TEdgeProgramScalar &rhs)
-            {
-                require_same_builder(
-                    lhs,
-                    rhs);
-
-                return make_node(
-                    TEdgeProgramOpcode::
-                        Subtract,
-                    lhs.node(),
-                    rhs.node(),
-                    0);
-            }
-
-            TEdgeProgramScalar multiply(
-                const TEdgeProgramScalar &lhs,
-                const TEdgeProgramScalar &rhs)
-            {
-                require_same_builder(
-                    lhs,
-                    rhs);
-
-                return make_node(
-                    TEdgeProgramOpcode::
-                        Multiply,
-                    lhs.node(),
-                    rhs.node(),
-                    0);
-            }
-
-            TEdgeProgramScalar negate(
-                const TEdgeProgramScalar &value)
+            TEdgeProgramScalar negate(const TEdgeProgramScalar &value)
             {
                 require_builder(value);
 
-                return make_node(
-                    TEdgeProgramOpcode::Negate,
-                    value.node(),
-                    0,
-                    0);
+                return make_node(TEdgeProgramOpcode::Negate, value.node(), 0, 0);
             }
 
-            void append_term(
-                const TEdgeProgramScalar &term,
-                const FieldElement
-                    &alpha_scale)
+            void append_term(const TEdgeProgramScalar &term, const FieldElement &alpha_scale)
             {
                 require_builder(term);
 
                 TEdgeProgramTerm output;
 
-                output.instruction_begin =
-                    program_.instructions
-                        .size();
+                output.instruction_begin = program_.instructions.size();
 
                 std::size_t stack_depth = 0;
                 std::size_t maximum_depth = 0;
 
-                emit_node(
-                    term.node(),
-                    &output.required_accesses,
-                    &stack_depth,
-                    &maximum_depth);
+                emit_node(term.node(), &output.required_accesses, &stack_depth, &maximum_depth);
 
                 if (stack_depth != 1)
                 {
-                    throw std::runtime_error(
-                        "invalid t_edge postfix "
-                        "program stack");
+                    throw std::runtime_error("invalid t_edge postfix "
+                                             "program stack");
                 }
 
-                std::sort(
-                    output.required_accesses
-                        .begin(),
-                    output.required_accesses
-                        .end());
+                std::sort(output.required_accesses.begin(), output.required_accesses.end());
 
-                output.required_accesses.erase(
-                    std::unique(
-                        output.required_accesses
-                            .begin(),
-                        output.required_accesses
-                            .end()),
-                    output.required_accesses
-                        .end());
+                output.required_accesses.erase(std::unique(output.required_accesses.begin(), output.required_accesses.end()), output.required_accesses.end());
 
-                output.instruction_end =
-                    program_.instructions
-                        .size();
+                output.instruction_end = program_.instructions.size();
 
-                output.maximum_stack_depth =
-                    maximum_depth;
+                output.maximum_stack_depth = maximum_depth;
 
-                output.alpha_scale =
-                    alpha_scale;
+                output.alpha_scale = alpha_scale;
 
-                program_.maximum_stack_depth =
-                    std::max(
-                        program_
-                            .maximum_stack_depth,
-                        maximum_depth);
+                program_.maximum_stack_depth = std::max(program_.maximum_stack_depth, maximum_depth);
 
-                program_.terms.push_back(
-                    std::move(output));
+                program_.terms.push_back(std::move(output));
             }
 
             TEdgeBoundProgram finish()
             {
                 if (program_.terms.empty())
                 {
-                    throw std::runtime_error(
-                        "t_edge program has no "
-                        "constraint terms");
+                    throw std::runtime_error("t_edge program has no "
+                                             "constraint terms");
                 }
 
                 return std::move(program_);
@@ -1050,9 +777,7 @@ namespace gatzk::protocol
         private:
             struct Node
             {
-                TEdgeProgramOpcode opcode =
-                    TEdgeProgramOpcode::
-                        LoadConstant;
+                TEdgeProgramOpcode opcode = TEdgeProgramOpcode::LoadConstant;
 
                 std::uint32_t lhs = 0;
                 std::uint32_t rhs = 0;
@@ -1061,469 +786,271 @@ namespace gatzk::protocol
                 std::size_t stack_cost = 1;
             };
 
-            TEdgeProgramScalar make_node(
-                TEdgeProgramOpcode opcode,
-                std::uint32_t lhs,
-                std::uint32_t rhs,
-                std::uint32_t operand)
+            TEdgeProgramScalar make_node(TEdgeProgramOpcode opcode, std::uint32_t lhs, std::uint32_t rhs, std::uint32_t operand)
             {
-                if (nodes_.size() >
-                    std::numeric_limits<
-                        std::uint32_t>::max())
+                if (nodes_.size() > std::numeric_limits<std::uint32_t>::max())
                 {
-                    throw std::runtime_error(
-                        "t_edge program node "
-                        "index overflow");
+                    throw std::runtime_error("t_edge program node "
+                                             "index overflow");
                 }
 
                 std::size_t stack_cost = 1;
 
                 switch (opcode)
                 {
-                case TEdgeProgramOpcode::
-                    LoadAccess:
-                case TEdgeProgramOpcode::
-                    LoadConstant:
-                {
-                    stack_cost = 1;
-                    break;
-                }
-
-                case TEdgeProgramOpcode::
-                    Negate:
-                {
-                    if (lhs >= nodes_.size())
+                    case TEdgeProgramOpcode::LoadAccess:
+                    case TEdgeProgramOpcode::LoadConstant:
                     {
-                        throw std::runtime_error(
-                            "t_edge negate node dependency is invalid");
+                        stack_cost = 1;
+                        break;
                     }
 
-                    stack_cost =
-                        nodes_[lhs]
-                            .stack_cost;
-
-                    break;
-                }
-
-                case TEdgeProgramOpcode::
-                    Subtract:
-                {
-                    if (lhs >= nodes_.size() ||
-                        rhs >= nodes_.size())
+                    case TEdgeProgramOpcode::Negate:
                     {
-                        throw std::runtime_error(
-                            "t_edge subtraction node dependency is invalid");
+                        if (lhs >= nodes_.size())
+                        {
+                            throw std::runtime_error("t_edge negate node dependency is invalid");
+                        }
+
+                        stack_cost = nodes_[lhs].stack_cost;
+
+                        break;
                     }
 
-                    const auto lhs_cost =
-                        nodes_[lhs]
-                            .stack_cost;
-
-                    const auto rhs_cost =
-                        nodes_[rhs]
-                            .stack_cost;
-
-                    stack_cost =
-                        std::max(
-                            lhs_cost,
-                            std::size_t{1} +
-                                rhs_cost);
-
-                    break;
-                }
-
-                case TEdgeProgramOpcode::Add:
-                case TEdgeProgramOpcode::
-                    Multiply:
-                {
-                    if (lhs >= nodes_.size() ||
-                        rhs >= nodes_.size())
+                    case TEdgeProgramOpcode::Subtract:
                     {
-                        throw std::runtime_error(
-                            "t_edge commutative node dependency is invalid");
+                        if (lhs >= nodes_.size() || rhs >= nodes_.size())
+                        {
+                            throw std::runtime_error("t_edge subtraction node dependency is invalid");
+                        }
+
+                        const auto lhs_cost = nodes_[lhs].stack_cost;
+
+                        const auto rhs_cost = nodes_[rhs].stack_cost;
+
+                        stack_cost = std::max(lhs_cost, std::size_t{1} + rhs_cost);
+
+                        break;
                     }
 
-                    const auto lhs_cost =
-                        nodes_[lhs]
-                            .stack_cost;
+                    case TEdgeProgramOpcode::Add:
+                    case TEdgeProgramOpcode::Multiply:
+                    {
+                        if (lhs >= nodes_.size() || rhs >= nodes_.size())
+                        {
+                            throw std::runtime_error("t_edge commutative node dependency is invalid");
+                        }
 
-                    const auto rhs_cost =
-                        nodes_[rhs]
-                            .stack_cost;
+                        const auto lhs_cost = nodes_[lhs].stack_cost;
 
-                    const auto larger_cost =
-                        std::max(
-                            lhs_cost,
-                            rhs_cost);
+                        const auto rhs_cost = nodes_[rhs].stack_cost;
 
-                    const auto smaller_cost =
-                        std::min(
-                            lhs_cost,
-                            rhs_cost);
+                        const auto larger_cost = std::max(lhs_cost, rhs_cost);
 
-                    stack_cost =
-                        std::max(
-                            larger_cost,
-                            std::size_t{1} +
-                                smaller_cost);
+                        const auto smaller_cost = std::min(lhs_cost, rhs_cost);
 
-                    break;
-                }
+                        stack_cost = std::max(larger_cost, std::size_t{1} + smaller_cost);
+
+                        break;
+                    }
                 }
 
-                if (stack_cost >
-                    kMaximumProgramStackDepth)
+                if (stack_cost > kMaximumProgramStackDepth)
                 {
-                    throw std::runtime_error(
-                        "t_edge symbolic expression exceeds maximum CUDA stack depth");
+                    throw std::runtime_error("t_edge symbolic expression exceeds maximum CUDA stack depth");
                 }
 
-                const auto index =
-                    static_cast<std::uint32_t>(
-                        nodes_.size());
+                const auto index = static_cast<std::uint32_t>(nodes_.size());
 
-                nodes_.push_back(
-                    Node{
-                        .opcode = opcode,
-                        .lhs = lhs,
-                        .rhs = rhs,
-                        .operand = operand,
-                        .stack_cost =
-                            stack_cost,
-                    });
+                nodes_.push_back(Node{
+                    .opcode = opcode,
+                    .lhs = lhs,
+                    .rhs = rhs,
+                    .operand = operand,
+                    .stack_cost = stack_cost,
+                });
 
-                return TEdgeProgramScalar(
-                    this,
-                    index);
+                return TEdgeProgramScalar(this, index);
             }
 
-            void require_builder(
-                const TEdgeProgramScalar &value)
-                const
+            void require_builder(const TEdgeProgramScalar &value) const
             {
                 if (value.builder() != this)
                 {
-                    throw std::runtime_error(
-                        "t_edge program mixed "
-                        "different builders");
+                    throw std::runtime_error("t_edge program mixed "
+                                             "different builders");
                 }
             }
 
-            void require_same_builder(
-                const TEdgeProgramScalar &lhs,
-                const TEdgeProgramScalar &rhs)
-                const
+            void require_same_builder(const TEdgeProgramScalar &lhs, const TEdgeProgramScalar &rhs) const
             {
                 require_builder(lhs);
                 require_builder(rhs);
             }
 
-            void emit_node(
-                std::uint32_t node_index,
-                std::vector<std::uint32_t>
-                    *required_accesses,
-                std::size_t *stack_depth,
-                std::size_t *maximum_depth)
+            void emit_node(std::uint32_t node_index, std::vector<std::uint32_t> *required_accesses, std::size_t *stack_depth, std::size_t *maximum_depth)
             {
-                if (node_index >=
-                    nodes_.size())
+                if (node_index >= nodes_.size())
                 {
-                    throw std::runtime_error(
-                        "t_edge program node "
-                        "out of range");
+                    throw std::runtime_error("t_edge program node "
+                                             "out of range");
                 }
 
-                const auto &node =
-                    nodes_[node_index];
+                const auto &node = nodes_[node_index];
 
                 switch (node.opcode)
                 {
-                case TEdgeProgramOpcode::
-                    LoadAccess:
-                {
-                    program_.instructions
-                        .push_back(
-                            TEdgeProgramInstruction{
-                                .opcode =
-                                    node.opcode,
-                                .operand =
-                                    node.operand,
-                            });
-
-                    required_accesses->push_back(
-                        node.operand);
-
-                    ++*stack_depth;
-
-                    *maximum_depth =
-                        std::max(
-                            *maximum_depth,
-                            *stack_depth);
-
-                    return;
-                }
-
-                case TEdgeProgramOpcode::
-                    LoadConstant:
-                {
-                    program_.instructions
-                        .push_back(
-                            TEdgeProgramInstruction{
-                                .opcode =
-                                    node.opcode,
-                                .operand =
-                                    node.operand,
-                            });
-
-                    ++*stack_depth;
-
-                    *maximum_depth =
-                        std::max(
-                            *maximum_depth,
-                            *stack_depth);
-
-                    return;
-                }
-
-                case TEdgeProgramOpcode::
-                    Negate:
-                {
-                    emit_node(
-                        node.lhs,
-                        required_accesses,
-                        stack_depth,
-                        maximum_depth);
-
-                    program_.instructions
-                        .push_back(
-                            TEdgeProgramInstruction{
-                                .opcode =
-                                    node.opcode,
-                                .operand = 0,
-                            });
-
-                    return;
-                }
-
-                case TEdgeProgramOpcode::
-                    Subtract:
-                {
-                    emit_node(
-                        node.lhs,
-                        required_accesses,
-                        stack_depth,
-                        maximum_depth);
-
-                    emit_node(
-                        node.rhs,
-                        required_accesses,
-                        stack_depth,
-                        maximum_depth);
-
-                    if (*stack_depth < 2)
+                    case TEdgeProgramOpcode::LoadAccess:
                     {
-                        throw std::runtime_error(
-                            "invalid t_edge "
-                            "binary expression "
-                            "stack");
+                        program_.instructions.push_back(TEdgeProgramInstruction{
+                            .opcode = node.opcode,
+                            .operand = node.operand,
+                        });
+
+                        required_accesses->push_back(node.operand);
+
+                        ++*stack_depth;
+
+                        *maximum_depth = std::max(*maximum_depth, *stack_depth);
+
+                        return;
                     }
 
-                    --*stack_depth;
-
-                    program_.instructions
-                        .push_back(
-                            TEdgeProgramInstruction{
-                                .opcode =
-                                    node.opcode,
-                                .operand = 0,
-                            });
-
-                    return;
-                }
-
-                case TEdgeProgramOpcode::Add:
-                case TEdgeProgramOpcode::
-                    Multiply:
-                {
-                    auto first_node =
-                        node.lhs;
-
-                    auto second_node =
-                        node.rhs;
-
-                    if (nodes_[second_node]
-                            .stack_cost >
-                        nodes_[first_node]
-                            .stack_cost)
+                    case TEdgeProgramOpcode::LoadConstant:
                     {
-                        std::swap(
-                            first_node,
-                            second_node);
+                        program_.instructions.push_back(TEdgeProgramInstruction{
+                            .opcode = node.opcode,
+                            .operand = node.operand,
+                        });
+
+                        ++*stack_depth;
+
+                        *maximum_depth = std::max(*maximum_depth, *stack_depth);
+
+                        return;
                     }
 
-                    emit_node(
-                        first_node,
-                        required_accesses,
-                        stack_depth,
-                        maximum_depth);
-
-                    emit_node(
-                        second_node,
-                        required_accesses,
-                        stack_depth,
-                        maximum_depth);
-
-                    if (*stack_depth < 2)
+                    case TEdgeProgramOpcode::Negate:
                     {
-                        throw std::runtime_error(
-                            "invalid t_edge "
-                            "binary expression "
-                            "stack");
+                        emit_node(node.lhs, required_accesses, stack_depth, maximum_depth);
+
+                        program_.instructions.push_back(TEdgeProgramInstruction{
+                            .opcode = node.opcode,
+                            .operand = 0,
+                        });
+
+                        return;
                     }
 
-                    --*stack_depth;
+                    case TEdgeProgramOpcode::Subtract:
+                    {
+                        emit_node(node.lhs, required_accesses, stack_depth, maximum_depth);
 
-                    program_.instructions
-                        .push_back(
-                            TEdgeProgramInstruction{
-                                .opcode =
-                                    node.opcode,
-                                .operand = 0,
-                            });
+                        emit_node(node.rhs, required_accesses, stack_depth, maximum_depth);
 
-                    return;
-                }
+                        if (*stack_depth < 2)
+                        {
+                            throw std::runtime_error("invalid t_edge "
+                                                     "binary expression "
+                                                     "stack");
+                        }
+
+                        --*stack_depth;
+
+                        program_.instructions.push_back(TEdgeProgramInstruction{
+                            .opcode = node.opcode,
+                            .operand = 0,
+                        });
+
+                        return;
+                    }
+
+                    case TEdgeProgramOpcode::Add:
+                    case TEdgeProgramOpcode::Multiply:
+                    {
+                        auto first_node = node.lhs;
+
+                        auto second_node = node.rhs;
+
+                        if (nodes_[second_node].stack_cost > nodes_[first_node].stack_cost)
+                        {
+                            std::swap(first_node, second_node);
+                        }
+
+                        emit_node(first_node, required_accesses, stack_depth, maximum_depth);
+
+                        emit_node(second_node, required_accesses, stack_depth, maximum_depth);
+
+                        if (*stack_depth < 2)
+                        {
+                            throw std::runtime_error("invalid t_edge "
+                                                     "binary expression "
+                                                     "stack");
+                        }
+
+                        --*stack_depth;
+
+                        program_.instructions.push_back(TEdgeProgramInstruction{
+                            .opcode = node.opcode,
+                            .operand = 0,
+                        });
+
+                        return;
+                    }
                 }
             }
 
             std::vector<Node> nodes_;
 
-            std::unordered_map<
-                std::string,
-                std::uint32_t>
-                access_indices_;
+            std::unordered_map<std::string, std::uint32_t> access_indices_;
 
             TEdgeBoundProgram program_;
         };
 
-        TEdgeProgramScalar::
-            TEdgeProgramScalar(
-                const FieldElement &value)
+        TEdgeProgramScalar::TEdgeProgramScalar(const FieldElement &value)
         {
-            if (active_t_edge_program_builder ==
-                nullptr)
+            if (active_t_edge_program_builder == nullptr)
             {
-                throw std::runtime_error(
-                    "t_edge symbolic constant "
-                    "created without builder");
+                throw std::runtime_error("t_edge symbolic constant "
+                                         "created without builder");
             }
 
-            *this =
-                active_t_edge_program_builder
-                    ->constant(value);
+            *this = active_t_edge_program_builder->constant(value);
         }
 
-        TEdgeProgramScalar operator+(
-            const TEdgeProgramScalar &lhs,
-            const TEdgeProgramScalar &rhs)
-        {
-            return lhs.builder()->add(
-                lhs,
-                rhs);
-        }
+        TEdgeProgramScalar operator+(const TEdgeProgramScalar &lhs, const TEdgeProgramScalar &rhs) { return lhs.builder()->add(lhs, rhs); }
 
-        TEdgeProgramScalar operator-(
-            const TEdgeProgramScalar &lhs,
-            const TEdgeProgramScalar &rhs)
-        {
-            return lhs.builder()->subtract(
-                lhs,
-                rhs);
-        }
+        TEdgeProgramScalar operator-(const TEdgeProgramScalar &lhs, const TEdgeProgramScalar &rhs) { return lhs.builder()->subtract(lhs, rhs); }
 
-        TEdgeProgramScalar operator*(
-            const TEdgeProgramScalar &lhs,
-            const TEdgeProgramScalar &rhs)
-        {
-            return lhs.builder()->multiply(
-                lhs,
-                rhs);
-        }
+        TEdgeProgramScalar operator*(const TEdgeProgramScalar &lhs, const TEdgeProgramScalar &rhs) { return lhs.builder()->multiply(lhs, rhs); }
 
-        TEdgeProgramScalar operator-(
-            const TEdgeProgramScalar &value)
-        {
-            return value.builder()->negate(
-                value);
-        }
+        TEdgeProgramScalar operator-(const TEdgeProgramScalar &value) { return value.builder()->negate(value); }
 
-        TEdgeProgramScalar operator+(
-            const TEdgeProgramScalar &lhs,
-            const FieldElement &rhs)
-        {
-            return lhs +
-                   TEdgeProgramScalar(rhs);
-        }
+        TEdgeProgramScalar operator+(const TEdgeProgramScalar &lhs, const FieldElement &rhs) { return lhs + TEdgeProgramScalar(rhs); }
 
-        TEdgeProgramScalar operator+(
-            const FieldElement &lhs,
-            const TEdgeProgramScalar &rhs)
-        {
-            return TEdgeProgramScalar(lhs) +
-                   rhs;
-        }
+        TEdgeProgramScalar operator+(const FieldElement &lhs, const TEdgeProgramScalar &rhs) { return TEdgeProgramScalar(lhs) + rhs; }
 
-        TEdgeProgramScalar operator-(
-            const TEdgeProgramScalar &lhs,
-            const FieldElement &rhs)
-        {
-            return lhs -
-                   TEdgeProgramScalar(rhs);
-        }
+        TEdgeProgramScalar operator-(const TEdgeProgramScalar &lhs, const FieldElement &rhs) { return lhs - TEdgeProgramScalar(rhs); }
 
-        TEdgeProgramScalar operator-(
-            const FieldElement &lhs,
-            const TEdgeProgramScalar &rhs)
-        {
-            return TEdgeProgramScalar(lhs) -
-                   rhs;
-        }
+        TEdgeProgramScalar operator-(const FieldElement &lhs, const TEdgeProgramScalar &rhs) { return TEdgeProgramScalar(lhs) - rhs; }
 
-        TEdgeProgramScalar operator*(
-            const TEdgeProgramScalar &lhs,
-            const FieldElement &rhs)
-        {
-            return lhs *
-                   TEdgeProgramScalar(rhs);
-        }
+        TEdgeProgramScalar operator*(const TEdgeProgramScalar &lhs, const FieldElement &rhs) { return lhs * TEdgeProgramScalar(rhs); }
 
-        TEdgeProgramScalar operator*(
-            const FieldElement &lhs,
-            const TEdgeProgramScalar &rhs)
-        {
-            return TEdgeProgramScalar(lhs) *
-                   rhs;
-        }
+        TEdgeProgramScalar operator*(const FieldElement &lhs, const TEdgeProgramScalar &rhs) { return TEdgeProgramScalar(lhs) * rhs; }
 
-        TEdgeProgramScalar &
-        TEdgeProgramScalar::operator+=(
-            const TEdgeProgramScalar &rhs)
+        TEdgeProgramScalar &TEdgeProgramScalar::operator+=(const TEdgeProgramScalar &rhs)
         {
             *this = *this + rhs;
             return *this;
         }
 
-        TEdgeProgramScalar &
-        TEdgeProgramScalar::operator-=(
-            const TEdgeProgramScalar &rhs)
+        TEdgeProgramScalar &TEdgeProgramScalar::operator-=(const TEdgeProgramScalar &rhs)
         {
             *this = *this - rhs;
             return *this;
         }
 
-        TEdgeProgramScalar &
-        TEdgeProgramScalar::operator*=(
-            const TEdgeProgramScalar &rhs)
+        TEdgeProgramScalar &TEdgeProgramScalar::operator*=(const TEdgeProgramScalar &rhs)
         {
             *this = *this * rhs;
             return *this;
@@ -1532,59 +1059,34 @@ namespace gatzk::protocol
         class TEdgeProgramQuotientAccumulator
         {
         public:
-            explicit TEdgeProgramQuotientAccumulator(
-                const FieldElement &alpha,
-                bool,
-                const std::vector<
-                    FieldElement> *)
-                : builder_(
-                      active_t_edge_program_builder),
-                  alpha_(alpha),
-                  alpha_power_(
-                      FieldElement::one())
+            explicit TEdgeProgramQuotientAccumulator(const FieldElement &alpha, bool, const std::vector<FieldElement> *) :
+                builder_(active_t_edge_program_builder), alpha_(alpha), alpha_power_(FieldElement::one())
             {
                 if (builder_ == nullptr)
                 {
-                    throw std::runtime_error(
-                        "t_edge symbolic "
-                        "accumulator has no "
-                        "builder");
+                    throw std::runtime_error("t_edge symbolic "
+                                             "accumulator has no "
+                                             "builder");
                 }
             }
 
-            void add(
-                const TEdgeProgramScalar &term)
+            void add(const TEdgeProgramScalar &term)
             {
-                builder_->append_term(
-                    term,
-                    alpha_power_);
+                builder_->append_term(term, alpha_power_);
 
                 alpha_power_ *= alpha_;
 
                 ++term_count_;
             }
 
-            TEdgeProgramScalar value() const
-            {
-                return TEdgeProgramScalar(
-                    FieldElement::zero());
-            }
+            TEdgeProgramScalar value() const { return TEdgeProgramScalar(FieldElement::zero()); }
 
-            std::optional<std::size_t>
-            first_nonzero_term() const
-            {
-                return std::nullopt;
-            }
+            std::optional<std::size_t> first_nonzero_term() const { return std::nullopt; }
 
-            FieldElement
-            first_nonzero_value() const
-            {
-                return FieldElement::zero();
-            }
+            FieldElement first_nonzero_value() const { return FieldElement::zero(); }
 
         private:
-            TEdgeProgramBuilder *builder_ =
-                nullptr;
+            TEdgeProgramBuilder *builder_ = nullptr;
 
             FieldElement alpha_;
 
@@ -1595,53 +1097,34 @@ namespace gatzk::protocol
 
     }
 
-    std::shared_ptr<const TEdgeEvaluationPlan>
-    build_t_edge_evaluation_plan(
-        const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges)
+    std::shared_ptr<const TEdgeEvaluationPlan> build_t_edge_evaluation_plan(const ProtocolContext &context,
+                                                                            const std::map<std::string, FieldElement> &challenges)
     {
         auto plan = std::make_shared<TEdgeEvaluationPlan>();
 
-        plan->alpha_quot =
-            challenges.at("alpha_quot");
+        plan->alpha_quot = challenges.at("alpha_quot");
 
-        plan->y_out =
-            challenges.at("y_out");
+        plan->y_out = challenges.at("y_out");
 
-        plan->binding_metadata =
-            build_binding_relation_metadata(context);
+        plan->binding_metadata = build_binding_relation_metadata(context);
         plan->hidden_head_constants.resize(context.model.hidden_layers.size());
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
+        for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
             const auto &layer = context.model.hidden_layers[layer_index];
             auto &layer_constants = plan->hidden_head_constants.at(layer_index);
             layer_constants.reserve(layer.heads.size());
-            for (std::size_t local_head_index = 0;
-                 local_head_index < layer.heads.size();
-                 ++local_head_index)
+            for (std::size_t local_head_index = 0; local_head_index < layer.heads.size(); ++local_head_index)
             {
                 HiddenHeadEvaluationConstants constants;
                 constants.layer_index = layer_index;
                 constants.local_head_index = local_head_index;
-                const auto challenge = [&](std::string_view base)
-                {
-                    return hidden_challenge_name(base, layer_index, local_head_index);
-                };
+                const auto challenge = [&](std::string_view base) { return hidden_challenge_name(base, layer_index, local_head_index); };
                 constants.prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
                 constants.division_prefix = constants.prefix + "Div_";
                 constants.division_selector = hidden_q_nd_h_selector_label(layer_index);
 
-                constants.division =
-                    bind_signed_division_challenges(
-                        constants.division_prefix,
-                        context.config.range_bits,
-                        challenges);
+                constants.division = bind_signed_division_challenges(constants.division_prefix, context.config.range_bits, challenges);
 
-                // Q_Nd_h is the sole layer-scoped edge selector for hidden
-                // aggregation/ELU queries, including layers whose width happens
-                // to equal the configured maximum.
                 constants.elu_query_selector = constants.division_selector;
                 constants.beta_src = challenges.at(challenge("beta_src_h"));
                 constants.beta_dst = challenges.at(challenge("beta_dst_h"));
@@ -1665,124 +1148,75 @@ namespace gatzk::protocol
             }
         }
         plan->output_heads.reserve(context.model.output_layer.heads.size());
-        for (std::size_t head_index = 0;
-             head_index < context.model.output_layer.heads.size(); ++head_index)
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
             OutputHeadEvaluationConstants constants;
-            constants.prefix =
-                output_head_prefix(head_index) + "_";
+            constants.prefix = output_head_prefix(head_index) + "_";
 
-            constants.division_prefix =
-                constants.prefix + "Div_";
+            constants.division_prefix = constants.prefix + "Div_";
 
-            constants.division_selector =
-                "P_Q_div_out" + std::to_string(head_index);
+            constants.division_selector = "P_Q_div_out" + std::to_string(head_index);
 
-            constants.division =
-                bind_signed_division_challenges(
-                    constants.division_prefix,
-                    context.config.range_bits,
-                    challenges);
+            constants.division = bind_signed_division_challenges(constants.division_prefix, context.config.range_bits, challenges);
 
-            constants.binding_prefix =
-                constants.prefix + "Bind_";
+            constants.binding_prefix = constants.prefix + "Bind_";
             constants.y_flat_label = constants.prefix + "Y_flat";
-            constants.external_y_name =
-                output_external_eval_name("y", head_index);
+            constants.external_y_name = output_external_eval_name("y", head_index);
             constants.view_prefix = output_bias_view_prefix(head_index);
-            constants.power_label =
-                output_bias_basis_label(head_index, "Powers");
-            constants.beta_src = challenges.at(
-                output_challenge_name("beta_src_out", head_index));
-            constants.beta_dst = challenges.at(
-                output_challenge_name("beta_dst_out", head_index));
-            constants.eta_src = challenges.at(
-                output_challenge_name("eta_src_out", head_index));
-            constants.eta_dst = challenges.at(
-                output_challenge_name("eta_dst_out", head_index));
+            constants.power_label = output_bias_basis_label(head_index, "Powers");
+            constants.beta_src = challenges.at(output_challenge_name("beta_src_out", head_index));
+            constants.beta_dst = challenges.at(output_challenge_name("beta_dst_out", head_index));
+            constants.eta_src = challenges.at(output_challenge_name("eta_src_out", head_index));
+            constants.eta_dst = challenges.at(output_challenge_name("eta_dst_out", head_index));
             constants.eta_dst_sq = constants.eta_dst * constants.eta_dst;
             constants.eta_dst_cu = constants.eta_dst_sq * constants.eta_dst;
             constants.eta_dst_4 = constants.eta_dst_cu * constants.eta_dst;
             constants.eta_dst_5 = constants.eta_dst_4 * constants.eta_dst;
-            constants.beta_l = challenges.at(
-                output_challenge_name("beta_L_out", head_index));
-            constants.eta_l = challenges.at(
-                output_challenge_name("eta_L_out", head_index));
-            constants.beta_r = challenges.at(
-                output_challenge_name("beta_R_out", head_index));
-            constants.beta_exp = challenges.at(
-                output_challenge_name("beta_exp_out", head_index));
-            constants.eta_exp = challenges.at(
-                output_challenge_name("eta_exp_out", head_index));
-            constants.beta_t = challenges.at(
-                output_challenge_name("beta_t_out", head_index));
-            constants.eta_t = challenges.at(
-                output_challenge_name("eta_t_out", head_index));
-            constants.beta_view = challenges.at(
-                output_bias_view_beta_label(head_index));
-            constants.eta_view = challenges.at(
-                output_bias_view_eta_label(head_index));
-            constants.gamma = challenges.at(
-                output_bias_basis_gamma_label(head_index));
-            const auto basis_layout = coefficient_chunk_layout(
-                context.local.num_classes + registered_blinder_coefficient_count(
-                                                context,
-                                                output_bias_basis_label(head_index, "Coeff")),
-                context.domains.edge->size);
+            constants.beta_l = challenges.at(output_challenge_name("beta_L_out", head_index));
+            constants.eta_l = challenges.at(output_challenge_name("eta_L_out", head_index));
+            constants.beta_r = challenges.at(output_challenge_name("beta_R_out", head_index));
+            constants.beta_exp = challenges.at(output_challenge_name("beta_exp_out", head_index));
+            constants.eta_exp = challenges.at(output_challenge_name("eta_exp_out", head_index));
+            constants.beta_t = challenges.at(output_challenge_name("beta_t_out", head_index));
+            constants.eta_t = challenges.at(output_challenge_name("eta_t_out", head_index));
+            constants.beta_view = challenges.at(output_bias_view_beta_label(head_index));
+            constants.eta_view = challenges.at(output_bias_view_eta_label(head_index));
+            constants.gamma = challenges.at(output_bias_basis_gamma_label(head_index));
+            const auto basis_layout = coefficient_chunk_layout(context.local.num_classes +
+                                                                   registered_blinder_coefficient_count(context, output_bias_basis_label(head_index, "Coeff")),
+                                                               context.domains.edge->size);
             constants.basis_chunks.reserve(basis_layout.size());
             for (const auto &chunk : basis_layout)
             {
                 OutputHeadEvaluationConstants::BasisChunkLabels labels;
-                labels.value = output_bias_basis_chunk_label(
-                    head_index, chunk.chunk_index);
-                labels.active_selector =
-                    output_bias_basis_region_selector_label(
-                        head_index, chunk.chunk_index, "active");
-                labels.semantic_selector =
-                    output_bias_basis_region_selector_label(
-                        head_index, chunk.chunk_index, "semantic");
-                labels.gap_selector =
-                    output_bias_basis_region_selector_label(
-                        head_index, chunk.chunk_index, "gap");
-                labels.tail_selector =
-                    output_bias_basis_region_selector_label(
-                        head_index, chunk.chunk_index, "tail");
-                labels.accumulator =
-                    output_bias_basis_chunk_accumulator_label(
-                        head_index, chunk.chunk_index);
+                labels.value = output_bias_basis_chunk_label(head_index, chunk.chunk_index);
+                labels.active_selector = output_bias_basis_region_selector_label(head_index, chunk.chunk_index, "active");
+                labels.semantic_selector = output_bias_basis_region_selector_label(head_index, chunk.chunk_index, "semantic");
+                labels.gap_selector = output_bias_basis_region_selector_label(head_index, chunk.chunk_index, "gap");
+                labels.tail_selector = output_bias_basis_region_selector_label(head_index, chunk.chunk_index, "tail");
+                labels.accumulator = output_bias_basis_chunk_accumulator_label(head_index, chunk.chunk_index);
                 constants.basis_chunks.push_back(std::move(labels));
             }
-            plan->output_heads.push_back(
-                std::move(constants));
+            plan->output_heads.push_back(std::move(constants));
         }
 
-        plan->average_division =
-            bind_signed_division_challenges(
-                "P_avg_Div_",
-                context.config.range_bits,
-                challenges);
+        plan->average_division = bind_signed_division_challenges("P_avg_Div_", context.config.range_bits, challenges);
 
         return plan;
     }
 
-    std::optional<std::string> dynamic_commitment_domain_name(
-        const ProtocolContext &context,
-        const std::string &label)
+    std::optional<std::string> dynamic_commitment_domain_name(const ProtocolContext &context, const std::string &label)
     {
         if (label.ends_with("_ExternalMask"))
             return std::string("N");
         return dynamic_label_domain_name(context, label);
     }
 
-    FieldElement evaluate_barycentric_weight_column(
-        const algebra::RootOfUnityDomain &domain,
-        const FieldElement &row_point,
-        const FieldElement &point)
+    FieldElement evaluate_barycentric_weight_column(const algebra::RootOfUnityDomain &domain, const FieldElement &row_point, const FieldElement &point)
     {
         if (domain.size == 0)
         {
-            throw std::runtime_error(
-                "empty barycentric-weight domain");
+            throw std::runtime_error("empty barycentric-weight domain");
         }
 
         if (domain.size == 1)
@@ -1793,9 +1227,7 @@ namespace gatzk::protocol
         auto accumulator = row_point;
         auto row_power = row_point;
 
-        for (std::size_t exponent = 2;
-             exponent <= domain.size - 1;
-             ++exponent)
+        for (std::size_t exponent = 2; exponent <= domain.size - 1; ++exponent)
         {
             accumulator *= point;
             row_power *= row_point;
@@ -1808,16 +1240,12 @@ namespace gatzk::protocol
         return accumulator * domain.inv_size;
     }
 
-    FieldElement geometric_sum(
-        const FieldElement &base,
-        std::size_t count)
+    FieldElement geometric_sum(const FieldElement &base, std::size_t count)
     {
         auto out = FieldElement::zero();
         auto power = FieldElement::one();
 
-        for (std::size_t index = 0;
-             index < count;
-             ++index)
+        for (std::size_t index = 0; index < count; ++index)
         {
             out += power;
             power *= base;
@@ -1826,14 +1254,9 @@ namespace gatzk::protocol
         return out;
     }
 
-    FieldElement evaluate_geometric_power_column(
-        const algebra::RootOfUnityDomain &domain,
-        const FieldElement &gamma,
-        const FieldElement &point)
+    FieldElement evaluate_geometric_power_column(const algebra::RootOfUnityDomain &domain, const FieldElement &gamma, const FieldElement &point)
     {
-        if (const auto index = domain.rotation_shift(
-                FieldElement::one(), point);
-            index.has_value())
+        if (const auto index = domain.rotation_shift(FieldElement::one(), point); index.has_value())
             return gamma.pow(*index);
 
         const auto weights = domain.barycentric_weights(point);
@@ -1847,234 +1270,126 @@ namespace gatzk::protocol
         return value;
     }
 
-    DomainOpeningLabelRegistry
-    build_domain_opening_label_registry(
-        const ProtocolContext &context)
+    DomainOpeningLabelRegistry build_domain_opening_label_registry(const ProtocolContext &context)
     {
-        DomainOpeningLabelRegistry
-            labels_by_domain;
+        DomainOpeningLabelRegistry labels_by_domain;
 
-        for (const auto *domain : {
-                 "FH",
-                 "edge",
-                 "in",
-                 "d",
-                 "cat",
-                 "C",
-                 "N",
-                 "coef"})
+        for (const auto *domain : {"FH", "edge", "in", "d", "cat", "C", "N", "coef"})
         {
-            labels_by_domain.try_emplace(
-                domain);
+            labels_by_domain.try_emplace(domain);
         }
 
-        const auto planned_domains =
-            planned_dynamic_label_domains(
-                context);
+        const auto planned_domains = planned_dynamic_label_domains(context);
 
-        auto dynamic_labels =
-            dynamic_commitment_labels(
-                context);
+        auto dynamic_labels = dynamic_commitment_labels(context);
 
-        for (auto &label :
-             dynamic_labels)
+        for (auto &label : dynamic_labels)
         {
-            if (label.find(
-                    "_ScoreMask_") !=
-                    std::string::npos ||
-                label.ends_with(
-                    "_ExternalMask"))
+            if (label.find("_ScoreMask_") != std::string::npos || label.ends_with("_ExternalMask"))
             {
                 continue;
             }
 
-            const auto mapped =
-                dynamic_label_domain_name_with_plan_index(
-                    context,
-                    label,
-                    planned_domains);
+            const auto mapped = dynamic_label_domain_name_with_plan_index(context, label, planned_domains);
 
             if (!mapped.has_value())
             {
                 continue;
             }
 
-            labels_by_domain[*mapped]
-                .push_back(
-                    std::move(label));
+            labels_by_domain[*mapped].push_back(std::move(label));
         }
 
-        const auto binding_metadata =
-            build_binding_relation_metadata(
-                context);
+        const auto binding_metadata = build_binding_relation_metadata(context);
 
-        auto &c_labels =
-            labels_by_domain["C"];
+        auto &c_labels = labels_by_domain["C"];
 
-        auto &edge_labels =
-            labels_by_domain["edge"];
+        auto &edge_labels = labels_by_domain["edge"];
 
-        // Pi_bind-owned indexed-view claims share the same domain point groups
-        // and witnesses as ordinary trace claims, but their values are encoded
-        // by Eval_bind rather than duplicated in Eval_dom.
-        for (std::size_t head = 0;
-             head <
-             context.model.output_layer.heads
-                 .size();
-             ++head)
+        for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
         {
-            c_labels.push_back(
-                model_proof_local_label(
-                    output_bias_label(
-                        head)));
+            c_labels.push_back(model_proof_local_label(output_bias_label(head)));
 
-            for (const auto *suffix : {
-                     "Table_can",
-                     "m_can",
-                     "J_can",
-                     "R_can"})
+            for (const auto *suffix : {"Table_can", "m_can", "J_can", "R_can"})
             {
-                c_labels.push_back(
-                    output_bias_view_label(
-                        head,
-                        suffix));
+                c_labels.push_back(output_bias_view_label(head, suffix));
             }
 
-            for (const auto *suffix : {
-                     "Query",
-                     "J_qry",
-                     "R_qry"})
+            for (const auto *suffix : {"Query", "J_qry", "R_qry"})
             {
-                edge_labels.push_back(
-                    output_bias_view_label(
-                        head,
-                        suffix));
+                edge_labels.push_back(output_bias_view_label(head, suffix));
             }
 
-            const auto relation_id =
-                "bind:output:" +
-                std::to_string(
-                    head);
+            const auto relation_id = "bind:output:" + std::to_string(head);
 
-            const auto relation =
-                std::find_if(
-                    binding_metadata.begin(),
-                    binding_metadata.end(),
-                    [&](const BindingRelationMeta
-                            &candidate)
-                    {
-                        return candidate
-                                   .relation_id ==
-                               relation_id;
-                    });
+            const auto relation = std::find_if(binding_metadata.begin(), binding_metadata.end(),
+                                               [&](const BindingRelationMeta &candidate) { return candidate.relation_id == relation_id; });
 
-            if (relation ==
-                    binding_metadata.end() ||
-                relation
-                        ->coefficient_basis_relations
-                        .size() != 1)
+            if (relation == binding_metadata.end() || relation->coefficient_basis_relations.size() != 1)
             {
-                throw std::runtime_error(
-                    "domain opening registry is missing coefficient basis metadata");
+                throw std::runtime_error("domain opening registry is missing coefficient basis metadata");
             }
 
-            const auto &basis =
-                relation
-                    ->coefficient_basis_relations
-                    .front();
+            const auto &basis = relation->coefficient_basis_relations.front();
 
-            for (const auto &chunk :
-                 basis.chunks)
+            for (const auto &chunk : basis.chunks)
             {
-                edge_labels.push_back(
-                    chunk.object_id);
+                edge_labels.push_back(chunk.object_id);
 
-                edge_labels.push_back(
-                    chunk.accumulator_object);
+                edge_labels.push_back(chunk.accumulator_object);
             }
         }
 
-        auto &n_labels =
-            labels_by_domain[context.domains.n->name];
+        auto &n_labels = labels_by_domain[context.domains.n->name];
 
-        for (const auto &binding :
-             binding_metadata)
+        for (const auto &binding : binding_metadata)
         {
-            for (const auto &matrix :
-                 binding.canonical_matrices)
+            for (const auto &matrix : binding.canonical_matrices)
             {
-                if (matrix.canonical_domain !=
-                    context.domains.n->name)
+                if (matrix.canonical_domain != context.domains.n->name)
                 {
-                    throw std::runtime_error(
-                        "canonical matrix registered on unsupported domain: " +
-                        matrix.relation_id);
+                    throw std::runtime_error("canonical matrix registered on unsupported domain: " + matrix.relation_id);
                 }
 
-                n_labels.insert(
-                    n_labels.end(),
-                    matrix.column_objects.begin(),
-                    matrix.column_objects.end());
+                n_labels.insert(n_labels.end(), matrix.column_objects.begin(), matrix.column_objects.end());
 
-                n_labels.push_back(
-                    matrix.compressed_object);
+                n_labels.push_back(matrix.compressed_object);
             }
         }
 
-        for (const auto &binding :
-             binding_metadata)
+        for (const auto &binding : binding_metadata)
         {
-            for (const auto &relation :
-                 binding.aggregation_relations)
+            for (const auto &relation : binding.aggregation_relations)
             {
-                auto &node_labels =
-                    labels_by_domain[relation.node_domain];
+                auto &node_labels = labels_by_domain[relation.node_domain];
 
-                node_labels.push_back(
-                    relation.source_node_object);
+                node_labels.push_back(relation.source_node_object);
 
-                node_labels.push_back(
-                    relation.target_node_object);
+                node_labels.push_back(relation.target_node_object);
 
-                for (const auto *route : {
-                         &relation.source_route,
-                         &relation.target_route})
+                for (const auto *route : {&relation.source_route, &relation.target_route})
                 {
-                    node_labels.push_back(
-                        route->table_object);
+                    node_labels.push_back(route->table_object);
 
-                    node_labels.push_back(
-                        route->node_inverse_object);
+                    node_labels.push_back(route->node_inverse_object);
 
-                    node_labels.push_back(
-                        route->node_accumulator_object);
+                    node_labels.push_back(route->node_accumulator_object);
                 }
 
-                auto &relation_edge_labels =
-                    labels_by_domain[relation.edge_domain];
+                auto &relation_edge_labels = labels_by_domain[relation.edge_domain];
 
-                for (const auto *object : {
-                         &relation.source_edge_object,
-                         &relation.target_edge_object,
-                         &relation.product_object,
-                         &relation.psq_object})
+                for (const auto *object : {&relation.source_edge_object, &relation.target_edge_object, &relation.product_object, &relation.psq_object})
                 {
-                    relation_edge_labels.push_back(
-                        *object);
+                    relation_edge_labels.push_back(*object);
                 }
 
-                for (const auto *route : {
-                         &relation.source_route,
-                         &relation.target_route})
+                for (const auto *route : {&relation.source_route, &relation.target_route})
                 {
-                    relation_edge_labels.push_back(
-                        route->query_object);
+                    relation_edge_labels.push_back(route->query_object);
 
-                    relation_edge_labels.push_back(
-                        route->edge_inverse_object);
+                    relation_edge_labels.push_back(route->edge_inverse_object);
 
-                    relation_edge_labels.push_back(
-                        route->edge_accumulator_object);
+                    relation_edge_labels.push_back(route->edge_accumulator_object);
                 }
             }
         }
@@ -2082,21 +1397,13 @@ namespace gatzk::protocol
         return labels_by_domain;
     }
 
-    std::vector<std::string>
-    domain_opening_labels(
-        const ProtocolContext &context,
-        const std::string &domain_name)
+    std::vector<std::string> domain_opening_labels(const ProtocolContext &context, const std::string &domain_name)
     {
-        auto registry =
-            build_domain_opening_label_registry(
-                context);
+        auto registry = build_domain_opening_label_registry(context);
 
-        const auto labels =
-            registry.find(
-                domain_name);
+        const auto labels = registry.find(domain_name);
 
-        if (labels ==
-            registry.end())
+        if (labels == registry.end())
         {
             return {};
         }
@@ -2106,17 +1413,15 @@ namespace gatzk::protocol
 
     namespace
     {
-        std::array<FieldElement, 9> t_fh_terms(
-            const FHQuotientParameters &parameters,
-            const FHQuotientValues &values,
-            const QuotientBoundaryValues &boundary,
-            const FHFeatureEncodingValues *feature_encoding_values)
+        std::array<FieldElement, 9> t_fh_terms(const FHQuotientParameters &parameters, const FHQuotientValues &values, const QuotientBoundaryValues &boundary,
+                                               const FHFeatureEncodingValues *feature_encoding_values)
         {
             const auto one = FieldElement::one();
             const auto not_last = one - boundary.last;
             std::array<FieldElement, 9> terms;
             terms[0] = boundary.first * values.accumulator;
-            terms[1] = not_last * (values.accumulator_next - values.accumulator - values.q_table * values.multiplicity * values.j_table + values.q_query * values.j_query);
+            terms[1] = not_last *
+                       (values.accumulator_next - values.accumulator - values.q_table * values.multiplicity * values.j_table + values.q_query * values.j_query);
             terms[2] = boundary.last * values.accumulator;
             terms[3] = values.q_table * ((values.table + parameters.beta_feat) * values.j_table - one);
             terms[4] = (one - values.q_table) * values.j_table;
@@ -2124,41 +1429,26 @@ namespace gatzk::protocol
             terms[6] = (one - values.q_query) * values.j_query;
             if (feature_encoding_values != nullptr)
             {
-                const auto eta_feat_squared =
-                    parameters.eta_feat * parameters.eta_feat;
-                terms[7] =
-                    values.table - (feature_encoding_values->table_row + parameters.eta_feat * feature_encoding_values->table_column + eta_feat_squared * feature_encoding_values->table_feature);
-                terms[8] =
-                    values.query - (feature_encoding_values->query_row + parameters.eta_feat * feature_encoding_values->query_column + eta_feat_squared * feature_encoding_values->query_feature);
+                const auto eta_feat_squared = parameters.eta_feat * parameters.eta_feat;
+                terms[7] = values.table - (feature_encoding_values->table_row + parameters.eta_feat * feature_encoding_values->table_column +
+                                           eta_feat_squared * feature_encoding_values->table_feature);
+                terms[8] = values.query - (feature_encoding_values->query_row + parameters.eta_feat * feature_encoding_values->query_column +
+                                           eta_feat_squared * feature_encoding_values->query_feature);
             }
             return terms;
         }
 
-        FieldElement finish_t_fh_quotient(
-            const FieldElement &numerator,
-            const QuotientBoundaryValues &boundary)
+        FieldElement finish_t_fh_quotient(const FieldElement &numerator, const QuotientBoundaryValues &boundary)
         {
-            return boundary.zero_inverse.has_value()
-                       ? numerator * *boundary.zero_inverse
-                       : numerator / boundary.zero;
+            return boundary.zero_inverse.has_value() ? numerator * *boundary.zero_inverse : numerator / boundary.zero;
         }
     }
 
-    FieldElement evaluate_t_fh_from_values(
-        const FHQuotientParameters &parameters,
-        const FHQuotientValues &values,
-        const QuotientBoundaryValues &boundary,
-        const FHFeatureEncodingValues *feature_encoding_values)
+    FieldElement evaluate_t_fh_from_values(const FHQuotientParameters &parameters, const FHQuotientValues &values, const QuotientBoundaryValues &boundary,
+                                           const FHFeatureEncodingValues *feature_encoding_values)
     {
-        const auto terms = t_fh_terms(
-            parameters, values, boundary, feature_encoding_values);
-        // The quotient alpha slots form one fixed polynomial in alpha.  Horner
-        // evaluation removes the per-point alpha-power stream and its second
-        // multiplication per term.  In the full-identity production route the
-        // last two terms are certified zero, so they need not be traversed.
-        const auto term_count = feature_encoding_values == nullptr
-                                    ? std::size_t{7}
-                                    : terms.size();
+        const auto terms = t_fh_terms(parameters, values, boundary, feature_encoding_values);
+        const auto term_count = feature_encoding_values == nullptr ? std::size_t{7} : terms.size();
         auto numerator = terms[term_count - 1];
         for (std::size_t index = term_count - 1; index-- > 0;)
         {
@@ -2167,14 +1457,8 @@ namespace gatzk::protocol
         return finish_t_fh_quotient(numerator, boundary);
     }
 
-    FieldElement evaluate_t_fh(
-        const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges,
-        const EvalFn &eval,
-        const FieldElement &z,
-        FHQuotientProfile *profile,
-        const QuotientBoundaryValues *boundary_values,
-        bool feature_encoding_terms_are_identically_zero)
+    FieldElement evaluate_t_fh(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges, const EvalFn &eval, const FieldElement &z,
+                               FHQuotientProfile *profile, const QuotientBoundaryValues *boundary_values, bool feature_encoding_terms_are_identically_zero)
     {
         const auto total_start = Clock::now();
         const auto dependency_before = profile != nullptr ? profile->dependency_eval_ms : 0.0;
@@ -2189,15 +1473,11 @@ namespace gatzk::protocol
             return value;
         };
         const auto omega_z = z * context.domains.fh->omega;
-        const auto boundary = boundary_values != nullptr
-                                  ? *boundary_values
-                                  : boundary_lagrange_values(*context.domains.fh, z);
+        const auto boundary = boundary_values != nullptr ? *boundary_values : boundary_lagrange_values(*context.domains.fh, z);
         const FHQuotientParameters parameters{
             .alpha_quot = challenges.at("alpha_quot"),
             .beta_feat = challenges.at("beta_feat"),
-            .eta_feat = feature_encoding_terms_are_identically_zero
-                            ? FieldElement::zero()
-                            : challenges.at("eta_feat"),
+            .eta_feat = feature_encoding_terms_are_identically_zero ? FieldElement::zero() : challenges.at("eta_feat"),
         };
         const FHQuotientValues values{
             .q_table = profiled_eval("P_Q_tbl_feat", z),
@@ -2222,13 +1502,7 @@ namespace gatzk::protocol
                 .query_feature = profiled_eval("P_H", z),
             });
         }
-        const auto result = evaluate_t_fh_from_values(
-            parameters,
-            values,
-            boundary,
-            feature_encoding_values.has_value()
-                ? &*feature_encoding_values
-                : nullptr);
+        const auto result = evaluate_t_fh_from_values(parameters, values, boundary, feature_encoding_values.has_value() ? &*feature_encoding_values : nullptr);
         if (profile != nullptr)
         {
             const auto total_ms = elapsed_ms(total_start, Clock::now());
@@ -2237,83 +1511,33 @@ namespace gatzk::protocol
         return result;
     }
 
-    template <
-        bool UsePrecomputedAlphaPowers,
-        class Scalar,
-        class EvalCallable>
-    Scalar evaluate_t_edge_impl(
-        const ProtocolContext &context,
-        const std::map<
-            std::string,
-            FieldElement> &challenges,
-        const std::map<
-            std::string,
-            FieldElement>
-            &external_evaluations,
-        const EvalCallable &eval,
-        const FieldElement &z,
-        bool return_numerator,
-        std::size_t *first_nonzero_term,
-        FieldElement *first_nonzero_value,
-        const std::vector<FieldElement>
-            *precomputed_alpha_powers,
-        const TEdgeEvaluationPlan
-            *evaluation_plan,
-        const QuotientBoundaryValues
-            *boundary_values,
-        const Scalar *symbolic_first =
-            nullptr,
-        const Scalar *symbolic_last =
-            nullptr)
+    template <bool UsePrecomputedAlphaPowers, class Scalar, class EvalCallable>
+    Scalar evaluate_t_edge_impl(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges,
+                                const std::map<std::string, FieldElement> &external_evaluations, const EvalCallable &eval, const FieldElement &z,
+                                bool return_numerator, std::size_t *first_nonzero_term, FieldElement *first_nonzero_value,
+                                const std::vector<FieldElement> *precomputed_alpha_powers, const TEdgeEvaluationPlan *evaluation_plan,
+                                const QuotientBoundaryValues *boundary_values, const Scalar *symbolic_first = nullptr, const Scalar *symbolic_last = nullptr)
     {
-        // edge 域承载大部分“边上对象”约束：softmax 链、lookup、route 和 PSQ 都在这里闭合。
         const auto omega_z = z * context.domains.edge->omega;
-        const auto boundary = boundary_values != nullptr
-                                  ? *boundary_values
-                                  : boundary_lagrange_values(*context.domains.edge, z);
-        const Scalar first =
-            symbolic_first != nullptr
-                ? *symbolic_first
-                : Scalar(
-                      boundary.first);
+        const auto boundary = boundary_values != nullptr ? *boundary_values : boundary_lagrange_values(*context.domains.edge, z);
+        const Scalar first = symbolic_first != nullptr ? *symbolic_first : Scalar(boundary.first);
 
-        const Scalar last =
-            symbolic_last != nullptr
-                ? *symbolic_last
-                : Scalar(
-                      boundary.last);
+        const Scalar last = symbolic_last != nullptr ? *symbolic_last : Scalar(boundary.last);
 
-        const Scalar one =
-            FieldElement::one();
+        const Scalar one = FieldElement::one();
 
-        const Scalar two =
-            FieldElement(2);
+        const Scalar two = FieldElement(2);
 
-        const auto not_last =
-            one - last;
+        const auto not_last = one - last;
 
-        const auto zero_eval =
-            boundary.zero;
-        const auto alpha_quot =
-            evaluation_plan != nullptr
-                ? evaluation_plan->alpha_quot
-                : challenges.at("alpha_quot");
+        const auto zero_eval = boundary.zero;
+        const auto alpha_quot = evaluation_plan != nullptr ? evaluation_plan->alpha_quot : challenges.at("alpha_quot");
 
-        const auto y_out =
-            evaluation_plan != nullptr
-                ? evaluation_plan->y_out
-                : challenges.at("y_out");
+        const auto y_out = evaluation_plan != nullptr ? evaluation_plan->y_out : challenges.at("y_out");
         (void)signed_division_limb_count(context.config.range_bits);
-        const auto signed_division_limb_base =
-            FieldElement(std::uint64_t{1} << context.config.range_bits);
-        auto eval_z = [&](const std::string &label)
-        {
-            return eval(label, z);
-        };
-        auto eval_omega = [&](const std::string &label)
-        {
-            return eval(label, omega_z);
-        };
+        const auto signed_division_limb_base = FieldElement(std::uint64_t{1} << context.config.range_bits);
+        auto eval_z = [&](const std::string &label) { return eval(label, z); };
+        auto eval_omega = [&](const std::string &label) { return eval(label, omega_z); };
 
         const auto q_edge = eval_z("P_Q_edge_valid");
         const auto q_edge_next = eval_omega("P_Q_edge_valid");
@@ -2336,27 +1560,14 @@ namespace gatzk::protocol
         const auto t_elu_x_z = eval_z("P_T_ELU_x");
         const auto t_elu_y_z = eval_z("P_T_ELU_y");
         using ActiveAccumulator =
-            std::conditional_t<
-                std::is_same_v<
-                    Scalar,
-                    FieldElement>,
-                BasicQuotientAccumulator<
-                    UsePrecomputedAlphaPowers>,
-                TEdgeProgramQuotientAccumulator>;
+            std::conditional_t<std::is_same_v<Scalar, FieldElement>, BasicQuotientAccumulator<UsePrecomputedAlphaPowers>, TEdgeProgramQuotientAccumulator>;
 
-        ActiveAccumulator acc(
-            alpha_quot,
-            return_numerator,
-            precomputed_alpha_powers);
-        auto add_signed_division_constraints = [&](
-                                                   const std::string &prefix,
-                                                   const std::string &public_selector_label,
-                                                   const SignedDivisionEvaluationConstants
-                                                       *planned_constants)
+        ActiveAccumulator acc(alpha_quot, return_numerator, precomputed_alpha_powers);
+        auto add_signed_division_constraints =
+            [&](const std::string &prefix, const std::string &public_selector_label, const SignedDivisionEvaluationConstants *planned_constants)
         {
             const auto selector = eval_z(public_selector_label);
-            const auto &labels = signed_division_label_plan(
-                prefix, context.config.range_bits);
+            const auto &labels = signed_division_label_plan(prefix, context.config.range_bits);
             const auto active = eval_z(labels.values[0]);
             const auto x = eval_z(labels.values[1]);
             const auto d = eval_z(labels.values[2]);
@@ -2384,31 +1595,19 @@ namespace gatzk::protocol
             acc.add(selector * (two * a + d - two * d * q - r));
             acc.add(selector * (r + delta - two * d + one));
 
-            // Canonical padding is part of the public column-padding
-            // registry: no auxiliary value may survive outside Q_div.
             for (const auto &item : {x, d, y, sigma, zero, a, a_inv, d_inv, q, r, delta})
             {
                 acc.add((one - selector) * item);
             }
 
-            for (std::size_t value_index = 0;
-                 value_index < labels.decompositions.size(); ++value_index)
+            for (std::size_t value_index = 0; value_index < labels.decompositions.size(); ++value_index)
             {
-                const auto source =
-                    value_index == 0   ? a
-                    : value_index == 1 ? d - one
-                    : value_index == 2 ? q
-                    : value_index == 3 ? r
-                                       : delta;
-                Scalar reconstructed =
-                    FieldElement::zero();
+                const auto source = value_index == 0 ? a : value_index == 1 ? d - one : value_index == 2 ? q : value_index == 3 ? r : delta;
+                Scalar reconstructed = FieldElement::zero();
                 auto place = FieldElement::one();
-                for (std::size_t limb_index = 0;
-                     limb_index < labels.decompositions[value_index].size();
-                     ++limb_index)
+                for (std::size_t limb_index = 0; limb_index < labels.decompositions[value_index].size(); ++limb_index)
                 {
-                    const auto &limb_labels =
-                        labels.decompositions[value_index][limb_index];
+                    const auto &limb_labels = labels.decompositions[value_index][limb_index];
                     const auto limb_value = eval_z(limb_labels.limb);
                     reconstructed += place * limb_value;
                     place *= signed_division_limb_base;
@@ -2420,11 +1619,7 @@ namespace gatzk::protocol
                     const auto j_query = eval_z(limb_labels.range[4]);
                     const auto accumulator = eval_z(limb_labels.range[5]);
                     const auto accumulator_next = eval_omega(limb_labels.range[5]);
-                    const auto beta =
-                        planned_constants != nullptr
-                            ? planned_constants
-                                  ->betas[value_index][limb_index]
-                            : challenges.at(limb_labels.beta);
+                    const auto beta = planned_constants != nullptr ? planned_constants->betas[value_index][limb_index] : challenges.at(limb_labels.beta);
                     acc.add(first * accumulator);
                     acc.add(not_last * (accumulator_next - accumulator - q_tbl_r_z * multiplicity * j_table + selector * j_query));
                     acc.add(last * accumulator);
@@ -2442,12 +1637,8 @@ namespace gatzk::protocol
                 acc.add(selector * (source - reconstructed));
             }
         };
-        auto add_logup_constraints = [&](
-                                         const std::string &prefix,
-                                         const std::string &suffix,
-                                         const Scalar &q_table,
-                                         const Scalar &q_query,
-                                         const FieldElement &beta)
+        auto add_logup_constraints =
+            [&](const std::string &prefix, const std::string &suffix, const Scalar &q_table, const Scalar &q_query, const FieldElement &beta)
         {
             const auto table = eval_z(prefix + "Table_" + suffix);
             const auto query = eval_z(prefix + "Query_" + suffix);
@@ -2464,11 +1655,8 @@ namespace gatzk::protocol
             acc.add(q_query * ((query + beta) * j_query - one));
             acc.add((one - q_query) * j_query);
         };
-        auto add_coefficient_basis_binding = [&](
-                                                 const std::string &prefix,
-                                                 const std::string &public_selector_label,
-                                                 const std::string &source_label,
-                                                 const FieldElement &target)
+        auto add_coefficient_basis_binding =
+            [&](const std::string &prefix, const std::string &public_selector_label, const std::string &source_label, const FieldElement &target)
         {
             const auto selector = eval_z(public_selector_label);
             const auto selector_next = eval_omega(public_selector_label);
@@ -2489,94 +1677,36 @@ namespace gatzk::protocol
             acc.add(last * (current - target));
         };
 
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
+        for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
-            for (std::size_t local_head_index = 0;
-                 local_head_index < context.model.hidden_layers[layer_index].heads.size();
-                 ++local_head_index)
+            for (std::size_t local_head_index = 0; local_head_index < context.model.hidden_layers[layer_index].heads.size(); ++local_head_index)
             {
-                const auto *planned = evaluation_plan != nullptr
-                                          ? &evaluation_plan->hidden_head_constants
-                                                 .at(layer_index)
-                                                 .at(local_head_index)
-                                          : nullptr;
-                const auto challenge = [&](std::string_view base)
-                {
-                    return hidden_challenge_name(base, layer_index, local_head_index);
-                };
+                const auto *planned = evaluation_plan != nullptr ? &evaluation_plan->hidden_head_constants.at(layer_index).at(local_head_index) : nullptr;
+                const auto challenge = [&](std::string_view base) { return hidden_challenge_name(base, layer_index, local_head_index); };
                 const auto fallback_prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                const std::string &prefix = planned != nullptr
-                                                ? planned->prefix
-                                                : fallback_prefix;
-                const auto beta_src = planned != nullptr
-                                          ? planned->beta_src
-                                          : challenges.at(challenge("beta_src_h"));
-                const auto beta_dst = planned != nullptr
-                                          ? planned->beta_dst
-                                          : challenges.at(challenge("beta_dst_h"));
-                const auto eta_src = planned != nullptr
-                                         ? planned->eta_src
-                                         : challenges.at(challenge("eta_src_h"));
-                const auto eta_src_sq = planned != nullptr
-                                            ? planned->eta_src_sq
-                                            : eta_src * eta_src;
-                const auto eta_dst = planned != nullptr
-                                         ? planned->eta_dst
-                                         : challenges.at(challenge("eta_dst_h"));
-                const auto eta_dst_sq = planned != nullptr
-                                            ? planned->eta_dst_sq
-                                            : eta_dst * eta_dst;
-                const auto eta_dst_cu = planned != nullptr
-                                            ? planned->eta_dst_cu
-                                            : eta_dst_sq * eta_dst;
-                const auto eta_dst_4 = planned != nullptr
-                                           ? planned->eta_dst_4
-                                           : eta_dst_cu * eta_dst;
-                const auto eta_dst_5 = planned != nullptr
-                                           ? planned->eta_dst_5
-                                           : eta_dst_4 * eta_dst;
-                const auto beta_l = planned != nullptr
-                                        ? planned->beta_l
-                                        : challenges.at(challenge("beta_L_h"));
-                const auto eta_l = planned != nullptr
-                                       ? planned->eta_l
-                                       : challenges.at(challenge("eta_L_h"));
-                const auto beta_r = planned != nullptr
-                                        ? planned->beta_r
-                                        : challenges.at(challenge("beta_R_h"));
-                const auto beta_exp = planned != nullptr
-                                          ? planned->beta_exp
-                                          : challenges.at(challenge("beta_exp_h"));
-                const auto eta_exp = planned != nullptr
-                                         ? planned->eta_exp
-                                         : challenges.at(challenge("eta_exp_h"));
-                const auto beta_elu = planned != nullptr
-                                          ? planned->beta_elu
-                                          : challenges.at(challenge("beta_ELU_h"));
-                const auto eta_elu = planned != nullptr
-                                         ? planned->eta_elu
-                                         : challenges.at(challenge("eta_ELU_h"));
-                const auto q_qry_elu_z = eval_z(
-                    planned != nullptr
-                        ? planned->elu_query_selector
-                        : hidden_q_nd_h_selector_label(layer_index));
-                const auto beta_t = planned != nullptr
-                                        ? planned->beta_t
-                                        : challenges.at(challenge("beta_t_h"));
-                const auto eta_t = planned != nullptr
-                                       ? planned->eta_t
-                                       : challenges.at(challenge("eta_t_h"));
+                const std::string &prefix = planned != nullptr ? planned->prefix : fallback_prefix;
+                const auto beta_src = planned != nullptr ? planned->beta_src : challenges.at(challenge("beta_src_h"));
+                const auto beta_dst = planned != nullptr ? planned->beta_dst : challenges.at(challenge("beta_dst_h"));
+                const auto eta_src = planned != nullptr ? planned->eta_src : challenges.at(challenge("eta_src_h"));
+                const auto eta_src_sq = planned != nullptr ? planned->eta_src_sq : eta_src * eta_src;
+                const auto eta_dst = planned != nullptr ? planned->eta_dst : challenges.at(challenge("eta_dst_h"));
+                const auto eta_dst_sq = planned != nullptr ? planned->eta_dst_sq : eta_dst * eta_dst;
+                const auto eta_dst_cu = planned != nullptr ? planned->eta_dst_cu : eta_dst_sq * eta_dst;
+                const auto eta_dst_4 = planned != nullptr ? planned->eta_dst_4 : eta_dst_cu * eta_dst;
+                const auto eta_dst_5 = planned != nullptr ? planned->eta_dst_5 : eta_dst_4 * eta_dst;
+                const auto beta_l = planned != nullptr ? planned->beta_l : challenges.at(challenge("beta_L_h"));
+                const auto eta_l = planned != nullptr ? planned->eta_l : challenges.at(challenge("eta_L_h"));
+                const auto beta_r = planned != nullptr ? planned->beta_r : challenges.at(challenge("beta_R_h"));
+                const auto beta_exp = planned != nullptr ? planned->beta_exp : challenges.at(challenge("beta_exp_h"));
+                const auto eta_exp = planned != nullptr ? planned->eta_exp : challenges.at(challenge("eta_exp_h"));
+                const auto beta_elu = planned != nullptr ? planned->beta_elu : challenges.at(challenge("beta_ELU_h"));
+                const auto eta_elu = planned != nullptr ? planned->eta_elu : challenges.at(challenge("eta_ELU_h"));
+                const auto q_qry_elu_z = eval_z(planned != nullptr ? planned->elu_query_selector : hidden_q_nd_h_selector_label(layer_index));
+                const auto beta_t = planned != nullptr ? planned->beta_t : challenges.at(challenge("beta_t_h"));
+                const auto eta_t = planned != nullptr ? planned->eta_t : challenges.at(challenge("eta_t_h"));
 
-                auto z_head = [&](std::string_view suffix)
-                {
-                    return eval_z(prefix + std::string(suffix));
-                };
-                auto omega_head = [&](std::string_view suffix)
-                {
-                    return eval_omega(prefix + std::string(suffix));
-                };
+                auto z_head = [&](std::string_view suffix) { return eval_z(prefix + std::string(suffix)); };
+                auto omega_head = [&](std::string_view suffix) { return eval_omega(prefix + std::string(suffix)); };
 
                 const auto r_src_z = z_head("R_src");
                 const auto r_src_omega = omega_head("R_src");
@@ -2626,10 +1756,8 @@ namespace gatzk::protocol
                 const auto sum_edge_z = z_head("Sum_edge");
                 const auto h_agg_star_edge_z = z_head("H_agg_star_edge");
                 const auto &scales = context.config.quantization;
-                const auto aggregate_pre_scale =
-                    FieldElement(scales.s_agg_pre.at(layer_index));
-                const auto h_prime_scale =
-                    FieldElement(scales.s_h_prime.at(layer_index).at(local_head_index));
+                const auto aggregate_pre_scale = FieldElement(scales.s_agg_pre.at(layer_index));
+                const auto h_prime_scale = FieldElement(scales.s_h_prime.at(layer_index).at(local_head_index));
 
                 acc.add(first * r_src_z);
                 acc.add(q_edge * ((query_src_z + beta_src) * z_head("J_src_edge") - one));
@@ -2650,8 +1778,8 @@ namespace gatzk::protocol
                 acc.add(s_max_z * delta_z);
                 acc.add(zero_on_unselected(q_edge, s_max_z));
                 acc.add(first * (c_max_z - s_max_z));
-                acc.add(
-                    q_edge_next * (c_max_omega - q_new_next * s_max_omega - (one - q_new_next) * (c_max_z + s_max_omega)) + (one - q_edge_next) * (c_max_omega - c_max_z));
+                acc.add(q_edge_next * (c_max_omega - q_new_next * s_max_omega - (one - q_new_next) * (c_max_z + s_max_omega)) +
+                        (one - q_edge_next) * (c_max_omega - c_max_z));
                 acc.add(q_end * (c_max_z - one));
 
                 add_logup_constraints(prefix, "R", q_tbl_r_z, q_qry_r_z, beta_r);
@@ -2688,29 +1816,18 @@ namespace gatzk::protocol
                 acc.add(first * r_dst_z);
                 acc.add(q_edge * ((query_dst_z + beta_dst) * z_head("J_dst_edge") - one));
                 acc.add(not_last * route_edge_step(r_dst_omega, r_dst_z, query_dst_z, beta_dst, q_edge));
-                acc.add(query_dst_z - (dst_z + eta_dst * e_dst_edge_z + eta_dst_sq * m_edge_z + eta_dst_cu * sum_edge_z + eta_dst_4 * inv_edge_z + eta_dst_5 * h_agg_star_edge_z));
+                acc.add(query_dst_z - (dst_z + eta_dst * e_dst_edge_z + eta_dst_sq * m_edge_z + eta_dst_cu * sum_edge_z + eta_dst_4 * inv_edge_z +
+                                       eta_dst_5 * h_agg_star_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_dst_z));
-                add_signed_division_constraints(
-                    planned != nullptr
-                        ? planned->division_prefix
-                        : prefix + "Div_",
-                    planned != nullptr
-                        ? planned->division_selector
-                        : hidden_q_nd_h_selector_label(layer_index),
-                    planned != nullptr
-                        ? &planned->division
-                        : nullptr);
-                const auto q_div = eval_z(
-                    planned != nullptr
-                        ? planned->division_selector
-                        : hidden_q_nd_h_selector_label(layer_index));
+                add_signed_division_constraints(planned != nullptr ? planned->division_prefix : prefix + "Div_",
+                                                planned != nullptr ? planned->division_selector : hidden_q_nd_h_selector_label(layer_index),
+                                                planned != nullptr ? &planned->division : nullptr);
+                const auto q_div = eval_z(planned != nullptr ? planned->division_selector : hidden_q_nd_h_selector_label(layer_index));
                 acc.add(q_div * (h_agg_num_flat_z - sum_flat_z * h_agg_pre_flat_z));
                 acc.add(q_div * (z_head("Div_X") - aggregate_pre_scale * h_agg_num_flat_z));
                 acc.add(q_div * (z_head("Div_D") - h_prime_scale * sum_flat_z));
                 acc.add(q_div * (z_head("Div_Y") - h_elu_in_flat_z));
-                for (const auto &padding_value : {
-                         sum_flat_z, h_agg_pre_flat_z, h_agg_num_flat_z,
-                         h_elu_in_flat_z, h_agg_flat_z})
+                for (const auto &padding_value : {sum_flat_z, h_agg_pre_flat_z, h_agg_num_flat_z, h_elu_in_flat_z, h_agg_flat_z})
                 {
                     acc.add((one - q_div) * padding_value);
                 }
@@ -2719,80 +1836,27 @@ namespace gatzk::protocol
 
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
-            const auto *planned = evaluation_plan != nullptr
-                                      ? &evaluation_plan->output_heads.at(head_index)
-                                      : nullptr;
-            const auto fallback_prefix = planned == nullptr
-                                             ? output_head_prefix(head_index) + "_"
-                                             : std::string{};
-            const std::string &prefix = planned != nullptr
-                                            ? planned->prefix
-                                            : fallback_prefix;
-            const auto beta_src_out = planned != nullptr
-                                          ? planned->beta_src
-                                          : challenges.at(output_challenge_name(
-                                                "beta_src_out", head_index));
-            const auto beta_dst_out = planned != nullptr
-                                          ? planned->beta_dst
-                                          : challenges.at(output_challenge_name(
-                                                "beta_dst_out", head_index));
-            const auto eta_src_out = planned != nullptr
-                                         ? planned->eta_src
-                                         : challenges.at(output_challenge_name(
-                                               "eta_src_out", head_index));
-            const auto eta_dst_out = planned != nullptr
-                                         ? planned->eta_dst
-                                         : challenges.at(output_challenge_name(
-                                               "eta_dst_out", head_index));
-            const auto eta_dst_out_sq = planned != nullptr
-                                            ? planned->eta_dst_sq
-                                            : eta_dst_out * eta_dst_out;
-            const auto eta_dst_out_cu = planned != nullptr
-                                            ? planned->eta_dst_cu
-                                            : eta_dst_out_sq * eta_dst_out;
-            const auto eta_dst_out_4 = planned != nullptr
-                                           ? planned->eta_dst_4
-                                           : eta_dst_out_cu * eta_dst_out;
-            const auto eta_dst_out_5 = planned != nullptr
-                                           ? planned->eta_dst_5
-                                           : eta_dst_out_4 * eta_dst_out;
-            const auto beta_l_out = planned != nullptr
-                                        ? planned->beta_l
-                                        : challenges.at(output_challenge_name(
-                                              "beta_L_out", head_index));
-            const auto eta_l_out = planned != nullptr
-                                       ? planned->eta_l
-                                       : challenges.at(output_challenge_name(
-                                             "eta_L_out", head_index));
-            const auto beta_r_out = planned != nullptr
-                                        ? planned->beta_r
-                                        : challenges.at(output_challenge_name(
-                                              "beta_R_out", head_index));
-            const auto beta_exp_out = planned != nullptr
-                                          ? planned->beta_exp
-                                          : challenges.at(output_challenge_name(
-                                                "beta_exp_out", head_index));
-            const auto eta_exp_out = planned != nullptr
-                                         ? planned->eta_exp
-                                         : challenges.at(output_challenge_name(
-                                               "eta_exp_out", head_index));
-            const auto beta_t_out = planned != nullptr
-                                        ? planned->beta_t
-                                        : challenges.at(output_challenge_name(
-                                              "beta_t_out", head_index));
-            const auto eta_t_out = planned != nullptr
-                                       ? planned->eta_t
-                                       : challenges.at(output_challenge_name(
-                                             "eta_t_out", head_index));
+            const auto *planned = evaluation_plan != nullptr ? &evaluation_plan->output_heads.at(head_index) : nullptr;
+            const auto fallback_prefix = planned == nullptr ? output_head_prefix(head_index) + "_" : std::string{};
+            const std::string &prefix = planned != nullptr ? planned->prefix : fallback_prefix;
+            const auto beta_src_out = planned != nullptr ? planned->beta_src : challenges.at(output_challenge_name("beta_src_out", head_index));
+            const auto beta_dst_out = planned != nullptr ? planned->beta_dst : challenges.at(output_challenge_name("beta_dst_out", head_index));
+            const auto eta_src_out = planned != nullptr ? planned->eta_src : challenges.at(output_challenge_name("eta_src_out", head_index));
+            const auto eta_dst_out = planned != nullptr ? planned->eta_dst : challenges.at(output_challenge_name("eta_dst_out", head_index));
+            const auto eta_dst_out_sq = planned != nullptr ? planned->eta_dst_sq : eta_dst_out * eta_dst_out;
+            const auto eta_dst_out_cu = planned != nullptr ? planned->eta_dst_cu : eta_dst_out_sq * eta_dst_out;
+            const auto eta_dst_out_4 = planned != nullptr ? planned->eta_dst_4 : eta_dst_out_cu * eta_dst_out;
+            const auto eta_dst_out_5 = planned != nullptr ? planned->eta_dst_5 : eta_dst_out_4 * eta_dst_out;
+            const auto beta_l_out = planned != nullptr ? planned->beta_l : challenges.at(output_challenge_name("beta_L_out", head_index));
+            const auto eta_l_out = planned != nullptr ? planned->eta_l : challenges.at(output_challenge_name("eta_L_out", head_index));
+            const auto beta_r_out = planned != nullptr ? planned->beta_r : challenges.at(output_challenge_name("beta_R_out", head_index));
+            const auto beta_exp_out = planned != nullptr ? planned->beta_exp : challenges.at(output_challenge_name("beta_exp_out", head_index));
+            const auto eta_exp_out = planned != nullptr ? planned->eta_exp : challenges.at(output_challenge_name("eta_exp_out", head_index));
+            const auto beta_t_out = planned != nullptr ? planned->beta_t : challenges.at(output_challenge_name("beta_t_out", head_index));
+            const auto eta_t_out = planned != nullptr ? planned->eta_t : challenges.at(output_challenge_name("eta_t_out", head_index));
 
-            auto z_out = [&](std::string_view suffix)
-            {
-                return eval_z(prefix + std::string(suffix));
-            };
-            auto omega_out = [&](std::string_view suffix)
-            {
-                return eval_omega(prefix + std::string(suffix));
-            };
+            auto z_out = [&](std::string_view suffix) { return eval_z(prefix + std::string(suffix)); };
+            auto omega_out = [&](std::string_view suffix) { return eval_omega(prefix + std::string(suffix)); };
 
             const auto r_src_z = z_out("R_src");
             const auto r_src_omega = omega_out("R_src");
@@ -2852,8 +1916,8 @@ namespace gatzk::protocol
             acc.add(s_max_z * delta_z);
             acc.add(zero_on_unselected(q_edge, s_max_z));
             acc.add(first * (c_max_z - s_max_z));
-            acc.add(
-                q_edge_next * (c_max_omega - q_new_next * s_max_omega - (one - q_new_next) * (c_max_z + s_max_omega)) + (one - q_edge_next) * (c_max_omega - c_max_z));
+            acc.add(q_edge_next * (c_max_omega - q_new_next * s_max_omega - (one - q_new_next) * (c_max_z + s_max_omega)) +
+                    (one - q_edge_next) * (c_max_omega - c_max_z));
             acc.add(q_end * (c_max_z - one));
 
             add_logup_constraints(prefix, "R", q_tbl_r_z, q_qry_r_z, beta_r_out);
@@ -2883,22 +1947,13 @@ namespace gatzk::protocol
             acc.add(first * r_dst_z);
             acc.add(q_edge * ((query_dst_z + beta_dst_out) * z_out("J_dst_edge") - one));
             acc.add(not_last * route_edge_step(r_dst_omega, r_dst_z, query_dst_z, beta_dst_out, q_edge));
-            acc.add(query_dst_z - (dst_z + eta_dst_out * e_dst_edge_z + eta_dst_out_sq * m_edge_z + eta_dst_out_cu * sum_edge_z + eta_dst_out_4 * inv_edge_z + eta_dst_out_5 * y_star_edge_z));
+            acc.add(query_dst_z - (dst_z + eta_dst_out * e_dst_edge_z + eta_dst_out_sq * m_edge_z + eta_dst_out_cu * sum_edge_z + eta_dst_out_4 * inv_edge_z +
+                                   eta_dst_out_5 * y_star_edge_z));
             acc.add(zero_on_unselected(q_edge, query_dst_z));
-            add_signed_division_constraints(
-                planned != nullptr
-                    ? planned->division_prefix
-                    : prefix + "Div_",
-                planned != nullptr
-                    ? planned->division_selector
-                    : "P_Q_div_out" + std::to_string(head_index),
-                planned != nullptr
-                    ? &planned->division
-                    : nullptr);
-            const auto q_div = eval_z(
-                planned != nullptr
-                    ? planned->division_selector
-                    : "P_Q_div_out" + std::to_string(head_index));
+            add_signed_division_constraints(planned != nullptr ? planned->division_prefix : prefix + "Div_",
+                                            planned != nullptr ? planned->division_selector : "P_Q_div_out" + std::to_string(head_index),
+                                            planned != nullptr ? &planned->division : nullptr);
+            const auto q_div = eval_z(planned != nullptr ? planned->division_selector : "P_Q_div_out" + std::to_string(head_index));
             const auto y_pre_flat = z_out("Y_pre_flat");
             const auto sum_flat = z_out("Sum_flat");
             const auto y_pre_field_flat = z_out("Y_pre_field_flat");
@@ -2907,8 +1962,7 @@ namespace gatzk::protocol
             const auto y_flat = z_out("Y_flat");
             const auto &scales = context.config.quantization;
             const auto output_pre_scale = FieldElement(scales.s_out_pre);
-            const auto output_y_prime_scale =
-                FieldElement(scales.s_y_prime.at(head_index));
+            const auto output_y_prime_scale = FieldElement(scales.s_y_prime.at(head_index));
             acc.add(q_div * (y_agg_num_flat - sum_flat * y_pre_field_flat));
             acc.add(q_div * (z_out("Div_X") - output_pre_scale * y_agg_num_flat));
             acc.add(q_div * (z_out("Div_D") - output_y_prime_scale * sum_flat));
@@ -2920,37 +1974,19 @@ namespace gatzk::protocol
             acc.add((one - q_div) * y_pre_flat);
             acc.add((one - q_div) * bias_flat);
             acc.add((one - q_div) * y_flat);
-            add_coefficient_basis_binding(
-                planned != nullptr
-                    ? planned->binding_prefix
-                    : prefix + "Bind_",
-                planned != nullptr
-                    ? planned->division_selector
-                    : "P_Q_div_out" + std::to_string(head_index),
-                planned != nullptr
-                    ? planned->y_flat_label
-                    : prefix + "Y_flat",
-                external_evaluations.at(
-                    planned != nullptr
-                        ? planned->external_y_name
-                        : output_external_eval_name("y", head_index)));
-            const auto fallback_view_prefix = planned == nullptr
-                                                  ? output_bias_view_prefix(head_index)
-                                                  : std::string{};
-            const std::string &view_prefix = planned != nullptr
-                                                 ? planned->view_prefix
-                                                 : fallback_view_prefix;
+            add_coefficient_basis_binding(planned != nullptr ? planned->binding_prefix : prefix + "Bind_",
+                                          planned != nullptr ? planned->division_selector : "P_Q_div_out" + std::to_string(head_index),
+                                          planned != nullptr ? planned->y_flat_label : prefix + "Y_flat",
+                                          external_evaluations.at(planned != nullptr ? planned->external_y_name : output_external_eval_name("y", head_index)));
+            const auto fallback_view_prefix = planned == nullptr ? output_bias_view_prefix(head_index) : std::string{};
+            const std::string &view_prefix = planned != nullptr ? planned->view_prefix : fallback_view_prefix;
             const auto q_view = q_div;
             const auto query_view = eval_z(view_prefix + "Query");
             const auto j_view = eval_z(view_prefix + "J_qry");
             const auto r_view = eval_z(view_prefix + "R_qry");
             const auto r_view_next = eval_omega(view_prefix + "R_qry");
-            const auto beta_view = planned != nullptr
-                                       ? planned->beta_view
-                                       : challenges.at(output_bias_view_beta_label(head_index));
-            const auto eta_view = planned != nullptr
-                                      ? planned->eta_view
-                                      : challenges.at(output_bias_view_eta_label(head_index));
+            const auto beta_view = planned != nullptr ? planned->beta_view : challenges.at(output_bias_view_beta_label(head_index));
+            const auto eta_view = planned != nullptr ? planned->eta_view : challenges.at(output_bias_view_eta_label(head_index));
             acc.add(first * r_view);
             acc.add(not_last * (r_view_next - r_view - q_view * j_view));
             acc.add(q_view * ((query_view + beta_view) * j_view - one));
@@ -2961,78 +1997,38 @@ namespace gatzk::protocol
             if (planned == nullptr)
             {
                 fallback_basis_chunks = coefficient_chunk_layout(
-                    context.local.num_classes + registered_blinder_coefficient_count(
-                                                    context,
-                                                    output_bias_basis_label(head_index, "Coeff")),
+                    context.local.num_classes + registered_blinder_coefficient_count(context, output_bias_basis_label(head_index, "Coeff")),
                     context.domains.edge->size);
             }
-            const auto gamma = planned != nullptr
-                                   ? planned->gamma
-                                   : challenges.at(output_bias_basis_gamma_label(head_index));
-            const auto fallback_power_label = planned == nullptr
-                                                  ? output_bias_basis_label(head_index, "Powers")
-                                                  : std::string{};
-            const std::string &power_label = planned != nullptr
-                                                 ? planned->power_label
-                                                 : fallback_power_label;
+            const auto gamma = planned != nullptr ? planned->gamma : challenges.at(output_bias_basis_gamma_label(head_index));
+            const auto fallback_power_label = planned == nullptr ? output_bias_basis_label(head_index, "Powers") : std::string{};
+            const std::string &power_label = planned != nullptr ? planned->power_label : fallback_power_label;
             const auto power = eval_z(power_label);
             const auto power_next = eval_omega(power_label);
             acc.add(first * (power - one));
             acc.add(not_last * (power_next - gamma * power));
-            const auto chunk_count = planned != nullptr
-                                         ? planned->basis_chunks.size()
-                                         : fallback_basis_chunks.size();
-            for (std::size_t chunk_index = 0;
-                 chunk_index < chunk_count; ++chunk_index)
+            const auto chunk_count = planned != nullptr ? planned->basis_chunks.size() : fallback_basis_chunks.size();
+            for (std::size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index)
             {
-                const auto fallback_chunk = planned == nullptr
-                                                ? fallback_basis_chunks[chunk_index].chunk_index
-                                                : std::size_t{0};
-                const auto fallback_value_label = planned == nullptr
-                                                      ? output_bias_basis_chunk_label(
-                                                            head_index, fallback_chunk)
-                                                      : std::string{};
-                const auto fallback_active_selector = planned == nullptr
-                                                          ? output_bias_basis_region_selector_label(
-                                                                head_index, fallback_chunk, "active")
-                                                          : std::string{};
-                const auto fallback_semantic_selector = planned == nullptr
-                                                            ? output_bias_basis_region_selector_label(
-                                                                  head_index, fallback_chunk, "semantic")
-                                                            : std::string{};
-                const auto fallback_gap_selector = planned == nullptr
-                                                       ? output_bias_basis_region_selector_label(
-                                                             head_index, fallback_chunk, "gap")
-                                                       : std::string{};
-                const auto fallback_tail_selector = planned == nullptr
-                                                        ? output_bias_basis_region_selector_label(
-                                                              head_index, fallback_chunk, "tail")
-                                                        : std::string{};
-                const auto fallback_accumulator_label = planned == nullptr
-                                                            ? output_bias_basis_chunk_accumulator_label(
-                                                                  head_index, fallback_chunk)
-                                                            : std::string{};
-                const auto *planned_chunk = planned != nullptr
-                                                ? &planned->basis_chunks[chunk_index]
-                                                : nullptr;
-                const auto &value_label = planned != nullptr
-                                              ? planned_chunk->value
-                                              : fallback_value_label;
-                const auto &active_selector = planned != nullptr
-                                                  ? planned_chunk->active_selector
-                                                  : fallback_active_selector;
-                const auto &semantic_selector = planned != nullptr
-                                                    ? planned_chunk->semantic_selector
-                                                    : fallback_semantic_selector;
-                const auto &gap_selector = planned != nullptr
-                                               ? planned_chunk->gap_selector
-                                               : fallback_gap_selector;
-                const auto &tail_selector = planned != nullptr
-                                                ? planned_chunk->tail_selector
-                                                : fallback_tail_selector;
-                const auto &accumulator_label = planned != nullptr
-                                                    ? planned_chunk->accumulator
-                                                    : fallback_accumulator_label;
+                const auto fallback_chunk = planned == nullptr ? fallback_basis_chunks[chunk_index].chunk_index : std::size_t{0};
+                const auto fallback_value_label = planned == nullptr ? output_bias_basis_chunk_label(head_index, fallback_chunk) : std::string{};
+                const auto fallback_active_selector =
+                    planned == nullptr ? output_bias_basis_region_selector_label(head_index, fallback_chunk, "active") : std::string{};
+                const auto fallback_semantic_selector =
+                    planned == nullptr ? output_bias_basis_region_selector_label(head_index, fallback_chunk, "semantic") : std::string{};
+                const auto fallback_gap_selector =
+                    planned == nullptr ? output_bias_basis_region_selector_label(head_index, fallback_chunk, "gap") : std::string{};
+                const auto fallback_tail_selector =
+                    planned == nullptr ? output_bias_basis_region_selector_label(head_index, fallback_chunk, "tail") : std::string{};
+                const auto fallback_accumulator_label =
+                    planned == nullptr ? output_bias_basis_chunk_accumulator_label(head_index, fallback_chunk) : std::string{};
+                const auto *planned_chunk = planned != nullptr ? &planned->basis_chunks[chunk_index] : nullptr;
+                const auto &value_label = planned != nullptr ? planned_chunk->value : fallback_value_label;
+                const auto &active_selector = planned != nullptr ? planned_chunk->active_selector : fallback_active_selector;
+                const auto &semantic_selector = planned != nullptr ? planned_chunk->semantic_selector : fallback_semantic_selector;
+                const auto &gap_selector = planned != nullptr ? planned_chunk->gap_selector : fallback_gap_selector;
+                const auto &tail_selector = planned != nullptr ? planned_chunk->tail_selector : fallback_tail_selector;
+                const auto &accumulator_label = planned != nullptr ? planned_chunk->accumulator : fallback_accumulator_label;
                 const auto chunk_value = eval_z(value_label);
                 const auto q_active = eval_z(active_selector);
                 const auto q_semantic = eval_z(semantic_selector);
@@ -3043,18 +2039,14 @@ namespace gatzk::protocol
                 acc.add(q_gap * chunk_value);
                 acc.add(q_semantic * (chunk_value - bias_flat));
                 const auto basis_accumulator = eval_z(accumulator_label);
-                const auto basis_accumulator_next =
-                    eval_omega(accumulator_label);
+                const auto basis_accumulator_next = eval_omega(accumulator_label);
                 acc.add(first * basis_accumulator);
                 acc.add(not_last * (basis_accumulator_next - basis_accumulator - q_active * power * chunk_value));
             }
         }
 
         std::vector<BindingRelationMeta> local_binding_metadata;
-        const std::vector<BindingRelationMeta> *binding_metadata =
-            evaluation_plan != nullptr
-                ? &evaluation_plan->binding_metadata
-                : nullptr;
+        const std::vector<BindingRelationMeta> *binding_metadata = evaluation_plan != nullptr ? &evaluation_plan->binding_metadata : nullptr;
         if (binding_metadata == nullptr)
         {
             local_binding_metadata = build_binding_relation_metadata(context);
@@ -3064,145 +2056,82 @@ namespace gatzk::protocol
         {
             for (const auto &relation : binding.aggregation_relations)
             {
-                const auto source_edge = eval_z(
-                    relation.source_edge_object);
-                const auto target_edge = eval_z(
-                    relation.target_edge_object);
+                const auto source_edge = eval_z(relation.source_edge_object);
+                const auto target_edge = eval_z(relation.target_edge_object);
                 const auto product = eval_z(relation.product_object);
-                const auto product_next = eval_omega(
-                    relation.product_object);
+                const auto product_next = eval_omega(relation.product_object);
                 const auto psq = eval_z(relation.psq_object);
                 const auto psq_next = eval_omega(relation.psq_object);
                 acc.add(q_edge * (product - eval_z(relation.alpha_object) * source_edge));
                 acc.add(first * (psq - q_edge * product));
-                acc.add(not_last * psq_step(
-                                       psq_next, psq, product_next,
-                                       q_edge_next, q_new_next));
+                acc.add(not_last * psq_step(psq_next, psq, product_next, q_edge_next, q_new_next));
                 acc.add(q_end * (psq - target_edge));
                 acc.add(zero_on_unselected(q_edge, source_edge));
                 acc.add(zero_on_unselected(q_edge, target_edge));
                 acc.add(zero_on_unselected(q_edge, product));
-                for (const auto *route : {
-                         &relation.source_route,
-                         &relation.target_route})
+                for (const auto *route : {&relation.source_route, &relation.target_route})
                 {
-                    const auto beta = challenges.at(
-                        route->beta_challenge_label);
-                    const auto eta = challenges.at(
-                        route->eta_challenge_label);
-                    const auto accumulator = eval_z(
-                        route->edge_accumulator_object);
-                    const auto accumulator_next = eval_omega(
-                        route->edge_accumulator_object);
+                    const auto beta = challenges.at(route->beta_challenge_label);
+                    const auto eta = challenges.at(route->eta_challenge_label);
+                    const auto accumulator = eval_z(route->edge_accumulator_object);
+                    const auto accumulator_next = eval_omega(route->edge_accumulator_object);
                     const auto query = eval_z(route->query_object);
-                    const auto inverse = eval_z(
-                        route->edge_inverse_object);
+                    const auto inverse = eval_z(route->edge_inverse_object);
                     acc.add(first * accumulator);
                     acc.add(q_edge * ((query + beta) * inverse - one));
                     acc.add((one - q_edge) * inverse);
-                    acc.add(not_last * route_edge_step(
-                                           accumulator_next, accumulator, query, beta,
-                                           q_edge));
+                    acc.add(not_last * route_edge_step(accumulator_next, accumulator, query, beta, q_edge));
                     acc.add(query - (eval_z(route->index_object) + eta * eval_z(route->edge_value_object)));
                     acc.add(zero_on_unselected(q_edge, query));
                 }
             }
         }
 
-        for (const auto &spec :
-             flat_matrix_binding_specs(context))
+        for (const auto &spec : flat_matrix_binding_specs(context))
         {
-            const auto selector =
-                eval_z(
-                    spec.flat_selector_label);
+            const auto selector = eval_z(spec.flat_selector_label);
 
-            const auto current =
-                eval_z(
-                    spec.flat_accumulator_object);
+            const auto current = eval_z(spec.flat_accumulator_object);
 
-            const auto next =
-                eval_omega(
-                    spec.flat_accumulator_object);
+            const auto next = eval_omega(spec.flat_accumulator_object);
 
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto lambda = challenges.at(spec.lambda_challenge);
 
-            acc.add(
-                first * current);
+            acc.add(first * current);
 
-            acc.add(
-                not_last *
-                selector *
-                (next -
-                 lambda * current -
-                 eval_z(
-                     spec.flat_object)));
+            acc.add(not_last * selector * (next - lambda * current - eval_z(spec.flat_object)));
 
-            acc.add(
-                not_last *
-                (one - selector) *
-                (next - current));
+            acc.add(not_last * (one - selector) * (next - current));
         }
 
-        for (const auto &spec :
-             broadcast_flat_binding_specs(context))
+        for (const auto &spec : broadcast_flat_binding_specs(context))
         {
-            const auto selector =
-                eval_z(
-                    spec.flat_selector_label);
+            const auto selector = eval_z(spec.flat_selector_label);
 
-            const auto current =
-                eval_z(
-                    spec.flat_accumulator_object);
+            const auto current = eval_z(spec.flat_accumulator_object);
 
-            const auto next =
-                eval_omega(
-                    spec.flat_accumulator_object);
+            const auto next = eval_omega(spec.flat_accumulator_object);
 
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto lambda = challenges.at(spec.lambda_challenge);
 
-            acc.add(
-                first * current);
+            acc.add(first * current);
 
-            acc.add(
-                not_last *
-                selector *
-                (next -
-                 lambda * current -
-                 eval_z(
-                     spec.flat_object)));
+            acc.add(not_last * selector * (next - lambda * current - eval_z(spec.flat_object)));
 
-            acc.add(
-                not_last *
-                (one - selector) *
-                (next - current));
+            acc.add(not_last * (one - selector) * (next - current));
         }
 
-        add_signed_division_constraints(
-            "P_avg_Div_",
-            "P_Q_div_avg",
-            evaluation_plan != nullptr
-                ? &evaluation_plan->average_division
-                : nullptr);
+        add_signed_division_constraints("P_avg_Div_", "P_Q_div_avg", evaluation_plan != nullptr ? &evaluation_plan->average_division : nullptr);
         {
             const auto q_avg = eval_z("P_Q_div_avg");
-            Scalar summed_heads =
-                FieldElement::zero();
+            Scalar summed_heads = FieldElement::zero();
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                summed_heads += eval_z(
-                    output_head_prefix(head_index) + "_Y_flat");
+                summed_heads += eval_z(output_head_prefix(head_index) + "_Y_flat");
             }
             acc.add(q_avg * (eval_z("P_avg_Div_X") - summed_heads));
             acc.add(q_avg * (eval_z("P_avg_Div_D") - FieldElement(context.model.output_layer.heads.size())));
-            add_coefficient_basis_binding(
-                "P_avg_Bind_",
-                "P_Q_div_avg",
-                "P_avg_Div_Y",
-                external_evaluations.at("mu_out"));
+            add_coefficient_basis_binding("P_avg_Bind_", "P_Q_div_avg", "P_avg_Div_Y", external_evaluations.at("mu_out"));
         }
 
         if (return_numerator && acc.first_nonzero_term().has_value())
@@ -3212,979 +2141,357 @@ namespace gatzk::protocol
             if (first_nonzero_value != nullptr)
                 *first_nonzero_value = acc.first_nonzero_value();
         }
-        const auto numerator =
-            acc.value();
+        const auto numerator = acc.value();
 
         if (return_numerator)
         {
             return numerator;
         }
 
-        if constexpr (
-            std::is_same_v<
-                Scalar,
-                FieldElement>)
+        if constexpr (std::is_same_v<Scalar, FieldElement>)
         {
-            return boundary
-                           .zero_inverse
-                           .has_value()
-                       ? numerator *
-                             *boundary
-                                  .zero_inverse
-                       : numerator /
-                             zero_eval;
+            return boundary.zero_inverse.has_value() ? numerator * *boundary.zero_inverse : numerator / zero_eval;
         }
         else
         {
-            throw std::runtime_error(
-                "symbolic t_edge "
-                "evaluation requested "
-                "quotient division");
+            throw std::runtime_error("symbolic t_edge "
+                                     "evaluation requested "
+                                     "quotient division");
         }
     }
-    TEdgeBoundProgram
-    build_t_edge_bound_program(
-        const ProtocolContext &context,
-        const std::map<
-            std::string,
-            FieldElement> &challenges,
-        const std::map<
-            std::string,
-            FieldElement>
-            &external_evaluations,
-        const TEdgeEvaluationPlan &plan)
+    TEdgeBoundProgram build_t_edge_bound_program(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges,
+                                                 const std::map<std::string, FieldElement> &external_evaluations, const TEdgeEvaluationPlan &plan)
     {
         TEdgeProgramBuilder builder;
 
-        auto *previous_builder =
-            active_t_edge_program_builder;
+        auto *previous_builder = active_t_edge_program_builder;
 
-        active_t_edge_program_builder =
-            &builder;
+        active_t_edge_program_builder = &builder;
 
         try
         {
-            const auto first =
-                builder.boundary_first();
+            const auto first = builder.boundary_first();
 
-            const auto last =
-                builder.boundary_last();
+            const auto last = builder.boundary_last();
 
-            const auto z =
-                FieldElement(7);
+            const auto z = FieldElement(7);
 
-            const auto omega_z =
-                z *
-                context.domains.edge->omega;
+            const auto omega_z = z * context.domains.edge->omega;
 
-            const auto symbolic_eval =
-                [&](const std::string &label,
-                    const FieldElement &point)
-                -> TEdgeProgramScalar
+            const auto symbolic_eval = [&](const std::string &label, const FieldElement &point) -> TEdgeProgramScalar
             {
                 if (point == z)
                 {
-                    return builder.access(
-                        label,
-                        false);
+                    return builder.access(label, false);
                 }
 
                 if (point == omega_z)
                 {
-                    return builder.access(
-                        label,
-                        true);
+                    return builder.access(label, true);
                 }
 
-                throw std::runtime_error(
-                    "symbolic t_edge "
-                    "received unsupported "
-                    "evaluation point");
+                throw std::runtime_error("symbolic t_edge "
+                                         "received unsupported "
+                                         "evaluation point");
             };
 
-            (void)evaluate_t_edge_impl<
-                false,
-                TEdgeProgramScalar>(
-                context,
-                challenges,
-                external_evaluations,
-                symbolic_eval,
-                z,
-                true,
-                nullptr,
-                nullptr,
-                nullptr,
-                &plan,
-                nullptr,
-                &first,
-                &last);
+            (void)evaluate_t_edge_impl<false, TEdgeProgramScalar>(context, challenges, external_evaluations, symbolic_eval, z, true, nullptr, nullptr, nullptr,
+                                                                  &plan, nullptr, &first, &last);
         }
         catch (...)
         {
-            active_t_edge_program_builder =
-                previous_builder;
+            active_t_edge_program_builder = previous_builder;
 
             throw;
         }
 
-        active_t_edge_program_builder =
-            previous_builder;
+        active_t_edge_program_builder = previous_builder;
 
         return builder.finish();
     }
-    FieldElement evaluate_t_edge(
-        const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges,
-        const std::map<std::string, FieldElement> &external_evaluations,
-        const EvalFn &eval,
-        const FieldElement &z,
-        bool return_numerator,
-        std::size_t *first_nonzero_term,
-        FieldElement *first_nonzero_value,
-        const std::vector<FieldElement> *precomputed_alpha_powers,
-        const TEdgeEvaluationPlan *evaluation_plan,
-        const QuotientBoundaryValues *boundary_values)
+    FieldElement evaluate_t_edge(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges,
+                                 const std::map<std::string, FieldElement> &external_evaluations, const EvalFn &eval, const FieldElement &z,
+                                 bool return_numerator, std::size_t *first_nonzero_term, FieldElement *first_nonzero_value,
+                                 const std::vector<FieldElement> *precomputed_alpha_powers, const TEdgeEvaluationPlan *evaluation_plan,
+                                 const QuotientBoundaryValues *boundary_values)
     {
         if (precomputed_alpha_powers != nullptr)
         {
-            return evaluate_t_edge_impl<
-                true,
-                FieldElement>(
-                context,
-                challenges,
-                external_evaluations,
-                eval,
-                z,
-                return_numerator,
-                first_nonzero_term,
-                first_nonzero_value,
-                precomputed_alpha_powers,
-                evaluation_plan,
-                boundary_values);
+            return evaluate_t_edge_impl<true, FieldElement>(context, challenges, external_evaluations, eval, z, return_numerator, first_nonzero_term,
+                                                            first_nonzero_value, precomputed_alpha_powers, evaluation_plan, boundary_values);
         }
-        return evaluate_t_edge_impl<
-            false,
-            FieldElement>(
-            context,
-            challenges,
-            external_evaluations,
-            eval,
-            z,
-            return_numerator,
-            first_nonzero_term,
-            first_nonzero_value,
-            nullptr,
-            evaluation_plan,
-            boundary_values);
+        return evaluate_t_edge_impl<false, FieldElement>(context, challenges, external_evaluations, eval, z, return_numerator, first_nonzero_term,
+                                                         first_nonzero_value, nullptr, evaluation_plan, boundary_values);
     }
 
-    std::shared_ptr<const TNEvaluationPlan>
-    build_t_n_evaluation_plan(
-        const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges)
+    std::shared_ptr<const TNEvaluationPlan> build_t_n_evaluation_plan(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges)
     {
-        auto plan =
-            std::make_shared<TNEvaluationPlan>();
+        auto plan = std::make_shared<TNEvaluationPlan>();
 
-        plan->alpha_quot =
-            challenges.at("alpha_quot");
+        plan->alpha_quot = challenges.at("alpha_quot");
 
-        plan->binding_metadata =
-            build_binding_relation_metadata(context);
+        plan->binding_metadata = build_binding_relation_metadata(context);
 
-        // Validate the immutable matrix registry once.  The old implementation
-        // repeated this structural work at every quotient-coset point.
-        for (const auto &binding :
-             plan->binding_metadata)
+        for (const auto &binding : plan->binding_metadata)
         {
-            for (const auto &matrix :
-                 binding.canonical_matrices)
+            for (const auto &matrix : binding.canonical_matrices)
             {
-                if (matrix.canonical_domain !=
-                        context.domains.n->name ||
-                    matrix.column_objects.size() !=
-                        matrix.column_count ||
-                    matrix.row_count !=
-                        context.local.num_nodes)
+                if (matrix.canonical_domain != context.domains.n->name || matrix.column_objects.size() != matrix.column_count ||
+                    matrix.row_count != context.local.num_nodes)
                 {
-                    throw std::runtime_error(
-                        "invalid canonical matrix quotient registry: " +
-                        matrix.relation_id);
+                    throw std::runtime_error("invalid canonical matrix quotient registry: " + matrix.relation_id);
                 }
             }
 
-            for (const auto &relation :
-                 binding.aggregation_relations)
+            for (const auto &relation : binding.aggregation_relations)
             {
-                const auto contains_matrix =
-                    [&](const std::string &object)
+                const auto contains_matrix = [&](const std::string &object)
                 {
-                    return std::any_of(
-                        binding.canonical_matrices.begin(),
-                        binding.canonical_matrices.end(),
-                        [&](const auto &matrix)
-                        {
-                            return matrix.matrix_object ==
-                                   object;
-                        });
+                    return std::any_of(binding.canonical_matrices.begin(), binding.canonical_matrices.end(),
+                                       [&](const auto &matrix) { return matrix.matrix_object == object; });
                 };
 
-                if (!contains_matrix(
-                        relation.source_matrix_object))
+                if (!contains_matrix(relation.source_matrix_object))
                 {
-                    throw std::runtime_error(
-                        "aggregation quotient canonical matrix missing: " +
-                        relation.source_matrix_object);
+                    throw std::runtime_error("aggregation quotient canonical matrix missing: " + relation.source_matrix_object);
                 }
 
-                if (!contains_matrix(
-                        relation.target_matrix_object))
+                if (!contains_matrix(relation.target_matrix_object))
                 {
-                    throw std::runtime_error(
-                        "aggregation quotient canonical matrix missing: " +
-                        relation.target_matrix_object);
+                    throw std::runtime_error("aggregation quotient canonical matrix missing: " + relation.target_matrix_object);
                 }
             }
         }
 
-        const auto matrix_fold_specs =
-            matrix_fold_binding_specs(context);
+        const auto matrix_fold_specs = matrix_fold_binding_specs(context);
 
-        plan->matrix_fold_plans.reserve(
-            matrix_fold_specs.size());
+        plan->matrix_fold_plans.reserve(matrix_fold_specs.size());
 
-        for (const auto &spec :
-             matrix_fold_specs)
+        for (const auto &spec : matrix_fold_specs)
         {
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto lambda = challenges.at(spec.lambda_challenge);
 
-            const auto rho =
-                challenges.at(
-                    spec.source_point_challenge);
+            const auto rho = challenges.at(spec.source_point_challenge);
 
-            plan->matrix_fold_plans.push_back(
-                TNEvaluationPlan::MatrixFoldPlan{
-                    .spec = spec,
-                    .lambda = lambda,
-                    .barycentric_scale =
-                        context.domains.n
-                            ->zero_polynomial_eval(rho) *
-                        context.domains.n->inv_size,
-                });
+            plan->matrix_fold_plans.push_back(TNEvaluationPlan::MatrixFoldPlan{
+                .spec = spec,
+                .lambda = lambda,
+                .barycentric_scale = context.domains.n->zero_polynomial_eval(rho) * context.domains.n->inv_size,
+            });
         }
 
-        const auto flat_specs =
-            flat_matrix_binding_specs(context);
+        const auto flat_specs = flat_matrix_binding_specs(context);
 
-        plan->flat_matrix_plans.reserve(
-            flat_specs.size());
+        plan->flat_matrix_plans.reserve(flat_specs.size());
 
-        for (const auto &spec :
-             flat_specs)
+        for (const auto &spec : flat_specs)
         {
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto lambda = challenges.at(spec.lambda_challenge);
 
-            plan->flat_matrix_plans.push_back(
-                TNEvaluationPlan::FlatMatrixPlan{
-                    .spec = spec,
-                    .lambda = lambda,
-                    .row_base =
-                        lambda.pow(
-                            spec.columns),
-                });
+            plan->flat_matrix_plans.push_back(TNEvaluationPlan::FlatMatrixPlan{
+                .spec = spec,
+                .lambda = lambda,
+                .row_base = lambda.pow(spec.columns),
+            });
         }
 
-        const auto broadcast_specs =
-            broadcast_flat_binding_specs(context);
+        const auto broadcast_specs = broadcast_flat_binding_specs(context);
 
-        plan->broadcast_flat_plans.reserve(
-            broadcast_specs.size());
+        plan->broadcast_flat_plans.reserve(broadcast_specs.size());
 
-        for (const auto &spec :
-             broadcast_specs)
+        for (const auto &spec : broadcast_specs)
         {
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto lambda = challenges.at(spec.lambda_challenge);
 
-            plan->broadcast_flat_plans.push_back(
-                TNEvaluationPlan::BroadcastFlatPlan{
-                    .spec = spec,
-                    .row_base =
-                        lambda.pow(
-                            spec.width),
-                    .class_sum =
-                        geometric_sum(
-                            lambda,
-                            spec.width),
-                });
+            plan->broadcast_flat_plans.push_back(TNEvaluationPlan::BroadcastFlatPlan{
+                .spec = spec,
+                .row_base = lambda.pow(spec.width),
+                .class_sum = geometric_sum(lambda, spec.width),
+            });
         }
 
         return plan;
     }
 
-    FieldElement evaluate_t_n(
-        const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges,
-        const EvalFn &eval,
-        const FieldElement &z,
-        const TNEvaluationPlan *evaluation_plan,
-        const QuotientBoundaryValues *boundary_values,
-        const TNPublicSourceFoldEvalFn *public_source_fold_eval,
-        std::size_t evaluation_index)
+    FieldElement evaluate_t_n(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges, const EvalFn &eval, const FieldElement &z,
+                              const TNEvaluationPlan *evaluation_plan, const QuotientBoundaryValues *boundary_values,
+                              const TNPublicSourceFoldEvalFn *public_source_fold_eval, std::size_t evaluation_index)
     {
-        const auto owned_plan =
-            evaluation_plan == nullptr
-                ? build_t_n_evaluation_plan(
-                      context,
-                      challenges)
-                : std::shared_ptr<
-                      const TNEvaluationPlan>{};
+        const auto owned_plan = evaluation_plan == nullptr ? build_t_n_evaluation_plan(context, challenges) : std::shared_ptr<const TNEvaluationPlan>{};
 
-        const auto &plan =
-            evaluation_plan != nullptr
-                ? *evaluation_plan
-                : *owned_plan;
+        const auto &plan = evaluation_plan != nullptr ? *evaluation_plan : *owned_plan;
 
-        // N 域负责把边上广播的量重新收回到目标点，并补上分母倒数、PSQ 目标表和 route 节点侧约束。
-        const auto omega_z =
-            z * context.domains.n->omega;
+        const auto omega_z = z * context.domains.n->omega;
 
-        const auto boundary =
-            boundary_values != nullptr
-                ? *boundary_values
-                : boundary_lagrange_values(
-                      *context.domains.n,
-                      z);
+        const auto boundary = boundary_values != nullptr ? *boundary_values : boundary_lagrange_values(*context.domains.n, z);
 
-        const auto first =
-            boundary.first;
+        const auto first = boundary.first;
 
-        const auto last =
-            boundary.last;
+        const auto last = boundary.last;
 
-        const auto not_last =
-            FieldElement::one() - last;
+        const auto not_last = FieldElement::one() - last;
 
-        const auto zero_eval =
-            boundary.zero;
+        const auto zero_eval = boundary.zero;
 
-        const auto q_n =
-            eval("P_Q_N", z);
+        const auto q_n = eval("P_Q_N", z);
 
-        QuotientAccumulator acc(
-            plan.alpha_quot);
+        QuotientAccumulator acc(plan.alpha_quot);
 
-        for (std::size_t layer_index = 0;
-             layer_index <
-             context.model.hidden_layers.size();
-             ++layer_index)
+        for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
-            for (std::size_t local_head_index = 0;
-                 local_head_index <
-                 context.model.hidden_layers[layer_index]
-                     .heads.size();
-                 ++local_head_index)
+            for (std::size_t local_head_index = 0; local_head_index < context.model.hidden_layers[layer_index].heads.size(); ++local_head_index)
             {
-                const auto prefix =
-                    hidden_head_prefix(
-                        layer_index,
-                        local_head_index) +
-                    "_";
+                const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
 
-                const auto challenge =
-                    [&](std::string_view base)
-                {
-                    return hidden_challenge_name(
-                        base,
-                        layer_index,
-                        local_head_index);
-                };
+                const auto challenge = [&](std::string_view base) { return hidden_challenge_name(base, layer_index, local_head_index); };
 
-                const auto beta_src =
-                    challenges.at(
-                        challenge("beta_src_h"));
+                const auto beta_src = challenges.at(challenge("beta_src_h"));
 
-                const auto beta_dst =
-                    challenges.at(
-                        challenge("beta_dst_h"));
+                const auto beta_dst = challenges.at(challenge("beta_dst_h"));
 
-                const auto eta_src =
-                    challenges.at(
-                        challenge("eta_src_h"));
+                const auto eta_src = challenges.at(challenge("eta_src_h"));
 
-                const auto eta_dst =
-                    challenges.at(
-                        challenge("eta_dst_h"));
+                const auto eta_dst = challenges.at(challenge("eta_dst_h"));
 
-                const auto beta_t =
-                    challenges.at(
-                        challenge("beta_t_h"));
+                const auto beta_t = challenges.at(challenge("beta_t_h"));
 
-                const auto eta_t =
-                    challenges.at(
-                        challenge("eta_t_h"));
+                const auto eta_t = challenges.at(challenge("eta_t_h"));
 
-                const auto lambda_psq =
-                    challenges.at(
-                        challenge("lambda_psq_h"));
+                const auto lambda_psq = challenges.at(challenge("lambda_psq_h"));
 
-                const auto eta_src_sq =
-                    eta_src * eta_src;
+                const auto eta_src_sq = eta_src * eta_src;
 
-                const auto eta_dst_sq =
-                    eta_dst * eta_dst;
+                const auto eta_dst_sq = eta_dst * eta_dst;
 
-                const auto eta_dst_cu =
-                    eta_dst_sq * eta_dst;
+                const auto eta_dst_cu = eta_dst_sq * eta_dst;
 
-                const auto eta_dst_4 =
-                    eta_dst_cu * eta_dst;
+                const auto eta_dst_4 = eta_dst_cu * eta_dst;
 
-                const auto eta_dst_5 =
-                    eta_dst_4 * eta_dst;
+                const auto eta_dst_5 = eta_dst_4 * eta_dst;
 
-                acc.add(
-                    first *
-                    eval(
-                        prefix + "R_src_node",
-                        z));
+                acc.add(first * eval(prefix + "R_src_node", z));
 
-                acc.add(
-                    q_n *
-                    ((eval(
-                          prefix + "Table_src",
-                          z) +
-                      beta_src) *
-                         eval(
-                             prefix +
-                                 "J_src_node",
-                             z) -
-                     FieldElement::one()));
+                acc.add(q_n * ((eval(prefix + "Table_src", z) + beta_src) * eval(prefix + "J_src_node", z) - FieldElement::one()));
 
-                acc.add(
-                    not_last *
-                    route_node_step(
-                        eval(
-                            prefix +
-                                "R_src_node",
-                            omega_z),
-                        eval(
-                            prefix +
-                                "R_src_node",
-                            z),
-                        eval(
-                            prefix +
-                                "Table_src",
-                            z),
-                        beta_src,
-                        q_n,
-                        eval(
-                            prefix +
-                                "m_src",
-                            z)));
+                acc.add(not_last * route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z),
+                                                   beta_src, q_n, eval(prefix + "m_src", z)));
 
-                acc.add(
-                    first *
-                    eval(
-                        prefix + "R_dst_node",
-                        z));
+                acc.add(first * eval(prefix + "R_dst_node", z));
 
-                acc.add(
-                    q_n *
-                    ((eval(
-                          prefix + "Table_dst",
-                          z) +
-                      beta_dst) *
-                         eval(
-                             prefix +
-                                 "J_dst_node",
-                             z) -
-                     FieldElement::one()));
+                acc.add(q_n * ((eval(prefix + "Table_dst", z) + beta_dst) * eval(prefix + "J_dst_node", z) - FieldElement::one()));
 
-                acc.add(
-                    not_last *
-                    route_node_step(
-                        eval(
-                            prefix +
-                                "R_dst_node",
-                            omega_z),
-                        eval(
-                            prefix +
-                                "R_dst_node",
-                            z),
-                        eval(
-                            prefix +
-                                "Table_dst",
-                            z),
-                        beta_dst,
-                        q_n,
-                        eval(
-                            prefix +
-                                "m_dst",
-                            z)));
+                acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z),
+                                                   beta_dst, q_n, eval(prefix + "m_dst", z)));
 
-                acc.add(
-                    first *
-                    eval(
-                        prefix + "R_t_node",
-                        z));
+                acc.add(first * eval(prefix + "R_t_node", z));
 
-                acc.add(
-                    q_n *
-                    ((eval(
-                          prefix + "Table_t",
-                          z) +
-                      beta_t) *
-                         eval(
-                             prefix +
-                                 "J_t_node",
-                             z) -
-                     FieldElement::one()));
+                acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t) * eval(prefix + "J_t_node", z) - FieldElement::one()));
 
-                acc.add(
-                    not_last *
-                    route_node_step(
-                        eval(
-                            prefix +
-                                "R_t_node",
-                            omega_z),
-                        eval(
-                            prefix +
-                                "R_t_node",
-                            z),
-                        eval(
-                            prefix +
-                                "Table_t",
-                            z),
-                        beta_t,
-                        q_n,
-                        eval(
-                            prefix +
-                                "m_t",
-                            z)));
+                acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t, q_n,
+                                                   eval(prefix + "m_t", z)));
 
-                acc.add(
-                    q_n *
-                    (eval(prefix + "Sum", z) *
-                         eval(prefix + "inv", z) -
-                     FieldElement::one()));
+                acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
 
-                acc.add(
-                    q_n *
-                    (eval(prefix + "T_psq", z) -
-                     eval(prefix + "Sum", z) -
-                     lambda_psq *
-                         eval(
-                             prefix +
-                                 "H_agg_pre_star",
-                             z)));
+                acc.add(q_n * (eval(prefix + "T_psq", z) - eval(prefix + "Sum", z) - lambda_psq * eval(prefix + "H_agg_pre_star", z)));
 
-                acc.add(
-                    eval(
-                        prefix + "Table_src",
-                        z) -
-                    (eval("P_I", z) +
-                     eta_src *
-                         eval(
-                             prefix + "E_src",
-                             z) +
-                     eta_src_sq *
-                         eval(
-                             prefix + "H_star",
-                             z)));
+                acc.add(eval(prefix + "Table_src", z) - (eval("P_I", z) + eta_src * eval(prefix + "E_src", z) + eta_src_sq * eval(prefix + "H_star", z)));
 
-                acc.add(
-                    eval(
-                        prefix + "Table_dst",
-                        z) -
-                    (eval("P_I", z) +
-                     eta_dst *
-                         eval(
-                             prefix + "E_dst",
-                             z) +
-                     eta_dst_sq *
-                         eval(
-                             prefix + "M",
-                             z) +
-                     eta_dst_cu *
-                         eval(
-                             prefix + "Sum",
-                             z) +
-                     eta_dst_4 *
-                         eval(
-                             prefix + "inv",
-                             z) +
-                     eta_dst_5 *
-                         eval(
-                             prefix +
-                                 "H_agg_star",
-                             z)));
+                acc.add(eval(prefix + "Table_dst", z) -
+                        (eval("P_I", z) + eta_dst * eval(prefix + "E_dst", z) + eta_dst_sq * eval(prefix + "M", z) + eta_dst_cu * eval(prefix + "Sum", z) +
+                         eta_dst_4 * eval(prefix + "inv", z) + eta_dst_5 * eval(prefix + "H_agg_star", z)));
 
-                acc.add(
-                    eval(
-                        prefix + "Table_t",
-                        z) -
-                    (eval("P_I", z) +
-                     eta_t *
-                         eval(
-                             prefix + "T_psq",
-                             z)));
+                acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t * eval(prefix + "T_psq", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "E_src",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "E_src", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "E_dst",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "E_dst", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "M",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "M", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "Sum",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "Sum", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "inv",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "inv", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "H_star",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "H_star", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix +
-                                "H_agg_pre_star",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "H_agg_pre_star", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix +
-                                "H_agg_star",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "H_agg_star", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "Table_src",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_src", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "m_src",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "m_src", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "Table_dst",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_dst", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "m_dst",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "m_dst", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "T_psq",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "T_psq", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "Table_t",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + "m_t",
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
             }
         }
 
-        for (std::size_t head_index = 0;
-             head_index <
-             context.model.output_layer.heads.size();
-             ++head_index)
+        for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
-            const auto prefix =
-                output_head_prefix(
-                    head_index) +
-                "_";
+            const auto prefix = output_head_prefix(head_index) + "_";
 
-            const auto beta_src_out =
-                challenges.at(
-                    output_challenge_name(
-                        "beta_src_out",
-                        head_index));
+            const auto beta_src_out = challenges.at(output_challenge_name("beta_src_out", head_index));
 
-            const auto beta_dst_out =
-                challenges.at(
-                    output_challenge_name(
-                        "beta_dst_out",
-                        head_index));
+            const auto beta_dst_out = challenges.at(output_challenge_name("beta_dst_out", head_index));
 
-            const auto eta_src_out =
-                challenges.at(
-                    output_challenge_name(
-                        "eta_src_out",
-                        head_index));
+            const auto eta_src_out = challenges.at(output_challenge_name("eta_src_out", head_index));
 
-            const auto eta_dst_out =
-                challenges.at(
-                    output_challenge_name(
-                        "eta_dst_out",
-                        head_index));
+            const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index));
 
-            const auto beta_t_out =
-                challenges.at(
-                    output_challenge_name(
-                        "beta_t_out",
-                        head_index));
+            const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index));
 
-            const auto eta_t_out =
-                challenges.at(
-                    output_challenge_name(
-                        "eta_t_out",
-                        head_index));
+            const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index));
 
-            const auto lambda_out =
-                challenges.at(
-                    output_challenge_name(
-                        "lambda_out",
-                        head_index));
+            const auto lambda_out = challenges.at(output_challenge_name("lambda_out", head_index));
 
-            const auto eta_dst_out_sq =
-                eta_dst_out * eta_dst_out;
+            const auto eta_dst_out_sq = eta_dst_out * eta_dst_out;
 
-            const auto eta_dst_out_cu =
-                eta_dst_out_sq * eta_dst_out;
+            const auto eta_dst_out_cu = eta_dst_out_sq * eta_dst_out;
 
-            const auto eta_dst_out_4 =
-                eta_dst_out_cu * eta_dst_out;
+            const auto eta_dst_out_4 = eta_dst_out_cu * eta_dst_out;
 
-            const auto eta_dst_out_5 =
-                eta_dst_out_4 * eta_dst_out;
+            const auto eta_dst_out_5 = eta_dst_out_4 * eta_dst_out;
 
-            acc.add(
-                first *
-                eval(
-                    prefix + "R_src_node",
-                    z));
+            acc.add(first * eval(prefix + "R_src_node", z));
 
-            acc.add(
-                q_n *
-                ((eval(
-                      prefix + "Table_src",
-                      z) +
-                  beta_src_out) *
-                     eval(
-                         prefix +
-                             "J_src_node",
-                         z) -
-                 FieldElement::one()));
+            acc.add(q_n * ((eval(prefix + "Table_src", z) + beta_src_out) * eval(prefix + "J_src_node", z) - FieldElement::one()));
 
-            acc.add(
-                not_last *
-                route_node_step(
-                    eval(
-                        prefix +
-                            "R_src_node",
-                        omega_z),
-                    eval(
-                        prefix +
-                            "R_src_node",
-                        z),
-                    eval(
-                        prefix +
-                            "Table_src",
-                        z),
-                    beta_src_out,
-                    q_n,
-                    eval(
-                        prefix + "m_src",
-                        z)));
+            acc.add(not_last * route_node_step(eval(prefix + "R_src_node", omega_z), eval(prefix + "R_src_node", z), eval(prefix + "Table_src", z),
+                                               beta_src_out, q_n, eval(prefix + "m_src", z)));
 
-            acc.add(
-                first *
-                eval(
-                    prefix + "R_dst_node",
-                    z));
+            acc.add(first * eval(prefix + "R_dst_node", z));
 
-            acc.add(
-                q_n *
-                ((eval(
-                      prefix + "Table_dst",
-                      z) +
-                  beta_dst_out) *
-                     eval(
-                         prefix +
-                             "J_dst_node",
-                         z) -
-                 FieldElement::one()));
+            acc.add(q_n * ((eval(prefix + "Table_dst", z) + beta_dst_out) * eval(prefix + "J_dst_node", z) - FieldElement::one()));
 
-            acc.add(
-                not_last *
-                route_node_step(
-                    eval(
-                        prefix +
-                            "R_dst_node",
-                        omega_z),
-                    eval(
-                        prefix +
-                            "R_dst_node",
-                        z),
-                    eval(
-                        prefix +
-                            "Table_dst",
-                        z),
-                    beta_dst_out,
-                    q_n,
-                    eval(
-                        prefix + "m_dst",
-                        z)));
+            acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z),
+                                               beta_dst_out, q_n, eval(prefix + "m_dst", z)));
 
-            acc.add(
-                first *
-                eval(
-                    prefix + "R_t_node",
-                    z));
+            acc.add(first * eval(prefix + "R_t_node", z));
 
-            acc.add(
-                q_n *
-                ((eval(
-                      prefix + "Table_t",
-                      z) +
-                  beta_t_out) *
-                     eval(
-                         prefix +
-                             "J_t_node",
-                         z) -
-                 FieldElement::one()));
+            acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t_out) * eval(prefix + "J_t_node", z) - FieldElement::one()));
 
-            acc.add(
-                not_last *
-                route_node_step(
-                    eval(
-                        prefix +
-                            "R_t_node",
-                        omega_z),
-                    eval(
-                        prefix +
-                            "R_t_node",
-                        z),
-                    eval(
-                        prefix +
-                            "Table_t",
-                        z),
-                    beta_t_out,
-                    q_n,
-                    eval(
-                        prefix + "m_t",
-                        z)));
+            acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t_out, q_n,
+                                               eval(prefix + "m_t", z)));
 
-            acc.add(
-                q_n *
-                (eval(prefix + "Sum", z) *
-                     eval(prefix + "inv", z) -
-                 FieldElement::one()));
+            acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
 
-            acc.add(
-                q_n *
-                (eval(prefix + "T", z) -
-                 eval(prefix + "Sum", z) -
-                 lambda_out *
-                     eval(
-                         prefix + "Y_star",
-                         z)));
+            acc.add(q_n * (eval(prefix + "T", z) - eval(prefix + "Sum", z) - lambda_out * eval(prefix + "Y_star", z)));
 
-            acc.add(
-                eval(
-                    prefix + "Table_src",
-                    z) -
-                (eval("P_I", z) +
-                 eta_src_out *
-                     eval(
-                         prefix + "E_src",
-                         z)));
+            acc.add(eval(prefix + "Table_src", z) - (eval("P_I", z) + eta_src_out * eval(prefix + "E_src", z)));
 
-            acc.add(
-                eval(
-                    prefix + "Table_dst",
-                    z) -
-                (eval("P_I", z) +
-                 eta_dst_out *
-                     eval(
-                         prefix + "E_dst",
-                         z) +
-                 eta_dst_out_sq *
-                     eval(
-                         prefix + "M",
-                         z) +
-                 eta_dst_out_cu *
-                     eval(
-                         prefix + "Sum",
-                         z) +
-                 eta_dst_out_4 *
-                     eval(
-                         prefix + "inv",
-                         z) +
-                 eta_dst_out_5 *
-                     eval(
-                         prefix + "Y_star",
-                         z)));
+            acc.add(eval(prefix + "Table_dst", z) -
+                    (eval("P_I", z) + eta_dst_out * eval(prefix + "E_dst", z) + eta_dst_out_sq * eval(prefix + "M", z) +
+                     eta_dst_out_cu * eval(prefix + "Sum", z) + eta_dst_out_4 * eval(prefix + "inv", z) + eta_dst_out_5 * eval(prefix + "Y_star", z)));
 
-            acc.add(
-                eval(
-                    prefix + "Table_t",
-                    z) -
-                (eval("P_I", z) +
-                 eta_t_out *
-                     eval(
-                         prefix + "T",
-                         z)));
+            acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t_out * eval(prefix + "T", z)));
 
             for (const auto *suffix : {
                      "E_src",
@@ -4203,428 +2510,192 @@ namespace gatzk::protocol
                      "m_t",
                  })
             {
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            prefix + suffix,
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + suffix, z)));
             }
         }
 
-        for (const auto &binding :
-             plan.binding_metadata)
+        for (const auto &binding : plan.binding_metadata)
         {
-            for (const auto &matrix :
-                 binding.canonical_matrices)
+            for (const auto &matrix : binding.canonical_matrices)
             {
-                const auto compression =
-                    challenges.at(
-                        matrix
-                            .compression_challenge_label);
+                const auto compression = challenges.at(matrix.compression_challenge_label);
 
-                auto expected =
-                    FieldElement::zero();
+                auto expected = FieldElement::zero();
 
-                auto power =
-                    FieldElement::one();
+                auto power = FieldElement::one();
 
-                for (const auto &column :
-                     matrix.column_objects)
+                for (const auto &column : matrix.column_objects)
                 {
-                    const auto column_value =
-                        eval(column, z);
+                    const auto column_value = eval(column, z);
 
-                    expected +=
-                        power *
-                        column_value;
+                    expected += power * column_value;
 
-                    power *=
-                        compression;
+                    power *= compression;
 
-                    acc.add(
-                        zero_on_unselected(
-                            q_n,
-                            column_value));
+                    acc.add(zero_on_unselected(q_n, column_value));
                 }
 
-                acc.add(
-                    q_n *
-                    (eval(
-                         matrix.compressed_object,
-                         z) -
-                     expected));
+                acc.add(q_n * (eval(matrix.compressed_object, z) - expected));
             }
 
-            for (const auto &relation :
-                 binding.aggregation_relations)
+            for (const auto &relation : binding.aggregation_relations)
             {
-                const auto find_matrix =
-                    [&](const std::string &object)
-                    -> const CanonicalMatrixRelationMeta &
+                const auto find_matrix = [&](const std::string &object) -> const CanonicalMatrixRelationMeta &
                 {
-                    const auto it =
-                        std::find_if(
-                            binding.canonical_matrices.begin(),
-                            binding.canonical_matrices.end(),
-                            [&](const auto &matrix)
-                            {
-                                return matrix.matrix_object ==
-                                       object;
-                            });
+                    const auto it = std::find_if(binding.canonical_matrices.begin(), binding.canonical_matrices.end(),
+                                                 [&](const auto &matrix) { return matrix.matrix_object == object; });
 
-                    if (it ==
-                        binding.canonical_matrices.end())
+                    if (it == binding.canonical_matrices.end())
                     {
-                        throw std::runtime_error(
-                            "aggregation quotient canonical matrix missing: " +
-                            object);
+                        throw std::runtime_error("aggregation quotient canonical matrix missing: " + object);
                     }
 
                     return *it;
                 };
 
-                const auto compression =
-                    challenges.at(
-                        relation
-                            .compression_challenge_label);
+                const auto compression = challenges.at(relation.compression_challenge_label);
 
-                const auto compressed_columns =
-                    [&](const CanonicalMatrixRelationMeta &matrix)
+                const auto compressed_columns = [&](const CanonicalMatrixRelationMeta &matrix)
                 {
-                    auto value =
-                        FieldElement::zero();
+                    auto value = FieldElement::zero();
 
-                    auto power =
-                        FieldElement::one();
+                    auto power = FieldElement::one();
 
-                    for (const auto &column :
-                         matrix.column_objects)
+                    for (const auto &column : matrix.column_objects)
                     {
-                        value +=
-                            power *
-                            eval(
-                                column,
-                                z);
+                        value += power * eval(column, z);
 
-                        power *=
-                            compression;
+                        power *= compression;
                     }
 
                     return value;
                 };
 
-                acc.add(
-                    q_n *
-                    (eval(
-                         relation.source_node_object,
-                         z) -
-                     compressed_columns(
-                         find_matrix(
-                             relation
-                                 .source_matrix_object))));
+                acc.add(q_n * (eval(relation.source_node_object, z) - compressed_columns(find_matrix(relation.source_matrix_object))));
 
-                acc.add(
-                    q_n *
-                    (eval(
-                         relation.target_node_object,
-                         z) -
-                     compressed_columns(
-                         find_matrix(
-                             relation
-                                 .target_matrix_object))));
+                acc.add(q_n * (eval(relation.target_node_object, z) - compressed_columns(find_matrix(relation.target_matrix_object))));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            relation.source_node_object,
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(relation.source_node_object, z)));
 
-                acc.add(
-                    zero_on_unselected(
-                        q_n,
-                        eval(
-                            relation.target_node_object,
-                            z)));
+                acc.add(zero_on_unselected(q_n, eval(relation.target_node_object, z)));
 
                 for (const auto *route : {
                          &relation.source_route,
                          &relation.target_route,
                      })
                 {
-                    const auto beta =
-                        challenges.at(
-                            route
-                                ->beta_challenge_label);
+                    const auto beta = challenges.at(route->beta_challenge_label);
 
-                    const auto eta =
-                        challenges.at(
-                            route
-                                ->eta_challenge_label);
+                    const auto eta = challenges.at(route->eta_challenge_label);
 
-                    const auto accumulator =
-                        eval(
-                            route
-                                ->node_accumulator_object,
-                            z);
+                    const auto accumulator = eval(route->node_accumulator_object, z);
 
-                    const auto accumulator_next =
-                        eval(
-                            route
-                                ->node_accumulator_object,
-                            omega_z);
+                    const auto accumulator_next = eval(route->node_accumulator_object, omega_z);
 
-                    const auto table =
-                        eval(
-                            route->table_object,
-                            z);
+                    const auto table = eval(route->table_object, z);
 
-                    const auto inverse =
-                        eval(
-                            route
-                                ->node_inverse_object,
-                            z);
+                    const auto inverse = eval(route->node_inverse_object, z);
 
-                    const auto multiplicity =
-                        eval(
-                            route
-                                ->multiplicity_object,
-                            z);
+                    const auto multiplicity = eval(route->multiplicity_object, z);
 
-                    acc.add(
-                        first *
-                        accumulator);
+                    acc.add(first * accumulator);
 
-                    acc.add(
-                        q_n *
-                        ((table + beta) *
-                             inverse -
-                         FieldElement::one()));
+                    acc.add(q_n * ((table + beta) * inverse - FieldElement::one()));
 
-                    acc.add(
-                        (FieldElement::one() -
-                         q_n) *
-                        inverse);
+                    acc.add((FieldElement::one() - q_n) * inverse);
 
-                    acc.add(
-                        not_last *
-                        route_node_step(
-                            accumulator_next,
-                            accumulator,
-                            table,
-                            beta,
-                            q_n,
-                            multiplicity));
+                    acc.add(not_last * route_node_step(accumulator_next, accumulator, table, beta, q_n, multiplicity));
 
-                    acc.add(
-                        table -
-                        (eval(
-                             "P_AggBind_index_N",
-                             z) +
-                         eta *
-                             eval(
-                                 route
-                                     ->node_value_object,
-                                 z)));
+                    acc.add(table - (eval("P_AggBind_index_N", z) + eta * eval(route->node_value_object, z)));
 
-                    acc.add(
-                        zero_on_unselected(
-                            q_n,
-                            table));
+                    acc.add(zero_on_unselected(q_n, table));
                 }
             }
         }
 
         const auto add_canonical_compression =
-            [&](const std::string &matrix_object,
-                const std::string &target_object,
-                const FieldElement &compression,
-                std::size_t width)
+            [&](const std::string &matrix_object, const std::string &target_object, const FieldElement &compression, std::size_t width)
         {
-            auto expected =
-                FieldElement::zero();
+            auto expected = FieldElement::zero();
 
-            auto power =
-                FieldElement::one();
+            auto power = FieldElement::one();
 
-            for (std::size_t column = 0;
-                 column < width;
-                 ++column)
+            for (std::size_t column = 0; column < width; ++column)
             {
-                expected +=
-                    power *
-                    eval(
-                        canonical_matrix_column_label(
-                            matrix_object,
-                            column),
-                        z);
+                expected += power * eval(canonical_matrix_column_label(matrix_object, column), z);
 
-                power *=
-                    compression;
+                power *= compression;
             }
 
-            acc.add(
-                q_n *
-                (eval(
-                     target_object,
-                     z) -
-                 expected));
+            acc.add(q_n * (eval(target_object, z) - expected));
         };
 
-        for (std::size_t layer = 0;
-             layer <
-             context.model.hidden_layers.size();
-             ++layer)
+        for (std::size_t layer = 0; layer < context.model.hidden_layers.size(); ++layer)
         {
-            const auto &hidden_layer =
-                context.model.hidden_layers[layer];
+            const auto &hidden_layer = context.model.hidden_layers[layer];
 
-            for (std::size_t head = 0;
-                 head <
-                 hidden_layer.heads.size();
-                 ++head)
+            for (std::size_t head = 0; head < hidden_layer.heads.size(); ++head)
             {
-                const auto prefix =
-                    hidden_head_prefix(
-                        layer,
-                        head);
+                const auto prefix = hidden_head_prefix(layer, head);
 
-                const auto xi =
-                    challenges.at(
-                        hidden_challenge_name(
-                            "xi_h",
-                            layer,
-                            head));
+                const auto xi = challenges.at(hidden_challenge_name("xi_h", layer, head));
 
-                const auto width =
-                    hidden_layer.shape.head_dim;
+                const auto width = hidden_layer.shape.head_dim;
 
-                add_canonical_compression(
-                    prefix + "_H_prime",
-                    prefix + "_H_star",
-                    xi,
-                    width);
+                add_canonical_compression(prefix + "_H_prime", prefix + "_H_star", xi, width);
 
-                add_canonical_compression(
-                    prefix + "_H_agg_pre",
-                    prefix + "_H_agg_pre_star",
-                    xi,
-                    width);
+                add_canonical_compression(prefix + "_H_agg_pre", prefix + "_H_agg_pre_star", xi, width);
 
-                add_canonical_compression(
-                    prefix + "_H_agg",
-                    prefix + "_H_agg_star",
-                    xi,
-                    width);
+                add_canonical_compression(prefix + "_H_agg", prefix + "_H_agg_star", xi, width);
             }
 
-            const auto concat_width =
-                hidden_layer.shape.head_count *
-                hidden_layer.shape.head_dim;
+            const auto concat_width = hidden_layer.shape.head_count * hidden_layer.shape.head_dim;
 
-            const auto concat_object =
-                hidden_layer_concat_label(
-                    layer);
+            const auto concat_object = hidden_layer_concat_label(layer);
 
-            for (std::size_t column = 0;
-                 column < concat_width;
-                 ++column)
+            for (std::size_t column = 0; column < concat_width; ++column)
             {
-                const auto head =
-                    column /
-                    hidden_layer.shape.head_dim;
+                const auto head = column / hidden_layer.shape.head_dim;
 
-                const auto local_column =
-                    column %
-                    hidden_layer.shape.head_dim;
+                const auto local_column = column % hidden_layer.shape.head_dim;
 
-                acc.add(
-                    q_n *
-                    (eval(
-                         canonical_matrix_column_label(
-                             concat_object,
-                             column),
-                         z) -
-                     eval(
-                         canonical_matrix_column_label(
-                             hidden_head_prefix(
-                                 layer,
-                                 head) +
-                                 "_H_agg",
-                             local_column),
-                         z)));
+                acc.add(q_n * (eval(canonical_matrix_column_label(concat_object, column), z) -
+                               eval(canonical_matrix_column_label(hidden_head_prefix(layer, head) + "_H_agg", local_column), z)));
             }
 
-            add_canonical_compression(
-                concat_object,
-                hidden_layer_concat_star_label(
-                    layer),
-                challenges.at(
-                    hidden_concat_xi_name(
-                        layer)),
-                concat_width);
+            add_canonical_compression(concat_object, hidden_layer_concat_star_label(layer), challenges.at(hidden_concat_xi_name(layer)), concat_width);
         }
 
-        for (std::size_t head = 0;
-             head <
-             context.model.output_layer.heads.size();
-             ++head)
+        for (std::size_t head = 0; head < context.model.output_layer.heads.size(); ++head)
         {
-            const auto prefix =
-                output_head_prefix(
-                    head);
+            const auto prefix = output_head_prefix(head);
 
-            const auto xi =
-                challenges.at(
-                    "xi_out");
+            const auto xi = challenges.at("xi_out");
 
-            add_canonical_compression(
-                prefix + "_Y_prime",
-                prefix + "_Y_prime_star",
-                xi,
-                context.local.num_classes);
+            add_canonical_compression(prefix + "_Y_prime", prefix + "_Y_prime_star", xi, context.local.num_classes);
 
-            add_canonical_compression(
-                output_y_lin_label(
-                    head),
-                prefix + "_Y_star",
-                xi,
-                context.local.num_classes);
+            add_canonical_compression(output_y_lin_label(head), prefix + "_Y_star", xi, context.local.num_classes);
         }
 
-        std::optional<
-            std::vector<FieldElement>>
-            public_source_weights;
+        std::optional<std::vector<FieldElement>> public_source_weights;
 
-        const auto evaluate_public_source_fold =
-            [&](const auto &spec,
-                const FieldElement &lambda)
-            -> FieldElement
+        const auto evaluate_public_source_fold = [&](const auto &spec, const FieldElement &lambda) -> FieldElement
         {
             if (!public_source_weights.has_value())
             {
                 if (context.domains.n == nullptr)
                 {
-                    throw std::runtime_error(
-                        "t_N public-source fold is missing N domain");
+                    throw std::runtime_error("t_N public-source fold is missing N domain");
                 }
 
-                public_source_weights.emplace(
-                    context.domains.n
-                        ->barycentric_weights(z));
+                public_source_weights.emplace(context.domains.n->barycentric_weights(z));
             }
 
-            const auto &weights =
-                *public_source_weights;
+            const auto &weights = *public_source_weights;
 
-            if (spec.source_rows >
-                    context.local.features.size() ||
-                spec.source_rows >
-                    weights.size())
+            if (spec.source_rows > context.local.features.size() || spec.source_rows > weights.size())
             {
-                throw std::runtime_error(
-                    "t_N public-source fold row shape mismatch");
+                throw std::runtime_error("t_N public-source fold row shape mismatch");
             }
 
             if (spec.source_rows == 0)
@@ -4632,145 +2703,78 @@ namespace gatzk::protocol
                 return FieldElement::zero();
             }
 
-            const auto fold_range =
-                [&](std::size_t begin,
-                    std::size_t end)
-                -> FieldElement
+            const auto fold_range = [&](std::size_t begin, std::size_t end) -> FieldElement
             {
-                auto partial =
-                    FieldElement::zero();
+                auto partial = FieldElement::zero();
 
-                for (std::size_t row = begin;
-                     row < end;
-                     ++row)
+                for (std::size_t row = begin; row < end; ++row)
                 {
-                    const auto &feature_row =
-                        context.local.features[row];
+                    const auto &feature_row = context.local.features[row];
 
-                    if (feature_row.size() <
-                        spec.width)
+                    if (feature_row.size() < spec.width)
                     {
-                        throw std::runtime_error(
-                            "t_N public-source fold width mismatch");
+                        throw std::runtime_error("t_N public-source fold width mismatch");
                     }
 
-                    auto row_fold =
-                        FieldElement::zero();
+                    auto row_fold = FieldElement::zero();
 
-                    for (std::size_t column = 0;
-                         column < spec.width;
-                         ++column)
+                    for (std::size_t column = 0; column < spec.width; ++column)
                     {
-                        row_fold =
-                            row_fold * lambda +
-                            feature_row[column];
+                        row_fold = row_fold * lambda + feature_row[column];
                     }
 
-                    partial +=
-                        weights[row] *
-                        row_fold;
+                    partial += weights[row] * row_fold;
                 }
 
                 return partial;
             };
 
-            constexpr std::size_t
-                kMinimumParallelOperations =
-                    std::size_t{1} << 18;
+            constexpr std::size_t kMinimumParallelOperations = std::size_t{1} << 18;
 
-            constexpr std::size_t
-                kMinimumRowsPerWorker = 64;
+            constexpr std::size_t kMinimumRowsPerWorker = 64;
 
-            const auto hardware_workers =
-                std::max<std::size_t>(
-                    1,
-                    static_cast<std::size_t>(
-                        std::thread::
-                            hardware_concurrency()));
+            const auto hardware_workers = std::max<std::size_t>(1, static_cast<std::size_t>(std::thread::hardware_concurrency()));
 
-            const auto operations_row_threshold =
-                spec.width == 0
-                    ? std::numeric_limits<
-                          std::size_t>::max()
-                    : kMinimumParallelOperations /
-                              spec.width +
-                          (kMinimumParallelOperations %
-                                       spec.width !=
-                                   0
-                               ? 1
-                               : 0);
+            const auto operations_row_threshold = spec.width == 0
+                                                      ? std::numeric_limits<std::size_t>::max()
+                                                      : kMinimumParallelOperations / spec.width + (kMinimumParallelOperations % spec.width != 0 ? 1 : 0);
 
-            const bool use_parallel =
-                hardware_workers > 1 && spec.source_rows >=
-                                            operations_row_threshold;
+            const bool use_parallel = hardware_workers > 1 && spec.source_rows >= operations_row_threshold;
 
             if (!use_parallel)
             {
-                return fold_range(
-                    0,
-                    spec.source_rows);
+                return fold_range(0, spec.source_rows);
             }
 
-            const auto row_worker_cap =
-                1 +
-                (spec.source_rows - 1) /
-                    kMinimumRowsPerWorker;
+            const auto row_worker_cap = 1 + (spec.source_rows - 1) / kMinimumRowsPerWorker;
 
-            const auto worker_count =
-                std::min(
-                    hardware_workers,
-                    row_worker_cap);
+            const auto worker_count = std::min(hardware_workers, row_worker_cap);
 
             if (worker_count <= 1)
             {
-                return fold_range(
-                    0,
-                    spec.source_rows);
+                return fold_range(0, spec.source_rows);
             }
 
-            const auto chunk_size =
-                (spec.source_rows +
-                 worker_count - 1) /
-                worker_count;
+            const auto chunk_size = (spec.source_rows + worker_count - 1) / worker_count;
 
-            std::vector<
-                std::future<FieldElement>>
-                futures;
+            std::vector<std::future<FieldElement>> futures;
 
-            futures.reserve(
-                worker_count - 1);
+            futures.reserve(worker_count - 1);
 
-            for (std::size_t worker = 0;
-                 worker + 1 < worker_count;
-                 ++worker)
+            for (std::size_t worker = 0; worker + 1 < worker_count; ++worker)
             {
-                const auto begin =
-                    worker * chunk_size;
+                const auto begin = worker * chunk_size;
 
-                const auto end =
-                    std::min(
-                        spec.source_rows,
-                        begin + chunk_size);
+                const auto end = std::min(spec.source_rows, begin + chunk_size);
 
-                futures.emplace_back(
-                    std::async(
-                        std::launch::async,
-                        fold_range,
-                        begin,
-                        end));
+                futures.emplace_back(std::async(std::launch::async, fold_range, begin, end));
             }
 
-            const auto caller_begin =
-                (worker_count - 1) *
-                chunk_size;
+            const auto caller_begin = (worker_count - 1) * chunk_size;
 
-            const auto caller_partial =
-                fold_range(
-                    caller_begin,
-                    spec.source_rows);
+            const auto caller_partial = fold_range(caller_begin, spec.source_rows);
 
-            auto total =
-                FieldElement::zero();
+            auto total = FieldElement::zero();
 
             for (auto &future : futures)
             {
@@ -4781,248 +2785,104 @@ namespace gatzk::protocol
             return total;
         };
 
-        for (const auto &planned :
-             plan.matrix_fold_plans)
+        for (const auto &planned : plan.matrix_fold_plans)
         {
-            const auto &spec =
-                planned.spec;
+            const auto &spec = planned.spec;
 
-            const auto &lambda =
-                planned.lambda;
+            const auto &lambda = planned.lambda;
 
-            auto expected_source_fold =
-                FieldElement::zero();
+            auto expected_source_fold = FieldElement::zero();
 
             if (spec.public_source)
             {
-                if (public_source_fold_eval !=
-                    nullptr)
+                if (public_source_fold_eval != nullptr)
                 {
-                    // Prover materialization uses the independently derived
-                    // public-source polynomial on the exact quotient coset.
-                    // The verifier leaves this callback null and recomputes
-                    // the same interpolation directly from public features.
-                    expected_source_fold =
-                        (*public_source_fold_eval)(
-                            spec.source_fold_object,
-                            evaluation_index);
+                    expected_source_fold = (*public_source_fold_eval)(spec.source_fold_object, evaluation_index);
                 }
                 else
                 {
-                    expected_source_fold =
-                        evaluate_public_source_fold(
-                            spec,
-                            lambda);
+                    expected_source_fold = evaluate_public_source_fold(spec, lambda);
                 }
             }
             else
             {
-                for (std::size_t column = 0;
-                     column <
-                     spec.width;
-                     ++column)
+                for (std::size_t column = 0; column < spec.width; ++column)
                 {
-                    expected_source_fold =
-                        expected_source_fold *
-                            lambda +
-                        eval(
-                            canonical_matrix_column_label(
-                                spec
-                                    .source_matrix_object,
-                                column),
-                            z);
+                    expected_source_fold = expected_source_fold * lambda + eval(canonical_matrix_column_label(spec.source_matrix_object, column), z);
                 }
             }
 
-            acc.add(
-                q_n *
-                (eval(
-                     spec.source_fold_object,
-                     z) -
-                 expected_source_fold));
+            acc.add(q_n * (eval(spec.source_fold_object, z) - expected_source_fold));
 
-            const auto rho =
-                challenges.at(
-                    spec
-                        .source_point_challenge);
+            const auto rho = challenges.at(spec.source_point_challenge);
 
-            const auto source_weight_label =
-                spec.source_accumulator_object +
-                "_Weight";
+            const auto source_weight_label = spec.source_accumulator_object + "_Weight";
 
-            acc.add(
-                q_n *
-                (eval(
-                     source_weight_label,
-                     z) *
-                     (rho - z) -
-                 planned.barycentric_scale *
-                     z));
+            acc.add(q_n * (eval(source_weight_label, z) * (rho - z) - planned.barycentric_scale * z));
 
-            const auto source_current =
-                eval(
-                    spec
-                        .source_accumulator_object,
-                    z);
+            const auto source_current = eval(spec.source_accumulator_object, z);
 
-            const auto source_next =
-                eval(
-                    spec
-                        .source_accumulator_object,
-                    omega_z);
+            const auto source_next = eval(spec.source_accumulator_object, omega_z);
 
-            acc.add(
-                first *
-                source_current);
+            acc.add(first * source_current);
 
-            acc.add(
-                not_last *
-                q_n *
-                (source_next -
-                 source_current -
-                 eval(
-                     spec
-                         .source_fold_object,
-                     z) *
-                     eval(
-                         source_weight_label,
-                         z)));
+            acc.add(not_last * q_n * (source_next - source_current - eval(spec.source_fold_object, z) * eval(source_weight_label, z)));
 
-            acc.add(
-                not_last *
-                (FieldElement::one() -
-                 q_n) *
-                (source_next -
-                 source_current));
+            acc.add(not_last * (FieldElement::one() - q_n) * (source_next - source_current));
         }
 
-        for (const auto &planned :
-             plan.flat_matrix_plans)
+        for (const auto &planned : plan.flat_matrix_plans)
         {
-            const auto &spec =
-                planned.spec;
+            const auto &spec = planned.spec;
 
-            auto expected =
-                FieldElement::zero();
+            auto expected = FieldElement::zero();
 
-            for (std::size_t column = 0;
-                 column <
-                 spec.columns;
-                 ++column)
+            for (std::size_t column = 0; column < spec.columns; ++column)
             {
-                expected =
-                    expected *
-                        planned.lambda +
-                    eval(
-                        canonical_matrix_column_label(
-                            spec.matrix_object,
-                            column),
-                        z);
+                expected = expected * planned.lambda + eval(canonical_matrix_column_label(spec.matrix_object, column), z);
             }
 
-            acc.add(
-                q_n *
-                (eval(
-                     spec.row_fold_object,
-                     z) -
-                 expected));
+            acc.add(q_n * (eval(spec.row_fold_object, z) - expected));
 
-            const auto current =
-                eval(
-                    spec
-                        .row_accumulator_object,
-                    z);
+            const auto current = eval(spec.row_accumulator_object, z);
 
-            const auto next =
-                eval(
-                    spec
-                        .row_accumulator_object,
-                    omega_z);
+            const auto next = eval(spec.row_accumulator_object, omega_z);
 
-            acc.add(
-                first *
-                current);
+            acc.add(first * current);
 
-            acc.add(
-                not_last *
-                q_n *
-                (next -
-                 planned.row_base *
-                     current -
-                 eval(
-                     spec.row_fold_object,
-                     z)));
+            acc.add(not_last * q_n * (next - planned.row_base * current - eval(spec.row_fold_object, z)));
 
-            acc.add(
-                not_last *
-                (FieldElement::one() -
-                 q_n) *
-                (next - current));
+            acc.add(not_last * (FieldElement::one() - q_n) * (next - current));
         }
 
-        for (const auto &planned :
-             plan.broadcast_flat_plans)
+        for (const auto &planned : plan.broadcast_flat_plans)
         {
-            const auto &spec =
-                planned.spec;
+            const auto &spec = planned.spec;
 
-            const auto current =
-                eval(
-                    spec
-                        .node_accumulator_object,
-                    z);
+            const auto current = eval(spec.node_accumulator_object, z);
 
-            const auto next =
-                eval(
-                    spec
-                        .node_accumulator_object,
-                    omega_z);
+            const auto next = eval(spec.node_accumulator_object, omega_z);
 
-            acc.add(
-                first *
-                current);
+            acc.add(first * current);
 
-            acc.add(
-                not_last *
-                q_n *
-                (next -
-                 planned.row_base *
-                     current -
-                 eval(
-                     spec.node_object,
-                     z) *
-                     planned.class_sum));
+            acc.add(not_last * q_n * (next - planned.row_base * current - eval(spec.node_object, z) * planned.class_sum));
 
-            acc.add(
-                not_last *
-                (FieldElement::one() -
-                 q_n) *
-                (next -
-                 current));
+            acc.add(not_last * (FieldElement::one() - q_n) * (next - current));
         }
 
-        const auto numerator =
-            acc.value();
+        const auto numerator = acc.value();
 
         if (boundary.zero_inverse.has_value())
         {
-            return numerator *
-                   *boundary.zero_inverse;
+            return numerator * *boundary.zero_inverse;
         }
 
-        return numerator /
-               zero_eval;
+        return numerator / zero_eval;
     }
 
-    FieldElement evaluate_t_in(
-        const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges,
-        const std::map<std::string, FieldElement> &external_evaluations,
-        const EvalFn &eval,
-        const FieldElement &z,
-        bool return_numerator,
-        std::size_t *first_nonzero_term,
-        FieldElement *first_nonzero_value)
+    FieldElement evaluate_t_in(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges,
+                               const std::map<std::string, FieldElement> &external_evaluations, const EvalFn &eval, const FieldElement &z,
+                               bool return_numerator, std::size_t *first_nonzero_term, FieldElement *first_nonzero_value)
     {
         const auto omega_z = z * context.domains.in->omega;
         const auto boundary = boundary_lagrange_values(*context.domains.in, z);
@@ -5030,90 +2890,49 @@ namespace gatzk::protocol
         const auto last = boundary.last;
         const auto not_last = FieldElement::one() - last;
         const auto zero_eval = boundary.zero;
-        QuotientAccumulator acc(
-            challenges.at("alpha_quot"), return_numerator);
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
+        QuotientAccumulator acc(challenges.at("alpha_quot"), return_numerator);
+        for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
-            const auto q_valid = eval(
-                hidden_q_in_selector_label(layer_index), z);
+            const auto q_valid = eval(hidden_q_in_selector_label(layer_index), z);
             const auto q_invalid = FieldElement::one() - q_valid;
-            for (std::size_t local_head_index = 0;
-                 local_head_index < context.model.hidden_layers[layer_index].heads.size();
-                 ++local_head_index)
+            for (std::size_t local_head_index = 0; local_head_index < context.model.hidden_layers[layer_index].heads.size(); ++local_head_index)
             {
                 const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                const auto mu_name =
-                    "mu_l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index) + "_proj";
+                const auto mu_name = "mu_l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index) + "_proj";
                 const auto projection_semantic_eval =
                     external_evaluations.at(mu_name) -
-                    context.domains.n
-                            ->zero_polynomial_eval(
-                                challenges.at(
-                                    hidden_challenge_name(
-                                        "rho_proj_h",
-                                        layer_index,
-                                        local_head_index))) *
-                        external_evaluations.at(
-                            external_mask_eval_name(
-                                mu_name));
+                    context.domains.n->zero_polynomial_eval(challenges.at(hidden_challenge_name("rho_proj_h", layer_index, local_head_index))) *
+                        external_evaluations.at(external_mask_eval_name(mu_name));
                 acc.add(first * eval(prefix + "Acc_proj", z));
-                acc.add(q_valid * acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
+                acc.add(q_valid *
+                        acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
                 acc.add(not_last * q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_proj", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_proj", z)));
-                acc.add(
-                    last *
-                    (eval(prefix + "Acc_proj", z) -
-                     projection_semantic_eval));
+                acc.add(last * (eval(prefix + "Acc_proj", z) - projection_semantic_eval));
             }
         }
 
-        for (const auto &spec :
-             matrix_fold_binding_specs(context))
+        for (const auto &spec : matrix_fold_binding_specs(context))
         {
-            if (spec.fold_domain !=
-                context.domains.in->name)
+            if (spec.fold_domain != context.domains.in->name)
             {
                 continue;
             }
 
-            const auto selector =
-                eval(
-                    spec.fold_selector_label,
-                    z);
+            const auto selector = eval(spec.fold_selector_label, z);
 
-            const auto current =
-                eval(
-                    spec.fold_accumulator_object,
-                    z);
+            const auto current = eval(spec.fold_accumulator_object, z);
 
-            const auto next =
-                eval(
-                    spec.fold_accumulator_object,
-                    omega_z);
+            const auto next = eval(spec.fold_accumulator_object, omega_z);
 
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto lambda = challenges.at(spec.lambda_challenge);
 
-            acc.add(
-                first * current);
+            acc.add(first * current);
 
-            acc.add(
-                not_last *
-                selector *
-                (next -
-                 lambda * current -
-                 eval(
-                     spec.fold_object,
-                     z)));
+            acc.add(not_last * selector * (next - lambda * current - eval(spec.fold_object, z)));
 
-            acc.add(
-                not_last *
-                (FieldElement::one() - selector) *
-                (next - current));
+            acc.add(not_last * (FieldElement::one() - selector) * (next - current));
         }
 
         if (return_numerator && acc.first_nonzero_term().has_value())
@@ -5126,15 +2945,9 @@ namespace gatzk::protocol
         return return_numerator ? acc.value() : acc.value() / zero_eval;
     }
 
-    FieldElement evaluate_t_d(
-        const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges,
-        const std::map<std::string, FieldElement> &external_evaluations,
-        const EvalFn &eval,
-        const FieldElement &z,
-        bool return_numerator,
-        std::size_t *first_nonzero_term,
-        FieldElement *first_nonzero_value)
+    FieldElement evaluate_t_d(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges,
+                              const std::map<std::string, FieldElement> &external_evaluations, const EvalFn &eval, const FieldElement &z, bool return_numerator,
+                              std::size_t *first_nonzero_term, FieldElement *first_nonzero_value)
     {
         const auto omega_z = z * context.domains.d->omega;
         const auto boundary = boundary_lagrange_values(*context.domains.d, z);
@@ -5142,136 +2955,89 @@ namespace gatzk::protocol
         const auto last = boundary.last;
         const auto not_last = FieldElement::one() - last;
         const auto zero_eval = boundary.zero;
-        QuotientAccumulator acc(
-            challenges.at("alpha_quot"), return_numerator);
-        const auto semantic_external =
-            [&](const std::string &eval_name,
-                const std::string &challenge_name)
+        QuotientAccumulator acc(challenges.at("alpha_quot"), return_numerator);
+        const auto semantic_external = [&](const std::string &eval_name, const std::string &challenge_name)
         {
-            return external_evaluations.at(eval_name) - context.domains.n->zero_polynomial_eval(
-                                                            challenges.at(challenge_name)) *
-                                                            external_evaluations.at(
-                                                                external_mask_eval_name(eval_name));
+            return external_evaluations.at(eval_name) -
+                   context.domains.n->zero_polynomial_eval(challenges.at(challenge_name)) * external_evaluations.at(external_mask_eval_name(eval_name));
         };
 
-        for (std::size_t layer_index = 0;
-             layer_index < context.model.hidden_layers.size();
-             ++layer_index)
+        for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
-            const auto q_valid = eval(
-                hidden_q_d_h_selector_label(layer_index), z);
+            const auto q_valid = eval(hidden_q_d_h_selector_label(layer_index), z);
             const auto q_invalid = FieldElement::one() - q_valid;
-            for (std::size_t local_head_index = 0;
-                 local_head_index < context.model.hidden_layers[layer_index].heads.size();
-                 ++local_head_index)
+            for (std::size_t local_head_index = 0; local_head_index < context.model.hidden_layers[layer_index].heads.size(); ++local_head_index)
             {
                 const auto prefix = hidden_head_prefix(layer_index, local_head_index) + "_";
-                const auto challenge = [&](std::string_view base)
-                {
-                    return hidden_challenge_name(base, layer_index, local_head_index);
-                };
-                const auto suffix =
-                    "l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index);
-                const auto src_semantic_eval =
-                    external_evaluations.at(
-                        "mu_" + suffix + "_src") -
-                    context.domains.n->zero_polynomial_eval(
-                        challenges.at(challenge("y_src_h"))) *
-                        external_evaluations.at(
-                            hidden_score_mask_eval_name(layer_index, local_head_index, "src"));
-                const auto dst_semantic_eval =
-                    external_evaluations.at(
-                        "mu_" + suffix + "_dst") -
-                    context.domains.n->zero_polynomial_eval(
-                        challenges.at(challenge("y_dst_h"))) *
-                        external_evaluations.at(
-                            hidden_score_mask_eval_name(layer_index, local_head_index, "dst"));
+                const auto challenge = [&](std::string_view base) { return hidden_challenge_name(base, layer_index, local_head_index); };
+                const auto suffix = "l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index);
+                const auto src_semantic_eval = external_evaluations.at("mu_" + suffix + "_src") -
+                                               context.domains.n->zero_polynomial_eval(challenges.at(challenge("y_src_h"))) *
+                                                   external_evaluations.at(hidden_score_mask_eval_name(layer_index, local_head_index, "src"));
+                const auto dst_semantic_eval = external_evaluations.at("mu_" + suffix + "_dst") -
+                                               context.domains.n->zero_polynomial_eval(challenges.at(challenge("y_dst_h"))) *
+                                                   external_evaluations.at(hidden_score_mask_eval_name(layer_index, local_head_index, "dst"));
                 acc.add(first * eval(prefix + "Acc_src", z));
-                acc.add(q_valid * acc_step(eval(prefix + "Acc_src", omega_z), eval(prefix + "Acc_src", z), eval(prefix + "a_src", z), eval(prefix + "b_src", z)));
+                acc.add(q_valid *
+                        acc_step(eval(prefix + "Acc_src", omega_z), eval(prefix + "Acc_src", z), eval(prefix + "a_src", z), eval(prefix + "b_src", z)));
                 acc.add(not_last * q_invalid * (eval(prefix + "Acc_src", omega_z) - eval(prefix + "Acc_src", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_src", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_src", z)));
                 acc.add(last * (eval(prefix + "Acc_src", z) - src_semantic_eval));
 
                 acc.add(first * eval(prefix + "Acc_dst", z));
-                acc.add(q_valid * acc_step(eval(prefix + "Acc_dst", omega_z), eval(prefix + "Acc_dst", z), eval(prefix + "a_dst", z), eval(prefix + "b_dst", z)));
+                acc.add(q_valid *
+                        acc_step(eval(prefix + "Acc_dst", omega_z), eval(prefix + "Acc_dst", z), eval(prefix + "a_dst", z), eval(prefix + "b_dst", z)));
                 acc.add(not_last * q_invalid * (eval(prefix + "Acc_dst", omega_z) - eval(prefix + "Acc_dst", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_dst", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_dst", z)));
                 acc.add(last * (eval(prefix + "Acc_dst", z) - dst_semantic_eval));
 
                 acc.add(first * eval(prefix + "Acc_star", z));
-                acc.add(q_valid * acc_step(eval(prefix + "Acc_star", omega_z), eval(prefix + "Acc_star", z), eval(prefix + "a_star", z), eval(prefix + "b_star", z)));
+                acc.add(q_valid *
+                        acc_step(eval(prefix + "Acc_star", omega_z), eval(prefix + "Acc_star", z), eval(prefix + "a_star", z), eval(prefix + "b_star", z)));
                 acc.add(not_last * q_invalid * (eval(prefix + "Acc_star", omega_z) - eval(prefix + "Acc_star", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_star", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_star", z)));
-                acc.add(last * (eval(prefix + "Acc_star", z) - semantic_external(
-                                                                   "mu_" + suffix + "_star",
-                                                                   challenge("y_star_h"))));
+                acc.add(last * (eval(prefix + "Acc_star", z) - semantic_external("mu_" + suffix + "_star", challenge("y_star_h"))));
 
                 acc.add(first * eval(prefix + "Acc_agg_pre", z));
-                acc.add(q_valid * acc_step(eval(prefix + "Acc_agg_pre", omega_z), eval(prefix + "Acc_agg_pre", z), eval(prefix + "a_agg_pre", z), eval(prefix + "b_agg_pre", z)));
+                acc.add(q_valid * acc_step(eval(prefix + "Acc_agg_pre", omega_z), eval(prefix + "Acc_agg_pre", z), eval(prefix + "a_agg_pre", z),
+                                           eval(prefix + "b_agg_pre", z)));
                 acc.add(not_last * q_invalid * (eval(prefix + "Acc_agg_pre", omega_z) - eval(prefix + "Acc_agg_pre", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_agg_pre", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_agg_pre", z)));
-                acc.add(last * (eval(prefix + "Acc_agg_pre", z) - semantic_external(
-                                                                      "mu_" + suffix + "_agg_pre",
-                                                                      challenge("y_agg_pre_h"))));
+                acc.add(last * (eval(prefix + "Acc_agg_pre", z) - semantic_external("mu_" + suffix + "_agg_pre", challenge("y_agg_pre_h"))));
 
                 acc.add(first * eval(prefix + "Acc_agg", z));
-                acc.add(q_valid * acc_step(eval(prefix + "Acc_agg", omega_z), eval(prefix + "Acc_agg", z), eval(prefix + "a_agg", z), eval(prefix + "b_agg", z)));
+                acc.add(q_valid *
+                        acc_step(eval(prefix + "Acc_agg", omega_z), eval(prefix + "Acc_agg", z), eval(prefix + "a_agg", z), eval(prefix + "b_agg", z)));
                 acc.add(not_last * q_invalid * (eval(prefix + "Acc_agg", omega_z) - eval(prefix + "Acc_agg", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "a_agg", z)));
                 acc.add(zero_on_unselected(q_valid, eval(prefix + "b_agg", z)));
-                acc.add(last * (eval(prefix + "Acc_agg", z) - semantic_external(
-                                                                  "mu_" + suffix + "_agg",
-                                                                  challenge("y_agg_h"))));
+                acc.add(last * (eval(prefix + "Acc_agg", z) - semantic_external("mu_" + suffix + "_agg", challenge("y_agg_h"))));
             }
         }
-        for (const auto &spec :
-             matrix_fold_binding_specs(context))
+        for (const auto &spec : matrix_fold_binding_specs(context))
         {
-            if (spec.fold_domain !=
-                context.domains.d->name)
+            if (spec.fold_domain != context.domains.d->name)
             {
                 continue;
             }
 
-            const auto selector =
-                eval(
-                    spec.fold_selector_label,
-                    z);
+            const auto selector = eval(spec.fold_selector_label, z);
 
-            const auto current =
-                eval(
-                    spec.fold_accumulator_object,
-                    z);
+            const auto current = eval(spec.fold_accumulator_object, z);
 
-            const auto next =
-                eval(
-                    spec.fold_accumulator_object,
-                    omega_z);
+            const auto next = eval(spec.fold_accumulator_object, omega_z);
 
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto lambda = challenges.at(spec.lambda_challenge);
 
-            acc.add(
-                first * current);
+            acc.add(first * current);
 
-            acc.add(
-                not_last *
-                selector *
-                (next -
-                 lambda * current -
-                 eval(
-                     spec.fold_object,
-                     z)));
+            acc.add(not_last * selector * (next - lambda * current - eval(spec.fold_object, z)));
 
-            acc.add(
-                not_last *
-                (FieldElement::one() - selector) *
-                (next - current));
+            acc.add(not_last * (FieldElement::one() - selector) * (next - current));
         }
         if (return_numerator && acc.first_nonzero_term().has_value())
         {
@@ -5283,12 +3049,8 @@ namespace gatzk::protocol
         return return_numerator ? acc.value() : acc.value() / zero_eval;
     }
 
-    FieldElement evaluate_t_cat(
-        const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges,
-        const std::map<std::string, FieldElement> &external_evaluations,
-        const EvalFn &eval,
-        const FieldElement &z)
+    FieldElement evaluate_t_cat(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges,
+                                const std::map<std::string, FieldElement> &external_evaluations, const EvalFn &eval, const FieldElement &z)
     {
         const auto omega_z = z * context.domains.cat->omega;
         const auto boundary = boundary_lagrange_values(*context.domains.cat, z);
@@ -5296,21 +3058,17 @@ namespace gatzk::protocol
         const auto last = boundary.last;
         const auto not_last = FieldElement::one() - last;
         const auto zero_eval = boundary.zero;
-        // cat 域只约束多头拼接与输出投影输入，不重复承担 edge 域上的 softmax/lookup 主链。
         QuotientAccumulator acc(challenges.at("alpha_quot"));
 
         for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
-            const auto q_valid = eval(
-                hidden_q_cat_selector_label(layer_index), z);
+            const auto q_valid = eval(hidden_q_cat_selector_label(layer_index), z);
             const auto q_invalid = FieldElement::one() - q_valid;
             const auto prefix = hidden_layer_cat_prefix(layer_index);
             const auto mu_name = "mu_cat_l" + std::to_string(layer_index);
             const auto semantic_mu =
-                external_evaluations.at(mu_name) - context.domains.n->zero_polynomial_eval(challenges.at(
-                                                       hidden_concat_y_name(layer_index))) *
-                                                       external_evaluations.at(
-                                                           external_mask_eval_name(mu_name));
+                external_evaluations.at(mu_name) - context.domains.n->zero_polynomial_eval(challenges.at(hidden_concat_y_name(layer_index))) *
+                                                       external_evaluations.at(external_mask_eval_name(mu_name));
             acc.add(first * eval(prefix + "_Acc", z));
             acc.add(q_valid * acc_step(eval(prefix + "_Acc", omega_z), eval(prefix + "_Acc", z), eval(prefix + "_a", z), eval(prefix + "_b", z)));
             acc.add(not_last * q_invalid * (eval(prefix + "_Acc", omega_z) - eval(prefix + "_Acc", z)));
@@ -5323,90 +3081,48 @@ namespace gatzk::protocol
         {
             const auto q_valid = eval(output_q_cat_selector_label(), z);
             const auto q_invalid = FieldElement::one() - q_valid;
-            const auto prefix =
-                output_head_prefix(head_index) + "_";
+            const auto prefix = output_head_prefix(head_index) + "_";
 
-            const auto mu_name =
-                output_external_eval_name(
-                    "proj",
-                    head_index);
+            const auto mu_name = output_external_eval_name("proj", head_index);
 
             const auto projection_semantic_eval =
-                external_evaluations.at(mu_name) -
-                context.domains.n
-                        ->zero_polynomial_eval(
-                            challenges.at(
-                                output_challenge_name(
-                                    "rho_proj_out",
-                                    head_index))) *
-                    external_evaluations.at(
-                        external_mask_eval_name(
-                            mu_name));
+                external_evaluations.at(mu_name) - context.domains.n->zero_polynomial_eval(challenges.at(output_challenge_name("rho_proj_out", head_index))) *
+                                                       external_evaluations.at(external_mask_eval_name(mu_name));
             acc.add(first * eval(prefix + "Acc_proj", z));
-            acc.add(q_valid * acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
+            acc.add(q_valid *
+                    acc_step(eval(prefix + "Acc_proj", omega_z), eval(prefix + "Acc_proj", z), eval(prefix + "a_proj", z), eval(prefix + "b_proj", z)));
             acc.add(not_last * q_invalid * (eval(prefix + "Acc_proj", omega_z) - eval(prefix + "Acc_proj", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "a_proj", z)));
             acc.add(zero_on_unselected(q_valid, eval(prefix + "b_proj", z)));
-            acc.add(
-                last *
-                (eval(prefix + "Acc_proj", z) -
-                 projection_semantic_eval));
+            acc.add(last * (eval(prefix + "Acc_proj", z) - projection_semantic_eval));
         }
 
-        for (const auto &spec :
-             matrix_fold_binding_specs(context))
+        for (const auto &spec : matrix_fold_binding_specs(context))
         {
-            if (spec.fold_domain !=
-                context.domains.cat->name)
+            if (spec.fold_domain != context.domains.cat->name)
             {
                 continue;
             }
 
-            const auto selector =
-                eval(
-                    spec.fold_selector_label,
-                    z);
+            const auto selector = eval(spec.fold_selector_label, z);
 
-            const auto current =
-                eval(
-                    spec.fold_accumulator_object,
-                    z);
+            const auto current = eval(spec.fold_accumulator_object, z);
 
-            const auto next =
-                eval(
-                    spec.fold_accumulator_object,
-                    omega_z);
+            const auto next = eval(spec.fold_accumulator_object, omega_z);
 
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto lambda = challenges.at(spec.lambda_challenge);
 
-            acc.add(
-                first * current);
+            acc.add(first * current);
 
-            acc.add(
-                not_last *
-                selector *
-                (next -
-                 lambda * current -
-                 eval(
-                     spec.fold_object,
-                     z)));
+            acc.add(not_last * selector * (next - lambda * current - eval(spec.fold_object, z)));
 
-            acc.add(
-                not_last *
-                (FieldElement::one() - selector) *
-                (next - current));
+            acc.add(not_last * (FieldElement::one() - selector) * (next - current));
         }
         return acc.value() / zero_eval;
     }
 
-    FieldElement evaluate_t_c(
-        const ProtocolContext &context,
-        const std::map<std::string, FieldElement> &challenges,
-        const std::map<std::string, FieldElement> &external_evaluations,
-        const EvalFn &eval,
-        const FieldElement &z)
+    FieldElement evaluate_t_c(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges,
+                              const std::map<std::string, FieldElement> &external_evaluations, const EvalFn &eval, const FieldElement &z)
     {
         const auto omega_z = z * context.domains.c->omega;
         const auto boundary = boundary_lagrange_values(*context.domains.c, z);
@@ -5416,7 +3132,6 @@ namespace gatzk::protocol
         const auto zero_eval = boundary.zero;
         const auto q_valid = eval("P_Q_C_valid", z);
         const auto q_invalid = FieldElement::one() - q_valid;
-        // C 域主要对齐输出层每头的源/目标打分绑定，以及 bias 后输出和多头平均的关系。
         QuotientAccumulator acc(challenges.at("alpha_quot"));
 
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
@@ -5426,20 +3141,14 @@ namespace gatzk::protocol
             const auto mu_dst = output_external_eval_name("dst", head_index);
             const auto mu_star = output_external_eval_name("star", head_index);
             const auto star_semantic_eval =
-                external_evaluations.at(mu_star) - context.domains.n->zero_polynomial_eval(challenges.at(
-                                                       output_challenge_name("y_out_star", head_index))) *
-                                                       external_evaluations.at(
-                                                           external_mask_eval_name(mu_star));
+                external_evaluations.at(mu_star) - context.domains.n->zero_polynomial_eval(challenges.at(output_challenge_name("y_out_star", head_index))) *
+                                                       external_evaluations.at(external_mask_eval_name(mu_star));
             const auto src_semantic_eval =
-                external_evaluations.at(mu_src) - context.domains.n->zero_polynomial_eval(challenges.at(
-                                                      output_challenge_name("y_src_out", head_index))) *
-                                                      external_evaluations.at(
-                                                          output_score_mask_eval_name(head_index, "src"));
+                external_evaluations.at(mu_src) - context.domains.n->zero_polynomial_eval(challenges.at(output_challenge_name("y_src_out", head_index))) *
+                                                      external_evaluations.at(output_score_mask_eval_name(head_index, "src"));
             const auto dst_semantic_eval =
-                external_evaluations.at(mu_dst) - context.domains.n->zero_polynomial_eval(challenges.at(
-                                                      output_challenge_name("y_dst_out", head_index))) *
-                                                      external_evaluations.at(
-                                                          output_score_mask_eval_name(head_index, "dst"));
+                external_evaluations.at(mu_dst) - context.domains.n->zero_polynomial_eval(challenges.at(output_challenge_name("y_dst_out", head_index))) *
+                                                      external_evaluations.at(output_score_mask_eval_name(head_index, "dst"));
 
             acc.add(first * eval(prefix + "Acc_src", z));
             acc.add(q_valid * acc_step(eval(prefix + "Acc_src", omega_z), eval(prefix + "Acc_src", z), eval(prefix + "a_src", z), eval(prefix + "b_src", z)));
@@ -5474,58 +3183,33 @@ namespace gatzk::protocol
             acc.add(not_last * (accumulator_next - accumulator - q_valid * multiplicity * inverse));
             acc.add(q_valid * ((table + beta_view) * inverse - FieldElement::one()));
             acc.add(q_invalid * inverse);
-            acc.add(table - q_valid * (eval("P_BiasIndex_C", z) + eta_view * eval(
-                                                                                 model_proof_local_label(output_bias_label(head_index)), z)));
+            acc.add(table - q_valid * (eval("P_BiasIndex_C", z) + eta_view * eval(model_proof_local_label(output_bias_label(head_index)), z)));
             acc.add(multiplicity - eval("P_BiasMultiplicity_C", z));
         }
 
-        for (const auto &spec :
-             matrix_fold_binding_specs(context))
+        for (const auto &spec : matrix_fold_binding_specs(context))
         {
-            if (spec.fold_domain !=
-                context.domains.c->name)
+            if (spec.fold_domain != context.domains.c->name)
             {
                 continue;
             }
 
-            const auto selector =
-                eval(
-                    spec.fold_selector_label,
-                    z);
+            const auto selector = eval(spec.fold_selector_label, z);
 
-            const auto current =
-                eval(
-                    spec.fold_accumulator_object,
-                    z);
+            const auto current = eval(spec.fold_accumulator_object, z);
 
-            const auto next =
-                eval(
-                    spec.fold_accumulator_object,
-                    omega_z);
+            const auto next = eval(spec.fold_accumulator_object, omega_z);
 
-            const auto lambda =
-                challenges.at(
-                    spec.lambda_challenge);
+            const auto lambda = challenges.at(spec.lambda_challenge);
 
-            acc.add(
-                first * current);
+            acc.add(first * current);
 
-            acc.add(
-                not_last *
-                selector *
-                (next -
-                 lambda * current -
-                 eval(
-                     spec.fold_object,
-                     z)));
+            acc.add(not_last * selector * (next - lambda * current - eval(spec.fold_object, z)));
 
-            acc.add(
-                not_last *
-                (FieldElement::one() - selector) *
-                (next - current));
+            acc.add(not_last * (FieldElement::one() - selector) * (next - current));
         }
 
         return acc.value() / zero_eval;
     }
 
-} // namespace gatzk::protocol
+}

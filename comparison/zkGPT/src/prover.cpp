@@ -15,20 +15,15 @@ F prover::getCirValue(u8 layer_id, const vector<u32> &ori, u32 u) {
     return !layer_id ? val[0][ori[u]] : val[layer_id][u];
 }
 
-void prover::init() 
+void prover::init()
 {
     proof_size = 0;
     r_u.resize(C.size + 1);
     r_v.resize(C.size + 1);
 
-    // The upstream implementation reserved 2^28 scratch entries for every
-    // tiny circuit as well as for the largest historical GPT circuit.  That
-    // makes a bounded primitive check allocate tens of gigabytes before a
-    // single Sumcheck round.  Size the same official scratch arrays from the
-    // actual layered-circuit bit lengths; large circuits retain the original
-    // capacity while small relations stay bounded.
     int scratch_bits = 0;
-    for (const layer &current : C.circuit) {
+    for (const layer &current : C.circuit)
+    {
         scratch_bits = std::max<int>(scratch_bits, current.bit_length);
         scratch_bits = std::max<int>(scratch_bits, current.bit_length_u[0]);
         scratch_bits = std::max<int>(scratch_bits, current.bit_length_u[1]);
@@ -50,8 +45,8 @@ void prover::init()
     tmp_mult_array[0].resize(scratch_size);
     tmp_mult_array[1].resize(scratch_size);
     lasso_mult_v.resize(scratch_size);
-    for(std::size_t i=0;i<scratch_size;i++)
-        lasso_mult_v[i]=0;
+    for (std::size_t i = 0; i < scratch_size; i++)
+        lasso_mult_v[i] = 0;
 }
 
 /**
@@ -587,11 +582,6 @@ F prover::Vres(const vector<F>::const_iterator &r, u32 output_size, u8 r_size,in
 
 void prover::sumcheckFinalize1(const F &previous_random, F &claim_0, F &claim_1) {
     prove_timer.start();
-    // A one-element source domain has a legitimate zero-round phase 1.  In
-    // that case there is no challenge to store; the terminal values are
-    // already the exact MLE evaluations at the empty point.  Do not index
-    // round-1, which previously turned this valid native layer into an
-    // exception after the masked adapter reached it.
     if (round > 0)
         r_u[sumcheck_id].at(round - 1) = previous_random;
     V_u0 = claim_0 = total[0] ? V_mult[0][0].eval(previous_random) : (~C.circuit[sumcheck_id].bit_length_u[0]) ? V_mult[0][0].b : F_ZERO;

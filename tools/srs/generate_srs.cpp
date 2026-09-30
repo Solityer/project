@@ -27,9 +27,6 @@
 
 namespace
 {
-    // The ceremony writer emits exactly this top-level JSON schema.  The
-    // loader keeps the same set and rejects every other field before any key
-    // material is opened.
     [[maybe_unused]] constexpr std::array<std::string_view, 41> kCanonicalSrsManifestFields = {
         "manifest_format",
         "srs_id",
@@ -448,8 +445,7 @@ namespace
     std::string domain_generator_catalog_hash(const std::unordered_map<std::string, std::size_t> &domains)
     {
         std::ostringstream canonical;
-        canonical << "zkgat:domain-generator-catalog"
-                  << "|root_derivation_id=" << kRootDerivationId << "|row_order=" << kRowOrder;
+        canonical << "zkgat:domain-generator-catalog" << "|root_derivation_id=" << kRootDerivationId << "|row_order=" << kRowOrder;
         for (const auto &name : ordered_domain_names(domains))
         {
             canonical << '|' << name << ':' << domains.at(name) << ':' << canonical_field_hex(gatzk::algebra::FieldElement::root_of_unity(domains.at(name)));
@@ -915,9 +911,6 @@ namespace
         manifest << "  \"kzg_assumption_security_bits\": 128,\n";
         manifest << "  \"kzg_assumption_domain_catalog_hash\": \"" << domain_catalog_hash(domains) << "\",\n";
         manifest << "  \"domain_generator_catalog_hash\": \"" << domain_generator_catalog_hash(domains) << "\",\n";
-        // Materialize the exact prefix before appending the hash field.  Calling
-        // manifest.str() inside the chained insertion would hash bytes already
-        // inserted earlier in that same expression.
         const auto canonical_manifest_prefix = manifest.str();
         manifest << "  \"manifest_hash\": \"" << sha256_hex(canonical_manifest_prefix) << "\"\n";
         manifest << "}\n";
@@ -930,7 +923,7 @@ namespace
         out << manifest.str();
     }
 
-} // namespace
+}
 
 int main(int argc, char **argv)
 {
@@ -983,9 +976,6 @@ int main(int argc, char **argv)
         mcl::bn::hashAndMapToG2(g2, "gatzk:kzg:g2");
         const auto canonical_g1_size = serialize_g1(g1).size();
 
-        // Complete the ceremony preflight before creating the output directory
-        // or writing any key bytes.  A rejected sample must leave no partial
-        // material that could be mistaken for a registered SRS.
         mcl::Fr tau;
         gatzk::algebra::FieldElement tau_field;
         while (true)

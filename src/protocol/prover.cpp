@@ -102,10 +102,7 @@ namespace gatzk::protocol
 
             ScopedQuotientCoefficientScratchRelease &operator=(const ScopedQuotientCoefficientScratchRelease &) = delete;
 
-            ~ScopedQuotientCoefficientScratchRelease()
-            {
-                std::vector<mcl::Fr>().swap(quotient_coefficient_work);
-            }
+            ~ScopedQuotientCoefficientScratchRelease() { std::vector<mcl::Fr>().swap(quotient_coefficient_work); }
         };
 
         class ScopedQuotientTransformWorkerCap
@@ -116,10 +113,7 @@ namespace gatzk::protocol
                 quotient_transform_worker_cap = worker_cap;
             }
 
-            ~ScopedQuotientTransformWorkerCap()
-            {
-                quotient_transform_worker_cap = previous_;
-            }
+            ~ScopedQuotientTransformWorkerCap() { quotient_transform_worker_cap = previous_; }
 
             ScopedQuotientTransformWorkerCap(const ScopedQuotientTransformWorkerCap &) = delete;
 
@@ -134,10 +128,7 @@ namespace gatzk::protocol
             return std::chrono::duration<double, std::milli>(end - start).count();
         }
 
-        bool progress_enabled()
-        {
-            return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
-        }
+        bool progress_enabled() { return std::getenv("GATZK_RUN_PROGRESS") != nullptr; }
 
         void progress_note(const std::string &label)
         {
@@ -218,10 +209,7 @@ namespace gatzk::protocol
 
             ScopedCudaProverCacheRelease &operator=(const ScopedCudaProverCacheRelease &) = delete;
 
-            void dismiss() noexcept
-            {
-                armed_ = false;
-            }
+            void dismiss() noexcept { armed_ = false; }
 
         private:
             bool armed_ = true;
@@ -297,10 +285,7 @@ namespace gatzk::protocol
             return Polynomial::from_shared_evaluations(name, std::make_shared<const std::vector<FieldElement>>(std::move(values)), domain);
         }
 
-        Polynomial make_coeff_poly(const std::string &name, std::vector<FieldElement> values)
-        {
-            return Polynomial::from_coefficients(name, std::move(values));
-        }
+        Polynomial make_coeff_poly(const std::string &name, std::vector<FieldElement> values) { return Polynomial::from_coefficients(name, std::move(values)); }
 
         void add_public_poly(ProtocolContext &context, const std::string &name, Polynomial polynomial)
         {
@@ -557,10 +542,7 @@ namespace gatzk::protocol
             return true;
         }
 
-        bool lazy_fh_public_enabled(const ProtocolContext &context)
-        {
-            return complete_public_feature_source(context) && context.domains.fh != nullptr;
-        }
+        bool lazy_fh_public_enabled(const ProtocolContext &context) { return complete_public_feature_source(context) && context.domains.fh != nullptr; }
 
         bool is_lazy_fh_public_label(const std::string &name)
         {
@@ -568,10 +550,7 @@ namespace gatzk::protocol
                    name == "P_I_feat_qry" || name == "P_Q_tbl_feat" || name == "P_Q_qry_feat";
         }
 
-        bool lazy_full_feature_lookup_trace_enabled(const ProtocolContext &context)
-        {
-            return full_graph_feature_identity_enabled(context);
-        }
+        bool lazy_full_feature_lookup_trace_enabled(const ProtocolContext &context) { return full_graph_feature_identity_enabled(context); }
 
         bool is_lazy_full_feature_lookup_trace_label(const std::string &name)
         {
@@ -912,20 +891,14 @@ namespace gatzk::protocol
             return out;
         }
 
-        std::int64_t quantize_float_model_value_signed(double value, std::uint64_t scale)
-        {
-            return data::quantize_raw_at_scale(value, scale);
-        }
+        std::int64_t quantize_float_model_value_signed(double value, std::uint64_t scale) { return data::quantize_raw_at_scale(value, scale); }
 
         FieldElement quantize_float_model_value(double value, std::uint64_t scale)
         {
             return FieldElement::from_signed(quantize_float_model_value_signed(value, scale));
         }
 
-        double dequantize_trace_scalar(std::int64_t value, std::uint64_t scale)
-        {
-            return static_cast<double>(value) / static_cast<double>(scale);
-        }
+        double dequantize_trace_scalar(std::int64_t value, std::uint64_t scale) { return static_cast<double>(value) / static_cast<double>(scale); }
 
         std::size_t signed_table_size(std::int64_t min_raw, std::int64_t max_raw, std::string_view label)
         {
@@ -990,10 +963,6 @@ namespace gatzk::protocol
                 const auto input = static_cast<std::int64_t>(i);
                 const auto central_signed =
                     quantize_float_model_value_signed(std::exp(-static_cast<double>(input) / static_cast<double>(input_scale)), output_scale);
-                // ExpMap is a positive fixed-point weight.  Rounding the tail
-                // of exp(-delta/S_Delta) to zero would make the denominator
-                // relation degenerate and would violate the formal table
-                // contract, so the registered table saturates at one.
                 const auto candidate = std::max<std::int64_t>(1, central_signed);
                 if (candidate > previous)
                 {
@@ -1172,11 +1141,6 @@ namespace gatzk::protocol
             return out.str();
         }
 
-        // Hash the complete content-addressed file set for a private runtime
-        // resource.  Paths are included in sorted order so replacing a file at
-        // the same path cannot preserve a stale cache entry.  This helper is
-        // deliberately used only by the static-context cache; it never enters
-        // public proof metadata or exported artifacts.
         std::string cache_file_tree_identity(const std::filesystem::path &root)
         {
             if (!std::filesystem::exists(root))
@@ -1274,12 +1238,6 @@ namespace gatzk::protocol
                     return std::string("missing-config");
                 return cache_file_tree_identity(resolve_project_path(config.project_root, configured_path));
             };
-            // These private runtime identities bind the actual model registry,
-            // the complete checkpoint bundle tree (manifest, tensors.txt,
-            // tensors.npz, and every other regular file), dataset
-            // feature/topology source, SRS manifest and all PK/VK material,
-            // plus the compiler source that defines the artifact.  The two
-            // tensor encodings are both required; neither is a fallback.
             append("checkpoint_bundle_files", configured_resource_identity(config.checkpoint_bundle));
             append("dataset_features_topology_public_input_files", cache_file_tree_identity(project_root / config.cache_root / config.dataset));
             append("srs_manifest_vk_pk_files", configured_resource_identity(config.srs_path));
@@ -1288,9 +1246,6 @@ namespace gatzk::protocol
             return "sha256:" + cache_sha256_hex(canonical);
         }
 
-        // The evaluation memoization cache is proof-execution local.  Keep its
-        // key independent from the static-context file scan so opening a proof
-        // does not repeatedly reread large private SRS files.
         std::string execution_context_key(const util::AppConfig &config)
         {
             std::ostringstream stream;
@@ -1305,15 +1260,9 @@ namespace gatzk::protocol
             return stream.str();
         }
 
-        std::size_t hidden_head_width(const model::ModelParameters &parameters)
-        {
-            return model::max_hidden_head_dim(parameters);
-        }
+        std::size_t hidden_head_width(const model::ModelParameters &parameters) { return model::max_hidden_head_dim(parameters); }
 
-        std::size_t concat_width(const model::ModelParameters &parameters)
-        {
-            return model::max_hidden_concat_width(parameters);
-        }
+        std::size_t concat_width(const model::ModelParameters &parameters) { return model::max_hidden_concat_width(parameters); }
 
         struct ExternalEvalSpec
         {
@@ -1480,11 +1429,6 @@ namespace gatzk::protocol
 
         std::shared_ptr<algebra::DomainEvaluationWeightCache> shared_proof_domain_weight_cache()
         {
-            // Share one cache across all EvaluationMemoization instances belonging
-            // to this prove() invocation, but never retain challenge-point weights
-            // across proofs. Large FH/edge weights are proof-specific and keeping
-            // them in a process-static cache unnecessarily extends their lifetime
-            // into later opening working sets.
             return std::make_shared<algebra::DomainEvaluationWeightCache>();
         }
 
@@ -1708,10 +1652,6 @@ namespace gatzk::protocol
 
             const auto physical_size = spilled_file_value_count(spilled);
 
-            // Validate the on-disk representation even when no evaluation
-            // points were requested. Otherwise an empty-point fast return
-            // could silently accept a missing, truncated, or trailing-byte
-            // spill that would fail on the first non-empty request.
             if (spilled.lease == nullptr)
             {
                 throw std::runtime_error("spilled polynomial has no authenticated trace spill lease");
@@ -1761,8 +1701,6 @@ namespace gatzk::protocol
 
             auto stream = spilled.lease->open_payload_stream(payload_name);
 
-            // Direct domain hits are sparse. Keep the O(number_of_points)
-            // seek route so a direct-only opening never scans the whole spill.
             if (interpolation_indices.empty())
             {
                 std::array<FieldElement, 1> decoded{};
@@ -1814,9 +1752,6 @@ namespace gatzk::protocol
                 }
             };
 
-            // A physically empty compact spill is a logical all-zero vector.
-            // Preserve the proof-local domain blinder at every non-domain
-            // opening point without touching the empty file again.
             if (physical_size == 0)
             {
                 for (const auto point_index : interpolation_indices)
@@ -1955,27 +1890,20 @@ namespace gatzk::protocol
             return values;
         }
 
-        // proof 级 memoization 只缓存“当前 trace + 当前 Fiat-Shamir 挑战”派生出的值。
-        // 这样既能避免同一点重复求值，又不会把不同 proof 实例的状态混在一起。
         class EvaluationMemoization
         {
         public:
             EvaluationMemoization(const ProtocolContext &context, const TraceArtifacts &trace, const std::map<std::string, FieldElement> &challenges,
                                   std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry = nullptr,
-                                  std::shared_ptr<algebra::DomainEvaluationWeightCache> domain_weight_cache = nullptr, RunMetrics *metrics = nullptr)
-                : context_(context), trace_(trace), challenges_(challenges), backend_registry_(std::move(backend_registry)),
-                  domain_weight_cache_(std::move(domain_weight_cache)), context_key_(execution_context_key(context.config)), proof_cache_key_(context_key_),
-                  metrics_(metrics)
+                                  std::shared_ptr<algebra::DomainEvaluationWeightCache> domain_weight_cache = nullptr, RunMetrics *metrics = nullptr) :
+                context_(context), trace_(trace), challenges_(challenges), backend_registry_(std::move(backend_registry)),
+                domain_weight_cache_(std::move(domain_weight_cache)), context_key_(execution_context_key(context.config)), proof_cache_key_(context_key_),
+                metrics_(metrics)
             {
                 if (domain_weight_cache_ == nullptr)
                 {
                     domain_weight_cache_ = std::make_shared<algebra::DomainEvaluationWeightCache>();
                 }
-                // Trace evaluations include the proof-local zero-domain
-                // blinding polynomial.  A point/label hit from another proof
-                // is therefore not semantically reusable, even if its point
-                // happens to coincide.  Require the fresh session nonce and
-                // bind it into the process-shared cache key.
                 if (!trace.public_metadata.proof_nonce.empty())
                 {
                     proof_cache_key_ += "|proof_nonce=" + trace.public_metadata.proof_nonce;
@@ -3047,10 +2975,6 @@ namespace gatzk::protocol
                     }
                 }
 
-                // Spilled evaluation polynomials are not registered in the
-                // packed in-memory backend. Seed their ordinary label@point
-                // entries with one file pass per label instead of letting
-                // eval_named rescan the file independently for every point.
                 std::vector<SpilledEvaluationRequest> spilled_requests;
                 std::vector<std::vector<std::string>> spilled_cache_keys;
                 std::vector<std::string> scheduled_spilled_labels;
@@ -3227,8 +3151,6 @@ namespace gatzk::protocol
                             metrics_->fh_copy_convert_ms += elapsed_ms(copy_start, Clock::now());
                         }
                     };
-                    // 旋转点 kernel 只是大域 proving 热点的执行层优化。
-                    // 小域无法摊薄初始化成本，因此仍保留原始打包扫掠路线。
                     if (!public_labels.empty() && group.first->name == "FH")
                     {
                         for (const auto &point : points)
@@ -3317,9 +3239,6 @@ namespace gatzk::protocol
                                 continue;
                             }
 
-                            // Route2 这里只利用单位根域上的循环位移恒等式：
-                            // 同一域内 `{z, omega z, ...}` 的权重向量彼此只是循环平移。
-                            // 因此可以把多个点打包求值，而不改变 proof 中实际打开的对象和点位。
                             const auto eval_start = Clock::now();
                             const auto batched_values = backend->evaluate_with_native_weight_rotations(eval_labels, weight_entry.native_weights, *shifts);
                             if (metrics_ != nullptr && group.first->name == "FH")
@@ -3370,7 +3289,6 @@ namespace gatzk::protocol
                 {
                     return polynomial.evaluate(point);
                 }
-                // `parallel_fft` 只改变域权重的归约方式，opened value 本身必须保持不变。
                 if (values.size() > weight_entry.native_weights.size())
                 {
                     throw std::runtime_error("evaluation polynomial exceeds its domain weights");
@@ -3410,10 +3328,7 @@ namespace gatzk::protocol
             std::unordered_map<std::string, FieldElement> value_cache_;
         };
 
-        std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size)
-        {
-            return algebra::ntt_plan(size);
-        }
+        std::shared_ptr<const mcl::Ntt<mcl::Fr>> ntt_plan(std::size_t size) { return algebra::ntt_plan(size); }
 
         template <class Fn> void parallel_for_chunks_static(std::size_t count, std::size_t min_parallel_count, std::size_t max_worker_count, Fn &&fn)
         {
@@ -3750,15 +3665,6 @@ namespace gatzk::protocol
             }
             if (label == "t_FH" || label == "t_edge")
             {
-                // FH/edge lookup relations multiply as many as three blinded
-                // columns.  Each private column includes a registered
-                // Z_D*R tail, so the interpolation coset must retain the
-                // highest quotient coefficients.  A 4|D| coset covers the
-                // compiled tail budget.  FH's three registered blinder
-                // coefficients give degree at most 3|D|+2 after division.
-                // The edge relation reaches that same bound because its
-                // blinded lookup/state columns are multiplied by degree-|D|
-                // selectors; the minimal security regression attains degree 3|D|+2.
                 return 3 * domain_size + 2;
             }
             return std::nullopt;
@@ -3886,10 +3792,6 @@ namespace gatzk::protocol
                 {
                     const auto root = FieldElement::root_of_unity(target_size);
 
-                    // Fuse coefficient copy and geometric scaling directly
-                    // into the two paired-transform lanes.  This retains the
-                    // existing bounded parallel implementation and avoids a
-                    // persistent multi-GiB shift-power table.
                     algebra::copy_scaled_by_geometric_powers_native(coefficients, even_work, coefficient_count, shift, quotient_transform_worker_cap);
 
                     algebra::copy_scaled_by_geometric_powers_native(coefficients, odd_work, coefficient_count, shift * root, quotient_transform_worker_cap);
@@ -4126,9 +4028,6 @@ namespace gatzk::protocol
             ScopedQuotientWorkingSet(std::size_t target_size, bool cuda_enabled, const std::string &label)
             {
                 plan_.target_size = target_size;
-                // t_edge has its own bounded CPU term scheduler and CUDA executor admission.
-                // Running the generic full-coset admission first double-counts the same memory
-                // and rejected valid Pubmed/OGBN routes before their real executor was selected.
                 if (label == "t_edge" || target_size < (std::size_t{1} << 17))
                     return;
                 if (thread_owns_working_set())
@@ -4236,10 +4135,7 @@ namespace gatzk::protocol
                 shared.changed.notify_all();
             }
 
-            const QuotientWorkingSetPlan &plan() const noexcept
-            {
-                return plan_;
-            }
+            const QuotientWorkingSetPlan &plan() const noexcept { return plan_; }
 
         private:
             struct State
@@ -4306,7 +4202,9 @@ namespace gatzk::protocol
                     }
                     if (next < 0)
                         throw std::system_error(errno, std::generic_category(), "failed to open quotient spill directory");
-                    struct stat status{};
+                    struct stat status
+                    {
+                    };
                     if (::fstat(next, &status) != 0 || !S_ISDIR(status.st_mode))
                     {
                         const auto saved_errno = errno != 0 ? errno : ENOTDIR;
@@ -4556,7 +4454,9 @@ namespace gatzk::protocol
                 const auto fd = ::openat(root_fd, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
                 if (fd < 0)
                     continue;
-                struct stat snapshot{};
+                struct stat snapshot
+                {
+                };
                 if (::fstat(fd, &snapshot) != 0 || !quotient_private_regular(snapshot))
                 {
                     (void)::close(fd);
@@ -4569,7 +4469,9 @@ namespace gatzk::protocol
                     (void)::close(fd);
                     continue;
                 }
-                struct stat current{};
+                struct stat current
+                {
+                };
                 const bool unchanged = ::fstatat(root_fd, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) == 0 && quotient_private_regular(current) &&
                                        snapshot.st_dev == current.st_dev && snapshot.st_ino == current.st_ino && snapshot.st_mode == current.st_mode &&
                                        snapshot.st_nlink == current.st_nlink && snapshot.st_size == current.st_size;
@@ -4585,7 +4487,9 @@ namespace gatzk::protocol
             const auto fd = ::openat(root_fd, lock_name, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
             if (fd < 0)
                 throw std::system_error(errno, std::generic_category(), "failed to open quotient spill arena lock");
-            struct stat status{};
+            struct stat status
+            {
+            };
             if (::fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) || status.st_uid != ::geteuid() || (status.st_mode & 0777) != (S_IRUSR | S_IWUSR) ||
                 status.st_nlink != 1 || ::flock(fd, LOCK_EX) != 0)
             {
@@ -4604,8 +4508,8 @@ namespace gatzk::protocol
                 FieldElement *data = nullptr;
             };
 
-            QuotientCosetSpillArena(std::size_t total_cap_bytes, std::size_t transient_bytes, std::size_t geometry_bytes, std::size_t reserve_bytes)
-                : total_cap_bytes_(total_cap_bytes), transient_bytes_(transient_bytes), geometry_bytes_(geometry_bytes), reserve_bytes_(reserve_bytes)
+            QuotientCosetSpillArena(std::size_t total_cap_bytes, std::size_t transient_bytes, std::size_t geometry_bytes, std::size_t reserve_bytes) :
+                total_cap_bytes_(total_cap_bytes), transient_bytes_(transient_bytes), geometry_bytes_(geometry_bytes), reserve_bytes_(reserve_bytes)
             {
                 int arena_lock_fd = -1;
                 try
@@ -4620,13 +4524,12 @@ namespace gatzk::protocol
                     const auto creator_pid = static_cast<std::uint64_t>(::getpid());
                     const auto creator_start_ticks = quotient_current_process_start_ticks();
 
-                    // Anonymous temporary files are preferred.  No directory
-                    // entry exists for O_TMPFILE, so a crash cannot leave an
-                    // arena name behind.
                     fd_ = ::openat(root_fd_, ".", O_RDWR | O_TMPFILE | O_CLOEXEC, S_IRUSR | S_IWUSR);
                     if (fd_ >= 0)
                     {
-                        struct stat status{};
+                        struct stat status
+                        {
+                        };
                         const auto descriptor_flags = ::fcntl(fd_, F_GETFD);
                         if (::fchmod(fd_, S_IRUSR | S_IWUSR) != 0 || descriptor_flags < 0 || (descriptor_flags & FD_CLOEXEC) == 0 ||
                             ::fstat(fd_, &status) != 0 || !S_ISREG(status.st_mode) || status.st_uid != ::geteuid() ||
@@ -4644,11 +4547,6 @@ namespace gatzk::protocol
                         throw std::system_error(errno, std::generic_category(), "failed to create quotient coset spill arena");
                     }
 
-                    // Filesystems without O_TMPFILE use a strict, private
-                    // staging name containing authenticated process identity.
-                    // It is unlinked immediately; the next constructor's
-                    // lock-protected GC handles only a crash in this tiny
-                    // open-to-unlink window.
                     for (std::size_t attempt = 0; !created && attempt < 64; ++attempt)
                     {
                         const auto name =
@@ -4660,7 +4558,9 @@ namespace gatzk::protocol
                                 continue;
                             throw std::system_error(errno, std::generic_category(), "failed to create quotient coset spill arena");
                         }
-                        struct stat status{};
+                        struct stat status
+                        {
+                        };
                         const auto descriptor_flags = ::fcntl(fd_, F_GETFD);
                         if (::fchmod(fd_, S_IRUSR | S_IWUSR) != 0 || descriptor_flags < 0 || (descriptor_flags & FD_CLOEXEC) == 0 ||
                             ::fstat(fd_, &status) != 0 || !quotient_private_regular(status))
@@ -4690,7 +4590,9 @@ namespace gatzk::protocol
                     if (page_size_raw <= 0)
                         throw std::runtime_error("failed to determine quotient spill page size");
                     page_size_ = static_cast<std::size_t>(page_size_raw);
-                    struct statfs filesystem{};
+                    struct statfs filesystem
+                    {
+                    };
                     if (::fstatfs(fd_, &filesystem) != 0)
                         throw std::system_error(errno, std::generic_category(), "failed to inspect quotient spill filesystem");
                     memory_backed_ = filesystem.f_type == TMPFS_MAGIC || filesystem.f_type == RAMFS_MAGIC;
@@ -4871,10 +4773,6 @@ namespace gatzk::protocol
                     throw std::runtime_error("quotient coset spill arena exceeds off_t for " + label);
                 }
                 auto reservation = std::make_unique<util::FilesystemSpaceReservation>(root_, capacity, label);
-                // Establish vector capacity before extending the file.  If
-                // this allocation fails there is no file extent to roll
-                // back; after it succeeds publication is non-allocating for
-                // the normal movable Chunk path.
                 chunks_.reserve(chunks_.size() + 1);
 
                 const auto allocation_error = ::posix_fallocate(fd_, static_cast<off_t>(offset), static_cast<off_t>(capacity));
@@ -4909,8 +4807,6 @@ namespace gatzk::protocol
                 }
                 catch (...)
                 {
-                    // Recover ownership if publication throws after the
-                    // reservation moved into the pending object.
                     if (reservation == nullptr)
                     {
                         reservation = std::move(pending_chunk.reservation);
@@ -4931,10 +4827,6 @@ namespace gatzk::protocol
                 }
 
                 const auto rollback_error = errno;
-                // The file extent may still consume filesystem space.  Keep
-                // the reservation alive and poison this arena so accounting
-                // cannot silently claim that the extent was released.  No
-                // subsequent growth is permitted after this point.
                 poisoned_ = true;
                 poisoned_reservation_ = std::move(reservation);
                 throw std::runtime_error("quotient coset spill " + std::string(operation) + " failed and rollback also failed for " + label +
@@ -4969,8 +4861,8 @@ namespace gatzk::protocol
             {
             };
 
-            QuotientCosetValues(std::vector<FieldElement> values, std::shared_ptr<QuotientCosetSpillArena> spill_arena, const std::string &label)
-                : spill_arena_(std::move(spill_arena)), size_(values.size())
+            QuotientCosetValues(std::vector<FieldElement> values, std::shared_ptr<QuotientCosetSpillArena> spill_arena, const std::string &label) :
+                spill_arena_(std::move(spill_arena)), size_(values.size())
             {
                 static_assert(std::is_standard_layout_v<FieldElement>, "file-backed quotient cosets require standard-layout field elements");
 
@@ -4988,14 +4880,6 @@ namespace gatzk::protocol
 
                 std::uninitialized_copy(values.begin(), values.end(), static_cast<FieldElement *>(mapping_));
 
-                // Keep freshly produced pages eligible for the kernel's
-                // adaptive file-cache policy. A synchronous flush followed
-                // by MADV_DONTNEED forced every quotient dependency through
-                // storage even when the complete working set fit in RAM.
-                // Large instances remain bounded because these are unlinked
-                // MAP_SHARED pages: the kernel can write back and reclaim
-                // them under pressure, and the point loop explicitly drops
-                // each consumed prefix.
                 if (::madvise(mapping_, byte_count, MADV_SEQUENTIAL) != 0)
                 {
                     const auto error = errno;
@@ -5007,8 +4891,8 @@ namespace gatzk::protocol
             }
 
             QuotientCosetValues(std::size_t size, std::shared_ptr<QuotientCosetSpillArena> spill_arena, const std::string &label,
-                                bool even_odd_split_layout = false)
-                : spill_arena_(std::move(spill_arena)), size_(size), split_lane_size_(even_odd_split_layout ? size / 2 : 0)
+                                bool even_odd_split_layout = false) :
+                spill_arena_(std::move(spill_arena)), size_(size), split_lane_size_(even_odd_split_layout ? size / 2 : 0)
             {
                 if (even_odd_split_layout && (size_ < 2 || (size_ & 1U) != 0U))
                 {
@@ -5046,9 +4930,9 @@ namespace gatzk::protocol
             }
 
             QuotientCosetValues(std::shared_ptr<const QuotientCosetValues> semantic_values, std::vector<FieldElement> zero_domain_blinder,
-                                std::shared_ptr<const std::vector<FieldElement>> coset_points, std::vector<FieldElement> zero_cycle)
-                : semantic_values_(std::move(semantic_values)), zero_domain_blinder_(std::move(zero_domain_blinder)), coset_points_(std::move(coset_points)),
-                  zero_cycle_(std::move(zero_cycle)), size_(semantic_values_ != nullptr ? semantic_values_->size() : 0)
+                                std::shared_ptr<const std::vector<FieldElement>> coset_points, std::vector<FieldElement> zero_cycle) :
+                semantic_values_(std::move(semantic_values)), zero_domain_blinder_(std::move(zero_domain_blinder)), coset_points_(std::move(coset_points)),
+                zero_cycle_(std::move(zero_cycle)), size_(semantic_values_ != nullptr ? semantic_values_->size() : 0)
             {
                 if (semantic_values_ == nullptr || zero_domain_blinder_.empty() || zero_cycle_.empty())
                 {
@@ -5061,9 +4945,9 @@ namespace gatzk::protocol
             }
 
             QuotientCosetValues(PureZeroSemanticTag, std::size_t size, std::vector<FieldElement> zero_domain_blinder,
-                                std::shared_ptr<const std::vector<FieldElement>> coset_points, std::vector<FieldElement> zero_cycle)
-                : pure_zero_semantic_(true), zero_domain_blinder_(std::move(zero_domain_blinder)), coset_points_(std::move(coset_points)),
-                  zero_cycle_(std::move(zero_cycle)), size_(size)
+                                std::shared_ptr<const std::vector<FieldElement>> coset_points, std::vector<FieldElement> zero_cycle) :
+                pure_zero_semantic_(true), zero_domain_blinder_(std::move(zero_domain_blinder)), coset_points_(std::move(coset_points)),
+                zero_cycle_(std::move(zero_cycle)), size_(size)
             {
                 if (size_ == 0 || zero_cycle_.empty() || size_ % zero_cycle_.size() != 0)
                 {
@@ -5077,10 +4961,9 @@ namespace gatzk::protocol
 
             QuotientCosetValues(std::vector<std::pair<std::shared_ptr<const QuotientCosetValues>, FieldElement>> linear_terms,
                                 std::vector<FieldElement> zero_domain_blinder_correction, std::shared_ptr<const std::vector<FieldElement>> coset_points,
-                                std::vector<FieldElement> zero_cycle)
-                : linear_terms_(std::move(linear_terms)), zero_domain_blinder_(std::move(zero_domain_blinder_correction)),
-                  coset_points_(std::move(coset_points)), zero_cycle_(std::move(zero_cycle)),
-                  size_(!linear_terms_.empty() ? linear_terms_.front().first->size() : 0)
+                                std::vector<FieldElement> zero_cycle) :
+                linear_terms_(std::move(linear_terms)), zero_domain_blinder_(std::move(zero_domain_blinder_correction)), coset_points_(std::move(coset_points)),
+                zero_cycle_(std::move(zero_cycle)), size_(!linear_terms_.empty() ? linear_terms_.front().first->size() : 0)
             {
                 if (linear_terms_.empty() || size_ == 0)
                 {
@@ -5122,10 +5005,7 @@ namespace gatzk::protocol
                 }
             }
 
-            std::size_t size() const
-            {
-                return size_;
-            }
+            std::size_t size() const { return size_; }
             FieldElement *mutable_data()
             {
                 if (published_)
@@ -5331,8 +5211,6 @@ namespace gatzk::protocol
 
                     if (lane_bytes % page_size != 0)
                     {
-                        // MADV_DONTNEED is only an execution-side memory-pressure hint.
-                        // Never discard a partially shared page.
                         return;
                     }
 
@@ -5389,8 +5267,6 @@ namespace gatzk::protocol
             std::size_t size_ = 0;
             bool published_ = false;
 
-            // Non-zero only for the large CUDA t_edge physical layout:
-            // [even lane][odd lane].
             std::size_t split_lane_size_ = 0;
 
             mutable std::size_t discarded_bytes_ = 0;
@@ -5404,10 +5280,10 @@ namespace gatzk::protocol
         {
         public:
             QuotientPolynomialMaterializer(const ProtocolContext &context, const TraceArtifacts &trace, const std::map<std::string, FieldElement> &challenges,
-                                           std::string label, const QuotientWorkingSetPlan &working_set)
-                : context_(context), trace_(trace), challenges_(challenges), label_(std::move(label)), domain_(quotient_domain(context_, label_)),
-                  target_size_(domain_->size * quotient_coset_multiplier(label_)), rotation_step_(target_size_ / domain_->size),
-                  shift_(quotient_coset_shift(*domain_))
+                                           std::string label, const QuotientWorkingSetPlan &working_set) :
+                context_(context), trace_(trace), challenges_(challenges), label_(std::move(label)), domain_(quotient_domain(context_, label_)),
+                target_size_(domain_->size * quotient_coset_multiplier(label_)), rotation_step_(target_size_ / domain_->size),
+                shift_(quotient_coset_shift(*domain_))
             {
                 if (domain_ == nullptr)
                 {
@@ -5429,9 +5305,6 @@ namespace gatzk::protocol
                     throw std::runtime_error("quotient coset is too small for derived degree bound: " + label_ +
                                              " degree_bound=" + std::to_string(*degree_bound) + " target_size=" + std::to_string(target_size_));
                 }
-                // This is only a sizing bound for the edge alpha-power cache;
-                // derive it from the formal nested family, never from the
-                // checkpoint/parity nested family representation.
                 std::size_t edge_head_count = context_.model.output_layer.heads.size();
                 for (const auto &layer : context_.model.hidden_layers)
                     edge_head_count += layer.heads.size();
@@ -5504,9 +5377,6 @@ namespace gatzk::protocol
                     desired_labels.insert(access.label);
                 }
 
-                // Preserve the exact old correctness lower bound:
-                // every term must be able to keep all of its distinct
-                // direct accesses resident simultaneously.
                 for (const auto &term : program.terms)
                 {
                     std::unordered_set<std::string> term_labels;
@@ -5540,10 +5410,6 @@ namespace gatzk::protocol
                     minimum = std::max(minimum, term_labels.size());
                 }
 
-                // Derived linear leaves can require registered source leaves
-                // that are not themselves direct program accesses. Include
-                // those execution-only dependencies in the desired resident
-                // working set so capacity does not force needless rematerialization.
                 for (const auto &access : program.accesses)
                 {
                     const auto descriptor = t_edge_derived_linear_descriptor(access.label);
@@ -5610,10 +5476,6 @@ namespace gatzk::protocol
                     const auto flattened = flatten_t_edge_descriptor_sources(*descriptor);
                     if (flattened.status != TEdgeDerivedLinearFlattenStatus::Success || flattened.sources.empty())
                     {
-                        // The resident-linear path does not call
-                        // materialize_linear_leaf() for an unresolved
-                        // descriptor, so it contributes no linear buffer
-                        // shape to admission.
                         continue;
                     }
 
@@ -5772,11 +5634,6 @@ namespace gatzk::protocol
 
                 executor->prepare_program(program);
 
-                // CUDA t_edge materializes registered derived
-                // linear views directly instead of going through
-                // the CPU coset-prewarm path.  Those views must
-                // use the same zero-domain blinder correction
-                // geometry as the canonical materializer.
                 seed_lazy_blinder_geometry();
 
                 const auto cuda_stats_before = algebra::cuda_execution_stats_snapshot();
@@ -6303,11 +6160,6 @@ namespace gatzk::protocol
                         }
                     };
 
-                    // When the complete dependency closure fits in the
-                    // admitted cache, bind every logical leaf to one immutable
-                    // slot before any term kernel executes. This is purely an
-                    // execution schedule: labels, polynomials, blinders and
-                    // term order are unchanged.
                     std::vector<std::string> full_resident_labels;
 
                     std::unordered_set<std::string> full_resident_seen;
@@ -6346,9 +6198,6 @@ namespace gatzk::protocol
                             }
                         }
 
-                        // Fill the complete immutable access map immediately.
-                        // Program accesses which are not referenced by any
-                        // term may remain invalid; no kernel can read them.
                         for (std::size_t access = 0; access < program.accesses.size(); ++access)
                         {
                             const auto found = static_slot_by_label.find(program.accesses[access].label);
@@ -6367,11 +6216,6 @@ namespace gatzk::protocol
 
                         evaluation_bindings.reserve(full_resident_labels.size());
 
-                        // Collect every independent registered evaluation leaf
-                        // first. Their backing vectors and blinders live in
-                        // TraceArtifacts / ProtocolContext for the complete
-                        // materializer lifetime, so request pointers remain
-                        // valid while the bounded worker team executes.
                         for (const auto &label : full_resident_labels)
                         {
                             if (label == "__t_edge_boundary_l0")
@@ -6441,16 +6285,6 @@ namespace gatzk::protocol
                             }
                         }
 
-                        // Resolve everything not covered by the direct
-                        // evaluation batch exactly once. This includes:
-                        //   * coefficient leaves
-                        //   * spilled evaluation leaves
-                        //   * resident-linear derived leaves
-                        //   * formally unsupported derived leaves using the
-                        //     existing canonical host fallback
-                        //   * the boundary polynomial
-                        //
-                        // Materialize independent leaves before their derived consumers.
                         auto pending_labels = full_resident_labels;
                         std::stable_partition(pending_labels.begin(), pending_labels.end(), [&](const std::string &label)
                                               { return label == "__t_edge_boundary_l0" || !t_edge_derived_linear_descriptor(label).has_value(); });
@@ -7178,8 +7012,6 @@ namespace gatzk::protocol
                 {
                     quotient_values.assign(target_size_, FieldElement::zero());
                 }
-                // Warm the dependency cache before parallel point evaluation; after this the worker
-                // threads only read the cached coset vectors.
                 if (label_ == "t_FH" && !cuda_t_fh_route)
                 {
                     const auto prewarm_start = Clock::now();
@@ -7193,11 +7025,6 @@ namespace gatzk::protocol
                 }
                 else if (label_ != "t_edge")
                 {
-                    // Small-domain quotient evaluators repeatedly request the
-                    // same named coset vectors.  Resolve every authenticated
-                    // dependency once before the point loop so evaluation is
-                    // a read-only pointer lookup instead of millions of
-                    // mutex-protected string-map probes.
                     const auto prewarm_start = Clock::now();
                     const auto dependency_labels = quotient_dependency_labels(context_, label_);
                     if (label_ == "t_N")
@@ -7407,11 +7234,6 @@ namespace gatzk::protocol
                                 }
                             }
 
-                            // file_backed_coset_count_ is a cumulative execution counter.
-                            // A file-backed value may have been created and released before
-                            // this live cache snapshot.  An empty discard set is therefore
-                            // valid and simply means that there are no currently reachable
-                            // file-backed pages to discard.
                             progress_note("prove:quotient:" + label_ + ":evaluation_scheduler" + ":mode=persistent_block_team" +
                                           ":workers=" + std::to_string(persistent_worker_count) + ":blocks=" + std::to_string(evaluation_block_count) +
                                           ":discard_views=" + std::to_string(discard_set.size()));
@@ -7616,9 +7438,6 @@ namespace gatzk::protocol
 
                 const auto coefficient_start = Clock::now();
 
-                // Every evaluation worker has joined. The next phase consumes
-                // only quotient_values (or CUDA t_edge coefficients), not the
-                // dependency cosets. Preserve the output and resident result.
                 fh_coset_slots_ = {};
                 fast_coset_lookup_.clear();
                 edge_access_sequence_.clear();
@@ -7760,10 +7579,7 @@ namespace gatzk::protocol
                 bool rotated = false;
             };
 
-            bool use_file_backed_coset_storage() const
-            {
-                return label_ != "t_edge" && target_size_ >= (std::size_t{1} << 17);
-            }
+            bool use_file_backed_coset_storage() const { return label_ != "t_edge" && target_size_ >= (std::size_t{1} << 17); }
 
             std::size_t coset_byte_count(std::size_t element_count, const std::string &label) const
             {
@@ -7852,12 +7668,6 @@ namespace gatzk::protocol
             }
             bool can_preserve_split_lane_output(const algebra::Polynomial &polynomial) const
             {
-                // t_edge already has its dedicated device-resident fused
-                // executor.  Enable physical split-lane storage only for the
-                // genuinely large FH family where the generic host/tiered
-                // transform otherwise allocates two full half-size
-                // temporaries and then interleaves them into another full
-                // output vector.
                 if (label_ != "t_FH" || target_size_ < (std::size_t{1} << 24) || target_size_ < 2)
                     return false;
 
@@ -8054,10 +7864,7 @@ namespace gatzk::protocol
                 }
             }
 
-            const QuotientCosetValues &coset_values(const std::string &requested_name)
-            {
-                return *coset_values_ptr(requested_name);
-            }
+            const QuotientCosetValues &coset_values(const std::string &requested_name) { return *coset_values_ptr(requested_name); }
 
             void seed_fast_coset_lookup(const std::vector<std::string> &labels)
             {
@@ -8106,11 +7913,6 @@ namespace gatzk::protocol
                 auto it = fast_coset_lookup_.find(name);
                 if (it == fast_coset_lookup_.end())
                 {
-                    // The dependency registry is intentionally a prewarm
-                    // hint, not an alternate protocol equation.  Bind any
-                    // evaluator-discovered name once through the generic
-                    // resolver while recording the access plan.  The formal
-                    // point loop below remains a pointer-only replay path.
                     const auto values = coset_values_ptr(name);
                     it = fast_coset_lookup_.emplace(name, values.get()).first;
                     ++edge_access_plan_late_bind_count_;
@@ -8494,10 +8296,6 @@ namespace gatzk::protocol
 
                 if (label_ == "t_edge")
                 {
-                    // Registered derived columns can be evaluated as lazy
-                    // linear views of their authenticated sources plus the
-                    // exact difference between source and target blinders.
-                    // Seed the shared point geometry before parallel prewarm.
                     seed_lazy_blinder_geometry();
                 }
 
@@ -8765,48 +8563,48 @@ namespace gatzk::protocol
                                         const auto &instruction = program.instructions[instruction_index];
                                         switch (instruction.opcode)
                                         {
-                                        case TEdgeProgramOpcode::LoadAccess:
-                                        {
-                                            if (instruction.operand >= program.accesses.size() || depth >= stack.size())
-                                                throw std::runtime_error("bounded CPU t_edge load-access overflow");
-                                            const auto *values = access_values[instruction.operand];
-                                            if (values == nullptr)
-                                                throw std::runtime_error("bounded CPU t_edge load-access is unbound");
-                                            const auto value_index = program.accesses[instruction.operand].rotated ? rotated_index : point_index;
-                                            stack[depth++] = (*values)[value_index].native();
-                                            break;
-                                        }
-                                        case TEdgeProgramOpcode::LoadConstant:
-                                            if (instruction.operand >= program.constants.size() || depth >= stack.size())
-                                                throw std::runtime_error("bounded CPU t_edge load-constant overflow");
-                                            stack[depth++] = program.constants[instruction.operand].native();
-                                            break;
-                                        case TEdgeProgramOpcode::Add:
-                                        case TEdgeProgramOpcode::Subtract:
-                                        case TEdgeProgramOpcode::Multiply:
-                                        {
-                                            if (depth < 2)
-                                                throw std::runtime_error("bounded CPU t_edge binary stack underflow");
-                                            mcl::Fr value;
-                                            if (instruction.opcode == TEdgeProgramOpcode::Add)
-                                                mcl::Fr::add(value, stack[depth - 2], stack[depth - 1]);
-                                            else if (instruction.opcode == TEdgeProgramOpcode::Subtract)
-                                                mcl::Fr::sub(value, stack[depth - 2], stack[depth - 1]);
-                                            else
-                                                mcl::Fr::mul(value, stack[depth - 2], stack[depth - 1]);
-                                            stack[depth - 2] = value;
-                                            --depth;
-                                            break;
-                                        }
-                                        case TEdgeProgramOpcode::Negate:
-                                        {
-                                            if (depth == 0)
-                                                throw std::runtime_error("bounded CPU t_edge negate stack underflow");
-                                            mcl::Fr zero;
-                                            zero.clear();
-                                            mcl::Fr::sub(stack[depth - 1], zero, stack[depth - 1]);
-                                            break;
-                                        }
+                                            case TEdgeProgramOpcode::LoadAccess:
+                                            {
+                                                if (instruction.operand >= program.accesses.size() || depth >= stack.size())
+                                                    throw std::runtime_error("bounded CPU t_edge load-access overflow");
+                                                const auto *values = access_values[instruction.operand];
+                                                if (values == nullptr)
+                                                    throw std::runtime_error("bounded CPU t_edge load-access is unbound");
+                                                const auto value_index = program.accesses[instruction.operand].rotated ? rotated_index : point_index;
+                                                stack[depth++] = (*values)[value_index].native();
+                                                break;
+                                            }
+                                            case TEdgeProgramOpcode::LoadConstant:
+                                                if (instruction.operand >= program.constants.size() || depth >= stack.size())
+                                                    throw std::runtime_error("bounded CPU t_edge load-constant overflow");
+                                                stack[depth++] = program.constants[instruction.operand].native();
+                                                break;
+                                            case TEdgeProgramOpcode::Add:
+                                            case TEdgeProgramOpcode::Subtract:
+                                            case TEdgeProgramOpcode::Multiply:
+                                            {
+                                                if (depth < 2)
+                                                    throw std::runtime_error("bounded CPU t_edge binary stack underflow");
+                                                mcl::Fr value;
+                                                if (instruction.opcode == TEdgeProgramOpcode::Add)
+                                                    mcl::Fr::add(value, stack[depth - 2], stack[depth - 1]);
+                                                else if (instruction.opcode == TEdgeProgramOpcode::Subtract)
+                                                    mcl::Fr::sub(value, stack[depth - 2], stack[depth - 1]);
+                                                else
+                                                    mcl::Fr::mul(value, stack[depth - 2], stack[depth - 1]);
+                                                stack[depth - 2] = value;
+                                                --depth;
+                                                break;
+                                            }
+                                            case TEdgeProgramOpcode::Negate:
+                                            {
+                                                if (depth == 0)
+                                                    throw std::runtime_error("bounded CPU t_edge negate stack underflow");
+                                                mcl::Fr zero;
+                                                zero.clear();
+                                                mcl::Fr::sub(stack[depth - 1], zero, stack[depth - 1]);
+                                                break;
+                                            }
                                         }
                                     }
                                     if (depth != 1)
@@ -8964,13 +8762,6 @@ namespace gatzk::protocol
                 for (const auto &label : *labels)
                 {
                     const auto *polynomial = lookup_polynomial(label);
-                    // A shared evaluation buffer does not imply a shared
-                    // formal polynomial: private trace objects carry
-                    // independently sampled Z_domain blinders.  Keep those
-                    // labels in the materialization wave so semantic coset
-                    // reuse can share only the canonical evaluations and add
-                    // each registered blinder lazily.  Direct aliases are
-                    // valid only for unblinded columns.
                     if (polynomial != nullptr && polynomial->is_zero_domain_blinded())
                     {
                         filtered.push_back(label);
@@ -9062,17 +8853,12 @@ namespace gatzk::protocol
                 auto descriptor = internal::make_t_edge_derived_linear_descriptor(name, t_edge_descriptor_shape_, challenges_, collision_predicate);
                 if (descriptor.has_value())
                 {
-                    // Registered blinder ownership stays in the production
-                    // materializer; the pure mapper only describes semantics.
                     descriptor->target_zero_domain_blinder = registered_blinder_for_label(name);
                 }
                 return descriptor;
             }
 
-            bool is_edge_derived_coset_request(const std::string &name) const
-            {
-                return t_edge_derived_linear_descriptor(name).has_value();
-            }
+            bool is_edge_derived_coset_request(const std::string &name) const { return t_edge_derived_linear_descriptor(name).has_value(); }
 
             TEdgeDerivedLinearFlattenResult flatten_t_edge_descriptor_sources(const TEdgeDerivedLinearDescriptor &descriptor) const
             {
@@ -9163,10 +8949,6 @@ namespace gatzk::protocol
                 {
                     return false;
                 }
-                // A registered artifact takes the direct/spilled materializer
-                // path.  This preserves the pre-existing collision
-                // precedence for direct artifacts whose suffix resembles a
-                // derived label.
                 if (lookup_polynomial(name) != nullptr || trace_.spilled_polynomials.contains(name))
                 {
                     return false;
@@ -9430,10 +9212,6 @@ namespace gatzk::protocol
                 {
                     return nullptr;
                 }
-                // Table is already the authenticated evaluation column written
-                // by the trace.  Transform it once directly.  Reconstructing
-                // it from Row/Col/T_H performed three full 4x-FH transforms
-                // merely to recover the same committed polynomial.
                 if (requested_name == "P_Table_feat" || requested_name == "P_J_tbl_feat")
                 {
                     return nullptr;
@@ -9494,10 +9272,6 @@ namespace gatzk::protocol
                         alias_owner = alias_it->second;
                     }
                 }
-                // The cache -> derived -> resolver order is canonical.  A
-                // derived name is described once and all host consumers use
-                // the same descriptor, including recursive source flattening
-                // and its independent blinder correction.
                 if (const auto descriptor = t_edge_derived_linear_descriptor(requested_name); descriptor.has_value())
                 {
                     auto values = scaled_coset_sum(*descriptor);
@@ -9519,12 +9293,6 @@ namespace gatzk::protocol
                         return inserted ? direct_values : it->second;
                     }
                 }
-                // A spilled trace object is still the committed private
-                // polynomial, including its independently sampled
-                // Z_domain blinder.  Resolve it before public/lazy semantic
-                // aliases: those aliases reproduce only the canonical
-                // evaluation column and would silently drop the registered
-                // blinding tail after the object becomes file-backed.
                 if (const auto spilled_it = trace_.spilled_polynomials.find(requested_name); spilled_it != trace_.spilled_polynomials.end())
                 {
                     if (auto zero_values = spilled_pure_zero_semantic_coset(requested_name, spilled_it->second); zero_values != nullptr)
@@ -9663,11 +9431,6 @@ namespace gatzk::protocol
                 std::call_once(shift_powers_once_,
                                [&]()
                                {
-                                   // Quotient cosets are 4x their authenticated domain.
-                                   // A retained power table is useful on medium shapes
-                                   // because many dependency transforms reuse it, but
-                                   // 1-2 GiB tables on FH=2^24/2^25 cause more unified-
-                                   // memory pressure than the saved geometric recurrence.
                                    constexpr std::size_t kMaximumRetainedShiftPowerBytes = std::size_t{512} << 20;
 
                                    const auto power_count = target_size_ >= 2 ? target_size_ / 2 : target_size_;
@@ -9681,10 +9444,6 @@ namespace gatzk::protocol
 
                                    if (power_count > maximum_count)
                                    {
-                                       // Empty means that
-                                       // coset_evaluate_coefficients_into()
-                                       // uses its bounded streaming geometric-scaling
-                                       // path instead of retaining a giant lookup table.
                                        progress_note("prove:quotient:" + label_ +
                                                      ":shift_powers:"
                                                      "streaming:count=" +
@@ -9778,13 +9537,6 @@ namespace gatzk::protocol
                                                                                                   const std::map<std::string, FieldElement> &challenges,
                                                                                                   const std::vector<std::string> &labels, RunMetrics *metrics)
         {
-            // One scratch lifetime for the complete quotient family.
-            //
-            // Sequential large-family materialization can now reuse the
-            // coefficient capacity produced by t_edge/FH instead of returning
-            // multi-hundred-MiB/GiB buffers to the allocator after every
-            // quotient. Worker-thread scratch remains thread_local and is
-            // naturally destroyed when each async worker exits.
             const ScopedQuotientCoefficientScratchRelease family_coefficient_scratch_release;
 
             std::vector<std::pair<std::string, algebra::Polynomial>> out;
@@ -9855,9 +9607,6 @@ namespace gatzk::protocol
 
             const bool prioritize_t_edge = worker_count > 1 && t_edge_it != labels.end() && edge_size >= (1ULL << 15);
 
-            // t_N owns substantial inner parallelism.  Running it inside the
-            // outer quotient worker pool would oversubscribe the same CPU
-            // cores with t_FH/in/d/cat/C materialization workers.
             const bool prioritize_t_n = worker_count > 1 && t_n_it != labels.end() && n_size >= (1ULL << 12);
 
             if (prioritize_t_edge || prioritize_t_n)
@@ -10218,8 +9967,8 @@ namespace gatzk::protocol
             throw std::runtime_error("unknown quotient domain: " + label);
         }
 
-        std::vector<std::pair<std::string, algebra::Polynomial>> blind_quotient_polynomials(
-            const ProtocolContext &context, std::vector<std::pair<std::string, algebra::Polynomial>> &&quotients)
+        std::vector<std::pair<std::string, algebra::Polynomial>>
+        blind_quotient_polynomials(const ProtocolContext &context, std::vector<std::pair<std::string, algebra::Polynomial>> &&quotients)
         {
             std::vector<std::pair<std::string, algebra::Polynomial>> out;
             out.reserve(quotients.size() * 2);
@@ -10429,9 +10178,9 @@ namespace gatzk::protocol
             return {std::move(masked[0]), std::move(masked[1])};
         }
 
-        std::unordered_map<std::string, Commitment> batch_quotient_commitments(
-            std::vector<std::pair<std::string, algebra::Polynomial>> &&named_quotient_polynomials, const crypto::KZGKeyPair &key,
-            crypto::CommitBatchProfile *profile)
+        std::unordered_map<std::string, Commitment>
+        batch_quotient_commitments(std::vector<std::pair<std::string, algebra::Polynomial>> &&named_quotient_polynomials, const crypto::KZGKeyPair &key,
+                                   crypto::CommitBatchProfile *profile)
         {
             std::unordered_map<std::string, Commitment> out;
             out.reserve(named_quotient_polynomials.size());
@@ -10597,9 +10346,6 @@ namespace gatzk::protocol
                     for (const auto *region : {"active", "semantic", "gap", "tail"})
                         append_label(output_bias_basis_region_selector_label(head_index, chunk.chunk_index, region));
                 }
-                // Gamma powers are a verifier-reconstructible virtual column,
-                // not a committed/opened Pi_bind object.  The prover keeps the
-                // interpolant only as quotient-construction material.
                 append_label(basis.power_object);
                 for (const auto &chunk : basis.chunks)
                     append_label(chunk.accumulator_object);
@@ -10685,8 +10431,7 @@ namespace gatzk::protocol
                 "P_H", "P_T_H", "P_Row_feat_tbl", "P_Col_feat_tbl", "P_Row_feat_qry", "P_Col_feat_qry", "P_I_feat_qry",
             };
             std::erase_if(labels,
-                          [&](const std::string &label)
-                          {
+                          [&](const std::string &label) {
                               return std::find(identically_cancelled_dependencies.begin(), identically_cancelled_dependencies.end(), label) !=
                                      identically_cancelled_dependencies.end();
                           });
@@ -10698,9 +10443,6 @@ namespace gatzk::protocol
                                         const std::vector<FieldElement> &points, RunMetrics *metrics = nullptr, double *eval_gather_ms = nullptr,
                                         const std::string &progress_prefix = "")
         {
-            // 一个 bundle 对应 formal schema 中某个工作域的一次 opening。
-            // 这里必须严格复用 `domain_opening_labels()` 给出的标签顺序，
-            // 因为 prover 组包、verifier 取值和 proof_size_bytes 统计都依赖同一份 shape。
             DomainOpeningBundle bundle;
             bundle.points = points;
             const auto commitments = collect_commitments(trace, quotient_commitments, labels);
@@ -10803,7 +10545,7 @@ namespace gatzk::protocol
             return bundle;
         }
 
-    } // namespace
+    }
 
     std::vector<algebra::FieldElement> evaluate_spilled_evaluation_polynomial_points(const TraceArtifacts::SpilledEvaluationPolynomial &spilled,
                                                                                      const std::shared_ptr<algebra::RootOfUnityDomain> &domain,
@@ -10922,14 +10664,9 @@ namespace gatzk::protocol
         return results;
     }
 
-    // 构建一次 formal run 的静态上下文，产出数据集、模型、工作域、公开列与静态承诺。
-    // 这里禁止注入任何依赖单次 proof 的 witness 或挑战状态。
     struct StaticContextCachePayload
     {
         ProtocolContext context;
-        // The cache key is retained in the payload so every hit can re-check
-        // the current private resource identity instead of trusting a map
-        // lookup alone.
         std::string identity;
         std::string compiler_artifact_identity;
     };
@@ -10943,15 +10680,12 @@ namespace gatzk::protocol
 
     ProtocolContext build_context(const util::AppConfig &config, RunMetrics *metrics, bool retain_static_context_for_reuse)
     {
-        // Resolve the registered scale chain before cache lookup so every
-        // context identity includes the complete typed chain, not only an ID.
         auto canonical_config = config;
         canonical_config.quantization =
             util::canonical_quantization_scale_chain(config.quant_cfg_id, config.hidden_profile, config.K_out,
                                                      (std::filesystem::path(config.project_root) / "configs/quantization_scale_chain.cfg").string());
         static std::mutex cache_mutex;
         static std::unordered_map<std::string, StaticContextCachePayload> cache;
-        // 这里只复用静态上下文对象，见证和挑战相关状态必须按每次正式证明重新生成。
         const bool allow_static_context_cache = canonical_config.batching_rule != "multi_graph_batch";
 
         const auto cache_lookup_start = Clock::now();
@@ -10966,8 +10700,6 @@ namespace gatzk::protocol
                                                   payload.compiler_artifact_identity == static_context_compiler_artifact_identity(payload.context);
                 if (payload.identity == cache_key && compiler_identity_ok)
                 {
-                    // 这里只缓存静态上下文：工作域、SRS、公开列、静态承诺和模型数据。
-                    // 每次 proof 的 witness 与挑战派生值都必须重新生成。
                     auto node = cache.extract(it);
                     auto context = std::move(node.mapped().context);
                     context.config = canonical_config;
@@ -10978,9 +10710,6 @@ namespace gatzk::protocol
                     }
                     return context;
                 }
-                // A same-path replacement, missing resource, or corrupted
-                // cached payload is a hard miss. Never expose a cached static
-                // context to a new proof statement.
                 cache.erase(it);
                 append_note(metrics, "static_context_cache=stale_identity_rejected");
             }
@@ -10989,17 +10718,11 @@ namespace gatzk::protocol
         append_note(metrics, "static_context_cache=miss");
         ProtocolContext context;
         context.config = canonical_config;
-        // All model commitments below use the canonical, typed,
-        // layer/head-aware scale chain selected above.  Context construction
-        // selects one typed scale chain for the formal registry; no
-        // unvalidated scale source can enter this path.
         const auto &scales = context.config.quantization;
 
         progress_note("context:load_static:start");
         auto start = Clock::now();
 
-        // 先把数据集和 checkpoint bundle 收束成 formal shape；
-        // 这一段还不接触任何 challenge 或 witness。
         context.dataset = data::load_dataset(canonical_config);
         context.local = data::normalize_graph_input(context.dataset, canonical_config);
         data::validate_input_feature_views(context.dataset, context.local, scales.s_input, canonical_config.input_preprocess_id);
@@ -11090,7 +10813,6 @@ namespace gatzk::protocol
 
         progress_note("context:domains:start");
         start = Clock::now();
-        // 工作域大小一次性按特征表、边域、隐藏维和查表规模展开，后面 trace / quotient / opening 共用这套布局。
         const std::size_t fh_size = algebra::next_power_of_two(
             [&]()
             {
@@ -11107,14 +10829,8 @@ namespace gatzk::protocol
         const auto dataset_feature_count = context.dataset.num_nodes * context.dataset.num_features;
         const std::size_t d_h = hidden_head_width(context.model);
         const std::size_t d_cat = concat_width(context.model);
-        // The in-domain is a shared power-of-two capacity.  It must not be
-        // confused with any formal selector: each Q_in below uses its own
-        // layer.input_dim support.
         const std::size_t in_domain_capacity = std::max<std::size_t>(context.local.num_features, model::max_hidden_input_dim(context.model));
         const auto minimum_edge_rows = minimum_edge_trace_length(context.local.num_nodes, context.local.edges.size(), d_h, context.local.num_classes);
-        // The same pure planner drives canonical table generation and this
-        // pre-SRS domain calculation.  In particular, ExpMap rows are derived
-        // from the certified LReLU output bound; T_range remains exactly 2^B.
         const auto table_shape = plan_canonical_static_table_shape(context);
         const std::size_t edge_size = algebra::next_power_of_two(std::max<std::size_t>({
                                                                      minimum_edge_rows,
@@ -11160,9 +10876,6 @@ namespace gatzk::protocol
 
         progress_note("context:srs:start");
         start = Clock::now();
-        // Every registered quotient is materialized on a 4|D| coset below.
-        // Check the complete coefficient resource here so an undersized SRS
-        // fails during context construction rather than midway through prove.
         const std::size_t required_coefficient_count = std::max<std::size_t>({
             fh_size * 4,
             edge_size * 4,
@@ -11195,11 +10908,6 @@ namespace gatzk::protocol
 
         progress_note("context:public_static:start");
         start = Clock::now();
-        // 这里开始布置公开列、静态表和静态承诺；它们会直接进入 transcript 与 verifier 的公共视图。
-        // The canonical producer lives in the schema module and is also used
-        // by the independent verifier registration loader.  Keeping one
-        // producer ensures that a table with the right shape cannot diverge in
-        // one row from the table that was formally generated and committed.
         context.tables = build_canonical_static_tables(context);
         std::string static_table_reason;
         if (!validate_static_tables(context, &static_table_reason))
@@ -11227,9 +10935,6 @@ namespace gatzk::protocol
         add_public_poly(context, "P_Q_grp_new_edge", make_shared_eval_poly("P_Q_grp_new_edge", std::move(q_grp_new_edge), context.domains.edge));
         add_public_poly(context, "P_Q_grp_end_edge", make_shared_eval_poly("P_Q_grp_end_edge", std::move(q_grp_end_edge), context.domains.edge));
         add_public_poly(context, "P_Q_edge_valid", Polynomial::from_shared_evaluations("P_Q_edge_valid", edge_valid, context.domains.edge));
-        // Each hidden layer owns its own valid selectors.  The selector
-        // support is the layer's real shape; the surrounding work domain
-        // may still be a shared power-of-two capacity.
         for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
             const auto &layer = context.model.hidden_layers[layer_index];
@@ -11463,7 +11168,6 @@ namespace gatzk::protocol
         add_public_poly(context, "P_T_range", make_shared_eval_poly("P_T_range", std::move(range_values), context.domains.edge));
         add_static_commitment_from_public_material_checked(context, "V_T_range", "P_T_range");
 
-        // 模型参数在 context 阶段就固定成静态承诺，后面的 trace 只引用标签，不再重复构造权重对象。
         for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
             const auto &layer = context.model.hidden_layers[layer_index];
@@ -11565,17 +11269,12 @@ namespace gatzk::protocol
         return context;
     }
 
-    // 消费 trace 生成最终 proof，对外保证 commitment 顺序、block 顺序与 opening 结构稳定。
     Proof prove(const ProtocolContext &context, const TraceArtifacts &trace, RunMetrics *metrics)
     {
         if (context.verifier_shape_only)
             throw std::runtime_error("prover rejects verifier shape-only execution context");
-        // Prove is the commitment-producing boundary.  Revalidate the input
-        // views here as well because a caller may retain a trace and mutate
-        // or replace the context after build_trace returned.
         data::validate_input_feature_views(context.dataset, context.local, context.config.quantization.s_input, context.config.input_preprocess_id);
         const auto &route2 = util::route2_options();
-        // prove 入口只消费 trace 和固定挑战顺序，不在这里改写 proof schema 或 block 顺序。
         if (trace.commitment_order != dynamic_commitment_labels(context))
         {
             throw std::runtime_error("trace commitment order does not match the protocol commitment order");
@@ -11585,35 +11284,21 @@ namespace gatzk::protocol
 
         auto stage_start = Clock::now();
         progress_note("prove:quotient:start");
-        // 先重放动态承诺之前的 transcript，再在这套固定挑战上构造各工作域 quotient。
         const auto pre_quotient_challenges = replay_challenges(context, trace.commitments, {}, &trace.public_metadata);
         std::shared_ptr<const ProofEvaluationBackendRegistry> backend_registry;
         if (route2.packed_fft_backend)
         {
-            // Packed backends retain non-owning polynomial pointers.
-            // Keep this registry proof-local so those pointers never
-            // outlive the current context or trace.  Construction only
-            // indexes labels; subset materialization remains lazy.
             backend_registry = std::make_shared<ProofEvaluationBackendRegistry>(context, trace);
         }
         auto proof_domain_weight_cache = shared_proof_domain_weight_cache();
         const std::vector<std::string> quotient_labels = {"t_FH", "t_edge", "t_in", "t_d_h", "t_cat", "t_C", "t_N"};
         append_note(metrics, "quotient_cache=miss");
 
-        // On integrated-memory CUDA systems a large resident SRS cache
-        // competes directly with the file-backed quotient working set.
-        //
-        // Keep the cache across phases for ordinary workloads, where its
-        // reuse is beneficial. Release it only for quotient shapes that
-        // already enter the large edge/FH working-set class.
         const bool large_quotient_working_set = (context.domains.edge != nullptr && context.domains.edge->size >= (1ULL << 23)) ||
                                                 (context.domains.fh != nullptr && context.domains.fh->size >= (1ULL << 25));
 
         if (route2.cuda_field_hotspots && large_quotient_working_set)
         {
-            // Scalar conversion buffers and streamed-MSM staging are not
-            // useful during quotient construction. Release those first
-            // without throwing away immutable SRS bases.
             crypto::release_cuda_g1_msm_execution_workspace();
 
             constexpr std::size_t kMinimumRetainedCudaMsmBaseBytes = std::size_t{512} << 20;
@@ -11630,19 +11315,11 @@ namespace gatzk::protocol
                 {
                     const auto live_after_reserve = host_budget.available_bytes - host_budget.reserve_bytes;
 
-                    // Give only 1/16 of currently safe host/unified
-                    // headroom to cross-phase SRS residency.  Quotient
-                    // cosets retain the dominant share while useful
-                    // PPI/OGBN Lagrange prefixes can survive.
                     retained_cuda_msm_base_bytes =
                         std::min(host_budget.budget_bytes, std::min(live_after_reserve / std::size_t{8}, kMaximumIntegratedRetainedCudaMsmBaseBytes));
                 }
                 else
                 {
-                    // The historical 512 MiB floor is only an optimization
-                    // hint.  It must not survive when effective admission is
-                    // unavailable or below that floor on a constrained UMA
-                    // host.
                     retained_cuda_msm_base_bytes = host_budget.available_known ? std::min(kMinimumRetainedCudaMsmBaseBytes, host_budget.budget_bytes) : 0;
                 }
             }
@@ -11732,8 +11409,6 @@ namespace gatzk::protocol
             algebra::release_cuda_ntt_workspace();
             crypto::release_cuda_g1_msm_execution_workspace();
         }
-        // Quotient polynomials and commitments are proof-specific and must not be
-        // reused by a later fresh-proof measurement.
         const auto challenges = replay_challenges(context, trace.commitments, quotient_commitments, &trace.public_metadata);
         if (metrics != nullptr)
         {
@@ -11741,8 +11416,6 @@ namespace gatzk::protocol
         }
         progress_note("prove:quotient:done");
 
-        // 组装 proof 时必须严格按 schema 的 label 顺序回填，
-        // 否则 serializer / parser 与 verifier 会同时失配。
         Proof proof;
         proof.public_metadata = trace.public_metadata;
         proof.block_order = proof_block_order();
@@ -11820,8 +11493,6 @@ namespace gatzk::protocol
         };
         std::vector<BundleBuildResult> bundle_results;
         bundle_results.reserve(bundle_specs.size());
-        // 并行构造 opening bundle 之前先预热 barycentric 权重和 FH 公开值缓存。
-        // 大域权重向量体量极大，若在多个 bundle 中同时构造，会明显放大缺页和带宽争抢。
 
         const auto spilled_bytes_for_domain = [&](const std::string &domain_name)
         {
@@ -11950,20 +11621,10 @@ namespace gatzk::protocol
         }
         progress_note("prove:domain_opening:done:ms=" + std::to_string(domain_bundle_wall_ms));
 
-        // Every domain-opening scalar value has now been gathered into
-        // proof.domain_openings. The barycentric weight vectors are not
-        // needed by point-group witness construction below.
-        //
-        // In particular, large FH/edge instances can retain multiple
-        // GiB of challenge-specific weight vectors. Release them before
-        // folded opening plans allocate their own full-domain buffers.
         proof_domain_weight_cache.reset();
 
         progress_note("prove:domain_opening:weight_cache:released");
 
-        // Eval_bind owns every Pi_bind claim value.  The same claims remain
-        // inside the in-memory domain bundle solely so Open_dom can fold one
-        // global point group; the wire codec omits them from Eval_dom.
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
             const auto relation_id = "bind:output:" + std::to_string(head_index);
@@ -12307,11 +11968,6 @@ namespace gatzk::protocol
 
         std::vector<PointGroupOpeningResult> opening_results(point_groups.size());
 
-        // Older in-memory fixtures can still carry an id-zero spill
-        // descriptor.  Assign a proof-local descriptor token on demand for
-        // those entries; this map owns only scalar identities and never a
-        // source vector.  Current trace construction assigns the token when
-        // the spill is written, so this is a fail-safe compatibility seam.
         std::mutex descriptor_semantic_source_token_mutex;
         std::unordered_map<std::string, std::uintptr_t> descriptor_semantic_source_tokens;
         std::uintptr_t next_descriptor_semantic_source_token = 1;
@@ -12337,9 +11993,6 @@ namespace gatzk::protocol
 
         const auto streamed_semantic_source_key = [&](const TraceArtifacts::SpilledEvaluationPolynomial &spilled, std::uintptr_t source_token)
         {
-            // Length-prefix each variable component so a path/domain/name
-            // boundary cannot collide.  The key is execution-only and never
-            // enters transcript or proof bytes.
             const auto append_component = [](std::string *out, std::string_view value)
             {
                 out->append(std::to_string(value.size()));
@@ -12483,8 +12136,6 @@ namespace gatzk::protocol
                 add_evaluation_group(context_domain_by_name(context, spilled->second.domain_name));
                 add_opening_element_bytes(std::min(spilled_file_value_count(spilled->second), kOpeningStreamChunkValues), &workset.source_bytes, &overflow);
             }
-            // One live loaded coefficient source, one coefficient fold and
-            // one quotient. GPU folding additionally has bounded staging.
             add_opening_element_bytes(loaded_coefficient_count, &workset.source_bytes, &overflow);
             add_opening_element_bytes(coefficient_count, &workset.folded_bytes, &overflow);
             add_opening_element_bytes(coefficient_count, &workset.scratch_bytes, &overflow);
@@ -12526,9 +12177,6 @@ namespace gatzk::protocol
 
         const auto shared_file_backed_semantic_source_count = [&](std::size_t first_index, std::size_t second_index)
         {
-            // Keep small/medium resident opening paths unchanged.
-            // The paired source scan is reserved for genuinely large
-            // streamed sources where memory traffic dominates.
             constexpr std::size_t kMinimumSharedStreamSourceValues = 1ULL << 22;
 
             std::unordered_map<std::string, std::string> first_sources;
@@ -12654,10 +12302,6 @@ namespace gatzk::protocol
                 std::min<std::size_t>(work_order.size(), has_file_backed_openings ? std::min<std::size_t>(2, std::min(outer_worker_limit, memory_worker_cap))
                                                                                   : std::min(outer_worker_limit, memory_worker_cap));
 
-            // One CPU budget is shared by all concurrently opened groups.
-            // Previously each large domain group could independently request
-            // up to 16 inner workers on top of the outer group parallelism,
-            // producing substantial nested oversubscription.
             const auto per_group_inner_worker_budget =
                 std::max<std::size_t>(1, static_cast<std::size_t>(hardware_workers) / std::max<std::size_t>(1, worker_count));
 
@@ -12695,12 +12339,6 @@ namespace gatzk::protocol
                                                               values.push_back(claim.value);
                                                           }
 
-                                                          // The outer scheduler already parallelizes independent
-                                                          // groups.  Never let one group reacquire the whole
-                                                          // machine merely because its work estimate is large.
-                                                          // Large and small groups use the same globally bounded
-                                                          // per-group cap; KZG still decides internally how much
-                                                          // of that cap is useful.
                                                           const auto inner_worker_count = base_inner_worker_count;
 
                                                           const crypto::PointGroupOpeningExecutionOptions execution_options{
@@ -12901,9 +12539,6 @@ namespace gatzk::protocol
 
             const auto hardware_workers = std::max<unsigned>(1, std::thread::hardware_concurrency());
 
-            // open_point_group_pair_shared_stream() drives two independent
-            // opening constructions.  Split one global CPU budget between
-            // them instead of granting both the full 16-worker allowance.
             const auto inner_worker_count = std::min<std::size_t>(16, std::max<std::size_t>(1, static_cast<std::size_t>(hardware_workers) / 2));
 
             const std::array<crypto::PointGroupOpeningExecutionOptions, 2> pair_execution_options{
@@ -12956,8 +12591,7 @@ namespace gatzk::protocol
                           ":shared_sources=" + std::to_string(selection.shared_source_count) + ":ms=" + std::to_string(pair_wall_ms));
         };
 
-        const auto erase_opened_pair = [](std::vector<std::size_t> *indices, const std::array<std::size_t, 2> &pair)
-        {
+        const auto erase_opened_pair = [](std::vector<std::size_t> *indices, const std::array<std::size_t, 2> &pair) {
             indices->erase(std::remove_if(indices->begin(), indices->end(), [&](std::size_t index) { return index == pair[0] || index == pair[1]; }),
                            indices->end());
         };
@@ -13050,4 +12684,4 @@ namespace gatzk::protocol
         return proof;
     }
 
-} // namespace gatzk::protocol
+}

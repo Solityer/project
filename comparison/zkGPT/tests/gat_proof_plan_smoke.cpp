@@ -7,7 +7,7 @@ using namespace zkgpt::gat;
 
 namespace {
 
-Tensor tensor(const std::string &name, const std::vector<std::size_t> &dims) {
+Tensor tensor(const std::string& name, const std::vector<std::size_t>& dims) {
     Tensor result;
     result.name = name;
     result.shape.dims = dims;
@@ -33,14 +33,15 @@ Model model_fixture() {
     result.manifest.label_format = "single_label";
     result.manifest.output_average_rule = "per_head_bias_then_arithmetic_mean";
     result.manifest.quantization_scale_chain = "gat_l3_scale_chain";
-    for (std::size_t layer = 0; layer < 2; ++layer) for (std::size_t head = 0; head < 8; ++head) {
-        std::ostringstream prefix;
-        prefix << "hidden/layer" << layer << "/head" << head << "/";
-        const std::size_t input_dim = layer == 0 ? 2 : 8;
-        result.tensors.emplace(prefix.str() + "seq/kernel", tensor(prefix.str() + "seq/kernel", {1, input_dim, 1}));
-        result.tensors.emplace(prefix.str() + "attn_src/kernel", tensor(prefix.str() + "attn_src/kernel", {1, 1, 1}));
-        result.tensors.emplace(prefix.str() + "attn_dst/kernel", tensor(prefix.str() + "attn_dst/kernel", {1, 1, 1}));
-    }
+    for (std::size_t layer = 0; layer < 2; ++layer)
+        for (std::size_t head = 0; head < 8; ++head) {
+            std::ostringstream prefix;
+            prefix << "hidden/layer" << layer << "/head" << head << "/";
+            const std::size_t input_dim = layer == 0 ? 2 : 8;
+            result.tensors.emplace(prefix.str() + "seq/kernel", tensor(prefix.str() + "seq/kernel", {1, input_dim, 1}));
+            result.tensors.emplace(prefix.str() + "attn_src/kernel", tensor(prefix.str() + "attn_src/kernel", {1, 1, 1}));
+            result.tensors.emplace(prefix.str() + "attn_dst/kernel", tensor(prefix.str() + "attn_dst/kernel", {1, 1, 1}));
+        }
     for (std::size_t head = 0; head < 2; ++head) {
         std::ostringstream prefix;
         prefix << "output/head" << head << "/";
@@ -57,7 +58,9 @@ Model model_fixture() {
 QuantConfig quant_fixture() {
     QuantConfig result;
     result.schema = result.quant_cfg_id = "gat_l3_scale_chain";
-    result.s_input = 16; result.s_delta = 256; result.s_exp = 16;
+    result.s_input = 16;
+    result.s_delta = 256;
+    result.s_exp = 16;
     result.s_h = {{16, 16, 16}};
     for (std::size_t layer = 0; layer < 2; ++layer) {
         result.s_w_hidden[layer].assign(8, 4);
@@ -67,8 +70,11 @@ QuantConfig quant_fixture() {
         result.s_agg_pre[layer] = result.s_agg[layer] = result.s_cat[layer] = 16;
     }
     result.s_out_pre = result.s_out_head = result.s_out = 16;
-    result.s_w_output = {{4, 4}}; result.s_yprime_output = {{64, 64}};
-    result.s_a_src_output = {{4, 4}}; result.s_a_dst_output = {{4, 4}}; result.s_b_output = {{16, 16}};
+    result.s_w_output = {{4, 4}};
+    result.s_yprime_output = {{64, 64}};
+    result.s_a_src_output = {{4, 4}};
+    result.s_a_dst_output = {{4, 4}};
+    result.s_b_output = {{16, 16}};
     result.rounding = "nearest_ties_away";
     result.rescale = "none";
     result.output_average = "signed_round_div";
@@ -78,7 +84,10 @@ QuantConfig quant_fixture() {
 
 Graph graph_fixture() {
     Graph result;
-    result.num_nodes = 4; result.num_features = 2; result.graph_count = 2; result.num_classes = 2;
+    result.num_nodes = 4;
+    result.num_features = 2;
+    result.graph_count = 2;
+    result.num_classes = 2;
     result.node_ptr = {0, 2, 4};
     result.src = {0, 1, 0, 1, 2, 3, 2, 3};
     result.dst = {0, 0, 1, 1, 2, 2, 3, 3};
@@ -88,20 +97,18 @@ Graph graph_fixture() {
     return result;
 }
 
-} // namespace
+}
 
 int main() {
     const Model model = model_fixture();
     const QuantConfig quant = quant_fixture();
     const GatCircuitPlan plan = build_gat_circuit_plan(graph_fixture(), model, quant);
-    if (!plan.official_layered || plan.has_placeholder || plan.circuit.circuit.size() <= 1 ||
-        plan.matmuls.size() != 54 || plan.sparse_gkr.empty() || plan.lasso.size() != 4 ||
-        plan.checkpoints.empty() || !plan.registry.covers_all_segments()) return 1;
+    if (!plan.official_layered || plan.has_placeholder || plan.circuit.circuit.size() <= 1 || plan.matmuls.size() != 54 || plan.sparse_gkr.empty() ||
+        plan.lasso.size() != 4 || plan.checkpoints.empty() || !plan.registry.covers_all_segments())
+        return 1;
     const NativePrimitiveEvidence evidence = exercise_official_primitives("proof-plan-smoke");
-    if (!evidence.sumcheck_called || !evidence.gkr_path_bound || !evidence.lasso_range_called ||
-        !evidence.hyrax_commit_called) return 2;
-    std::cout << "gat_proof_plan_smoke: PASS layers=" << plan.circuit.circuit.size()
-              << " matmuls=" << plan.matmuls.size()
+    if (!evidence.sumcheck_called || !evidence.gkr_path_bound || !evidence.lasso_range_called || !evidence.hyrax_commit_called) return 2;
+    std::cout << "gat_proof_plan_smoke: PASS layers=" << plan.circuit.circuit.size() << " matmuls=" << plan.matmuls.size()
               << " checkpoints=" << plan.checkpoints.size() << "\n";
     return 0;
 }

@@ -25,14 +25,11 @@ import numpy as np
 
 from formal_common import DATASETS, ROOT, ContractError, abort, load_json, require_file, sha256
 
-
 RELATION = "R_GAT-ezkl"
 PRODUCER_ID = "ezkl-gat-independent-python"
 PRODUCER_VERSION = "1"
 TABLE_MAGIC = b"EZKL-GAT-TABLES\x00"
-BN254_MODULUS = int(
-    "30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001", 16
-)
+BN254_MODULUS = int("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001", 16)
 NATIVE_FIELD_HEX_PREFIX = "0x"
 
 
@@ -113,18 +110,12 @@ def authenticated_model_binding(context: dict[str, Any]) -> tuple[str, str, str]
         fail("setup producer context model binding schema is not canonical")
     model_hash = model.get("model_hash_field")
     if (
-        not isinstance(model_hash, str)
-        or len(model_hash) != 66
-        or not model_hash.startswith(NATIVE_FIELD_HEX_PREFIX)
-        or any(char not in "0123456789abcdef" for char in model_hash[2:])
+        not isinstance(model_hash, str) or len(model_hash) != 66 or not model_hash.startswith(NATIVE_FIELD_HEX_PREFIX) or
+        any(char not in "0123456789abcdef" for char in model_hash[2:])
     ):
         fail("setup producer context model hash is not a canonical Halo2 field encoding")
     model_digest = model.get("model_digest_sha256")
-    if (
-        not isinstance(model_digest, str)
-        or len(model_digest) != 64
-        or any(char not in "0123456789abcdef" for char in model_digest)
-    ):
+    if (not isinstance(model_digest, str) or len(model_digest) != 64 or any(char not in "0123456789abcdef" for char in model_digest)):
         fail("setup producer context model digest is not a canonical SHA-256")
     model_hash_domain = model.get("hash_domain")
     if not isinstance(model_hash_domain, str) or not model_hash_domain:
@@ -149,11 +140,7 @@ def rust_digest_identity(value: dict[str, Any], label: str) -> dict[str, str]:
     digest = value.get("digest")
     if not isinstance(identity, str) or not identity:
         fail(f"{label}.id is empty")
-    if (
-        not isinstance(digest, str)
-        or len(digest) != 64
-        or any(char not in "0123456789abcdef" for char in digest)
-    ):
+    if (not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)):
         fail(f"{label}.digest is not a canonical SHA-256")
     return {"id": identity, "digest": digest}
 
@@ -198,9 +185,7 @@ def parse_shape(value: str) -> list[int]:
 
 def scale_exponent(raw_multiplier: int, key: str) -> int:
     if raw_multiplier <= 0 or raw_multiplier & (raw_multiplier - 1):
-        fail(
-            f"quantization scale {key} must be a positive power-of-two multiplier"
-        )
+        fail(f"quantization scale {key} must be a positive power-of-two multiplier")
     return raw_multiplier.bit_length() - 1
 
 
@@ -247,7 +232,7 @@ def tensor_archive(path: Path) -> dict[str, tuple[list[int], list[float]]]:
                 rank = int(pieces[2])
                 if len(pieces) != 4 + rank:
                     fail(f"tensor header shape mismatch for {current_name}")
-                current_shape = [int(x) for x in pieces[3 : 3 + rank]]
+                current_shape = [int(x) for x in pieces[3:3 + rank]]
                 declared = int(pieces[3 + rank])
                 if declared != math.prod(current_shape):
                     fail(f"tensor header count mismatch for {current_name}")
@@ -263,9 +248,7 @@ def tensor_archive(path: Path) -> dict[str, tuple[list[int], list[float]]]:
     return result
 
 
-def quantized_tensor(
-    tensors: dict[str, tuple[list[int], list[float]]], name: str, exponent: int
-) -> np.ndarray:
+def quantized_tensor(tensors: dict[str, tuple[list[int], list[float]]], name: str, exponent: int) -> np.ndarray:
     if name not in tensors:
         fail(f"missing canonical tensor: {name}")
     shape, values = tensors[name]
@@ -287,13 +270,11 @@ class BinaryTable:
 
     def lookup(self, value: int) -> int:
         if value < self.minimum or value > self.maximum:
-            fail(
-                f"{self.metadata.get('table_id')} lookup {value} outside "
-                f"[{self.minimum},{self.maximum}]"
-            )
+            fail(f"{self.metadata.get('table_id')} lookup {value} outside "
+                 f"[{self.minimum},{self.maximum}]")
         index = value - self.minimum
         start = self.offset + index * 32
-        raw = self.mapped[start + 16 : start + 32]
+        raw = self.mapped[start + 16:start + 32]
         return int.from_bytes(raw, "little", signed=True)
 
 
@@ -309,7 +290,7 @@ def open_tables(path: Path, expected_id: str, expected_digest: str) -> tuple[mma
         fail("unsupported static-table archive version/count")
     (registry_size,) = struct.unpack_from("<Q", mapped, offset)
     offset += 8
-    registry = json.loads(bytes(mapped[offset : offset + registry_size]))
+    registry = json.loads(bytes(mapped[offset:offset + registry_size]))
     offset += registry_size
     if registry.get("format") != "ezkl-gat-static-tables-bin" or registry.get("version") != 1:
         fail("static-table registry format mismatch")
@@ -319,7 +300,7 @@ def open_tables(path: Path, expected_id: str, expected_digest: str) -> tuple[mma
     for expected_function in ("lrelu", "exp_neg", "elu", "max_relu"):
         (metadata_size,) = struct.unpack_from("<Q", mapped, offset)
         offset += 8
-        metadata = json.loads(bytes(mapped[offset : offset + metadata_size]))
+        metadata = json.loads(bytes(mapped[offset:offset + metadata_size]))
         offset += metadata_size
         (count,) = struct.unpack_from("<Q", mapped, offset)
         offset += 8
@@ -385,9 +366,7 @@ def graph_from_resources(data_dir: Path, meta: dict[str, str]) -> tuple[list[int
     return node_ids, src, dst, node_ptr, edge_ptr
 
 
-def feature_values(
-    data_dir: Path, meta: dict[str, str], exponent: int, preprocess_id: str
-) -> tuple[np.ndarray, Path]:
+def feature_values(data_dir: Path, meta: dict[str, str], exponent: int, preprocess_id: str) -> tuple[np.ndarray, Path]:
     nodes, columns = int(meta["num_nodes"]), int(meta["num_features"])
     npy_path = data_dir / "features.npy"
     text_path = data_dir / "features.txt"
@@ -488,10 +467,7 @@ def aggregate(
         rows = projected[np.asarray(src[start:end], dtype=np.int64)]
         weighted = rows * np.asarray(exponents, dtype=np.int64).reshape(-1, 1)
         numerators = np.sum(weighted, axis=0, dtype=np.int64).tolist()
-        values = [
-            signed_round_div(int(numerator) * numerator_scale, denominator * denominator_scale)
-            for numerator in numerators
-        ]
+        values = [signed_round_div(int(numerator) * numerator_scale, denominator * denominator_scale) for numerator in numerators]
         if elu is not None:
             values = [elu.lookup(value) for value in values]
         result[node, :] = np.asarray(values, dtype=np.int64)
@@ -621,9 +597,7 @@ def main(args: argparse.Namespace) -> int:
         fail("producer requires the baseline canonical resource manifest")
     if not manifest_path.is_file():
         fail(f"missing resource manifest: {manifest_path}")
-    config = local_path(
-        args.config or f"resources/canonical/configs/{args.dataset}_secure.cfg", "config"
-    )
+    config = local_path(args.config or f"resources/canonical/configs/{args.dataset}_secure.cfg", "config")
     output_dir = local_path(args.output_dir, "output directory")
     setup_context_path = local_path(args.setup_context, "setup context")
     statement_path = local_path(args.statement, "statement")
@@ -638,7 +612,7 @@ def main(args: argparse.Namespace) -> int:
     if statement_path.parent != output_dir or public_output_path.parent != output_dir or producer_manifest_path.parent != output_dir:
         fail("statement, public output and producer manifest must be in output-dir")
 
-    from validate_resources import validate_manifest  # imported only after ROOT is fixed
+    from validate_resources import validate_manifest
 
     resource_document = load_json(manifest_path, "resource manifest")
     validate_manifest(ROOT, resource_document, False)
@@ -662,9 +636,7 @@ def main(args: argparse.Namespace) -> int:
         fail("setup producer context schema/identity mismatch")
     if context["dataset"] != args.dataset:
         fail("setup producer context dataset mismatch")
-    model_hash_field, model_digest_sha256_expected, model_hash_domain = authenticated_model_binding(
-        context
-    )
+    model_hash_field, model_digest_sha256_expected, model_hash_domain = authenticated_model_binding(context)
     secure = parse_cfg(config)
     data_root = local_path(secure["data_root"], "authenticated data_root")
     data_dir = data_root / args.dataset
@@ -676,22 +648,16 @@ def main(args: argparse.Namespace) -> int:
     tensors = tensor_archive(tensor_path)
     scales_cfg = parse_cfg(ROOT / "resources/canonical/configs/quantization_scale_chain.cfg")
     if (
-        checkpoint.get("dataset") != args.dataset
-        or checkpoint.get("model_arch_id") != context["model_arch_id"]
-        or secure.get("model_arch_id") != context["model_arch_id"]
-        or checkpoint.get("quant_cfg_id") != context["quant_cfg_id"]
-        or secure.get("quant_cfg_id") != context["quant_cfg_id"]
-        or checkpoint.get("input_preprocess_id") != meta.get("input_preprocess_id")
-        or secure.get("input_preprocess_id") != meta.get("input_preprocess_id")
+        checkpoint.get("dataset") != args.dataset or checkpoint.get("model_arch_id") != context["model_arch_id"] or
+        secure.get("model_arch_id") != context["model_arch_id"] or checkpoint.get("quant_cfg_id") != context["quant_cfg_id"] or
+        secure.get("quant_cfg_id") != context["quant_cfg_id"] or checkpoint.get("input_preprocess_id") != meta.get("input_preprocess_id") or
+        secure.get("input_preprocess_id") != meta.get("input_preprocess_id")
     ):
         fail("authenticated config/checkpoint/metadata identity mismatch")
     preprocess_id = meta.get("input_preprocess_id", "")
     if preprocess_id not in {"row_normalize", "none"}:
         fail(f"unsupported authenticated input_preprocess_id: {preprocess_id}")
-    if (
-        scales_cfg.get("quant_cfg_id") != context["quant_cfg_id"]
-        or secure.get("quant_cfg_id") != context["quant_cfg_id"]
-    ):
+    if (scales_cfg.get("quant_cfg_id") != context["quant_cfg_id"] or secure.get("quant_cfg_id") != context["quant_cfg_id"]):
         fail("quantization config identity mismatch")
     s_input = scale_value(scales_cfg, "s_input")
     features, feature_path = feature_values(data_dir, meta, s_input, preprocess_id)
@@ -709,11 +675,8 @@ def main(args: argparse.Namespace) -> int:
     checkpoint_k_out = checkpoint.get("K_out")
     config_k_out = secure.get("K_out")
     if (
-        checkpoint.get("L") != len(hidden_meta) + 1
-        or checkpoint_k_out is None
-        or str(checkpoint_k_out) != str(output_head_count)
-        or secure.get("L") != str(len(hidden_meta) + 1)
-        or (config_k_out is not None and config_k_out != str(output_head_count))
+        checkpoint.get("L") != len(hidden_meta) + 1 or checkpoint_k_out is None or str(checkpoint_k_out) != str(output_head_count) or
+        secure.get("L") != str(len(hidden_meta) + 1) or (config_k_out is not None and config_k_out != str(output_head_count))
     ):
         fail("authenticated layer/head schema is not closed")
     hidden: list[list[tuple[np.ndarray, np.ndarray, np.ndarray]]] = []
@@ -732,11 +695,7 @@ def main(args: argparse.Namespace) -> int:
         if input_dim != current_dim:
             fail(f"checkpoint hidden layer {layer_index} input dimension is not closed")
         layer_specs = sorted(
-            (
-                spec
-                for spec in hidden_specs
-                if int(spec["layer_index"]) == layer_index
-            ),
+            (spec for spec in hidden_specs if int(spec["layer_index"]) == layer_index),
             key=lambda value: int(value["local_head_index"]),
         )
         if len(layer_specs) != head_count:
@@ -770,17 +729,13 @@ def main(args: argparse.Namespace) -> int:
     output_dst_scales = scale_list(scales_cfg, "s_a_dst_output", output_count)
     output_bias_scales = scale_list(scales_cfg, "s_b_output", output_count)
     for head_index, spec in enumerate(sorted(output_specs, key=lambda value: int(value["head_index"]))):
-        projection = quantized_tensor(tensors, spec["seq_kernel"], output_w_scales[head_index]).reshape(
-            current_dim, int(meta["num_classes"])
-        )
+        projection = quantized_tensor(tensors, spec["seq_kernel"], output_w_scales[head_index]).reshape(current_dim, int(meta["num_classes"]))
         a_src = quantized_tensor(tensors, spec["attn_src_kernel"], output_src_scales[head_index]).reshape(-1)
         a_dst = quantized_tensor(tensors, spec["attn_dst_kernel"], output_dst_scales[head_index]).reshape(-1)
         bias = quantized_tensor(tensors, spec["output_bias"], output_bias_scales[head_index]).reshape(-1)
         if (
-            projection.shape != (current_dim, int(meta["num_classes"]))
-            or a_src.shape != (int(meta["num_classes"]),)
-            or a_dst.shape != (int(meta["num_classes"]),)
-            or bias.shape != (int(meta["num_classes"]),)
+            projection.shape != (current_dim, int(meta["num_classes"])) or a_src.shape != (int(meta["num_classes"]),) or
+            a_dst.shape != (int(meta["num_classes"]),) or bias.shape != (int(meta["num_classes"]),)
         ):
             fail(f"checkpoint output head {head_index} tensor shape is not closed")
         outputs.append((projection, a_src, a_dst, bias))
@@ -793,9 +748,7 @@ def main(args: argparse.Namespace) -> int:
         fail("independent canonical model digest disagrees with setup context")
 
     table_path = ROOT / "resources/canonical/tables" / args.dataset / "gat_static_tables.bin"
-    table_map, tables, _registry = open_tables(
-        table_path, context["static_tables"]["id"], context["static_tables"]["digest"]
-    )
+    table_map, tables, _registry = open_tables(table_path, context["static_tables"]["id"], context["static_tables"]["digest"])
     try:
         groups = groups_for_graph(node_ids, dst, node_ptr, edge_ptr)
         output = canonical_forward(
@@ -836,9 +789,7 @@ def main(args: argparse.Namespace) -> int:
         "ezkl_security_profile_id": context["ezkl_security_profile_id"],
         "public_ezkl": {
             "topology": rust_digest_identity(context["topology"], "context.topology"),
-            "static_tables": rust_digest_identity(
-                context["static_tables"], "context.static_tables"
-            ),
+            "static_tables": rust_digest_identity(context["static_tables"], "context.static_tables"),
             "quant": rust_digest_identity(context["quantization"], "context.quantization"),
             "ledger": rust_digest_identity(context["ledger"], "context.ledger"),
             "circuit": circuit,
@@ -860,18 +811,12 @@ def main(args: argparse.Namespace) -> int:
         "public_output_sha256": public_output_sha,
         "statement_digest": "",
     }
-    # Rust hashes the typed statement after converting it through
-    # serde_json::Value, whose default map is recursively key-ordered.  Keep
-    # the producer's bytes independent of Python insertion order and Rust
-    # struct/flatten field order.
-    statement_digest = sha256_bytes(
-        json.dumps(
-            statement,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    )
+    statement_digest = sha256_bytes(json.dumps(
+        statement,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode())
     statement["statement_digest"] = statement_digest
     script_path = ROOT / "scripts/produce_public_statement.py"
     producer_manifest = {
@@ -900,11 +845,7 @@ def main(args: argparse.Namespace) -> int:
         "hash_domain": model_hash_domain,
         "canonical_model_digest": model_digest_sha256_expected,
         "circuit_ref": circuit,
-        "input_digest": sha256_bytes(
-            b"ezkl-gat-public-input-v1"
-            + b"".join(i128_bytes(int(x)) for x in features.ravel().tolist())
-            + bytes.fromhex(topo_digest)
-        ),
+        "input_digest": sha256_bytes(b"ezkl-gat-public-input-v1" + b"".join(i128_bytes(int(x)) for x in features.ravel().tolist()) + bytes.fromhex(topo_digest)),
         "output_digest": output_digest,
         "public_output_sha256": public_output_sha,
         "statement_sha256": sha256_bytes((json.dumps(statement, indent=2, ensure_ascii=False) + "\n").encode()),

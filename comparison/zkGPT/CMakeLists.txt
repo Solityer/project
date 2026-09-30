@@ -1,10 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 project(zkCNN)
 set(CMAKE_CXX_STANDARD 14)
-# The upstream demo was developed on x86_64, where the large code model is
-# useful for its very large GPT tensors.  It is not accepted by Clang's
-# default PIC mode on the aarch64 build host, and is unnecessary for the
-# compact baseline adapter; keep it for the original x86_64 path only.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     set(CMAKE_CXX_FLAGS "-mcmodel=large -O3 -lpthread -pthread")
 else()

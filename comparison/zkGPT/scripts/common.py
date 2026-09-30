@@ -20,7 +20,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-
 DATASETS: Tuple[str, ...] = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 BACKENDS: Tuple[str, ...] = ("cpu", "gpu")
 FORMAL_BACKENDS: Tuple[str, ...] = ("cpu",)
@@ -34,8 +33,6 @@ COLLECTED_SCHEMA = "zkgpt-gat-collected-results-v2"
 FINAL_SCHEMA = "zkgpt-gat-final-validation-v2"
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
-# Only these files are volatile formal-cell outputs.  Registration and its
-# prover secret are intentionally absent and therefore never removed.
 VOLATILE_RUN_FILES = frozenset({
     "result.json", "verifier_context.bin", "public_statement.json",
     "public_logits.txt", "proof.artifact", "verifier_report.json",
@@ -626,7 +623,7 @@ def validate_registration_artifact(
     Cora registrations without optional audit flags remain reusable.
     """
 
-    del root  # reserved for future native validation receipt binding
+    del root
     registration = load_json(registration_path, "model registration")
     if not isinstance(registration, dict):
         raise ChainError(f"model registration is not an object: {registration_path}")

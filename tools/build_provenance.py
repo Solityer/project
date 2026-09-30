@@ -25,17 +25,10 @@ SOURCE_MANIFEST_ALGORITHM = "sha256:length-prefixed-path-content"
 BUILD_RECEIPT_FORMAT = "zkgat_build_receipt"
 BUILD_IDENTITY_ALGORITHM = "zkgat:build-identity"
 
-# Generated/runtime trees are never part of a source identity.  ``build*`` is
-# prefix based so local directories such as build_debug are excluded too.
 EXCLUDED_COMPONENTS = {"comparison", "runs", "tests", ".git"}
 
 
 def _excluded(path: pathlib.PurePosixPath) -> bool:
-    # ``build*`` denotes generated directories (for example ``build`` and
-    # ``build_debug``), not source files whose basename happens to start with
-    # ``build``.  The provenance generator itself is source input and must be
-    # included in the inventory because changing it changes the generated
-    # compiler header and manifest.
     final_index = len(path.parts) - 1
     return any(component in EXCLUDED_COMPONENTS or (index != final_index and component.startswith("build")) for index, component in enumerate(path.parts))
 
@@ -66,7 +59,6 @@ def inventory_paths(root: pathlib.Path) -> list[str]:
         if relative.is_absolute() or _excluded(relative):
             continue
         absolute = root.joinpath(*relative.parts)
-        # Do not follow symlinks into source or artifact material.
         if absolute.is_symlink() or not absolute.is_file():
             continue
         paths.append(relative.as_posix())

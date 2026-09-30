@@ -12,9 +12,6 @@
 #include <unordered_map>
 #include <unordered_set>
 
-// 实现数据加载、缓存准备与局部图规范化。
-// 它把外部数据源整理为 formal 主线一致消费的 dataset / local graph 对象。
-
 namespace gatzk::data
 {
     namespace
@@ -22,7 +19,6 @@ namespace gatzk::data
         using algebra::FieldElement;
         std::vector<std::vector<double>> row_normalize(const std::vector<std::vector<double>> &raw_features)
         {
-            // 先按行归一化输入特征，让数据进入参考前向时保持稳定的节点内尺度。
             std::vector<std::vector<double>> normalized = raw_features;
             for (auto &row : normalized)
             {
@@ -364,7 +360,6 @@ namespace gatzk::data
                 }
             }
 
-            // 先恢复浮点特征，再量化成 formal 主线真正消费的域元素矩阵。
             bool npy_float32 = false;
             const auto raw_features = load_features_matrix(root, dataset.num_nodes, dataset.num_features, &npy_float32);
             if (dataset.input_preprocess_id == "ogbn_arxiv_raw_float32" &&
@@ -383,9 +378,6 @@ namespace gatzk::data
             }
             if (dataset.name == "ppi")
             {
-                // PPI is a 121-way multi-label task.  Requiring this file
-                // prevents a missing cache from silently becoming all-zero
-                // single-label targets through the labels.txt path.
                 dataset.labels_multi = load_multi_labels(root, dataset.num_nodes, dataset.num_classes);
             }
             else
@@ -462,7 +454,6 @@ namespace gatzk::data
             return dataset;
         }
 
-        // Planetoid 数据集允许按需生成 cache，但生成后的缓存才是 formal 主线真正读取的对象。
         void maybe_prepare_planetoid_cache(const util::AppConfig &config, const std::filesystem::path &cache_root)
         {
             if (!config.auto_prepare_dataset || std::filesystem::exists(cache_root / "meta.cfg"))
@@ -481,7 +472,6 @@ namespace gatzk::data
             }
         }
 
-        // PPI 多图 batch 同样先落缓存，再进入正式 proving 主线。
         void maybe_prepare_ppi_cache(const util::AppConfig &config, const std::filesystem::path &cache_root)
         {
             const bool canonical_cache = std::filesystem::exists(cache_root / "meta.cfg") && std::filesystem::exists(cache_root / "features.npy") &&
@@ -505,7 +495,6 @@ namespace gatzk::data
             }
         }
 
-        // ogbn_arxiv 的缓存准备与其他数据集分开处理，因为原始数据布局不同。
         void maybe_prepare_ogbn_arxiv_cache(const util::AppConfig &config, const std::filesystem::path &cache_root)
         {
             if (!config.auto_prepare_dataset || std::filesystem::exists(cache_root / "meta.cfg"))
@@ -562,7 +551,7 @@ namespace gatzk::data
             return (static_cast<std::uint64_t>(graph_id) << 48U) ^ (static_cast<std::uint64_t>(src) << 24U) ^ static_cast<std::uint64_t>(dst);
         }
 
-    } // namespace
+    }
 
     std::vector<std::vector<double>> preprocess_input_features(const std::vector<std::vector<double>> &raw_features, std::string_view dataset,
                                                                std::string_view input_preprocess_id)
@@ -595,10 +584,6 @@ namespace gatzk::data
 
     std::int64_t quantize_raw_at_scale(double value, std::uint64_t scale)
     {
-        // Keep the multiplication and rounding in a wider accumulator.  A
-        // double comparison against INT64_MAX is insufficient because that
-        // endpoint rounds to 2^63 in binary64, which could otherwise permit an
-        // out-of-range conversion to int64_t.
         if (scale == 0 || !std::isfinite(value))
             throw std::runtime_error("registered quantizer requires a positive scale and finite input");
         const auto scaled = static_cast<long double>(value) * static_cast<long double>(scale);
@@ -644,11 +629,6 @@ namespace gatzk::data
             throw std::runtime_error("input feature preprocessing identity mismatch");
         const bool dataset_raw_present = !dataset.features_fp.empty();
         const bool dataset_quantized_present = !dataset.features.empty();
-        // A full-graph proving context may deliberately drop the duplicated
-        // dataset feature matrices after the canonical context has validated
-        // them; LocalGraph remains the sole owned witness view in that case.
-        // Never accept a partially redacted dataset, and never allow a
-        // partial-batch local view to stand in for the missing dataset source.
         if (dataset_raw_present != dataset_quantized_present ||
             (dataset_raw_present && (dataset.features_fp.size() != dataset.num_nodes || dataset.features.size() != dataset.num_nodes)))
             throw std::runtime_error("dataset input feature views are partially present or malformed");
@@ -769,7 +749,6 @@ namespace gatzk::data
         }
     }
 
-    // 按 formal 约束补自环、排序、切 batch，并生成公开输入摘要。
     LocalGraph normalize_graph_input(const GraphDataset &dataset, const util::AppConfig &config)
     {
         if (dataset.num_nodes == 0)
@@ -804,7 +783,6 @@ namespace gatzk::data
         std::vector<Edge> batch_edges;
         batch_edges.reserve(dataset.edges.size() + dataset.num_nodes);
 
-        // 逐图抽出节点、做局部重编号，并把边改写成当前 batch 下的绝对局部编号。
         for (std::size_t batch_graph_id = 0; batch_graph_id < total_batch_graphs; ++batch_graph_id)
         {
             const auto dataset_graph_id = graph_ids[batch_graph_id];
@@ -861,7 +839,6 @@ namespace gatzk::data
                     append_edge(edge.dst, edge.src);
                 }
             }
-            // 自环在规范化阶段统一补齐，后面 softmax 聚合和 route/PSQ 都默认它存在。
             for (std::size_t i = 0; i < selected_nodes.size(); ++i)
             {
                 const auto node_local = local_offset + i;
@@ -878,7 +855,6 @@ namespace gatzk::data
                 });
             }
 
-            // 最终边序固定为“先 graph_id，再 dst，再稳定索引”，与笔记里的公开排序约定对齐。
             std::stable_sort(graph_edges.begin(), graph_edges.end(),
                              [](const Edge &lhs, const Edge &rhs)
                              {
@@ -910,7 +886,6 @@ namespace gatzk::data
         local.public_input.edge_ptr = local.edge_ptr;
         local.public_input.src.reserve(local.edges.size());
         local.public_input.dst.reserve(local.edges.size());
-        // 公开输入只保留 verifier 真正需要重放的 src/dst 序列和 batch 指针。
         for (const auto &edge : local.edges)
         {
             local.public_input.src.push_back(edge.src);
@@ -922,4 +897,4 @@ namespace gatzk::data
         return local;
     }
 
-} // namespace gatzk::data
+}

@@ -1,6 +1,4 @@
 #pragma once
-// 本文件提供域上求值权重的构造与缓存，是 prove / verify 在
-// domain opening、quotient 复算和批量求值阶段共用的执行层工具。
 
 #include <condition_variable>
 #include <memory>
@@ -18,11 +16,7 @@
 
 namespace gatzk::algebra
 {
-    // 将挑战点编码成缓存键，供不同域上的求值权重复用。
-    inline std::string point_cache_key(const FieldElement &point)
-    {
-        return point.to_string();
-    }
+    inline std::string point_cache_key(const FieldElement &point) { return point.to_string(); }
 
     inline std::string domain_point_cache_key(const std::shared_ptr<RootOfUnityDomain> &domain, const FieldElement &point)
     {
@@ -35,7 +29,6 @@ namespace gatzk::algebra
 
     struct DomainEvaluationWeights
     {
-        // 挑战点恰好落在域上时可直接索引，否则走重心权重求值。
         std::optional<std::size_t> direct_index;
         std::vector<mcl::Fr> native_weights;
     };

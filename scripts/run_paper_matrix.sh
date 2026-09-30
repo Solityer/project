@@ -47,11 +47,10 @@ run_cell() {
     native_status=${pipeline_status[0]}
     log_status=${pipeline_status[1]}
     final_status=$native_status
-    if (( final_status == 0 && log_status != 0 )); then
+    if ((final_status == 0 && log_status != 0)); then
         final_status=$log_status
     fi
-    if (( final_status == 0 )) &&
-       ! grep -Eq "^dataset=${dataset} .*backend=${backend} status=VERIFY_OK " "$cell_log"; then
+    if ((final_status == 0)) && ! grep -Eq "^dataset=${dataset} .*backend=${backend} status=VERIFY_OK " "$cell_log"; then
         final_status=1
         printf 'Missing matching native VERIFY_OK result.\n' >> "$cell_log"
     fi
@@ -77,4 +76,4 @@ for backend in gpu cpu; do
     done
 done
 printf 'ATTEMPTED=%s PASSED=%s FAILED=%s STATUS_FILE=%s\n' "$attempted" "$passed" "$failed" "$summary"
-(( attempted == 10 && failed == 0 ))
+((attempted == 10 && failed == 0))

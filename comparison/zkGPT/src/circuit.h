@@ -58,12 +58,6 @@ public:
     vector<u32> ori_id_u, ori_id_v;
     i8 fft_bit_length;
 
-    // Native FCONN metadata.  A FCONN layer is intentionally represented by
-    // its public descriptor rather than by one binary gate for every scalar
-    // product.  The adapter materializer fills these fields and the native
-    // masked GKR walk checks them against its prover witness.  They are
-    // derived in-memory state and are never a replacement for the native
-    // MatMul Sumcheck relation.
     std::string native_relation_id;
     std::string native_family_id;
     u32 native_rows{}, native_inner{}, native_cols{};

@@ -6,12 +6,7 @@
 #include "native_protocol.hpp"
 #include <utils.hpp>
 
-// Formal FCONN layers carry an adapter-local descriptor identity.  The
-// helper is defined with the other masked-GKR utilities below and is also
-// used by the legacy transcript replay path above it.
-static bool masked_fconn_shape_matches(const layer &current,
-                                       const NativeGkrMatmulShape &shape,
-                                       std::string *reason);
+static bool masked_fconn_shape_matches(const layer &current, const NativeGkrMatmulShape &shape, std::string *reason);
 #include <circuit.h>
 #include <iostream>
 #include <sstream>
@@ -201,9 +196,7 @@ bool gkr_scope_message(const std::string &label) {
     return label.compare(0, sizeof("gkr/") - 1, "gkr/") == 0;
 }
 
-} // namespace
-
-
+}
 
 static bool masked_fconn_shape_matches(const layer &current,
                                        const NativeGkrMatmulShape &shape,
@@ -408,84 +401,99 @@ void verifier::predicatePhase2(u8 layer_id)
         bin_value[gate.l] += beta_g[gate.g] * beta_u[gate.u] * beta_v[gate.v] * gate.sc;
 }
 
-F verifier::challenge(const std::string &label) {
-    if (session_ != nullptr) return session_->challenge(label);
+F verifier::challenge(const std::string &label)
+{
+    if (session_ != nullptr)
+        return session_->challenge(label);
     F value;
     value.setByCSPRNG();
     return value;
 }
 
-void verifier::absorb_field(const std::string &label, const F &value) {
-    if (session_ != nullptr) session_->absorb_field(label, value);
+void verifier::absorb_field(const std::string &label, const F &value)
+{
+    if (session_ != nullptr)
+        session_->absorb_field(label, value);
 }
 
-void verifier::absorb_fields(const std::string &label, const std::vector<F> &values) {
-    if (session_ != nullptr) session_->absorb_fields(label, values);
+void verifier::absorb_fields(const std::string &label, const std::vector<F> &values)
+{
+    if (session_ != nullptr)
+        session_->absorb_fields(label, values);
 }
 
 bool verifier::prove(int commit_thread)
 {
     (void)commit_thread;
-    cout<<"Circuit Initiation finished"<<endl;
-    cout<<"Proving Service started"<<endl;
+    cout << "Circuit Initiation finished" << endl;
+    cout << "Proving Service started" << endl;
     const bool gkr_ok = verifyGKR();
     const bool lasso_ok = gkr_ok && verifyLasso();
     const bool opening_ok = lasso_ok && openCommit();
-    cout<<"Our results:"<<endl;
-    cout<<"Matrix multiplication Prover time: "<<matrix_time<<"s"<<endl;
-    cout<<"Total Prover time: "<<prover_time + range_prover_time<<"s"<<endl;
-    cout<<"Verifier time: "<<verifier_time<<"s"<<endl;
-    cout<<"Proof size: "<<(double)(p->proof_size)/1024.0<<"KB"<<endl;
+    cout << "Our results:" << endl;
+    cout << "Matrix multiplication Prover time: " << matrix_time << "s" << endl;
+    cout << "Total Prover time: " << prover_time + range_prover_time << "s" << endl;
+    cout << "Verifier time: " << verifier_time << "s" << endl;
+    cout << "Proof size: " << (double)(p->proof_size) / 1024.0 << "KB" << endl;
     return gkr_ok && lasso_ok && opening_ok;
 }
 
-bool verifier::prove_with_session(NativeProofSession &session, int commit_thread) {
-    if (!session.valid()) return false;
+bool verifier::prove_with_session(NativeProofSession &session, int commit_thread)
+{
+    if (!session.valid())
+        return false;
     const std::size_t checkpoint = session.checkpoint();
     NativeProofSession *previous = session_;
     session_ = &session;
     bool result = false;
-    try {
+    try
+    {
         result = prove(commit_thread);
-    } catch (...) {
+    }
+    catch (...)
+    {
         session_ = previous;
         session.rollback(checkpoint);
         throw;
     }
     session_ = previous;
-    if (!result || !session.replay()) {
+    if (!result || !session.replay())
+    {
         session.rollback(checkpoint);
         return false;
     }
     return true;
 }
 
-bool verifier::prove_gkr_with_session(NativeProofSession &session, int commit_thread) {
+bool verifier::prove_gkr_with_session(NativeProofSession &session, int commit_thread)
+{
     (void)commit_thread;
-    if (!session.valid()) return false;
+    if (!session.valid())
+        return false;
     const std::size_t checkpoint = session.checkpoint();
     NativeProofSession *previous = session_;
     session_ = &session;
     bool result = false;
-    try {
-        // verifyGKR is the native zkGPT GKR/MatMul prover-verifier loop.  It
-        // consumes the prover's layered values only while producing the
-        // transcript; the returned session is the public proof boundary.
+    try
+    {
         result = verifyGKR();
-    } catch (...) {
+    }
+    catch (...)
+    {
         session_ = previous;
         session.rollback(checkpoint);
         throw;
     }
     session_ = previous;
-    if (!result || !session.replay()) {
+    if (!result || !session.replay())
+    {
         session.rollback(checkpoint);
         return false;
     }
     return true;
 }
 
-Fr * init_book_keeping(int m,int n,vector<Fr> &vec,int offset, vector<Fr> & ra)
+Fr *init_book_keeping(int m, int n, vector<Fr> &vec, int offset, vector<Fr> &ra)
 {
     assert(ra.size()==m+n);
     Fr* pa[30];
@@ -677,7 +685,7 @@ void sc_last_worker_first(Fr& A, Fr&B,Fr&C,Fr*& read_1,Fr*& read_2, int*& L,int*
 
 
 
-pair<Fr,Fr> sum_check_product(Fr* f,Fr* g,int m,Fr* r,Fr ans)
+pair<Fr, Fr> sum_check_product(Fr *f, Fr *g, int m, Fr *r, Fr ans)
 {
     Fr A=0,B=0,C=0;
     Fr *zf=new Fr[1<<m], *zg=new Fr[1<<m];
@@ -730,11 +738,6 @@ pair<Fr,Fr> sum_check_product(Fr* f,Fr* g,int m,Fr* r,Fr ans)
         return sum_check_product(new_f,new_g,m-1,r+1,new_ans);
 }
 
-// Session-bound variant of the native dedicated matrix-product Sumcheck.  It
-// keeps the original polynomial/folding arithmetic, but records each
-// prover polynomial before deriving the next challenge instead of consuming
-// verifier-side CSPRNG state.  The independent verifier can replay these
-// degree-two messages without accessing the product witness.
 pair<Fr,Fr> sum_check_product_session(Fr* f, Fr* g, int m,
                                        NativeProofSession &session,
                                        const std::string &label, Fr ans,
@@ -1270,10 +1273,6 @@ bool verifier::verifyLasso()
     timer ptimer,vtimer;
     auto &cur = C.circuit[0];
 
-    // Bind the public lookup/constraint shape before any Lasso challenge is
-    // derived.  This is deliberately only a structural context binding;
-    // the native LC_f/M_f/input-consistency argument remains unsupported and
-    // therefore still keeps the formal masked_full adapter fail-closed.
     if (session_ != nullptr) {
         std::ostringstream context;
         context << "lasso-context-v1|" << C.size;
@@ -2656,11 +2655,6 @@ bool masked_matmul_witness_vectors(const NativeGkrMatmulWitness &witness,
     }
     left.assign(rows_domain * inner_domain, F_ZERO);
     right.assign(inner_domain * cols_domain, F_ZERO);
-    // Keep the inner coordinate as the low MLE bits.  The LHS is canonical
-    // row-major, so each row receives its full padded-inner stride.  The RHS
-    // already uses native column-major blocks, and is copied block-for-block;
-    // this preserves the gap between a non-power-of-two inner dimension and
-    // the next column.
     for (std::size_t row = 0; row < shape.rows; ++row)
         for (std::size_t term = 0; term < shape.inner; ++term)
             left[row * inner_domain + term] =
@@ -2829,12 +2823,10 @@ bool masked_validate_circuit(const layeredCircuit &circuit,
 }
 
 void masked_gkr_progress(const std::string &message) {
-    // Diagnostics only: do not absorb progress labels into the proof
-    // transcript or alter the independent verifier's wire.
     std::cerr << "[zkGPT][gkr] " << message << std::endl;
 }
 
-} // namespace
+}
 
 bool prove_masked_gkr_transcript(
     NativeProofSession &session, const layeredCircuit &circuit,
@@ -3297,9 +3289,6 @@ bool prove_masked_gkr_transcript(
                 NativeMaskedTerminalSpec phase2_spec;
                 phase2_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedU;
                 phase2_spec.gkr_coefficients = {bin[0], bin[1], bin[2], uni[0], uni[1]};
-                // Phase2's fixed U side is exactly phase1's public masked
-                // terminal.  Carry both representations and reject any
-                // later substitution instead of trusting a recomputed vector.
                 phase2_spec.fixed_values = phase1_result.terminal_values;
                 phase2_spec.defer_terminal_relation =
                     phase2_spec.gkr_coefficients.size() == 5 &&
@@ -3332,22 +3321,10 @@ bool prove_masked_gkr_transcript(
                 phase1_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedV;
                 phase1_spec.gkr_coefficients = coefficients;
                 phase1_spec.fixed_values = {F_ZERO, F_ZERO};
-                // With fixed V=(0,0), only uni[0] and uni[1] remain in the
-                // predicate.  If both vanish, the unmasked relation is the
-                // canonical constant zero; the masked Sumcheck may carry a
-                // hidden terminal mask and must defer only that masked
-                // predicate check while retaining all opening bindings.
                 phase1_spec.defer_terminal_relation =
                     coefficients.size() == 5 && coefficients[3].isZero() &&
                     coefficients[4].isZero();
                 phase1_spec.unmasked_fixed_values = {F_ZERO, F_ZERO};
-                // Fixed V=(0,0) is a public constant, so both the masked and
-                // unmasked terminal bindings must use the canonical
-                // zero-value/zero-blinder commitment expected by the
-                // independent verifier.  Keep this public identity opening
-                // off the fast path: the fast-path operand guard requires a
-                // non-identity commitment, while the ordinary native
-                // Pedersen relation still proves this opening completely.
                 const ScalarOpening zero_opening{
                     zkgpt::native_pedersen::commit(
                         basis, F_ZERO, F_ZERO),
@@ -4019,9 +3996,6 @@ bool verify_masked_gkr_transcript(
                     (fixed_u_spec.gkr_coefficients[1] *
                          fixed_u_spec.fixed_values[1])
                         .isZero();
-                // The phase2 fixed side must consume the exact authenticated
-                // phase1 terminal commitments.  Its public values and
-                // commitments are supplied together to the native verifier.
                 fixed_u_spec.fixed_commitments = phase1_result.terminal_commitments;
                 fixed_u_spec.expected_unmasked_fixed_commitments =
                     phase1_result.unmasked_terminal_commitments;
@@ -4040,8 +4014,6 @@ bool verify_masked_gkr_transcript(
                 }
                 masked_v = phase2_result.terminal_values;
             } else {
-                // The fixed-V relation is checked inside the authenticated
-                // terminal scope; no raw terminal claim is trusted here.
             }
             if (current.bit_length_u[0] >= 0) {
                 if (current.size_u[0] == 0 ||
@@ -4256,10 +4228,6 @@ bool verify_masked_gkr_transcript(
                 input_result.terminal_commitments[0];
             input_binding->input_weight_evaluation = input_weight_evaluation;
         }
-        // The adapter consumes the mask commitment together with the three
-        // terminal opening mask commitments in input-combine.  Any remaining
-        // GKR-labelled message here would be an inserted or trailing proof
-        // object; unrelated combine/opening suffixes are allowed.
         for (std::size_t index = cursor; index < session.messages().size(); ++index) {
             const std::string &label = session.messages()[index].label;
             if (label.compare(0, sizeof("gkr/") - 1, "gkr/") == 0 ||

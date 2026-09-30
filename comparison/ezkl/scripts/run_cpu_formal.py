@@ -74,8 +74,6 @@ def main(args: argparse.Namespace) -> int:
         if not path.is_file():
             abort(f"missing formal runner component: {path}")
 
-    # This prepares all five exact tables/ledgers, including the OGBN canonical
-    # table/ledger, and writes a fresh authenticated resource manifest.
     run(
         [python, local_cli(prepare, "resource preparer"), "--commit-manifest"],
         "prepare five-dataset canonical resources",
@@ -84,13 +82,8 @@ def main(args: argparse.Namespace) -> int:
         [python, local_cli(resource_validator, "resource validator"), "--require-complete"],
         "require complete authenticated resources",
     )
-    # Invoke the checked-in shell entrypoint through bash so the formal runner
-    # remains usable when a source checkout does not preserve executable bits.
     run(["bash", local_cli(build, "build script"), "--cpu"], "build official ezkl CPU binary")
 
-    # The native binary is now source-matched to the code used by the build.
-    # provision_srs.py parses the native PUBLIC_SRS_SHA256_HASHES table, uses
-    # its maximum supported k, and updates all five secure configs atomically.
     run(
         [python, local_cli(provision, "SRS provisioner"), "--binary", local_cli(binary, "binary")],
         "provision official SRS through native get-srs",

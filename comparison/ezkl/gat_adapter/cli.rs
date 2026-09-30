@@ -69,13 +69,7 @@ impl FormalCliContract {
             native_verify_required: true,
             gpu_evidence_required: true,
             proof_instance_binding: "native_public_instances".into(),
-            official_chain: vec![
-                "gat-prepare".into(),
-                "produce-public-statement".into(),
-                "gat-witness".into(),
-                "prove".into(),
-                "verify".into(),
-            ],
+            official_chain: vec!["gat-prepare".into(), "produce-public-statement".into(), "gat-witness".into(), "prove".into(), "verify".into(),],
             prepare_command: "gat-prepare".into(),
             producer_command: "produce-public-statement".into(),
             witness_command: "gat-witness".into(),
@@ -151,29 +145,16 @@ impl FormalCliContract {
         let contract = Self::canonical();
         contract.validate()?;
         if let Some(parent) = resolved_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("create {}: {}", parent.display(), e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("create {}: {}", parent.display(), e))?;
         }
-        let bytes = serde_json::to_vec_pretty(&contract)
-            .map_err(|e| format!("serialize formal CLI contract: {}", e))?;
-        fs::write(&resolved_path, bytes)
-            .map_err(|e| format!("write formal CLI contract: {}", e))
+        let bytes = serde_json::to_vec_pretty(&contract).map_err(|e| format!("serialize formal CLI contract: {}", e))?;
+        fs::write(&resolved_path, bytes).map_err(|e| format!("write formal CLI contract: {}", e))
     }
 }
 
 fn validate_contract_path(path: &Path) -> Result<(), String> {
-    if path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
-        return Err(format!(
-            "formal CLI contract path must be baseline-local and must not contain '..': {}",
-            path.display()
-        ));
+    if path.is_absolute() || path.components().any(|component| { matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)) }){
+        return Err(format!("formal CLI contract path must be baseline-local and must not contain '..': {}", path.display()));
     }
     if path.as_os_str().is_empty() {
         return Err("formal CLI contract path must not be empty".into());
@@ -188,47 +169,31 @@ fn validate_contract_path(path: &Path) -> Result<(), String> {
 /// symlinks and the canonical parent/target must remain below the canonical
 /// current working directory (the active baseline root).
 fn resolve_contract_path(path: &Path) -> Result<PathBuf, String> {
-    let baseline_root = std::env::current_dir()
-        .map_err(|e| format!("resolve formal CLI baseline root: {}", e))?;
-    let canonical_root = baseline_root
-        .canonicalize()
-        .map_err(|e| format!("canonicalize formal CLI baseline root: {}", e))?;
+    let baseline_root = std::env::current_dir().map_err(|e| format!("resolve formal CLI baseline root: {}", e))?;
+    let canonical_root = baseline_root.canonicalize().map_err(|e| format!("canonicalize formal CLI baseline root: {}", e))?;
     let resolved = baseline_root.join(path);
     ensure_no_symlink_components(&resolved, &baseline_root)?;
     if let Some(parent) = resolved.parent() {
         if !parent.exists() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("create formal CLI parent {}: {}", parent.display(), e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("create formal CLI parent {}: {}", parent.display(), e))?;
             ensure_no_symlink_components(&resolved, &baseline_root)?;
         }
-        let canonical_parent = parent
-            .canonicalize()
-            .map_err(|e| format!("canonicalize formal CLI parent {}: {}", parent.display(), e))?;
+        let canonical_parent = parent.canonicalize().map_err(|e| format!("canonicalize formal CLI parent {}: {}", parent.display(), e))?;
         if !canonical_parent.starts_with(&canonical_root) {
-            return Err(format!(
-                "formal CLI contract path escapes baseline root: {}",
-                path.display()
-            ));
+            return Err(format!("formal CLI contract path escapes baseline root: {}", path.display()));
         }
     }
     if resolved.exists() {
-        let canonical_target = resolved
-            .canonicalize()
-            .map_err(|e| format!("canonicalize formal CLI contract {}: {}", resolved.display(), e))?;
+        let canonical_target = resolved.canonicalize().map_err(|e| format!("canonicalize formal CLI contract {}: {}", resolved.display(), e))?;
         if !canonical_target.starts_with(&canonical_root) {
-            return Err(format!(
-                "formal CLI contract path escapes baseline root: {}",
-                path.display()
-            ));
+            return Err(format!("formal CLI contract path escapes baseline root: {}", path.display()));
         }
     }
     Ok(resolved)
 }
 
 fn ensure_no_symlink_components(path: &Path, root: &Path) -> Result<(), String> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| format!("formal CLI path escapes baseline root: {}", path.display()))?;
+    let relative = path.strip_prefix(root).map_err(|_| format!("formal CLI path escapes baseline root: {}", path.display()))?;
     let mut current = root.to_path_buf();
     for component in relative.components() {
         let Component::Normal(part) = component else {
@@ -237,18 +202,12 @@ fn ensure_no_symlink_components(path: &Path, root: &Path) -> Result<(), String> 
         current.push(part);
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(format!(
-                    "formal CLI contract path contains a symlink: {}",
-                    path.display()
-                ));
+                return Err(format!("formal CLI contract path contains a symlink: {}", path.display()));
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
             Err(error) => {
-                return Err(format!(
-                    "inspect formal CLI contract path {}: {}",
-                    current.display(), error
-                ));
+                return Err(format!("inspect formal CLI contract path {}: {}", current.display(), error));
             }
         }
     }

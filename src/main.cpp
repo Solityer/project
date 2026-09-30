@@ -33,10 +33,6 @@
 #include "gatzk/util/route2.hpp"
 #include "gatzk/util/trace_spill.hpp"
 
-// 读取配置、选择 CPU / partial CUDA-hotspot 执行路线，并串联 context、trace、prove、verify 与 artifact 导出。
-// 对外只汇总三项正式时间与 canonical proof bytes 大小，不在入口层改写 proof contract。
-// 控制台正式输出必须收口为“每次运行一行”，避免把开发过程日志重新暴露到提交表面。
-
 namespace
 {
     class ExclusiveFormalRunLock
@@ -110,10 +106,7 @@ namespace
 
         ScopedFormalTimingDiagnosticsSuppression &operator=(const ScopedFormalTimingDiagnosticsSuppression &) = delete;
 
-        ~ScopedFormalTimingDiagnosticsSuppression()
-        {
-            restore();
-        }
+        ~ScopedFormalTimingDiagnosticsSuppression() { restore(); }
 
         void restore() noexcept
         {
@@ -177,10 +170,7 @@ namespace
 
         ScopedProverCudaExecutionStateRelease &operator=(const ScopedProverCudaExecutionStateRelease &) = delete;
 
-        ~ScopedProverCudaExecutionStateRelease()
-        {
-            release_now();
-        }
+        ~ScopedProverCudaExecutionStateRelease() { release_now(); }
 
         void release_now() noexcept
         {
@@ -287,7 +277,6 @@ int main(int argc, char **argv)
             updated.export_dir = export_dir.string();
             return updated;
         };
-        // Static resources are prepared once by run_once before proof timing.
         auto parse_switch = [](const std::string &value, const std::string &name)
         {
             if (value == "on" || value == "true" || value == "1")
@@ -348,7 +337,6 @@ int main(int argc, char **argv)
             }
             return std::string(argv[++index]);
         };
-        // 入口层只解析 formal 主线允许暴露的执行层开关，不在这里分叉协议语义。
         for (int i = 1; i < argc; ++i)
         {
             const std::string arg = argv[i];
@@ -415,8 +403,7 @@ int main(int argc, char **argv)
         {
             const bool valid_export_tag = export_tag.size() <= 96 && export_tag != "." && export_tag != ".." &&
                                           std::all_of(export_tag.begin(), export_tag.end(),
-                                                      [](unsigned char value)
-                                                      {
+                                                      [](unsigned char value) {
                                                           return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
                                                                  (value >= '0' && value <= '9') || value == '_' || value == '-' || value == '.';
                                                       });
@@ -427,7 +414,6 @@ int main(int argc, char **argv)
         }
         compute_backend = normalize_compute_backend(compute_backend);
 
-        // 先确定执行层落点，再把 route2 选项整体交给后续 prove / verify 共用。
         set_process_env("GATZK_ALGEBRA_BACKEND", "cpu");
         route2.cuda_trace_hotspots = compute_backend == "cuda_hotspots";
         route2.cuda_field_hotspots = compute_backend == "cuda_hotspots";
@@ -475,15 +461,10 @@ int main(int argc, char **argv)
 
         const auto loaded_config = gatzk::util::load_config(config_path);
         const ExclusiveFormalRunLock formal_run_lock(std::filesystem::current_path() / "runs" / ".gatzk_run.lock");
-        // Reap only authenticated inactive trace leases before entering the
-        // measured run. Legacy/incomplete/unverifiable directories remain
-        // untouched by the fail-closed collector.
         gatzk::util::TraceSpillLease::collect_stale(gatzk::util::TraceSpillLease::default_root());
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
         gatzk::util::set_route2_options(route2);
 
-        // Formal mainline performs one measured run. Static setup/context
-        // preparation remains outside the online prover timing interval.
         auto run_once = [&](const gatzk::util::AppConfig &run_config, const std::string &mode_label, bool export_artifacts = true, bool log_benchmark = true)
         {
             ScopedFormalTimingDiagnosticsSuppression timed_diagnostics_suppression(log_benchmark);
@@ -547,7 +528,6 @@ int main(int argc, char **argv)
             }
             append_note(metrics, metrics.optimization_flags);
 
-            // 正式主线从这里开始：先构静态上下文，再物化 trace、生成 proof，最后复验并导出产物。
             progress(mode_label + ":context:start");
             const auto context_start = std::chrono::steady_clock::now();
             const auto context = gatzk::protocol::build_context(run_config, &metrics, false);
@@ -610,9 +590,8 @@ int main(int argc, char **argv)
                     {
                         const auto failed_at = std::chrono::steady_clock::now();
                         const auto prove_wall_until_failure_ms = std::chrono::duration<double, std::milli>(failed_at - metrics.prove_timer_wall_start).count();
-                        std::cerr << "[failure-profile] stage=prove"
-                                  << " diagnostic_only=true"
-                                  << " context_build_ms=" << format_ms(metrics.context_build_ms) << " trace_wall_ms=" << format_ms(trace_elapsed_ms)
+                        std::cerr << "[failure-profile] stage=prove" << " diagnostic_only=true" << " context_build_ms=" << format_ms(metrics.context_build_ms)
+                                  << " trace_wall_ms=" << format_ms(trace_elapsed_ms)
                                   << " prove_wall_until_failure_ms=" << format_ms(prove_wall_until_failure_ms)
                                   << " commitment_ms_so_far=" << format_ms(metrics.commitment_time_ms) << '\n';
                     }
@@ -663,9 +642,6 @@ int main(int argc, char **argv)
             metrics.trace_misc_ms = metrics.route_pack_residual_ms + metrics.selector_padding_residual_ms + metrics.public_poly_residual_ms +
                                     metrics.hidden_output_object_residual_ms + metrics.shared_helper_build_ms + metrics.field_conversion_residual_ms +
                                     metrics.copy_move_residual_ms + metrics.trace_finalize_ms;
-            // The formal verifier must be constructed from the authenticated
-            // point-only VK registry; the verifier consumes only this
-            // independently authenticated context.
             const auto configured_registry_path =
                 run_config.verifier_registry_path.empty() ? gatzk::protocol::canonical_verifier_registry_path(context) : run_config.verifier_registry_path;
             auto verifier_registry_path = std::filesystem::path(configured_registry_path);
@@ -681,9 +657,6 @@ int main(int argc, char **argv)
             const auto proof_parse_end = std::chrono::steady_clock::now();
             metrics.proof_parse_ms = std::chrono::duration<double, std::milli>(proof_parse_end - verify_start).count();
             const auto verifier_accepted = gatzk::protocol::verify(verifier_context, parsed_proof, &metrics);
-            // The formal verify clock closes at the protocol verifier return.
-            // Everything below is an experiment-level audit or acceptance
-            // check and must not be folded into verify_time_ms.
             const auto verify_end = std::chrono::steady_clock::now();
             metrics.verify_time_ms = std::chrono::duration<double, std::milli>(verify_end - verify_start).count();
             metrics.verify_misc_ms = clamp_non_negative(
@@ -692,8 +665,6 @@ int main(int argc, char **argv)
             metrics.verify_accounted_ms = verify_accounted_ms(metrics);
             metrics.verify_accounting_gap_ms = metrics.verify_time_ms - metrics.verify_accounted_ms;
             metrics.proof_size_bytes = proof_bytes.size();
-            // The parsed public-output digest is an experiment-level payload
-            // audit input, deliberately computed after the protocol timer.
             trace.proof_public_output_hash =
                 gatzk::protocol::canonical_output_digest(parsed_proof.public_logits, context.local.num_nodes, context.local.num_classes);
             const auto audit_start = std::chrono::steady_clock::now();
@@ -724,9 +695,6 @@ int main(int argc, char **argv)
                                  ", proof_output_matches_trace=" + std::string(trace.public_logits == parsed_proof.public_logits ? "true" : "false") +
                                  ", private_plain_count=" + std::to_string(private_plain_count) + ")\n";
             }
-            // Tamper coverage is a test-only suite.  Formal production runs do
-            // not execute it and therefore must publish an explicit pending
-            // state rather than claiming coverage from defaults or a stale run.
             metrics.tamper_tests_passed = false;
             metrics.tamper_test_case_map.clear();
             metrics.tamper_tests_ms = 0.0;

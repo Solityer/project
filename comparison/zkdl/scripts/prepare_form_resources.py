@@ -33,11 +33,7 @@ GX = int("17f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e8
 GY = int("08b3f481e3aaa0f1a09e30ed741d8ae4fcf5e095d5d00af600db18cb2c04b3edd03cc744a2888ae40caa232946c5e7e1", 16)
 G = (GX, GY)
 
-# Logical relation domains are not IPA basis domains.  The native CPU opening
-# implementation deliberately works on a bounded Hyrax basis; large relation
-# families are represented as ordered logical segments which reuse this
-# authenticated prefix.  Keep this limit in one place so setup, validators and
-# the native loader cannot silently drift.
+
 MAX_NATIVE_DOMAIN = 1 << 30
 NATIVE_BASIS_DOMAIN = 1 << 18
 SRS_FRAME_HEADER_BYTES = 8 + 4 + 4 + 8 + 8 + 8
@@ -160,8 +156,7 @@ def next_pow2(value: int) -> int:
     if value < 1:
         return 1
     result = 1 << (value - 1).bit_length()
-    # Native tensor descriptors currently admit at most 2^30 coordinates.
-    # This is a representation/overflow boundary, not a dataset-size cap.
+
     if result > MAX_NATIVE_DOMAIN:
         die(f"relation domain {result} exceeds the native 2^30 coordinate safety boundary")
     return result
@@ -204,11 +199,15 @@ def ledger_digest(ledger: dict[str, Any]) -> str:
     hash_string(h, "zkDL_gat_integer_bound_ledger_v1")
     for key in ("ledger_id", "quant_cfg_id", "static_table_id", "field_modulus", "scale_chain_digest", "static_table_descriptor_digest"):
         hash_string(h, ledger[key])
-    for key in ("max_score_abs", "max_table_output_abs", "max_delta", "max_exp", "max_sum", "max_aggregate_num", "max_dividend_abs", "max_aux_abs", "max_divisor"):
+    for key in (
+        "max_score_abs", "max_table_output_abs", "max_delta", "max_exp", "max_sum", "max_aggregate_num",
+        "max_dividend_abs", "max_aux_abs", "max_divisor"
+    ):
         hash_u64(h, int(ledger[key]))
     families = ledger["families"]
     hash_u64(h, len(families))
-    fields = ("max_input_abs", "max_weight_abs", "max_attention_abs", "max_bias_abs", "max_score_abs", "max_table_output_abs", "max_delta", "max_exp", "max_sum", "max_aggregate_num", "max_dividend_abs", "max_aux_abs", "max_divisor", "max_field_product_abs")
+    fields = ("max_input_abs", "max_weight_abs", "max_attention_abs", "max_bias_abs", "max_score_abs", "max_table_output_abs", "max_delta",
+              "max_exp", "max_sum", "max_aggregate_num", "max_dividend_abs", "max_aux_abs", "max_divisor", "max_field_product_abs")
     for family in families:
         hash_string(h, family["family_id"])
         hash_u64(h, int(family["layer_index"]))
@@ -336,8 +335,7 @@ def graph_degree(root: Path, dataset: str, values: dict[str, str] | None = None)
     def graph_for_node(node: int) -> int:
         if dataset != "ppi":
             return 0
-        # node_ptr is short (one entry per PPI graph), matching native's
-        # upper_bound lookup rather than scanning the full edge list.
+
         import bisect
         return bisect.bisect_right(node_ptr, node) - 1
 
@@ -532,11 +530,6 @@ def relation_family_domains(values: dict[str, str], nodes: int, edges: int,
     add("output_sum", nodes, classes)
     add("public_Y", nodes, classes)
 
-    # Operation descriptors add derived TensorFamily entries for every
-    # route/broadcast/prefix/lookup/rounding view.  They are real relation
-    # families in the native witness (not prover-only labels), so register
-    # each exact view domain here as well.  The SRS writer may still bind all
-    # of these logical requirements to the authenticated common prefix.
     def view(name: str, *shape: int) -> None:
         add(name, *shape)
 
@@ -673,10 +666,13 @@ def model_entries(root: Path, values: dict[str, str],
     for name, shape, floats in load_tensors(tensors_path):
         if "/hidden/" in "/" + name:
             prefix = name.split("/seq/kernel")[0].split("/attn_")[0]
-            mapped = name.replace("/seq/kernel", "/model/seq_kernel").replace("/attn_src/kernel", "/model/attn_src").replace("/attn_dst/kernel", "/model/attn_dst")
+            mapped = name.replace("/seq/kernel", "/model/seq_kernel").replace("/attn_src/kernel",
+                                                                              "/model/attn_src").replace("/attn_dst/kernel", "/model/attn_dst")
             scale = 4
         elif name.startswith("output/"):
-            mapped = name.replace("/seq/kernel", "/model/seq_kernel").replace("/attn_src/kernel", "/model/attn_src").replace("/attn_dst/kernel", "/model/attn_dst").replace("/output_bias", "/model/output_bias")
+            mapped = name.replace("/seq/kernel", "/model/seq_kernel").replace(
+                "/attn_src/kernel", "/model/attn_src"
+            ).replace("/attn_dst/kernel", "/model/attn_dst").replace("/output_bias", "/model/output_bias")
             scale = 16 if name.endswith("output_bias") else 4
         else:
             continue
@@ -705,10 +701,7 @@ def model_entries(root: Path, values: dict[str, str],
                 segment_point = point_add(
                     segment_point,
                     point_mul(generators[index], quantized_value))
-            # Model segment shares are deterministic: the authenticated
-            # sidecar blinder is assigned to segment zero and the remaining
-            # shares are canonical zero.  This is exactly the native
-            # SegmentCommitmentMaterial setup path for visibility=2.
+
             if segment_index == 0:
                 segment_point = point_add(segment_point,
                                           point_mul(h_point, blinders[mapped]))
@@ -918,11 +911,7 @@ def load_srs_basis(root: Path, values: dict[str, str], required_domain: int) -> 
     basis_domain = selected.get("basis_domain")
     if not isinstance(basis_domain, int) or basis_domain < 1 or basis_domain & (basis_domain - 1):
         die("installed local SRS default chunk has no canonical basis_domain")
-    # Model registry entries carry the IPA digest of the complete common
-    # authenticated basis, even when an individual tensor uses only a shorter
-    # legal prefix.  Read that complete frame here; taking only the largest
-    # model-domain prefix would produce a digest for a different basis than
-    # the native prover/verifier resource.
+
     generators = read_srs_frame_prefix(srs_dir, selected.get("G"), "G", basis_domain)
     if len(generators) != basis_domain:
         die("installed local SRS common G frame does not cover its basis_domain")
@@ -994,9 +983,28 @@ def make_tables(values: dict[str, str], quant_digest: str) -> dict[str, Any]:
     elu_padded_domain = next_pow2(elu_rows)
     exp_padded_domain = next_pow2(exp_rows)
     spec = "\n".join((values["static_table_id"], generator_id, version, scale_id, domain_id, row_order,
-                       padding_rule, values["range_bits"], str(-bound), str(bound), str(bound),
-                       str(lrelu_padded_domain), str(elu_padded_domain), str(exp_padded_domain))) + "\n"
-    table: dict[str, Any] = {"schema": "zkDL_gat_static_table_descriptor_v1", "quant_cfg_id": values["quant_cfg_id"], "generator_id": generator_id, "version": version, "scale_id": scale_id, "domain_id": domain_id, "row_order": row_order, "padding_rule": padding_rule, "lrelu_padded_domain": lrelu_padded_domain, "elu_padded_domain": elu_padded_domain, "exp_padded_domain": exp_padded_domain, "spec_hash": sha256_bytes(spec.encode()), "static_table_id": values["static_table_id"], "lrelu_min": -bound, "lrelu_max": bound, "elu_min": -bound, "elu_max": bound, "exp_max": bound}
+                      padding_rule, values["range_bits"], str(-bound), str(bound), str(bound),
+                      str(lrelu_padded_domain), str(elu_padded_domain), str(exp_padded_domain))) + "\n"
+    table: dict[str, Any] = {
+        "schema": "zkDL_gat_static_table_descriptor_v1",
+        "quant_cfg_id": values["quant_cfg_id"],
+        "generator_id": generator_id,
+        "version": version,
+        "scale_id": scale_id,
+        "domain_id": domain_id,
+        "row_order": row_order,
+        "padding_rule": padding_rule,
+        "lrelu_padded_domain": lrelu_padded_domain,
+        "elu_padded_domain": elu_padded_domain,
+        "exp_padded_domain": exp_padded_domain,
+        "spec_hash": sha256_bytes(spec.encode()),
+        "static_table_id": values["static_table_id"],
+        "lrelu_min": -bound,
+        "lrelu_max": bound,
+        "elu_min": -bound,
+        "elu_max": bound,
+        "exp_max": bound
+    }
     table["lrelu"] = [x if x >= 0 else round_away(x * 0.2) for x in range(-bound, bound + 1)]
     table["elu"] = [x if x >= 0 else round_away((math.exp(x / 16.0) - 1.0) * 16.0) for x in range(-bound, bound + 1)]
     table["exp"] = [max(1, round_away(math.exp(-x / 256.0) * 16.0)) for x in range(bound + 1)]
@@ -1089,6 +1097,7 @@ def make_ledger(root: Path, values: dict[str, str], tables: dict[str, Any], tabl
     ledger_id = f"zkdl_integer_ledger_v2_{values['dataset']}_degree_{degree}"
     degree_id = f"zkdl_degree_v2_{values['dataset']}_{degree}"
     families: list[dict[str, Any]] = []
+
     def family(fid: str, layer: int, head: int, output: int, input_bound: int, weight: int, attention: int, bias: int) -> None:
         score = max(1, input_bound * max(1, weight) * max(1, attention) * 8)
         table_out = max(1, score)
@@ -1099,7 +1108,26 @@ def make_ledger(root: Path, values: dict[str, str], tables: dict[str, Any], tabl
         dividend = max(1, aggregate * 16)
         divisor = max(1, summation * 64)
         aux = max(1, 2 * dividend + divisor, 2 * divisor * max(1, (dividend + divisor - 1) // divisor) + 2 * divisor)
-        families.append({"family_id": fid, "layer_index": layer, "head_index": head, "output": output, "max_input_abs": input_bound, "max_weight_abs": max(1, weight), "max_attention_abs": max(1, attention), "max_bias_abs": max(0, bias), "max_score_abs": score, "max_table_output_abs": table_out, "max_delta": delta, "max_exp": exp, "max_sum": summation, "max_aggregate_num": aggregate, "max_dividend_abs": dividend, "max_aux_abs": aux, "max_divisor": divisor, "max_field_product_abs": max(1, exp * input_bound * max(1, weight))})
+        families.append({
+            "family_id": fid,
+            "layer_index": layer,
+            "head_index": head,
+            "output": output,
+            "max_input_abs": input_bound,
+            "max_weight_abs": max(1, weight),
+            "max_attention_abs": max(1, attention),
+            "max_bias_abs": max(0, bias),
+            "max_score_abs": score,
+            "max_table_output_abs": table_out,
+            "max_delta": delta,
+            "max_exp": exp,
+            "max_sum": summation,
+            "max_aggregate_num": aggregate,
+            "max_dividend_abs": dividend,
+            "max_aux_abs": aux,
+            "max_divisor": divisor,
+            "max_field_product_abs": max(1, exp * input_bound * max(1, weight))
+        })
     current = max(1, 1 << min(int(values["range_bits"]), 20))
     for layer in range(2):
         for head in range(8):
@@ -1108,7 +1136,18 @@ def make_ledger(root: Path, values: dict[str, str], tables: dict[str, Any], tabl
         family(f"output/head{head}", 2, head, 1, current, bound, bound, bound)
     fields = ("max_score_abs", "max_table_output_abs", "max_delta", "max_exp", "max_sum", "max_aggregate_num", "max_dividend_abs", "max_aux_abs", "max_divisor")
     global_values = {key: max(int(item[key]) for item in families) for key in fields}
-    ledger = {"schema": "zkDL_gat_integer_bound_ledger_v1", "ledger_id": ledger_id, "degree_bound_id": degree_id, "quant_cfg_id": values["quant_cfg_id"], "static_table_id": values["static_table_id"], "field_modulus": str(R), "scale_chain_digest": quant_digest, "static_table_descriptor_digest": table_file_digest, **global_values, "families": families}
+    ledger = {
+        "schema": "zkDL_gat_integer_bound_ledger_v1",
+        "ledger_id": ledger_id,
+        "degree_bound_id": degree_id,
+        "quant_cfg_id": values["quant_cfg_id"],
+        "static_table_id": values["static_table_id"],
+        "field_modulus": str(R),
+        "scale_chain_digest": quant_digest,
+        "static_table_descriptor_digest": table_file_digest,
+        **global_values,
+        "families": families
+    }
     ledger["digest"] = ledger_digest(ledger)
     return ledger
 
@@ -1118,15 +1157,10 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
     srs_dir.parent.mkdir(parents=True, exist_ok=True)
     if srs_dir.is_symlink():
         die(f"local SRS destination is symlinked: {srs_dir}")
-    # The logical relation may be much larger than the common IPA basis.  The
-    # latter is intentionally bounded and reused by ordered segments; setup
-    # must never materialize one G point per logical coordinate.
+
     segment_plan = plan_srs_segments(family_domains)
     common_domain = int(segment_plan["basis_domain"])
-    # All family chunks authenticate one common prefix basis.  The manifest
-    # retains per-family required domains, but the large G frame and the H/U
-    # frames are written once and referenced by every family.  Include a
-    # conservative metadata allowance in the disk admission check.
+
     estimated_bytes = (
         (SRS_FRAME_HEADER_BYTES + G1_POINT_BYTES * common_domain) +
         2 * (SRS_FRAME_HEADER_BYTES + G1_POINT_BYTES) +
@@ -1152,6 +1186,7 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
                 seen_points.add(encoded)
                 return encoded, point
         die(f"CSPRNG point sampling exhausted uniqueness attempts for {label}")
+
     def write_frame(label: str, payloads: Iterable[bytes], count: int) -> dict[str, Any]:
         """Stream one authenticated common frame without retaining points."""
         relative = Path("wildcard") / f"{label}.chunk0.bin"
@@ -1233,7 +1268,7 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
                 "logical_domain": max(family_domains.values()),
                 "segment_size": common_domain,
                 "segment_count": max((int(v) + common_domain - 1) // common_domain
-                                      for v in family_domains.values()),
+                                     for v in family_domains.values()),
             },
             "families": families, "generator_digest": default["generator_digest"],
         }
@@ -1325,7 +1360,8 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool) ->
     ledger = make_ledger(root, values, table, table_file_digest, quant_digest)
     ledger_path = root / values["integer_bound_ledger"]
     ledger_file_digest = write_json(ledger_path, ledger)
-    model_domains = [math.prod([next_pow2(int(axis)) for axis in (shape[1:] if len(shape) == 3 and shape[0] == 1 else shape)]) for _, shape, _ in load_tensors(root / values["checkpoint_bundle"] / "tensors.txt")]
+    model_domains = [math.prod([next_pow2(int(axis)) for axis in (shape[1:] if len(shape) == 3 and shape[0] == 1 else shape)])
+                     for _, shape, _ in load_tensors(root / values["checkpoint_bundle"] / "tensors.txt")]
     metadata = graph_metadata(root, dataset, values)
     family_domains = relation_family_domains(
         values, nodes, edges, table, model_domains,
@@ -1337,9 +1373,7 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool) ->
     if not regenerate_srs and resources_valid:
         return "REUSED"
     srs_path = root / values["srs_path"]
-    # Any stale/inconsistent authenticated resource set is rebuilt as one
-    # atomic setup unit.  This also upgrades old single-frame manifests to the
-    # segmented bytes-bound schema without asking the user to remove files.
+
     if regenerate_srs or not srs_path.is_dir() or not resources_valid:
         srs_digest, generator_digest = write_srs(root, values, family_domains)
     else:
@@ -1350,7 +1384,9 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool) ->
     tensors = load_tensors(root / values["checkpoint_bundle"] / "tensors.txt")
     tensor_ids = set()
     for name, _, _ in tensors:
-        mapped = name.replace("/seq/kernel", "/model/seq_kernel").replace("/attn_src/kernel", "/model/attn_src").replace("/attn_dst/kernel", "/model/attn_dst").replace("/output_bias", "/model/output_bias")
+        mapped = name.replace("/seq/kernel", "/model/seq_kernel").replace(
+            "/attn_src/kernel", "/model/attn_src"
+        ).replace("/attn_dst/kernel", "/model/attn_dst").replace("/output_bias", "/model/output_bias")
         if "/model/" in mapped:
             tensor_ids.add(mapped)
     old_blinders = existing_blinders(root, values, tensor_ids)
@@ -1363,7 +1399,24 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool) ->
     write_json(manifest_path, manifest)
     registry_entries = model_entries(
         root, values, h_point, u_point, blinders, generators, srs_digest)
-    registry = {"schema": "zkDL_gat_model_registry_v3", "dataset": dataset, "model_arch_id": values["model_arch_id"], "model_param_id": values["model_param_id"], "quant_cfg_id": values["quant_cfg_id"], "static_table_id": values["static_table_id"], "srs_id": values["srs_id"], "srs_manifest_digest": srs_digest, "generator_digest": generator_digest, "config_digest": config_identity(config_path), "scale_chain_digest": quant_digest, "static_table_digest": table_file_digest, "integer_bound_ledger_digest": ledger_file_digest, "model_manifest_digest": sha256_file(root / values["checkpoint_bundle"] / "manifest.json"), "model_tensors": registry_entries, "source_root": "baseline-local"}
+    registry = {
+        "schema": "zkDL_gat_model_registry_v3",
+        "dataset": dataset,
+        "model_arch_id": values["model_arch_id"],
+        "model_param_id": values["model_param_id"],
+        "quant_cfg_id": values["quant_cfg_id"],
+        "static_table_id": values["static_table_id"],
+        "srs_id": values["srs_id"],
+        "srs_manifest_digest": srs_digest,
+        "generator_digest": generator_digest,
+        "config_digest": config_identity(config_path),
+        "scale_chain_digest": quant_digest,
+        "static_table_digest": table_file_digest,
+        "integer_bound_ledger_digest": ledger_file_digest,
+        "model_manifest_digest": sha256_file(root / values["checkpoint_bundle"] / "manifest.json"),
+        "model_tensors": registry_entries,
+        "source_root": "baseline-local"
+    }
     registry["registry_identity_digest"] = sha256_bytes(compact(registry))
     registry["verifier_registry_digest"] = registry["registry_identity_digest"]
     registry_path = root / values["model_registry_path"]
@@ -1372,7 +1425,8 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool) ->
     sidecar = {"schema": "zkDL_gat_model_blinder_sidecar_v1", "registry_digest": registry_digest, "entries": sidecar_entries, "source_root": "baseline-local"}
     sidecar_path = root / values["model_blinder_sidecar_path"]
     sidecar_digest = write_json_atomic(sidecar_path, sidecar, 0o600)
-    update_config(config_path, {"degree_bound_id": ledger["degree_bound_id"], "srs_manifest_digest": srs_digest, "verifier_registry_digest": registry_digest, "model_blinder_sidecar_digest": sidecar_digest})
+    update_config(config_path, {"degree_bound_id": ledger["degree_bound_id"], "srs_manifest_digest": srs_digest,
+                  "verifier_registry_digest": registry_digest, "model_blinder_sidecar_digest": sidecar_digest})
     return "MATERIALIZED" if old_blinders is None else "MATERIALIZED_REUSING_BLINDERS"
 
 

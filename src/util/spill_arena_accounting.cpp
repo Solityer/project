@@ -30,4 +30,4 @@ namespace gatzk::util
         return current_bytes <= total_cap_bytes && growth_bytes <= total_cap_bytes - current_bytes;
     }
 
-} // namespace gatzk::util
+}

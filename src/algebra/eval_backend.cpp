@@ -14,13 +14,9 @@
 
 namespace gatzk::algebra
 {
-    // 供 quotient、domain opening 与 verifier 复算阶段批量求值复用。
-    // 它属于 algebra 执行层加速，不改变 formal 多项式、challenge 或 opening 契约。
 
     namespace
     {
-        // 根据标签列表生成唯一的缓存键（字符串）
-        // 将每个标签后加换行符拼接，确保不同顺序的标签列表产生不同键
         std::string subset_cache_key(const std::vector<std::string> &labels)
         {
             std::string key;
@@ -32,7 +28,6 @@ namespace gatzk::algebra
             return key;
         }
 
-        // 返回针对特定域和行数应该使用的子集物化阈值
         std::size_t subset_cache_threshold_for(const std::shared_ptr<RootOfUnityDomain> &domain, std::size_t row_count)
         {
             constexpr std::size_t kDefaultThreshold = 1U << 21U;
@@ -53,10 +48,7 @@ namespace gatzk::algebra
             return true;
         }
 
-        bool cached_subset_multi_rotation_candidate_enabled()
-        {
-            return true;
-        }
+        bool cached_subset_multi_rotation_candidate_enabled() { return true; }
 
     }
 
@@ -73,11 +65,9 @@ namespace gatzk::algebra
         std::vector<mcl::Fr> interleaved_values;
     };
 
-    // 校验同域多项式并建立标签到索引的映射；数值从 canonical 列直接
-    // 读取，只有命中的小标签子集才会按阈值惰性物化交织布局。
     PackedEvaluationBackend::PackedEvaluationBackend(std::shared_ptr<RootOfUnityDomain> domain,
-                                                     std::vector<std::pair<std::string, const Polynomial *>> polynomials)
-        : domain_(std::move(domain)), polynomials_(std::move(polynomials)), subset_cache_state_(std::make_shared<SubsetCacheState>())
+                                                     std::vector<std::pair<std::string, const Polynomial *>> polynomials) :
+        domain_(std::move(domain)), polynomials_(std::move(polynomials)), subset_cache_state_(std::make_shared<SubsetCacheState>())
     {
         if (domain_ == nullptr)
         {
@@ -164,25 +154,21 @@ namespace gatzk::algebra
         return it->second;
     }
 
-    // 根据标签列表解析出对应的行索引
     std::vector<std::size_t> PackedEvaluationBackend::resolve_row_indices(const std::vector<std::string> &labels) const
     {
         return subset_for(labels).row_indices;
     }
 
-    // 返回标签子集的行索引
     const std::vector<std::size_t> &PackedEvaluationBackend::subset_row_indices(const std::vector<std::string> &labels) const
     {
         return subset_for(labels).row_indices;
     }
 
-    // 返回标签子集的行索引
     const std::vector<std::uint32_t> &PackedEvaluationBackend::subset_row_indices_u32(const std::vector<std::string> &labels) const
     {
         return subset_for(labels).row_indices_u32;
     }
 
-    // 直接返回指定标签在给定列索引上的多项式值（每个多项式在该点的求值）
     std::vector<FieldElement> PackedEvaluationBackend::values_at_direct_index(const std::vector<std::string> &labels, std::size_t index) const
     {
         std::vector<FieldElement> out;
@@ -195,7 +181,6 @@ namespace gatzk::algebra
         return out;
     }
 
-    // 使用普通权重（域元素）计算加权和：先转换为原生权重，再调用原生版本
     std::vector<FieldElement> PackedEvaluationBackend::evaluate_with_weights(const std::vector<std::string> &labels,
                                                                              const std::vector<FieldElement> &weights) const
     {
@@ -207,7 +192,6 @@ namespace gatzk::algebra
         return evaluate_with_native_weights(labels, native_weights);
     }
 
-    // 使用原生权重（mcl::Fr）计算加权和（--parallel-fft on）
     std::vector<FieldElement> PackedEvaluationBackend::evaluate_with_native_weights(const std::vector<std::string> &labels,
                                                                                     const std::vector<mcl::Fr> &weights) const
     {
@@ -220,11 +204,6 @@ namespace gatzk::algebra
         const auto row_count = labels.size();
         const bool try_gpu = should_use_cuda_weighted_evaluation(domain_->size, row_count);
 
-        // On a unified-memory device, full-domain evaluation polynomials are
-        // already stored in the columnar layout consumed by the CUDA kernel.
-        // Use those read-only columns directly instead of materializing or
-        // scanning an interleaved label subset first. Per-column lengths let
-        // the same kernel preserve the canonical zero-padded tail semantics.
         if (try_gpu && cuda_backend_unified_addressing_available())
         {
             std::vector<const uint64_t *> direct_column_ptrs;
@@ -288,8 +267,6 @@ namespace gatzk::algebra
                 }
             }
 
-            // 先把交织布局拆成按列连续缓冲区，再统一交给 GPU。
-            // 这样权重只上传一次，多个多项式共享同一组 barycentric 权重。
             std::vector<std::vector<mcl::Fr>> col_buffers(row_count);
             std::vector<const uint64_t *> col_ptrs(row_count);
             for (std::size_t r = 0; r < row_count; ++r)
@@ -333,7 +310,6 @@ namespace gatzk::algebra
             throw std::runtime_error("CUDA weighted evaluation kernel failed; refusing silent CPU fallback");
         }
 
-        // ---- CPU path ----
         std::vector<mcl::Fr> native_out(row_count);
         for (auto &value : native_out)
         {
@@ -421,7 +397,6 @@ namespace gatzk::algebra
         return out;
     }
 
-    // 使用原生权重的旋转求值
     std::vector<std::vector<FieldElement>> PackedEvaluationBackend::evaluate_with_weight_rotations(const std::vector<std::string> &labels,
                                                                                                    const std::vector<FieldElement> &representative_weights,
                                                                                                    const std::vector<std::size_t> &rotations) const
@@ -434,7 +409,6 @@ namespace gatzk::algebra
         return evaluate_with_native_weight_rotations(labels, native_weights, rotations);
     }
 
-    // CPU 实现的带权重旋转求值（核心算法）（--parallel-fft on）（--rotated-fft-kernel on）
     std::vector<std::vector<FieldElement>> PackedEvaluationBackend::evaluate_with_native_weight_rotations(const std::vector<std::string> &labels,
                                                                                                           const std::vector<mcl::Fr> &representative_weights,
                                                                                                           const std::vector<std::size_t> &rotations,
@@ -464,11 +438,6 @@ namespace gatzk::algebra
 
         const bool unified_addressing = cuda_backend_unified_addressing_available();
 
-        // Establish the cache policy and all host-side sizes before asking
-        // subset_for() to materialize the interleaved cache.  Overflow or a
-        // failed CUDA/host admission deliberately selects an uncached route;
-        // it must never allocate the large host vector first and discover the
-        // peak violation afterwards.
         std::size_t interleaved_term_count = 0;
         std::size_t subset_cache_bytes = 0;
         const bool cache_policy_eligible = row_count > 1 && checked_size_mul(domain_->size, row_count, &interleaved_term_count) &&
@@ -483,9 +452,6 @@ namespace gatzk::algebra
 
         if (try_gpu && unified_addressing)
         {
-            // GB10/UVA can consume canonical column storage directly.  Do not
-            // build or retain a second domain_size * column_count interleaved
-            // host copy merely to feed the GPU.
             uncached_subset = build_subset_view(labels, false);
 
             subset_ptr = &uncached_subset;
@@ -522,14 +488,8 @@ namespace gatzk::algebra
                 }
                 return out;
             }
-            // A declined candidate is intentionally not fatal.  The
-            // canonical cached-subset loop below remains the exact fallback.
         }
 
-        // Unified-memory CUDA uses canonical evaluation columns directly only
-        // when the production cache policy did not admit a subset.  When the
-        // subset exists, candidate=off intentionally exercises the legacy
-        // cached-subset path on the same production route.
         if (try_gpu && unified_addressing && !use_cached_subset)
         {
             std::vector<const uint64_t *> direct_column_ptrs;
@@ -585,7 +545,6 @@ namespace gatzk::algebra
         }
         const auto &subset = *subset_ptr;
 
-        // ---- GPU path for rotated evaluations ----
         if (try_gpu)
         {
             constexpr std::size_t kMaxRotationPartialBytes = 256ULL * 1024ULL * 1024ULL;
@@ -596,15 +555,6 @@ namespace gatzk::algebra
                                                   ? std::size_t{1}
                                                   : std::max<std::size_t>(1, kMaxRotationPartialBytes / static_cast<std::size_t>(partial_bytes_per_point));
 
-            // For a genuine multi-rotation launch, upload the representative
-            // weights once and preserve the canonical `[rotation][column]`
-            // output order supplied by the CUDA API.  Keep the established
-            // single-rotation route below when there is no batch to amortize.
-            // A cached subset is intentionally kept on the established
-            // interleaved route.  Turning it into row-major columns here
-            // would duplicate a potentially multi-GiB host buffer.  The
-            // canonical polynomial values below are already contiguous and
-            // can be passed directly with their true lengths.
             if (point_count > 1 && rotations_per_launch > 1 && !use_cached_subset)
             {
                 std::vector<const uint64_t *> col_ptrs(row_count);
@@ -692,9 +642,6 @@ namespace gatzk::algebra
                 throw std::runtime_error("CUDA rotated evaluation kernel failed; refusing silent CPU fallback");
             }
 
-            // 旋转点评估共享同一代表权重，只是在域上做循环平移。
-            // Canonical evaluation columns are already contiguous; pass them
-            // directly and let the CUDA path zero-fill any short tail.
             std::vector<const uint64_t *> col_ptrs(row_count);
             std::vector<std::size_t> column_lengths(row_count);
             for (std::size_t r = 0; r < row_count; ++r)
@@ -712,7 +659,6 @@ namespace gatzk::algebra
             bool all_ok = true;
             for (std::size_t point_index = 0; point_index < point_count; ++point_index)
             {
-                // `omega` 旋转只会导致权重向量循环位移，不改变 formal 求值点集合。
                 const auto rotation = rotations[point_index];
                 std::vector<mcl::Fr> rotated_weights(domain_->size);
                 for (std::size_t col = 0; col < domain_->size; ++col)

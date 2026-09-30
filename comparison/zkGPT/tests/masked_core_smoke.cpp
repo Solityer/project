@@ -7,35 +7,33 @@ using namespace zkgpt::gat;
 
 namespace {
 
-std::string zeros() {
-    return std::string(64, '0');
-}
+std::string zeros() { return std::string(64, '0'); }
 
-} // namespace
+}
 
 int main() {
     initPairing(mcl::BN254);
     const std::string basis_label = "masked-core-smoke/basis";
-    const ProverCommitment com_w = commit_private_segment_for_prover(
-        {3, 5, 7, 11}, basis_label, 4);
-    const ProverCommitment com_aux = commit_private_segment_for_prover(
-        {13, 17, 19, 23}, basis_label, 4);
-    const ProverCommitment com_l = commit_private_segment_for_prover(
-        {0, 1, 0, 1}, basis_label, 4);
+    const ProverCommitment com_w = commit_private_segment_for_prover({3, 5, 7, 11}, basis_label, 4);
+    const ProverCommitment com_aux = commit_private_segment_for_prover({13, 17, 19, 23}, basis_label, 4);
+    const ProverCommitment com_l = commit_private_segment_for_prover({0, 1, 0, 1}, basis_label, 4);
     const std::string basis_id = com_w.wire.basis_id;
     const G1 H = hyrax::derive_pedersen_blinding_generator(basis_id);
     std::vector<G1> generators(4);
-    for (std::size_t index = 0; index < generators.size(); ++index)
-        hashAndMapToG1(generators[index],
-                       basis_label + "/coordinate/" + std::to_string(index));
+    for (std::size_t index = 0; index < generators.size(); ++index) hashAndMapToG1(generators[index], basis_label + "/coordinate/" + std::to_string(index));
 
     const std::string context_digest = zeros();
-    NativeProofStatement statement{
-        context_digest, "bn254-fr-v1", zeros(), zeros(), zeros(), zeros(),
-        zeros(), zeros(),
-        NativeProofStatement::basis_digest_for(
-            H, generators, std::vector<Fr>(4, Fr(0)), 4),
-        4, context_digest};
+    NativeProofStatement statement{context_digest,
+                                   "bn254-fr-v1",
+                                   zeros(),
+                                   zeros(),
+                                   zeros(),
+                                   zeros(),
+                                   zeros(),
+                                   zeros(),
+                                   NativeProofStatement::basis_digest_for(H, generators, std::vector<Fr>(4, Fr(0)), 4),
+                                   4,
+                                   context_digest};
 
     MaskedCoreWitness witness;
     witness.public_input = {Fr(2), Fr(4)};
@@ -52,18 +50,14 @@ int main() {
     witness.com_L = com_l;
     witness.has_dynamic_commitments = true;
 
-    MaskedCoreResult result = prove_masked_core(
-        statement, com_w.wire, com_w.blinder, basis_id, H, generators,
-        witness, context_digest);
+    MaskedCoreResult result = prove_masked_core(statement, com_w.wire, com_w.blinder, basis_id, H, generators, witness, context_digest);
     if (!result.generated) {
         std::cerr << "masked core honest path failed: " << result.diagnostic << '\n';
         return 1;
     }
     std::string reason;
-    if (!verify_masked_core(
-            result.artifact, com_w.wire, basis_id, H, generators,
-            witness.public_input, witness.public_output,
-            witness.gkr_coefficients, 1, Fr(4), 1, &reason)) {
+    if (!verify_masked_core(result.artifact, com_w.wire, basis_id, H, generators, witness.public_input, witness.public_output, witness.gkr_coefficients, 1,
+                            Fr(4), 1, &reason)) {
         std::cerr << "masked core independent verification failed: " << reason << '\n';
         return 2;
     }
@@ -73,26 +67,20 @@ int main() {
     }
     GatProofArtifact tampered = result.artifact;
     bool changed = false;
-    for (NativeProofMessage &message : tampered.native_messages) {
+    for (NativeProofMessage& message : tampered.native_messages) {
         if (message.label == "matmul/claim") {
-            message.payload[message.payload.size() - 1] =
-                message.payload.back() == '4' ? '5' : '4';
+            message.payload[message.payload.size() - 1] = message.payload.back() == '4' ? '5' : '4';
             changed = true;
             break;
         }
     }
-    if (!changed || verify_masked_core(
-            tampered, com_w.wire, basis_id, H, generators,
-            witness.public_input, witness.public_output,
-            witness.gkr_coefficients, 1, Fr(4), 1, &reason)) {
+    if (!changed || verify_masked_core(tampered, com_w.wire, basis_id, H, generators, witness.public_input, witness.public_output, witness.gkr_coefficients, 1,
+                                       Fr(4), 1, &reason)) {
         std::cerr << "masked core claim tamper was accepted\n";
         return 4;
     }
-    MaskedCoreResult second = prove_masked_core(
-        statement, com_w.wire, com_w.blinder, basis_id, H, generators,
-        witness, context_digest);
-    if (!second.generated ||
-        second.artifact.transcript_digest == result.artifact.transcript_digest) {
+    MaskedCoreResult second = prove_masked_core(statement, com_w.wire, com_w.blinder, basis_id, H, generators, witness, context_digest);
+    if (!second.generated || second.artifact.transcript_digest == result.artifact.transcript_digest) {
         std::cerr << "masked core freshness check failed\n";
         return 5;
     }

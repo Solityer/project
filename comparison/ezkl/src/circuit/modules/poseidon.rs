@@ -233,22 +233,12 @@ impl<S: Spec<Fp, WIDTH, RATE> + Sync, const WIDTH: usize, const RATE: usize> Mod
                     } => {
                         // this should never ever fail
                         let num_elems = dims[*idx].iter().product::<usize>();
-                        let tensor_offset = initial_offset
-                            + dims[..*idx]
-                                .iter()
-                                .map(|x| x.iter().product::<usize>())
-                                .sum::<usize>();
+                        let tensor_offset = initial_offset + dims[..*idx].iter().map(|x| x.iter().product::<usize>()).sum::<usize>();
                         (0..num_elems)
                             .map(|i| {
                                 let x = i % WIDTH;
                                 let y = i / WIDTH;
-                                region.assign_advice_from_instance(
-                                    || "pub input anchor",
-                                    *col,
-                                    tensor_offset + i,
-                                    self.config.hash_inputs[x],
-                                    y,
-                                )
+                                region.assign_advice_from_instance(|| "pub input anchor", *col, tensor_offset + i, self.config.hash_inputs[x], y,)
                             })
                             .collect::<Result<Vec<_>, _>>()
                             .map_err(|e| e.into())

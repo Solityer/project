@@ -60,9 +60,7 @@ def validate_cell(
         resource_digest = sha256_file(root / "results" / "resource_manifest.json")
     audited = validate_formal_cell(root, dataset, backend, preflight, resource_digest,
                                    seen_artifact_paths, seen_artifact_digests)
-    # The collector record is itself an authenticated view.  Compare every
-    # identity/path/stat/timing field that the audit returns; a caller cannot
-    # edit the matrix JSON to point at a different live cell.
+
     for key, expected in audited.items():
         if cell.get(key) != expected:
             raise ChainError(f"collected cell field mismatch for {key}: {dataset}/{backend}")
@@ -106,7 +104,7 @@ def main(argv: Sequence[str]) -> int:
             raise ChainError("formal preflight is not an object")
         _validate_preflight_binding(root, preflight, resource_digest, backends)
         input_path = root / args.input
-        # Keep input path baseline-local and reject aliases before opening it.
+
         from common import local_path
         input_path = local_path(root, args.input, "collected results")
         payload = load_json(input_path, "collected results")
@@ -152,4 +150,3 @@ def main(argv: Sequence[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

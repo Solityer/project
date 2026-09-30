@@ -11,14 +11,7 @@ use super::relation::RoundingMode;
 use super::schema::CanonicalGat;
 
 /// Public input order used by a model built with [`build_model_for_run_args`].
-pub const PUBLIC_INPUT_NAMES: [&str; 6] = [
-    "feature_table",
-    "node_ids",
-    "src",
-    "dst",
-    "node_ptr",
-    "edge_ptr",
-];
+pub const PUBLIC_INPUT_NAMES: [&str; 6] = ["feature_table", "node_ids", "src", "dst", "node_ptr", "edge_ptr",];
 
 /// The private model closure is one flat runtime input.  It is deliberately
 /// not represented by per-tensor Constant nodes: the graph circuit hashes and
@@ -42,34 +35,20 @@ pub fn build_model(_spec: CanonicalGat, _rounding: RoundingMode) -> Result<Model
 /// public-Hashed parameter module for the same runtime settings used later by
 /// compile/forward/prove.  The returned model still follows the official
 /// `GraphCircuit` path; this check prevents a private-parameter fallback.
-pub fn build_model_for_run_args(
-    spec: CanonicalGat,
-    rounding: RoundingMode,
-    run_args: &RunArgs,
-) -> Result<Model, String> {
+pub fn build_model_for_run_args(spec: CanonicalGat, rounding: RoundingMode, run_args: &RunArgs,) -> Result<Model, String> {
     if !run_args.param_visibility.is_hashed_public() {
-        return Err(
-            "unsupported_exact_relation: canonical GAT weights require runtime param_visibility=Hashed{hash_is_public:true}".into(),
-        );
+        return Err("unsupported_exact_relation: canonical GAT weights require runtime param_visibility=Hashed{hash_is_public:true}".into(),);
     }
     build_model_with_hashed_runtime(spec, rounding)
 }
 
-fn build_model_with_hashed_runtime(
-    spec: CanonicalGat,
-    rounding: RoundingMode,
-) -> Result<Model, String> {
+fn build_model_with_hashed_runtime(spec: CanonicalGat, rounding: RoundingMode,) -> Result<Model, String> {
     spec.validate_for_compile()?;
     let mut nodes = BTreeMap::new();
     let mut next = 0usize;
     let graph = &spec.graph;
     let public_shapes = [
-        (
-            vec![graph.n_total, spec.feature_dim],
-            InputType::F32,
-            spec.scales.s_input,
-        ),
-        (vec![graph.n], InputType::Int, 0),
+        (vec![graph.n_total, spec.feature_dim], InputType::F32, spec.scales.s_input,),(vec![graph.n], InputType::Int, 0),
         (vec![graph.e], InputType::Int, 0),
         (vec![graph.e], InputType::Int, 0),
         (vec![graph.g_batch + 1], InputType::Int, 0),
@@ -82,11 +61,7 @@ fn build_model_with_hashed_runtime(
         nodes.insert(
             idx,
             NodeType::Node(Node {
-                opkind: SupportedOp::Input(Input {
-                    scale,
-                    datum_type,
-                    decomp: false,
-                }),
+                opkind: SupportedOp::Input(Input { scale, datum_type, decomp: false,}),
                 out_scale: scale,
                 inputs: vec![],
                 out_dims: dims,
@@ -105,13 +80,7 @@ fn build_model_with_hashed_runtime(
     nodes.insert(
         parameter_input,
         NodeType::Node(Node {
-            opkind: SupportedOp::Input(Input {
-                // A flat closure can contain multiple canonical scales; each
-                // tensor slice is checked by GatOp before use.
-                scale: spec.scales.s_w_hidden[0][0],
-                datum_type: InputType::F32,
-                decomp: false,
-            }),
+            opkind: SupportedOp::Input(Input { scale: spec.scales.s_w_hidden[0][0], datum_type: InputType::F32, decomp: false,}),
             out_scale: spec.scales.s_w_hidden[0][0],
             inputs: vec![],
             out_dims: vec![parameter_len],
@@ -134,21 +103,12 @@ fn build_model_with_hashed_runtime(
             num_uses: 1,
         }),
     );
-    let graph = ParsedNodes::from_parts_with_param_inputs(
-        nodes,
-        inputs,
-        vec![parameter_input],
-        vec![(gat_idx, 0)],
-        vec![InputType::F32],
-    );
+    let graph = ParsedNodes::from_parts_with_param_inputs(nodes, inputs, vec![parameter_input], vec![(gat_idx, 0)], vec![InputType::F32],);
     Ok(Model {
         graph,
         visibility: VarVisibility {
             input: Visibility::Public,
-            params: Visibility::Hashed {
-                hash_is_public: true,
-                outlets: vec![],
-            },
+            params: Visibility::Hashed { hash_is_public: true, outlets: vec![],},
             output: Visibility::Public,
         },
     })

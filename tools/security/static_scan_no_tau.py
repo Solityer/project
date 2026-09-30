@@ -97,7 +97,7 @@ def main():
                     pos = text.find(marker, pos)
                     if pos == -1:
                         break
-                    window = text[pos : pos + 320]
+                    window = text[pos:pos + 320]
                     line_no = text.count("\n", 0, pos) + 1
                     if "context.kzg))" in window or "context.kzg);" in window:
                         failures.append((path.relative_to(ROOT), line_no, "verifier must use context.kzg.vk"))

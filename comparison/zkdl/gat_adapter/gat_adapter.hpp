@@ -1,12 +1,5 @@
 #pragma once
 
-// GAT adaptation data model for the official CUDA/C++ zkDL tree.
-//
-// This header deliberately contains no prover implementation.  It describes
-// the canonical witness, public statement, and operation-family views that
-// the native zkDL Sumcheck/Hyrax implementation consumes.  The implementation
-// lives in gat_runner.cu and keeps all GAT-specific logic in this directory.
-
 #include <cstdint>
 #include <array>
 #include <filesystem>
@@ -19,27 +12,20 @@ namespace zkdl_gat {
 
 enum class Backend { Cpu, Gpu };
 
-const char* backend_name(Backend backend) noexcept;
-Backend parse_backend(const std::string& value);
+const char *backend_name(Backend backend) noexcept;
+Backend parse_backend(const std::string &value);
 
 struct Matrix {
     std::uint64_t rows = 0;
     std::uint64_t cols = 0;
     std::vector<std::int64_t> values;
 
-    std::int64_t& at(std::uint64_t row, std::uint64_t col) {
-        return values.at(static_cast<std::size_t>(row * cols + col));
-    }
-    const std::int64_t& at(std::uint64_t row, std::uint64_t col) const {
-        return values.at(static_cast<std::size_t>(row * cols + col));
-    }
+    std::int64_t &at(std::uint64_t row, std::uint64_t col) { return values.at(static_cast<std::size_t>(row * cols + col)); }
+    const std::int64_t &at(std::uint64_t row, std::uint64_t col) const { return values.at(static_cast<std::size_t>(row * cols + col)); }
 };
 
 struct FieldValue {
-    // Canonical little-endian 32-byte encoding of a BLS12-381 scalar.  The
-    // native bridge converts this encoding to its Fr_t representation before
-    // committing or opening; keeping it byte-oriented here avoids a second
-    // field implementation in the adapter.
+
     std::array<std::uint8_t, 32> bytes{};
 };
 
@@ -120,9 +106,7 @@ struct Config {
     std::string srs_type;
     std::string srs_id;
     std::string srs_path;
-    // Authenticated native proof resources.  Digest values are required by
-    // the formal loader; UNAVAILABLE is an explicit fail-closed marker, not
-    // a usable default.
+
     std::string srs_manifest_digest;
     std::filesystem::path model_registry_path;
     std::filesystem::path model_blinder_sidecar_path;
@@ -139,8 +123,7 @@ struct Config {
     bool deduplicate_edges = true;
     bool auto_prepare_dataset = false;
     bool dump_trace = false;
-    // Independent verification may authenticate public metadata and relation
-    // resources without opening private checkpoint tensor payloads.
+
     bool public_verifier_mode = false;
     Architecture architecture;
     Quantization quantization;
@@ -155,10 +138,7 @@ struct Graph {
     std::vector<std::uint64_t> absolute_ids;
     std::vector<std::uint32_t> src;
     std::vector<std::uint32_t> dst;
-    // Protocol edge_ptr is the graph-batch prefix pointer.  The destination
-    // CSR pointer is kept separately because it is a derived selector used by
-    // the native sparse/group relations, not a replacement for the public
-    // batch boundary.
+
     std::vector<std::uint64_t> node_ptr;
     std::vector<std::uint64_t> edge_ptr;
     std::vector<std::uint64_t> node_edge_ptr;
@@ -195,9 +175,7 @@ struct StaticTables {
     std::vector<std::int64_t> lrelu;
     std::vector<std::int64_t> elu;
     std::vector<std::int64_t> exp;
-    // The logical table rows are not necessarily a power of two.  These
-    // authenticated domains describe the canonical zero-padded MLE table
-    // used by the native relation and its public Q_table selector.
+
     std::uint64_t lrelu_padded_domain = 0;
     std::uint64_t elu_padded_domain = 0;
     std::uint64_t exp_padded_domain = 0;
@@ -210,9 +188,7 @@ struct StaticTables {
     std::string spec_hash;
     std::string digest;
     std::string descriptor_digest;
-    // Canonical sorted-lookup table metadata is a separate authenticated
-    // resource.  It contains logical rows only; native padding is described
-    // by the RelationPlan and never turns into an expanded chi family.
+
     std::string sorted_lookup_descriptor;
     std::string sorted_lookup_descriptor_digest;
     std::string quant_cfg_id;
@@ -380,10 +356,6 @@ struct OperationFamily {
     std::uint64_t degree = 0;
 };
 
-// Host-side, proof-stack-independent descriptor for the native sorted lookup
-// bridge.  The native proof wire has its own versioned descriptor; this object
-// binds the runner's public resource, query families, and bounded segmented
-// layouts before the bridge is called.
 struct SortedLookupQueryPlan {
     std::string operation_id;
     std::string table_ref;
@@ -553,7 +525,7 @@ struct RunRecord {
     std::string error;
 };
 
-Config load_config(const std::filesystem::path& path);
+Config load_config(const std::filesystem::path &path);
 struct AssetManifestEntry {
     std::string path;
     std::uint64_t bytes = 0;
@@ -582,37 +554,22 @@ struct AssetManifest {
     std::vector<AssetManifestEntry> files;
 };
 
-AssetManifest load_asset_manifest(const Config& config);
-ModelBundle load_model_bundle(const Config& config);
-ModelBundle load_model_metadata(const Config& config);
-Graph load_graph(const Config& config);
-StaticTables build_static_tables(const Config& config, const Graph& graph);
-RelationPlan build_relation_plan(const Config& config, const Graph& graph,
-                                 const StaticTables& tables);
-GatTrace execute_cpu(const Config& config, const Graph& graph,
-                     const ModelBundle& model, const StaticTables& tables);
-GatTrace execute_gpu(const Config& config, const Graph& graph,
-                     const ModelBundle& model, const StaticTables& tables,
-                     bool* kernel_executed);
-PublicStatement make_statement(const Config& config, const Graph& graph,
-                               const ModelBundle& model, const StaticTables& tables,
-                               const RelationPlan& relation, const GatTrace& trace);
-void write_statement(const std::filesystem::path& path,
-                     const PublicStatement& statement);
-bool read_statement(const std::filesystem::path& path,
-                    PublicStatement* statement, std::string* error);
-void write_run_record(const std::filesystem::path& path, const RunRecord& record);
+AssetManifest load_asset_manifest(const Config &config);
+ModelBundle load_model_bundle(const Config &config);
+ModelBundle load_model_metadata(const Config &config);
+Graph load_graph(const Config &config);
+StaticTables build_static_tables(const Config &config, const Graph &graph);
+RelationPlan build_relation_plan(const Config &config, const Graph &graph, const StaticTables &tables);
+GatTrace execute_cpu(const Config &config, const Graph &graph, const ModelBundle &model, const StaticTables &tables);
+GatTrace execute_gpu(const Config &config, const Graph &graph, const ModelBundle &model, const StaticTables &tables, bool *kernel_executed);
+PublicStatement make_statement(const Config &config, const Graph &graph, const ModelBundle &model, const StaticTables &tables, const RelationPlan &relation,
+                               const GatTrace &trace);
+void write_statement(const std::filesystem::path &path, const PublicStatement &statement);
+bool read_statement(const std::filesystem::path &path, PublicStatement *statement, std::string *error);
+void write_run_record(const std::filesystem::path &path, const RunRecord &record);
 
-// Public output is a verifier input, not a value trusted from a proof
-// envelope.  The production verifier reads this canonical integer matrix
-// independently and checks the statement digest before invoking native code.
-Matrix read_public_output(const std::filesystem::path& path,
-                          std::uint64_t expected_rows,
-                          std::uint64_t expected_cols);
+Matrix read_public_output(const std::filesystem::path &path, std::uint64_t expected_rows, std::uint64_t expected_cols);
 
-// Structural validation shared by the production bridge and short negative
-// tests.  It deliberately rejects missing/duplicate/non-canonical registry
-// entries before any native proving call.
-bool relation_plan_complete(const RelationPlan& relation, std::string* error = nullptr);
+bool relation_plan_complete(const RelationPlan &relation, std::string *error = nullptr);
 
-}  // namespace zkdl_gat
+}

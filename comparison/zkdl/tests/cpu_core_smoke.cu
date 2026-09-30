@@ -11,32 +11,23 @@ namespace {
 
 zkdl::FrWire scalar(unsigned value) { return zkdl::fr_from_u32(value); }
 
-// Test-only algebraic smoke fixture.  It is not setup evidence: formal H/U
-// points must come from the authenticated registry/SRS resource path.
-zkdl::CpuG1Point fixture_generator(const char* domain) {
+zkdl::CpuG1Point fixture_generator(const char *domain) {
     std::vector<zkdl::byte> seed;
-    for (const char* cursor = domain; *cursor != '\0'; ++cursor)
-        seed.push_back(static_cast<zkdl::byte>(*cursor));
+    for (const char *cursor = domain; *cursor != '\0'; ++cursor) seed.push_back(static_cast<zkdl::byte>(*cursor));
     const std::array<zkdl::byte, 32U> digest = zkdl::sha256(seed);
     zkdl::FrWire scalar_value{};
     for (std::size_t limb = 0U; limb < scalar_value.size(); ++limb) {
         const std::size_t offset = 4U * limb;
-        scalar_value[limb] = static_cast<std::uint32_t>(digest[offset]) |
-                             (static_cast<std::uint32_t>(digest[offset + 1U]) << 8U) |
-                             (static_cast<std::uint32_t>(digest[offset + 2U]) << 16U) |
-                             (static_cast<std::uint32_t>(digest[offset + 3U]) << 24U);
+        scalar_value[limb] = static_cast<std::uint32_t>(digest[offset]) | (static_cast<std::uint32_t>(digest[offset + 1U]) << 8U) |
+                             (static_cast<std::uint32_t>(digest[offset + 2U]) << 16U) | (static_cast<std::uint32_t>(digest[offset + 3U]) << 24U);
     }
-    // The top two bits are cleared so the digest-derived scalar is canonical
-    // for the BLS12-381 scalar modulus without a test-only reduction rule.
+
     scalar_value.back() &= 0x3fU;
-    if (zkdl::fr_compare(scalar_value, zkdl::FrWire{}) == 0U)
-        scalar_value[0] = 1U;
+    if (zkdl::fr_compare(scalar_value, zkdl::FrWire{}) == 0U) scalar_value[0] = 1U;
     return zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar_value);
 }
 
-bool same_fr(const zkdl::FrWire& a, const zkdl::FrWire& b) {
-    return zkdl::fr_compare(a, b) == 0;
-}
+bool same_fr(const zkdl::FrWire &a, const zkdl::FrWire &b) { return zkdl::fr_compare(a, b) == 0; }
 
 zkdl::CpuIpaOpeningMetadata test_metadata() {
     const std::vector<zkdl::byte> label{'c', 'p', 'u', '-', 'i', 'p', 'a'};
@@ -52,7 +43,7 @@ zkdl::CpuIpaOpeningMetadata test_metadata() {
     return metadata;
 }
 
-}  // namespace
+}
 
 int main() {
     using namespace zkdl;
@@ -80,13 +71,10 @@ int main() {
     assert(!ipa_u.is_zero());
     assert(!cpu_g1_equal(ipa_h, ipa_u));
     const CpuIpaOpeningMetadata metadata = test_metadata();
-    EvaluationOpeningProof opening = cpu_open(generators, values, point, ipa_h, ipa_u,
-                                              FrWire{}, metadata);
+    EvaluationOpeningProof opening = cpu_open(generators, values, point, ipa_h, ipa_u, FrWire{}, metadata);
     std::string error;
     assert(opening_shape_valid(opening, &error));
-    const bool opening_verified = cpu_verify_opening(
-        opening, cpu_g1_from_native(opening.commitment_eval), generators,
-        ipa_h, ipa_u, metadata, &error);
+    const bool opening_verified = cpu_verify_opening(opening, cpu_g1_from_native(opening.commitment_eval), generators, ipa_h, ipa_u, metadata, &error);
     if (!opening_verified) std::cerr << "IPA positive verify failed: " << error << std::endl;
     assert(opening_verified);
 
@@ -96,34 +84,21 @@ int main() {
     ProofEnvelope decoded;
     assert(ProofEnvelope::deserialize(encoded, decoded, &error));
     assert(decoded.openings.size() == 1U);
-    assert(cpu_verify_opening(decoded.openings[0],
-                              cpu_g1_from_native(decoded.openings[0].commitment_eval),
-                              generators, ipa_h, ipa_u, metadata, &error));
+    assert(cpu_verify_opening(decoded.openings[0], cpu_g1_from_native(decoded.openings[0].commitment_eval), generators, ipa_h, ipa_u, metadata, &error));
     decoded.openings[0].value.val[0] ^= 1U;
-    assert(!cpu_verify_opening(decoded.openings[0],
-                               cpu_g1_from_native(opening.commitment_eval), generators,
-                               ipa_h, ipa_u, metadata, &error));
+    assert(!cpu_verify_opening(decoded.openings[0], cpu_g1_from_native(opening.commitment_eval), generators, ipa_h, ipa_u, metadata, &error));
     EvaluationOpeningProof tampered_left = opening;
     tampered_left.rounds[0].x.val[0] ^= 1U;
-    assert(!cpu_verify_opening(tampered_left,
-                               cpu_g1_from_native(opening.commitment_eval), generators,
-                               ipa_h, ipa_u, metadata, &error));
+    assert(!cpu_verify_opening(tampered_left, cpu_g1_from_native(opening.commitment_eval), generators, ipa_h, ipa_u, metadata, &error));
     EvaluationOpeningProof tampered_right = opening;
     tampered_right.rounds[1].y.val[0] ^= 1U;
-    assert(!cpu_verify_opening(tampered_right,
-                               cpu_g1_from_native(opening.commitment_eval), generators,
-                               ipa_h, ipa_u, metadata, &error));
+    assert(!cpu_verify_opening(tampered_right, cpu_g1_from_native(opening.commitment_eval), generators, ipa_h, ipa_u, metadata, &error));
 
-    // Appendix-A.3/Fennel v3 keeps the evaluation and folded scalars hidden
-    // from the wire.  Exercise the native prover/verifier and its strict
-    // round-trip without changing any relation call site.
-    HyraxOpeningProverResult v3_result = cpu_open_hyrax_v3(
-        generators, values, point, ipa_h, ipa_u, FrWire{}, metadata);
+    HyraxOpeningProverResult v3_result = cpu_open_hyrax_v3(generators, values, point, ipa_h, ipa_u, FrWire{}, metadata);
     assert(hyrax_opening_v3_shape_valid(v3_result.proof, &error));
     const CpuG1Point v3_xi = cpu_g1_from_native(v3_result.proof.xi);
     const CpuG1Point v3_tau = cpu_g1_from_native(v3_result.proof.tau);
-    assert(cpu_verify_hyrax_v3(v3_result.proof, v3_xi, v3_tau, generators, point,
-                               ipa_h, ipa_u, metadata, &error));
+    assert(cpu_verify_hyrax_v3(v3_result.proof, v3_xi, v3_tau, generators, point, ipa_h, ipa_u, metadata, &error));
 
     std::vector<zkdl::byte> v3_bytes;
     serialize_hyrax_opening_v3(v3_result.proof, v3_bytes);
@@ -131,56 +106,37 @@ int main() {
     size_t v3_offset = 0U;
     assert(deserialize_hyrax_opening_v3(v3_bytes, v3_offset, v3_decoded));
     assert(v3_offset == v3_bytes.size());
-    assert(cpu_verify_hyrax_v3(v3_decoded, v3_xi, v3_tau, generators, point,
-                               ipa_h, ipa_u, metadata, &error));
+    assert(cpu_verify_hyrax_v3(v3_decoded, v3_xi, v3_tau, generators, point, ipa_h, ipa_u, metadata, &error));
 
     HyraxOpeningProofV3 v3_tampered_tau = v3_result.proof;
     v3_tampered_tau.tau.x.val[0] ^= 1U;
-    assert(!cpu_verify_hyrax_v3(v3_tampered_tau, v3_xi, v3_tau, generators, point,
-                                ipa_h, ipa_u, metadata, &error));
+    assert(!cpu_verify_hyrax_v3(v3_tampered_tau, v3_xi, v3_tau, generators, point, ipa_h, ipa_u, metadata, &error));
     HyraxOpeningProofV3 v3_tampered_round = v3_result.proof;
     v3_tampered_round.rounds[0].x.val[0] ^= 1U;
-    assert(!cpu_verify_hyrax_v3(v3_tampered_round, v3_xi, v3_tau, generators, point,
-                                ipa_h, ipa_u, metadata, &error));
+    assert(!cpu_verify_hyrax_v3(v3_tampered_round, v3_xi, v3_tau, generators, point, ipa_h, ipa_u, metadata, &error));
     HyraxOpeningProofV3 v3_tampered_z1 = v3_result.proof;
     v3_tampered_z1.z1.val[0] ^= 1U;
-    assert(!cpu_verify_hyrax_v3(v3_tampered_z1, v3_xi, v3_tau, generators, point,
-                                ipa_h, ipa_u, metadata, &error));
+    assert(!cpu_verify_hyrax_v3(v3_tampered_z1, v3_xi, v3_tau, generators, point, ipa_h, ipa_u, metadata, &error));
     HyraxOpeningProofV3 v3_tampered_metadata = v3_result.proof;
     v3_tampered_metadata.descriptor_digest[0] ^= 1U;
-    assert(!cpu_verify_hyrax_v3(v3_tampered_metadata, v3_xi, v3_tau, generators, point,
-                                ipa_h, ipa_u, metadata, &error));
-    assert(!cpu_verify_hyrax_v3(v3_result.proof, v3_xi,
-                                cpu_g1_add(v3_tau, generator), generators, point,
-                                ipa_h, ipa_u, metadata, &error));
-    assert(!cpu_verify_hyrax_v3(v3_result.proof,
-                                cpu_g1_add(v3_xi, generator), v3_tau,
-                                generators, point, ipa_h, ipa_u, metadata, &error));
+    assert(!cpu_verify_hyrax_v3(v3_tampered_metadata, v3_xi, v3_tau, generators, point, ipa_h, ipa_u, metadata, &error));
+    assert(!cpu_verify_hyrax_v3(v3_result.proof, v3_xi, cpu_g1_add(v3_tau, generator), generators, point, ipa_h, ipa_u, metadata, &error));
+    assert(!cpu_verify_hyrax_v3(v3_result.proof, cpu_g1_add(v3_xi, generator), v3_tau, generators, point, ipa_h, ipa_u, metadata, &error));
 
-    const FrWire public_evaluation = cpu_ipa_inner_product(
-        values, cpu_ipa_mle_weights(point));
-    HyraxOpeningProverResult v3_public = cpu_open_hyrax_v3_public(
-        generators, values, point, ipa_h, ipa_u, FrWire{}, metadata);
+    const FrWire public_evaluation = cpu_ipa_inner_product(values, cpu_ipa_mle_weights(point));
+    HyraxOpeningProverResult v3_public = cpu_open_hyrax_v3_public(generators, values, point, ipa_h, ipa_u, FrWire{}, metadata);
     const CpuG1Point public_xi = cpu_g1_from_native(v3_public.proof.xi);
     const CpuG1Point expected_public_tau = cpu_g1_mul(ipa_u, public_evaluation);
     assert(cpu_g1_equal(cpu_g1_from_native(v3_public.proof.tau), expected_public_tau));
-    assert(cpu_verify_hyrax_v3_public(v3_public.proof, public_xi,
-                                      public_evaluation, generators, point,
-                                      ipa_h, ipa_u, metadata, &error));
-    assert(!cpu_verify_hyrax_v3_public(
-        v3_public.proof, public_xi, fr_add(public_evaluation, scalar(1U)),
-        generators, point, ipa_h, ipa_u, metadata, &error));
+    assert(cpu_verify_hyrax_v3_public(v3_public.proof, public_xi, public_evaluation, generators, point, ipa_h, ipa_u, metadata, &error));
+    assert(!cpu_verify_hyrax_v3_public(v3_public.proof, public_xi, fr_add(public_evaluation, scalar(1U)), generators, point, ipa_h, ipa_u, metadata, &error));
 
-    const CpuHidingCommitment model_commitment(
-        "model-family", 1U, generators, generator, values, scalar(17U), scalar(23U));
-    const CpuHidingCommitment dynamic_commitment(
-        "dynamic-family", 2U, generators, generator, values, scalar(19U), scalar(29U));
+    const CpuHidingCommitment model_commitment("model-family", 1U, generators, generator, values, scalar(17U), scalar(23U));
+    const CpuHidingCommitment dynamic_commitment("dynamic-family", 2U, generators, generator, values, scalar(19U), scalar(29U));
     assert(!same_fr(model_commitment.randomness, dynamic_commitment.randomness));
     assert(cpu_g1_equal(model_commitment.commitment, model_commitment.commitment));
     assert(cpu_g1_equal(dynamic_commitment.commitment, dynamic_commitment.commitment));
-    assert(validate_hiding_commitments(
-        std::vector<CommitmentRecord>{model_commitment.record(), dynamic_commitment.record()},
-        &error));
+    assert(validate_hiding_commitments(std::vector<CommitmentRecord>{model_commitment.record(), dynamic_commitment.record()}, &error));
     CommitmentRecord tampered = dynamic_commitment.record();
     tampered.commitment.x.val[0] ^= 1U;
     assert(!CpuHidingCommitment::verify_record(tampered, &error));
@@ -207,13 +163,10 @@ int main() {
     ProofEnvelope parsed;
     assert(ProofEnvelope::deserialize(proof_bytes, parsed, &error));
     Transcript verifier_transcript;
-    assert(verify_output_binding(parsed.bindings[0], fr_value(scalar(5U)),
-                                 parsed.bindings[0].output_claims[0],
-                                 verifier_transcript, &error));
+    assert(verify_output_binding(parsed.bindings[0], fr_value(scalar(5U)), parsed.bindings[0].output_claims[0], verifier_transcript, &error));
     parsed.bindings[0].output_claims[0] = fr_value(scalar(0U));
     Transcript tampered_transcript;
-    assert(!verify_output_binding(parsed.bindings[0], fr_value(scalar(5U)),
-                                  fr_value(scalar(0U)), tampered_transcript, &error));
+    assert(!verify_output_binding(parsed.bindings[0], fr_value(scalar(5U)), fr_value(scalar(0U)), tampered_transcript, &error));
 
     std::cout << "zkdl CPU core smoke ok" << std::endl;
     return 0;

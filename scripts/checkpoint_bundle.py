@@ -11,12 +11,6 @@ import numpy as np
 
 from quantization_scale_chain import CANONICAL_QUANT_CFG_ID, OGBN_ARXIV_INTERNAL_NAME, canonical_input_preprocess_id, canonical_quantization_scale_chain
 
-# The JSON manifest is emitted by ``build_family_manifest`` and the PPI
-# importer.  Keep this list synchronized with the C++ checkpoint reader: a
-# manifest is one canonical object, so an unrecognized top-level key is never
-# silently ignored.  Dataset-specific fields are part of the same format and
-# are allowed for every dataset; their semantic validators decide when they
-# are required.
 CHECKPOINT_MANIFEST_FIELDS = frozenset(
     {
         "checkpoint_prefix",
@@ -89,10 +83,6 @@ CHECKPOINT_MANIFEST_REQUIRED_FIELDS = frozenset(
     }
 )
 
-# The torch checkpoint carries training provenance in addition to the fields
-# copied into the JSON manifest.  It has its own explicit canonical format;
-# keeping it strict prevents an ignored metadata alias from entering export or
-# replay through the Python path.
 CHECKPOINT_METADATA_FIELDS = frozenset(
     {
         "dataset",
@@ -224,7 +214,6 @@ def _require_string(value: object, label: str, *, nonempty: bool = True) -> str:
 
 
 def _require_unsigned(value: object, label: str, *, positive: bool = False) -> int:
-    # ``bool`` is an ``int`` subclass, but is never a valid manifest integer.
     if type(value) is not int or value < 0 or value > _U64_MAX:
         raise ValueError(f"{label} must be an unsigned integer")
     if positive and value == 0:
@@ -289,10 +278,8 @@ def _validate_profile_and_dimension_chain(
         previous_concat = head_count * head_dim
 
     if (
-        layer_count != 3
-        or output_head_count != 2
-        or [{"head_count": profile["head_count"], "head_dim": profile["head_dim"]} for profile in hidden_profile]
-        != [{"head_count": 8, "head_dim": 8}, {"head_count": 8, "head_dim": 8}]
+        layer_count != 3 or output_head_count != 2 or [{"head_count": profile["head_count"], "head_dim": profile["head_dim"]}
+                                                       for profile in hidden_profile] != [{"head_count": 8, "head_dim": 8}, {"head_count": 8, "head_dim": 8}]
     ):
         raise ValueError(f"{label} must use the canonical L=3, hidden 8x8/8x8, K_out=2 shape")
 
@@ -354,16 +341,14 @@ def _validate_head_specs_and_tensor_shapes(
     label: str,
 ) -> None:
     expected_pairs = [
-        (layer_index, local_head_index)
-        for layer_index, layer in enumerate(hidden_layers)
+        (layer_index, local_head_index) for layer_index, layer in enumerate(hidden_layers)
         for local_head_index in range(_require_unsigned(layer["head_count"], f"{label}.hidden_layers[{layer_index}].head_count", positive=True))
     ]
     actual_pairs = [
         (
             _require_unsigned(spec["layer_index"], f"{label}.hidden_head_specs.layer_index"),
             _require_unsigned(spec["local_head_index"], f"{label}.hidden_head_specs.local_head_index"),
-        )
-        for spec in hidden_head_specs
+        ) for spec in hidden_head_specs
     ]
     if actual_pairs != expected_pairs:
         raise ValueError(f"{label}.hidden_head_specs must use canonical layer/local order")
@@ -379,9 +364,8 @@ def _validate_head_specs_and_tensor_shapes(
             referenced.append(name)
             _tensor_shape(tensor_index, name, shape, f"{label}.hidden_head_specs[{spec_index}].{field}")
 
-    output_input_dim = _require_unsigned(hidden_layers[-1]["head_count"], f"{label}.hidden_layers[-1].head_count", positive=True) * _require_unsigned(
-        hidden_layers[-1]["head_dim"], f"{label}.hidden_layers[-1].head_dim", positive=True
-    )
+    output_input_dim = _require_unsigned(hidden_layers[-1]["head_count"], f"{label}.hidden_layers[-1].head_count", positive=True
+                                         ) * _require_unsigned(hidden_layers[-1]["head_dim"], f"{label}.hidden_layers[-1].head_dim", positive=True)
     expected_output_indices = list(range(len(output_head_specs)))
     actual_output_indices = [_require_unsigned(spec["head_index"], f"{label}.output_head_specs.head_index") for spec in output_head_specs]
     if actual_output_indices != expected_output_indices:
@@ -664,10 +648,6 @@ def _parse_text_float32(token: str, label: str) -> np.float32:
         raise ValueError(f"checkpoint tensor dump value is not numeric: {label}") from error
     if not math.isfinite(parsed):
         raise ValueError(f"checkpoint tensor dump value is not finite: {label}")
-    # The producer writes float32 values as float64 ``.17g`` decimals.  Parse
-    # the decimal once and round only to float32, then compare the resulting
-    # bytes with the NPZ value.  A float32 overflow is not an admissible
-    # encoding even when the source decimal itself is finite.
     if abs(parsed) > float(np.finfo(np.float32).max):
         raise ValueError(f"checkpoint tensor dump value overflows float32: {label}")
     with np.errstate(all="ignore"):
@@ -719,7 +699,7 @@ def _load_text_tensor_map(manifest: Mapping[str, object], path: pathlib.Path) ->
             values = np.empty(count, dtype=np.float32)
         except MemoryError as error:
             raise ValueError(f"checkpoint tensor dump is too large: {name}") from error
-        for index, token in enumerate(tokens[cursor : cursor + count]):
+        for index, token in enumerate(tokens[cursor:cursor + count]):
             values[index] = _parse_text_float32(token, name)
         cursor += count
 
@@ -746,8 +726,6 @@ def validate_tensor_encodings(manifest: Mapping[str, object], npz_path: pathlib.
     C-order.  The returned map is the validated NPZ data keyed by logical name
     so consumers cannot use an unchecked archive after this function returns.
     """
-    # Keep this boundary fail-closed for direct callers as well as callers that
-    # already loaded a validated manifest.
     validate_checkpoint_manifest(manifest)
     tensor_index = manifest["tensor_index"]
     assert isinstance(tensor_index, dict)
@@ -848,8 +826,7 @@ def build_family_manifest(
         {
             "head_count": _require_unsigned(layer["head_count"], "formal checkpoint manifest hidden head_count", positive=True),
             "head_dim": _require_unsigned(layer["head_dim"], "formal checkpoint manifest hidden head_dim", positive=True),
-        }
-        for layer in hidden_layers
+        } for layer in hidden_layers
     ]
     k_out = len(output_head_specs)
     if len(hidden_layers) != 2 or hidden_profile != [{"head_count": 8, "head_dim": 8}, {"head_count": 8, "head_dim": 8}]:

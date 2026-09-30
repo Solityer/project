@@ -9,9 +9,6 @@
 namespace gatzk::protocol::internal
 {
 
-    // Execution-only cache for public aggregation multiplicities.  This header
-    // lives outside the installed include tree: it is shared by the verifier
-    // implementation and its focused regression without becoming protocol API.
     struct AggregationMultiplicityCache
     {
         std::vector<algebra::FieldElement> src;
@@ -24,4 +21,4 @@ namespace gatzk::protocol::internal
                                                                    const algebra::FieldElement &point, const AggregationMultiplicityCache &multiplicity,
                                                                    algebra::DomainEvaluationWeightCache &weight_cache);
 
-} // namespace gatzk::protocol::internal
+}

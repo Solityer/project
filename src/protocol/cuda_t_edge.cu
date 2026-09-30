@@ -77,56 +77,56 @@ namespace gatzk::protocol
 
                     switch (source.opcode)
                     {
-                    case TEdgeProgramOpcode::LoadAccess:
-                    case TEdgeProgramOpcode::LoadConstant:
-                    {
-                        if (depth >= kMaximumProgramStackDepth)
+                        case TEdgeProgramOpcode::LoadAccess:
+                        case TEdgeProgramOpcode::LoadConstant:
                         {
-                            throw std::runtime_error("CUDA t_edge compiled register depth overflow");
+                            if (depth >= kMaximumProgramStackDepth)
+                            {
+                                throw std::runtime_error("CUDA t_edge compiled register depth overflow");
+                            }
+
+                            target.dst = static_cast<std::uint8_t>(depth);
+
+                            ++depth;
+
+                            maximum_depth = std::max(maximum_depth, depth);
+
+                            break;
                         }
 
-                        target.dst = static_cast<std::uint8_t>(depth);
-
-                        ++depth;
-
-                        maximum_depth = std::max(maximum_depth, depth);
-
-                        break;
-                    }
-
-                    case TEdgeProgramOpcode::Add:
-                    case TEdgeProgramOpcode::Subtract:
-                    case TEdgeProgramOpcode::Multiply:
-                    {
-                        if (depth < 2)
+                        case TEdgeProgramOpcode::Add:
+                        case TEdgeProgramOpcode::Subtract:
+                        case TEdgeProgramOpcode::Multiply:
                         {
-                            throw std::runtime_error("CUDA t_edge binary instruction underflows stack");
+                            if (depth < 2)
+                            {
+                                throw std::runtime_error("CUDA t_edge binary instruction underflows stack");
+                            }
+
+                            target.lhs = static_cast<std::uint8_t>(depth - 2U);
+
+                            target.rhs = static_cast<std::uint8_t>(depth - 1U);
+
+                            target.dst = target.lhs;
+
+                            --depth;
+
+                            break;
                         }
 
-                        target.lhs = static_cast<std::uint8_t>(depth - 2U);
-
-                        target.rhs = static_cast<std::uint8_t>(depth - 1U);
-
-                        target.dst = target.lhs;
-
-                        --depth;
-
-                        break;
-                    }
-
-                    case TEdgeProgramOpcode::Negate:
-                    {
-                        if (depth == 0)
+                        case TEdgeProgramOpcode::Negate:
                         {
-                            throw std::runtime_error("CUDA t_edge negate instruction underflows stack");
+                            if (depth == 0)
+                            {
+                                throw std::runtime_error("CUDA t_edge negate instruction underflows stack");
+                            }
+
+                            target.lhs = static_cast<std::uint8_t>(depth - 1U);
+
+                            target.dst = target.lhs;
+
+                            break;
                         }
-
-                        target.lhs = static_cast<std::uint8_t>(depth - 1U);
-
-                        target.dst = target.lhs;
-
-                        break;
-                    }
                     }
                 }
 
@@ -144,11 +144,6 @@ namespace gatzk::protocol
             return compiled;
         }
 
-        // The exact leaf helpers feed a bounded multi-stage CUDA transform
-        // with one lane of target_size / 2 elements.  The leaf transform is
-        // decomposed into ICICLE-supported 2^24 subtransforms plus exact
-        // radix-2 combines; keep this capability boundary local to the
-        // t_edge executor and do not conflate it with the quotient program.
         constexpr std::size_t kMaximumCudaLeafNttSize = std::size_t{1} << 26;
 
         static_assert(sizeof(GpuFr) == sizeof(mcl::Fr));
@@ -205,15 +200,9 @@ namespace gatzk::protocol
         {
             GpuFr values[RegisterCount];
 
-            __device__ __forceinline__ void store(std::uint8_t index, const GpuFr &value)
-            {
-                values[index] = value;
-            }
+            __device__ __forceinline__ void store(std::uint8_t index, const GpuFr &value) { values[index] = value; }
 
-            __device__ __forceinline__ GpuFr load(std::uint8_t index) const
-            {
-                return values[index];
-            }
+            __device__ __forceinline__ GpuFr load(std::uint8_t index) const { return values[index]; }
         };
 
         template <> struct TEdgeRegisterFile<4>
@@ -227,18 +216,18 @@ namespace gatzk::protocol
             {
                 switch (index)
                 {
-                case 0:
-                    r0 = value;
-                    break;
-                case 1:
-                    r1 = value;
-                    break;
-                case 2:
-                    r2 = value;
-                    break;
-                default:
-                    r3 = value;
-                    break;
+                    case 0:
+                        r0 = value;
+                        break;
+                    case 1:
+                        r1 = value;
+                        break;
+                    case 2:
+                        r2 = value;
+                        break;
+                    default:
+                        r3 = value;
+                        break;
                 }
             }
 
@@ -246,14 +235,14 @@ namespace gatzk::protocol
             {
                 switch (index)
                 {
-                case 0:
-                    return r0;
-                case 1:
-                    return r1;
-                case 2:
-                    return r2;
-                default:
-                    return r3;
+                    case 0:
+                        return r0;
+                    case 1:
+                        return r1;
+                    case 2:
+                        return r2;
+                    default:
+                        return r3;
                 }
             }
         };
@@ -273,30 +262,30 @@ namespace gatzk::protocol
             {
                 switch (index)
                 {
-                case 0:
-                    r0 = value;
-                    break;
-                case 1:
-                    r1 = value;
-                    break;
-                case 2:
-                    r2 = value;
-                    break;
-                case 3:
-                    r3 = value;
-                    break;
-                case 4:
-                    r4 = value;
-                    break;
-                case 5:
-                    r5 = value;
-                    break;
-                case 6:
-                    r6 = value;
-                    break;
-                default:
-                    r7 = value;
-                    break;
+                    case 0:
+                        r0 = value;
+                        break;
+                    case 1:
+                        r1 = value;
+                        break;
+                    case 2:
+                        r2 = value;
+                        break;
+                    case 3:
+                        r3 = value;
+                        break;
+                    case 4:
+                        r4 = value;
+                        break;
+                    case 5:
+                        r5 = value;
+                        break;
+                    case 6:
+                        r6 = value;
+                        break;
+                    default:
+                        r7 = value;
+                        break;
                 }
             }
 
@@ -304,22 +293,22 @@ namespace gatzk::protocol
             {
                 switch (index)
                 {
-                case 0:
-                    return r0;
-                case 1:
-                    return r1;
-                case 2:
-                    return r2;
-                case 3:
-                    return r3;
-                case 4:
-                    return r4;
-                case 5:
-                    return r5;
-                case 6:
-                    return r6;
-                default:
-                    return r7;
+                    case 0:
+                        return r0;
+                    case 1:
+                        return r1;
+                    case 2:
+                        return r2;
+                    case 3:
+                        return r3;
+                    case 4:
+                        return r4;
+                    case 5:
+                        return r5;
+                    case 6:
+                        return r6;
+                    default:
+                        return r7;
                 }
             }
         };
@@ -339,11 +328,6 @@ namespace gatzk::protocol
 
             auto accumulated = quotient[point];
 
-            // Terms are deliberately evaluated in their original canonical
-            // order.  The only change versus the previous executor is that
-            // the intermediate quotient value stays in a register until the
-            // end of this batch instead of being written to global memory
-            // after every term.
             for (std::size_t term_index = term_begin; term_index < term_end; ++term_index)
             {
                 const auto term = terms[term_index];
@@ -356,57 +340,57 @@ namespace gatzk::protocol
 
                     switch (instruction.opcode)
                     {
-                    case TEdgeProgramOpcode::LoadAccess:
-                    {
-                        const auto access = instruction.operand;
-
-                        const auto slot = access_slots[access];
-
-                        const auto logical_index = access_rotated[access] != 0 ? (point + rotation_step) & (target_size - 1U) : point;
-
-                        std::size_t physical_index = logical_index;
-
-                        if (leaf_split_layout[slot] != 0)
+                        case TEdgeProgramOpcode::LoadAccess:
                         {
-                            const auto half_size = target_size / 2;
+                            const auto access = instruction.operand;
 
-                            physical_index = logical_index / 2 + ((logical_index & 1U) != 0U ? half_size : 0);
+                            const auto slot = access_slots[access];
+
+                            const auto logical_index = access_rotated[access] != 0 ? (point + rotation_step) & (target_size - 1U) : point;
+
+                            std::size_t physical_index = logical_index;
+
+                            if (leaf_split_layout[slot] != 0)
+                            {
+                                const auto half_size = target_size / 2;
+
+                                physical_index = logical_index / 2 + ((logical_index & 1U) != 0U ? half_size : 0);
+                            }
+
+                            registers.store(instruction.dst, leaf_slots[slot][physical_index]);
+
+                            break;
                         }
 
-                        registers.store(instruction.dst, leaf_slots[slot][physical_index]);
+                        case TEdgeProgramOpcode::LoadConstant:
+                        {
+                            registers.store(instruction.dst, constants[instruction.operand]);
+                            break;
+                        }
 
-                        break;
-                    }
+                        case TEdgeProgramOpcode::Add:
+                        {
+                            registers.store(instruction.dst, algebra::gpu::fr_add(registers.load(instruction.lhs), registers.load(instruction.rhs)));
+                            break;
+                        }
 
-                    case TEdgeProgramOpcode::LoadConstant:
-                    {
-                        registers.store(instruction.dst, constants[instruction.operand]);
-                        break;
-                    }
+                        case TEdgeProgramOpcode::Subtract:
+                        {
+                            registers.store(instruction.dst, algebra::gpu::fr_sub(registers.load(instruction.lhs), registers.load(instruction.rhs)));
+                            break;
+                        }
 
-                    case TEdgeProgramOpcode::Add:
-                    {
-                        registers.store(instruction.dst, algebra::gpu::fr_add(registers.load(instruction.lhs), registers.load(instruction.rhs)));
-                        break;
-                    }
+                        case TEdgeProgramOpcode::Multiply:
+                        {
+                            registers.store(instruction.dst, algebra::gpu::fr_mul(registers.load(instruction.lhs), registers.load(instruction.rhs)));
+                            break;
+                        }
 
-                    case TEdgeProgramOpcode::Subtract:
-                    {
-                        registers.store(instruction.dst, algebra::gpu::fr_sub(registers.load(instruction.lhs), registers.load(instruction.rhs)));
-                        break;
-                    }
-
-                    case TEdgeProgramOpcode::Multiply:
-                    {
-                        registers.store(instruction.dst, algebra::gpu::fr_mul(registers.load(instruction.lhs), registers.load(instruction.rhs)));
-                        break;
-                    }
-
-                    case TEdgeProgramOpcode::Negate:
-                    {
-                        registers.store(instruction.dst, algebra::gpu::fr_sub(algebra::gpu::fr_zero(), registers.load(instruction.lhs)));
-                        break;
-                    }
+                        case TEdgeProgramOpcode::Negate:
+                        {
+                            registers.store(instruction.dst, algebra::gpu::fr_sub(algebra::gpu::fr_zero(), registers.load(instruction.lhs)));
+                            break;
+                        }
                     }
                 }
 
@@ -510,9 +494,9 @@ namespace gatzk::protocol
         {
         public:
             CudaTEdgeExecutorImpl(std::size_t domain_size, std::size_t target_size, const algebra::FieldElement &shift, const algebra::FieldElement &omega,
-                                  std::size_t cache_slot_count)
-                : domain_size_(domain_size), target_size_(target_size), shift_(shift), rotation_step_(target_size / domain_size),
-                  cache_slot_count_(cache_slot_count)
+                                  std::size_t cache_slot_count) :
+                domain_size_(domain_size), target_size_(target_size), shift_(shift), rotation_step_(target_size / domain_size),
+                cache_slot_count_(cache_slot_count)
             {
                 (void)omega;
 
@@ -545,9 +529,6 @@ namespace gatzk::protocol
 
                     device_leaf_arenas_.clear();
 
-                    // Slot 0 must remain a standalone allocation because
-                    // finalize_coefficients() transfers ownership of this
-                    // buffer to the returned resident coefficient object.
                     auto dedicated_status = cudaMalloc(reinterpret_cast<void **>(&device_leaf_slots_.front()), leaf_bytes);
 
                     if (dedicated_status != cudaSuccess)
@@ -738,15 +719,9 @@ namespace gatzk::protocol
                 }
             }
 
-            ~CudaTEdgeExecutorImpl() override
-            {
-                release_all_noexcept();
-            }
+            ~CudaTEdgeExecutorImpl() override { release_all_noexcept(); }
 
-            std::size_t cache_slot_count() const override
-            {
-                return cache_slot_count_;
-            }
+            std::size_t cache_slot_count() const override { return cache_slot_count_; }
 
             void prepare_program(const TEdgeBoundProgram &program) override
             {
@@ -1083,8 +1058,6 @@ namespace gatzk::protocol
                             future.get();
                         }
 
-                        // Each joined batch call used make_default_stream_wait=false
-                        // and completed its own stream before returning.
                         if (!batch_declined.load(std::memory_order_acquire))
                         {
                             for (const auto &request : requests)
@@ -1114,11 +1087,6 @@ namespace gatzk::protocol
                     }
                 }
 
-                // The native batch route is intentionally optional for
-                // staged transforms or resource-pressure cases.  Preserve the
-                // already validated bounded multi-worker implementation as
-                // the exact fallback rather than falling back to a different
-                // mathematical path.
                 const auto hardware_workers = std::max<std::size_t>(1, std::thread::hardware_concurrency());
 
                 std::size_t worker_count = std::min<std::size_t>({
@@ -1939,9 +1907,6 @@ namespace gatzk::protocol
 
                 if (!device_leaf_slots_.empty() && device_leaf_slots_.front() != nullptr)
                 {
-                    // Slot 0 is the only standalone leaf allocation.  It can
-                    // be null after finalize_coefficients() transfers its
-                    // ownership to the resident coefficient buffer.
                     (void)cudaFree(device_leaf_slots_.front());
                 }
 
@@ -2104,10 +2069,7 @@ namespace gatzk::protocol
         return std::make_unique<CudaTEdgeExecutorImpl>(domain_size, target_size, shift, omega, cache_slot_count);
     }
 
-    bool cuda_t_edge_executor_available()
-    {
-        return algebra::cuda_field_hotspots_available();
-    }
+    bool cuda_t_edge_executor_available() { return algebra::cuda_field_hotspots_available(); }
 
     bool cuda_t_edge_leaf_exact_ntt_supported(std::size_t target_size)
     {
@@ -2116,10 +2078,6 @@ namespace gatzk::protocol
 
     bool cuda_t_edge_executor_can_admit(std::size_t target_size, std::size_t cache_slot_count, bool leaf_exact_ntt_supported)
     {
-        // Preserve the shape-only API for small runtime probes.  Production
-        // large-route selection uses the complete overload below so program,
-        // linear-buffer, caller-host, and domain geometry are admitted before
-        // the executor constructor can allocate anything.
         CudaTEdgeExecutorAdmissionShape shape;
         shape.domain_size = target_size;
         return cuda_t_edge_executor_can_admit(target_size, cache_slot_count, leaf_exact_ntt_supported, shape);
@@ -2156,11 +2114,6 @@ namespace gatzk::protocol
             return false;
         }
 
-        // ICICLE is initialized lazily by the first CUDA NTT call.  The
-        // pinned generic-domain implementation allocates one max-domain
-        // managed twiddle vector plus small fixed tables.  Account for the
-        // vector here so admission cannot succeed before that allocation and
-        // then fail after source materialization starts.
         constexpr std::size_t kMaximumCudaNttSize = std::size_t{1} << 24;
         std::size_t icicle_domain_bytes = 0;
         if (!checked_mul_size(kMaximumCudaNttSize + 1, sizeof(GpuFr), &icicle_domain_bytes))
@@ -2168,9 +2121,6 @@ namespace gatzk::protocol
             return false;
         }
 
-        // The domain's small internal/basic tables and executor-side CUDA
-        // bookkeeping are bounded independent of the graph workload.  Keep a
-        // fixed conservative allowance rather than silently omitting them.
         constexpr std::size_t kFixedMetadataBytes = std::size_t{1} << 20;
 
         constexpr std::size_t kAdmissionHeadroomBytes = std::size_t{1} << 30;
@@ -2252,10 +2202,6 @@ namespace gatzk::protocol
             return false;
         }
 
-        // Host/UMA allocations that are live at the same peak: the
-        // constructor's temporary inverse cycle, persistent slot metadata,
-        // prepare_program's rotated access vector, materialize_linear_leaf's
-        // packed host arrays, and caller-owned output/staging vectors.
         std::size_t host_slot_bytes = 0;
         std::size_t host_bound_bytes = 0;
         std::size_t host_prefix_bytes = 0;
@@ -2314,9 +2260,6 @@ namespace gatzk::protocol
         {
             const auto host = util::cached_effective_memory_snapshot();
 
-            // UMA execution shares host DRAM with CUDA allocations.  A
-            // conservative total fallback is not a known available budget;
-            // reject admission until a trustworthy host snapshot exists.
             if (!host.effective_available_known)
             {
                 return false;

@@ -24,8 +24,6 @@
 
 namespace gatzk::crypto
 {
-    // 实现 KZG 依赖的群运算、批量 MSM 与序列化，是 protocol 层访问曲线后端的唯一实现落点。
-    // 属于 crypto 执行层，不允许改写承诺含义或 配对方程。
 
     namespace
     {
@@ -33,10 +31,7 @@ namespace gatzk::crypto
         {
             std::array<std::uint8_t, 32> bytes{};
 
-            bool operator==(const ScalarKey &other) const
-            {
-                return bytes == other.bytes;
-            }
+            bool operator==(const ScalarKey &other) const { return bytes == other.bytes; }
         };
 
         class MsmWorkerPool
@@ -199,10 +194,7 @@ namespace gatzk::crypto
             const G1Point *points = nullptr;
             std::size_t count = 0;
 
-            bool operator==(const StableBaseSliceKey &other) const
-            {
-                return points == other.points && count == other.count;
-            }
+            bool operator==(const StableBaseSliceKey &other) const { return points == other.points && count == other.count; }
         };
 
         struct StableBaseSliceKeyHash
@@ -310,13 +302,8 @@ namespace gatzk::crypto
             return key;
         }
 
-        // 同基点批量乘法会反复命中相同 `(base, scalar)`，这里用字符串键复用结果。
-        std::string same_base_cache_key(const G1Point &point, const algebra::FieldElement &scalar)
-        {
-            return point.to_string() + "|" + scalar.to_string();
-        }
+        std::string same_base_cache_key(const G1Point &point, const algebra::FieldElement &scalar) { return point.to_string() + "|" + scalar.to_string(); }
 
-        // 仅缓存执行层群乘结果，不跨越协议对象边界。
         class SameBaseMulCache
         {
         public:
@@ -347,14 +334,12 @@ namespace gatzk::crypto
             std::unordered_map<std::string, G1Point> entries_;
         };
 
-        // 进程级单例缓存，供 MSM / 承诺等热点复用。
         SameBaseMulCache &same_base_mul_cache()
         {
             static SameBaseMulCache cache;
             return cache;
         }
 
-        // 序列化接口同时服务 transcript 吸收与 artifact 导出。
         template <class Point> std::vector<std::uint8_t> serialize_impl(const Point &point)
         {
             algebra::ensure_mcl_field_ready();
@@ -369,7 +354,6 @@ namespace gatzk::crypto
 
     }
 
-    // 文本化输出主要服务日志、manifest 与调试，不参与协议运算。
     std::string G1Point::to_string() const
     {
         algebra::ensure_mcl_field_ready();
@@ -382,11 +366,7 @@ namespace gatzk::crypto
         return value.serializeToHexStr();
     }
 
-    // backend 名称会进入 artifact，帮助 README 与 manifest 对齐当前实现。
-    std::string backend_name()
-    {
-        return GATZK_CRYPTO_BACKEND_NAME;
-    }
+    std::string backend_name() { return GATZK_CRYPTO_BACKEND_NAME; }
 
     G1Point g1_zero()
     {
@@ -853,11 +833,6 @@ namespace gatzk::crypto
                         {
                             auto *request = group.requests[offset];
 
-                            // The first stable-SRS CUDA use is allowed to seed
-                            // the resident base cache.  Returning a cold
-                            // singleton to CPU prevents later commitments and
-                            // openings from amortizing the immutable SRS
-                            // preparation cost.
                             if (!try_cuda_g1_msm(request->output, request->points, request->scalars, request->count, true, request->stable_srs_capacity,
                                                  request->device_montgomery_scalars, request->device_montgomery_scalar_capacity,
                                                  request->device_montgomery_scalar_device))
@@ -1019,15 +994,9 @@ namespace gatzk::crypto
     class ScopedCudaMsmBatchWindow
     {
     public:
-        explicit ScopedCudaMsmBatchWindow(CudaMsmBatchWindow *window) : previous_(current_cuda_msm_batch_window())
-        {
-            current_cuda_msm_batch_window() = window;
-        }
+        explicit ScopedCudaMsmBatchWindow(CudaMsmBatchWindow *window) : previous_(current_cuda_msm_batch_window()) { current_cuda_msm_batch_window() = window; }
 
-        ~ScopedCudaMsmBatchWindow()
-        {
-            current_cuda_msm_batch_window() = previous_;
-        }
+        ~ScopedCudaMsmBatchWindow() { current_cuda_msm_batch_window() = previous_; }
 
     private:
         CudaMsmBatchWindow *previous_ = nullptr;
@@ -1054,10 +1023,6 @@ namespace gatzk::crypto
             }
         }
 
-        // A same-SRS batch window is an explicit request to coalesce several
-        // immutable-base MSMs.  Admit the 2^12+ shape even when the resident
-        // base cache is still cold: the batch coordinator owns the single
-        // base upload and seeds residency for the whole wave.
         if (stable_srs_bases && current_cuda_msm_batch_window() != nullptr && count >= (std::size_t{1} << 12))
         {
             return true;
@@ -1361,11 +1326,6 @@ namespace gatzk::crypto
                 return out;
             }
 
-            // Preserve immutable SRS bases before any sparse/grouped path
-            // constructs temporary base vectors.  Large single MSMs keep the
-            // existing threshold.  Smaller 2^12+ objects take this route only
-            // while an explicit same-SRS batch window is active, so isolated
-            // small MSMs retain the existing CPU heuristics.
             const bool coalesced_same_srs_request = current_cuda_msm_batch_window() != nullptr && count >= (std::size_t{1} << 12);
 
             if (stable_srs_bases && util::route2_options().cuda_field_hotspots && (count >= (std::size_t{1} << 14) || coalesced_same_srs_request))
@@ -1526,8 +1486,6 @@ namespace gatzk::crypto
 
         const auto hardware_workers = std::max<std::size_t>(1, std::thread::hardware_concurrency());
 
-        // CPU execution, single-worker execution, and nested batch schedulers
-        // preserve the existing path exactly.
         if (!util::route2_options().cuda_field_hotspots || worker_count <= 1 || hardware_workers <= 1 || current_cuda_msm_batch_window() != nullptr)
         {
             msm_batch_worker_pool().parallel_for(worker_count, worker);
@@ -1557,7 +1515,6 @@ namespace gatzk::crypto
                                              });
     }
 
-    // 同基点批量乘法是 KZG 承诺与 witness 构造的典型热点。（--fast-msm on）
     std::vector<G1Point> g1_mul_same_base_batch(const G1Point &point, const std::vector<algebra::FieldElement> &scalars)
     {
         algebra::ensure_mcl_field_ready();
@@ -1571,7 +1528,6 @@ namespace gatzk::crypto
         std::vector<algebra::FieldElement> miss_scalars;
         miss_indices.reserve(scalars.size());
         miss_scalars.reserve(scalars.size());
-        // 先把缓存命中的 `(base, scalar)` 拿出来，未命中的再交给后面的 mcl 批处理。
         for (std::size_t i = 0; i < scalars.size(); ++i)
         {
             if (!same_base_mul_cache().lookup(point, scalars[i], &out[i]))
@@ -1596,8 +1552,6 @@ namespace gatzk::crypto
             return out;
         }
 
-        // 快速MSM路径
-        // 把未命中的标量收成一次 `mulEach` 输入，尽量让同基点批乘只过一遍曲线后端。
         std::vector<mcl::G1> points(miss_scalars.size(), point.value);
         std::vector<mcl::Fr> native_scalars;
         native_scalars.reserve(miss_scalars.size());
@@ -1632,7 +1586,6 @@ namespace gatzk::crypto
             }
         }
 
-        // 串行回退时也保持同一批量接口，避免逐项乘法和缓存写回交错得太碎。
         mcl::G1::mulEach(points.data(), native_scalars.data(), points.size());
         for (std::size_t i = 0; i < points.size(); ++i)
         {
@@ -1680,11 +1633,7 @@ namespace gatzk::crypto
         return lhs.value == rhs.value;
     }
 
-    // 序列化G1点为字节向量
-    std::vector<std::uint8_t> serialize(const G1Point &point)
-    {
-        return serialize_impl(point.value);
-    }
+    std::vector<std::uint8_t> serialize(const G1Point &point) { return serialize_impl(point.value); }
 
     std::size_t serialize(const G1Point &point, std::uint8_t *output, std::size_t capacity)
     {
@@ -1705,10 +1654,7 @@ namespace gatzk::crypto
         return written;
     }
 
-    std::vector<std::uint8_t> serialize(const G2Point &point)
-    {
-        return serialize_impl(point.value);
-    }
+    std::vector<std::uint8_t> serialize(const G2Point &point) { return serialize_impl(point.value); }
 
     G1Point deserialize_g1(const std::uint8_t *bytes, std::size_t size)
     {
@@ -1730,10 +1676,7 @@ namespace gatzk::crypto
         return out;
     }
 
-    G1Point deserialize_g1(const std::vector<std::uint8_t> &bytes)
-    {
-        return deserialize_g1(bytes.data(), bytes.size());
-    }
+    G1Point deserialize_g1(const std::vector<std::uint8_t> &bytes) { return deserialize_g1(bytes.data(), bytes.size()); }
 
     G2Point deserialize_g2(const std::vector<std::uint8_t> &bytes)
     {
@@ -1747,18 +1690,10 @@ namespace gatzk::crypto
         return out;
     }
 
-    std::size_t serialized_size(const G1Point &point)
-    {
-        return serialize(point).size();
-    }
+    std::size_t serialized_size(const G1Point &point) { return serialize(point).size(); }
 
-    // 返回 G1 点序列化后的字节长度
-    std::size_t serialized_size(const G2Point &point)
-    {
-        return serialize(point).size();
-    }
+    std::size_t serialized_size(const G2Point &point) { return serialize(point).size(); }
 
-    // 预计算G2点的配对系数，用于加速多次配对运算
     PreparedG2 prepare_g2(const G2Point &point)
     {
         algebra::ensure_mcl_field_ready();
@@ -1788,7 +1723,6 @@ namespace gatzk::crypto
         return miller_product.isOne();
     }
 
-    // 判断动态点对与预计算点对的配对乘积是否为 1
     bool pairing_product_is_one_mixed_prepared(const G1Point &lhs_dynamic, const G2Point &rhs_dynamic, const G1Point &lhs_prepared,
                                                const PreparedG2 &rhs_prepared)
     {

@@ -41,9 +41,6 @@
 #include "gatzk/util/route2.hpp"
 namespace gatzk::crypto
 {
-    // Forward declarations for the cache identity planner, which lives in the
-    // first implementation namespace while domain selection is defined near
-    // the public key-loading entry point below.
     std::vector<std::string> select_lagrange_srs_domains(const SRSManifest &manifest,
                                                          const std::vector<std::pair<std::string, std::size_t>> &required_lagrange_domains);
 
@@ -149,8 +146,6 @@ namespace gatzk::crypto
             std::string scalar;
             std::vector<SrsJsonValue> array;
             std::vector<std::pair<std::string, SrsJsonValue>> object;
-            // The parser records the raw key position so the manifest hash can
-            // retain the writer's exact prefix digest without searching text.
             std::vector<std::size_t> object_key_positions;
         };
 
@@ -170,10 +165,7 @@ namespace gatzk::crypto
             }
 
         private:
-            [[noreturn]] void fail(const std::string &message) const
-            {
-                throw std::runtime_error(message + " at byte " + std::to_string(position_));
-            }
+            [[noreturn]] void fail(const std::string &message) const { throw std::runtime_error(message + " at byte " + std::to_string(position_)); }
 
             void skip_whitespace()
             {
@@ -199,35 +191,35 @@ namespace gatzk::crypto
                     fail("SRS manifest value is missing");
                 switch (text_[position_])
                 {
-                case '{':
-                    return parse_object();
-                case '[':
-                    return parse_array();
-                case '"':
-                {
-                    SrsJsonValue value;
-                    value.kind = SrsJsonKind::String;
-                    value.scalar = parse_string();
-                    return value;
-                }
-                case 't':
-                    parse_literal("true");
-                    return SrsJsonValue{.kind = SrsJsonKind::Boolean, .scalar = "true"};
-                case 'f':
-                    parse_literal("false");
-                    return SrsJsonValue{.kind = SrsJsonKind::Boolean, .scalar = "false"};
-                case 'n':
-                    parse_literal("null");
-                    return SrsJsonValue{.kind = SrsJsonKind::Null};
-                default:
-                    if (text_[position_] == '-' || std::isdigit(static_cast<unsigned char>(text_[position_])))
+                    case '{':
+                        return parse_object();
+                    case '[':
+                        return parse_array();
+                    case '"':
                     {
                         SrsJsonValue value;
-                        value.kind = SrsJsonKind::Number;
-                        value.scalar = parse_number();
+                        value.kind = SrsJsonKind::String;
+                        value.scalar = parse_string();
                         return value;
                     }
-                    fail("malformed SRS manifest value");
+                    case 't':
+                        parse_literal("true");
+                        return SrsJsonValue{.kind = SrsJsonKind::Boolean, .scalar = "true"};
+                    case 'f':
+                        parse_literal("false");
+                        return SrsJsonValue{.kind = SrsJsonKind::Boolean, .scalar = "false"};
+                    case 'n':
+                        parse_literal("null");
+                        return SrsJsonValue{.kind = SrsJsonKind::Null};
+                    default:
+                        if (text_[position_] == '-' || std::isdigit(static_cast<unsigned char>(text_[position_])))
+                        {
+                            SrsJsonValue value;
+                            value.kind = SrsJsonKind::Number;
+                            value.scalar = parse_number();
+                            return value;
+                        }
+                        fail("malformed SRS manifest value");
                 }
             }
 
@@ -262,55 +254,55 @@ namespace gatzk::crypto
                     const char escaped = text_[position_++];
                     switch (escaped)
                     {
-                    case '"':
-                        result.push_back('"');
-                        break;
-                    case '\\':
-                        result.push_back('\\');
-                        break;
-                    case '/':
-                        result.push_back('/');
-                        break;
-                    case 'b':
-                        result.push_back('\b');
-                        break;
-                    case 'f':
-                        result.push_back('\f');
-                        break;
-                    case 'n':
-                        result.push_back('\n');
-                        break;
-                    case 'r':
-                        result.push_back('\r');
-                        break;
-                    case 't':
-                        result.push_back('\t');
-                        break;
-                    case 'u':
-                    {
-                        if (position_ + 4 > text_.size())
-                            fail("truncated SRS manifest unicode escape");
-                        unsigned value = 0;
-                        for (std::size_t index = 0; index < 4; ++index)
+                        case '"':
+                            result.push_back('"');
+                            break;
+                        case '\\':
+                            result.push_back('\\');
+                            break;
+                        case '/':
+                            result.push_back('/');
+                            break;
+                        case 'b':
+                            result.push_back('\b');
+                            break;
+                        case 'f':
+                            result.push_back('\f');
+                            break;
+                        case 'n':
+                            result.push_back('\n');
+                            break;
+                        case 'r':
+                            result.push_back('\r');
+                            break;
+                        case 't':
+                            result.push_back('\t');
+                            break;
+                        case 'u':
                         {
-                            const char digit = text_[position_++];
-                            value <<= 4U;
-                            if (digit >= '0' && digit <= '9')
-                                value |= static_cast<unsigned>(digit - '0');
-                            else if (digit >= 'a' && digit <= 'f')
-                                value |= static_cast<unsigned>(digit - 'a' + 10);
-                            else if (digit >= 'A' && digit <= 'F')
-                                value |= static_cast<unsigned>(digit - 'A' + 10);
-                            else
-                                fail("malformed SRS manifest unicode escape");
+                            if (position_ + 4 > text_.size())
+                                fail("truncated SRS manifest unicode escape");
+                            unsigned value = 0;
+                            for (std::size_t index = 0; index < 4; ++index)
+                            {
+                                const char digit = text_[position_++];
+                                value <<= 4U;
+                                if (digit >= '0' && digit <= '9')
+                                    value |= static_cast<unsigned>(digit - '0');
+                                else if (digit >= 'a' && digit <= 'f')
+                                    value |= static_cast<unsigned>(digit - 'a' + 10);
+                                else if (digit >= 'A' && digit <= 'F')
+                                    value |= static_cast<unsigned>(digit - 'A' + 10);
+                                else
+                                    fail("malformed SRS manifest unicode escape");
+                            }
+                            if (value > 0x7f)
+                                fail("SRS manifest must use ASCII canonical strings");
+                            result.push_back(static_cast<char>(value));
+                            break;
                         }
-                        if (value > 0x7f)
-                            fail("SRS manifest must use ASCII canonical strings");
-                        result.push_back(static_cast<char>(value));
-                        break;
-                    }
-                    default:
-                        fail("malformed SRS manifest escape");
+                        default:
+                            fail("malformed SRS manifest escape");
                     }
                 }
                 fail("unterminated SRS manifest string");
@@ -592,8 +584,7 @@ namespace gatzk::crypto
             std::vector<std::pair<std::string, std::size_t>> ordered(domains.begin(), domains.end());
             std::sort(ordered.begin(), ordered.end());
             std::ostringstream canonical;
-            canonical << "zkgat:domain-generator-catalog"
-                      << "|root_derivation_id=" << root_derivation_id << "|row_order=" << row_order;
+            canonical << "zkgat:domain-generator-catalog" << "|root_derivation_id=" << root_derivation_id << "|row_order=" << row_order;
             for (const auto &[name, size] : ordered)
             {
                 const auto generator = generators.find(name);
@@ -695,10 +686,6 @@ namespace gatzk::crypto
             std::string sha256;
         };
 
-        // Cache keys must authenticate the bytes that are actually consumed by
-        // the key loader.  Filesystem path/mtime metadata is insufficient:
-        // replacing a resource in place must invalidate a resident key even
-        // when the path and timestamps are unchanged.
         CanonicalFileIdentity canonical_file_identity(const std::filesystem::path &path)
         {
             std::error_code error;
@@ -1024,29 +1011,29 @@ namespace gatzk::crypto
         {
             switch (failure.kind)
             {
-            case G1LoadWorkerFailure::CanonicalDeserialize:
-                return "failed to deserialize SRS G1 point "
-                       "at index " +
-                       std::to_string(failure.index) + ": " + path.string();
+                case G1LoadWorkerFailure::CanonicalDeserialize:
+                    return "failed to deserialize SRS G1 point "
+                           "at index " +
+                           std::to_string(failure.index) + ": " + path.string();
 
-            case G1LoadWorkerFailure::CanonicalIdentity:
-                return "identity SRS G1 point at index " + std::to_string(failure.index) + ": " + path.string();
+                case G1LoadWorkerFailure::CanonicalIdentity:
+                    return "identity SRS G1 point at index " + std::to_string(failure.index) + ": " + path.string();
 
-            case G1LoadWorkerFailure::CanonicalSerialize:
-                return "failed to serialize SRS G1 point "
-                       "at index " +
-                       std::to_string(failure.index) + ": " + path.string();
+                case G1LoadWorkerFailure::CanonicalSerialize:
+                    return "failed to serialize SRS G1 point "
+                           "at index " +
+                           std::to_string(failure.index) + ": " + path.string();
 
-            case G1LoadWorkerFailure::CanonicalEncoding:
-                return "non-canonical SRS G1 encoding at index " + std::to_string(failure.index) + ": " + path.string();
+                case G1LoadWorkerFailure::CanonicalEncoding:
+                    return "non-canonical SRS G1 encoding at index " + std::to_string(failure.index) + ": " + path.string();
 
-            case G1LoadWorkerFailure::UnexpectedCanonical:
-                return "unexpected exception while validating "
-                       "canonical SRS G1 point near index " +
-                       std::to_string(failure.index) + ": " + path.string();
+                case G1LoadWorkerFailure::UnexpectedCanonical:
+                    return "unexpected exception while validating "
+                           "canonical SRS G1 point near index " +
+                           std::to_string(failure.index) + ": " + path.string();
 
-            case G1LoadWorkerFailure::None:
-                return {};
+                case G1LoadWorkerFailure::None:
+                    return {};
             }
 
             return "unknown parallel SRS G1 validation failure: " + path.string();
@@ -1076,9 +1063,6 @@ namespace gatzk::crypto
 
             constexpr std::size_t kHashBufferBytes = 8ULL << 20;
 
-            // Keep enough reusable canonical buffers to expose CPU parallelism
-            // without allowing temporary payload storage to grow without a
-            // deterministic bound.
             constexpr std::size_t kPipelineBufferBudgetBytes = 256ULL << 20;
 
             if (point_size == 0 || expected_point_count > (std::numeric_limits<std::size_t>::max() - kHeaderSize) / point_size)
@@ -1267,8 +1251,6 @@ namespace gatzk::crypto
                 return out;
             }
 
-            // A single-core host uses the same authenticated bytes but does
-            // not need the producer/consumer queue.
             if (background_worker_count == 0)
             {
                 std::vector<std::uint8_t> payload(maximum_chunk_bytes);
@@ -1478,8 +1460,6 @@ namespace gatzk::crypto
 
                 if (prefix_complete && !worker_failed())
                 {
-                    // Workers consume the exact prefix bytes already entered
-                    // into SHA-256 while this thread authenticates the suffix.
                     hash_unloaded_suffix();
                 }
             }
@@ -1499,8 +1479,6 @@ namespace gatzk::crypto
             ready_cv.notify_all();
             free_cv.notify_all();
 
-            // After I/O and hashing finish, the caller also drains validation
-            // work instead of leaving one CPU unused.
             validation_worker();
 
             for (auto &worker : workers)
@@ -1805,14 +1783,7 @@ namespace gatzk::crypto
             parallel_for_chunks_capped(count, min_parallel_count, 0, std::forward<Fn>(fn));
         }
 
-        std::string srs_domain_name(const std::string &domain_name)
-        {
-            // The manifest key is the authenticated entry_id.  Quotient and
-            // transcript labels use `d_h`, but the canonical SRS catalogue
-            // entry generated by the setup tool is `d`; never rewrite one
-            // entry_id into another or select material by size alone.
-            return domain_name;
-        }
+        std::string srs_domain_name(const std::string &domain_name) { return domain_name; }
 
         std::string srs_exact_domain_name(const std::string &domain_name, std::size_t domain_size)
         {
@@ -1833,10 +1804,7 @@ namespace gatzk::crypto
             return polynomial.domain->name;
         }
 
-        bool progress_enabled()
-        {
-            return std::getenv("GATZK_RUN_PROGRESS") != nullptr;
-        }
+        bool progress_enabled() { return std::getenv("GATZK_RUN_PROGRESS") != nullptr; }
 
         void progress_note(const std::string &label)
         {
@@ -1863,12 +1831,6 @@ namespace gatzk::crypto
             {
                 return std::min<std::size_t>(object_count, std::max<std::size_t>(1, std::min<std::size_t>(3, cpu_count / 8)));
             }
-            // Route batches commonly contain two N-domain MSMs followed by
-            // two larger edge-domain MSMs.  Four outer workers cap every
-            // object at one quarter of the machine, then leave half the CPU
-            // idle once the N-domain work finishes.  Two outer workers keep
-            // both edge MSMs concurrent while allowing each to use half the
-            // machine; the smaller objects are picked up by the same workers.
             if (object_count == 4 && max_scalar_count >= (1ULL << 13) && max_scalar_count <= (1ULL << 15) && total_scalar_count <= max_scalar_count * 3)
             {
                 return std::min<std::size_t>(2, cpu_count / 2);
@@ -2080,8 +2042,6 @@ namespace gatzk::crypto
             G1MSMProfile compact_profile;
             const G1MSMExecutionOptions compact_msm_options{
                 .max_worker_count = msm_options != nullptr ? msm_options->max_worker_count : 0,
-                // The compact point vector is temporary material, not the
-                // immutable Lagrange SRS storage named by the caller.
                 .stable_srs_bases = false,
                 .stable_srs_capacity = 0,
             };
@@ -2152,10 +2112,7 @@ namespace gatzk::crypto
             const G1Point *points = nullptr;
             std::size_t storage_capacity = 0;
 
-            bool operator==(const SameSrsCommitWaveKey &other) const
-            {
-                return points == other.points && storage_capacity == other.storage_capacity;
-            }
+            bool operator==(const SameSrsCommitWaveKey &other) const { return points == other.points && storage_capacity == other.storage_capacity; }
         };
 
         struct SameSrsCommitWave
@@ -2187,10 +2144,6 @@ namespace gatzk::crypto
                 return std::nullopt;
             }
 
-            // CUDA execution preserves the immutable SRS point vector even
-            // when the logical scalar vector is sparse or has a constant
-            // tail.  Keep such objects eligible for same-SRS scheduling;
-            // the lower MSM execution layer owns the exact scalar route.
             (void)estimated_work;
 
             if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
@@ -2290,9 +2243,6 @@ namespace gatzk::crypto
                 }
             }
 
-            // Large prefixes first.  Preparing the maximum useful prefix for
-            // one immutable SRS storage allows later smaller prefixes to hit
-            // the already-resident base cache instead of upgrading it again.
             std::stable_sort(waves.begin(), waves.end(),
                              [](const SameSrsCommitWave &lhs, const SameSrsCommitWave &rhs) { return lhs.max_scalar_count > rhs.max_scalar_count; });
 
@@ -2305,10 +2255,6 @@ namespace gatzk::crypto
                     continue;
                 }
 
-                // Compare the actual launch count and scalar padding before
-                // using a mixed-length prefix batch.  All arithmetic here is
-                // checked because this planner runs on production metadata,
-                // not only the small targeted fixtures.
                 const auto checked_add = [](std::size_t lhs, std::size_t rhs, const char *what)
                 {
                     if (rhs > std::numeric_limits<std::size_t>::max() - lhs)
@@ -2389,11 +2335,6 @@ namespace gatzk::crypto
                     continue;
                 }
 
-                // The prefix candidate is not worthwhile when it saves no
-                // launch, or when it would pad more than half the scalars.
-                // Preserve the former exact-count wave behavior inside this
-                // same immutable-SRS owner instead of sending these objects
-                // to the unrelated outer fallback scheduler.
                 if (wave_profile != nullptr)
                 {
                     wave_profile->used_exact_count = true;
@@ -2421,8 +2362,6 @@ namespace gatzk::crypto
                         }
                         else
                         {
-                            // A singleton is still part of the exact-count
-                            // plan and must not be left to outer scheduling.
                             commit_one(exact_order[offset]);
                         }
 
@@ -2438,7 +2377,6 @@ namespace gatzk::crypto
             return completed;
         }
 
-        // KZG多项式承诺主函数
         G1Point commit_polynomial_point(const algebra::Polynomial &polynomial, const KZGProverKey &pk, CommitObjectProfile *profile = nullptr,
                                         const G1MSMExecutionOptions *msm_options = nullptr, EvaluationCommitmentCache *reuse_cache = nullptr)
         {
@@ -2446,9 +2384,6 @@ namespace gatzk::crypto
             const auto msm_start = Clock::now();
             G1MSMExecutionOptions stable_msm_options{
                 .max_worker_count = msm_options != nullptr ? msm_options->max_worker_count : 0,
-                // Both coefficient and Lagrange commitment bases below are
-                // immutable proving-key SRS storage.  Individual backends
-                // retain their own size-aware preparation/cache thresholds.
                 .stable_srs_bases = true,
                 .stable_srs_capacity = 0,
             };
@@ -2457,7 +2392,6 @@ namespace gatzk::crypto
             bool semantic_commitment_reuse = false;
             std::size_t committed_vector_length = polynomial.size();
 
-            // 系数多项式采用SRS powers + MSM
             if (polynomial.basis == algebra::PolynomialBasis::Coefficient)
             {
                 if (pk.powers_g1 == nullptr)
@@ -2497,7 +2431,6 @@ namespace gatzk::crypto
             }
             else
             {
-                // 评估多项式采用 拉格朗日SRS + MSM
                 const auto *lagrange_srs = evaluation_srs_points(polynomial, pk);
                 stable_msm_options.stable_srs_capacity = lagrange_srs->size();
                 if (polynomial.size() > lagrange_srs->size())
@@ -3154,8 +3087,7 @@ namespace gatzk::crypto
             }
 
             const auto it = std::find_if(plan->evaluation_groups.begin(), plan->evaluation_groups.end(),
-                                         [&](const FoldedEvaluationGroup &group)
-                                         {
+                                         [&](const FoldedEvaluationGroup &group) {
                                              return group.domain != nullptr && group.domain->name == domain->name && group.domain->size == domain->size &&
                                                     group.domain->omega == domain->omega;
                                          });
@@ -3397,10 +3329,6 @@ namespace gatzk::crypto
                 throw std::runtime_error(std::string(operation) + " metadata is incomplete");
             }
 
-            // An uncompacted descriptor has a canonical full-length file.
-            // Keep zero as the legacy/default sentinel, but reject any other
-            // contradictory stored count instead of silently selecting a
-            // different physical representation.
             if (!info.zero_tail_compacted)
             {
                 if (info.stored_value_count != 0 && info.stored_value_count != info.value_count)
@@ -3438,11 +3366,6 @@ namespace gatzk::crypto
             const auto first_stored_count = validated_file_backed_semantic_source_count(first, "streamed semantic source compatibility");
             const auto second_stored_count = validated_file_backed_semantic_source_count(second, "streamed semantic source compatibility");
 
-            // A shared scan is valid only when both descriptors authenticate
-            // the same physical representation.  In particular, a compacted
-            // prefix and a full-length file (or two different paths) must be
-            // scanned independently rather than silently combining a
-            // representative descriptor with the other source's bytes.
             return first_stored_count == second_stored_count && first.zero_tail_compacted == second.zero_tail_compacted && first.file_path == second.file_path;
         }
 
@@ -3518,9 +3441,10 @@ namespace gatzk::crypto
                 profile->streamed_semantic_source_scan_bytes += algebra::field_elements_binary_size(stored_value_count);
             }
 
-            for_each_file_backed_semantic_source_chunk(
-                info, "semantic source", [&](const std::vector<FieldElement> &chunk, std::size_t offset)
-                { accumulate_streamed_evaluation_source(group, chunk, scale, info.file_path, worker_cap, offset, true); });
+            for_each_file_backed_semantic_source_chunk(info, "semantic source",
+                                                       [&](const std::vector<FieldElement> &chunk, std::size_t offset) {
+                                                           accumulate_streamed_evaluation_source(group, chunk, scale, info.file_path, worker_cap, offset, true);
+                                                       });
         }
 
         void accumulate_file_backed_semantic_source_pair(FoldedEvaluationGroup *first_group, FoldedEvaluationGroup *second_group,
@@ -3546,8 +3470,7 @@ namespace gatzk::crypto
             }
 
             for_each_file_backed_semantic_source_chunk(info, "paired semantic source",
-                                                       [&](const std::vector<FieldElement> &chunk, std::size_t offset)
-                                                       {
+                                                       [&](const std::vector<FieldElement> &chunk, std::size_t offset) {
                                                            accumulate_streamed_evaluation_source_pair(first_group, second_group, chunk, first_scale,
                                                                                                       second_scale, info.file_path, worker_cap, offset, true);
                                                        });
@@ -3867,16 +3790,6 @@ namespace gatzk::crypto
             std::vector<SemanticFold> semantic_folds;
             std::unordered_map<std::string, std::size_t> semantic_fold_index;
 
-            // Production opening claims have already been computed from the exact
-            // formal opening polynomials.  In that mode we may combine several
-            // independently blinded evaluation polynomials that share one immutable
-            // semantic source:
-            //
-            //   sum_i a_i (S + Z_D R_i)
-            //     = (sum_i a_i) S + Z_D (sum_i a_i R_i).
-            //
-            // VerifyAgainstOpeningPolynomials retains the per-polynomial path
-            // required by focused claim-validation tests.
             if (!validate_claims && semantic_source_resolver != nullptr)
             {
                 semantic_folds.reserve(commitments.size());
@@ -3888,9 +3801,6 @@ namespace gatzk::crypto
                         throw std::runtime_error("streamed folded opening claim shape mismatch: " + commitments[i].name);
                     }
 
-                    // In-memory opening material retains the existing path.  This
-                    // optimization is intentionally limited to file-backed evaluation
-                    // material carrying explicit semantic-source metadata.
                     if (commitments[i].opening_polynomial != nullptr)
                     {
                         continue;
@@ -3926,11 +3836,6 @@ namespace gatzk::crypto
                             throw std::runtime_error("streamed opening semantic source has no authenticated trace spill lease: " + commitments[i].name);
                         }
                         const auto payload_name = semantic_info->lease->payload_name(semantic_info->file_path);
-                        // Validate every descriptor before grouping by the
-                        // execution-only semantic key.  A representative
-                        // path may be reused for a valid shared source, but
-                        // a malformed alternate descriptor must never be
-                        // hidden by that reuse.
                         if (semantic_info->lease->payload_size(payload_name) != algebra::field_elements_binary_size(stored_value_count))
                         {
                             throw std::runtime_error("streamed opening semantic source length mismatch: " + semantic_info->file_path);
@@ -3990,10 +3895,6 @@ namespace gatzk::crypto
                     }
                 }
 
-                // Singleton file-backed sources still stay on the streamed
-                // path.  They have no pair to fuse, but materializing their
-                // logical vector would recreate the large opening working set
-                // that this resolver is intended to avoid.
                 std::size_t shared_source_count = 0;
                 std::size_t shared_member_count = 0;
 
@@ -4298,10 +4199,6 @@ namespace gatzk::crypto
 
                 const auto &second = deferred[1][second_index];
 
-                // The semantic source key, not the formal commitment name or
-                // commitment point, determines whether two point groups may
-                // share a physical scan.  Their commitments and blinders are
-                // intentionally still folded independently below.
                 const bool same_source_with_physical_metadata =
                     first.info.key == second.info.key && compatible_streamed_semantic_source_metadata(first.info, second.info);
 
@@ -4325,10 +4222,6 @@ namespace gatzk::crypto
                 }
                 else if (first.info.file_backed && second.info.file_backed)
                 {
-                    // Distinct physical paths may still represent the same
-                    // logical zero-tailed source.  Validate and consume both
-                    // descriptors independently rather than treating the
-                    // first path as an alias for the second one.
                     accumulate_file_backed_semantic_source(&first_group, first.info, first.scale, worker_caps[0],
                                                            scan_profiles != nullptr ? (*scan_profiles)[0] : nullptr);
                     accumulate_file_backed_semantic_source(&second_group, second.info, second.scale, worker_caps[1],
@@ -4379,8 +4272,6 @@ namespace gatzk::crypto
                 throw std::runtime_error("opening denominator buffer/domain shape mismatch");
             }
 
-            // Small/medium domains already retain all domain points.
-            // Keep their existing execution path unchanged.
             if (domain->points_precomputed)
             {
                 parallel_for_chunks_capped(domain->size, 1ULL << 15, worker_cap,
@@ -4452,9 +4343,6 @@ namespace gatzk::crypto
                 }
             };
 
-            // Use the output array itself as the per-row prefix-product
-            // workspace.  The original denominator does not need to remain
-            // resident: it is regenerated in the reverse pass from omega^i.
             run_chunks(
                 [&](std::size_t task, std::size_t begin, std::size_t end)
                 {
@@ -4474,8 +4362,6 @@ namespace gatzk::crypto
                             throw std::runtime_error("opening point overlaps evaluation domain; derivative witness path is not implemented");
                         }
 
-                        // Temporarily store the product of every denominator
-                        // preceding this row inside the eventual output slot.
                         denominator_native[row] = local_product;
 
                         mcl::Fr::mul(local_product, local_product, denominator);
@@ -4486,8 +4372,6 @@ namespace gatzk::crypto
                     chunk_products[task] = local_product;
                 });
 
-            // Reduce the per-chunk products and perform exactly one field
-            // inversion for the complete domain.
             std::vector<mcl::Fr> chunk_prefixes(task_count);
 
             mcl::Fr total_product;
@@ -4512,14 +4396,9 @@ namespace gatzk::crypto
 
                 mcl::Fr::mul(suffix_inverse, suffix_inverse, chunk_products[task]);
 
-                // Reuse the chunk-product slot for the inverse of the entire
-                // chunk product required by the reverse pass.
                 chunk_products[task] = chunk_inverse;
             }
 
-            // Reconstruct omega^row backwards without a full-size prefixes
-            // allocation while retaining the one-inversion batch-inversion
-            // result.
             run_chunks(
                 [&](std::size_t task, std::size_t begin, std::size_t end)
                 {
@@ -4668,11 +4547,6 @@ namespace gatzk::crypto
                     profile->witness_msm_ms += elapsed_ms(witness_msm_start, Clock::now());
                 }
 
-                // The domain-value quotient above is the unique degree < n
-                // interpolant of the full quotient on H.  For
-                // P^zk=P+Z_H R, the omitted high-degree part is exactly
-                // Z_H * (R(X)-R(z))/(X-z); its quotient contribution is the
-                // small coefficient polynomial (R(X)-R(z))/(X-z).
                 const auto blinder_witness_start = Clock::now();
                 std::vector<FieldElement> blinder_quotient_fold;
                 if (!group.folded_zero_domain_blinder.empty())
@@ -4844,18 +4718,12 @@ namespace gatzk::crypto
             const auto rhs = g2_sub(vk.g2_tau, g2_mul(vk.g2_one, point));
             if (rhs == g2_zero())
             {
-                // tau must remain outside every proof-derived opening point.  A
-                // zero [tau-z]_2 makes the KZG equation degenerate and is an SRS
-                // compromise, never a valid proof result.
                 return false;
             }
             const bool numerator_is_zero = numerator == g1_zero();
             const bool witness_is_zero = witness == g1_zero();
             if (numerator_is_zero || witness_is_zero)
             {
-                // The identically-zero folded polynomial has the valid
-                // equation e(0,G2)=e(0,[tau-z]2).  Handle it explicitly since
-                // the pairing backend rejects zero affine inputs.
                 return numerator_is_zero && witness_is_zero;
             }
             if (util::route2_options().fast_verify_pairing && vk.g2_one_prepared != nullptr)
@@ -4880,10 +4748,7 @@ namespace gatzk::crypto
             const std::vector<G1Point> *lagrange_srs = nullptr;
             const std::vector<algebra::FieldElement> *values = nullptr;
 
-            bool operator==(const PointerKey &other) const
-            {
-                return domain == other.domain && lagrange_srs == other.lagrange_srs && values == other.values;
-            }
+            bool operator==(const PointerKey &other) const { return domain == other.domain && lagrange_srs == other.lagrange_srs && values == other.values; }
         };
 
         struct PointerKeyHash
@@ -5335,10 +5200,7 @@ namespace gatzk::crypto
                                                              });
     }
 
-    std::size_t serialized_size(const Commitment &commitment)
-    {
-        return serialized_size(commitment.point);
-    }
+    std::size_t serialized_size(const Commitment &commitment) { return serialized_size(commitment.point); }
 
     std::string required_lagrange_cache_fragment(const std::vector<std::pair<std::string, std::size_t>> &required_lagrange_domains)
     {
@@ -5435,10 +5297,6 @@ namespace gatzk::crypto
         static std::unordered_map<std::string, KZGKeyPair> cache;
         const auto cache_key = srs_path + "|" + expected_srs_type + "|" + expected_srs_id + "|coef=" + std::to_string(required_coefficient_count) +
                                "|lagrange=" + required_lagrange_cache_fragment(required_lagrange_domains);
-        // Resolve and authenticate the manifest/catalogue before consulting the
-        // process-local cache.  The cache payload stores the resulting
-        // manifest/resource identity; a same-path replacement therefore cannot
-        // return stale PK/VK/domain-zero-G2 material.
         const auto srs_root = std::filesystem::path(srs_path);
         const auto manifest = load_manifest_file(srs_path);
         validate_manifest(manifest, expected_srs_type, expected_srs_id);
@@ -5451,8 +5309,6 @@ namespace gatzk::crypto
                 if (it->second.resource_identity == resource_identity && it->second.pk.resource_identity == resource_identity &&
                     it->second.vk.resource_identity == resource_identity)
                     return it->second;
-                // Erase stale material before reloading.  Do not let a
-                // mismatched payload survive under the same path/config key.
                 cache.erase(it);
             }
         }
@@ -5541,10 +5397,6 @@ namespace gatzk::crypto
             throw std::runtime_error("SRS vanishing G2 catalogue hash mismatch");
         }
 
-        // The manifest hashes authenticate bytes, but they do not prove that the
-        // coefficient PK and the G2 verifier catalogue were generated from the
-        // same toxic-waste scalar.  Audit the relations needed by ordinary KZG
-        // and by proof-local model divisibility before exposing either key.
         if (powers_g1.size() < 2 || !pairing_equal(powers_g1[1], g2_one, powers_g1[0], g2_tau))
         {
             throw std::runtime_error("SRS coefficient/G2 tau consistency audit failed");
@@ -5606,9 +5458,6 @@ namespace gatzk::crypto
             .g2_tau_prepared = vk.g2_tau_prepared,
             .resource_identity = resource_identity,
         };
-        // Close the small TOCTOU window between the pre-cache identity scan
-        // and parsing the large point files.  A resource replacement during
-        // loading is a hard failure, never a cacheable key.
         const auto post_load_resource_identity = canonical_key_resource_identity(srs_root, manifest, selected_lagrange_domains);
         if (post_load_resource_identity != resource_identity)
             throw std::runtime_error("SRS key resource identity changed while loading");
@@ -5708,10 +5557,6 @@ namespace gatzk::crypto
             }
         }
 
-        // Within one KZG call, several independently blinded objects may share
-        // exactly the same immutable semantic evaluation vector. Elect one
-        // representative before any worker is launched; aliases are committed
-        // only after that representative has populated the semantic cache.
         struct SemanticRepresentativeKey
         {
             const algebra::RootOfUnityDomain *domain = nullptr;
@@ -5808,8 +5653,6 @@ namespace gatzk::crypto
 
         std::vector<bool> completed(object_count, false);
 
-        // Already-cached semantic objects perform no large MSM. Resolve them
-        // before forming the CUDA waves.
         for (std::size_t index = 0; index < object_count; ++index)
         {
             if (!preexisting_cache_hit[index])
@@ -5844,8 +5687,6 @@ namespace gatzk::crypto
             completed[index] = completed[index] || wave_completed[index];
         }
 
-        // Handle sparse/tail/singleton work with the fallback scheduler after
-        // the explicit CUDA waves remove the large dense same-SRS families.
         std::vector<std::size_t> remaining_indices;
 
         std::size_t remaining_total_work = 0;
@@ -5916,13 +5757,6 @@ namespace gatzk::crypto
                                                   }
                                               });
 
-                // std::vector<bool> is bit-packed.  Do not let worker
-                // threads update distinct proxy bits concurrently because
-                // those bits can share one underlying machine word.
-                //
-                // g1_parallel_msm_batch_workers() is synchronous and
-                // propagates worker failures, so every remaining object is
-                // known complete when control reaches this point.
                 for (const auto index : remaining_indices)
                 {
                     completed[index] = true;
@@ -5939,10 +5773,6 @@ namespace gatzk::crypto
             }
         }
 
-        // Semantic aliases intentionally run after their representative.  The
-        // representative has populated EvaluationCommitmentCache, so these
-        // objects reuse its evaluation component and pay only their own
-        // zero-domain blinder adjustment.
         for (std::size_t index = 0; index < object_count; ++index)
         {
             if (semantic_alias_of[index] == object_count)
@@ -6255,9 +6085,6 @@ namespace gatzk::crypto
         }
         if (!any_nonzero)
         {
-            // A 512-bit reduction is zero only with negligible probability.  A
-            // deterministic fallback would violate the fresh-randomness rule,
-            // so resample the first coefficient from the CSPRNG instead.
             do
             {
                 if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1)
@@ -6431,9 +6258,7 @@ namespace gatzk::crypto
 
                 std::ostringstream diagnostic;
 
-                diagnostic << "KZG fold diagnostic: "
-                           << "commitment_material_mismatch"
-                           << ";claims=" << commitments.size();
+                diagnostic << "KZG fold diagnostic: " << "commitment_material_mismatch" << ";claims=" << commitments.size();
 
                 if (!mismatch_indices.empty())
                 {

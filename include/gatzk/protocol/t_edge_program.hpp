@@ -19,13 +19,11 @@ namespace gatzk::protocol
         Negate,
     };
 
-    inline constexpr std::size_t
-        kMaximumProgramStackDepth = 64;
+    inline constexpr std::size_t kMaximumProgramStackDepth = 64;
 
     struct TEdgeProgramInstruction
     {
-        TEdgeProgramOpcode opcode =
-            TEdgeProgramOpcode::LoadConstant;
+        TEdgeProgramOpcode opcode = TEdgeProgramOpcode::LoadConstant;
 
         std::uint32_t operand = 0;
     };
@@ -41,28 +39,22 @@ namespace gatzk::protocol
         std::size_t instruction_begin = 0;
         std::size_t instruction_end = 0;
 
-        algebra::FieldElement alpha_scale =
-            algebra::FieldElement::one();
+        algebra::FieldElement alpha_scale = algebra::FieldElement::one();
 
-        std::vector<std::uint32_t>
-            required_accesses;
+        std::vector<std::uint32_t> required_accesses;
 
         std::size_t maximum_stack_depth = 0;
     };
 
     struct TEdgeBoundProgram
     {
-        std::vector<TEdgeProgramInstruction>
-            instructions;
+        std::vector<TEdgeProgramInstruction> instructions;
 
-        std::vector<algebra::FieldElement>
-            constants;
+        std::vector<algebra::FieldElement> constants;
 
-        std::vector<TEdgeProgramAccess>
-            accesses;
+        std::vector<TEdgeProgramAccess> accesses;
 
-        std::vector<TEdgeProgramTerm>
-            terms;
+        std::vector<TEdgeProgramTerm> terms;
 
         std::size_t maximum_stack_depth = 0;
     };

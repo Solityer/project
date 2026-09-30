@@ -26,27 +26,18 @@ find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-# Embed a canonical source inventory and compiler receipt in every binary.
-# Runtime artifact export additionally hashes the actual executable bytes, so
-# arbitrary provenance environment variables cannot promote a formal run.
 set(GATZK_GENERATED_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated")
-set(GATZK_BUILD_PROVENANCE_HEADER
-    "${GATZK_GENERATED_INCLUDE_DIR}/gatzk/build_provenance.hpp")
-set(GATZK_SOURCE_MANIFEST
-    "${GATZK_GENERATED_INCLUDE_DIR}/gatzk/source_manifest.json")
+set(GATZK_BUILD_PROVENANCE_HEADER "${GATZK_GENERATED_INCLUDE_DIR}/gatzk/build_provenance.hpp")
+set(GATZK_SOURCE_MANIFEST "${GATZK_GENERATED_INCLUDE_DIR}/gatzk/source_manifest.json")
 file(MAKE_DIRECTORY "${GATZK_GENERATED_INCLUDE_DIR}/gatzk")
-set(GATZK_BUILD_FLAGS
-    "CXX=${CMAKE_CXX_FLAGS};BUILD=${CMAKE_BUILD_TYPE};NATIVE=${GATZK_ENABLE_NATIVE_ARCH};CUDA=${GATZK_ENABLE_CUDA_BACKEND};FAST_MSM=${GATZK_ENABLE_FAST_MSM_DEFAULT};PARALLEL_FFT=${GATZK_ENABLE_PARALLEL_FFT_DEFAULT};PACKED_FFT=${GATZK_ENABLE_PACKED_FFT_DEFAULT};ROTATED_FFT_KERNEL=${GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT};COMPACT_TRACE_LAYOUT=${GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT};FAST_VERIFY=${GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT}")
-execute_process(
-    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/build_provenance.py"
-            --root "${PROJECT_SOURCE_DIR}"
-            --output "${GATZK_BUILD_PROVENANCE_HEADER}"
-            --source-manifest-output "${GATZK_SOURCE_MANIFEST}"
-            --compiler-id "${CMAKE_CXX_COMPILER_ID}"
-            --compiler-version "${CMAKE_CXX_COMPILER_VERSION}"
-            --build-type "${CMAKE_BUILD_TYPE}"
-            --flags "${GATZK_BUILD_FLAGS}"
-    RESULT_VARIABLE GATZK_PROVENANCE_RESULT)
+set(
+    GATZK_BUILD_FLAGS
+    "CXX=${CMAKE_CXX_FLAGS};BUILD=${CMAKE_BUILD_TYPE};NATIVE=${GATZK_ENABLE_NATIVE_ARCH};CUDA=${GATZK_ENABLE_CUDA_BACKEND};FAST_MSM=${GATZK_ENABLE_FAST_MSM_DEFAULT};PARALLEL_FFT=${GATZK_ENABLE_PARALLEL_FFT_DEFAULT};PACKED_FFT=${GATZK_ENABLE_PACKED_FFT_DEFAULT};ROTATED_FFT_KERNEL=${GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT};COMPACT_TRACE_LAYOUT=${GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT};FAST_VERIFY=${GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT}"
+)
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/build_provenance.py" --root "${PROJECT_SOURCE_DIR}" --output
+                        "${GATZK_BUILD_PROVENANCE_HEADER}" --source-manifest-output "${GATZK_SOURCE_MANIFEST}" --compiler-id "${CMAKE_CXX_COMPILER_ID}"
+                        --compiler-version "${CMAKE_CXX_COMPILER_VERSION}" --build-type "${CMAKE_BUILD_TYPE}" --flags "${GATZK_BUILD_FLAGS}"
+                RESULT_VARIABLE GATZK_PROVENANCE_RESULT)
 if(NOT GATZK_PROVENANCE_RESULT EQUAL 0)
     message(FATAL_ERROR "failed to generate source-locked build provenance")
 endif()
@@ -60,12 +51,9 @@ include(cmake/ConfigureMCL.cmake)
 if(GATZK_ENABLE_CUDA_BACKEND)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
         if(CMAKE_VERSION VERSION_LESS 3.24)
-            message(FATAL_ERROR
-                "GAT-ZKML: CUDA builds require an explicit "
-                "-DCMAKE_CUDA_ARCHITECTURES=<architecture> with CMake < 3.24")
+            message(FATAL_ERROR "GAT-ZKML: CUDA builds require an explicit " "-DCMAKE_CUDA_ARCHITECTURES=<architecture> with CMake < 3.24")
         endif()
-        set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING
-            "CUDA architectures for the canonical CUDA backend")
+        set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING "CUDA architectures for the canonical CUDA backend")
     endif()
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
@@ -74,182 +62,75 @@ if(GATZK_ENABLE_CUDA_BACKEND)
 endif()
 
 set(GATZK_SOURCES
-    src/algebra/eval_backend.cpp
-    src/algebra/field_io.cpp
-    src/util/effective_memory.cpp
-    src/util/spill_arena_accounting.cpp
-    src/util/storage_reservation.cpp
-    src/util/trace_spill.cpp
-    src/algebra/polynomial.cpp
-    src/algebra/vector_ops.cpp
-    src/crypto/curve.cpp
-    src/crypto/cuda_msm_stub.cpp
-    src/crypto/kzg.cpp
-    src/crypto/transcript.cpp
-    src/data/loader.cpp
-    src/model/gat.cpp
-    src/protocol/lookup.cpp
-    src/protocol/challenges.cpp
-    src/protocol/opening_registry.cpp
-    src/protocol/artifact_export.cpp
-    src/protocol/internal/t_edge_descriptor.cpp
-    src/protocol/prover.cpp
-    src/protocol/proof_codec.cpp
-    src/protocol/psq.cpp
-    src/protocol/quotients.cpp
-    src/protocol/schema.cpp
-    src/protocol/schema_labels.cpp
-    src/protocol/trace.cpp
-    src/protocol/verifier.cpp
-    src/protocol/verifier_context.cpp
-    src/protocol/verifier_registration_artifact.cpp
-    src/protocol/zkmap.cpp
-    src/util/config.cpp
-    src/util/logging.cpp
-    src/util/route2.cpp
-    src/protocol/cuda_t_edge_stub.cpp
-    src/protocol/cuda_t_fh_stub.cpp
-)
+    src/algebra/eval_backend.cpp src/algebra/field_io.cpp src/util/effective_memory.cpp src/util/spill_arena_accounting.cpp src/util/storage_reservation.cpp
+    src/util/trace_spill.cpp src/algebra/polynomial.cpp src/algebra/vector_ops.cpp src/crypto/curve.cpp src/crypto/cuda_msm_stub.cpp src/crypto/kzg.cpp
+    src/crypto/transcript.cpp src/data/loader.cpp src/model/gat.cpp src/protocol/lookup.cpp src/protocol/challenges.cpp src/protocol/opening_registry.cpp
+    src/protocol/artifact_export.cpp src/protocol/internal/t_edge_descriptor.cpp src/protocol/prover.cpp src/protocol/proof_codec.cpp src/protocol/psq.cpp
+    src/protocol/quotients.cpp src/protocol/schema.cpp src/protocol/schema_labels.cpp src/protocol/trace.cpp src/protocol/verifier.cpp
+    src/protocol/verifier_context.cpp src/protocol/verifier_registration_artifact.cpp src/protocol/zkmap.cpp src/util/config.cpp src/util/logging.cpp
+    src/util/route2.cpp src/protocol/cuda_t_edge_stub.cpp src/protocol/cuda_t_fh_stub.cpp)
 
 if(GATZK_ENABLE_CUDA_BACKEND)
-    list(APPEND GATZK_SOURCES
-        src/algebra/cuda_backend.cu
-        src/algebra/cuda_ntt.cu
-        src/crypto/cuda_msm.cu
-        src/protocol/cuda_t_edge.cu
-        src/protocol/cuda_t_fh.cu
-    )
+    list(APPEND GATZK_SOURCES src/algebra/cuda_backend.cu src/algebra/cuda_ntt.cu src/crypto/cuda_msm.cu src/protocol/cuda_t_edge.cu src/protocol/cuda_t_fh.cu)
 
-    list(REMOVE_ITEM GATZK_SOURCES
-        src/crypto/cuda_msm_stub.cpp
-        src/protocol/cuda_t_edge_stub.cpp
-        src/protocol/cuda_t_fh_stub.cpp)
+    list(REMOVE_ITEM GATZK_SOURCES src/crypto/cuda_msm_stub.cpp src/protocol/cuda_t_edge_stub.cpp src/protocol/cuda_t_fh_stub.cpp)
 
     set(GATZK_ICICLE_ROOT "${PROJECT_SOURCE_DIR}/third_party/icicle")
-    if(NOT EXISTS "${GATZK_ICICLE_ROOT}/LICENSE"
-        OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu"
-        OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/ntt/extern.cu"
-        OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/ntt/kernel_ntt.cu")
-        message(FATAL_ERROR
-            "GAT-ZKML: CUDA MSM/NTT requires ICICLE v2.8.0 at the pinned "
-            "aacec3f72f14f53dd96d835698d2c87cde3a68b8 gitlink; "
-            "run 'git submodule update --init third_party/icicle'")
+    if(NOT EXISTS "${GATZK_ICICLE_ROOT}/LICENSE" OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu"
+       OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/ntt/extern.cu" OR NOT EXISTS "${GATZK_ICICLE_ROOT}/icicle/src/ntt/kernel_ntt.cu")
+        message(FATAL_ERROR "GAT-ZKML: CUDA MSM/NTT requires ICICLE v2.8.0 at the pinned " "aacec3f72f14f53dd96d835698d2c87cde3a68b8 gitlink; "
+                            "run 'git submodule update --init third_party/icicle'")
     endif()
-    set(
-        GATZK_ICICLE_MSM_PATCHED_DIR
-        "${CMAKE_BINARY_DIR}/generated/icicle_v28_msm")
+    set(GATZK_ICICLE_MSM_PATCHED_DIR "${CMAKE_BINARY_DIR}/generated/icicle_v28_msm")
 
-    set(
-        GATZK_ICICLE_MSM_PATCHED_EXTERN
-        "${GATZK_ICICLE_MSM_PATCHED_DIR}/extern.cu")
+    set(GATZK_ICICLE_MSM_PATCHED_EXTERN "${GATZK_ICICLE_MSM_PATCHED_DIR}/extern.cu")
 
-    set(
-        GATZK_ICICLE_MSM_PATCHED_IMPL
-        "${GATZK_ICICLE_MSM_PATCHED_DIR}/msm.cu")
+    set(GATZK_ICICLE_MSM_PATCHED_IMPL "${GATZK_ICICLE_MSM_PATCHED_DIR}/msm.cu")
 
-    add_custom_command(
-        OUTPUT
-            "${GATZK_ICICLE_MSM_PATCHED_EXTERN}"
-            "${GATZK_ICICLE_MSM_PATCHED_IMPL}"
-        COMMAND
-            "${CMAKE_COMMAND}" -E make_directory
-            "${GATZK_ICICLE_MSM_PATCHED_DIR}"
-        COMMAND
-            "${CMAKE_COMMAND}" -E copy_if_different
-            "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu"
-            "${GATZK_ICICLE_MSM_PATCHED_EXTERN}"
-        COMMAND
-            "${Python3_EXECUTABLE}"
-            "${PROJECT_SOURCE_DIR}/tools/patch_icicle_v28_msm.py"
-            --input
-            "${GATZK_ICICLE_ROOT}/icicle/src/msm/msm.cu"
-            --output
-            "${GATZK_ICICLE_MSM_PATCHED_IMPL}"
-        DEPENDS
-            "${PROJECT_SOURCE_DIR}/tools/patch_icicle_v28_msm.py"
-            "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu"
-            "${GATZK_ICICLE_ROOT}/icicle/src/msm/msm.cu"
-        VERBATIM)
+    add_custom_command(OUTPUT "${GATZK_ICICLE_MSM_PATCHED_EXTERN}" "${GATZK_ICICLE_MSM_PATCHED_IMPL}" COMMAND "${CMAKE_COMMAND}" -E make_directory
+                                                                                                              "${GATZK_ICICLE_MSM_PATCHED_DIR}"
+                       COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu" "${GATZK_ICICLE_MSM_PATCHED_EXTERN}"
+                       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/patch_icicle_v28_msm.py" --input
+                               "${GATZK_ICICLE_ROOT}/icicle/src/msm/msm.cu" --output "${GATZK_ICICLE_MSM_PATCHED_IMPL}"
+                       DEPENDS "${PROJECT_SOURCE_DIR}/tools/patch_icicle_v28_msm.py" "${GATZK_ICICLE_ROOT}/icicle/src/msm/extern.cu"
+                               "${GATZK_ICICLE_ROOT}/icicle/src/msm/msm.cu" VERBATIM)
 
-    add_library(
-        gatzk_icicle_bls12_381_msm STATIC
-        "${GATZK_ICICLE_MSM_PATCHED_EXTERN}")
-    target_include_directories(
-        gatzk_icicle_bls12_381_msm
-        PUBLIC "${GATZK_ICICLE_ROOT}/icicle/include")
-    target_compile_definitions(
-        gatzk_icicle_bls12_381_msm
-        PRIVATE CURVE=bls12_381 CURVE_ID=2 FIELD_ID=2)
-    target_compile_options(
-        gatzk_icicle_bls12_381_msm
-        PRIVATE
-            $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
-            $<$<COMPILE_LANGUAGE:CUDA>:-include=cstdint>)
-    target_link_libraries(
-        gatzk_icicle_bls12_381_msm PRIVATE CUDA::cudart)
-    set_target_properties(
-        gatzk_icicle_bls12_381_msm
-        PROPERTIES
-            CUDA_SEPARABLE_COMPILATION ON
-            POSITION_INDEPENDENT_CODE ON)
-    add_library(
-        gatzk_icicle_bls12_381_ntt STATIC
-        "${GATZK_ICICLE_ROOT}/icicle/src/ntt/extern.cu"
-        "${GATZK_ICICLE_ROOT}/icicle/src/ntt/kernel_ntt.cu")
+    add_library(gatzk_icicle_bls12_381_msm STATIC "${GATZK_ICICLE_MSM_PATCHED_EXTERN}")
+    target_include_directories(gatzk_icicle_bls12_381_msm PUBLIC "${GATZK_ICICLE_ROOT}/icicle/include")
+    target_compile_definitions(gatzk_icicle_bls12_381_msm PRIVATE CURVE=bls12_381 CURVE_ID=2 FIELD_ID=2)
+    target_compile_options(gatzk_icicle_bls12_381_msm PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr> $<$<COMPILE_LANGUAGE:CUDA>:-include=cstdint>)
+    target_link_libraries(gatzk_icicle_bls12_381_msm PRIVATE CUDA::cudart)
+    set_target_properties(gatzk_icicle_bls12_381_msm PROPERTIES CUDA_SEPARABLE_COMPILATION ON POSITION_INDEPENDENT_CODE ON)
+    add_library(gatzk_icicle_bls12_381_ntt STATIC "${GATZK_ICICLE_ROOT}/icicle/src/ntt/extern.cu" "${GATZK_ICICLE_ROOT}/icicle/src/ntt/kernel_ntt.cu")
 
-    target_include_directories(
-        gatzk_icicle_bls12_381_ntt
-        PUBLIC "${GATZK_ICICLE_ROOT}/icicle/include")
+    target_include_directories(gatzk_icicle_bls12_381_ntt PUBLIC "${GATZK_ICICLE_ROOT}/icicle/include")
 
-    target_compile_definitions(
-        gatzk_icicle_bls12_381_ntt
-        PRIVATE
-            FIELD=bls12_381
-            FIELD_ID=2)
+    target_compile_definitions(gatzk_icicle_bls12_381_ntt PRIVATE FIELD=bls12_381 FIELD_ID=2)
 
-    target_compile_options(
-        gatzk_icicle_bls12_381_ntt
-        PRIVATE
-            $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
-            $<$<COMPILE_LANGUAGE:CUDA>:-include=cstdint>)
+    target_compile_options(gatzk_icicle_bls12_381_ntt PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr> $<$<COMPILE_LANGUAGE:CUDA>:-include=cstdint>)
 
-    target_link_libraries(
-        gatzk_icicle_bls12_381_ntt
-        PRIVATE CUDA::cudart)
+    target_link_libraries(gatzk_icicle_bls12_381_ntt PRIVATE CUDA::cudart)
 
-    set_target_properties(
-        gatzk_icicle_bls12_381_ntt
-        PROPERTIES
-            CUDA_SEPARABLE_COMPILATION ON
-            POSITION_INDEPENDENT_CODE ON)
+    set_target_properties(gatzk_icicle_bls12_381_ntt PROPERTIES CUDA_SEPARABLE_COMPILATION ON POSITION_INDEPENDENT_CODE ON)
 endif()
 
 add_library(gatzkml STATIC ${GATZK_SOURCES})
-target_include_directories(gatzkml PUBLIC
-    "${GATZK_GENERATED_INCLUDE_DIR}"
-    ${PROJECT_SOURCE_DIR}/include)
-target_include_directories(gatzkml PRIVATE
-    ${PROJECT_SOURCE_DIR}/src)
+target_include_directories(gatzkml PUBLIC "${GATZK_GENERATED_INCLUDE_DIR}" ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(gatzkml PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_options(gatzkml PRIVATE -Wall -Wextra -Wpedantic)
 if(GATZK_ENABLE_NATIVE_ARCH AND GATZK_CXX_SUPPORTS_MARCH_NATIVE)
-    target_compile_options(
-        gatzkml
-        PRIVATE
-            $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:-march=native>)
+    target_compile_options(gatzkml PRIVATE $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:-march=native>)
 endif()
-target_compile_definitions(
-    gatzkml
-    PUBLIC
-        GATZK_CRYPTO_BACKEND_NAME="${GATZK_SELECTED_BACKEND}"
-        GATZK_ENABLE_FAST_MSM_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_FAST_MSM_DEFAULT}>,1,0>
-        GATZK_ENABLE_PARALLEL_FFT_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_PARALLEL_FFT_DEFAULT}>,1,0>
-        GATZK_ENABLE_PACKED_FFT_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_PACKED_FFT_DEFAULT}>,1,0>
-        GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT}>,1,0>
-        GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT}>,1,0>
-        GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT}>,1,0>
-        GATZK_ENABLE_CUDA_BACKEND=$<IF:$<BOOL:${GATZK_ENABLE_CUDA_BACKEND}>,1,0>
-        GATZK_CANONICAL_SCALE_CHAIN_PATH="${PROJECT_SOURCE_DIR}/configs/quantization_scale_chain.cfg"
-)
+target_compile_definitions(gatzkml
+                           PUBLIC GATZK_CRYPTO_BACKEND_NAME="${GATZK_SELECTED_BACKEND}"
+                                  GATZK_ENABLE_FAST_MSM_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_FAST_MSM_DEFAULT}>,1,0>
+                                  GATZK_ENABLE_PARALLEL_FFT_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_PARALLEL_FFT_DEFAULT}>,1,0>
+                                  GATZK_ENABLE_PACKED_FFT_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_PACKED_FFT_DEFAULT}>,1,0>
+                                  GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_ROTATED_FFT_KERNEL_DEFAULT}>,1,0>
+                                  GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_COMPACT_TRACE_LAYOUT_DEFAULT}>,1,0>
+                                  GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT=$<IF:$<BOOL:${GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT}>,1,0>
+                                  GATZK_ENABLE_CUDA_BACKEND=$<IF:$<BOOL:${GATZK_ENABLE_CUDA_BACKEND}>,1,0>
+                                  GATZK_CANONICAL_SCALE_CHAIN_PATH="${PROJECT_SOURCE_DIR}/configs/quantization_scale_chain.cfg")
 
 if(GATZK_USE_MCL)
     target_compile_definitions(gatzkml PUBLIC GATZK_USE_MCL=1)
@@ -260,28 +141,16 @@ endif()
 target_link_libraries(gatzkml PUBLIC Threads::Threads OpenSSL::Crypto)
 
 if(GATZK_ENABLE_CUDA_BACKEND)
-    target_link_libraries(
-        gatzkml
-        PUBLIC CUDA::cudart
-        PRIVATE
-            gatzk_icicle_bls12_381_msm
-            gatzk_icicle_bls12_381_ntt)
+    target_link_libraries(gatzkml PUBLIC CUDA::cudart PRIVATE gatzk_icicle_bls12_381_msm gatzk_icicle_bls12_381_ntt)
     set_target_properties(gatzkml PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 endif()
 
 add_executable(gatzk_run src/main.cpp)
 target_link_libraries(gatzk_run PRIVATE gatzkml)
 
-# Explicit setup utility for the authenticated point-only VK_model/VK_static
-# registry.  Formal runs consume an existing registry and fail closed when it
-# is absent; this target is never invoked implicitly by gatzk_run.
 add_executable(gatzk_registry_register tools/register_verifier_registry.cpp)
 target_link_libraries(gatzk_registry_register PRIVATE gatzkml)
 
-# Short-lived independent inspection utility used by the fail-closed result
-# aggregator.  It consumes only the canonical point-only registration artifact
-# and emits authenticated registry/ledger metadata; it never constructs a
-# proving context or starts a proof run.
 add_executable(gatzk_registry_inspect tools/inspect_verifier_registry.cpp)
 target_link_libraries(gatzk_registry_inspect PRIVATE gatzkml)
 
@@ -291,10 +160,7 @@ target_link_libraries(gatzk_srs_setup PRIVATE gatzkml)
 
 option(GATZK_BUILD_CORE_EXECUTION_REGRESSION "Build isolated core execution regression" OFF)
 if(GATZK_BUILD_CORE_EXECUTION_REGRESSION)
-    add_executable(gatzk_core_execution_regression EXCLUDE_FROM_ALL
-        tests/core_execution_regression.cpp)
+    add_executable(gatzk_core_execution_regression EXCLUDE_FROM_ALL tests/core_execution_regression.cpp)
     target_link_libraries(gatzk_core_execution_regression PRIVATE gatzkml)
-    target_compile_definitions(gatzk_core_execution_regression PRIVATE
-        GATZK_EXECUTION_TEST_ROOT="${PROJECT_SOURCE_DIR}/tests/.core_execution")
+    target_compile_definitions(gatzk_core_execution_regression PRIVATE GATZK_EXECUTION_TEST_ROOT="${PROJECT_SOURCE_DIR}/tests/.core_execution")
 endif()
-

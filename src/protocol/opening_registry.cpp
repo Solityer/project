@@ -765,9 +765,6 @@ namespace gatzk::protocol
 
         claim_index_by_commitment_.clear();
 
-        // Claims keep stable non-owning pointers into
-        // commitment_execution_identity_by_reference_.  Keep the interned
-        // commitment table alive for the complete registry lifetime.
         commitment_execution_identity_by_point_.clear();
 
         last_group_valid_ = false;

@@ -50,19 +50,12 @@ impl GatOp {
         Ok(Self { spec, rounding })
     }
 
-    fn bound_family(
-        &self,
-        layer: usize,
-        head: usize,
-        is_output: bool,
-    ) -> Result<&BoundFamily, CircuitError> {
+    fn bound_family(&self, layer: usize, head: usize, is_output: bool,) -> Result<&BoundFamily, CircuitError> {
         self.spec
             .ledger
             .families
             .iter()
-            .find(|family| {
-                family.layer == layer && family.head == head && family.is_output == is_output
-            })
+            .find(|family| { family.layer == layer && family.head == head && family.is_output == is_output})
             .ok_or(CircuitError::UnsupportedOp)
     }
 
@@ -101,11 +94,7 @@ impl GatOp {
         self.spec.private_params_redacted = true;
     }
 
-    fn unknown_or_map<FN>(
-        input: &ValTensor<Fp>,
-        dims: &[usize],
-        map: FN,
-    ) -> Result<ValTensor<Fp>, CircuitError>
+    fn unknown_or_map<FN>(input: &ValTensor<Fp>, dims: &[usize], map: FN,) -> Result<ValTensor<Fp>, CircuitError>
     where
         FN: Fn(IntegerRep) -> Result<IntegerRep, String>,
     {
@@ -118,10 +107,7 @@ impl GatOp {
                 .map(|x| {
                     map(x)
                         .map(|v| ValType::Value(Value::known(integer_rep_to_felt(v))))
-                        .map_err(|e| {
-                            CircuitError::TensorError(crate::tensor::TensorError::DimError(e))
-                        })
-                })
+                        .map_err(|e| { CircuitError::TensorError(crate::tensor::TensorError::DimError(e)) }) })
                 .collect::<Result<Vec<_>, _>>()?
         };
         let mut tensor: ValTensor<Fp> = Tensor::new(Some(&vals), dims)?.into();
@@ -130,10 +116,7 @@ impl GatOp {
     }
 
     fn constant_i128(values: &[i128], dims: &[usize]) -> Result<ValTensor<Fp>, CircuitError> {
-        let vals = values
-            .iter()
-            .map(|x| ValType::Constant(integer_rep_to_felt(*x)))
-            .collect::<Vec<_>>();
+        let vals = values.iter().map(|x| ValType::Constant(integer_rep_to_felt(*x))).collect::<Vec<_>>();
         Ok(Tensor::new(Some(&vals), dims)?.into())
     }
 
@@ -144,10 +127,7 @@ impl GatOp {
     /// prover's witness into the compiled graph or changing the relation's
     /// fixed layout.
     fn value_i128(values: &[i128], dims: &[usize]) -> Result<ValTensor<Fp>, CircuitError> {
-        let vals = values
-            .iter()
-            .map(|x| ValType::Value(Value::known(integer_rep_to_felt(*x))))
-            .collect::<Vec<_>>();
+        let vals = values.iter().map(|x| ValType::Value(Value::known(integer_rep_to_felt(*x)))).collect::<Vec<_>>();
         Ok(Tensor::new(Some(&vals), dims)?.into())
     }
 
@@ -157,21 +137,9 @@ impl GatOp {
     }
 
     fn table(table: &ExactTable) -> Result<(ValTensor<Fp>, ValTensor<Fp>), CircuitError> {
-        let keys = table
-            .rows
-            .iter()
-            .map(|(x, _)| ValType::Constant(integer_rep_to_felt(*x)))
-            .collect::<Vec<_>>();
-        let values = table
-            .rows
-            .iter()
-            .map(|(_, y)| ValType::Constant(integer_rep_to_felt(*y)))
-            .collect::<Vec<_>>();
-        Ok((
-            Tensor::new(Some(&keys), &[keys.len()])?.into(),
-            Tensor::new(Some(&values), &[values.len()])?.into(),
-        ))
-    }
+        let keys = table.rows.iter().map(|(x, _)| ValType::Constant(integer_rep_to_felt(*x))).collect::<Vec<_>>();
+        let values = table.rows.iter().map(|(_, y)| ValType::Constant(integer_rep_to_felt(*y))).collect::<Vec<_>>();
+        Ok((Tensor::new(Some(&keys), &[keys.len()])?.into(), Tensor::new(Some(&values), &[values.len()])?.into(),)) }
 
     fn exact_lookup(
         &self,
@@ -182,23 +150,13 @@ impl GatOp {
     ) -> Result<ValTensor<Fp>, CircuitError> {
         let output = Self::unknown_or_map(input, input.dims(), |x| table.lookup(x))?;
         let (keys, values) = Self::table(table)?;
-        let (_, checked_output) =
-            layouts::dynamic_lookup(config, region, &[input, &output], &[&keys, &values])?;
+        let (_, checked_output) = layouts::dynamic_lookup(config, region, &[input, &output], &[&keys, &values])?;
         Ok(checked_output)
     }
 
-    fn require_scale(
-        tensor: &ValTensor<Fp>,
-        expected: i32,
-        label: &str,
-    ) -> Result<(), CircuitError> {
+    fn require_scale(tensor: &ValTensor<Fp>, expected: i32, label: &str,) -> Result<(), CircuitError> {
         if tensor.scale() != expected {
-            return Err(CircuitError::DimMismatch(format!(
-                "{} scale {} does not match canonical scale {}",
-                label,
-                tensor.scale(),
-                expected
-            )));
+            return Err(CircuitError::DimMismatch(format!("{} scale {} does not match canonical scale {}", label, tensor.scale(), expected)));
         }
         Ok(())
     }
@@ -206,80 +164,37 @@ impl GatOp {
     fn topology_constant(&self, which: usize) -> Result<ValTensor<Fp>, CircuitError> {
         let graph = &self.spec.graph;
         let (data, dims): (Vec<i128>, Vec<usize>) = match which {
-            NODE_ID_INPUT => (
-                graph.node_ids.iter().map(|x| *x as i128).collect(),
-                vec![graph.n],
-            ),
-            SRC_INPUT => (
-                graph.src.iter().map(|x| *x as i128).collect(),
-                vec![graph.e],
-            ),
-            DST_INPUT => (
-                graph.dst.iter().map(|x| *x as i128).collect(),
-                vec![graph.e],
-            ),
-            NODE_PTR_INPUT => (
-                graph.node_ptr.iter().map(|x| *x as i128).collect(),
-                vec![graph.g_batch + 1],
-            ),
-            EDGE_PTR_INPUT => (
-                graph.edge_ptr.iter().map(|x| *x as i128).collect(),
-                vec![graph.g_batch + 1],
-            ),
+            NODE_ID_INPUT => (graph.node_ids.iter().map(|x| *x as i128).collect(), vec![graph.n],),
+            SRC_INPUT => (graph.src.iter().map(|x| *x as i128).collect(), vec![graph.e],),
+            DST_INPUT => (graph.dst.iter().map(|x| *x as i128).collect(), vec![graph.e],),
+            NODE_PTR_INPUT => (graph.node_ptr.iter().map(|x| *x as i128).collect(), vec![graph.g_batch + 1],),
+            EDGE_PTR_INPUT => (graph.edge_ptr.iter().map(|x| *x as i128).collect(), vec![graph.g_batch + 1],),
             _ => return Err(CircuitError::UnsupportedOp),
         };
         Self::constant_i128(&data, &dims)
     }
 
-    fn bind_topology(
-        &self,
-        config: &BaseConfig<Fp>,
-        region: &mut RegionCtx<Fp>,
-        input: &ValTensor<Fp>,
-        slot: usize,
-    ) -> Result<ValTensor<Fp>, CircuitError> {
+    fn bind_topology(&self, config: &BaseConfig<Fp>, region: &mut RegionCtx<Fp>, input: &ValTensor<Fp>, slot: usize,) -> Result<ValTensor<Fp>, CircuitError> {
         let public = layouts::identity(config, region, &[input])?;
         let expected = self.topology_constant(slot)?;
         layouts::enforce_equality(config, region, &[&public, &expected])
     }
 
-    fn weight_tensors<'a>(
-        &self,
-        values: &'a [&ValTensor<Fp>],
-    ) -> Result<Vec<ValTensor<Fp>>, CircuitError> {
-        let flat = values
-            .get(FIRST_WEIGHT_INPUT)
-            .ok_or_else(|| CircuitError::DimMismatch("missing flat GAT parameter input".into()))?;
+    fn weight_tensors<'a>(&self, values: &'a [&ValTensor<Fp>],) -> Result<Vec<ValTensor<Fp>>, CircuitError> {
+        let flat = values.get(FIRST_WEIGHT_INPUT).ok_or_else(|| CircuitError::DimMismatch("missing flat GAT parameter input".into()))?;
         if values.len() != FIRST_WEIGHT_INPUT + 1 {
-            return Err(CircuitError::DimMismatch(
-                "canonical GAT requires one flat runtime parameter input".into(),
-            ));
+            return Err(CircuitError::DimMismatch("canonical GAT requires one flat runtime parameter input".into(),));
         }
         let expected_len = self.spec.model.flattened_params().len();
         if flat.len() != expected_len {
-            return Err(CircuitError::DimMismatch(format!(
-                "flat GAT parameter length {} does not match canonical closure {}",
-                flat.len(),
-                expected_len
-            )));
+            return Err(CircuitError::DimMismatch(format!("flat GAT parameter length {} does not match canonical closure {}", flat.len(), expected_len)));
         }
         let mut at = 0usize;
         let mut out = Vec::new();
         for (layer_idx, layer) in self.spec.model.hidden_layers.iter().enumerate() {
             for (head_idx, _head) in layer.heads.iter().enumerate() {
                 for (dims, scale) in [
-                    (
-                        vec![layer.d_in, layer.d_head],
-                        self.spec.scales.s_w_hidden[layer_idx][head_idx],
-                    ),
-                    (
-                        vec![layer.d_head],
-                        self.spec.scales.s_a_src_hidden[layer_idx][head_idx],
-                    ),
-                    (
-                        vec![layer.d_head],
-                        self.spec.scales.s_a_dst_hidden[layer_idx][head_idx],
-                    ),
+                    (vec![layer.d_in, layer.d_head], self.spec.scales.s_w_hidden[layer_idx][head_idx],),(vec![layer.d_head], self.spec.scales.s_a_src_hidden[layer_idx][head_idx],),(vec![layer.d_head], self.spec.scales.s_a_dst_hidden[layer_idx][head_idx],),
                 ] {
                     let len = dims.iter().product::<usize>();
                     let tensor = Self::flatten_slice(flat, at, at + len, &dims)?;
@@ -294,24 +209,12 @@ impl GatOp {
             for (dims, scale) in [
                 (
                     vec![
-                        self.spec.model.hidden_layers.last().unwrap().heads.len()
-                            * self.spec.model.hidden_layers.last().unwrap().d_head,
+                        self.spec.model.hidden_layers.last().unwrap().heads.len() * self.spec.model.hidden_layers.last().unwrap().d_head,
                         self.spec.model.classes,
                     ],
                     self.spec.scales.s_w_output[head_idx],
                 ),
-                (
-                    vec![self.spec.model.classes],
-                    self.spec.scales.s_a_src_output[head_idx],
-                ),
-                (
-                    vec![self.spec.model.classes],
-                    self.spec.scales.s_a_dst_output[head_idx],
-                ),
-                (
-                    vec![self.spec.model.classes],
-                    self.spec.scales.s_b_output[head_idx],
-                ),
+                (vec![self.spec.model.classes], self.spec.scales.s_a_src_output[head_idx],),(vec![self.spec.model.classes], self.spec.scales.s_a_dst_output[head_idx],),(vec![self.spec.model.classes], self.spec.scales.s_b_output[head_idx],),
             ] {
                 let len = dims.iter().product::<usize>();
                 let tensor = Self::flatten_slice(flat, at, at + len, &dims)?;
@@ -322,9 +225,7 @@ impl GatOp {
             }
         }
         if at != flat.len() {
-            return Err(CircuitError::DimMismatch(
-                "GAT flat parameter closure was not consumed exactly".into(),
-            ));
+            return Err(CircuitError::DimMismatch("GAT flat parameter closure was not consumed exactly".into(),));
         }
         Ok(out)
     }
@@ -334,12 +235,7 @@ impl GatOp {
         Ok(Tensor::new(Some(&vec![value; len]), &[len])?.into())
     }
 
-    fn flatten_slice(
-        value: &ValTensor<Fp>,
-        start: usize,
-        end: usize,
-        dims: &[usize],
-    ) -> Result<ValTensor<Fp>, CircuitError> {
+    fn flatten_slice(value: &ValTensor<Fp>, start: usize, end: usize, dims: &[usize],) -> Result<ValTensor<Fp>, CircuitError> {
         let mut flat = value.clone();
         flat.flatten();
         let mut slice = flat.get_slice(&[start..end])?;
@@ -347,10 +243,7 @@ impl GatOp {
         Ok(slice)
     }
 
-    fn append_tensors(
-        tensors: &[ValTensor<Fp>],
-        dims: &[usize],
-    ) -> Result<ValTensor<Fp>, CircuitError> {
+    fn append_tensors(tensors: &[ValTensor<Fp>], dims: &[usize],) -> Result<ValTensor<Fp>, CircuitError> {
         let mut vals = Vec::new();
         for tensor in tensors {
             vals.extend(tensor.get_inner_tensor()?.iter().cloned());
@@ -361,21 +254,12 @@ impl GatOp {
     /// Interleave hidden-head outputs into the canonical `[node, head*width]`
     /// layout.  A plain concatenation would produce head-major storage and
     /// silently change the next layer's projection relation.
-    fn interleave_heads(
-        tensors: &[ValTensor<Fp>],
-        nodes: usize,
-        channels: usize,
-    ) -> Result<ValTensor<Fp>, CircuitError> {
+    fn interleave_heads(tensors: &[ValTensor<Fp>], nodes: usize, channels: usize,) -> Result<ValTensor<Fp>, CircuitError> {
         if tensors.is_empty() {
             return Err(CircuitError::UnsupportedOp);
         }
-        if tensors
-            .iter()
-            .any(|tensor| tensor.len() != nodes * channels)
-        {
-            return Err(CircuitError::DimMismatch(
-                "hidden head output shape does not match graph".into(),
-            ));
+        if tensors.iter().any(|tensor| tensor.len() != nodes * channels) {
+            return Err(CircuitError::DimMismatch("hidden head output shape does not match graph".into(),));
         }
         let mut vals = Vec::with_capacity(nodes * tensors.len() * channels);
         for node in 0..nodes {
@@ -388,15 +272,9 @@ impl GatOp {
         Ok(Tensor::new(Some(&vals), &[nodes, tensors.len() * channels])?.into())
     }
 
-    fn tile_rows(
-        value: &ValTensor<Fp>,
-        rows: usize,
-        cols: usize,
-    ) -> Result<ValTensor<Fp>, CircuitError> {
+    fn tile_rows(value: &ValTensor<Fp>, rows: usize, cols: usize,) -> Result<ValTensor<Fp>, CircuitError> {
         if value.len() != rows {
-            return Err(CircuitError::DimMismatch(
-                "cannot tile tensor with incompatible rows".into(),
-            ));
+            return Err(CircuitError::DimMismatch("cannot tile tensor with incompatible rows".into(),));
         }
         let mut vals = Vec::with_capacity(rows * cols);
         for item in value.get_inner_tensor()?.iter() {
@@ -405,12 +283,7 @@ impl GatOp {
         Ok(Tensor::new(Some(&vals), &[rows, cols])?.into())
     }
 
-    fn inverse_exact(
-        &self,
-        config: &BaseConfig<Fp>,
-        region: &mut RegionCtx<Fp>,
-        denominator: &ValTensor<Fp>,
-    ) -> Result<ValTensor<Fp>, CircuitError> {
+    fn inverse_exact(&self, config: &BaseConfig<Fp>, region: &mut RegionCtx<Fp>, denominator: &ValTensor<Fp>,) -> Result<ValTensor<Fp>, CircuitError> {
         let inv = if denominator.any_unknowns()? {
             Self::unknown_tensor(denominator.dims())?
         } else {
@@ -418,10 +291,7 @@ impl GatOp {
             if d == 0 {
                 return Err(CircuitError::UnsupportedOp);
             }
-            let value = ValType::Value(Value::known(
-                Option::from(integer_rep_to_felt::<Fp>(d).invert())
-                    .ok_or(CircuitError::UnsupportedOp)?,
-            ));
+            let value = ValType::Value(Value::known(Option::from(integer_rep_to_felt::<Fp>(d).invert()).ok_or(CircuitError::UnsupportedOp)?,));
             Tensor::new(Some(&[value]), denominator.dims())?.into()
         };
         let product = layouts::pairwise(config, region, &[denominator, &inv], BaseOp::Mult)?;
@@ -451,55 +321,51 @@ impl GatOp {
         bounds: Option<&BoundFamily>,
     ) -> Result<ValTensor<Fp>, CircuitError> {
         if divisor.len() != 1 {
-            return Err(CircuitError::DimMismatch(
-                "GAT divisor must be scalar".into(),
-            ));
+            return Err(CircuitError::DimMismatch("GAT divisor must be scalar".into(),));
         }
-        let (q, q_floor, rem, abs, sigma, zero, rounded_up) =
-            if dividend.any_unknowns()? || divisor.any_unknowns()? {
-                let dims = dividend.dims();
-                (
-                    Self::unknown_tensor(dims)?,
-                    Self::unknown_tensor(dims)?,
-                    Self::unknown_tensor(dims)?,
-                    Self::unknown_tensor(dims)?,
-                    Self::unknown_tensor(dims)?,
-                    Self::unknown_tensor(dims)?,
-                    Self::unknown_tensor(dims)?,
-                )
-            } else {
-                let d = divisor.int_evals()?[0];
-                if d <= 0 {
-                    return Err(CircuitError::UnsupportedOp);
-                }
-                let mut qv = Vec::new();
-                let mut q_floor_v = Vec::new();
-                let mut rv = Vec::new();
-                let mut av = Vec::new();
-                let mut sv = Vec::new();
-                let mut zv = Vec::new();
-                let mut rounded_up_v = Vec::new();
-                for x in dividend.int_evals()?.iter().copied() {
-                    let signed = super::relation::evaluate_signed_division(x, d, rounding)
-                        .map_err(|_| CircuitError::UnsupportedOp)?;
-                    qv.push(signed.quotient);
-                    q_floor_v.push(signed.quotient_floor);
-                    rv.push(signed.remainder);
-                    av.push(signed.abs_dividend);
-                    sv.push(if signed.sigma { 1 } else { 0 });
-                    zv.push(if signed.zero { 1 } else { 0 });
-                    rounded_up_v.push(if signed.rounded_up { 1 } else { 0 });
-                }
-                (
-                    Self::value_i128(&qv, dividend.dims())?,
-                    Self::value_i128(&q_floor_v, dividend.dims())?,
-                    Self::value_i128(&rv, dividend.dims())?,
-                    Self::value_i128(&av, dividend.dims())?,
-                    Self::value_i128(&sv, dividend.dims())?,
-                    Self::value_i128(&zv, dividend.dims())?,
-                    Self::value_i128(&rounded_up_v, dividend.dims())?,
-                )
-            };
+        let (q, q_floor, rem, abs, sigma, zero, rounded_up) = if dividend.any_unknowns()? || divisor.any_unknowns()? {
+            let dims = dividend.dims();
+            (
+                Self::unknown_tensor(dims)?,
+                Self::unknown_tensor(dims)?,
+                Self::unknown_tensor(dims)?,
+                Self::unknown_tensor(dims)?,
+                Self::unknown_tensor(dims)?,
+                Self::unknown_tensor(dims)?,
+                Self::unknown_tensor(dims)?,
+            )
+        } else {
+            let d = divisor.int_evals()?[0];
+            if d <= 0 {
+                return Err(CircuitError::UnsupportedOp);
+            }
+            let mut qv = Vec::new();
+            let mut q_floor_v = Vec::new();
+            let mut rv = Vec::new();
+            let mut av = Vec::new();
+            let mut sv = Vec::new();
+            let mut zv = Vec::new();
+            let mut rounded_up_v = Vec::new();
+            for x in dividend.int_evals()?.iter().copied() {
+                let signed = super::relation::evaluate_signed_division(x, d, rounding).map_err(|_| CircuitError::UnsupportedOp)?;
+                qv.push(signed.quotient);
+                q_floor_v.push(signed.quotient_floor);
+                rv.push(signed.remainder);
+                av.push(signed.abs_dividend);
+                sv.push(if signed.sigma { 1 } else { 0 });
+                zv.push(if signed.zero { 1 } else { 0 });
+                rounded_up_v.push(if signed.rounded_up { 1 } else { 0 });
+            }
+            (
+                Self::value_i128(&qv, dividend.dims())?,
+                Self::value_i128(&q_floor_v, dividend.dims())?,
+                Self::value_i128(&rv, dividend.dims())?,
+                Self::value_i128(&av, dividend.dims())?,
+                Self::value_i128(&sv, dividend.dims())?,
+                Self::value_i128(&zv, dividend.dims())?,
+                Self::value_i128(&rounded_up_v, dividend.dims())?,
+            )
+        };
         layouts::boolean_identity(config, region, &[&sigma], true)?;
         layouts::boolean_identity(config, region, &[&zero], true)?;
         layouts::boolean_identity(config, region, &[&rounded_up], true)?;
@@ -513,22 +379,11 @@ impl GatOp {
         let signed_q = layouts::pairwise(config, region, &[&sign_factor, &q_abs], BaseOp::Mult)?;
         layouts::enforce_equality(config, region, &[&q, &signed_q])?;
         let d_repeated = Self::repeated_scalar(divisor, dividend.len())?;
-        let max_divisor = bounds
-            .map(|family| family.max_divisor)
-            .unwrap_or(self.spec.ledger.max_divisor);
-        let max_aux_abs = bounds
-            .map(|family| family.max_aux_abs)
-            .unwrap_or(self.spec.ledger.max_aux_abs);
-        let max_dividend_abs = bounds
-            .map(|family| family.max_dividend_abs)
-            .unwrap_or(self.spec.ledger.max_dividend_abs);
+        let max_divisor = bounds.map(|family| family.max_divisor).unwrap_or(self.spec.ledger.max_divisor);
+        let max_aux_abs = bounds.map(|family| family.max_aux_abs).unwrap_or(self.spec.ledger.max_aux_abs);
+        let max_dividend_abs = bounds.map(|family| family.max_dividend_abs).unwrap_or(self.spec.ledger.max_dividend_abs);
         layouts::range_check(config, region, &[&q_abs], &(0, max_dividend_abs))?;
-        layouts::range_check(
-            config,
-            region,
-            &[&q],
-            &(-max_dividend_abs, max_dividend_abs),
-        )?;
+        layouts::range_check(config, region, &[&q], &(-max_dividend_abs, max_dividend_abs),)?;
         layouts::range_check(config, region, &[&sign_factor], &(-1, 1))?;
         layouts::range_check(config, region, &[divisor], &(1, max_divisor))?;
         let d_inv_scalar = self.inverse_exact(config, region, divisor)?;
@@ -546,12 +401,7 @@ impl GatOp {
                     if x == 0 {
                         Ok(ValType::Value(Value::known(Fp::ZERO)))
                     } else {
-                        Ok(ValType::Value(Value::known(
-                            Option::from(integer_rep_to_felt::<Fp>(x).invert())
-                                .ok_or(CircuitError::UnsupportedOp)?,
-                        )))
-                    }
-                })
+                        Ok(ValType::Value(Value::known(Option::from(integer_rep_to_felt::<Fp>(x).invert()).ok_or(CircuitError::UnsupportedOp)?,))) } })
                 .collect::<Result<Vec<_>, _>>()?;
             Tensor::new(Some(&vals), abs.dims())?.into()
         };
@@ -579,10 +429,7 @@ impl GatOp {
                 .iter()
                 .map(|r| match rounding {
                     RoundingMode::TowardZero => d.checked_sub(1).and_then(|v| v.checked_sub(*r)),
-                    RoundingMode::NearestTiesAway => d
-                        .checked_mul(2)
-                        .and_then(|v| v.checked_sub(1))
-                        .and_then(|v| v.checked_sub(*r)),
+                    RoundingMode::NearestTiesAway => d.checked_mul(2).and_then(|v| v.checked_sub(1)).and_then(|v| v.checked_sub(*r)),
                 })
                 .collect::<Option<Vec<_>>>()
                 .ok_or(CircuitError::UnsupportedOp)?;
@@ -591,61 +438,34 @@ impl GatOp {
 
         match rounding {
             RoundingMode::TowardZero => {
-                // Canonical truncation identity:
-                //   abs = d*q_floor + rem,  rem + delta = d - 1.
-                let dq_floor =
-                    layouts::pairwise(config, region, &[&d_repeated, &q_floor], BaseOp::Mult)?;
-                let abs_reconstructed =
-                    layouts::pairwise(config, region, &[&dq_floor, &rem], BaseOp::Add)?;
+                let dq_floor = layouts::pairwise(config, region, &[&d_repeated, &q_floor], BaseOp::Mult)?;
+                let abs_reconstructed = layouts::pairwise(config, region, &[&dq_floor, &rem], BaseOp::Add)?;
                 layouts::enforce_equality(config, region, &[&abs, &abs_reconstructed])?;
                 let r_delta = layouts::pairwise(config, region, &[&rem, &delta_vals], BaseOp::Add)?;
                 layouts::enforce_equality(config, region, &[&r_delta, &d_minus_one])?;
             }
             RoundingMode::NearestTiesAway => {
-                // Canonical nearest/ties-away identity:
-                //   2*abs + d = 2*d*q_abs + rem,
-                //   rem + delta = 2*d - 1.
                 let two_abs = layouts::pairwise(config, region, &[&two, &abs], BaseOp::Mult)?;
                 let lhs = layouts::pairwise(config, region, &[&two_abs, &d_repeated], BaseOp::Add)?;
-                let dq_abs =
-                    layouts::pairwise(config, region, &[&d_repeated, &q_abs], BaseOp::Mult)?;
+                let dq_abs = layouts::pairwise(config, region, &[&d_repeated, &q_abs], BaseOp::Mult)?;
                 let two_dq_abs = layouts::pairwise(config, region, &[&two, &dq_abs], BaseOp::Mult)?;
                 let rhs = layouts::pairwise(config, region, &[&two_dq_abs, &rem], BaseOp::Add)?;
                 layouts::enforce_equality(config, region, &[&lhs, &rhs])?;
 
                 let two_d = layouts::pairwise(config, region, &[&two, &d_repeated], BaseOp::Mult)?;
-                let two_d_minus_one =
-                    layouts::pairwise(config, region, &[&two_d, &one], BaseOp::Sub)?;
+                let two_d_minus_one = layouts::pairwise(config, region, &[&two_d, &one], BaseOp::Sub)?;
                 let r_delta = layouts::pairwise(config, region, &[&rem, &delta_vals], BaseOp::Add)?;
                 layouts::enforce_equality(config, region, &[&r_delta, &two_d_minus_one])?;
 
-                // Rounding is selected from the *floor* remainder, not from
-                // the canonical nearest residual above.
-                let dq_floor =
-                    layouts::pairwise(config, region, &[&d_repeated, &q_floor], BaseOp::Mult)?;
+                let dq_floor = layouts::pairwise(config, region, &[&d_repeated, &q_floor], BaseOp::Mult)?;
                 let floor_rem = layouts::pairwise(config, region, &[&abs, &dq_floor], BaseOp::Sub)?;
-                let two_floor_rem =
-                    layouts::pairwise(config, region, &[&two, &floor_rem], BaseOp::Mult)?;
-                let low = layouts::pairwise(
-                    config,
-                    region,
-                    &[&d_minus_one, &two_floor_rem],
-                    BaseOp::Sub,
-                )?;
-                let high =
-                    layouts::pairwise(config, region, &[&two_floor_rem, &d_repeated], BaseOp::Sub)?;
-                let one_minus_round =
-                    layouts::pairwise(config, region, &[&one, &rounded_up], BaseOp::Sub)?;
-                let low_selected =
-                    layouts::pairwise(config, region, &[&one_minus_round, &low], BaseOp::Mult)?;
-                let high_selected =
-                    layouts::pairwise(config, region, &[&rounded_up, &high], BaseOp::Mult)?;
-                let selected = layouts::pairwise(
-                    config,
-                    region,
-                    &[&low_selected, &high_selected],
-                    BaseOp::Add,
-                )?;
+                let two_floor_rem = layouts::pairwise(config, region, &[&two, &floor_rem], BaseOp::Mult)?;
+                let low = layouts::pairwise(config, region, &[&d_minus_one, &two_floor_rem], BaseOp::Sub,)?;
+                let high = layouts::pairwise(config, region, &[&two_floor_rem, &d_repeated], BaseOp::Sub)?;
+                let one_minus_round = layouts::pairwise(config, region, &[&one, &rounded_up], BaseOp::Sub)?;
+                let low_selected = layouts::pairwise(config, region, &[&one_minus_round, &low], BaseOp::Mult)?;
+                let high_selected = layouts::pairwise(config, region, &[&rounded_up, &high], BaseOp::Mult)?;
+                let selected = layouts::pairwise(config, region, &[&low_selected, &high_selected], BaseOp::Add,)?;
                 layouts::range_check(config, region, &[&floor_rem], &(0, max_aux_abs))?;
                 layouts::range_check(config, region, &[&selected], &(0, max_aux_abs))?;
             }
@@ -683,31 +503,20 @@ impl GatOp {
         let claimed = if values.any_unknowns()? {
             Self::unknown_tensor(&[1])?
         } else {
-            let max = values
-                .int_evals()?
-                .into_iter()
-                .max()
-                .ok_or(CircuitError::UnsupportedOp)?;
+            let max = values.int_evals()?.into_iter().max().ok_or(CircuitError::UnsupportedOp)?;
             Self::value_i128(&[max], &[1])?
         };
-        layouts::range_check(
-            config,
-            region,
-            &[&claimed],
-            &(-bounds.max_table_output_abs, bounds.max_table_output_abs),
-        )?;
+        layouts::range_check(config, region, &[&claimed], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
         let claimed_repeated = Self::repeated_scalar(&claimed, values.len())?;
         let one = Self::constant_i128(&vec![1; values.len()], values.dims())?;
-        let max_minus_one =
-            layouts::pairwise(config, region, &[&claimed_repeated, &one], BaseOp::Sub)?;
+        let max_minus_one = layouts::pairwise(config, region, &[&claimed_repeated, &one], BaseOp::Sub)?;
         let w = layouts::pairwise(config, region, &[values, &max_minus_one], BaseOp::Sub)?;
         let y = self.exact_lookup(config, region, &w, &self.spec.tables.max_relu)?;
         let y = layouts::boolean_identity(config, region, &[&y], true)?;
         let y_sum = layouts::sum(config, region, &[&y])?;
         let one_scalar = Self::constant_i128(&[1], &[1])?;
         let deficit = layouts::pairwise(config, region, &[&one_scalar, &y_sum], BaseOp::Sub)?;
-        let zero_or_one =
-            self.exact_lookup(config, region, &deficit, &self.spec.tables.max_relu)?;
+        let zero_or_one = self.exact_lookup(config, region, &deficit, &self.spec.tables.max_relu)?;
         let zero = Self::constant_i128(&[0], &[1])?;
         layouts::enforce_equality(config, region, &[&zero_or_one, &zero])?;
         Ok(claimed)
@@ -733,53 +542,29 @@ impl GatOp {
     ) -> Result<ValTensor<Fp>, CircuitError> {
         let graph = &self.spec.graph;
         Self::require_scale(projected, projected_scale, "projected tensor")?;
-        Self::require_scale(
-            attention_src,
-            attention_src_scale,
-            "source attention vector",
-        )?;
-        Self::require_scale(
-            attention_dst,
-            attention_dst_scale,
-            "destination attention vector",
-        )?;
+        Self::require_scale(attention_src, attention_src_scale, "source attention vector",)?;
+        Self::require_scale(attention_dst, attention_dst_scale, "destination attention vector",)?;
         let mut src_values = layouts::gather(config, region, &[projected, source], 0)?;
         let mut dst_values = layouts::gather(config, region, &[projected, dst], 0)?;
         src_values.set_scale(projected_scale);
         dst_values.set_scale(projected_scale);
-        let mut src_score =
-            layouts::einsum(config, region, &[&src_values, attention_src], "ij,j->i")?;
-        let mut dst_score =
-            layouts::einsum(config, region, &[&dst_values, attention_dst], "ij,j->i")?;
+        let mut src_score = layouts::einsum(config, region, &[&src_values, attention_src], "ij,j->i")?;
+        let mut dst_score = layouts::einsum(config, region, &[&dst_values, attention_dst], "ij,j->i")?;
         src_score.set_scale(self.spec.scales.s_delta);
         dst_score.set_scale(self.spec.scales.s_delta);
         let mut score = layouts::pairwise(config, region, &[&src_score, &dst_score], BaseOp::Add)?;
         score.set_scale(self.spec.scales.s_delta);
-        layouts::range_check(
-            config,
-            region,
-            &[&score],
-            &(-bounds.max_score_abs, bounds.max_score_abs),
-        )?;
+        layouts::range_check(config, region, &[&score], &(-bounds.max_score_abs, bounds.max_score_abs),)?;
         let mut score = self.exact_lookup(config, region, &score, &self.spec.tables.lrelu)?;
         score.set_scale(self.spec.scales.s_delta);
-        layouts::range_check(
-            config,
-            region,
-            &[&score],
-            &(-bounds.max_table_output_abs, bounds.max_table_output_abs),
-        )?;
+        layouts::range_check(config, region, &[&score], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
         let mut node_values = vec![None; graph.n * channels];
-        for (node, start, end) in graph
-            .destination_groups()
-            .map_err(|_| CircuitError::UnsupportedOp)?
-        {
+        for (node, start, end) in graph.destination_groups().map_err(|_| CircuitError::UnsupportedOp)? {
             let group_score = Self::flatten_slice(&score, start, end, &[end - start])?;
             let max = self.exact_group_max(config, region, &group_score, bounds)?;
             let max_repeated = Self::repeated_scalar(&max, end - start)?;
             let score_group = Self::flatten_slice(&score, start, end, &[end - start])?;
-            let mut delta =
-                layouts::pairwise(config, region, &[&max_repeated, &score_group], BaseOp::Sub)?;
+            let mut delta = layouts::pairwise(config, region, &[&max_repeated, &score_group], BaseOp::Sub)?;
             delta.set_scale(self.spec.scales.s_delta);
             layouts::range_check(config, region, &[&delta], &(0, bounds.max_delta))?;
             let mut exp = self.exact_lookup(config, region, &delta, &self.spec.tables.exp)?;
@@ -789,25 +574,12 @@ impl GatOp {
             denominator.set_scale(self.spec.scales.s_exp);
             layouts::range_check(config, region, &[&denominator], &(1, bounds.max_sum))?;
             let inverse = self.inverse_exact(config, region, &denominator)?;
-            let alpha = layouts::pairwise(
-                config,
-                region,
-                &[&exp, &Self::repeated_scalar(&inverse, end - start)?],
-                BaseOp::Mult,
-            )?;
-            let src_group = Self::flatten_slice(
-                &src_values,
-                start * channels,
-                end * channels,
-                &[end - start, channels],
-            )?;
+            let alpha = layouts::pairwise(config, region, &[&exp, &Self::repeated_scalar(&inverse, end - start)?], BaseOp::Mult,)?;
+            let src_group = Self::flatten_slice(&src_values, start * channels, end * channels, &[end - start, channels],)?;
             let exp_group = Self::tile_rows(&exp, end - start, channels)?;
             let alpha_group = Self::tile_rows(&alpha, end - start, channels)?;
             let mut channel_outputs = Vec::new();
             for channel in 0..channels {
-                // Keep the channel slice as an explicit tensor; the second
-                // dimension is selected by copying its ValTypes so no host
-                // result can bypass the aggregation constraints.
                 let mut vals = Vec::new();
                 let mut alpha_vals = Vec::new();
                 let mut exp_vals = Vec::new();
@@ -817,66 +589,27 @@ impl GatOp {
                     exp_vals.push(exp_group.get_inner_tensor()?.get(&[row, channel]).clone());
                 }
                 let values = Tensor::new(Some(&vals), &[end - start])?.into();
-                let alpha_values: ValTensor<Fp> =
-                    Tensor::new(Some(&alpha_vals), &[end - start])?.into();
-                let exp_values: ValTensor<Fp> =
-                    Tensor::new(Some(&exp_vals), &[end - start])?.into();
-                let field_product =
-                    layouts::pairwise(config, region, &[&alpha_values, &values], BaseOp::Mult)?;
+                let alpha_values: ValTensor<Fp> = Tensor::new(Some(&alpha_vals), &[end - start])?.into();
+                let exp_values: ValTensor<Fp> = Tensor::new(Some(&exp_vals), &[end - start])?.into();
+                let field_product = layouts::pairwise(config, region, &[&alpha_values, &values], BaseOp::Mult)?;
                 let field_sum = layouts::sum(config, region, &[&field_product])?;
-                let numerator_product =
-                    layouts::pairwise(config, region, &[&exp_values, &values], BaseOp::Mult)?;
+                let numerator_product = layouts::pairwise(config, region, &[&exp_values, &values], BaseOp::Mult)?;
                 let mut numerator = layouts::sum(config, region, &[&numerator_product])?;
-                numerator.set_scale(
-                    self.spec
-                        .scales
-                        .s_exp
-                        .checked_add(projected_scale)
-                        .ok_or(CircuitError::UnsupportedOp)?,
-                );
-                let field_from_numerator =
-                    layouts::pairwise(config, region, &[&numerator, &inverse], BaseOp::Mult)?;
+                numerator.set_scale(self.spec.scales.s_exp.checked_add(projected_scale).ok_or(CircuitError::UnsupportedOp)?,);
+                let field_from_numerator = layouts::pairwise(config, region, &[&numerator, &inverse], BaseOp::Mult)?;
                 layouts::enforce_equality(config, region, &[&field_sum, &field_from_numerator])?;
-                layouts::range_check(
-                    config,
-                    region,
-                    &[&numerator],
-                    &(-bounds.max_aggregation_num, bounds.max_aggregation_num),
-                )?;
+                layouts::range_check(config, region, &[&numerator], &(-bounds.max_aggregation_num, bounds.max_aggregation_num),)?;
                 let recovery_multiplier = scale_exponent_to_multiplier(recovery_scale)
                     .map_err(|_| CircuitError::UnsupportedOp)
-                    .and_then(|value| {
-                        i128::try_from(value).map_err(|_| CircuitError::UnsupportedOp)
-                    })?;
+                    .and_then(|value| { i128::try_from(value).map_err(|_| CircuitError::UnsupportedOp) })?;
                 let denominator_multiplier = scale_exponent_to_multiplier(projected_scale)
                     .map_err(|_| CircuitError::UnsupportedOp)
-                    .and_then(|value| {
-                        i128::try_from(value).map_err(|_| CircuitError::UnsupportedOp)
-                    })?;
-                let numerator_scale = Self::constant_i128(
-                    &vec![recovery_multiplier; numerator.len()],
-                    numerator.dims(),
-                )?;
-                let scaled_numerator = layouts::pairwise(
-                    config,
-                    region,
-                    &[&numerator, &numerator_scale],
-                    BaseOp::Mult,
-                )?;
+                    .and_then(|value| { i128::try_from(value).map_err(|_| CircuitError::UnsupportedOp) })?;
+                let numerator_scale = Self::constant_i128(&vec![recovery_multiplier; numerator.len()], numerator.dims(),)?;
+                let scaled_numerator = layouts::pairwise(config, region, &[&numerator, &numerator_scale], BaseOp::Mult,)?;
                 let denominator_scale = Self::constant_i128(&[denominator_multiplier], &[1])?;
-                let scaled_denominator = layouts::pairwise(
-                    config,
-                    region,
-                    &[&denominator, &denominator_scale],
-                    BaseOp::Mult,
-                )?;
-                let q = self.signed_round_div_layout(
-                    config,
-                    region,
-                    &scaled_numerator,
-                    &scaled_denominator,
-                    Some(bounds),
-                )?;
+                let scaled_denominator = layouts::pairwise(config, region, &[&denominator, &denominator_scale], BaseOp::Mult,)?;
+                let q = self.signed_round_div_layout(config, region, &scaled_numerator, &scaled_denominator, Some(bounds),)?;
                 let q = if use_elu {
                     let mut q = q;
                     q.set_scale(recovery_scale);
@@ -907,38 +640,22 @@ impl Op<Fp> for GatOp {
         format!("CanonicalGAT({})", self.spec.model.model_arch_id)
     }
 
-    fn layout(
-        &self,
-        config: &mut BaseConfig<Fp>,
-        region: &mut RegionCtx<Fp>,
-        values: &[&ValTensor<Fp>],
-    ) -> Result<Option<ValTensor<Fp>>, CircuitError> {
+    fn layout(&self, config: &mut BaseConfig<Fp>, region: &mut RegionCtx<Fp>, values: &[&ValTensor<Fp>],) -> Result<Option<ValTensor<Fp>>, CircuitError> {
         if values.len() < FIRST_WEIGHT_INPUT {
-            return Err(CircuitError::DimMismatch(
-                "GAT requires six public inputs".into(),
-            ));
+            return Err(CircuitError::DimMismatch("GAT requires six public inputs".into(),));
         }
-        self.spec
-            .validate_for_compile()
-            .map_err(|e| CircuitError::DimMismatch(format!("invalid canonical GAT: {}", e)))?;
-        Self::require_scale(
-            values[FEATURE_INPUT],
-            self.spec.scales.s_input,
-            "feature input",
-        )?;
+        self.spec.validate_for_compile().map_err(|e| CircuitError::DimMismatch(format!("invalid canonical GAT: {}", e)))?;
+        Self::require_scale(values[FEATURE_INPUT], self.spec.scales.s_input, "feature input",)?;
         let mut features = layouts::identity(config, region, &[values[FEATURE_INPUT]])?;
         features.set_scale(self.spec.scales.s_input);
-        let mut node_ids =
-            self.bind_topology(config, region, values[NODE_ID_INPUT], NODE_ID_INPUT)?;
+        let mut node_ids = self.bind_topology(config, region, values[NODE_ID_INPUT], NODE_ID_INPUT)?;
         let mut src = self.bind_topology(config, region, values[SRC_INPUT], SRC_INPUT)?;
         let mut dst = self.bind_topology(config, region, values[DST_INPUT], DST_INPUT)?;
         node_ids.set_scale(0);
         src.set_scale(0);
         dst.set_scale(0);
-        let _node_ptr =
-            self.bind_topology(config, region, values[NODE_PTR_INPUT], NODE_PTR_INPUT)?;
-        let _edge_ptr =
-            self.bind_topology(config, region, values[EDGE_PTR_INPUT], EDGE_PTR_INPUT)?;
+        let _node_ptr = self.bind_topology(config, region, values[NODE_PTR_INPUT], NODE_PTR_INPUT)?;
+        let _edge_ptr = self.bind_topology(config, region, values[EDGE_PTR_INPUT], EDGE_PTR_INPUT)?;
         let weights = self.weight_tensors(values)?;
         let mut weight_idx = 0;
         let mut current = layouts::gather(config, region, &[&features, &node_ids], 0)?;
@@ -952,26 +669,13 @@ impl Op<Fp> for GatOp {
                 let attention_src = layouts::identity(config, region, &[&weights[weight_idx + 1]])?;
                 let attention_dst = layouts::identity(config, region, &[&weights[weight_idx + 2]])?;
                 weight_idx += 3;
-                Self::require_scale(
-                    &projection,
-                    self.spec.scales.s_w_hidden[layer_idx][head_idx],
-                    "hidden projection weight",
-                )?;
-                Self::require_scale(
-                    &attention_src,
-                    self.spec.scales.s_a_src_hidden[layer_idx][head_idx],
-                    "hidden source attention weight",
-                )?;
-                Self::require_scale(
-                    &attention_dst,
-                    self.spec.scales.s_a_dst_hidden[layer_idx][head_idx],
-                    "hidden destination attention weight",
-                )?;
+                Self::require_scale(&projection, self.spec.scales.s_w_hidden[layer_idx][head_idx], "hidden projection weight",)?;
+                Self::require_scale(&attention_src, self.spec.scales.s_a_src_hidden[layer_idx][head_idx], "hidden source attention weight",)?;
+                Self::require_scale(&attention_dst, self.spec.scales.s_a_dst_hidden[layer_idx][head_idx], "hidden destination attention weight",)?;
                 if projection.dims() != [current_dim, layer.d_head] {
                     return Err(CircuitError::DimMismatch("GAT projection shape".into()));
                 }
-                let mut projected =
-                    layouts::einsum(config, region, &[&current, &projection], "ij,jk->ik")?;
+                let mut projected = layouts::einsum(config, region, &[&current, &projection], "ij,jk->ik")?;
                 projected.set_scale(self.spec.scales.s_h_prime[layer_idx][head_idx]);
                 let aggregated = self.aggregate_head(
                     config,
@@ -1004,24 +708,11 @@ impl Op<Fp> for GatOp {
             let attention_dst = layouts::identity(config, region, &[&weights[weight_idx + 2]])?;
             let bias = layouts::identity(config, region, &[&weights[weight_idx + 3]])?;
             weight_idx += 4;
-            Self::require_scale(
-                &projection,
-                self.spec.scales.s_w_output[head_idx],
-                "output projection weight",
-            )?;
-            Self::require_scale(
-                &attention_src,
-                self.spec.scales.s_a_src_output[head_idx],
-                "output source attention weight",
-            )?;
-            Self::require_scale(
-                &attention_dst,
-                self.spec.scales.s_a_dst_output[head_idx],
-                "output destination attention weight",
-            )?;
+            Self::require_scale(&projection, self.spec.scales.s_w_output[head_idx], "output projection weight",)?;
+            Self::require_scale(&attention_src, self.spec.scales.s_a_src_output[head_idx], "output source attention weight",)?;
+            Self::require_scale(&attention_dst, self.spec.scales.s_a_dst_output[head_idx], "output destination attention weight",)?;
             Self::require_scale(&bias, self.spec.scales.s_b_output[head_idx], "output bias")?;
-            let mut projected =
-                layouts::einsum(config, region, &[&current, &projection], "ij,jk->ik")?;
+            let mut projected = layouts::einsum(config, region, &[&current, &projection], "ij,jk->ik")?;
             projected.set_scale(self.spec.scales.s_y_prime[head_idx]);
             let aggregated = self.aggregate_head(
                 config,
@@ -1040,63 +731,30 @@ impl Op<Fp> for GatOp {
                 self.spec.scales.s_a_src_output[head_idx],
                 self.spec.scales.s_a_dst_output[head_idx],
             )?;
-            let out_head_multiplier = scale_exponent_to_multiplier(self.spec.scales.s_out_head)
-                .map_err(|_| CircuitError::UnsupportedOp)?;
-            let out_head_multiplier =
-                i128::try_from(out_head_multiplier).map_err(|_| CircuitError::UnsupportedOp)?;
-            let out_pre_multiplier = scale_exponent_to_multiplier(self.spec.scales.s_out_pre)
-                .map_err(|_| CircuitError::UnsupportedOp)?;
-            let out_pre_multiplier =
-                i128::try_from(out_pre_multiplier).map_err(|_| CircuitError::UnsupportedOp)?;
-            let scale_const = Self::constant_i128(
-                &vec![out_head_multiplier; aggregated.len()],
-                aggregated.dims(),
-            )?;
-            let aligned_dividend =
-                layouts::pairwise(config, region, &[&aggregated, &scale_const], BaseOp::Mult)?;
+            let out_head_multiplier = scale_exponent_to_multiplier(self.spec.scales.s_out_head).map_err(|_| CircuitError::UnsupportedOp)?;
+            let out_head_multiplier = i128::try_from(out_head_multiplier).map_err(|_| CircuitError::UnsupportedOp)?;
+            let out_pre_multiplier = scale_exponent_to_multiplier(self.spec.scales.s_out_pre).map_err(|_| CircuitError::UnsupportedOp)?;
+            let out_pre_multiplier = i128::try_from(out_pre_multiplier).map_err(|_| CircuitError::UnsupportedOp)?;
+            let scale_const = Self::constant_i128(&vec![out_head_multiplier; aggregated.len()], aggregated.dims(),)?;
+            let aligned_dividend = layouts::pairwise(config, region, &[&aggregated, &scale_const], BaseOp::Mult)?;
             let divisor = Self::constant_i128(&[out_pre_multiplier], &[1])?;
-            let mut aligned = self.signed_round_div_layout(
-                config,
-                region,
-                &aligned_dividend,
-                &divisor,
-                Some(bounds),
-            )?;
+            let mut aligned = self.signed_round_div_layout(config, region, &aligned_dividend, &divisor, Some(bounds),)?;
             aligned.set_scale(self.spec.scales.s_out_head);
-            let mut bias_repeated = Self::append_tensors(
-                &(0..self.spec.graph.n)
-                    .map(|_| bias.clone())
-                    .collect::<Vec<_>>(),
-                &[self.spec.graph.n, self.spec.model.classes],
-            )?;
+            let mut bias_repeated =
+                Self::append_tensors(&(0..self.spec.graph.n).map(|_| bias.clone()).collect::<Vec<_>>(), &[self.spec.graph.n, self.spec.model.classes],)?;
             bias_repeated.set_scale(self.spec.scales.s_b_output[head_idx]);
-            let mut head_output =
-                layouts::pairwise(config, region, &[&aligned, &bias_repeated], BaseOp::Add)?;
+            let mut head_output = layouts::pairwise(config, region, &[&aligned, &bias_repeated], BaseOp::Add)?;
             head_output.set_scale(self.spec.scales.s_out_head);
             output_heads.push(head_output);
         }
-        let mut output = output_heads
-            .first()
-            .cloned()
-            .ok_or(CircuitError::UnsupportedOp)?;
+        let mut output = output_heads.first().cloned().ok_or(CircuitError::UnsupportedOp)?;
         for head in output_heads.iter().skip(1) {
             output = layouts::pairwise(config, region, &[&output, head], BaseOp::Add)?;
             output.set_scale(self.spec.scales.s_out_head);
         }
         output.set_scale(self.spec.scales.s_out_head);
-        let count = Self::constant_i128(
-            &[i128::try_from(self.spec.model.output_heads.len())
-                .map_err(|_| CircuitError::UnsupportedOp)?],
-            &[1],
-        )?;
-        output = self.signed_round_div_layout_mode(
-            config,
-            region,
-            &output,
-            &count,
-            RoundingMode::NearestTiesAway,
-            None,
-        )?;
+        let count = Self::constant_i128(&[i128::try_from(self.spec.model.output_heads.len()).map_err(|_| CircuitError::UnsupportedOp)?], &[1],)?;
+        output = self.signed_round_div_layout_mode(config, region, &output, &count, RoundingMode::NearestTiesAway, None,)?;
         output.set_scale(self.spec.scales.s_out);
         output.reshape(&[self.spec.graph.n, self.spec.model.classes])?;
         Ok(Some(output))

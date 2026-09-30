@@ -79,9 +79,6 @@ def main() -> None:
         class_vector = raw_class_vector.astype(np.int64, copy=False)
         class_vectors[class_index] = class_vector
 
-    # The GraphSAGE PPI release stores split membership on each raw node.  Keep
-    # the masks in the same permutation as features/edges; labels remain the
-    # original 121-dimensional multi-hot vectors for BCEWithLogitsLoss.
     split_masks = {"train": np.ones(node_count, dtype=bool), "val": np.zeros(node_count, dtype=bool), "test": np.zeros(node_count, dtype=bool)}
     for node in graph["nodes"]:
         raw_node = str(node["id"])
@@ -121,9 +118,6 @@ def main() -> None:
 
     np.save(output_root / "features.npy", features_permuted.astype(np.float32, copy=False))
     np.save(output_root / "labels_multi.npy", labels_multi_permuted)
-    # The C++ formal data loader intentionally does not depend on NumPy.  Keep
-    # the same node order and full 121-column target in an explicit dependency-
-    # free text representation as well; it is never reduced to an argmax/single label.
     np.savetxt(
         output_root / "labels_multi.txt",
         labels_multi_permuted.astype(np.int8, copy=False),

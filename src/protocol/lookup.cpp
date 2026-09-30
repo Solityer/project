@@ -11,9 +11,6 @@
 #include <thread>
 #include <unordered_map>
 
-// lookup 选择器与 LogUp 累加器
-// 特征、激活、range 与 exp 表查询约束的底层公共实现
-
 namespace gatzk::protocol
 {
     namespace
@@ -36,11 +33,6 @@ namespace gatzk::protocol
                 return;
             }
 
-            // 把同一批分母统一做前缀积和一次逆元，减少 LogUp 热路径里的逐项求逆。
-            // This buffer is shared by the disjoint chunk workers below, so
-            // it must be an ordinary function-local allocation. A
-            // thread_local buffer would resolve to an empty, different vector
-            // inside each async worker.
             std::vector<mcl::Fr> prefix(values.size());
             const auto hardware_workers = std::max<std::size_t>(1, std::min<std::size_t>(kMaxParallelWorkers, std::thread::hardware_concurrency()));
             constexpr std::size_t kParallelThreshold = 1ULL << 18;
@@ -84,9 +76,6 @@ namespace gatzk::protocol
                         chunk_products[chunk] = product;
                     });
 
-                // Only O(worker_count) values remain, so one serial batch
-                // inversion is cheaper than another task launch and keeps the
-                // same single-inversion algebra as the parallel path.
                 std::vector<mcl::Fr> chunk_prefix(chunk_count);
                 mcl::Fr chunk_product = 1;
                 for (std::size_t chunk = 0; chunk < chunk_count; ++chunk)
@@ -142,7 +131,6 @@ namespace gatzk::protocol
     std::vector<algebra::FieldElement> build_selector(std::size_t valid_length, std::size_t domain_size)
     {
         std::vector<algebra::FieldElement> out(domain_size, algebra::FieldElement::zero());
-        // 选择器只标记有效前缀，剩余位置全部留给 padding 与零约束处理。
         for (std::size_t i = 0; i < valid_length && i < domain_size; ++i)
         {
             out[i] = algebra::FieldElement::one();

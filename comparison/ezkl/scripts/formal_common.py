@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "resources" / "resource_manifest.json"
 CONTRACT = ROOT / "artifacts" / "gat_adapter" / "formal_cli.json"
@@ -28,9 +27,6 @@ CANONICAL_PRIVACY = "model_and_trace_hidden"
 CANONICAL_STATEMENT_MODE = "external"
 CANONICAL_OUTPUT_MODE = "public_logits"
 NATIVE_SECURITY_PROFILE_ID = "halo2-kzg-shplonk"
-# The repository's 516-byte k=1 test SRS is intentionally below this bound.
-# Full GAT circuits require a materially larger native Halo2 KZG parameter
-# file; provision_srs.py enforces the same floor before staging it.
 MIN_FORMAL_SRS_BYTES = 4096
 SRS_MANIFEST = ROOT / "resources" / "native_srs" / "srs_manifest.json"
 NATIVE_SRS_SCHEMA_VERSION = 2
@@ -128,9 +124,7 @@ def reject_forbidden_path(path: Path, label: str) -> None:
     lowered = "/".join(path.parts).lower()
     if any(marker in lowered for marker in FORBIDDEN_PATH_MARKERS):
         abort(f"{label} uses a forbidden dummy/generated/reduced/placeholder path: {path}")
-    if "tests" in {part.lower() for part in path.parts} or "assets" in {
-        part.lower() for part in path.parts
-    }:
+    if "tests" in {part.lower() for part in path.parts} or "assets" in {part.lower() for part in path.parts}:
         abort(f"{label} must not come from tests/assets: {path}")
 
 
@@ -140,10 +134,8 @@ def require_formal_srs(path: Path, label: str = "trusted official ezkl SRS") -> 
         abort(f"{label} is not an authentic SRS: {path}")
     result = require_file(path, label)
     if result.stat().st_size < MIN_FORMAL_SRS_BYTES:
-        abort(
-            f"{label} is too small for a full formal Halo2 KZG circuit: "
-            f"{result.stat().st_size} bytes (minimum {MIN_FORMAL_SRS_BYTES})"
-        )
+        abort(f"{label} is too small for a full formal Halo2 KZG circuit: "
+              f"{result.stat().st_size} bytes (minimum {MIN_FORMAL_SRS_BYTES})")
     return result
 
 
@@ -264,9 +256,8 @@ def load_cli_contract() -> dict[str, Any]:
         if command in {"gen-srs", "get-srs", "mock", "gen-random-data", "calibrate-settings"}:
             abort(f"GAT adapter contract maps {key} to a forbidden non-formal command")
     if (
-        commands["prepare_command"] != "gat-prepare"
-        or commands["producer_command"] != "produce-public-statement"
-        or commands["witness_command"] != "gat-witness"
+        commands["prepare_command"] != "gat-prepare" or commands["producer_command"] != "produce-public-statement" or
+        commands["witness_command"] != "gat-witness"
     ):
         abort("GAT adapter contract must expose gat-prepare, external producer and gat-witness")
     if commands["prove_command"] != "prove" or commands["verify_command"] != "verify":
@@ -287,9 +278,7 @@ def load_cli_contract() -> dict[str, Any]:
     }:
         abort("GAT adapter contract required_flags schema mismatch")
     for stage, values in flags.items():
-        if not isinstance(values, list) or not values or any(
-            not isinstance(value, str) or not value.startswith("--") for value in values
-        ):
+        if not isinstance(values, list) or not values or any(not isinstance(value, str) or not value.startswith("--") for value in values):
             abort(f"GAT adapter contract required_flags.{stage} is invalid")
     required_flag_sets = {
         "prepare": {
@@ -323,8 +312,14 @@ def load_cli_contract() -> dict[str, Any]:
         },
         "prove": {"--witness", "--compiled-circuit", "--pk-path", "--proof-path", "--srs-path", "--check-mode"},
         "verify": {
-            "--settings-path", "--proof-path", "--vk-path", "--srs-path", "--statement",
-            "--public-output", "--artifact-manifest", "--resource-manifest",
+            "--settings-path",
+            "--proof-path",
+            "--vk-path",
+            "--srs-path",
+            "--statement",
+            "--public-output",
+            "--artifact-manifest",
+            "--resource-manifest",
         },
     }
     for stage, required in required_flag_sets.items():
@@ -554,8 +549,20 @@ def validate_public_statement(
     public = require_exact_keys(
         statement["public_ezkl"],
         {
-            "topology", "static_tables", "quant", "ledger", "circuit", "model_hash", "model",
-            "feature_table", "node_ids", "src", "dst", "node_ptr", "edge_ptr", "y",
+            "topology",
+            "static_tables",
+            "quant",
+            "ledger",
+            "circuit",
+            "model_hash",
+            "model",
+            "feature_table",
+            "node_ids",
+            "src",
+            "dst",
+            "node_ptr",
+            "edge_ptr",
+            "y",
         },
         "external public statement public_ezkl",
     )
@@ -567,8 +574,15 @@ def validate_public_statement(
     circuit = require_exact_keys(
         public["circuit"],
         {
-            "relation_id", "compiled_circuit_id", "compiled_circuit_digest", "settings_id",
-            "settings_digest", "vk_id", "vk_digest", "model_graph_id", "model_graph_digest",
+            "relation_id",
+            "compiled_circuit_id",
+            "compiled_circuit_digest",
+            "settings_id",
+            "settings_digest",
+            "vk_id",
+            "vk_digest",
+            "model_graph_id",
+            "model_graph_digest",
             "ezkl_security_profile_id",
         },
         "statement circuit_ref",
@@ -580,9 +594,8 @@ def validate_public_statement(
     if model["hash"] != public["model_hash"] or not isinstance(public["model_hash"], str) or not public["model_hash"]:
         abort("statement native model H(W) binding mismatch")
     if (
-        len(public["model_hash"]) != 66
-        or not public["model_hash"].startswith("0x")
-        or any(character not in "0123456789abcdef" for character in public["model_hash"][2:])
+        len(public["model_hash"]) != 66 or not public["model_hash"].startswith("0x") or
+        any(character not in "0123456789abcdef" for character in public["model_hash"][2:])
     ):
         abort("statement native model H(W) is not a canonical Halo2 field encoding")
     require_digest(model["canonical_model_digest"], "statement canonical model digest")
@@ -608,15 +621,11 @@ def validate_public_statement(
         abort("statement graph pointers must start at zero")
     if public["node_ptr"][-1] != len(public["node_ids"]) or public["edge_ptr"][-1] != len(public["src"]):
         abort("statement graph pointers do not cover the public graph")
-    if any(a >= b for a, b in zip(public["node_ptr"], public["node_ptr"][1:])) or any(
-        a >= b for a, b in zip(public["edge_ptr"], public["edge_ptr"][1:])
-    ):
+    if any(a >= b for a, b in zip(public["node_ptr"], public["node_ptr"][1:])) or any(a >= b for a, b in zip(public["edge_ptr"], public["edge_ptr"][1:])):
         abort("statement graph pointers must be strictly increasing")
     if len(set(public["node_ids"])) != len(public["node_ids"]):
         abort("statement node_ids contain duplicates")
-    for node_start, node_end, edge_start, edge_end in zip(
-        public["node_ptr"], public["node_ptr"][1:], public["edge_ptr"], public["edge_ptr"][1:]
-    ):
+    for node_start, node_end, edge_start, edge_end in zip(public["node_ptr"], public["node_ptr"][1:], public["edge_ptr"], public["edge_ptr"][1:]):
         if any(
             src < node_start or src >= node_end or dst < node_start or dst >= node_end
             for src, dst in zip(public["src"][edge_start:edge_end], public["dst"][edge_start:edge_end])
@@ -632,7 +641,8 @@ def validate_public_statement(
         output_bytes.extend(value.to_bytes(16, "little", signed=True))
     if statement["output_digest"] != sha256_bytes(bytes(output_bytes)):
         abort("statement output_digest does not match public Y")
-    if public["quant"]["id"] != statement["quant_cfg_id"] or public["static_tables"]["id"] != statement["static_table_id"] or public["ledger"]["id"] != statement["degree_bound_id"]:
+    if public["quant"]["id"] != statement["quant_cfg_id"] or public["static_tables"]["id"] != statement["static_table_id"] or public["ledger"][
+        "id"] != statement["degree_bound_id"]:
         abort("statement registry ids do not match public boundary")
     if quant_cfg_id is not None and statement["quant_cfg_id"] != quant_cfg_id:
         abort("external public statement quant_cfg_id does not match the canonical config")
@@ -726,12 +736,9 @@ def validate_artifact_identity(
     if manifest["schema_version"] != 1 or manifest["dataset"] != dataset or manifest["backend"] != backend:
         abort("artifact identity manifest dataset/backend/schema mismatch")
     if (
-        manifest["baseline"] != "ezkl"
-        or manifest["proof_scope"] != CANONICAL_PROOF_SCOPE
-        or manifest["relation_id"] != CANONICAL_RELATION
-        or manifest["privacy_policy"] != CANONICAL_PRIVACY
-        or manifest["public_statement_mode"] != CANONICAL_STATEMENT_MODE
-        or manifest["output_mode"] != CANONICAL_OUTPUT_MODE
+        manifest["baseline"] != "ezkl" or manifest["proof_scope"] != CANONICAL_PROOF_SCOPE or manifest["relation_id"] != CANONICAL_RELATION or
+        manifest["privacy_policy"] != CANONICAL_PRIVACY or manifest["public_statement_mode"] != CANONICAL_STATEMENT_MODE or
+        manifest["output_mode"] != CANONICAL_OUTPUT_MODE
     ):
         abort("artifact identity manifest is not full_gat")
     circuit_ref = require_circuit_ref(manifest["circuit_ref"], "artifact identity circuit_ref")
@@ -765,9 +772,7 @@ def validate_artifact_identity(
         abort("artifact SRS provenance digest does not match artifact identity")
     require_digest(manifest["srs_sha256"], "artifact srs_sha256")
     require_digest(srs_provenance["sha256"], "artifact SRS provenance sha256")
-    source_snapshot = require_exact_keys(
-        manifest["source_snapshot"], {"root", "git_commit", "git_tree"}, "artifact source_snapshot"
-    )
+    source_snapshot = require_exact_keys(manifest["source_snapshot"], {"root", "git_commit", "git_tree"}, "artifact source_snapshot")
     for key in ("root", "git_commit", "git_tree"):
         if not isinstance(source_snapshot[key], str) or not source_snapshot[key]:
             abort(f"artifact source_snapshot.{key} is empty")
@@ -779,13 +784,7 @@ def validate_artifact_identity(
     for index, record in enumerate(artifact_files):
         record = require_exact_keys(record, {"path", "size", "sha256"}, f"artifact files[{index}]")
         relative = record["path"]
-        if (
-            not isinstance(relative, str)
-            or not relative
-            or Path(relative).is_absolute()
-            or ".." in Path(relative).parts
-            or Path(relative).parts[0] == "."
-        ):
+        if (not isinstance(relative, str) or not relative or Path(relative).is_absolute() or ".." in Path(relative).parts or Path(relative).parts[0] == "."):
             abort(f"artifact files[{index}].path is not baseline-local")
         if relative in file_records:
             abort(f"artifact files contains duplicate path: {relative}")
@@ -877,9 +876,7 @@ def validate_gpu_evidence_document(evidence: Any, *, backend: str) -> dict[str, 
         },
         "GPU/backend evidence",
     )
-    if not isinstance(evidence["gpu_kernel_invocation_count"], int) or isinstance(
-        evidence["gpu_kernel_invocation_count"], bool
-    ):
+    if not isinstance(evidence["gpu_kernel_invocation_count"], int) or isinstance(evidence["gpu_kernel_invocation_count"], bool):
         abort("GPU evidence kernel invocation count is not an integer")
     require_digest(evidence["invocation_trace_sha256"], "GPU invocation trace digest")
     if backend == "gpu":
@@ -908,13 +905,9 @@ def validate_gpu_evidence_document(evidence: Any, *, backend: str) -> dict[str, 
                 abort(f"GPU evidence provenance is missing {key}")
         require_digest(provenance["manifest_sha256"], "GPU backend manifest_sha256")
     elif (
-        evidence.get("backend") != "CPU"
-        or evidence.get("gpu_backend") != "none"
-        or evidence.get("backend_loaded") is not True
-        or evidence.get("cpu_fallback") is not False
-        or evidence.get("device_synchronized") is not True
-        or evidence["gpu_kernel_invocation_count"] != 0
-        or evidence.get("provenance") is not None
+        evidence.get("backend") != "CPU" or evidence.get("gpu_backend") != "none" or evidence.get("backend_loaded") is not True or
+        evidence.get("cpu_fallback") is not False or evidence.get("device_synchronized") is not True or evidence["gpu_kernel_invocation_count"] != 0 or
+        evidence.get("provenance") is not None
     ):
         abort("CPU run has invalid backend evidence")
     return evidence
@@ -941,8 +934,15 @@ def require_circuit_ref(value: Any, label: str = "circuit_ref") -> dict[str, str
     value = require_exact_keys(
         value,
         {
-            "relation_id", "compiled_circuit_id", "compiled_circuit_digest", "settings_id",
-            "settings_digest", "vk_id", "vk_digest", "model_graph_id", "model_graph_digest",
+            "relation_id",
+            "compiled_circuit_id",
+            "compiled_circuit_digest",
+            "settings_id",
+            "settings_digest",
+            "vk_id",
+            "vk_digest",
+            "model_graph_id",
+            "model_graph_digest",
             "ezkl_security_profile_id",
         },
         label,
@@ -952,13 +952,7 @@ def require_circuit_ref(value: Any, label: str = "circuit_ref") -> dict[str, str
         abort(f"{label} is missing a non-empty identity field")
     if value["relation_id"] != CANONICAL_RELATION:
         abort(f"{label}.relation_id is not R_GAT-ezkl")
-    if any(
-        any(
-            marker in value[key].lower()
-            for marker in ("unbound", "pending", "placeholder", "dummy", "fake")
-        )
-        for key in required[1:]
-    ):
+    if any(any(marker in value[key].lower() for marker in ("unbound", "pending", "placeholder", "dummy", "fake")) for key in required[1:]):
         abort(f"{label} contains a placeholder identity")
     for key in ("compiled_circuit_digest", "settings_digest", "vk_digest", "model_graph_digest"):
         require_digest(value[key], f"{label}.{key}")

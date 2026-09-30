@@ -14,33 +14,32 @@
 using namespace std;
 using namespace mcl::bn;
 
-namespace {
+namespace
+{
 
-std::string point_encoding(const G1 &point) {
+std::string point_encoding(const G1 &point)
+{
     return point.serializeToHexStr();
 }
 
-bool valid_point(const G1 &point, bool require_nonzero) {
-    return (!require_nonzero || !point.isZero()) && point.isValid() &&
-           point.isValidOrder();
+bool valid_point(const G1 &point, bool require_nonzero)
+{
+    return (!require_nonzero || !point.isZero()) && point.isValid() && point.isValidOrder();
 }
 
-std::string basis_encoding(const G1 &G, const std::vector<G1> &generators,
-                           const std::vector<Fr> &basis) {
+std::string basis_encoding(const G1 &G, const std::vector<G1> &generators, const std::vector<Fr> &basis)
+{
     std::ostringstream payload;
     payload << point_encoding(G) << '|' << generators.size();
     for (std::size_t i = 0; i < generators.size(); ++i)
-        payload << '|' << point_encoding(generators[i]) << '|'
-                << basis[i].getStr(16);
+        payload << '|' << point_encoding(generators[i]) << '|' << basis[i].getStr(16);
     return payload.str();
 }
 
-void absorb_fold(NativeProofSession &session, const std::string &label,
-                 const G1 &gamma_minus1, const G1 &gamma_1,
-                 const Fr &cross_left, const Fr &cross_right) {
+void absorb_fold(NativeProofSession &session, const std::string &label, const G1 &gamma_minus1, const G1 &gamma_1, const Fr &cross_left, const Fr &cross_right)
+{
     std::ostringstream payload;
-    payload << point_encoding(gamma_minus1) << '|'
-            << point_encoding(gamma_1);
+    payload << point_encoding(gamma_minus1) << '|' << point_encoding(gamma_1);
     (void)cross_left;
     (void)cross_right;
     session.absorb(label, payload.str());
@@ -348,7 +347,7 @@ Pack bullet_reduce(G1 gamma, Fr*a,G1*g,int n,G1& G,Fr* x,Fr y,bool need_free) //
     gamma_1=G*x2a1+perdersen_commit(g,x+n/2,n/2);
     Fr c,invc;
     do {
-        c.setByCSPRNG();  // step3 V choose random c
+        c.setByCSPRNG();
     } while (c.isZero());
     //prover verifier both comp
     vtimer.start();
@@ -406,7 +405,7 @@ Pack bullet_reduce(G1 gamma, Fr*a,G1*g,int n,G1& G,Fr* x,Fr y,bool need_free) //
     return bullet_reduce(gamma_prime,aprime,gprime,n/2,G,xprime,yprime,true);
 }   
 
-void prove_dot_product(G1 comm_x, G1 comm_y, Fr* a, G1*g ,G1& G,Fr* x,Fr y,int n)  // y= <a,x> ,
+void prove_dot_product(G1 comm_x, G1 comm_y, Fr *a, G1 *g, G1 &G, Fr *x, Fr y, int n)
 {
     G1 gamma=comm_x+comm_y;
     Pack p=bullet_reduce(gamma,a,g,n,G,x,y);
@@ -464,7 +463,7 @@ Pack bullet_reduce_with_session(G1 gamma, Fr *a, G1 *g, int n,
     return result;
 }
 
-} // namespace
+}
 
 void prove_dot_product_with_session(G1 comm_x, G1 comm_y, Fr *a, G1 *g,
                                     G1 &G, Fr *x, Fr y, int n,
@@ -559,7 +558,7 @@ Fr prover_evaluate(Fr*w ,Fr*r,G1& G,G1* g, Fr*L,Fr*R,int l)  // nlogn brute forc
 }
 namespace hyrax
 {
-pair<double,double> open(Fr*w,Fr*r,Fr eval,G1&G,G1*g,Fr*L,Fr*R,G1*tk,int l)
+pair<double, double> open(Fr *w, Fr *r, Fr eval, G1 &G, G1 *g, Fr *L, Fr *R, G1 *tk, int l)
 {
     double prover_time=0,verifier_time=0;
     int halfl=l/2;
@@ -828,7 +827,7 @@ bool reject_masked_trailing(const NativeProofSession &session,
     return true;
 }
 
-} // namespace
+}
 
 bool verify_opening_with_session(
     const G1 &comm_x, const Fr &eval, const G1 &G,
@@ -1177,8 +1176,6 @@ static bool open_masked_mle_impl(
             raw_evaluation += basis[index] * values[index];
         Fr mu;
         if (forced_masked_evaluation != nullptr) {
-            // The forced claim is still hidden: only its difference from the
-            // private raw evaluation is retained as the evaluation mask.
             mu = *forced_masked_evaluation - raw_evaluation;
         } else {
             mu.setByCSPRNG();
@@ -1652,7 +1649,7 @@ bool chunked_scalar_commitment(
     return result.valid(basis, reason);
 }
 
-} // namespace
+}
 
 bool prove_chunked_mle_opening(
     NativeProofSession &session, const std::string &label,

@@ -52,13 +52,13 @@ def main() -> None:
     project_root = cfg_path.parent.parent.resolve()
     data_root = (project_root / cfg.get("data_root", "data")).resolve()
     output_dir = (
-        pathlib.Path(args.output_dir).expanduser().resolve()
-        if args.output_dir is not None
-        else (project_root / cfg.get("checkpoint_bundle", "artifacts/checkpoints/ogbn_arxiv_gat")).resolve()
+        pathlib.Path(args.output_dir).expanduser().resolve() if args.output_dir is not None else
+        (project_root / cfg.get("checkpoint_bundle", "artifacts/checkpoints/ogbn_arxiv_gat")).resolve()
     )
     checkpoint_path = output_dir / "best_model.pt"
     if checkpoint_path.exists() and not args.overwrite:
-        raise FileExistsError(f"refusing to overwrite {checkpoint_path}; pass a fresh --output-dir " "or explicitly use --overwrite")
+        raise FileExistsError(f"refusing to overwrite {checkpoint_path}; pass a fresh --output-dir "
+                              "or explicitly use --overwrite")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cache_root = ensure_cache(project_root, data_root)
@@ -75,7 +75,8 @@ def main() -> None:
     dropout = float(_override(args.dropout, cfg_float(cfg, "dropout", 0.5)))
     use_cuda = bool(_override(args.use_cuda, True))
     if (epochs, patience, lr, weight_decay, dropout) != (500, 100, 0.005, 0.0005, 0.5) or seed != 11:
-        raise ValueError("ogbn_arxiv formal training requires epochs=500, patience=100, " "lr=0.005, weight_decay=0.0005, dropout=0.5, seed=11")
+        raise ValueError("ogbn_arxiv formal training requires epochs=500, patience=100, "
+                         "lr=0.005, weight_decay=0.0005, dropout=0.5, seed=11")
     if epochs <= 0 or patience <= 0:
         raise ValueError("epochs and patience must be positive")
     if not 0.0 <= dropout < 1.0:
@@ -93,9 +94,6 @@ def main() -> None:
     cached_features = np.load(cache_root / "features.npy", allow_pickle=False)
     if cached_features.dtype != np.dtype(np.float32) or cached_features.shape != arrays.features.shape or not np.array_equal(cached_features, arrays.features):
         raise ValueError("ogbn_arxiv cache features.npy is not the exact released float32 producer output")
-    # OGBN-Arxiv is registered as raw_float32: the released float32
-    # feature matrix enters the canonical ties-away quantizer directly.  Do
-    # not apply the Planetoid/PPI row-normalization contract here.
     input_preprocess_id = str(cfg["input_preprocess_id"])
     raw_features = preprocess_input_features(cached_features, dataset=OGBN_ARXIV_INTERNAL_NAME, input_preprocess_id=input_preprocess_id)
     quantized_features, input_quantization = quantized_input_features(raw_features, chain, range_bits=cfg_int(cfg, "range_bits", 21))
@@ -155,7 +153,8 @@ def main() -> None:
         epoch_metrics = {"epoch": float(epoch), "train_loss": float(loss.item()), "train_acc": train_acc, "val_loss": val_loss, "val_acc": val_acc}
         history.append(epoch_metrics)
         print(
-            f"[ogbn_arxiv] epoch={epoch:04d} train_loss={loss.item():.6f} train_acc={train_acc:.4f} " f"val_loss={val_loss:.6f} val_acc={val_acc:.4f}",
+            f"[ogbn_arxiv] epoch={epoch:04d} train_loss={loss.item():.6f} train_acc={train_acc:.4f} "
+            f"val_loss={val_loss:.6f} val_acc={val_acc:.4f}",
             flush=True,
         )
 

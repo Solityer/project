@@ -139,9 +139,9 @@ namespace gatzk::protocol
         {
         public:
             CudaTFHExecutorImpl(std::size_t domain_size, std::size_t target_size, const algebra::FieldElement &shift, const algebra::FieldElement &domain_omega,
-                                const CudaTFHParameters &parameters, std::size_t requested_tile_size)
-                : domain_size_(domain_size), target_size_(target_size), shift_(shift), parameters_(parameters),
-                  tile_capacity_(std::clamp(requested_tile_size, kMinimumTileSize, kMaximumTileSize))
+                                const CudaTFHParameters &parameters, std::size_t requested_tile_size) :
+                domain_size_(domain_size), target_size_(target_size), shift_(shift), parameters_(parameters),
+                tile_capacity_(std::clamp(requested_tile_size, kMinimumTileSize, kMaximumTileSize))
             {
                 if (domain_size_ == 0 || target_size_ == 0 || target_size_ % domain_size_ != 0)
                     throw std::runtime_error("invalid CUDA t_FH domain shape");
@@ -214,20 +214,11 @@ namespace gatzk::protocol
                 }
             }
 
-            ~CudaTFHExecutorImpl() override
-            {
-                release_noexcept();
-            }
+            ~CudaTFHExecutorImpl() override { release_noexcept(); }
 
-            std::size_t tile_capacity() const override
-            {
-                return tile_capacity_;
-            }
+            std::size_t tile_capacity() const override { return tile_capacity_; }
 
-            std::size_t pipeline_slot_count() const override
-            {
-                return kPipelineSlotCount;
-            }
+            std::size_t pipeline_slot_count() const override { return kPipelineSlotCount; }
 
             void wait_for_slot(std::size_t slot) override
             {
@@ -483,10 +474,7 @@ namespace gatzk::protocol
         };
     }
 
-    bool cuda_t_fh_executor_available()
-    {
-        return algebra::cuda_backend_available() && algebra::cuda_backend_unified_addressing_available();
-    }
+    bool cuda_t_fh_executor_available() { return algebra::cuda_backend_available() && algebra::cuda_backend_unified_addressing_available(); }
 
     bool cuda_t_fh_executor_can_admit(std::size_t domain_size, std::size_t target_size, std::size_t requested_tile_size)
     {

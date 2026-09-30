@@ -5,11 +5,9 @@
 int main() {
     using namespace zkdl_gat::relation;
     const auto scalar = [](std::uint32_t value) { return zkdl::fr_from_u32(value); };
-    // Algebra-only fixture, deliberately confined to tests.  These known-DL
-    // points and digest labels are not a trusted production SRS or registry.
+
     std::vector<zkdl::CpuG1Point> generators;
-    for (std::uint32_t i = 0U; i < 4U; ++i)
-        generators.push_back(zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar(i + 2U)));
+    for (std::uint32_t i = 0U; i < 4U; ++i) generators.push_back(zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar(i + 2U)));
     const auto h = zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar(103U));
     const auto u = zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar(109U));
     RelationStatement statement;
@@ -20,20 +18,15 @@ int main() {
     statement.srs_digest = zkdl::sha256(std::vector<zkdl::byte>{'p'});
     statement.registry_digest = zkdl::sha256(std::vector<zkdl::byte>{'r'});
     TensorWitness source{"layer1/source", 3U, 2U, {scalar(3U), scalar(5U)}};
-    TensorWitness output{"layer1/output", 3U, 4U,
-        {scalar(5U), scalar(5U), scalar(0U), scalar(0U)}};
-    const std::map<std::string, const TensorWitness*> witnesses{
-        {source.id, &source}, {output.id, &output}};
-    const std::map<std::string, FrWire> blinders{
-        {source.id, scalar(17U)}, {output.id, scalar(19U)}};
+    TensorWitness output{"layer1/output", 3U, 4U, {scalar(5U), scalar(5U), scalar(0U), scalar(0U)}};
+    const std::map<std::string, const TensorWitness *> witnesses{{source.id, &source}, {output.id, &output}};
+    const std::map<std::string, FrWire> blinders{{source.id, scalar(17U)}, {output.id, scalar(19U)}};
     std::vector<CommitmentWire> commitments;
-    for (const auto* tensor : {&source, &output}) {
-        const auto commitment = zkdl::cpu_g1_add(zkdl::cpu_g1_sum(
-            std::vector<zkdl::CpuG1Point>(generators.begin(),
-                generators.begin() + tensor->domain_size), tensor->values),
-            zkdl::cpu_g1_mul(h, blinders.at(tensor->id)));
-        commitments.push_back(CommitmentWire{tensor->id, tensor->visibility,
-            tensor->domain_size, zkdl::cpu_g1_to_native(commitment)});
+    for (const auto *tensor : {&source, &output}) {
+        const auto commitment = zkdl::cpu_g1_add(zkdl::cpu_g1_sum(std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + tensor->domain_size),
+                                                                  tensor->values),
+                                                 zkdl::cpu_g1_mul(h, blinders.at(tensor->id)));
+        commitments.push_back(CommitmentWire{tensor->id, tensor->visibility, tensor->domain_size, zkdl::cpu_g1_to_native(commitment)});
     }
     OperationDescriptor descriptor;
     descriptor.id = "layer1/route";
@@ -58,56 +51,46 @@ int main() {
     descriptor.selector_source_ref = source.id;
     descriptor.selector_output_ref = output.id;
     std::string error;
-    const auto require = [&](bool condition, const char* label) {
+    const auto require = [&](bool condition, const char *label) {
         if (!condition) throw std::runtime_error(std::string(label) + ": " + error);
     };
     try {
         const std::vector<FrWire> kat_point{scalar(2U), scalar(3U)};
-        const std::vector<FrWire> kat_expected{
-            scalar(2U), zkdl::fr_neg(scalar(3U)), zkdl::fr_neg(scalar(4U)), scalar(6U)};
+        const std::vector<FrWire> kat_expected{scalar(2U), zkdl::fr_neg(scalar(3U)), zkdl::fr_neg(scalar(4U)), scalar(6U)};
         const auto kat_weights = zkdl::cpu_ipa_mle_weights(kat_point);
         require(kat_weights.size() == kat_expected.size(), "MLE weights KAT size");
         for (std::size_t index = 0U; index < kat_expected.size(); ++index)
-            require(zkdl::fr_compare(kat_weights[index], kat_expected[index]) == 0,
-                    "MLE weights KAT value");
-        const std::vector<FrWire> kat_values{
-            scalar(1U), scalar(2U), scalar(3U), scalar(4U)};
+            require(zkdl::fr_compare(kat_weights[index], kat_expected[index]) == 0, "MLE weights KAT value");
+        const std::vector<FrWire> kat_values{scalar(1U), scalar(2U), scalar(3U), scalar(4U)};
         const auto folded = mle_value(kat_values, kat_point);
         const std::vector<FrWire> dot_point{kat_point.rbegin(), kat_point.rend()};
-        const auto dotted = zkdl::cpu_ipa_inner_product(
-            kat_values, zkdl::cpu_ipa_mle_weights(dot_point));
+        const auto dotted = zkdl::cpu_ipa_inner_product(kat_values, zkdl::cpu_ipa_mle_weights(dot_point));
         require(zkdl::fr_compare(folded, dotted) == 0, "fold/dot MLE identity");
         require(descriptor.valid(&error), "descriptor");
         require(formal_relation_components_supported({descriptor}, &error), "route admission");
         zkdl::Transcript prover_transcript("sparse-route-hidden-smoke");
         SparseRouteProof proof;
-        static_assert(std::is_same<decltype(proof.sumcheck), zkdl::ZkSumcheckProof>::value,
-                      "route must use hidden Sumcheck");
-        static_assert(std::is_same<decltype(proof.source_opening), zkdl::HyraxOpeningProofV3>::value,
-                      "route must use a hidden evaluation opening");
-        require(prove_sparse_route(descriptor, witnesses, blinders, generators, h, u,
-            commitments, statement, prover_transcript, proof, &error), "prove");
+        static_assert(std::is_same<decltype(proof.sumcheck), zkdl::ZkSumcheckProof>::value, "route must use hidden Sumcheck");
+        static_assert(std::is_same<decltype(proof.source_opening), zkdl::HyraxOpeningProofV3>::value, "route must use a hidden evaluation opening");
+        require(prove_sparse_route(descriptor, witnesses, blinders, generators, h, u, commitments, statement, prover_transcript, proof, &error), "prove");
         const auto encoded = proof.serialize();
         SparseRouteProof decoded;
         require(SparseRouteProof::deserialize(encoded, decoded, &error), "decode");
         require(decoded.serialize() == encoded, "canonical wire");
         zkdl::Transcript verifier_transcript("sparse-route-hidden-smoke");
-        require(verify_sparse_route(descriptor, commitments, generators, h, u,
-            statement, verifier_transcript, decoded, &error), "independent verify");
-        require(fr_compare_mixed(prover_transcript.challenge("after-route"),
-            verifier_transcript.challenge("after-route")) == 0, "transcript replay");
+        require(verify_sparse_route(descriptor, commitments, generators, h, u, statement, verifier_transcript, decoded, &error), "independent verify");
+        require(fr_compare_mixed(prover_transcript.challenge("after-route"), verifier_transcript.challenge("after-route")) == 0, "transcript replay");
 
         auto changed_descriptor = descriptor;
         changed_descriptor.selector_dst[0] = 0U;
         zkdl::Transcript changed_transcript("sparse-route-hidden-smoke");
-        require(!verify_sparse_route(changed_descriptor, commitments, generators, h, u,
-            statement, changed_transcript, decoded, &error), "reject changed public route");
+        require(!verify_sparse_route(changed_descriptor, commitments, generators, h, u, statement, changed_transcript, decoded, &error),
+                "reject changed public route");
         auto changed_commitments = commitments;
-        changed_commitments[0].commitment = zkdl::cpu_g1_to_native(zkdl::cpu_g1_add(
-            zkdl::cpu_g1_from_native(commitments[0].commitment), generators[0]));
+        changed_commitments[0].commitment = zkdl::cpu_g1_to_native(zkdl::cpu_g1_add(zkdl::cpu_g1_from_native(commitments[0].commitment), generators[0]));
         zkdl::Transcript replaced_transcript("sparse-route-hidden-smoke");
-        require(!verify_sparse_route(descriptor, changed_commitments, generators, h, u,
-            statement, replaced_transcript, decoded, &error), "reject replaced canonical source");
+        require(!verify_sparse_route(descriptor, changed_commitments, generators, h, u, statement, replaced_transcript, decoded, &error),
+                "reject replaced canonical source");
         auto old_version = encoded;
         old_version[4] = 2U;
         require(!SparseRouteProof::deserialize(old_version, decoded, &error), "reject old revealing wire");
@@ -117,13 +100,12 @@ int main() {
         decoded = proof;
         decoded.output_opening.tau.x.val[0] ^= 1U;
         zkdl::Transcript tau_tampered_transcript("sparse-route-hidden-smoke");
-        require(!verify_sparse_route(descriptor, commitments, generators, h, u,
-            statement, tau_tampered_transcript, decoded, &error), "reject tau tamper");
+        require(!verify_sparse_route(descriptor, commitments, generators, h, u, statement, tau_tampered_transcript, decoded, &error), "reject tau tamper");
 
         std::cout << "sparse_route_hidden_smoke PASS: cross-domain route, destination/feature "
                      "selectors, inactive padding, hidden wire, independent verifier, tamper\n";
         return 0;
-    } catch (const std::exception& exception) {
+    } catch (const std::exception &exception) {
         std::cerr << exception.what() << '\n';
         return 1;
     }

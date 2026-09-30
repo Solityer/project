@@ -6,7 +6,6 @@ import argparse
 import pathlib
 from typing import Dict, Iterable, Tuple
 
-
 from checkpoint_bundle import (
     load_checkpoint_manifest,
     validate_checkpoint_manifest,
@@ -18,7 +17,6 @@ from quantization_scale_chain import (
     canonical_input_preprocess_id,
     canonical_quantization_scale_chain,
 )
-
 
 EXPECTED: Dict[str, Tuple[Tuple[int, ...], int, str, str, str, str]] = {
     "cora": ((1433, 64), 7, "gat_family_L3_hid8x8-8x8_kout2_c7", "cora_planetoid_seed11", "transductive_node_classification", "node"),
@@ -125,8 +123,7 @@ def check_source_checkpoint(
         require(bundle["selection_metric"] == "validation_loss", "source checkpoint PPI selection metric mismatch")
         require(bundle["split_format"] == "node_masks", "source checkpoint PPI split metadata mismatch")
     require(
-        manifest["checkpoint_prefix"]
-        in {str(checkpoint.resolve()), str(checkpoint)},
+        manifest["checkpoint_prefix"] in {str(checkpoint.resolve()), str(checkpoint)},
         "source checkpoint provenance does not match the bundle check path",
     )
 
@@ -134,13 +131,11 @@ def check_source_checkpoint(
     for layer_index, input_dim in enumerate(d_in_profile):
         for head_index in range(8):
             prefix = f"hidden_layers.{layer_index}.heads.{head_index}"
-            expected.update(
-                {
-                    f"{prefix}.seq.weight": (8, input_dim),
-                    f"{prefix}.attn_dst.weight": (1, 8),
-                    f"{prefix}.attn_src.weight": (1, 8),
-                }
-            )
+            expected.update({
+                f"{prefix}.seq.weight": (8, input_dim),
+                f"{prefix}.attn_dst.weight": (1, 8),
+                f"{prefix}.attn_src.weight": (1, 8),
+            })
     for head_index in range(2):
         prefix = f"output_heads.{head_index}"
         expected.update(
@@ -191,8 +186,7 @@ def check_bundle(bundle_dir: pathlib.Path, dataset: str, checkpoint: pathlib.Pat
     )
     for spec in [*manifest["hidden_head_specs"], *manifest["output_head_specs"]]:
         require(isinstance(spec, dict), "head spec must be an object")
-        require("attn_dst_bias" not in spec and "attn_src_bias" not in spec,
-                "attention scalar bias fields are forbidden")
+        require("attn_dst_bias" not in spec and "attn_src_bias" not in spec, "attention scalar bias fields are forbidden")
     require(manifest["task_type"] == task_type, "bundle task_type mismatch")
     require(manifest["report_unit"] == report_unit, "bundle report_unit mismatch")
     require(manifest["output_average_rule"] == "per_head_bias_then_arithmetic_mean", "bundle output average rule mismatch")
@@ -221,8 +215,6 @@ def check_bundle(bundle_dir: pathlib.Path, dataset: str, checkpoint: pathlib.Pat
     require(all(isinstance(layer, dict) for layer in hidden_layers), "hidden layer entries must be objects")
     require(all(isinstance(spec, dict) for spec in hidden_specs), "hidden head entries must be objects")
     require(all(isinstance(spec, dict) for spec in output_specs), "output head entries must be objects")
-    # Formal checkpoint identity is the explicit (layer_index, local_head_index)
-    # pair.  A global-only entry is rejected fail-closed.
     expected_pairs = [(layer_index, head_index) for layer_index in range(2) for head_index in range(8)]
     actual_pairs = []
     for spec in hidden_specs:
@@ -230,11 +222,8 @@ def check_bundle(bundle_dir: pathlib.Path, dataset: str, checkpoint: pathlib.Pat
         actual_pairs.append((int(spec["layer_index"]), int(spec["local_head_index"])))
     require(actual_pairs == expected_pairs, "hidden head specs must use canonical layer/local pair order")
     require(
-        [
-            (int(layer["input_dim"]), int(layer["head_count"]), int(layer["head_dim"]))
-            for layer in hidden_layers
-        ]
-        == [(d_in_profile[0], 8, 8), (d_in_profile[1], 8, 8)],
+        [(int(layer["input_dim"]), int(layer["head_count"]), int(layer["head_dim"]))
+         for layer in hidden_layers] == [(d_in_profile[0], 8, 8), (d_in_profile[1], 8, 8)],
         "bundle hidden layer shape mismatch",
     )
     for layer_index, input_dim in enumerate(d_in_profile):

@@ -183,17 +183,12 @@ pub fn canonical_string_to_fr(value: &str) -> Result<bn256::Fr, String> {
     if value.len() != 66 || !value.starts_with("0x") {
         return Err("native BN254 Fr must be encoded as 0x plus 64 hex digits".into());
     }
-    if value[2..]
-        .bytes()
-        .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
-    {
+    if value[2..].bytes().any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase()) {
         return Err("native BN254 Fr encoding must use lower-case hexadecimal".into());
     }
     let mut repr = [0_u8; 32];
-    hex::decode_to_slice(&value[2..], &mut repr)
-        .map_err(|error| format!("invalid native BN254 Fr encoding: {}", error))?;
-    Option::from(bn256::Fr::from_repr(repr.into()))
-        .ok_or_else(|| "native BN254 Fr encoding is not a canonical field element".into())
+    hex::decode_to_slice(&value[2..], &mut repr).map_err(|error| format!("invalid native BN254 Fr encoding: {}", error))?;
+    Option::from(bn256::Fr::from_repr(repr.into())).ok_or_else(|| "native BN254 Fr encoding is not a canonical field element".into())
 }
 
 /// converts a little endian Hex string into a field element

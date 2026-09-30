@@ -242,7 +242,6 @@ namespace
         descriptor.path = (lease->path() / "noncanonical.bin").string();
         descriptor.size = 1;
         reject([&] { (void)protocol::resolve_trace_coefficient_polynomial(trace, "test_spill"); }, "noncanonical coefficient");
-        // This test checks the source resolver, not a KZG verification claim.
     }
 
     void test_evaluation_spill_registry()

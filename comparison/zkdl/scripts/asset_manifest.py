@@ -148,10 +148,6 @@ def main() -> int:
             "sha256": sha256(path),
         })
 
-    # Native SRS, model registry, and prover-only blinder resources are
-    # baseline-local setup outputs.  For canonical datasets they must already
-    # be present, baseline-local, and digest-bound after setup; this script
-    # never generates, repairs, or downgrades them to an UNAVAILABLE marker.
     srs_path_raw = values.get("srs_path", "UNAVAILABLE")
     srs_manifest_digest = values.get("srs_manifest_digest", "UNAVAILABLE")
     model_registry_path_raw = values.get("model_registry_path", "UNAVAILABLE")
@@ -172,8 +168,7 @@ def main() -> int:
                 "sha256": sha256(resource_path),
             })
     elif srs_path_raw != "UNAVAILABLE" and srs_manifest_digest != "UNAVAILABLE":
-        # Non-canonical synthetic fixtures may opt into resource checks, but
-        # never receive a best-effort manifest for an absent resource.
+
         srs_path = local_path(root, srs_path_raw, "srs_path")
         if srs_path.is_symlink() or not srs_path.is_dir():
             fail("BLOCKED: configured SRS directory is missing")

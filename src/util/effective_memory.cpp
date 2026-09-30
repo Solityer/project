@@ -23,8 +23,6 @@ namespace gatzk::util
         using Clock = std::chrono::steady_clock;
 
         constexpr std::uint64_t kKiB = 1024;
-        // Values at this scale are cgroup's conventional "unlimited"
-        // sentinels, while being far above any supported host memory size.
         constexpr std::uint64_t kHugeUnlimitedSentinel = 1ULL << 60;
         constexpr auto kSnapshotCacheLifetime = std::chrono::milliseconds(250);
 
@@ -281,10 +279,6 @@ namespace gatzk::util
                 }
                 begin = end + 1;
             }
-            // A mount-root `max` is not the current process' limit when the
-            // process is nested in a finite cgroup.  Prefer membership paths
-            // exclusively whenever /proc/self/cgroup supplied one, and only
-            // fall back to the root file when membership could not be read.
             if (!membership_paths.empty())
             {
                 return membership_paths;
@@ -305,25 +299,16 @@ namespace gatzk::util
                 {
                     if (trim(*contents).empty())
                     {
-                        // An existing but empty controller file is a
-                        // malformed controller value, not an absent
-                        // controller.  Keep a non-empty marker so the parser
-                        // cannot accidentally fail open.
                         return std::string("__gatzk_empty_cgroup_value__");
                     }
                     return contents;
                 }
-                // A discovered controller file that cannot be read must not
-                // silently turn into an unrestricted host admission.  The
-                // parser treats this marker as malformed and applies its
-                // conservative fallback; absent controller files still mean
-                // that this host has no visible cgroup memory controller.
                 return std::string("__gatzk_unreadable_cgroup_value__");
             }
             return std::nullopt;
         }
 
-    } // namespace
+    }
 
     EffectiveMemorySnapshot parse_effective_memory_snapshot(const EffectiveMemoryTextSources &sources)
     {
@@ -346,9 +331,6 @@ namespace gatzk::util
         const auto v1_limit = select_limit(sources.cgroup_v1_limit, sources.cgroup_v1_membership_limit, sources.cgroup_v1_root_limit);
         const auto v1_current = select_current(sources.cgroup_v1_current, sources.cgroup_v1_membership_current, sources.cgroup_v1_root_current);
 
-        // Do not trim before checking presence: whitespace and the explicit
-        // unreadable/empty markers are controller evidence and must be
-        // classified as malformed rather than as an unrestricted host.
         const bool use_v2 = !v2_limit.empty() || !v2_current.empty();
         const bool use_v1 = !use_v2 && (!v1_limit.empty() || !v1_current.empty());
         snapshot.cgroup_v2 = use_v2;
@@ -412,11 +394,6 @@ namespace gatzk::util
         }
         else
         {
-            // MemTotal alone does not establish reclaimable/available memory.
-            // In particular, total/8 is only a heuristic and must never turn
-            // an unavailable controller value into an admitted production
-            // budget.  The read path may replace this unknown value with the
-            // independently observed bare-metal _SC_AVPHYS_PAGES fallback.
             available = 0;
             snapshot.conservative = true;
         }
@@ -435,18 +412,12 @@ namespace gatzk::util
             }
             else
             {
-                // A finite limit without a trustworthy current usage is not
-                // safe to admit against.  This is intentionally conservative.
                 available = 0;
                 available_known = false;
                 snapshot.conservative = true;
             }
         }
 
-        // Once a controller is present but malformed, the host-level
-        // MemAvailable value cannot prove that the process is below its
-        // effective cgroup limit. Preserve the diagnostic byte value only in
-        // the snapshot fields; public admission must see unknown/zero.
         if ((snapshot.cgroup_v2 || snapshot.cgroup_v1) && snapshot.cgroup_malformed)
         {
             available = 0;
@@ -510,12 +481,6 @@ namespace gatzk::util
             .cgroup_v1_root_current = {},
         });
 
-        // /proc/meminfo can be unavailable in a restricted container or can
-        // contain an overflowing/malformed value.  Retain independently
-        // observed bare-metal page counters where they can establish a
-        // trustworthy total and available count.  Do not synthesize an
-        // available budget from total/8: an unknown available count remains
-        // zero and is rejected by the common admission helper.
         const auto bytes_from_pages = [](long pages_raw, long page_size_raw) -> std::optional<std::size_t>
         {
             if (pages_raw <= 0 || page_size_raw <= 0)
@@ -547,10 +512,6 @@ namespace gatzk::util
             snapshot.conservative = true;
         }
 
-        // _SC_AVPHYS_PAGES is an independent available-page observation on a
-        // bare-metal host. It is only used when no finite cgroup limit is
-        // known and no malformed controller value needs to be contained. A
-        // finite controller's current usage remains authoritative.
         if (!snapshot.host_available_known && sysconf_available.has_value() && !snapshot.cgroup_limit_known && !snapshot.cgroup_malformed)
         {
             snapshot.host_available_known = true;
@@ -603,9 +564,6 @@ namespace gatzk::util
         }
         if (!snapshot.effective_total_known)
         {
-            // A reserve recommendation cannot establish a budget when total
-            // memory is unknown. Callers still receive the minimum reserve,
-            // while admit_effective_memory rejects unknown availability.
             return minimum_bytes;
         }
         const auto scaled = snapshot.effective_total_bytes <= std::numeric_limits<std::size_t>::max() / numerator
@@ -677,8 +635,6 @@ namespace gatzk::util
         const auto base = admit_effective_memory(snapshot, 0, 0, reserve_bytes, 1, std::numeric_limits<std::size_t>::max());
         result.budget_bytes = base.budget_bytes;
 
-        // A snapshot without a trustworthy available-memory value is never
-        // used to infer safe overlap.  One group remains the fail-closed cap.
         if (!result.memory_known || result.largest_workset_bytes == 0 || result.budget_bytes == 0)
         {
             result.maximum_parallel_groups = 1;
@@ -690,4 +646,4 @@ namespace gatzk::util
         return result;
     }
 
-} // namespace gatzk::util
+}

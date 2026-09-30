@@ -45,8 +45,7 @@ def inspect_dataset(root: Path, dataset: str) -> Dict[str, Any]:
         "cache_entries": cache_entries,
         "checkpoint_sidecar_sha256": sha256_file(checkpoint_dir / "integrity.sha256"),
         "checkpoint_entries": checkpoint_entries,
-        # This is the digest of the canonical manifest itself, not a digest
-        # inferred from model tensor contents at runtime.
+
         "checkpoint_manifest_sha256": checkpoint_entries["manifest.json"],
     }
 

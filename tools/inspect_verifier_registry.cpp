@@ -144,11 +144,6 @@ int main(int argc, char **argv)
         if (file_digest != trusted_digest)
             throw std::runtime_error("verifier registry file digest does not match trusted digest");
 
-        // The formal loader performs the complete canonical parse, digest
-        // check, compiler-artifact validation, IntegerBoundLedger validation,
-        // static-table validation, SecurityBudgetLedger reconstruction, and
-        // model/static registry shape checks.  This utility deliberately uses
-        // that independent loader instead of trusting a metadata sidecar.
         const auto verifier_context = gatzk::protocol::load_verifier_context_from_registry(path.string(), trusted_digest);
         if (!gatzk::protocol::validate_verifier_context(verifier_context))
             throw std::runtime_error("verifier registry independent context validation failed");

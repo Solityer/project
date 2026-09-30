@@ -120,14 +120,9 @@ def input_quantization_diagnostic(values: torch.Tensor | np.ndarray, *, scale: i
         "non_integer_ratio": float(np.mean(non_integer)),
         "max_abs_input": float(np.max(np.abs(raw))),
         "max_abs_quantized": float(np.max(np.abs(quantized))),
-        "abs_input_quantiles": {str(q): float(np.quantile(np.abs(raw), q)) for q in (0.0, 0.5, 0.9, 0.99, 1.0)},
+        "abs_input_quantiles": {str(q): float(np.quantile(np.abs(raw), q))
+                                for q in (0.0, 0.5, 0.9, 0.99, 1.0)},
         "max_abs_error": float(np.max(np.abs(quantized - raw))),
-        # S_input quantization has no clipping/saturation branch.  Exposing
-        # both fields makes that fact explicit and still reports values which
-        # would exceed the configured unsigned limb/range capacity.
-        # When a formal limb/range is supplied, saturation is exactly the
-        # fraction of rounded values outside that representable range.  Do
-        # not report a hard-coded zero for a lossy input sample.
         "saturation_ratio": 0.0,
     }
     if range_bits is not None:
@@ -157,9 +152,8 @@ def quantize_torch_ste(values: torch.Tensor, scale: int) -> torch.Tensor:
     return values + (quantized - values).detach()
 
 
-def quantized_input_features(
-    input_features: np.ndarray, chain: QuantizationScaleChain, *, range_bits: int | None = None
-) -> tuple[np.ndarray, Dict[str, object]]:
+def quantized_input_features(input_features: np.ndarray, chain: QuantizationScaleChain, *,
+                             range_bits: int | None = None) -> tuple[np.ndarray, Dict[str, object]]:
     """Materialize the formal public input q/S view for training."""
     input_view = np.asarray(input_features, dtype=np.float64)
     quantized_raw = quantize_array_ties_away(input_view, chain.s_input)
@@ -292,8 +286,6 @@ def load_dataset(
     label_ids = labels_to_int(labels)
     edge_src, edge_dst = build_sorted_edge_index(adjacency, features.shape[0], add_self_loops=True)
     return DatasetTensors(
-        # q/S is exactly representable for the canonical power-of-two S_input;
-        # keep the preprocessing itself float64 before this device transfer.
         features=torch.tensor(features, dtype=torch.float32, device=device),
         labels=torch.tensor(label_ids, dtype=torch.long, device=device),
         train_mask=torch.tensor(train_mask, dtype=torch.bool, device=device),
@@ -342,10 +334,6 @@ class AttentionHead(nn.Module):
             linear_scores = e_dst[edge_dst] + e_src[edge_src]
             scores = F.leaky_relu(linear_scores, negative_slope=0.2)
         else:
-            # Forward values are the registered fixed-point values q/S.  The
-            # straight-through wrapper keeps this path trainable while making
-            # checkpoint selection observe the same parameter and activation
-            # quantization semantics as the formal trace.
             working_inputs = quantize_torch_ste(working_inputs, quantization["input"])
             seq_weight = quantize_torch_ste(self.seq.weight, quantization["weight"])
             attn_dst_weight = quantize_torch_ste(self.attn_dst.weight, quantization["a_dst"])
@@ -367,10 +355,6 @@ class AttentionHead(nn.Module):
         else:
             delta = quantize_torch_ste(max_per_dst[edge_dst] - scores, quantization["delta"])
             exp_scores = quantize_torch_ste(torch.exp(-delta), quantization["exp"])
-            # The formal ExpMap table is defined on exp(-Delta) with a
-            # positive unit entry at Delta=0.  Keep QAT on that same
-            # registered support when a floating-point exp underflows to a
-            # value which would quantize to zero.
             exp_scores = torch.clamp(exp_scores, min=1.0 / float(quantization["exp"]))
         sum_per_dst = torch.zeros((num_nodes,), device=inputs.device, dtype=inputs.dtype)
         sum_per_dst.index_add_(0, edge_dst, exp_scores)
@@ -453,9 +437,8 @@ class PlanetoidGAT(nn.Module):
         output_input_dim = int(self.hidden_profile[-1]["head_count"]) * int(self.hidden_profile[-1]["head_dim"])
         self.output_heads = nn.ModuleList([AttentionHead(output_input_dim, self.num_classes, output_bias=True) for _ in range(self.k_out)])
 
-    def forward(
-        self, features: torch.Tensor, edge_src: torch.Tensor, edge_dst: torch.Tensor, *, dropout: float, training: bool, return_trace: bool = False
-    ) -> Tuple[torch.Tensor, Dict[str, object] | None]:
+    def forward(self, features: torch.Tensor, edge_src: torch.Tensor, edge_dst: torch.Tensor, *, dropout: float, training: bool,
+                return_trace: bool = False) -> Tuple[torch.Tensor, Dict[str, object] | None]:
         layer_input = features
         hidden_layer_traces: List[Dict[str, object]] = []
         for layer_index, layer in enumerate(self.hidden_layers):
@@ -579,9 +562,8 @@ def checkpoint_metadata(
     return metadata
 
 
-def load_checkpoint(
-    path: Union[str, pathlib.Path], device: torch.device | str | None = None, *, map_location: torch.device | str | None = None
-) -> Dict[str, object]:
+def load_checkpoint(path: Union[str, pathlib.Path], device: torch.device | str | None = None, *,
+                    map_location: torch.device | str | None = None) -> Dict[str, object]:
     """Load one canonical structured formal checkpoint."""
     if device is not None and map_location is not None:
         raise ValueError("pass either device or map_location, not both")
@@ -607,7 +589,8 @@ def load_checkpoint(
         raise ValueError("checkpoint must declare the canonical L=3 and K_out=2")
     bundle_chain = bundle["quantization_scale_chain"]
     if not isinstance(bundle_chain, str) or not bundle_chain:
-        raise ValueError("checkpoint is missing the complete quantization_scale_chain; " "quant_cfg_id alone is not a formal identity")
+        raise ValueError("checkpoint is missing the complete quantization_scale_chain; "
+                         "quant_cfg_id alone is not a formal identity")
     try:
         profile = checkpoint_hidden_profile(bundle)
         chain = canonical_quantization_scale_chain(bundle["quant_cfg_id"], profile, bundle["K_out"])
@@ -667,7 +650,8 @@ def main() -> None:
     output_dir = _resolve_output_dir(project_root, cfg, dataset, args.output_dir)
     checkpoint_path = output_dir / "best_model.pt"
     if checkpoint_path.exists() and not args.overwrite:
-        raise FileExistsError(f"refusing to overwrite {checkpoint_path}; pass a fresh --output-dir " "or explicitly use --overwrite")
+        raise FileExistsError(f"refusing to overwrite {checkpoint_path}; pass a fresh --output-dir "
+                              "or explicitly use --overwrite")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     hidden_profile = require_canonical_model_config(cfg, dataset)
@@ -683,7 +667,8 @@ def main() -> None:
     expected_training = {"cora": (500, 100, 0.005, 0.0005, 0.6), "citeseer": (500, 100, 0.005, 0.0005, 0.6), "pubmed": (500, 100, 0.01, 0.001, 0.6)}[dataset]
     actual_training = (epochs, patience, learning_rate, weight_decay, dropout)
     if actual_training != expected_training or seed != 11:
-        raise ValueError(f"{dataset} formal training requires epochs/patience/lr/weight_decay/" f"dropout={expected_training} and seed=11")
+        raise ValueError(f"{dataset} formal training requires epochs/patience/lr/weight_decay/"
+                         f"dropout={expected_training} and seed=11")
     if epochs <= 0 or patience <= 0:
         raise ValueError("epochs and patience must be positive")
     if not 0.0 <= dropout < 1.0:

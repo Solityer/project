@@ -1,6 +1,6 @@
 use ezkl::gat_adapter::{
-    evaluate_signed_division, scale_exponent_to_multiplier, CanonicalGat, CanonicalModel,
-    ExactTable, GatOp, HeadWeights, HiddenLayerSpec, ModelBinding, RoundingMode,
+    evaluate_signed_division, scale_exponent_to_multiplier, CanonicalGat, CanonicalModel, ExactTable, GatOp, HeadWeights, HiddenLayerSpec, ModelBinding,
+    RoundingMode,
 };
 
 #[test]
@@ -25,15 +25,11 @@ fn signed_round_division_covers_sign_zero_tie_and_toward_zero() {
     assert_eq!(zero.quotient, 0);
     assert_eq!(zero.remainder, 0);
 
-    // For an odd divisor the canonical nearest residual may reach 2*d-1;
-    // this is the ties-away boundary and must remain admissible.
     let odd_boundary = evaluate_signed_division(1, 3, RoundingMode::NearestTiesAway).unwrap();
     assert_eq!(odd_boundary.quotient, 0);
     assert_eq!(odd_boundary.remainder, 5);
     assert_eq!(odd_boundary.delta, 0);
-    odd_boundary
-        .validate(RoundingMode::NearestTiesAway)
-        .unwrap();
+    odd_boundary.validate(RoundingMode::NearestTiesAway).unwrap();
 
     let toward_zero = evaluate_signed_division(-5, 2, RoundingMode::TowardZero).unwrap();
     assert_eq!(toward_zero.quotient, -2);
@@ -82,20 +78,10 @@ fn redaction_keeps_parameter_shape_but_removes_private_values() {
     let model = CanonicalModel {
         hidden_layers: vec![HiddenLayerSpec {
             d_in: 1,
-            heads: vec![HeadWeights {
-                projection: vec![17],
-                a_src: vec![-3],
-                a_dst: vec![5],
-                bias: vec![],
-            }],
+            heads: vec![HeadWeights { projection: vec![17], a_src: vec![-3], a_dst: vec![5], bias: vec![],}],
             d_head: 1,
         }],
-        output_heads: vec![HeadWeights {
-            projection: vec![11],
-            a_src: vec![7],
-            a_dst: vec![-2],
-            bias: vec![13],
-        }],
+        output_heads: vec![HeadWeights { projection: vec![11], a_src: vec![7], a_dst: vec![-2], bias: vec![13],}],
         classes: 1,
         model_arch_id: "test".into(),
     };
@@ -103,23 +89,14 @@ fn redaction_keeps_parameter_shape_but_removes_private_values() {
     let mut op = GatOp {
         spec: CanonicalGat {
             model,
-            model_binding: ModelBinding {
-                hash: "0x01".into(),
-                hash_domain: "ezkl-gat-model-v1".into(),
-                canonical_model_digest: "00".repeat(32),
-            },
+            model_binding: ModelBinding { hash: "0x01".into(), hash_domain: "ezkl-gat-model-v1".into(), canonical_model_digest: "00".repeat(32),},
             ..CanonicalGat::default()
         },
         rounding: RoundingMode::NearestTiesAway,
     };
     op.redact_private_params();
     assert_eq!(op.spec.model.flattened_params().len(), before_len);
-    assert!(op
-        .spec
-        .model
-        .flattened_params()
-        .iter()
-        .all(|value| *value == 0));
+    assert!(op.spec.model.flattened_params().iter().all(|value| *value == 0));
     assert!(op.spec.private_params_redacted);
     assert_eq!(op.spec.model_binding.hash_domain, "ezkl-gat-model-v1");
 }

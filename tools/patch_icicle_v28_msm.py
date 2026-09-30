@@ -101,10 +101,6 @@ def main() -> None:
 
     text = replace_once(text, old, new, "large-bucket metadata synchronization")
 
-    # large_bucket_indices is consumed and released exclusively by
-    # stream_large_buckets.  Allocating it on the main stream leaves a
-    # cross-stream stream-ordered-allocation dependency that ICICLE v2.8.0
-    # never establishes explicitly.
     old = """        unsigned* large_bucket_indices;
         CHK_IF_RETURN(cudaMallocAsync(&large_bucket_indices, sizeof(unsigned) * large_buckets_nof_threads, stream));
 """
@@ -116,12 +112,6 @@ def main() -> None:
 
     text = replace_once(text, old, new, "large-bucket allocation stream ownership")
 
-    # The large-bucket stream reads all four sorted arrays below.  In the
-    # original v2.8.0 code the main stream queues cudaFreeAsync() for those
-    # arrays before it waits for event_large_buckets_accumulated.  With the
-    # CUDA stream-ordered allocator this permits reuse before the secondary
-    # stream has completed its reads.  Preserve concurrent accumulation, but
-    # put the event dependency before the frees.
     old = """      CHK_IF_RETURN(cudaFreeAsync(sorted_point_indices, stream));
       CHK_IF_RETURN(cudaFreeAsync(sorted_bucket_sizes, stream));
       CHK_IF_RETURN(cudaFreeAsync(sorted_bucket_offsets, stream));
@@ -150,12 +140,6 @@ def main() -> None:
 
     text = replace_once(text, old, new, "large-bucket metadata lifetime ordering")
 
-    # Iterative reduction uses allocations created on the main MSM stream from
-    # stream_reduction as well.  v2.8.0 only establishes the reverse
-    # stream_reduction -> main dependency after the kernels finish.  Add the
-    # missing main -> stream_reduction dependency at the beginning of each
-    # reduction generation; the two reduction streams remain concurrent once
-    # the generation inputs are ready.
     old = """        cudaStream_t stream_reduction;
         cudaEvent_t event_finished_reduction;
         CHK_IF_RETURN(cudaStreamCreate(&stream_reduction));

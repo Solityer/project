@@ -8,9 +8,7 @@
 
 use num::{BigUint, Zero};
 
-use super::schema::{
-    parse_authenticated_bn254_modulus, scale_exponent_to_multiplier, CanonicalGat, ExactTable,
-};
+use super::schema::{parse_authenticated_bn254_modulus, scale_exponent_to_multiplier, CanonicalGat, ExactTable,};
 
 /// Rounding rule used by signed fixed-point divisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -60,10 +58,7 @@ impl SignedDivision {
         }
         let remainder_upper = match mode {
             RoundingMode::TowardZero => self.divisor.checked_sub(1),
-            RoundingMode::NearestTiesAway => {
-                self.divisor.checked_mul(2).and_then(|x| x.checked_sub(1))
-            }
-        }
+            RoundingMode::NearestTiesAway => { self.divisor.checked_mul(2).and_then(|x| x.checked_sub(1)) } }
         .ok_or_else(|| "signed division remainder bound overflow".to_string())?;
         if self.remainder > remainder_upper {
             return Err("signed division remainder is outside its canonical range".into());
@@ -84,16 +79,11 @@ impl SignedDivision {
                 if reconstructed != self.abs_dividend {
                     return Err("signed division quotient/remainder identity failed".into());
                 }
-                self.divisor
-                    .checked_sub(1)
-                    .and_then(|x| x.checked_sub(self.remainder))
-                    .ok_or_else(|| "signed division delta underflow".to_string())?
+                self.divisor.checked_sub(1).and_then(|x| x.checked_sub(self.remainder)).ok_or_else(|| "signed division delta underflow".to_string())?
             }
             RoundingMode::NearestTiesAway => {
-                let rounded_abs = self
-                    .quotient_floor
-                    .checked_add(i128::from(self.rounded_up))
-                    .ok_or_else(|| "signed division rounded quotient overflow".to_string())?;
+                let rounded_abs =
+                    self.quotient_floor.checked_add(i128::from(self.rounded_up)).ok_or_else(|| "signed division rounded quotient overflow".to_string())?;
                 let lhs = self
                     .abs_dividend
                     .checked_mul(2)
@@ -123,32 +113,18 @@ impl SignedDivision {
             RoundingMode::NearestTiesAway => {
                 let floor_remainder = self
                     .abs_dividend
-                    .checked_sub(
-                        self.divisor
-                            .checked_mul(self.quotient_floor)
-                            .ok_or_else(|| "signed division floor product overflow".to_string())?,
-                    )
+                    .checked_sub(self.divisor.checked_mul(self.quotient_floor).ok_or_else(|| "signed division floor product overflow".to_string())?,)
                     .ok_or_else(|| "signed division floor remainder underflow".to_string())?;
-                floor_remainder
-                    .checked_mul(2)
-                    .ok_or_else(|| "signed division tie comparison overflow".to_string())?
-                    >= self.divisor
+                floor_remainder.checked_mul(2).ok_or_else(|| "signed division tie comparison overflow".to_string())? >= self.divisor
             }
         };
         if self.rounded_up != expected_up {
             return Err("signed division nearest-rounding bit failed".into());
         }
-        let rounded_abs = self
-            .quotient_floor
-            .checked_add(i128::from(self.rounded_up))
-            .ok_or_else(|| "signed division rounded quotient overflow".to_string())?;
-        let expected_quotient = if self.sigma {
-            rounded_abs
-                .checked_neg()
-                .ok_or_else(|| "signed division quotient overflow".to_string())?
-        } else {
-            rounded_abs
-        };
+        let rounded_abs =
+            self.quotient_floor.checked_add(i128::from(self.rounded_up)).ok_or_else(|| "signed division rounded quotient overflow".to_string())?;
+        let expected_quotient =
+            if self.sigma { rounded_abs.checked_neg().ok_or_else(|| "signed division quotient overflow".to_string())? } else { rounded_abs };
         if self.quotient != expected_quotient {
             return Err("signed division sign/quotient relation failed".into());
         }
@@ -196,22 +172,18 @@ pub struct GatTrace {
 }
 
 fn checked_add(a: i128, b: i128) -> Result<i128, String> {
-    a.checked_add(b)
-        .ok_or_else(|| "integer addition overflow".into())
+    a.checked_add(b).ok_or_else(|| "integer addition overflow".into())
 }
 
 fn checked_mul(a: i128, b: i128) -> Result<i128, String> {
-    a.checked_mul(b)
-        .ok_or_else(|| "integer multiplication overflow".into())
+    a.checked_mul(b).ok_or_else(|| "integer multiplication overflow".into())
 }
 
 fn dot(a: &[i128], b: &[i128]) -> Result<i128, String> {
     if a.len() != b.len() {
         return Err("dot product dimensions do not match".into());
     }
-    a.iter()
-        .zip(b)
-        .try_fold(0_i128, |acc, (x, y)| checked_add(acc, checked_mul(*x, *y)?))
+    a.iter().zip(b).try_fold(0_i128, |acc, (x, y)| checked_add(acc, checked_mul(*x, *y)?))
 }
 
 fn signed_round_div(x: i128, d: i128, mode: RoundingMode) -> Result<SignedDivision, String> {
@@ -220,22 +192,13 @@ fn signed_round_div(x: i128, d: i128, mode: RoundingMode) -> Result<SignedDivisi
     }
     let sigma = x < 0;
     let zero = x == 0;
-    let abs = x
-        .checked_abs()
-        .ok_or_else(|| "signed dividend overflow".to_string())?;
+    let abs = x.checked_abs().ok_or_else(|| "signed dividend overflow".to_string())?;
     let q0 = abs / d;
     let r0 = abs % d;
     let rounded_up = match mode {
         RoundingMode::TowardZero => false,
-        RoundingMode::NearestTiesAway => {
-            r0.checked_mul(2)
-                .ok_or_else(|| "remainder doubling overflow".to_string())?
-                >= d
-        }
-    };
-    let rounded_abs = q0
-        .checked_add(i128::from(rounded_up))
-        .ok_or_else(|| "quotient overflow".to_string())?;
+        RoundingMode::NearestTiesAway => { r0.checked_mul(2).ok_or_else(|| "remainder doubling overflow".to_string())? >= d} };
+    let rounded_abs = q0.checked_add(i128::from(rounded_up)).ok_or_else(|| "quotient overflow".to_string())?;
     let quotient = if sigma { -rounded_abs } else { rounded_abs };
     let remainder = match mode {
         RoundingMode::TowardZero => r0,
@@ -246,37 +209,20 @@ fn signed_round_div(x: i128, d: i128, mode: RoundingMode) -> Result<SignedDivisi
             .ok_or_else(|| "nearest remainder overflow".to_string())?,
     };
     let delta = match mode {
-        RoundingMode::TowardZero => d
-            .checked_sub(1)
-            .and_then(|x| x.checked_sub(remainder))
-            .ok_or_else(|| "remainder complement underflow".to_string())?,
+        RoundingMode::TowardZero => d.checked_sub(1).and_then(|x| x.checked_sub(remainder)).ok_or_else(|| "remainder complement underflow".to_string())?,
         RoundingMode::NearestTiesAway => d
             .checked_mul(2)
             .and_then(|x| x.checked_sub(1))
             .and_then(|x| x.checked_sub(remainder))
             .ok_or_else(|| "nearest remainder complement underflow".to_string())?,
     };
-    let division = SignedDivision {
-        sigma,
-        zero,
-        abs_dividend: abs,
-        divisor: d,
-        quotient,
-        quotient_floor: q0,
-        rounded_up,
-        remainder,
-        delta,
-    };
+    let division = SignedDivision { sigma, zero, abs_dividend: abs, divisor: d, quotient, quotient_floor: q0, rounded_up, remainder, delta,};
     division.validate(mode)?;
     Ok(division)
 }
 
 /// Expose one signed division witness to the circuit adapter and tests.
-pub fn evaluate_signed_division(
-    x: i128,
-    d: i128,
-    mode: RoundingMode,
-) -> Result<SignedDivision, String> {
+pub fn evaluate_signed_division(x: i128, d: i128, mode: RoundingMode,) -> Result<SignedDivision, String> {
     signed_round_div(x, d, mode)
 }
 
@@ -311,39 +257,19 @@ fn inverse_mod(a: i128, modulus: &BigUint) -> Result<BigUint, String> {
 
 fn scale_multiplier_i128(exponent: i32, label: &str) -> Result<i128, String> {
     let multiplier = scale_exponent_to_multiplier(exponent)?;
-    i128::try_from(multiplier).map_err(|_| {
-        format!(
-            "{} scale multiplier does not fit signed host integer",
-            label
-        )
-    })
-}
+    i128::try_from(multiplier).map_err(|_| { format!("{} scale multiplier does not fit signed host integer", label) }) }
 
 fn lookup(table: &ExactTable, x: i128) -> Result<i128, String> {
     table.lookup(x)
 }
 
-fn project(
-    features: &[i128],
-    row: usize,
-    d_in: usize,
-    projection: &[i128],
-    d_out: usize,
-) -> Result<Vec<i128>, String> {
-    let start = row
-        .checked_mul(d_in)
-        .ok_or_else(|| "feature offset overflow".to_string())?;
-    let end = start
-        .checked_add(d_in)
-        .ok_or_else(|| "feature row end overflow".to_string())?;
-    let input = features
-        .get(start..end)
-        .ok_or_else(|| "feature row is outside feature table".to_string())?;
+fn project(features: &[i128], row: usize, d_in: usize, projection: &[i128], d_out: usize,) -> Result<Vec<i128>, String> {
+    let start = row.checked_mul(d_in).ok_or_else(|| "feature offset overflow".to_string())?;
+    let end = start.checked_add(d_in).ok_or_else(|| "feature row end overflow".to_string())?;
+    let input = features.get(start..end).ok_or_else(|| "feature row is outside feature table".to_string())?;
     (0..d_out)
         .map(|j| {
-            let weights = (0..d_in)
-                .map(|i| projection[i * d_out + j])
-                .collect::<Vec<_>>();
+            let weights = (0..d_in).map(|i| projection[i * d_out + j]).collect::<Vec<_>>();
             dot(input, &weights)
         })
         .collect()
@@ -372,36 +298,19 @@ fn aggregate(
     }
     let mut scores = Vec::with_capacity(graph.e);
     for edge in 0..graph.e {
-        let s = dot(
-            &src_values[graph.src[edge] * d_out..(graph.src[edge] + 1) * d_out],
-            a_src,
-        )?;
-        let d = dot(
-            &dst_values[graph.dst[edge] * d_out..(graph.dst[edge] + 1) * d_out],
-            a_dst,
-        )?;
+        let s = dot(&src_values[graph.src[edge] * d_out..(graph.src[edge] + 1) * d_out], a_src,)?;
+        let d = dot(&dst_values[graph.dst[edge] * d_out..(graph.dst[edge] + 1) * d_out], a_dst,)?;
         scores.push(lookup(lrelu, checked_add(s, d)?)?);
     }
     let mut out = vec![0_i128; graph.n * d_out];
     let mut traces = Vec::new();
     for (dst, start, end) in graph.destination_groups()? {
-        let max_score = scores[start..end]
-            .iter()
-            .copied()
-            .max()
-            .ok_or_else(|| "empty destination group".to_string())?;
+        let max_score = scores[start..end].iter().copied().max().ok_or_else(|| "empty destination group".to_string())?;
         let mut exps = Vec::with_capacity(end - start);
         for score in &scores[start..end] {
-            exps.push(lookup(
-                exp,
-                max_score
-                    .checked_sub(*score)
-                    .ok_or_else(|| "score difference overflow".to_string())?,
-            )?);
+            exps.push(lookup(exp, max_score.checked_sub(*score).ok_or_else(|| "score difference overflow".to_string())?,)?);
         }
-        let denominator = exps
-            .iter()
-            .try_fold(0_i128, |acc, x| checked_add(acc, *x))?;
+        let denominator = exps.iter().try_fold(0_i128, |acc, x| checked_add(acc, *x))?;
         if denominator <= 0 {
             return Err("softmax denominator must be positive".into());
         }
@@ -411,13 +320,8 @@ fn aggregate(
         for (local, edge) in (start..end).enumerate() {
             let src = graph.src[edge];
             for channel in 0..d_out {
-                numerators[channel] = checked_add(
-                    numerators[channel],
-                    checked_mul(exps[local], src_values[src * d_out + channel])?,
-                )?;
-                raw_field_values[channel] = (raw_field_values[channel].clone()
-                    + mod_mul(exps[local], src_values[src * d_out + channel], modulus))
-                    % modulus;
+                numerators[channel] = checked_add(numerators[channel], checked_mul(exps[local], src_values[src * d_out + channel])?,)?;
+                raw_field_values[channel] = (raw_field_values[channel].clone() + mod_mul(exps[local], src_values[src * d_out + channel], modulus)) % modulus;
             }
         }
         let values = numerators
@@ -434,38 +338,19 @@ fn aggregate(
                 return Err("field alpha numerator disagrees with integer numerator path".into());
             }
         }
-        let field_values = numerators
-            .iter()
-            .map(|numerator| (mod_from_signed(*numerator, modulus) * &inv) % modulus)
-            .collect::<Vec<_>>();
+        let field_values = numerators.iter().map(|numerator| (mod_from_signed(*numerator, modulus) * &inv) % modulus).collect::<Vec<_>>();
         let divisions = numerators
             .iter()
-            .map(|num| {
-                signed_round_div(
-                    checked_mul(*num, numerator_scale)?,
-                    checked_mul(denominator, denominator_scale)?,
-                    mode,
-                )
-            })
+            .map(|num| { signed_round_div(checked_mul(*num, numerator_scale)?, checked_mul(denominator, denominator_scale)?, mode,) })
             .collect::<Result<Vec<_>, _>>()?;
-        let values = if let Some(elu_table) = elu {
-            values
-                .iter()
-                .map(|x| lookup(elu_table, *x))
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            values
-        };
+        let values = if let Some(elu_table) = elu { values.iter().map(|x| lookup(elu_table, *x)).collect::<Result<Vec<_>, _>>()? } else { values };
         out[dst * d_out..(dst + 1) * d_out].copy_from_slice(&values);
         traces.push(AggregationTrace {
             dst,
             numerators,
             denominator,
             values,
-            field_values: field_values
-                .into_iter()
-                .map(|value| value.to_string())
-                .collect(),
+            field_values: field_values.into_iter().map(|value| value.to_string()).collect(),
             divisions,
             alignment_divisions: Vec::new(),
         });
@@ -479,14 +364,12 @@ pub fn evaluate(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTrace, St
     let modulus = modulus_from_spec(model)?;
     let output_recovery_scale = scale_multiplier_i128(model.scales.s_out_pre, "s_out_pre")?;
     let output_head_scale = scale_multiplier_i128(model.scales.s_out_head, "s_out_head")?;
-    let output_head_count = i128::try_from(model.model.output_heads.len())
-        .map_err(|_| "output head count does not fit host integer".to_string())?;
+    let output_head_count = i128::try_from(model.model.output_heads.len()).map_err(|_| "output head count does not fit host integer".to_string())?;
     let graph = &model.graph;
     let mut current = vec![0_i128; graph.n * model.feature_dim];
     for (node, table_row) in graph.node_ids.iter().copied().enumerate() {
         let source = table_row * model.feature_dim;
-        current[node * model.feature_dim..(node + 1) * model.feature_dim]
-            .copy_from_slice(&model.features[source..source + model.feature_dim]);
+        current[node * model.feature_dim..(node + 1) * model.feature_dim].copy_from_slice(&model.features[source..source + model.feature_dim]);
     }
     let mut hidden = Vec::new();
     let mut current_dim = model.feature_dim;
@@ -511,43 +394,26 @@ pub fn evaluate(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTrace, St
                 mode,
                 &modulus,
                 scale_multiplier_i128(model.scales.s_agg_pre[layer_idx], "s_agg_pre hidden layer")?,
-                scale_multiplier_i128(
-                    model.scales.s_h_prime[layer_idx][head_idx],
-                    "hidden projection scale",
-                )?,
+                scale_multiplier_i128(model.scales.s_h_prime[layer_idx][head_idx], "hidden projection scale",)?,
                 Some(&model.tables.elu),
             )?;
-            // `aggregate` already performs the protocol's
-            // S_agg_pre / (S_H' * Sum) recovery.  The ELU table consumes the
-            // recovered integer at exactly S_agg_pre and emits S_agg.
             for node in 0..graph.n {
                 let base = (node * layer.heads.len() + head_idx) * layer.d_head;
-                layer_values[base..base + layer.d_head]
-                    .copy_from_slice(&aggregated[node * layer.d_head..(node + 1) * layer.d_head]);
+                layer_values[base..base + layer.d_head].copy_from_slice(&aggregated[node * layer.d_head..(node + 1) * layer.d_head]);
             }
             layer_heads.push(traces);
         }
         current = layer_values.clone();
         current_dim = layer.heads.len() * layer.d_head;
-        hidden.push(HiddenTrace {
-            node_values: layer_values,
-            heads: layer_heads,
-        });
+        hidden.push(HiddenTrace { node_values: layer_values, heads: layer_heads,});
     }
     let mut output_heads = Vec::new();
     let mut head_outputs = Vec::new();
     for (head_idx, head) in model.model.output_heads.iter().enumerate() {
         let mut projected = vec![0_i128; graph.n * model.model.classes];
         for node in 0..graph.n {
-            let row = project(
-                &current,
-                node,
-                current_dim,
-                &head.projection,
-                model.model.classes,
-            )?;
-            projected[node * model.model.classes..(node + 1) * model.model.classes]
-                .copy_from_slice(&row);
+            let row = project(&current, node, current_dim, &head.projection, model.model.classes,)?;
+            projected[node * model.model.classes..(node + 1) * model.model.classes].copy_from_slice(&row);
         }
         let (aggregated, mut traces) = aggregate(
             graph,
@@ -569,47 +435,23 @@ pub fn evaluate(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTrace, St
             .zip(std::iter::repeat(&head.bias))
             .flat_map(|(row, bias)| {
                 row.iter().zip(bias).map(|(x, b)| {
-                    let aligned = signed_round_div(
-                        checked_mul(*x, output_head_scale)?,
-                        scale_multiplier_i128(model.scales.s_out_pre, "s_out_pre")?,
-                        mode,
-                    )?;
+                    let aligned = signed_round_div(checked_mul(*x, output_head_scale)?, scale_multiplier_i128(model.scales.s_out_pre, "s_out_pre")?, mode,)?;
                     let value = checked_add(aligned.quotient, *b)?;
                     Ok::<i128, String>(value)
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        // Store the alignment division in every destination trace so the
-        // witness shape records both output recovery and scale alignment.
         let out_pre = scale_multiplier_i128(model.scales.s_out_pre, "s_out_pre")?;
         for trace in &mut traces {
-            trace.alignment_divisions = trace
-                .values
-                .iter()
-                .map(|value| {
-                    signed_round_div(checked_mul(*value, output_head_scale)?, out_pre, mode)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            trace.alignment_divisions =
+                trace.values.iter().map(|value| { signed_round_div(checked_mul(*value, output_head_scale)?, out_pre, mode) }).collect::<Result<Vec<_>, _>>()?;
         }
         head_outputs.push(with_bias);
         output_heads.push(traces);
     }
     let mut output = vec![0_i128; graph.n * model.model.classes];
     for i in 0..output.len() {
-        output[i] = signed_round_div(
-            head_outputs
-                .iter()
-                .try_fold(0_i128, |acc, h| checked_add(acc, h[i]))?,
-            output_head_count,
-            // The protocol fixes the final head average to nearest-ties-away;
-            // it is not allowed to inherit a backend-specific truncation mode.
-            RoundingMode::NearestTiesAway,
-        )?
-        .quotient;
+        output[i] = signed_round_div(head_outputs.iter().try_fold(0_i128, |acc, h| checked_add(acc, h[i]))?, output_head_count, RoundingMode::NearestTiesAway,)?
+            .quotient;
     }
-    Ok(GatTrace {
-        hidden,
-        output,
-        output_heads,
-    })
-}
+    Ok(GatTrace { hidden, output, output_heads,}) }

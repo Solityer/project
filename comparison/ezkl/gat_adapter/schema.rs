@@ -45,17 +45,11 @@ pub fn canonical_tensor_archive_key(name: &str) -> Result<String, String> {
         return Err("canonical tensor name must not be empty".into());
     }
     if name.contains('\0') || name.contains('\\') {
-        return Err(format!(
-            "canonical tensor name contains a forbidden path character: {}",
-            name
-        ));
+        return Err(format!("canonical tensor name contains a forbidden path character: {}", name));
     }
     let encoded = name.replace('/', "__").replace(':', "__");
     if encoded.is_empty() || encoded.contains('/') || encoded.contains(':') {
-        return Err(format!(
-            "canonical tensor archive key is not encodable: {}",
-            name
-        ));
+        return Err(format!("canonical tensor archive key is not encodable: {}", name));
     }
     Ok(encoded)
 }
@@ -98,9 +92,7 @@ pub fn parse_bn254_modulus(value: &str, label: &str) -> Result<BigUint, String> 
         return Err(format!("{} must be unsigned", label));
     }
     let (digits, radix) = if let Some(hex) = value.strip_prefix("0x") {
-        if hex.is_empty()
-            || hex.bytes().any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
-        {
+        if hex.is_empty() || hex.bytes().any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase()) {
             return Err(format!("{} must use lower-case 0x hexadecimal", label));
         }
         (hex, 16)
@@ -113,8 +105,7 @@ pub fn parse_bn254_modulus(value: &str, label: &str) -> Result<BigUint, String> 
     if digits.len() > 1 && digits.starts_with('0') {
         return Err(format!("{} has non-canonical leading zeroes", label));
     }
-    BigUint::parse_bytes(digits.as_bytes(), radix)
-        .ok_or_else(|| format!("{} is not a valid unsigned integer", label))
+    BigUint::parse_bytes(digits.as_bytes(), radix).ok_or_else(|| format!("{} is not a valid unsigned integer", label))
 }
 
 /// Parse and authenticate a resource ledger's BN254 Fr modulus.
@@ -186,14 +177,8 @@ impl CircuitRef {
                 return Err(format!("CircuitRef.{} must not be empty", label));
             }
             let lowered = value.to_ascii_lowercase();
-            if ["unbound", "pending", "placeholder", "dummy", "fake"]
-                .iter()
-                .any(|marker| lowered.contains(marker))
-            {
-                return Err(format!(
-                    "CircuitRef.{} contains an unbound/placeholder identity",
-                    label
-                ));
+            if ["unbound", "pending", "placeholder", "dummy", "fake"].iter().any(|marker| lowered.contains(marker)) {
+                return Err(format!("CircuitRef.{} contains an unbound/placeholder identity", label));
             }
         }
         for (label, digest) in [
@@ -229,14 +214,8 @@ impl ModelBinding {
         if self.hash.is_empty() {
             return Err("model binding hash must not be empty".into());
         }
-        canonical_string_to_fr(&self.hash)
-            .map_err(|error| format!("model binding hash: {}", error))?;
-        validate_digest(
-            "model binding canonical_model_digest",
-            &self.canonical_model_digest,
-        )
-    }
-}
+        canonical_string_to_fr(&self.hash).map_err(|error| format!("model binding hash: {}", error))?;
+        validate_digest("model binding canonical_model_digest", &self.canonical_model_digest,) } }
 
 /// Complete verifier-facing public instance binding.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,18 +317,11 @@ impl ExactTable {
             return Err("exact table id must not be empty".into());
         }
         if self.input_scale < 0 || self.output_scale < 0 {
-            return Err(format!(
-                "{} input/output scales must be non-negative exact exponents",
-                self.table_id
-            ));
+            return Err(format!("{} input/output scales must be non-negative exact exponents", self.table_id));
         }
         scale_exponent_to_multiplier(self.input_scale)?;
         scale_exponent_to_multiplier(self.output_scale)?;
-        for (label, identity) in [
-            ("function_id", &self.function_id),
-            ("domain_id", &self.domain_id),
-            ("generator_id", &self.generator_id),
-        ] {
+        for (label, identity) in [("function_id", &self.function_id), ("domain_id", &self.domain_id), ("generator_id", &self.generator_id),] {
             if identity.is_empty() {
                 return Err(format!("{} {} must not be empty", self.table_id, label));
             }
@@ -362,20 +334,13 @@ impl ExactTable {
             .checked_sub(self.input_min)
             .and_then(|x| x.checked_add(1))
             .ok_or_else(|| format!("{} input domain length overflow", self.table_id))?;
-        let expected_len = usize::try_from(expected_len)
-            .map_err(|_| format!("{} input domain is too large", self.table_id))?;
+        let expected_len = usize::try_from(expected_len).map_err(|_| format!("{} input domain is too large", self.table_id))?;
         if self.rows.len() != expected_len {
-            return Err(format!(
-                "{} rows are not a complete contiguous domain",
-                self.table_id
-            ));
+            return Err(format!("{} rows are not a complete contiguous domain", self.table_id));
         }
         for (row_idx, (input, output)) in self.rows.iter().enumerate() {
             if *input < self.input_min || *input > self.input_max {
-                return Err(format!(
-                    "{} row input {} is outside [{}, {}]",
-                    self.table_id, input, self.input_min, self.input_max
-                ));
+                return Err(format!("{} row input {} is outside [{}, {}]", self.table_id, input, self.input_min, self.input_max));
             }
             if non_negative_input && *input < 0 {
                 return Err(format!("{} contains a negative input", self.table_id));
@@ -385,24 +350,15 @@ impl ExactTable {
             }
             let expected_input = self
                 .input_min
-                .checked_add(
-                    i128::try_from(row_idx)
-                        .map_err(|_| format!("{} row index does not fit i128", self.table_id))?,
-                )
+                .checked_add(i128::try_from(row_idx).map_err(|_| format!("{} row index does not fit i128", self.table_id))?,)
                 .ok_or_else(|| format!("{} row input overflow", self.table_id))?;
             if *input != expected_input {
-                return Err(format!(
-                    "{} rows must be sorted and contiguous",
-                    self.table_id
-                ));
+                return Err(format!("{} rows must be sorted and contiguous", self.table_id));
             }
         }
         let expected_digest = sha256_digest(&self.canonical_bytes())?;
         if self.digest != expected_digest {
-            return Err(format!(
-                "{} digest does not match canonical rows",
-                self.table_id
-            ));
+            return Err(format!("{} digest does not match canonical rows", self.table_id));
         }
         Ok(())
     }
@@ -450,13 +406,7 @@ impl CanonicalGraph {
         for value in [self.n_total, self.n, self.e, self.g_batch] {
             append_usize(&mut out, value);
         }
-        for values in [
-            self.node_ids.as_slice(),
-            self.src.as_slice(),
-            self.dst.as_slice(),
-            self.node_ptr.as_slice(),
-            self.edge_ptr.as_slice(),
-        ] {
+        for values in [self.node_ids.as_slice(), self.src.as_slice(), self.dst.as_slice(), self.node_ptr.as_slice(), self.edge_ptr.as_slice(),] {
             append_usize(&mut out, values.len());
             for value in values {
                 append_usize(&mut out, *value);
@@ -523,17 +473,12 @@ impl CanonicalGraph {
                 return Err(format!("edge {} crosses a graph boundary", k));
             }
         }
-        // The edge layout is the canonical stable destination order.  Equal
-        // destinations retain their original order, so no tie-breaker is
-        // silently introduced by the adapter.
         for graph in 0..self.g_batch {
             let start = self.edge_ptr[graph];
             let end = self.edge_ptr[graph + 1];
             for pair in self.dst[start..end].windows(2) {
                 if pair[0] > pair[1] {
-                    return Err(
-                        "edges must be stably sorted by destination within each graph".into(),
-                    );
+                    return Err("edges must be stably sorted by destination within each graph".into(),);
                 }
             }
         }
@@ -548,18 +493,12 @@ impl CanonicalGraph {
 
     /// Return the graph containing a node.
     pub fn graph_for_node(&self, node: usize) -> Result<usize, String> {
-        self.node_ptr
-            .windows(2)
-            .position(|w| w[0] <= node && node < w[1])
-            .ok_or_else(|| format!("node {} is outside node_ptr", node))
+        self.node_ptr.windows(2).position(|w| w[0] <= node && node < w[1]).ok_or_else(|| format!("node {} is outside node_ptr", node))
     }
 
     /// Return the graph containing an edge.
     pub fn graph_for_edge(&self, edge: usize) -> Result<usize, String> {
-        self.edge_ptr
-            .windows(2)
-            .position(|w| w[0] <= edge && edge < w[1])
-            .ok_or_else(|| format!("edge {} is outside edge_ptr", edge))
+        self.edge_ptr.windows(2).position(|w| w[0] <= edge && edge < w[1]).ok_or_else(|| format!("edge {} is outside edge_ptr", edge))
     }
 
     /// Return contiguous edge ranges for each destination group.
@@ -632,38 +571,24 @@ pub struct ScaleChain {
 /// multiplier.  This intentionally does not use floating point or rounding.
 pub fn scale_exponent_to_multiplier(exponent: i32) -> Result<u128, String> {
     if exponent < 0 {
-        return Err(format!(
-            "scale exponent {} is not a positive power-of-two",
-            exponent
-        ));
+        return Err(format!("scale exponent {} is not a positive power-of-two", exponent));
     }
     let exponent = u32::try_from(exponent).map_err(|_| "invalid scale exponent".to_string())?;
-    1_u128
-        .checked_shl(exponent)
-        .ok_or_else(|| "scale exponent exceeds exact u128 multiplier range".into())
+    1_u128.checked_shl(exponent).ok_or_else(|| "scale exponent exceeds exact u128 multiplier range".into())
 }
 
 /// Convert an exact positive power-of-two multiplier into an ezkl log2
 /// exponent.  Non-powers and zero are rejected instead of being rounded.
 pub fn multiplier_to_scale_exponent(multiplier: u128) -> Result<i32, String> {
     if multiplier == 0 || !multiplier.is_power_of_two() {
-        return Err(format!(
-            "multiplier {} is not a positive power of two",
-            multiplier
-        ));
+        return Err(format!("multiplier {} is not a positive power of two", multiplier));
     }
-    i32::try_from(multiplier.trailing_zeros())
-        .map_err(|_| "power-of-two exponent does not fit i32".into())
+    i32::try_from(multiplier.trailing_zeros()).map_err(|_| "power-of-two exponent does not fit i32".into())
 }
 
 impl ScaleChain {
     /// Validate the scale closure required by the protocol.
-    pub fn validate(
-        &self,
-        layers: usize,
-        hidden_heads: &[usize],
-        output_heads: usize,
-    ) -> Result<(), String> {
+    pub fn validate(&self, layers: usize, hidden_heads: &[usize], output_heads: usize,) -> Result<(), String> {
         if layers < 2 || self.s_input <= 0 || self.s_delta <= 0 || self.s_exp <= 0 {
             return Err("invalid scale chain or layer count".into());
         }
@@ -684,14 +609,7 @@ impl ScaleChain {
         {
             return Err("scale chain dimensions do not match model architecture".into());
         }
-        let mut all_scales = vec![
-            self.s_input,
-            self.s_delta,
-            self.s_exp,
-            self.s_out_pre,
-            self.s_out_head,
-            self.s_out,
-        ];
+        let mut all_scales = vec![self.s_input, self.s_delta, self.s_exp, self.s_out_pre, self.s_out_head, self.s_out,];
         all_scales.extend(self.s_h.iter().copied());
         all_scales.extend(self.s_agg_pre.iter().copied());
         all_scales.extend(self.s_agg.iter().copied());
@@ -713,27 +631,15 @@ impl ScaleChain {
         for layer in &self.s_a_dst_hidden {
             all_scales.extend(layer.iter().copied());
         }
-        if all_scales
-            .iter()
-            .copied()
-            .any(|scale| scale_exponent_to_multiplier(scale).is_err())
-        {
+        if all_scales.iter().copied().any(|scale| scale_exponent_to_multiplier(scale).is_err()) {
             return Err("all numeric scales must be exact positive powers of two".into());
         }
-        if self.s_h[0] != self.s_input
-            || self.s_cat != self.s_agg
-            || self.s_out != self.s_out_head
-            || self.s_out_pre <= 0
-            || self.s_out_head <= 0
-        {
+        if self.s_h[0] != self.s_input || self.s_cat != self.s_agg || self.s_out != self.s_out_head || self.s_out_pre <= 0 || self.s_out_head <= 0 {
             return Err("input/concat/output scale closure is not canonical".into());
         }
         for layer in 0..layers - 1 {
             if self.s_h[layer + 1] != self.s_cat[layer] {
-                return Err(format!(
-                    "hidden concat transition at layer {} does not close to s_cat",
-                    layer
-                ));
+                return Err(format!("hidden concat transition at layer {} does not close to s_cat", layer));
             }
             if self.s_w_hidden[layer].len() != hidden_heads[layer]
                 || self.s_h_prime[layer].len() != hidden_heads[layer]
@@ -744,26 +650,16 @@ impl ScaleChain {
             }
             for head in 0..hidden_heads[layer] {
                 if self.s_h_prime[layer][head] != self.s_h[layer] + self.s_w_hidden[layer][head] {
-                    return Err(format!(
-                        "hidden projection scale mismatch at {}:{}",
-                        layer, head
-                    ));
+                    return Err(format!("hidden projection scale mismatch at {}:{}", layer, head));
                 }
                 if self.s_h_prime[layer][head] + self.s_a_src_hidden[layer][head] != self.s_delta
-                    || self.s_h_prime[layer][head] + self.s_a_dst_hidden[layer][head]
-                        != self.s_delta
+                    || self.s_h_prime[layer][head] + self.s_a_dst_hidden[layer][head] != self.s_delta
                 {
-                    return Err(format!(
-                        "hidden attention scale mismatch at {}:{}",
-                        layer, head
-                    ));
+                    return Err(format!("hidden attention scale mismatch at {}:{}", layer, head));
                 }
             }
             if self.s_agg_pre[layer] <= 0 || self.s_agg[layer] <= 0 || self.s_cat[layer] <= 0 {
-                return Err(format!(
-                    "invalid hidden aggregation scale at layer {}",
-                    layer
-                ));
+                return Err(format!("invalid hidden aggregation scale at layer {}", layer));
             }
         }
         self.shared_elu_scales()?;
@@ -782,17 +678,9 @@ impl ScaleChain {
     /// Return the shared ELU table scales after proving that every hidden
     /// layer uses the same authenticated table domain.
     pub fn shared_elu_scales(&self) -> Result<(i32, i32), String> {
-        let (&input, rest_input) = self
-            .s_agg_pre
-            .split_first()
-            .ok_or_else(|| "missing hidden aggregation input scales".to_string())?;
-        let (&output, rest_output) = self
-            .s_agg
-            .split_first()
-            .ok_or_else(|| "missing hidden aggregation output scales".to_string())?;
-        if rest_input.iter().any(|value| *value != input)
-            || rest_output.iter().any(|value| *value != output)
-        {
+        let (&input, rest_input) = self.s_agg_pre.split_first().ok_or_else(|| "missing hidden aggregation input scales".to_string())?;
+        let (&output, rest_output) = self.s_agg.split_first().ok_or_else(|| "missing hidden aggregation output scales".to_string())?;
+        if rest_input.iter().any(|value| *value != input) || rest_output.iter().any(|value| *value != output) {
             return Err("hidden layers require one shared authenticated ELU table scale".into());
         }
         Ok((input, output))
@@ -801,22 +689,10 @@ impl ScaleChain {
     /// Serialize the typed chain in the canonical source format used by the
     /// checkpoint manifests and the main GAT implementation.
     pub fn canonical_serialization(&self) -> Result<String, String> {
-        let source_value =
-            |value: i32| scale_exponent_to_multiplier(value).map(|value| value.to_string());
-        let vector = |values: &[i32]| {
-            values
-                .iter()
-                .copied()
-                .map(source_value)
-                .collect::<Result<Vec<_>, _>>()
-                .map(|values| values.join(","))
-        };
+        let source_value = |value: i32| scale_exponent_to_multiplier(value).map(|value| value.to_string());
+        let vector = |values: &[i32]| { values.iter().copied().map(source_value).collect::<Result<Vec<_>, _>>().map(|values| values.join(",")) };
         let matrix = |values: &[Vec<i32>]| {
-            values
-                .iter()
-                .map(|row| vector(row).map(|row| format!("[{}]", row)))
-                .collect::<Result<Vec<_>, _>>()
-                .map(|values| values.join(";"))
+            values.iter().map(|row| vector(row).map(|row| format!("[{}]", row))).collect::<Result<Vec<_>, _>>().map(|values| values.join(";"))
         };
         Ok(format!(
             "schema=gat_l3_scale_chain|S_input={}|S_Delta={}|S_exp={}|S_H=[{}]|S_W_hidden=[{}]|S_H_prime_hidden=[{}]|S_a_src_hidden=[{}]|S_a_dst_hidden=[{}]|S_agg_pre=[{}]|S_agg=[{}]|S_cat=[{}]|S_out_pre={}|S_out_head={}|S_out={}|S_W_output=[{}]|S_Y_prime_output=[{}]|S_a_src_output=[{}]|S_a_dst_output=[{}]|S_b_output=[{}]|S_inv=field_exact|S_alpha=field_exact|round=nearest_ties_away|rescale=none|output_average=signed_round_div",
@@ -854,12 +730,7 @@ impl ScaleChain {
                 out.extend_from_slice(&scale.to_le_bytes());
             }
         }
-        for layers in [
-            self.s_w_hidden.as_slice(),
-            self.s_h_prime.as_slice(),
-            self.s_a_src_hidden.as_slice(),
-            self.s_a_dst_hidden.as_slice(),
-        ] {
+        for layers in [self.s_w_hidden.as_slice(), self.s_h_prime.as_slice(), self.s_a_src_hidden.as_slice(), self.s_a_dst_hidden.as_slice(),] {
             append_usize(&mut out, layers.len());
             for layer in layers {
                 append_usize(&mut out, layer.len());
@@ -868,11 +739,7 @@ impl ScaleChain {
                 }
             }
         }
-        for group in [
-            self.s_agg_pre.as_slice(),
-            self.s_agg.as_slice(),
-            self.s_cat.as_slice(),
-        ] {
+        for group in [self.s_agg_pre.as_slice(), self.s_agg.as_slice(), self.s_cat.as_slice(),] {
             append_usize(&mut out, group.len());
             for scale in group {
                 out.extend_from_slice(&scale.to_le_bytes());
@@ -881,13 +748,9 @@ impl ScaleChain {
         for scale in [self.s_out_pre, self.s_out_head, self.s_out] {
             out.extend_from_slice(&scale.to_le_bytes());
         }
-        for group in [
-            self.s_w_output.as_slice(),
-            self.s_y_prime.as_slice(),
-            self.s_a_src_output.as_slice(),
-            self.s_a_dst_output.as_slice(),
-            self.s_b_output.as_slice(),
-        ] {
+        for group in
+            [self.s_w_output.as_slice(), self.s_y_prime.as_slice(), self.s_a_src_output.as_slice(), self.s_a_dst_output.as_slice(), self.s_b_output.as_slice(),]
+        {
             append_usize(&mut out, group.len());
             for scale in group {
                 out.extend_from_slice(&scale.to_le_bytes());
@@ -960,33 +823,21 @@ impl StaticTables {
 
 fn validate_registered_table(table: &ExactTable, expected_function: &str) -> Result<(), String> {
     if table.function_id != expected_function {
-        return Err(format!(
-            "table {} has function {}, expected {}",
-            table.table_id, table.function_id, expected_function
-        ));
+        return Err(format!("table {} has function {}, expected {}", table.table_id, table.function_id, expected_function));
     }
     match expected_function {
         "lrelu" => {
             let mut previous = None;
             for (input, output) in &table.rows {
                 if *input >= 0 && *output != *input {
-                    return Err(format!(
-                        "{} positive LeakyReLU row is not identity at {}",
-                        table.table_id, input
-                    ));
+                    return Err(format!("{} positive LeakyReLU row is not identity at {}", table.table_id, input));
                 }
                 if *input < 0 && (*output < *input || *output > 0) {
-                    return Err(format!(
-                        "{} negative LeakyReLU row is outside the canonical slope range at {}",
-                        table.table_id, input
-                    ));
+                    return Err(format!("{} negative LeakyReLU row is outside the canonical slope range at {}", table.table_id, input));
                 }
                 if let Some(previous) = previous {
                     if *output < previous {
-                        return Err(format!(
-                            "{} LeakyReLU rows are not monotone",
-                            table.table_id
-                        ));
+                        return Err(format!("{} LeakyReLU rows are not monotone", table.table_id));
                     }
                 }
                 previous = Some(*output);
@@ -996,17 +847,11 @@ fn validate_registered_table(table: &ExactTable, expected_function: &str) -> Res
             let mut previous = None;
             for (input, output) in &table.rows {
                 if *input < 0 || *output <= 0 {
-                    return Err(format!(
-                        "{} ExpMap rows violate the non-negative/positive domain",
-                        table.table_id
-                    ));
+                    return Err(format!("{} ExpMap rows violate the non-negative/positive domain", table.table_id));
                 }
                 if let Some(previous) = previous {
                     if *output > previous {
-                        return Err(format!(
-                            "{} ExpMap rows must be non-increasing",
-                            table.table_id
-                        ));
+                        return Err(format!("{} ExpMap rows must be non-increasing", table.table_id));
                     }
                 }
                 previous = Some(*output);
@@ -1016,16 +861,10 @@ fn validate_registered_table(table: &ExactTable, expected_function: &str) -> Res
             let mut previous = None;
             for (input, output) in &table.rows {
                 if *input >= 0 && *output != *input {
-                    return Err(format!(
-                        "{} non-negative ELU row is not identity at {}",
-                        table.table_id, input
-                    ));
+                    return Err(format!("{} non-negative ELU row is not identity at {}", table.table_id, input));
                 }
                 if *input < 0 && *output >= 0 {
-                    return Err(format!(
-                        "{} negative ELU row must remain negative at {}",
-                        table.table_id, input
-                    ));
+                    return Err(format!("{} negative ELU row must remain negative at {}", table.table_id, input));
                 }
                 if let Some(previous) = previous {
                     if *output < previous {
@@ -1039,20 +878,11 @@ fn validate_registered_table(table: &ExactTable, expected_function: &str) -> Res
             for (input, output) in &table.rows {
                 let expected = (*input).max(0);
                 if *output != expected {
-                    return Err(format!(
-                        "{} max/ReLU row at {} is {}, expected {}",
-                        table.table_id, input, output, expected
-                    ));
+                    return Err(format!("{} max/ReLU row at {} is {}, expected {}", table.table_id, input, output, expected));
                 }
             }
         }
-        _ => {
-            return Err(format!(
-                "unsupported exact table function {}",
-                expected_function
-            ))
-        }
-    }
+        _ => { return Err(format!("unsupported exact table function {}", expected_function)) } }
     Ok(())
 }
 
@@ -1113,10 +943,7 @@ impl BoundFamily {
             ("max_divisor", self.max_divisor),
         ] {
             if value < 0 || BigUint::from(value as u128) >= field_half.clone() {
-                return Err(format!(
-                    "{}.{} does not satisfy the strict BN254 field no-wrap bound",
-                    label, name
-                ));
+                return Err(format!("{}.{} does not satisfy the strict BN254 field no-wrap bound", label, name));
             }
         }
         Ok(())
@@ -1247,38 +1074,17 @@ impl IntegerBoundLedger {
             family.validate(&format!("family[{}]", idx), &half)?;
             for (name, family_value, global_value) in [
                 ("max_score_abs", family.max_score_abs, self.max_score_abs),
-                (
-                    "max_table_output_abs",
-                    family.max_table_output_abs,
-                    self.max_table_output_abs,
-                ),
-                ("max_delta", family.max_delta, self.max_delta),
+                ("max_table_output_abs", family.max_table_output_abs, self.max_table_output_abs,),("max_delta", family.max_delta, self.max_delta),
                 ("max_exp", family.max_exp, self.max_exp),
                 ("max_sum", family.max_sum, self.max_sum),
-                (
-                    "max_aggregation_num",
-                    family.max_aggregation_num,
-                    self.max_aggregation_num,
-                ),
-                (
-                    "max_dividend_abs",
-                    family.max_dividend_abs,
-                    self.max_dividend_abs,
-                ),
-                ("max_aux_abs", family.max_aux_abs, self.max_aux_abs),
+                ("max_aggregation_num", family.max_aggregation_num, self.max_aggregation_num,),("max_dividend_abs", family.max_dividend_abs, self.max_dividend_abs,),("max_aux_abs", family.max_aux_abs, self.max_aux_abs),
             ] {
                 if family_value > global_value {
-                    return Err(format!(
-                        "family[{}] {} exceeds global ledger bound",
-                        idx, name
-                    ));
+                    return Err(format!("family[{}] {} exceeds global ledger bound", idx, name));
                 }
             }
             if family.max_divisor > self.max_divisor {
-                return Err(format!(
-                    "family[{}] divisor bound exceeds global max_divisor",
-                    idx
-                ));
+                return Err(format!("family[{}] divisor bound exceeds global max_divisor", idx));
             }
         }
         Ok(())
@@ -1331,9 +1137,7 @@ impl CanonicalModel {
     /// Validate dimensions and hidden/output bias policy.
     pub fn validate(&self, input_dim: usize) -> Result<(), String> {
         if self.hidden_layers.is_empty() || self.output_heads.is_empty() || self.classes == 0 {
-            return Err(
-                "GAT requires at least one hidden layer, one output head and one class".into(),
-            );
+            return Err("GAT requires at least one hidden layer, one output head and one class".into(),);
         }
         if self.model_arch_id.is_empty() {
             return Err("model_arch_id must not be empty".into());
@@ -1341,36 +1145,18 @@ impl CanonicalModel {
         let mut current_dim = input_dim;
         for (layer_idx, layer) in self.hidden_layers.iter().enumerate() {
             if layer.d_in != current_dim || layer.d_head == 0 || layer.heads.is_empty() {
-                return Err(format!(
-                    "hidden layer {} dimension/head mismatch",
-                    layer_idx
-                ));
+                return Err(format!("hidden layer {} dimension/head mismatch", layer_idx));
             }
             for head in &layer.heads {
-                let projection_len = layer.d_in.checked_mul(layer.d_head).ok_or_else(|| {
-                    format!("hidden layer {} projection shape overflow", layer_idx)
-                })?;
-                if head.projection.len() != projection_len
-                    || head.a_src.len() != layer.d_head
-                    || head.a_dst.len() != layer.d_head
-                    || !head.bias.is_empty()
-                {
-                    return Err(format!(
-                        "invalid hidden head tensor shape at layer {}",
-                        layer_idx
-                    ));
+                let projection_len = layer.d_in.checked_mul(layer.d_head).ok_or_else(|| { format!("hidden layer {} projection shape overflow", layer_idx) })?;
+                if head.projection.len() != projection_len || head.a_src.len() != layer.d_head || head.a_dst.len() != layer.d_head || !head.bias.is_empty() {
+                    return Err(format!("invalid hidden head tensor shape at layer {}", layer_idx));
                 }
             }
-            current_dim = layer
-                .heads
-                .len()
-                .checked_mul(layer.d_head)
-                .ok_or_else(|| format!("hidden layer {} output shape overflow", layer_idx))?;
+            current_dim = layer.heads.len().checked_mul(layer.d_head).ok_or_else(|| format!("hidden layer {} output shape overflow", layer_idx))?;
         }
         for head in &self.output_heads {
-            let projection_len = current_dim
-                .checked_mul(self.classes)
-                .ok_or_else(|| "output projection shape overflow".to_string())?;
+            let projection_len = current_dim.checked_mul(self.classes).ok_or_else(|| "output projection shape overflow".to_string())?;
             if head.projection.len() != projection_len
                 || head.a_src.len() != self.classes
                 || head.a_dst.len() != self.classes
@@ -1460,10 +1246,7 @@ impl CanonicalGat {
 
     fn validate_inner(&self, require_circuit_ref: bool) -> Result<(), String> {
         if self.schema_version != GAT_SCHEMA_VERSION {
-            return Err(format!(
-                "unsupported GAT schema version {}",
-                self.schema_version
-            ));
+            return Err(format!("unsupported GAT schema version {}", self.schema_version));
         }
         if self.quant_cfg_id.is_empty() || self.ezkl_security_profile_id.is_empty() {
             return Err("quant_cfg_id and ezkl_security_profile_id are required".into());
@@ -1471,18 +1254,14 @@ impl CanonicalGat {
         self.graph.validate()?;
         self.topology.validate("topology")?;
         let expected_topology_digest = sha256_digest(&self.graph.canonical_bytes())?;
-        if self.topology.digest != expected_topology_digest
-            || self.topology.id != self.graph.topology_id
-        {
+        if self.topology.digest != expected_topology_digest || self.topology.id != self.graph.topology_id {
             return Err("topology identity does not match canonical graph wiring".into());
         }
         match &self.circuit_ref {
             Some(circuit_ref) => {
                 circuit_ref.validate()?;
                 if circuit_ref.ezkl_security_profile_id != self.ezkl_security_profile_id {
-                    return Err(
-                        "CircuitRef security profile disagrees with canonical profile".into(),
-                    );
+                    return Err("CircuitRef security profile disagrees with canonical profile".into(),);
                 }
             }
             None if require_circuit_ref => {
@@ -1490,48 +1269,21 @@ impl CanonicalGat {
             }
             None => {}
         }
-        let expected_feature_len = self
-            .graph
-            .n_total
-            .checked_mul(self.feature_dim)
-            .ok_or_else(|| "feature table shape overflow".to_string())?;
+        let expected_feature_len = self.graph.n_total.checked_mul(self.feature_dim).ok_or_else(|| "feature table shape overflow".to_string())?;
         if self.features.len() != expected_feature_len || self.feature_dim == 0 {
             return Err("feature table shape does not match n_total and feature_dim".into());
         }
         self.model.validate(self.feature_dim)?;
-        let hidden_heads = self
-            .model
-            .hidden_layers
-            .iter()
-            .map(|layer| layer.heads.len())
-            .collect::<Vec<_>>();
-        self.scales.validate(
-            self.model.layer_count(),
-            &hidden_heads,
-            self.model.output_heads.len(),
-        )?;
+        let hidden_heads = self.model.hidden_layers.iter().map(|layer| layer.heads.len()).collect::<Vec<_>>();
+        self.scales.validate(self.model.layer_count(), &hidden_heads, self.model.output_heads.len(),)?;
         let expected_quant_digest = sha256_digest(&self.scales.canonical_bytes())?;
-        if self.quantization.id != self.quant_cfg_id
-            || self.quantization.digest != expected_quant_digest
-        {
+        if self.quantization.id != self.quant_cfg_id || self.quantization.digest != expected_quant_digest {
             return Err("quantization identity does not match scale chain".into());
         }
         self.tables.validate()?;
         let (elu_input_scale, elu_output_scale) = self.scales.shared_elu_scales()?;
         for (label, table, input_scale, output_scale) in [
-            (
-                "lrelu",
-                &self.tables.lrelu,
-                self.scales.s_delta,
-                self.scales.s_delta,
-            ),
-            (
-                "exp",
-                &self.tables.exp,
-                self.scales.s_delta,
-                self.scales.s_exp,
-            ),
-            ("elu", &self.tables.elu, elu_input_scale, elu_output_scale),
+            ("lrelu", &self.tables.lrelu, self.scales.s_delta, self.scales.s_delta,),("exp", &self.tables.exp, self.scales.s_delta, self.scales.s_exp,),("elu", &self.tables.elu, elu_input_scale, elu_output_scale),
         ] {
             if table.input_scale != input_scale || table.output_scale != output_scale {
                 return Err(format!(
@@ -1543,9 +1295,7 @@ impl CanonicalGat {
         self.validate_table_bounds()?;
         self.ledger.validate()?;
         let expected_ledger_digest = sha256_digest(&self.ledger.canonical_bytes())?;
-        if self.ledger_identity.id != self.ledger.ledger_id
-            || self.ledger_identity.digest != expected_ledger_digest
-        {
+        if self.ledger_identity.id != self.ledger.ledger_id || self.ledger_identity.digest != expected_ledger_digest {
             return Err("ledger identity does not match bound ledger".into());
         }
         if self.model_binding.hash_domain != MODEL_HASH_DOMAIN {
@@ -1553,12 +1303,7 @@ impl CanonicalGat {
         }
         self.model_binding.validate()?;
         if self.private_params_redacted {
-            if self
-                .model
-                .flattened_params()
-                .iter()
-                .any(|value| *value != 0)
-            {
+            if self.model.flattened_params().iter().any(|value| *value != 0) {
                 return Err("redacted model binding contains non-zero private parameters".into());
             }
         } else if self.model_binding.canonical_model_digest != self.canonical_model_digest()? {
@@ -1569,63 +1314,26 @@ impl CanonicalGat {
     }
 
     fn validate_table_bounds(&self) -> Result<(), String> {
-        let check = |table: &ExactTable,
-                     label: &str,
-                     input_bound: i128,
-                     output_bound: i128|
-         -> Result<(), String> {
+        let check = |table: &ExactTable, label: &str, input_bound: i128, output_bound: i128| -> Result<(), String> {
             if input_bound < 0 || output_bound < 0 {
                 return Err(format!("{} has a negative ledger bound", label));
             }
             let input_bound = input_bound as u128;
             let output_bound = output_bound as u128;
-            if table.rows.iter().any(|(input, output)| {
-                input.unsigned_abs() > input_bound || output.unsigned_abs() > output_bound
-            }) {
+            if table.rows.iter().any(|(input, output)| { input.unsigned_abs() > input_bound || output.unsigned_abs() > output_bound}){
                 return Err(format!("{} row exceeds authenticated ledger bounds", label));
             }
             Ok(())
         };
-        check(
-            &self.tables.lrelu,
-            "lrelu",
-            self.ledger.max_score_abs,
-            self.ledger.max_table_output_abs,
-        )?;
-        check(
-            &self.tables.exp,
-            "exp",
-            self.ledger.max_delta,
-            self.ledger.max_exp,
-        )?;
-        check(
-            &self.tables.elu,
-            "elu",
-            self.ledger.max_dividend_abs,
-            self.ledger.max_table_output_abs,
-        )?;
-        check(
-            &self.tables.max_relu,
-            "max_relu",
-            self.ledger.max_aux_abs,
-            self.ledger.max_table_output_abs,
-        )
-    }
+        check(&self.tables.lrelu, "lrelu", self.ledger.max_score_abs, self.ledger.max_table_output_abs,)?;
+        check(&self.tables.exp, "exp", self.ledger.max_delta, self.ledger.max_exp,)?;
+        check(&self.tables.elu, "elu", self.ledger.max_dividend_abs, self.ledger.max_table_output_abs,)?;
+        check(&self.tables.max_relu, "max_relu", self.ledger.max_aux_abs, self.ledger.max_table_output_abs,) }
 
     fn validate_bound_families(&self) -> Result<(), String> {
-        let expected = self
-            .model
-            .hidden_layers
-            .iter()
-            .map(|layer| layer.heads.len())
-            .sum::<usize>()
-            + self.model.output_heads.len();
+        let expected = self.model.hidden_layers.iter().map(|layer| layer.heads.len()).sum::<usize>() + self.model.output_heads.len();
         if self.ledger.families.len() != expected {
-            return Err(format!(
-                "bound ledger has {} families, expected {}",
-                self.ledger.families.len(),
-                expected
-            ));
+            return Err(format!("bound ledger has {} families, expected {}", self.ledger.families.len(), expected));
         }
         for (layer, spec) in self.model.hidden_layers.iter().enumerate() {
             for head in 0..spec.heads.len() {
@@ -1633,16 +1341,9 @@ impl CanonicalGat {
                     .ledger
                     .families
                     .iter()
-                    .find(|family| {
-                        family.layer == layer && family.head == head && !family.is_output
-                    })
+                    .find(|family| { family.layer == layer && family.head == head && !family.is_output})
                     .ok_or_else(|| format!("missing hidden bound family {}:{}", layer, head))?;
-                validate_param_bounds(
-                    family,
-                    &spec.heads[head],
-                    false,
-                    &format!("hidden {}:{}", layer, head),
-                )?;
+                validate_param_bounds(family, &spec.heads[head], false, &format!("hidden {}:{}", layer, head),)?;
             }
         }
         let output_layer = usize::MAX;
@@ -1651,27 +1352,16 @@ impl CanonicalGat {
                 .ledger
                 .families
                 .iter()
-                .find(|family| {
-                    family.layer == output_layer && family.head == head && family.is_output
-                })
+                .find(|family| { family.layer == output_layer && family.head == head && family.is_output})
                 .ok_or_else(|| format!("missing output bound family {}", head))?;
-            validate_param_bounds(
-                family,
-                &self.model.output_heads[head],
-                true,
-                &format!("output {}", head),
-            )?;
+            validate_param_bounds(family, &self.model.output_heads[head], true, &format!("output {}", head),)?;
         }
         Ok(())
     }
 
     /// Canonical model parameter bytes for an external identity/manifest.
     pub fn canonical_model_bytes(&self) -> Vec<u8> {
-        self.model
-            .flattened_params()
-            .into_iter()
-            .flat_map(|x| x.to_le_bytes())
-            .collect()
+        self.model.flattened_params().into_iter().flat_map(|x| x.to_le_bytes()).collect()
     }
 
     /// SHA-256 identity of the canonical model parameter bytes.  The native
@@ -1684,24 +1374,14 @@ impl CanonicalGat {
 
     /// Construct a verifier-facing public instance binding for a canonical
     /// output digest.  This never accepts or reads private witness data.
-    pub fn public_instance_binding(
-        &self,
-        feature_digest: String,
-        output_digest: String,
-    ) -> Result<PublicInstanceBinding, String> {
+    pub fn public_instance_binding(&self, feature_digest: String, output_digest: String,) -> Result<PublicInstanceBinding, String> {
         self.validate()?;
         let binding = PublicInstanceBinding {
             topology: self.topology.clone(),
-            static_tables: DigestIdentity {
-                id: self.tables.static_tables_id.clone(),
-                digest: self.tables.static_tables_digest.clone(),
-            },
+            static_tables: DigestIdentity { id: self.tables.static_tables_id.clone(), digest: self.tables.static_tables_digest.clone(),},
             quant: self.quantization.clone(),
             ledger: self.ledger_identity.clone(),
-            circuit: self
-                .circuit_ref
-                .clone()
-                .ok_or_else(|| "canonical GAT circuit identity is not bound".to_string())?,
+            circuit: self.circuit_ref.clone().ok_or_else(|| "canonical GAT circuit identity is not bound".to_string())?,
             model: self.model_binding.clone(),
             feature_digest,
             output_digest,
@@ -1711,12 +1391,7 @@ impl CanonicalGat {
     }
 }
 
-fn validate_param_bounds(
-    family: &BoundFamily,
-    head: &HeadWeights,
-    is_output: bool,
-    label: &str,
-) -> Result<(), String> {
+fn validate_param_bounds(family: &BoundFamily, head: &HeadWeights, is_output: bool, label: &str,) -> Result<(), String> {
     let check = |name: &str, values: &[i128], bound: i128| -> Result<(), String> {
         if bound < 0 {
             return Err(format!("{}.{} bound is negative", label, name));

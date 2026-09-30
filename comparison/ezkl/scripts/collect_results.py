@@ -48,7 +48,6 @@ from formal_common import (
     validate_public_statement,
 )
 
-
 REQUIRED_RESULT_KEYS = {
     "schema_version",
     "status",
@@ -224,7 +223,10 @@ def validate_cell(path: Path) -> dict[str, Any]:
     if result["native_verify_result"] is not True or result["native_public_instance_binding"] is not True:
         abort(f"{path} has no native verify/public-instance attestation")
     circuit_ref = require_circuit_ref(result["circuit_ref"])
-    for key in ("public_statement_sha256", "public_output_sha256", "srs_sha256", "settings_sha256", "compiled_circuit_sha256", "vk_sha256", "pk_sha256", "proof_sha256", "binary_sha256", "source_tree_sha256", "resource_manifest_sha256", "artifact_manifest_sha256", "core_run_manifest_sha256"):
+    for key in (
+        "public_statement_sha256", "public_output_sha256", "srs_sha256", "settings_sha256", "compiled_circuit_sha256", "vk_sha256", "pk_sha256", "proof_sha256",
+        "binary_sha256", "source_tree_sha256", "resource_manifest_sha256", "artifact_manifest_sha256", "core_run_manifest_sha256"
+    ):
         require_digest(result[key], f"{path}:{key}")
     if isinstance(result["proof_size_bytes"], bool) or not isinstance(result["proof_size_bytes"], int) or result["proof_size_bytes"] <= 0:
         abort(f"{path} has no positive proof size")
@@ -296,21 +298,12 @@ def validate_cell(path: Path) -> dict[str, Any]:
         "core run manifest",
     )
     if (
-        core["schema_version"] != 1
-        or core["relation_id"] != CANONICAL_RELATION
-        or core["dataset"] != dataset
-        or core["backend"] != backend
-        or core["proof_scope"] != CANONICAL_PROOF_SCOPE
-        or core["privacy_policy"] != CANONICAL_PRIVACY
-        or core["public_statement_mode"] != CANONICAL_STATEMENT_MODE
-        or core["output_mode"] != CANONICAL_OUTPUT_MODE
-        or core["native_verify_result"] is not True
-        or core["native_public_instance_binding"] is not True
-        or core["verifier_reads_witness"] is not False
-        or core["proof_contains_private_witness"] is not False
-        or core["public_statement_sha256"] != result["public_statement_sha256"]
-        or core["public_output_sha256"] != result["public_output_sha256"]
-        or core["circuit_ref"] != artifact["circuit_ref"]
+        core["schema_version"] != 1 or core["relation_id"] != CANONICAL_RELATION or core["dataset"] != dataset or core["backend"] != backend or
+        core["proof_scope"] != CANONICAL_PROOF_SCOPE or core["privacy_policy"] != CANONICAL_PRIVACY or
+        core["public_statement_mode"] != CANONICAL_STATEMENT_MODE or core["output_mode"] != CANONICAL_OUTPUT_MODE or core["native_verify_result"] is not True or
+        core["native_public_instance_binding"] is not True or core["verifier_reads_witness"] is not False or
+        core["proof_contains_private_witness"] is not False or core["public_statement_sha256"] != result["public_statement_sha256"] or
+        core["public_output_sha256"] != result["public_output_sha256"] or core["circuit_ref"] != artifact["circuit_ref"]
     ):
         abort(f"{path} core run manifest is not a successful native external binding")
     require_digest(core["public_statement_sha256"], "core public statement digest")
@@ -318,10 +311,7 @@ def validate_cell(path: Path) -> dict[str, Any]:
     require_digest(core["proof_instances_sha256"], "core proof instance digest")
     if not isinstance(core["proof_instance_count"], int) or core["proof_instance_count"] <= 0:
         abort(f"{path} core proof instance count is invalid")
-    if (
-        core["proof_instances_sha256"] != result["proof_instances"]["sha256"]
-        or core["proof_instance_count"] != result["proof_instances"]["count"]
-    ):
+    if (core["proof_instances_sha256"] != result["proof_instances"]["sha256"] or core["proof_instance_count"] != result["proof_instances"]["count"]):
         abort(f"{path} core proof-instance attestation does not match the native proof")
     if sha256(core_path) != result["core_run_manifest_sha256"]:
         abort(f"{path} core run manifest digest mismatch")

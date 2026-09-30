@@ -27,8 +27,7 @@ int main() {
 
     Transcript verifier_transcript;
     std::string error;
-    assert(verify_sumcheck(sumcheck, fr_value(fr_from_u32(5U)), verifier_transcript,
-                           nullptr, &error));
+    assert(verify_sumcheck(sumcheck, fr_value(fr_from_u32(5U)), verifier_transcript, nullptr, &error));
 
     ProofEnvelope envelope;
     envelope.statement_digest = challenge_transcript.digest();
@@ -47,14 +46,7 @@ int main() {
     malformed.rounds.push_back(G1Jacobian_generator);
     assert(!opening_shape_valid(malformed, &error));
 
-    // Exercise the native commitment/IPA wire path on a four-row tensor.  GPU
-    // IPA verification remains an explicit resource blocker in this phase.
-    Fr_t values[4] = {
-        {1U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
-        {2U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
-        {3U, 0U, 0U, 0U, 0U, 0U, 0U, 0U},
-        {4U, 0U, 0U, 0U, 0U, 0U, 0U, 0U}
-    };
+    Fr_t values[4] = {{1U, 0U, 0U, 0U, 0U, 0U, 0U, 0U}, {2U, 0U, 0U, 0U, 0U, 0U, 0U, 0U}, {3U, 0U, 0U, 0U, 0U, 0U, 0U, 0U}, {4U, 0U, 0U, 0U, 0U, 0U, 0U, 0U}};
     FrTensor tensor(4U, values);
     Commitment generators(4U, G1Jacobian_generator);
     G1TensorJacobian commitment = generators.commit(tensor);
@@ -63,10 +55,8 @@ int main() {
     opening_point.push_back(fr_value(fr_from_u32(11U)));
     opening_point.push_back(fr_value(fr_from_u32(13U)));
     opening_point.push_back(fr_value(fr_from_u32(17U)));
-    const zkdl::CpuG1Point ipa_h = zkdl::cpu_g1_mul(
-        zkdl::cpu_g1_generator(), zkdl::fr_from_u32(2U));
-    const zkdl::CpuG1Point ipa_u = zkdl::cpu_g1_mul(
-        zkdl::cpu_g1_generator(), zkdl::fr_from_u32(3U));
+    const zkdl::CpuG1Point ipa_h = zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), zkdl::fr_from_u32(2U));
+    const zkdl::CpuG1Point ipa_u = zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), zkdl::fr_from_u32(3U));
     zkdl::CpuIpaOpeningMetadata metadata;
     const std::vector<zkdl::byte> metadata_label{'c', 'o', 'r', 'e', '-', 'i', 'p', 'a'};
     metadata.commitment_index = 0U;
@@ -77,13 +67,11 @@ int main() {
     std::vector<zkdl::byte> srs_label = metadata_label;
     srs_label.push_back('s');
     metadata.srs_digest = zkdl::sha256(srs_label);
-    metadata.outer_point = {
-        zkdl::fr_wire(opening_point[2]), zkdl::fr_wire(opening_point[3])};
+    metadata.outer_point = {zkdl::fr_wire(opening_point[2]), zkdl::fr_wire(opening_point[3])};
     uint opening_size = 0;
     EvaluationOpeningProof retained;
-    retained = generators.open_with_ipa_proof(
-        tensor, commitment, opening_point, zkdl::cpu_g1_to_native(ipa_h),
-        zkdl::cpu_g1_to_native(ipa_u), zkdl::FrWire{}, metadata);
+    retained = generators.open_with_ipa_proof(tensor, commitment, opening_point, zkdl::cpu_g1_to_native(ipa_h), zkdl::cpu_g1_to_native(ipa_u), zkdl::FrWire{},
+                                              metadata);
     assert(opening_shape_valid(retained, &error));
     (void)opening_size;
     assert(!generators.verify_opening_gpu(retained, commitment({}), &error));

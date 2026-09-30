@@ -123,8 +123,6 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
     require(isinstance(output_specs, list) and len(output_specs) == 2, "PPI bundle 必须包含 2 个 output head")
     require(all(isinstance(spec, dict) for spec in hidden_specs), "PPI hidden_head_specs 每项必须是对象")
     require(all(isinstance(spec, dict) for spec in output_specs), "PPI output_head_specs 每项必须是对象")
-    # Formal identity is the explicit layer/local pair; a global-only manifest
-    # is rejected fail-closed.
     expected_pairs = [(layer_index, head_index) for layer_index in range(2) for head_index in range(8)]
     actual_pairs = []
     for spec in hidden_specs:
@@ -168,9 +166,6 @@ def validate_ppi_bundle(manifest: Dict[str, object], bundle_dir: pathlib.Path) -
 
 def install_bundle(source_dir: pathlib.Path, output_dir: pathlib.Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    # A canonical checkpoint directory also contains best_model.pt and its
-    # training summary. Replace only bundle-owned files so importing the
-    # freshly trained checkpoint cannot erase its source artifact.
     bundle_files = ("manifest.json", "tensors.npz", "tensors.txt")
     for name in bundle_files:
         destination = output_dir / name

@@ -28,23 +28,15 @@ bool range_proof_prove_dot_product(G1 comm_x, G1 comm_y, Fr* a, Fr* x,Fr y, G1*g
 
 G1* range_proof_prover_commit(ll* w, G1* g, int l,int thread_n=1);
 Fr range_proof_prover_evaluate(ll*w ,Fr*r,int l);  
-void range_proof_open(ll*w,Fr*r,Fr eval,G1&G,G1*g,G1*comm,int l);
-void range_proof_open(Fr*w,Fr*r,Fr eval,G1&G,G1*g,G1*comm,int l);
+void range_proof_open(ll *w, Fr *r, Fr eval, G1 &G, G1 *g, G1 *comm, int l);
+void range_proof_open(Fr *w, Fr *r, Fr eval, G1 &G, G1 *g, G1 *comm, int l);
 
-// Native session-aware vector opening used by the baseline-local Lasso and
-// L_qry wires.  The proof is the real Hyrax IPA transcript; the verifier only
-// receives the commitment, public basis setup and serialized session.
-bool range_proof_open_with_session(
-    const std::vector<Fr> &witness, const std::vector<Fr> &point,
-    const G1 &G, const std::vector<G1> &generators,
-    G1 &commitment, Fr &evaluation, NativeProofSession &session,
-    const std::string &label, std::string *reason = nullptr,
-    bool enforce_statement_basis = true);
+bool range_proof_open_with_session(const std::vector<Fr> &witness, const std::vector<Fr> &point, const G1 &G, const std::vector<G1> &generators, G1 &commitment,
+                                   Fr &evaluation, NativeProofSession &session, const std::string &label, std::string *reason = nullptr,
+                                   bool enforce_statement_basis = true);
 
-bool range_proof_verify_opening_with_session(
-    const G1 &commitment, const Fr &evaluation, const G1 &G,
-    const std::vector<G1> &generators, const std::vector<Fr> &basis,
-    const NativeProofSession &session, const std::string &label,
-    std::string *reason = nullptr, bool enforce_statement_basis = true);
+bool range_proof_verify_opening_with_session(const G1 &commitment, const Fr &evaluation, const G1 &G, const std::vector<G1> &generators,
+                                             const std::vector<Fr> &basis, const NativeProofSession &session, const std::string &label,
+                                             std::string *reason = nullptr, bool enforce_statement_basis = true);
 
 #endif

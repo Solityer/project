@@ -7,24 +7,13 @@
 #include <string>
 #include <vector>
 
-// Independent replay helpers for the native sumcheck wires.  They consume
-// only public claims and the typed transcript; no prover object, witness, or
-// circuit scratch buffers are consulted.
-bool verify_quadratic_sumcheck_session(
-    const NativeProofSession &session, const std::string &label,
-    const F &initial_claim, std::size_t rounds, F *final_sum = nullptr,
-    std::vector<F> *terminal_claims = nullptr, std::string *reason = nullptr);
+bool verify_quadratic_sumcheck_session(const NativeProofSession& session, const std::string& label, const F& initial_claim, std::size_t rounds,
+                                       F* final_sum = nullptr, std::vector<F>* terminal_claims = nullptr, std::string* reason = nullptr);
 
-bool verify_product_sumcheck_session(
-    const NativeProofSession &session, const std::string &label,
-    const F &initial_claim, std::size_t rounds, F *terminal_left = nullptr,
-    F *terminal_right = nullptr, std::string *reason = nullptr);
+bool verify_product_sumcheck_session(const NativeProofSession& session, const std::string& label, const F& initial_claim, std::size_t rounds,
+                                     F* terminal_left = nullptr, F* terminal_right = nullptr, std::string* reason = nullptr);
 
-// Check the native GKR layer transition after an independently replayed
-// Sumcheck: predicate relation first, then alpha/beta claim propagation.
-bool verify_gkr_predicate_alpha_beta_transition(
-    const F &sumcheck_final, const F &predicate_value,
-    const F &claim_u1, const F &claim_v1, const F &alpha, const F &beta,
-    const F &next_claim, std::string *reason = nullptr);
+bool verify_gkr_predicate_alpha_beta_transition(const F& sumcheck_final, const F& predicate_value, const F& claim_u1, const F& claim_v1, const F& alpha,
+                                                const F& beta, const F& next_claim, std::string* reason = nullptr);
 
 #endif

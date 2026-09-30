@@ -17,7 +17,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 
@@ -50,14 +49,12 @@ def main(args: argparse.Namespace) -> int:
     for dataset in DATASETS:
         run([sys.executable, str(generator), "--root", str(ROOT), "--dataset", dataset])
 
-    run(
-        [
-            sys.executable,
-            str(validator),
-            "--write-manifest",
-            "--require-complete",
-        ]
-    )
+    run([
+        sys.executable,
+        str(validator),
+        "--write-manifest",
+        "--require-complete",
+    ])
     print("authenticated five-dataset ezkl GAT tables/ledgers and resource manifest")
     print("native official SRS will be provisioned by scripts/run_cpu_formal.py")
     return 0

@@ -121,9 +121,7 @@ class ProductionContractTests(unittest.TestCase):
             require_fixed_digest("0" * 63, "digest", "synthetic")
 
     def test_collector_rejects_cross_cell_artifact_reuse(self) -> None:
-        # The shared audit helper owns the actual path/digest rejection.  This
-        # bounded contract assertion keeps the collector's duplicate sets
-        # explicit and prevents a future refactor from silently dropping them.
+
         seen_paths = {Path("/tmp/shared-proof.artifact")}
         seen_digests = {"0" * 64}
         self.assertIn(Path("/tmp/shared-proof.artifact"), seen_paths)

@@ -68,7 +68,7 @@ namespace gatzk::algebra
             }
         }
 
-    } // namespace
+    }
 
     std::size_t field_elements_binary_size(std::size_t value_count)
     {
@@ -176,4 +176,4 @@ namespace gatzk::algebra
         return values;
     }
 
-} // namespace gatzk::algebra
+}

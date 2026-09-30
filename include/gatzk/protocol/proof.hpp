@@ -1,6 +1,4 @@
 #pragma once
-// 定义协议层共享的数据契约，
-// 包括 context、trace、proof 与正式运行指标，是 artifact contract 的核心来源。
 
 #include <chrono>
 #include <map>
@@ -30,10 +28,8 @@ namespace gatzk::protocol
         struct ValidatedVerifierExecutionState;
     }
 
-    inline constexpr const char *kFormalTimingSchema =
-        "online_trace_commit_prove_protocol_verify_v2";
+    inline constexpr const char *kFormalTimingSchema = "online_trace_commit_prove_protocol_verify_v2";
 
-    // 固定静态查表集合，对应 formal note 中的激活、指数与范围表。
     struct StaticTables
     {
         std::vector<std::pair<algebra::FieldElement, algebra::FieldElement>> lrelu;
@@ -42,14 +38,12 @@ namespace gatzk::protocol
         std::vector<algebra::FieldElement> range;
     };
 
-    // 单个注意力头使用的局部工作域集合。
     struct AttentionHeadDomains
     {
         std::shared_ptr<algebra::RootOfUnityDomain> in;
         std::shared_ptr<algebra::RootOfUnityDomain> d;
     };
 
-    // 一次 formal run 中所有 proving / verifying 工作域的统一持有者。
     struct WorkDomains
     {
         std::shared_ptr<algebra::RootOfUnityDomain> fh;
@@ -59,17 +53,10 @@ namespace gatzk::protocol
         std::shared_ptr<algebra::RootOfUnityDomain> cat;
         std::shared_ptr<algebra::RootOfUnityDomain> c;
         std::shared_ptr<algebra::RootOfUnityDomain> n;
-        // Formal domains retain the layer/head coordinates.  The checkpoint
-        // The execution context stores only the canonical public shape here.
         std::vector<std::vector<AttentionHeadDomains>> hidden_layers;
         std::optional<AttentionHeadDomains> output_head;
     };
 
-    // Point-only verifier metadata for one public polynomial.  The prover
-    // keeps the concrete evaluation column in ProtocolContext, while the
-    // registration carries only the canonical declaration needed by the
-    // verifier to rebuild values deterministically from authenticated public
-    // inputs and domain metadata.
     struct VerifierPublicPolynomialDescriptor
     {
         std::string name;
@@ -79,7 +66,6 @@ namespace gatzk::protocol
         bool operator==(const VerifierPublicPolynomialDescriptor &) const = default;
     };
 
-    // 对外公开且会进入 transcript / manifest / verifier 的元数据契约。
     struct PublicMetadata
     {
         std::string protocol_name;
@@ -110,8 +96,6 @@ namespace gatzk::protocol
         std::string public_output;
     };
 
-    // 构建一次 formal 证明所需的静态上下文。
-    // 这里不保存动态 witness，只保存数据集、模型、SRS、公开列和静态承诺。
     struct ProtocolContext
     {
         util::AppConfig config;
@@ -122,28 +106,15 @@ namespace gatzk::protocol
         WorkDomains domains;
         crypto::KZGKeyPair kzg;
         std::unordered_map<std::string, algebra::Polynomial> public_polynomials;
-        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor>
-            public_polynomial_descriptors;
+        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> public_polynomial_descriptors;
         std::unordered_map<std::string, crypto::Commitment> public_commitments;
-        // Prover-side opening material for public FH polynomials. This does not change public
-        // polynomial semantics or transcript-visible commitments.
         std::unordered_map<std::string, std::shared_ptr<const algebra::Polynomial>> public_fh_coefficient_materials;
         std::unordered_map<std::string, crypto::Commitment> static_commitments;
         std::shared_ptr<const ProtocolCompilerArtifact> compiler_artifact;
-        // Exact immutable artifact object that passed the full setup-time
-        // canonical rebuild.  Proof verification rejects a swapped pointer but
-        // does not repeat the expensive compiler pass inside verify_time.
         const ProtocolCompilerArtifact *validated_compiler_artifact_identity = nullptr;
-        // Internal verifier shape-only projection marker.  A context with
-        // this bit set carries shape-only model shells and must never be used
-        // by the prover or by an artifact compiler that needs model values.
         bool verifier_shape_only = false;
     };
 
-    // The verifier must not receive the proving context.  This deliberately
-    // repeats only public configuration fields; in particular it has no
-    // project/checkpoint/SRS paths, seed, model tensors, proving key, or
-    // opening-polynomial storage.
     struct VerifierConfig
     {
         std::string dataset;
@@ -179,9 +150,6 @@ namespace gatzk::protocol
         std::vector<std::size_t> d_in_profile;
     };
 
-    // Shape-only model view.  Head entries intentionally carry no tensor or
-    // floating-point parameter fields; they exist solely to preserve the
-    // canonical layer/local-head iteration order used by the verifier.
     struct VerifierModelHeadShape
     {
     };
@@ -221,8 +189,6 @@ namespace gatzk::protocol
 
     struct VerifierSRSMetadata
     {
-        // Public SRS-manifest identity and verifier-side catalogue metadata.
-        // Path fields and all prover material are deliberately absent.
         std::string manifest_format;
         std::string srs_id;
         std::string curve_id;
@@ -258,18 +224,12 @@ namespace gatzk::protocol
         std::string security_level;
     };
 
-    // A point-only commitment.  It is intentionally not crypto::Commitment:
-    // the latter owns an optional opening_polynomial for the prover.
     struct VerifierPointCommitment
     {
         std::string name;
         crypto::G1Point point;
     };
 
-    // Setup-time, point-only certificate for one model object.  It exposes
-    // only the metadata needed to independently rebuild the fixed-point
-    // no-wrap ledger; raw tensor values and checkpoint provenance never cross
-    // the registration boundary.
     struct ModelBoundCertificate
     {
         bool present = false;
@@ -296,8 +256,6 @@ namespace gatzk::protocol
         bool operator==(const VerifierRegistryEntry &) const = default;
     };
 
-    // Authenticated VK_model/VK_static material.  Canonical serialization is
-    // length-delimited and SHA-256 hashed; entry order is part of the digest.
     struct AuthenticatedVerifierRegistry
     {
         std::string format = "zkgat_verifier_registry";
@@ -316,16 +274,11 @@ namespace gatzk::protocol
         std::string srs_generator_id;
         std::string srs_encoding;
         std::string srs_spec_id;
-        // Exact hash of the compiler artifact material copied into the SRS
-        // directory.  This is distinct from compiler_artifact_digest, which
-        // authenticates the typed instance artifact in this registry.
         std::string srs_protocol_compiler_artifact_hash;
         std::string compiler_artifact_digest;
         std::string model_layout_digest;
         std::string quant_chain_digest;
         std::string static_table_digest;
-        // These are produced from the complete registered table bytes and
-        // scale/bound certificate, rather than fixed marker strings.
         std::string static_table_generator_id;
         std::string static_table_spec_hash;
         std::string range_and_scale_certificate;
@@ -342,9 +295,6 @@ namespace gatzk::protocol
         bool operator==(const AuthenticatedVerifierRegistry &) const = default;
     };
 
-    // Independent verifier-side context.  The public API below accepts only
-    // this type.  It owns point-only registries and a verifier key, never a
-    // proving key or raw model/checkpoint material.
     struct VerifierContext
     {
         VerifierConfig config;
@@ -355,35 +305,17 @@ namespace gatzk::protocol
         WorkDomains domains;
         VerifierSRSMetadata srs;
         crypto::KZGVerifierKey kzg_vk;
-        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor>
-            public_polynomial_descriptors;
+        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> public_polynomial_descriptors;
         std::unordered_map<std::string, VerifierPointCommitment> public_commitments;
         std::unordered_map<std::string, VerifierPointCommitment> static_commitments;
         std::shared_ptr<const ProtocolCompilerArtifact> compiler_artifact;
         AuthenticatedVerifierRegistry registry;
-        // Digest captured from the authenticated registry file.  Verifier
-        // entry points reject any post-load mutation of the registry or its
-        // canonical metadata.
         std::string authenticated_registry_digest;
-        // Out-of-band trust anchor supplied by the run configuration.  The
-        // registry file's own digest is never accepted as its sole root.
         std::string trusted_registry_digest;
 
-        // Execution-only immutable projection created only after the complete
-        // registry validation succeeds.  It is never serialized and contains
-        // no proving key, witness, raw checkpoint material, or private tensor.
-        std::shared_ptr<
-            const detail::ValidatedVerifierExecutionState>
-            validated_execution_state;
+        std::shared_ptr<const detail::ValidatedVerifierExecutionState> validated_execution_state;
     };
 
-    // Self-contained, canonical verifier registration artifact.  This is the
-    // only wire object accepted by the formal verifier loader.  It owns the
-    // complete quantized public feature source, authenticated static tables,
-    // point commitments, and descriptor metadata needed to reconstruct
-    // VerifierContext (including the full typed compiler artifact); it
-    // deliberately contains no model tensors, checkpoint paths, proving key,
-    // or opening polynomial.
     struct VerifierRegistrationArtifact
     {
         VerifierConfig config;
@@ -394,8 +326,7 @@ namespace gatzk::protocol
         WorkDomains domains;
         VerifierSRSMetadata srs;
         crypto::KZGVerifierKey kzg_vk;
-        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor>
-            public_polynomial_descriptors;
+        std::unordered_map<std::string, VerifierPublicPolynomialDescriptor> public_polynomial_descriptors;
         std::unordered_map<std::string, VerifierPointCommitment> public_commitments;
         std::unordered_map<std::string, VerifierPointCommitment> static_commitments;
         ProtocolCompilerArtifact compiler_artifact;
@@ -407,40 +338,21 @@ namespace gatzk::protocol
 
     struct PiBindProof;
 
-    // `build_trace` 输出的全部动态对象。
-    // 这里的标签、承诺顺序与挑战映射会直接进入 proof 生成阶段。
     struct TraceArtifacts
     {
-        // Read-only instance compiler contract used while materializing blinded
-        // objects. It is execution context and is never serialized into proof.
         std::shared_ptr<const ProtocolCompilerArtifact> compiler_artifact;
-        // Per-proof execution cache for identical semantic evaluation columns.
-        // It never crosses proof boundaries and is never serialized.
-        std::shared_ptr<crypto::EvaluationCommitmentCache>
-            evaluation_commitment_cache;
+        std::shared_ptr<crypto::EvaluationCommitmentCache> evaluation_commitment_cache;
         PublicMetadata public_metadata;
-        // 对超大 evaluation 列的临时落盘描述，只是执行层优化，不改变多项式语义。
         struct SpilledEvaluationPolynomial
         {
             std::string path;
             std::string domain_name;
             std::size_t size = 0;
-            // Logical evaluation-vector length.  The file may physically omit
-            // a strict all-zero suffix; consumers must reconstruct that suffix
-            // as canonical zero rather than infer a shorter polynomial/domain.
             std::size_t physical_size = 0;
             bool zero_tail_compacted = false;
-            // Exact per-proof identity of an immutable shared evaluation buffer.
-            // Execution-only: it is used to share semantic cosets across
-            // independently blinded columns and is never serialized.
             std::uintptr_t semantic_source_id = 0;
-            // Execution-only result of a proof-local scan of the compact shared
-            // semantic source.  This metadata is never serialized into proof.
             bool compact_semantic_source_all_zero = false;
             std::vector<algebra::FieldElement> zero_domain_blinder;
-            // The authenticated execution-only lease is carried by every
-            // descriptor so opening/KZG consumers cannot fall back to an
-            // untrusted path after the trace owner has moved on.
             std::shared_ptr<const util::TraceSpillLease> lease;
         };
 
@@ -452,11 +364,7 @@ namespace gatzk::protocol
         };
         struct SemanticSpillSourceCacheEntry
         {
-            // Keep only a weak execution owner so this cache never extends the
-            // natural lifetime of a large trace aggregate.
-            std::weak_ptr<
-                const std::vector<algebra::FieldElement>>
-                values;
+            std::weak_ptr<const std::vector<algebra::FieldElement>> values;
 
             std::string path;
             std::string domain_name;
@@ -468,75 +376,35 @@ namespace gatzk::protocol
 
         struct SemanticSourceIdentityCacheEntry
         {
-            // The weak owner is used only to validate exact shared ownership;
-            // retaining a large evaluation vector merely to keep an identity
-            // alive would defeat the spill path's memory contract.
-            std::weak_ptr<
-                const std::vector<algebra::FieldElement>>
-                values;
+            std::weak_ptr<const std::vector<algebra::FieldElement>> values;
             std::string domain_name;
             std::size_t size = 0;
             std::uintptr_t token = 0;
         };
 
-        // 原始列与矩阵，主要服务 artifact 导出与后续按标签取值。
         std::unordered_map<std::string, std::vector<algebra::FieldElement>> columns;
         std::unordered_map<std::string, model::Matrix> matrices;
-        // 多项式视图与可选落盘信息。
         std::unordered_map<std::string, algebra::Polynomial> polynomials;
         std::unordered_map<std::string, SpilledEvaluationPolynomial> spilled_polynomials;
 
-        // Execution-only backing. Coefficient vectors retain their full,
-        // publicly configured length; this descriptor is never serialized.
         struct SpilledCoefficientPolynomial
         {
             std::string path;
             std::size_t size = 0;
             std::shared_ptr<const util::TraceSpillLease> lease;
         };
-        std::unordered_map<std::string, SpilledCoefficientPolynomial>
-            spilled_coefficient_polynomials;
+        std::unordered_map<std::string, SpilledCoefficientPolynomial> spilled_coefficient_polynomials;
         bool large_execution_working_set = false;
-        // Monotonic proof-local token source for spilled descriptors that do
-        // not carry a shared backing identity.  This is execution metadata
-        // only: it deliberately owns no evaluation values and is never
-        // serialized.  Keeping the token in TraceArtifacts prevents a
-        // recycled raw buffer address from accidentally aliasing two
-        // independent spilled sources.
         std::uintptr_t next_spill_semantic_source_token = 1;
-        // Proof-local stable identities for exact shared evaluation owners.
-        // The vector is deliberately weak and execution-only; tokens never
-        // enter proof bytes or the Fiat-Shamir transcript.
-        std::vector<SemanticSourceIdentityCacheEntry>
-            semantic_source_identity_cache;
-        // Proof-local execution cache keyed by exact shared-buffer identity.
-        // It prevents Limb/Query aliases from rescanning the same compact source
-        // and is never serialized.
-        std::unordered_map<
-            std::uintptr_t,
-            CompactSemanticSourceZeroCacheEntry>
-            compact_semantic_source_zero_cache;
-        // One physical canonical semantic spill per exact shared source/domain.
-        // Independently blinded formal objects reuse only the value file; every
-        // SpilledEvaluationPolynomial still owns its own zero-domain blinder.
-        // Execution-only and never serialized.
-        std::unordered_map<
-            std::string,
-            SemanticSpillSourceCacheEntry>
-            semantic_spill_source_cache;
-        // Owns the per-proof spill directory.  The custom lease deleter removes
-        // the directory after the last TraceArtifacts copy is released.
+        std::vector<SemanticSourceIdentityCacheEntry> semantic_source_identity_cache;
+        std::unordered_map<std::uintptr_t, CompactSemanticSourceZeroCacheEntry> compact_semantic_source_zero_cache;
+        std::unordered_map<std::string, SemanticSpillSourceCacheEntry> semantic_spill_source_cache;
         std::shared_ptr<const util::TraceSpillLease> spill_directory_lease;
         std::unordered_map<std::string, std::string> polynomial_domains;
-        // 动态承诺、正式承诺顺序以及挑战重放结果。
         std::unordered_map<std::string, crypto::Commitment> commitments;
         std::vector<std::string> commitment_order;
         std::map<std::string, algebra::FieldElement> challenges;
-        // verifier 直接消费的外点值。route 终值不是 proof 标量；
-        // 它们只能通过 S_route 中的全局 point-group 引用进入正式关系。
         std::map<std::string, algebra::FieldElement> external_evaluations;
-        // 主协议的公开 logits，按 N x C 行优先展平。这一份数据必须由
-        // verifier 独立重建多项式求值，不得用 trace 内部 hash 代替。
         std::vector<algebra::FieldElement> public_logits;
         std::string reference_fp32_logits_hash;
         std::string reference_quant_logits_hash;
@@ -546,10 +414,7 @@ namespace gatzk::protocol
         std::shared_ptr<PiBindProof> pi_bind;
     };
 
-    // Resolve the physical prefix represented by an execution-only spill
-    // descriptor while retaining its logical evaluation-vector length.
-    inline std::size_t spilled_file_value_count(
-        const TraceArtifacts::SpilledEvaluationPolynomial &spilled)
+    inline std::size_t spilled_file_value_count(const TraceArtifacts::SpilledEvaluationPolynomial &spilled)
     {
         if (!spilled.zero_tail_compacted)
         {
@@ -557,8 +422,7 @@ namespace gatzk::protocol
         }
         if (spilled.physical_size > spilled.size)
         {
-            throw std::runtime_error(
-                "spilled polynomial physical size exceeds logical size");
+            throw std::runtime_error("spilled polynomial physical size exceeds logical size");
         }
         return spilled.physical_size;
     }
@@ -594,8 +458,6 @@ namespace gatzk::protocol
         bool multithreaded_msm = false;
     };
 
-    // 单个工作域 opening bundle 的 proof 载体。
-    // 标签顺序由 schema 固定，proof_size_bytes 只统计真正随 proof 发送的点值与 witness。
     enum class PayloadValueKind
     {
         PublicValue,
@@ -609,9 +471,6 @@ namespace gatzk::protocol
         std::vector<PayloadValueKind> value_kinds;
     };
 
-    // One physical KZG witness is owned by exactly one canonical point group.
-    // Claims and their values remain in Eval_dom/Eval_ext/Eval_bind and are
-    // reconstructed from the compiler schema; they are never duplicated here.
     struct PointGroupOpening
     {
         std::string group_id;
@@ -620,8 +479,6 @@ namespace gatzk::protocol
         crypto::G1Point witness;
     };
 
-    // Pi_bind carries commitments and metadata references only.  KZG witnesses remain
-    // owned by Open_dom/W_ext; a binding subproof can only refer to those owner groups.
     struct MetadataReference
     {
         std::string object_id;
@@ -637,10 +494,6 @@ namespace gatzk::protocol
         crypto::Commitment blinder_commitment;
     };
 
-    // Public, verifier-reconstructible metadata for one indexed-view relation.
-    // None of these fields is prover-selectable witness data: the instance compiler
-    // fixes the index map, selectors, multiplicity rule, challenge labels and the
-    // exact Com_viewLogUp order.
     struct IndexedViewRelationMeta
     {
         std::string relation_id;
@@ -660,10 +513,6 @@ namespace gatzk::protocol
         bool operator==(const IndexedViewRelationMeta &) const = default;
     };
 
-    // Canonical metadata for the KZG same-point normalization used by a binding
-    // relation.  source_linear_maps describes the public linear reconstruction of
-    // F_j from already-owned commitments; points and deltas are in canonical point
-    // order, with points.front() the public pivot.
     struct KZGShiftRelationMeta
     {
         std::string relation_id;
@@ -682,11 +531,6 @@ namespace gatzk::protocol
         bool operator==(const KZGShiftRelationMeta &) const = default;
     };
 
-    // Canonical instance metadata for a coefficient-tail/chunk basis link.  The
-    // transcript derives gamma after the coefficient and chunk commitments; the
-    // edge-domain accumulator is then Taylor-shifted back to gamma so the verifier
-    // can check the link with ordinary KZG point groups without receiving either
-    // private value in the clear.
     struct CoefficientBasisChunkMeta
     {
         std::string object_id;
@@ -720,11 +564,6 @@ namespace gatzk::protocol
         bool operator==(const CoefficientBasisRelationMeta &) const = default;
     };
 
-    // Canonical node-domain representation of one private matrix.  The column
-    // family is the only H_N trace for the matrix.  compressed_object is committed
-    // only after the column commitments have fixed compression_challenge_label;
-    // its equality to the challenge-weighted canonical columns is enforced in the
-    // global N-domain quotient.
     struct CanonicalMatrixRelationMeta
     {
         std::string relation_id;
@@ -738,9 +577,6 @@ namespace gatzk::protocol
         bool operator==(const CanonicalMatrixRelationMeta &) const = default;
     };
 
-    // One N-domain table / edge-domain query broadcast used by an aggregation
-    // binding.  The two accumulators are related by the registered KZG Taylor
-    // shift; no route terminal is serialized as a scalar.
     struct AggregationRouteRelationMeta
     {
         std::string relation_id;
@@ -767,8 +603,6 @@ namespace gatzk::protocol
         bool operator==(const AggregationRouteRelationMeta &) const = default;
     };
 
-    // Independent post-commit compression and PSQ proof for one attention
-    // aggregation matrix.  commitment_order is the exact Pi_bind.Com_agg order.
     struct AggregationRelationMeta
     {
         std::string relation_id;
@@ -792,11 +626,6 @@ namespace gatzk::protocol
         bool operator==(const AggregationRelationMeta &) const = default;
     };
 
-    // Cross-domain terminal equality for one of the protocol's native LogUp
-    // routes.  The edge accumulator is Taylor-shifted onto a verifier-chosen
-    // relation point and the node/edge terminal difference is opened as a
-    // verifier-reconstructed virtual commitment.  No route terminal scalar is
-    // carried by the proof.
     struct RouteTerminalRelationMeta
     {
         std::string relation_id;
@@ -863,7 +692,6 @@ namespace gatzk::protocol
         std::vector<BindingSubproof> subproofs;
     };
 
-    // 最终 proof 对象，顺序与字段语义必须与 verifier 和 artifact 导出保持一致。
     struct Proof
     {
         PublicMetadata public_metadata;
@@ -880,9 +708,6 @@ namespace gatzk::protocol
         std::map<std::string, algebra::FieldElement> challenges;
     };
 
-    // 运行期与 benchmark 统一使用的指标表。
-    // 这里记录三项正式时间、canonical proof bytes 大小及内部热路径拆分。
-    // 正式展示面只能读取最小指标；细粒度字段只允许停留在内部 manifest。
     struct RunMetrics
     {
         std::string backend_name;
@@ -898,8 +723,6 @@ namespace gatzk::protocol
         double formal_time_sum_ms = 0.0;
         double non_formal_overhead_ms = 0.0;
         double reference_forward_ms = 0.0;
-        // Experiment-level audits are intentionally outside verify_time_ms:
-        // the protocol verifier owns only parse_proof through verify(...).
         double payload_audit_ms = 0.0;
         double reference_consistency_ms = 0.0;
         bool reference_consistency_passed = false;
@@ -1004,8 +827,6 @@ namespace gatzk::protocol
         double quotient_t_c_ms = 0.0;
         double quotient_t_n_ms = 0.0;
         double quotient_public_eval_ms = 0.0;
-        // Point generation and its required batch synchronization only.  Quotient
-        // materialization and proof-object packing remain in prove_time.
         double quotient_commitment_ms = 0.0;
         double quotient_fold_prepare_ms = 0.0;
         double quotient_copy_convert_ms = 0.0;
@@ -1036,10 +857,6 @@ namespace gatzk::protocol
         double prover_total_ms = 0.0;
         double prover_wall_including_audit_ms = 0.0;
         double prover_reference_audit_ms = 0.0;
-        // Canonical protocol-verifier wall clock: parse_proof start through
-        // the return of verify(...).  Public-output digest, payload audit,
-        // reference consistency, final acceptance, tamper checks, and export
-        // are not part of this metric.
         double verify_time_ms = 0.0;
         double proof_parse_ms = 0.0;
         double verify_metadata_ms = 0.0;
@@ -1062,7 +879,6 @@ namespace gatzk::protocol
         double verify_bundle_lookup_ms = 0.0;
         double verify_fold_ms = 0.0;
         double verify_copy_convert_ms = 0.0;
-        // formal proof 的传输尺寸，不是对象内存占用，也不是目录大小。
         std::size_t proof_size_bytes = 0;
         bool enabled_fast_msm = false;
         bool enabled_parallel_fft = false;
@@ -1106,10 +922,6 @@ namespace gatzk::protocol
         std::string gpu_acceleration_status;
         std::string notes;
 
-        // Execution-only state for the exclusive prover timer.  These fields
-        // are never serialized into a proof or an artifact; they let the
-        // commitment scopes pause the prove clock without deriving prove_time
-        // as a residual from a larger wall-clock interval.
         bool timing_state_valid = true;
         std::string timing_state_error;
         bool prove_timer_started = false;
@@ -1127,16 +939,12 @@ namespace gatzk::protocol
     {
         using Clock = std::chrono::steady_clock;
 
-        inline double elapsed_ms(
-            const Clock::time_point &start,
-            const Clock::time_point &end)
+        inline double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end)
         {
             return std::chrono::duration<double, std::milli>(end - start).count();
         }
 
-        inline void mark_invalid(
-            RunMetrics *metrics,
-            const char *reason)
+        inline void mark_invalid(RunMetrics *metrics, const char *reason)
         {
             if (metrics == nullptr)
                 return;
@@ -1147,10 +955,7 @@ namespace gatzk::protocol
         inline void require_valid(const RunMetrics &metrics)
         {
             if (!metrics.timing_state_valid)
-                throw std::runtime_error(
-                    metrics.timing_state_error.empty()
-                        ? "formal timing state is invalid"
-                        : metrics.timing_state_error);
+                throw std::runtime_error(metrics.timing_state_error.empty() ? "formal timing state is invalid" : metrics.timing_state_error);
         }
 
         inline void start_prove_timer(RunMetrics *metrics)
@@ -1158,31 +963,23 @@ namespace gatzk::protocol
             if (metrics == nullptr)
                 return;
             require_valid(*metrics);
-            if (metrics->prove_timer_started || metrics->prove_timer_finished ||
-                metrics->commitment_timer_depth != 0 || metrics->reference_audit_timer_running)
+            if (metrics->prove_timer_started || metrics->prove_timer_finished || metrics->commitment_timer_depth != 0 || metrics->reference_audit_timer_running)
             {
-                mark_invalid(
-                    metrics,
-                    "formal prove timer started in an invalid timing state");
-                throw std::runtime_error(
-                    "formal prove timer started in an invalid timing state");
+                mark_invalid(metrics, "formal prove timer started in an invalid timing state");
+                throw std::runtime_error("formal prove timer started in an invalid timing state");
             }
-            const auto started =
-                Clock::now();
+            const auto started = Clock::now();
 
             metrics->prove_time_ms = 0.0;
             metrics->prover_total_ms = 0.0;
             metrics->prover_wall_including_audit_ms = 0.0;
             metrics->prover_reference_audit_ms = 0.0;
-            metrics->prove_timer_commitment_baseline_ms =
-                metrics->commitment_time_ms;
+            metrics->prove_timer_commitment_baseline_ms = metrics->commitment_time_ms;
             metrics->prove_timer_started = true;
             metrics->prove_timer_running = true;
             metrics->prove_timer_finished = false;
-            metrics->prove_timer_wall_start =
-                started;
-            metrics->prove_timer_segment_start =
-                started;
+            metrics->prove_timer_wall_start = started;
+            metrics->prove_timer_segment_start = started;
         }
 
         inline void finish_prove_timer(RunMetrics *metrics)
@@ -1190,35 +987,24 @@ namespace gatzk::protocol
             if (metrics == nullptr)
                 return;
             require_valid(*metrics);
-            if (!metrics->prove_timer_started || !metrics->prove_timer_running ||
-                metrics->commitment_timer_depth != 0 || metrics->reference_audit_timer_running)
+            if (!metrics->prove_timer_started || !metrics->prove_timer_running || metrics->commitment_timer_depth != 0 ||
+                metrics->reference_audit_timer_running)
             {
-                mark_invalid(
-                    metrics,
-                    "formal prove timer finished in an invalid timing state");
-                throw std::runtime_error(
-                    "formal prove timer finished in an invalid timing state");
+                mark_invalid(metrics, "formal prove timer finished in an invalid timing state");
+                throw std::runtime_error("formal prove timer finished in an invalid timing state");
             }
             const auto finished = Clock::now();
-            const auto duration_ms = elapsed_ms(
-                metrics->prove_timer_segment_start,
-                finished);
+            const auto duration_ms = elapsed_ms(metrics->prove_timer_segment_start, finished);
             if (duration_ms < 0.0)
             {
-                mark_invalid(
-                    metrics,
-                    "formal prove timer measured a negative duration");
-                throw std::runtime_error(
-                    "formal prove timer measured a negative duration");
+                mark_invalid(metrics, "formal prove timer measured a negative duration");
+                throw std::runtime_error("formal prove timer measured a negative duration");
             }
             metrics->prove_time_ms += duration_ms;
             if (metrics->prove_time_ms < 0.0)
             {
-                mark_invalid(
-                    metrics,
-                    "formal prove timer measured a negative duration");
-                throw std::runtime_error(
-                    "formal prove timer measured a negative duration");
+                mark_invalid(metrics, "formal prove timer measured a negative duration");
+                throw std::runtime_error("formal prove timer measured a negative duration");
             }
             metrics->prove_timer_started = false;
             metrics->prove_timer_running = false;
@@ -1232,20 +1018,15 @@ namespace gatzk::protocol
             require_valid(*metrics);
             if (metrics->prove_timer_finished || metrics->reference_audit_timer_running)
             {
-                mark_invalid(
-                    metrics,
-                    "commitment started outside a valid proof-production interval");
-                throw std::runtime_error(
-                    "commitment started outside a valid proof-production interval");
+                mark_invalid(metrics, "commitment started outside a valid proof-production interval");
+                throw std::runtime_error("commitment started outside a valid proof-production interval");
             }
             if (metrics->commitment_timer_depth == 0)
             {
                 metrics->commitment_timer_start = Clock::now();
                 if (metrics->prove_timer_started && metrics->prove_timer_running)
                 {
-                    metrics->prove_time_ms += elapsed_ms(
-                        metrics->prove_timer_segment_start,
-                        metrics->commitment_timer_start);
+                    metrics->prove_time_ms += elapsed_ms(metrics->prove_timer_segment_start, metrics->commitment_timer_start);
                     metrics->prove_timer_running = false;
                 }
             }
@@ -1259,36 +1040,25 @@ namespace gatzk::protocol
             require_valid(*metrics);
             if (metrics->commitment_timer_depth == 0)
             {
-                mark_invalid(
-                    metrics,
-                    "formal commitment timer ended without a matching scope");
-                throw std::runtime_error(
-                    "formal commitment timer ended without a matching scope");
+                mark_invalid(metrics, "formal commitment timer ended without a matching scope");
+                throw std::runtime_error("formal commitment timer ended without a matching scope");
             }
             --metrics->commitment_timer_depth;
             if (metrics->commitment_timer_depth != 0)
                 return;
 
             const auto finished = Clock::now();
-            const auto duration_ms = elapsed_ms(
-                metrics->commitment_timer_start,
-                finished);
+            const auto duration_ms = elapsed_ms(metrics->commitment_timer_start, finished);
             if (duration_ms < 0.0)
             {
-                mark_invalid(
-                    metrics,
-                    "formal commitment timer measured a negative duration");
-                throw std::runtime_error(
-                    "formal commitment timer measured a negative duration");
+                mark_invalid(metrics, "formal commitment timer measured a negative duration");
+                throw std::runtime_error("formal commitment timer measured a negative duration");
             }
             metrics->commitment_time_ms += duration_ms;
             if (metrics->commitment_time_ms < 0.0)
             {
-                mark_invalid(
-                    metrics,
-                    "formal commitment timer measured a negative duration");
-                throw std::runtime_error(
-                    "formal commitment timer measured a negative duration");
+                mark_invalid(metrics, "formal commitment timer measured a negative duration");
+                throw std::runtime_error("formal commitment timer measured a negative duration");
             }
             if (metrics->prove_timer_started)
             {
@@ -1300,28 +1070,21 @@ namespace gatzk::protocol
         inline void assert_quiescent(RunMetrics &metrics)
         {
             require_valid(metrics);
-            if (metrics.commitment_timer_depth != 0 || metrics.prove_timer_started ||
-                metrics.prove_timer_running || metrics.reference_audit_timer_running)
+            if (metrics.commitment_timer_depth != 0 || metrics.prove_timer_started || metrics.prove_timer_running || metrics.reference_audit_timer_running)
             {
-                mark_invalid(
-                    &metrics,
-                    "formal timing state is not quiescent");
-                throw std::runtime_error(
-                    "formal timing state is not quiescent");
+                mark_invalid(&metrics, "formal timing state is not quiescent");
+                throw std::runtime_error("formal timing state is not quiescent");
             }
         }
 
         inline void assert_prove_finished(RunMetrics &metrics)
         {
             require_valid(metrics);
-            if (!metrics.prove_timer_finished || metrics.prove_timer_started || metrics.prove_timer_running ||
-                metrics.commitment_timer_depth != 0 || metrics.reference_audit_timer_running)
+            if (!metrics.prove_timer_finished || metrics.prove_timer_started || metrics.prove_timer_running || metrics.commitment_timer_depth != 0 ||
+                metrics.reference_audit_timer_running)
             {
-                mark_invalid(
-                    &metrics,
-                    "formal prove timer has not completed canonical serialization");
-                throw std::runtime_error(
-                    "formal prove timer has not completed canonical serialization");
+                mark_invalid(&metrics, "formal prove timer has not completed canonical serialization");
+                throw std::runtime_error("formal prove timer has not completed canonical serialization");
             }
         }
 
@@ -1333,8 +1096,7 @@ namespace gatzk::protocol
                 if (metrics_ == nullptr)
                     return;
                 require_valid(*metrics_);
-                if (metrics_->reference_audit_timer_running || metrics_->commitment_timer_depth != 0 ||
-                    metrics_->prove_timer_finished)
+                if (metrics_->reference_audit_timer_running || metrics_->commitment_timer_depth != 0 || metrics_->prove_timer_finished)
                 {
                     mark_invalid(metrics_, "reference audit started in an invalid timing state");
                     throw std::runtime_error("reference audit started in an invalid timing state");
@@ -1357,8 +1119,7 @@ namespace gatzk::protocol
                     return;
                 const auto finished = Clock::now();
                 const auto duration = elapsed_ms(started_, finished);
-                if (duration < 0.0 || !metrics_->reference_audit_timer_running ||
-                    metrics_->commitment_timer_depth != 0)
+                if (duration < 0.0 || !metrics_->reference_audit_timer_running || metrics_->commitment_timer_depth != 0)
                 {
                     mark_invalid(metrics_, "reference audit failed to close");
                     return;
@@ -1386,8 +1147,7 @@ namespace gatzk::protocol
         class ScopedCommitment
         {
         public:
-            explicit ScopedCommitment(RunMetrics *metrics)
-                : metrics_(metrics)
+            explicit ScopedCommitment(RunMetrics *metrics) : metrics_(metrics)
             {
                 begin_commitment(metrics_);
                 active_ = metrics_ != nullptr;
@@ -1406,12 +1166,7 @@ namespace gatzk::protocol
                 }
                 catch (...)
                 {
-                    // A commitment scope must not hide the original proving
-                    // failure.  The normal path is checked by the timer
-                    // state transitions above.
-                    mark_invalid(
-                        metrics_,
-                        "formal commitment scope failed to close");
+                    mark_invalid(metrics_, "formal commitment scope failed to close");
                 }
             }
 
@@ -1419,6 +1174,6 @@ namespace gatzk::protocol
             RunMetrics *metrics_ = nullptr;
             bool active_ = false;
         };
-    } // namespace timing
+    }
 
-} // namespace gatzk::protocol
+}

@@ -37,9 +37,7 @@ def main(argv: List[str]) -> int:
         resource_errors = verify_local_resources(root, (args.dataset,))
         if resource_errors:
             raise ChainError("resource authentication failed: " + " | ".join(resource_errors))
-        # Keep these explicit checks in the direct registration entrypoint as
-        # well as in the shared resource gate.  A caller must never be able to
-        # register against an unauthenticated cache/checkpoint or quant chain.
+
         verify_cache(root, args.dataset)
         verify_checkpoint(root, args.dataset)
         if config.get("setup_mode") != "hyrax_native_local" or config.get("setup_resource_scope") != "baseline-local":

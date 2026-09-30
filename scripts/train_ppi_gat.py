@@ -209,9 +209,8 @@ def main() -> None:
     data_root = (project_root / cfg.get("data_root", "data")).resolve()
     cache_root = (project_root / cfg.get("cache_root", "data/cache") / "ppi").resolve()
     output_dir = (
-        pathlib.Path(args.output_dir).expanduser().resolve()
-        if args.output_dir is not None
-        else (project_root / cfg.get("checkpoint_bundle", "artifacts/checkpoints/ppi_gat")).resolve()
+        pathlib.Path(args.output_dir).expanduser().resolve() if args.output_dir is not None else
+        (project_root / cfg.get("checkpoint_bundle", "artifacts/checkpoints/ppi_gat")).resolve()
     )
     checkpoint_path = output_dir / "best_model.pt"
     if checkpoint_path.exists() and not args.overwrite:
@@ -230,7 +229,8 @@ def main() -> None:
     seed = int(_override(args.seed, cfg_int(cfg, "seed", 11)))
     use_cuda = bool(_override(args.use_cuda, True))
     if (epochs, patience, learning_rate, weight_decay, dropout) != (500, 100, 0.005, 0.0, 0.0) or seed != 11:
-        raise ValueError("PPI formal training requires epochs=500, patience=100, lr=0.005, " "weight_decay=0, dropout=0, seed=11")
+        raise ValueError("PPI formal training requires epochs=500, patience=100, lr=0.005, "
+                         "weight_decay=0, dropout=0, seed=11")
     if not use_cuda:
         raise RuntimeError("formal training requires CUDA; refusing to create a CPU checkpoint")
     if not torch.cuda.is_available():
@@ -288,7 +288,8 @@ def main() -> None:
             eval_logits, _ = model(data.features, data.edge_src, data.edge_dst, dropout=0.0, training=False, return_trace=False)
             validation_loss = float(masked_bce_with_logits(eval_logits, data.labels_multi, data.val_mask).item())
         history.append({"epoch": float(epoch), "train_loss": float(loss.item()), "val_loss": validation_loss})
-        print(f"[ppi] epoch={epoch:04d} train_loss={loss.item():.6f} " f"val_loss={validation_loss:.6f}", flush=True)
+        print(f"[ppi] epoch={epoch:04d} train_loss={loss.item():.6f} "
+              f"val_loss={validation_loss:.6f}", flush=True)
         if validation_loss < best_val_loss:
             best_val_loss = validation_loss
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}

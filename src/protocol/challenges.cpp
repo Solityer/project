@@ -18,9 +18,6 @@
 
 namespace gatzk::protocol
 {
-    // 负责把 formal note 固定的 transcript 吸收顺序重放为 challenge 集合
-    // 连接 public metadata、dynamic commitment、quotient commitment 与 prove/verify 共享挑战值
-    // 这里的任何标签顺序变化都会直接改变 proof contract，因此只能做缓存和标签整理，不能改语义
     namespace
     {
 
@@ -37,10 +34,7 @@ namespace gatzk::protocol
             return out.str();
         }
 
-        void absorb_text_scalar(crypto::Transcript &transcript, const std::string &label, const std::string &value)
-        {
-            transcript.absorb_text(label, value);
-        }
+        void absorb_text_scalar(crypto::Transcript &transcript, const std::string &label, const std::string &value) { transcript.absorb_text(label, value); }
 
         void absorb(crypto::Transcript &transcript, const std::string &label, const std::unordered_map<std::string, crypto::Commitment> &commitments)
         {
@@ -74,15 +68,9 @@ namespace gatzk::protocol
             }
         }
 
-        std::size_t hidden_head_width(const model::ModelParameters &parameters)
-        {
-            return model::max_hidden_head_dim(parameters);
-        }
+        std::size_t hidden_head_width(const model::ModelParameters &parameters) { return model::max_hidden_head_dim(parameters); }
 
-        std::size_t concat_width(const model::ModelParameters &parameters)
-        {
-            return model::max_hidden_concat_width(parameters);
-        }
+        std::size_t concat_width(const model::ModelParameters &parameters) { return model::max_hidden_concat_width(parameters); }
 
         std::string hidden_profile_string(const model::ModelParameters &parameters)
         {
@@ -180,10 +168,10 @@ namespace gatzk::protocol
             push("J_qry_exp");
             push("R_exp");
             push("H_agg_pre");
-            push("Sum_flat"); // 注意力权重归一化分母
+            push("Sum_flat");
             push("H_agg_pre_flat");
-            push("H_agg_num_flat"); // 整数特征聚合的分子
-            push("H_ELU_in_flat");  // 经过除法和舍入后进入ELU的整数
+            push("H_agg_num_flat");
+            push("H_ELU_in_flat");
             push("H_agg_flat");
             push("Table_ELU");
             push("Query_ELU");
@@ -325,8 +313,8 @@ namespace gatzk::protocol
             labels.push_back(prefix + "_R_dst");
             labels.push_back(prefix + "_Y_pre_flat");
             labels.push_back(prefix + "_Sum_flat");
-            labels.push_back(prefix + "_Y_pre_field_flat"); // 聚合辅助值
-            labels.push_back(prefix + "_Y_agg_num_flat");   // 整数聚合分子
+            labels.push_back(prefix + "_Y_pre_field_flat");
+            labels.push_back(prefix + "_Y_agg_num_flat");
             labels.push_back(prefix + "_Bias_flat");
             labels.push_back(prefix + "_Y_flat");
         }
@@ -353,8 +341,6 @@ namespace gatzk::protocol
 
     }
 
-    // 统一构造会进入 transcript、proof metadata 与 run manifest 的公开元数据。
-    // 这些字段既参与 verifier 重放，也会影响 proof_size_bytes 中被计入的字符串载荷。
     PublicMetadata canonical_public_metadata(const ProtocolContext &context)
     {
         PublicMetadata metadata;
@@ -784,8 +770,6 @@ namespace gatzk::protocol
 
     std::vector<std::string> dynamic_commitment_labels(const ProtocolContext &context)
     {
-        // 这里返回的是 proof 中动态承诺的正式顺序。
-        // family 形状越宽，标签数量越多，最终 proof_size_bytes 也会随之增加。
         std::vector<std::string> labels = {
             "P_H", "P_Table_feat", "P_Query_feat", "P_m_feat", "P_J_tbl_feat", "P_J_qry_feat", "P_R_feat",
         };
@@ -801,8 +785,6 @@ namespace gatzk::protocol
                 labels.push_back(hidden_model_binding_blinder_label(layer_index, head_index, "src"));
                 labels.push_back(hidden_model_binding_blinder_label(layer_index, head_index, "dst"));
             }
-            // The concat block is serialized immediately after all heads of
-            // its layer and before the next layer's hidden-head family.
             append_concat_labels(labels, hidden_layer_concat_label(layer_index), hidden_layer_concat_star_label(layer_index),
                                  hidden_layer_cat_prefix(layer_index));
         }
@@ -931,8 +913,6 @@ namespace gatzk::protocol
         return out;
     }
 
-    // 按正式 transcript 顺序重放 challenge，供 prove 与 verify 共享同一挑战语义。
-    // 当 quotient commitment 仍未生成时，函数只返回前半段 challenge，避免在 build_context 阶段改写顺序。
     std::map<std::string, algebra::FieldElement> replay_challenges(const ProtocolContext &context,
                                                                    const std::unordered_map<std::string, crypto::Commitment> &dynamic_commitments,
                                                                    const std::unordered_map<std::string, crypto::Commitment> &quotient_commitments,

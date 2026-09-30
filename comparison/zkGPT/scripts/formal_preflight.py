@@ -95,9 +95,7 @@ def _fixture_file(root: Path, directory: Path, name: str, fixture: Mapping[str, 
     elif not isinstance(value, str):
         raise ChainError(f"formal fixture has malformed {field}")
     else:
-        # Fixture paths may be baseline-relative, but must resolve directly
-        # inside this fresh directory.  Absolute and escaping paths are never
-        # accepted.
+
         if value.startswith("/"):
             raise ChainError(f"formal fixture {field} must be baseline-relative")
         candidate = local_path(root, value, f"formal fixture {field}")
@@ -295,8 +293,7 @@ def run_tiny_formal(root: Path, backend: str) -> Dict[str, Any]:
         if keep_fresh:
             print(f"PREFLIGHT_PARTIAL_DIAGNOSTICS stage={stage} directory={fresh}", file=sys.stderr)
         else:
-            # This directory is disposable by construction.  A future
-            # preflight can never accidentally consume an old fixture path.
+
             shutil.rmtree(fresh, ignore_errors=False)
 
 
@@ -317,14 +314,10 @@ def run_capacity(root: Path, dataset: str, backend: str) -> Dict[str, Any]:
         raise ChainError(f"unsupported capacity schema for {dataset}/{backend}")
     if payload.get("dataset") != dataset or payload.get("backend") != backend or payload.get("status") not in ("READY", "BLOCKED"):
         raise ChainError(f"capacity has an invalid status for {dataset}/{backend}")
-    # The native CLI returns non-zero for a genuine, fail-closed capacity
-    # blocker.  Preserve that structured JSON so the caller can collect all
-    # five dataset statuses instead of replacing it with a generic exception.
+
     if completed.returncode != 0 and payload.get("status") != "BLOCKED":
         raise ChainError(f"capacity preflight failed for {dataset}/{backend}: {completed.stderr[-1000:]}")
-    # Capacity records must expose explicit bounded counts.  We don't impose
-    # a guessed numerical threshold here; the native materializer decides its
-    # relation-specific caps and reports rejection when they are exceeded.
+
     for key in ("layer_count", "max_layer_size", "max_materialized_vector_elements", "estimated_peak_memory_bytes"):
         if key in payload:
             value = payload[key]

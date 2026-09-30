@@ -199,7 +199,6 @@ def main() -> int:
                 path.write_bytes(contents)
             checks.append((label, rejected))
 
-        # Re-run the final validator after all negative mutations are restored.
         final_after = invoke(final, 0)
         print(
             f"collector_fixture PASS artifact_sha256={artifact_digest} "

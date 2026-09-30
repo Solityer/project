@@ -21,7 +21,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 SRS_ROOT = ROOT / "resources" / "native_srs"
@@ -137,18 +136,13 @@ def install_shared_srs(binary: Path, logrows: int, expected: str) -> tuple[Path,
     if destination.is_symlink() or (destination.exists() and not destination.is_file()):
         fail(f"shared native SRS destination is not a regular file: {destination}")
 
-    # A valid cache is authenticated again by native get-srs.  A stale or
-    # mismatched cache is removed by that native hash gate and is redownloaded
-    # through a temporary path below.
     if destination.exists():
         valid, _ = native_get_srs(binary, destination, logrows)
         if valid:
             size = validate_native_file(destination, expected)
             return destination, size
 
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".kzg{logrows}.", suffix=".native-get-srs", dir=SRS_ROOT
-    )
+    fd, temporary_name = tempfile.mkstemp(prefix=f".kzg{logrows}.", suffix=".native-get-srs", dir=SRS_ROOT)
     os.close(fd)
     temporary = Path(temporary_name)
     temporary.unlink()
@@ -158,7 +152,6 @@ def install_shared_srs(binary: Path, logrows: int, expected: str) -> tuple[Path,
             fail("native get-srs failed; official SRS was not installed")
         size = validate_native_file(temporary, expected)
         os.replace(temporary, destination)
-        # Re-read the atomically installed object before publishing provenance.
         size = validate_native_file(destination, expected)
         return destination, size
     finally:
@@ -316,8 +309,6 @@ def main(args: argparse.Namespace) -> int:
             for dataset in DATASETS
         },
     }
-    # Ensure all config updates are structurally possible before publishing
-    # either side of the binding.
     for dataset in DATASETS:
         values = parse_config(config_path(dataset))
         if values.get("srs_type") != "trusted_srs":

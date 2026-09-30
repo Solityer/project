@@ -70,7 +70,7 @@ namespace gatzk::protocol::internal
         {
             return (match.hidden && (match.suffix == "w_psq" || match.suffix == "T_psq_edge")) || (!match.hidden && match.suffix == "w");
         }
-    } // namespace
+    }
 
     std::optional<TEdgeDerivedLinearDescriptor> make_t_edge_derived_linear_descriptor(std::string_view name, const TEdgeDescriptorShape &shape,
                                                                                       const std::map<std::string, FieldElement> &challenges,
@@ -285,4 +285,4 @@ namespace gatzk::protocol::internal
         return result;
     }
 
-} // namespace gatzk::protocol::internal
+}

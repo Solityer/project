@@ -23,7 +23,6 @@ import zipfile
 from pathlib import Path
 from typing import Any, NoReturn
 
-
 SCHEMA_VERSION = 1
 TABLE_MAGIC = b"EZKL-GAT-TABLES\x00"
 TABLE_FORMAT_VERSION = 1
@@ -177,18 +176,15 @@ def validate_checkpoint_archive(root: Path, manifest_path: Path, checkpoint: dic
             fail(f"tensor dtype is missing for {logical_name} in {manifest_path}")
         shape = metadata["shape"]
         if (
-            not isinstance(shape, list)
-            or not shape
-            or any(isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0 for dimension in shape)
+            not isinstance(shape, list) or not shape or
+            any(isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0 for dimension in shape)
         ):
             fail(f"tensor shape is invalid for {logical_name} in {manifest_path}")
         expected[archive_key] = metadata
 
     if checkpoint.get("tensor_count") != len(expected):
-        fail(
-            f"tensor_count mismatch in {manifest_path}: "
-            f"declared {checkpoint.get('tensor_count')}, indexed {len(expected)}"
-        )
+        fail(f"tensor_count mismatch in {manifest_path}: "
+             f"declared {checkpoint.get('tensor_count')}, indexed {len(expected)}")
 
     archive_path = manifest_path.parent / "tensors.npz"
     if not archive_path.is_file() or archive_path.is_symlink():
@@ -208,10 +204,8 @@ def validate_checkpoint_archive(root: Path, manifest_path: Path, checkpoint: dic
         actual.add(key)
     expected_keys = set(expected)
     if actual != expected_keys:
-        fail(
-            f"checkpoint archive/manifest mismatch in {archive_path}: "
-            f"missing={sorted(expected_keys - actual)}, extra={sorted(actual - expected_keys)}"
-        )
+        fail(f"checkpoint archive/manifest mismatch in {archive_path}: "
+             f"missing={sorted(expected_keys - actual)}, extra={sorted(actual - expected_keys)}")
 
 
 def _npy_contract(path: Path) -> dict[str, Any]:
@@ -356,26 +350,21 @@ def validate_table_archive(path: Path) -> None:
         if version != TABLE_FORMAT_VERSION or count != 4:
             fail(f"unsupported table archive version/count in {path}")
         registry = _read_metadata(stream, "registry metadata", path)
-        if set(registry) != {
-            "format", "version", "static_tables_id", "backend_aux_tables_id",
-            "static_tables_digest", "table_order"
-        }:
+        if set(registry) != {"format", "version", "static_tables_id", "backend_aux_tables_id", "static_tables_digest", "table_order"}:
             fail(f"registry metadata schema mismatch: {path}")
         if registry["format"] != "ezkl-gat-static-tables-bin" or registry["version"] != TABLE_FORMAT_VERSION:
             fail(f"registry metadata identity mismatch: {path}")
         if (
-            not isinstance(registry["static_tables_id"], str)
-            or not isinstance(registry["backend_aux_tables_id"], str)
-            or not isinstance(registry["table_order"], list)
+            not isinstance(registry["static_tables_id"], str) or not isinstance(registry["backend_aux_tables_id"], str) or
+            not isinstance(registry["table_order"], list)
         ):
             fail(f"registry metadata types are invalid: {path}")
         table_order = ["lrelu", "exp", "elu", "max_relu"]
         if registry["table_order"] != table_order:
             fail(f"registry table order mismatch: {path}")
         if (
-            not isinstance(registry["static_tables_digest"], str)
-            or len(registry["static_tables_digest"]) != 64
-            or any(char not in "0123456789abcdef" for char in registry["static_tables_digest"])
+            not isinstance(registry["static_tables_digest"], str) or len(registry["static_tables_digest"]) != 64 or
+            any(char not in "0123456789abcdef" for char in registry["static_tables_digest"])
         ):
             fail(f"registry digest is malformed: {path}")
         static_hasher = hashlib.sha256(b"ezkl-gat-static-tables-v1")
@@ -385,19 +374,19 @@ def validate_table_archive(path: Path) -> None:
         for expected_function in functions:
             metadata = _read_metadata(stream, "table metadata", path)
             required = {
-                "table_id", "input_scale", "output_scale", "function_id", "domain_id",
-                "generator_id", "input_min", "input_max", "row_count", "digest", "canonical_len"
+                "table_id", "input_scale", "output_scale", "function_id", "domain_id", "generator_id", "input_min", "input_max", "row_count", "digest",
+                "canonical_len"
             }
             if set(metadata) != required:
                 fail(f"table metadata schema mismatch: {path}")
-            if any(
-                not isinstance(metadata[key], str)
-                for key in ("table_id", "function_id", "domain_id", "generator_id", "digest")
-            ) or any(
-                isinstance(metadata[key], bool) or not isinstance(metadata[key], int)
-                for key in (
-                    "input_scale", "output_scale", "input_min", "input_max",
-                    "row_count", "canonical_len",
+            if any(not isinstance(metadata[key], str) for key in ("table_id", "function_id", "domain_id", "generator_id", "digest")) or any(
+                isinstance(metadata[key], bool) or not isinstance(metadata[key], int) for key in (
+                    "input_scale",
+                    "output_scale",
+                    "input_min",
+                    "input_max",
+                    "row_count",
+                    "canonical_len",
                 )
             ):
                 fail(f"table metadata types are invalid: {path}")
@@ -414,11 +403,7 @@ def validate_table_archive(path: Path) -> None:
                 fail(f"table domain is not contiguous: {path}")
             if metadata["function_id"] != expected_function:
                 fail(f"table function identity mismatch: {path}")
-            if (
-                not isinstance(metadata["digest"], str)
-                or len(metadata["digest"]) != 64
-                or any(char not in "0123456789abcdef" for char in metadata["digest"])
-            ):
+            if (not isinstance(metadata["digest"], str) or len(metadata["digest"]) != 64 or any(char not in "0123456789abcdef" for char in metadata["digest"])):
                 fail(f"table digest is malformed: {path}")
             canonical_length = _table_canonical_length(metadata)
             if metadata["canonical_len"] != canonical_length:
@@ -457,6 +442,8 @@ def validate_table_archive(path: Path) -> None:
             fail(f"static-table registry digest mismatch: {path}")
         if stream.read(1):
             fail(f"static-table archive has trailing bytes: {path}")
+
+
 def source_snapshot(baseline_root: Path) -> dict[str, Any]:
     snapshot: dict[str, Any] = {"root": str(baseline_root.resolve())}
     try:
@@ -597,8 +584,6 @@ def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool)
         if path_text.endswith("/gat_static_tables.bin"):
             validate_table_archive(local)
         if verify_source:
-            # The source is baseline-local and was already authenticated above;
-            # retain the flag for CLI compatibility with the staging workflow.
             pass
     expected = {p.relative_to(root).as_posix() for p in regular_files(root)}
     if seen != expected:
@@ -616,11 +601,7 @@ def require_complete_resource_set(root: Path, manifest: dict[str, Any]) -> None:
     fallback or an implicitly trusted sidecar.
     """
 
-    paths = {
-        entry["path"]
-        for entry in manifest.get("files", [])
-        if isinstance(entry, dict) and isinstance(entry.get("path"), str)
-    }
+    paths = {entry["path"] for entry in manifest.get("files", []) if isinstance(entry, dict) and isinstance(entry.get("path"), str)}
     missing = []
     for dataset in sorted(REQUIRED_GENERATED_DATASETS):
         for relative in (
@@ -630,11 +611,8 @@ def require_complete_resource_set(root: Path, manifest: dict[str, Any]) -> None:
             if relative not in paths:
                 missing.append(relative)
     if missing:
-        fail(
-            "PREPARE/BLOCKED: authenticated exact table/ledger resources are missing; "
-            "run scripts/prepare_gat_resources.py first: "
-            + ", ".join(missing)
-        )
+        fail("PREPARE/BLOCKED: authenticated exact table/ledger resources are missing; "
+             "run scripts/prepare_gat_resources.py first: " + ", ".join(missing))
 
 
 def atomic_manifest_write(path: Path, value: dict[str, Any]) -> None:

@@ -416,7 +416,7 @@ void range_proof_open(ll*w,Fr*r,Fr eval,G1&G,G1*g,G1*comm,int l)
     //cout << "open group: " << duration_ms4.count() << " ms" << endl;
     //verf.stop("total verify :");
 }
-void range_proof_open(Fr*w,Fr*r,Fr eval,G1&G,G1*g,G1*comm,int l)
+void range_proof_open(Fr *w, Fr *r, Fr eval, G1 &G, G1 *g, G1 *comm, int l)
 {
     int halfl=l/2;
     int rownum=(1<<halfl),colnum=(1<<(l-halfl));

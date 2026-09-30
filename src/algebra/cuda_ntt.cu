@@ -34,23 +34,11 @@ namespace gatzk::algebra
     {
         using IcicleScalar = bls12_381::scalar_t;
 
-        // OGBN t_edge needs:
-        //   2^23 inverse NTT
-        //   two 2^24 forward NTTs.
-        //
-        // Deliberately do not initialize a 2^32 ICICLE domain: the additional
-        // twiddle storage would be unnecessary for the production quotient path.
         constexpr std::size_t kMaximumCudaNttSize = std::size_t{1} << 24;
 
-        // Larger quotient cosets are decomposed into radix-2 stages whose
-        // leaf transforms stay at kMaximumCudaNttSize.  Keep the extension
-        // bounded at a 2^26 lane (2^27 total coset) so admission can account
-        // for a fixed, auditable workspace shape.
         constexpr std::size_t kMaximumCudaStagedNttSize = std::size_t{1} << 26;
         constexpr std::size_t kMaximumCudaCosetTargetSize = std::size_t{1} << 27;
 
-        // Preserve workspace/headroom after persistent ICICLE twiddles and the
-        // explicit input/output buffers have been accounted for.
         constexpr std::size_t kCudaNttReserveBytes = std::size_t{4} << 30;
 
         std::size_t checked_ntt_bytes(std::size_t size, std::size_t batch_size);
@@ -89,15 +77,12 @@ namespace gatzk::algebra
         class CudaRegisteredHostTransferGuard final : public CudaHostTransferGuard
         {
         public:
-            CudaRegisteredHostTransferGuard(void *host_pointer, cudaEvent_t event, int device, bool unregister_on_wait)
-                : host_pointer_(host_pointer), event_(event), device_(device), unregister_on_wait_(unregister_on_wait)
+            CudaRegisteredHostTransferGuard(void *host_pointer, cudaEvent_t event, int device, bool unregister_on_wait) :
+                host_pointer_(host_pointer), event_(event), device_(device), unregister_on_wait_(unregister_on_wait)
             {
             }
 
-            ~CudaRegisteredHostTransferGuard() override
-            {
-                complete_noexcept();
-            }
+            ~CudaRegisteredHostTransferGuard() override { complete_noexcept(); }
 
             void wait() const override
             {
@@ -290,8 +275,6 @@ namespace gatzk::algebra
 
         IcicleScalar protocol_maximum_root()
         {
-            // Use the protocol's exact MCL root rather than assuming that a
-            // backend-specific primitive-root convention is identical.
             const auto root = FieldElement::root_of_unity(kMaximumCudaNttSize);
 
             std::array<std::uint8_t, 64> bytes{};
@@ -357,10 +340,7 @@ namespace gatzk::algebra
             int device = -1;
             cudaStream_t stream = nullptr;
 
-            ~CudaNttWorkspace()
-            {
-                release();
-            }
+            ~CudaNttWorkspace() { release(); }
 
             bool ensure(std::size_t required_bytes, int current_device, bool staged = false)
             {
@@ -595,11 +575,6 @@ namespace gatzk::algebra
             return workspace;
         }
 
-        // ICICLE allocates the pinned 2^24 domain lazily.  The exact allocator
-        // footprint includes implementation tables in addition to the field
-        // vector, so keep a separate fixed allowance in every admission.  It
-        // is deliberately conservative and remains bounded independently of
-        // the caller's graph fan-out.
         constexpr std::size_t kIcicleDomainHeadroomBytes = std::size_t{1} << 30;
 
         bool admit_cuda_ntt_growth(std::size_t additional_bytes, int device)
@@ -724,12 +699,6 @@ namespace gatzk::algebra
             {
                 auto coefficient = index < coefficient_count ? coefficients[index] : algebra::gpu::fr_zero();
 
-                // Exactly reproduce:
-                //
-                // c[i] -= R[i]
-                // c[n+i] += R[i]
-                //
-                // from coset_evaluate_polynomial_into().
                 if (index < blinder_count)
                 {
                     coefficient = algebra::gpu::fr_sub(coefficient, blinder[index]);
@@ -1022,11 +991,6 @@ namespace gatzk::algebra
             }
         }
 
-        // The pinned ICICLE build is intentionally limited to a 2^24
-        // transform. Quotient cosets can be one or two powers larger. The
-        // kernels below provide the exact radix-2 decomposition needed to
-        // keep every ICICLE call within that bound while retaining the
-        // canonical natural-order transform.
         __global__ void split_ntt_residues_kernel(const GpuFr *input, GpuFr *output, std::size_t vector_count, std::size_t transform_size,
                                                   std::size_t base_size, std::size_t radix)
         {
@@ -1076,9 +1040,6 @@ namespace gatzk::algebra
                 const auto scaled_odd = algebra::gpu::fr_mul(input[input_base + second_input_offset + index], twiddle);
                 const auto even = input[input_base + index];
 
-                // An in-place combine is safe: each index owns exactly the two
-                // outputs at index and index+half_size, and no other thread
-                // writes either location.
                 output[output_base + index] = algebra::gpu::fr_mul(algebra::gpu::fr_add(even, scaled_odd), combine_scale);
                 output[output_base + half_size + index] = algebra::gpu::fr_mul(algebra::gpu::fr_sub(even, scaled_odd), combine_scale);
                 twiddle = algebra::gpu::fr_mul(twiddle, root);
@@ -1095,15 +1056,6 @@ namespace gatzk::algebra
                 return false;
             }
 
-            // DeviceContext::stream is a reference.  Do not obtain a
-            // context from get_default_device_context() and then assign
-            // through ctx.stream here: that reference aliases ICICLE's
-            // process-global static default_stream and therefore races when
-            // independent CUDA NTT workers execute concurrently.
-            //
-            // Bind the context reference to per-call storage instead.  The
-            // storage lives for the complete synchronous host-side NTT
-            // submission and each worker therefore keeps its own CUDA stream.
             cudaStream_t context_stream = stream;
 
             device_context::DeviceContext ctx{context_stream, static_cast<std::size_t>(device), cudaMemPool_t{}};
@@ -1158,10 +1110,6 @@ namespace gatzk::algebra
                                            batch_size, direction, device, stream);
             }
 
-            // The staged 2^25/2^26 path still uses the explicit two-lane
-            // residue decomposition.  Keep its existing audited batch bound;
-            // larger direct batches are handled only by the native ICICLE
-            // path above.
             if (batch_size > 2)
             {
                 return false;
@@ -1256,8 +1204,6 @@ namespace gatzk::algebra
                     return false;
                 }
 
-                // Pair residues (0,2) and (1,3) in each vector to form the
-                // two length-2^25 intermediate transforms.
                 combine_radix2_groups_kernel<<<static_cast<unsigned>(first_stage_blocks_size), kBlockSize, 0, stream>>>(
                     reinterpret_cast<const GpuFr *>(scratch_b), reinterpret_cast<GpuFr *>(scratch_a), batch_size, 2, kMaximumCudaNttSize, kMaximumCudaNttSize,
                     2 * kMaximumCudaNttSize, 2 * kMaximumCudaNttSize, size, combine_root_for(2 * kMaximumCudaNttSize), combine_scale);
@@ -1317,8 +1263,6 @@ namespace gatzk::algebra
             if (releasable_bytes == std::numeric_limits<std::size_t>::max())
                 return false;
 
-            // The staged schedule reuses output for residue scratch and input
-            // for leaf outputs. It needs two physical buffers, not four.
             const auto additional_workspace_bytes = workspace.can_reuse(total_bytes, device, false) || replacement_bytes <= releasable_bytes
                                                         ? std::size_t{0}
                                                         : replacement_bytes - releasable_bytes;
@@ -1352,8 +1296,6 @@ namespace gatzk::algebra
 
             if (!prepare())
             {
-                // Only this thread's transient workspace is reclaimed. The
-                // shared ICICLE domain and resident SRS bases remain intact.
                 if (workspace.stream != nullptr)
                 {
                     if (workspace.device != device)
@@ -1385,8 +1327,6 @@ namespace gatzk::algebra
                     if (batch_size == 1)
                         return false;
 
-                    // Replan a pair as two GPU transforms. Never return a
-                    // recoverable decline after the first host vector changed.
                     if (!run_cuda_ntt_batch(first, nullptr, size, 1, direction))
                         return false;
                     if (!run_cuda_ntt_batch(second, nullptr, size, 1, direction))
@@ -1413,10 +1353,6 @@ namespace gatzk::algebra
                     record_cuda_h2d(one_vector_bytes);
                 }
 
-                // Split: input -> output. Leaf NTTs: output -> input.
-                // Radix-2 combines in input; radix-4 combines back into output.
-                // Stream ordering makes the reuse safe, and the final result
-                // already occupies its destination without a full D2D copy.
                 if (!run_bounded_ntt_device(reinterpret_cast<const mcl::Fr *>(workspace.input), reinterpret_cast<mcl::Fr *>(device_result), size, batch_size,
                                             direction, device, stream, reinterpret_cast<mcl::Fr *>(workspace.output),
                                             reinterpret_cast<mcl::Fr *>(workspace.input)))
@@ -1445,8 +1381,6 @@ namespace gatzk::algebra
             }
             catch (...)
             {
-                // A caller may destroy host buffers while unwinding. Drain
-                // submitted transfers before allowing that ownership change.
                 (void)cudaStreamSynchronize(stream);
                 workspace.release();
                 throw;
@@ -1655,9 +1589,6 @@ namespace gatzk::algebra
 
         const auto half_size = target_size / 2;
 
-        // True multi-leaf batching uses ICICLE's native contiguous batch
-        // layout.  The separately audited staged 2^25/2^26 transform keeps
-        // the original single-leaf route.
         if (domain_size > kMaximumCudaNttSize || half_size > kMaximumCudaNttSize || target_size > kMaximumCudaCosetTargetSize)
         {
             return false;
@@ -1764,8 +1695,6 @@ namespace gatzk::algebra
 
             const auto descriptor_bytes = batch_size * sizeof(CudaCosetBatchDescriptor);
 
-            // One pinned host descriptor array and one device descriptor
-            // array are both execution working sets.
             add(descriptor_bytes);
             add(descriptor_bytes);
 
@@ -1807,9 +1736,6 @@ namespace gatzk::algebra
 
         const auto stream = workspace.stream;
 
-        // These are only upper bounds for the pinned staging allocations.
-        // Actual H2D transfers below use the sum of each request's logical
-        // value_count/blinder_count rather than these dense bounds.
         const auto maximum_values_bytes = checked_ntt_bytes(domain_size, batch_limit);
 
         const auto maximum_blinder_bytes = maximum_blinder_count == 0 ? std::size_t{0} : checked_ntt_bytes(maximum_blinder_count, batch_limit);
@@ -3164,15 +3090,9 @@ namespace gatzk::algebra
         return true;
     }
 
-    bool cuda_ntt_in_place_exact(mcl::Fr *values, std::size_t size)
-    {
-        return run_cuda_ntt_batch(values, nullptr, size, 1, ntt::NTTDir::kForward);
-    }
+    bool cuda_ntt_in_place_exact(mcl::Fr *values, std::size_t size) { return run_cuda_ntt_batch(values, nullptr, size, 1, ntt::NTTDir::kForward); }
 
-    bool cuda_intt_in_place_exact(mcl::Fr *values, std::size_t size)
-    {
-        return run_cuda_ntt_batch(values, nullptr, size, 1, ntt::NTTDir::kInverse);
-    }
+    bool cuda_intt_in_place_exact(mcl::Fr *values, std::size_t size) { return run_cuda_ntt_batch(values, nullptr, size, 1, ntt::NTTDir::kInverse); }
 
     namespace
     {
@@ -3257,7 +3177,6 @@ namespace gatzk::algebra
                 throw_cuda_ntt_error("Taylor pointwise product", status);
             record_cuda_kernel_invocations(1);
 
-            // Reuse the consumed kernel buffer as inverse-transform scratch.
             if (!run_bounded_ntt_device(frequency, result, size, 1, ntt::NTTDir::kInverse, device, stream, other, frequency))
                 throw std::runtime_error("admitted Taylor inverse NTT declined");
             status = cudaMemcpyAsync(values, result, bytes, cudaMemcpyDeviceToHost, stream);
@@ -3365,18 +3284,12 @@ namespace gatzk::algebra
 
             if (initialized[device_index])
             {
-                // release_domain frees twiddle material shared by every NTT on
-                // this device.  All quotient transforms must be complete before
-                // this stage boundary is entered.
                 status = cudaDeviceSynchronize();
 
                 if (status != cudaSuccess)
                 {
                     throw_cuda_ntt_error("domain release pre-synchronization", status);
                 }
-                // Keep release-domain stream storage local for the same
-                // reason as the execution context above: DeviceContext
-                // stores its stream by reference.
                 cudaStream_t release_stream = nullptr;
 
                 device_context::DeviceContext ctx{release_stream, static_cast<std::size_t>(device_index), cudaMemPool_t{}};
@@ -3407,4 +3320,4 @@ namespace gatzk::algebra
         }
     }
 
-} // namespace gatzk::algebra
+}
