@@ -318,7 +318,7 @@ def main(args: argparse.Namespace) -> int:
     witness = output / "witness.json"
     proof = output / "proof.json"
     env = os.environ.copy()
-    env.pop("ENABLE_ICICLE_GPU", None)
+    for key in ("ENABLE_ICICLE_GPU", "ICICLE_SMALL_K", "ICICLE_SMALL_K_FFT"): env.pop(key, None)
     env["EZKL_WORKING_DIR"] = str(ROOT)
     env["EZKL_GAT_BACKEND"] = args.backend
     env["EZKL_GAT_RUN_DIR"] = str(output)
@@ -331,6 +331,8 @@ def main(args: argparse.Namespace) -> int:
     gpu_env = env.copy()
     if args.backend == "gpu":
         gpu_env["ENABLE_ICICLE_GPU"] = "1"
+        gpu_env["ICICLE_SMALL_K"] = "2"
+        gpu_env["ICICLE_SMALL_K_FFT"] = "2"
     setup_ms = 0.0
     if args.reuse_setup and (output / "setup_timing.json").is_file():
         setup_ms = float(load_json(output / "setup_timing.json", "setup timing")["duration_ms"])

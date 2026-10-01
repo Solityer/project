@@ -98,6 +98,7 @@ fn icicle_points_from_c<C: CurveAffine>(bases: &[C]) -> Vec<Affine<CurveCfg>> {
 }
 
 fn c_from_icicle_point<C: CurveAffine>(point: &G1Projective) -> C::Curve {
+    if point.z == G1Projective::zero().z { return C::Curve::identity(); }
     let (x, y) = {
         let affine: Affine<CurveCfg> = Affine::<CurveCfg>::from(*point);
         if affine == Affine::<CurveCfg>::zero() { return C::Curve::identity(); }
@@ -161,7 +162,7 @@ pub fn fft_on_device<Scalar: ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeFiel
         CudaStream::default().synchronize().expect("ICICLE NTT domain synchronization failed");
         if domains.contains_key(&device_id) { release_domain::<ScalarField>(&cfg.ctx).expect("ICICLE NTT domain release failed"); }
         let primitive = icicle_scalars_from_c_scalars(&[root]);
-        initialize_domain(primitive[0], &cfg.ctx, true).expect("ICICLE NTT domain initialization failed");
+        initialize_domain(primitive[0], &cfg.ctx, log_n >= 3).expect("ICICLE NTT domain initialization failed");
         domains.insert(device_id, (log_n, root));
     }
 

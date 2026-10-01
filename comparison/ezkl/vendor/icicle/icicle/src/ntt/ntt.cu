@@ -520,7 +520,8 @@ namespace ntt {
 
     domain.max_size = 0;
     domain.max_log_size = 0;
-    domain.twiddles = nullptr; // allocated via cudaMallocManaged(...) so released without calling cudaFree(...)
+    CHK_IF_RETURN(cudaFree(domain.twiddles));
+    domain.twiddles = nullptr;
     CHK_IF_RETURN(cudaFreeAsync(domain.internal_twiddles, ctx.stream));
     domain.internal_twiddles = nullptr;
     CHK_IF_RETURN(cudaFreeAsync(domain.basic_twiddles, ctx.stream));

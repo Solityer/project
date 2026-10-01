@@ -55,10 +55,12 @@ def parser() -> argparse.ArgumentParser:
 def run(command: list[str], label: str, *, gpu: bool = False) -> float:
     print(f"[ezkl-formal] {label}: {' '.join(command)}", flush=True)
     env = os.environ.copy()
-    env.pop("ENABLE_ICICLE_GPU", None)
+    for key in ("ENABLE_ICICLE_GPU", "ICICLE_SMALL_K", "ICICLE_SMALL_K_FFT"): env.pop(key, None)
     if gpu:
         env["ENABLE_ICICLE_GPU"] = "1"
         env["EZKL_GAT_BACKEND"] = "gpu"
+        env["ICICLE_SMALL_K"] = "2"
+        env["ICICLE_SMALL_K_FFT"] = "2"
     started = time.monotonic()
     completed = subprocess.run(command, cwd=ROOT, env=env, check=False)
     if completed.returncode != 0:

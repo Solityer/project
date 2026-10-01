@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
+export CARGO_HOME="$ROOT/.cargo_local"
 
 usage() {
   echo "usage: $0 --cpu|--gpu" >&2
