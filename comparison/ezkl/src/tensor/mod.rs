@@ -242,7 +242,11 @@ impl<F: PrimeField + Clone + TensorType + PartialOrd> From<Tensor<AssignedCell<A
         for x in value.iter() {
             output.push(x.value_field().evaluate());
         }
-        Tensor::new(Some(&output), value.dims()).unwrap()
+        let mut tensor = Tensor::new(Some(&output), value.dims()).unwrap();
+        if let Some(scale) = value.scale() {
+            tensor.set_scale(scale);
+        }
+        tensor
     }
 }
 
@@ -253,6 +257,9 @@ impl<F: PrimeField + TensorType + Clone + PartialOrd> From<Tensor<Value<F>>>
         let mut ta: Tensor<Value<Assigned<F>>> = Tensor::from((0..t.len()).map(|i| t[i].into()));
         // safe to unwrap as we know the dims are correct
         ta.reshape(t.dims()).unwrap();
+        if let Some(scale) = t.scale() {
+            ta.set_scale(scale);
+        }
         ta
     }
 }
@@ -263,6 +270,9 @@ impl<F: PrimeField + TensorType + Clone> From<Tensor<IntegerRep>> for Tensor<Val
             Tensor::from((0..t.len()).map(|i| Value::known(integer_rep_to_felt::<F>(t[i]))));
         // safe to unwrap as we know the dims are correct
         ta.reshape(t.dims()).unwrap();
+        if let Some(scale) = t.scale() {
+            ta.set_scale(scale);
+        }
         ta
     }
 }
@@ -1162,6 +1172,9 @@ impl<T: Clone + TensorType> Tensor<T> {
         let mut t = Tensor::from(self.inner.iter().map(|e| f(e.clone())));
         // safe to unwrap as we know the dims are correct
         t.reshape(self.dims()).unwrap();
+        if let Some(scale) = self.scale {
+            t.set_scale(scale);
+        }
         t
     }
 

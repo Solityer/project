@@ -405,7 +405,7 @@ fn validate_checkpoint(checkpoint: &CheckpointManifest, dataset: &str, meta: &Da
     }
     for (name, shape) in &expected_tensors {
         let tensor = checkpoint.tensor_index.get(name).ok_or_else(|| format!("checkpoint is missing tensor {}", name))?;
-        if tensor.shape != *shape {
+        if !authenticated_tensor_shape_matches(name, &tensor.shape, shape) {
             return Err(format!("checkpoint tensor {} shape {:?} does not match authenticated shape {:?}", name, tensor.shape, shape));
         }
     }
@@ -507,6 +507,23 @@ fn expected_tensor_layout(checkpoint: &CheckpointManifest,) -> Result<Vec<(Strin
         expected.push((format!("{}/output_bias", prefix), vec![1, checkpoint.classes, 1],));
     }
     Ok(expected)
+}
+
+fn authenticated_tensor_shape_matches(name: &str, actual: &[usize], expected: &[usize]) -> bool {
+    if actual == expected {
+        return true;
+    }
+    if !name.ends_with("/output_bias") {
+        return false;
+    }
+    let output_bias_classes = |shape: &[usize]| match shape {
+        [classes] | [1, classes, 1] => Some(*classes),
+        _ => None,
+    };
+    match (output_bias_classes(actual), output_bias_classes(expected)) {
+        (Some(actual_classes), Some(expected_classes)) => actual_classes == expected_classes,
+        _ => false,
+    }
 }
 
 fn parse_usize(value: &str, label: &str) -> Result<usize, String> {

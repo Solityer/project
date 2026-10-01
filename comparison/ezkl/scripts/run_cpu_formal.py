@@ -15,6 +15,7 @@ import argparse
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from formal_common import (
@@ -48,6 +49,38 @@ def local_cli(path: Path, label: str) -> str:
         return path.resolve().relative_to(ROOT.resolve()).as_posix()
     except ValueError:
         abort(f"{label} is outside the ezkl baseline: {path}")
+
+
+def prepare_output_dir(output_root: Path, dataset: str) -> Path:
+    output = output_root / dataset / "cpu"
+    if not (output.exists() or output.is_symlink()):
+        output.mkdir(parents=True)
+        return output
+    if output.is_symlink() or not output.is_dir():
+        abort(f"formal output is not a directory or is symlinked: {output}")
+    result = output / "result.json"
+    if result.exists() or result.is_symlink():
+        abort(f"formal output already exists; refusing to mix runs: {output}")
+
+    incomplete = output_root / ".incomplete"
+    if incomplete.exists() or incomplete.is_symlink():
+        if incomplete.is_symlink() or not incomplete.is_dir():
+            abort(f"incomplete archive root is not a directory or is symlinked: {incomplete}")
+    else:
+        incomplete.mkdir()
+    dataset_archive = incomplete / dataset
+    if dataset_archive.exists() or dataset_archive.is_symlink():
+        if dataset_archive.is_symlink() or not dataset_archive.is_dir():
+            abort(f"incomplete archive dataset path is not a directory or is symlinked: {dataset_archive}")
+    else:
+        dataset_archive.mkdir()
+    archive = dataset_archive / datetime.now(timezone.utc).strftime("cpu-%Y%m%dT%H%M%S%fZ")
+    if archive.exists() or archive.is_symlink():
+        abort(f"incomplete archive already exists; refusing to overwrite: {archive}")
+    output.rename(archive)
+    print(f"[ezkl-cpu] archived incomplete formal output: {output} -> {archive}")
+    output.mkdir(parents=True)
+    return output
 
 
 def main(args: argparse.Namespace) -> int:
@@ -98,10 +131,7 @@ def main(args: argparse.Namespace) -> int:
         abort(f"shared official SRS is missing or symlinked: {srs}")
 
     for dataset in DATASETS:
-        output = output_root / dataset / "cpu"
-        if output.exists() or output.is_symlink():
-            abort(f"formal output already exists; refusing to mix runs: {output}")
-        output.mkdir(parents=True)
+        output = prepare_output_dir(output_root, dataset)
         setup = [
             local_cli(binary, "binary"),
             "gat-prepare",

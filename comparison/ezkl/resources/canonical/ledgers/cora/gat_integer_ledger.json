@@ -10,7 +10,7 @@
   "max_divisor": 173056,
   "field_modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
   "ledger_id": "ledger:gat:cora:v1",
-  "ledger_digest": "ac73158a629615cc8df9a16f6c5e3378a61ff3c91d6f455b00a0700d371f3a72",
+  "ledger_digest": "f74c1eecdb750ed97eb72b361fa95788450422dcaac7d050901529e1d5be4e9d",
   "families": [
     {
       "layer": 0,
@@ -291,7 +291,7 @@
       "max_score_abs": 524288,
       "max_weight_abs": 1,
       "max_attention_abs": 1,
-      "max_bias_abs": 0,
+      "max_bias_abs": 1,
       "max_table_output_abs": 8192,
       "max_delta": 8192,
       "max_exp": 16,
@@ -308,7 +308,7 @@
       "max_score_abs": 524288,
       "max_weight_abs": 1,
       "max_attention_abs": 1,
-      "max_bias_abs": 0,
+      "max_bias_abs": 1,
       "max_table_output_abs": 8192,
       "max_delta": 8192,
       "max_exp": 16,

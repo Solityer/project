@@ -602,11 +602,19 @@ impl Model {
             "instances".blue()
         );
 
-        let inputs: Vec<ValTensor<Fp>> = self
-            .graph
-            .input_shapes()?
+        let input_shapes = self.graph.input_shapes()?;
+        let input_scales = self.graph.get_input_scales();
+        if input_shapes.len() != input_scales.len() {
+            return Err(GraphError::MisformedParams(format!(
+                "graph input shape count {} does not match canonical scale count {}",
+                input_shapes.len(),
+                input_scales.len()
+            )));
+        }
+        let inputs: Vec<ValTensor<Fp>> = input_shapes
             .iter()
-            .map(|shape| {
+            .enumerate()
+            .map(|(i, shape)| {
                 let len = shape.iter().product();
                 let mut t: ValTensor<Fp> = (0..len)
                     .map(|_| {
@@ -620,18 +628,37 @@ impl Model {
                     .into();
 
                 t.reshape(shape)?;
+                t.set_scale(input_scales[i]);
                 Ok(t)
             })
             .collect::<Result<Vec<_>, GraphError>>()?;
 
-        let runtime_params = self
-            .graph
-            .param_shapes()?
+        let param_shapes = self.graph.param_shapes()?;
+        if param_shapes.len() != self.graph.param_inputs.len() {
+            return Err(GraphError::MisformedParams(format!(
+                "graph parameter shape count {} does not match parameter node count {}",
+                param_shapes.len(),
+                self.graph.param_inputs.len()
+            )));
+        }
+        let runtime_params = param_shapes
             .iter()
-            .map(|shape| {
+            .enumerate()
+            .map(|(i, shape)| {
                 let len = shape.iter().product();
                 let mut tensor: ValTensor<Fp> = (0..len).map(|_| ValType::Value(Value::<Fp>::unknown())).collect::<Vec<_>>().into();
                 tensor.reshape(shape)?;
+                let node_idx = self.graph.param_inputs[i];
+                let scale = self
+                    .graph
+                    .nodes
+                    .get(&node_idx)
+                    .ok_or(GraphError::MissingNode(node_idx))?
+                    .out_scales()
+                    .first()
+                    .copied()
+                    .ok_or(GraphError::MissingNode(node_idx))?;
+                tensor.set_scale(scale);
                 Ok(tensor)
             })
             .collect::<Result<Vec<_>, GraphError>>()?;

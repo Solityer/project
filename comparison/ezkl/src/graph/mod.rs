@@ -1002,6 +1002,35 @@ impl<'de> Deserialize<'de> for GraphSettings {
 }
 
 impl GraphSettings {
+    /// Calculate the minimum instance capacity needed for a model.
+    pub fn required_logrows_for_model(
+        model: &Model,
+        run_args: &RunArgs,
+    ) -> Result<u32, GraphError> {
+        let model_instance_shapes = model.instance_shapes()?;
+        let parameter_shapes = if model.graph.num_param_inputs() > 0 {
+            model.graph.param_shapes()?
+        } else {
+            model.const_shapes()
+        };
+        let mut num_params = 0;
+        for shape in parameter_shapes {
+            num_params += shape.iter().product::<usize>();
+        }
+        let module_sizes = GraphModules::num_constraints_and_instances(
+            model.graph.input_shapes()?,
+            vec![vec![num_params]],
+            model.graph.output_shapes()?,
+            VarVisibility::from_args(run_args)?,
+        );
+        let settings = GraphSettings {
+            model_instance_shapes,
+            module_sizes,
+            ..Default::default()
+        };
+        Ok(settings.log2_total_instances_with_blinding())
+    }
+
     /// Calc the number of rows required for lookup tables
     pub fn lookup_log_rows(&self) -> u32 {
         ((self.run_args.lookup_range.1 - self.run_args.lookup_range.0) as f32)
@@ -1579,6 +1608,7 @@ impl GraphCircuit {
 
             let mut t: Tensor<Fp> = t.into_iter().into();
             t.reshape(shape)?;
+            t.set_scale(scale);
 
             data.push(t);
         }
@@ -2153,26 +2183,40 @@ impl Circuit<Fp> for GraphCircuit {
 
         let mut config = config.clone();
 
-        let mut inputs = self
-            .graph_witness
-            .get_input_tensor()
+        let input_scales = self.model().graph.get_input_scales();
+        let mut input_tensors = self.graph_witness.get_input_tensor();
+        if input_tensors.len() != input_scales.len() {
+            return Err(PlonkError::Synthesis);
+        }
+        let mut inputs = input_tensors
             .iter_mut()
-            .map(|i| {
-                i.set_visibility(input_vis);
-                ValTensor::try_from(i.clone()).map_err(|e| {
+            .enumerate()
+            .map(|(i, tensor)| {
+                tensor.set_scale(input_scales[i]);
+                tensor.set_visibility(input_vis);
+                ValTensor::try_from(tensor.clone()).map_err(|e| {
                     log::error!("failed to convert input to valtensor: {:?}", e);
                     PlonkError::Synthesis
                 })
             })
             .collect::<Result<Vec<ValTensor<Fp>>, PlonkError>>()?;
 
-        let outputs = self
-            .graph_witness
-            .get_output_tensor()
+        let output_scales = self
+            .model()
+            .graph
+            .get_output_scales()
+            .map_err(|_| PlonkError::Synthesis)?;
+        let mut output_tensors = self.graph_witness.get_output_tensor();
+        if output_tensors.len() != output_scales.len() {
+            return Err(PlonkError::Synthesis);
+        }
+        let outputs = output_tensors
             .iter_mut()
-            .map(|i| {
-                i.set_visibility(output_vis);
-                ValTensor::try_from(i.clone()).map_err(|e| {
+            .enumerate()
+            .map(|(i, tensor)| {
+                tensor.set_scale(output_scales[i]);
+                tensor.set_visibility(output_vis);
+                ValTensor::try_from(tensor.clone()).map_err(|e| {
                     log::error!("failed to convert output to valtensor: {:?}", e);
                     PlonkError::Synthesis
                 })
@@ -2220,22 +2264,40 @@ impl Circuit<Fp> for GraphCircuit {
             if !param_visibility.is_hashed_public() {
                 return Err(PlonkError::Synthesis);
             }
+            let parameter_shapes = self
+                .model()
+                .graph
+                .param_shapes()
+                .map_err(|_| PlonkError::Synthesis)?;
             let mut parameter_tensors = self.graph_witness.get_param_tensor();
+            if parameter_tensors.len() != parameter_shapes.len()
+                || parameter_tensors
+                    .iter()
+                    .zip(&parameter_shapes)
+                    .any(|(tensor, shape)| tensor.len() != shape.iter().product::<usize>())
+            {
+                return Err(PlonkError::Synthesis);
+            }
+            for (i, tensor) in parameter_tensors.iter_mut().enumerate() {
+                let node_idx = *self
+                    .model()
+                    .graph
+                    .param_inputs
+                    .get(i)
+                    .ok_or(PlonkError::Synthesis)?;
+                let scale = self
+                    .model()
+                    .graph
+                    .nodes
+                    .get(&node_idx)
+                    .and_then(|node| node.out_scales().first().copied())
+                    .ok_or(PlonkError::Synthesis)?;
+                tensor.set_scale(scale);
+            }
             if parameter_tensors.len() != 1 {
                 return Err(PlonkError::Synthesis);
             }
             let mut parameter = parameter_tensors.pop().ok_or(PlonkError::Synthesis)?;
-            let parameter_shape = self
-                .model()
-                .graph
-                .param_shapes()
-                .map_err(|_| PlonkError::Synthesis)?
-                .into_iter()
-                .next()
-                .ok_or(PlonkError::Synthesis)?;
-            if parameter.len() != parameter_shape.iter().product::<usize>() {
-                return Err(PlonkError::Synthesis);
-            }
             parameter.set_visibility(param_visibility);
             let parameter: ValTensor<Fp> = parameter.try_into().map_err(|_| PlonkError::Synthesis)?;
 

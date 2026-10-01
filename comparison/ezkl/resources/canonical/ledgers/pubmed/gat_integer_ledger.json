@@ -10,7 +10,7 @@
   "max_divisor": 175104,
   "field_modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
   "ledger_id": "ledger:gat:pubmed:v1",
-  "ledger_digest": "d9a271ac1e15e5bc7889e537eda24ca9554fdcdf1a950094b7b416c292189aaf",
+  "ledger_digest": "781761ffecf9ab9f22db3b18f84868a530780a4bbe3a9bef6e356af733c59fbf",
   "families": [
     {
       "layer": 0,
@@ -291,7 +291,7 @@
       "max_score_abs": 524288,
       "max_weight_abs": 1,
       "max_attention_abs": 1,
-      "max_bias_abs": 0,
+      "max_bias_abs": 2,
       "max_table_output_abs": 8192,
       "max_delta": 8192,
       "max_exp": 16,
@@ -308,7 +308,7 @@
       "max_score_abs": 524288,
       "max_weight_abs": 1,
       "max_attention_abs": 1,
-      "max_bias_abs": 0,
+      "max_bias_abs": 2,
       "max_table_output_abs": 8192,
       "max_delta": 8192,
       "max_exp": 16,

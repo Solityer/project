@@ -185,6 +185,11 @@ impl GatOp {
         if values.len() != FIRST_WEIGHT_INPUT + 1 {
             return Err(CircuitError::DimMismatch("canonical GAT requires one flat runtime parameter input".into(),));
         }
+        Self::require_scale(
+            flat,
+            self.spec.scales.s_w_hidden[0][0],
+            "flat GAT parameter input",
+        )?;
         let expected_len = self.spec.model.flattened_params().len();
         if flat.len() != expected_len {
             return Err(CircuitError::DimMismatch(format!("flat GAT parameter length {} does not match canonical closure {}", flat.len(), expected_len)));

@@ -266,12 +266,13 @@ impl<F: PrimeField + TensorType + PartialOrd> TensorType for ValTensor<F> {
 
 impl<F: PrimeField + TensorType + PartialOrd> From<Tensor<ValType<F>>> for ValTensor<F> {
     fn from(t: Tensor<ValType<F>>) -> ValTensor<F> {
+        let scale = t.scale().unwrap_or(1);
         ValTensor::Value {
             inner: t.map(|x| x),
 
             dims: t.dims().to_vec(),
 
-            scale: 1,
+            scale,
         }
     }
 }
@@ -301,6 +302,7 @@ impl<F: PrimeField + TensorType + PartialOrd> TryFrom<Tensor<F>> for ValTensor<F
 
     fn try_from(t: Tensor<F>) -> Result<ValTensor<F>, TensorError> {
         let visibility = t.visibility.clone();
+        let scale = t.scale().unwrap_or(1);
 
         let dims = t.dims().to_vec();
 
@@ -328,43 +330,46 @@ impl<F: PrimeField + TensorType + PartialOrd> TryFrom<Tensor<F>> for ValTensor<F
 
             dims,
 
-            scale: 1,
+            scale,
         })
     }
 }
 
 impl<F: PrimeField + TensorType + PartialOrd> From<Tensor<Value<F>>> for ValTensor<F> {
     fn from(t: Tensor<Value<F>>) -> ValTensor<F> {
+        let scale = t.scale().unwrap_or(1);
         ValTensor::Value {
             inner: t.map(|x| x.into()),
 
             dims: t.dims().to_vec(),
 
-            scale: 1,
+            scale,
         }
     }
 }
 
 impl<F: PrimeField + TensorType + PartialOrd> From<Tensor<Value<Assigned<F>>>> for ValTensor<F> {
     fn from(t: Tensor<Value<Assigned<F>>>) -> ValTensor<F> {
+        let scale = t.scale().unwrap_or(1);
         ValTensor::Value {
             inner: t.map(|x| x.into()),
 
             dims: t.dims().to_vec(),
 
-            scale: 1,
+            scale,
         }
     }
 }
 
 impl<F: PrimeField + TensorType + PartialOrd> From<Tensor<AssignedCell<F, F>>> for ValTensor<F> {
     fn from(t: Tensor<AssignedCell<F, F>>) -> ValTensor<F> {
+        let scale = t.scale().unwrap_or(1);
         ValTensor::Value {
             inner: t.map(|x| x.into()),
 
             dims: t.dims().to_vec(),
 
-            scale: 1,
+            scale,
         }
     }
 }

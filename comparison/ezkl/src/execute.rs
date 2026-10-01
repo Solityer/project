@@ -2226,6 +2226,18 @@ fn gat_prepare_setup(
         &run_args,
     )
     .map_err(EZKLError::from)?;
+    let required_logrows = GraphSettings::required_logrows_for_model(&model, &run_args)?;
+    run_args.logrows = run_args.logrows.max(required_logrows);
+    run_args.validate().map_err(EZKLError::from)?;
+    if run_args.logrows > crate::graph::MAX_PUBLIC_SRS {
+        return Err(format!(
+            "canonical GAT setup requires logrows {}, exceeding official SRS maximum {}",
+            run_args.logrows,
+            crate::graph::MAX_PUBLIC_SRS
+        )
+        .into());
+    }
+    info!("canonical GAT setup logrows: {}", run_args.logrows);
     let circuit = GraphCircuit::new(model, &run_args)?;
     let settings_path = output_dir.join("settings.json");
     let compiled_path = output_dir.join("compiled.circuit");

@@ -40,6 +40,7 @@ UNSATISFIED_RANGE_ROW = re.compile(r"^bytes \*/(\d+)$", re.IGNORECASE)
 DOWNLOAD_ATTEMPTS = 4
 DOWNLOAD_BACKOFF_SECONDS = 1.0
 DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+DOWNLOAD_USER_AGENT = "ezkl-srs-provisioner/1"
 
 
 class DownloadError(RuntimeError):
@@ -139,7 +140,7 @@ def sync_directory(path: Path) -> None:
 
 def download_once(url: str, partial: Path) -> bool:
     offset = partial.stat().st_size if partial.exists() else 0
-    headers = {"Accept-Encoding": "identity"}
+    headers = {"Accept-Encoding": "identity", "User-Agent": DOWNLOAD_USER_AGENT}
     if offset:
         headers["Range"] = f"bytes={offset}-"
     request = urllib.request.Request(url, headers=headers)
@@ -166,9 +167,7 @@ def download_once(url: str, partial: Path) -> bool:
                 expected_bytes = end - start + 1
                 declared_length = response_length(response)
                 if declared_length is not None and declared_length != expected_bytes:
-                    raise DownloadError(
-                        f"206 Content-Length {declared_length} != Content-Range length {expected_bytes}"
-                    )
+                    raise DownloadError(f"206 Content-Length {declared_length} != Content-Range length {expected_bytes}")
                 mode = "ab"
             elif status == 200:
                 expected_bytes = response_length(response)
@@ -193,9 +192,7 @@ def download_once(url: str, partial: Path) -> bool:
                                 break
                             chunk = response.read(min(DOWNLOAD_CHUNK_BYTES, remaining + 1))
                             if not chunk:
-                                raise DownloadError(
-                                    f"short response body: received {received} of {expected_bytes} bytes"
-                                )
+                                raise DownloadError(f"short response body: received {received} of {expected_bytes} bytes")
                             if len(chunk) > remaining:
                                 stream.write(chunk[:remaining])
                                 received += remaining
@@ -203,13 +200,9 @@ def download_once(url: str, partial: Path) -> bool:
                         stream.write(chunk)
                         received += len(chunk)
                     if expected_bytes is not None and received != expected_bytes:
-                        raise DownloadError(
-                            f"short response body: received {received} of {expected_bytes} bytes"
-                        )
+                        raise DownloadError(f"short response body: received {received} of {expected_bytes} bytes")
                     if total is not None and offset + received != total:
-                        raise DownloadError(
-                            f"short range response: reached {offset + received} of {total} bytes"
-                        )
+                        raise DownloadError(f"short range response: reached {offset + received} of {total} bytes")
                 finally:
                     stream.flush()
                     os.fsync(stream.fileno())
@@ -239,11 +232,7 @@ def download_official_srs(url: str, partial: Path, destination: Path, expected: 
             if attempt == DOWNLOAD_ATTEMPTS:
                 fail(f"official SRS download failed after {attempt} attempts: {exc}")
             delay = DOWNLOAD_BACKOFF_SECONDS * attempt
-            print(
-                f"official SRS download attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed: {exc}; "
-                f"retrying in {delay:g}s",
-                file=sys.stderr,
-            )
+            print(f"official SRS download attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed: {exc}; " f"retrying in {delay:g}s", file=sys.stderr)
             time.sleep(delay)
     raise AssertionError("unreachable")
 
@@ -312,11 +301,7 @@ def parse_config(path: Path) -> dict[str, str]:
 
 
 def updated_config(path: Path, *, srs_id: str, srs_path: str, sha256_value: str) -> str:
-    updates = {
-        "srs_id": srs_id,
-        "srs_path": srs_path,
-        "trusted_srs_sha256": sha256_value,
-    }
+    updates = {"srs_id": srs_id, "srs_path": srs_path, "trusted_srs_sha256": sha256_value}
     lines = path.read_text().splitlines()
     output: list[str] = []
     seen: set[str] = set()
