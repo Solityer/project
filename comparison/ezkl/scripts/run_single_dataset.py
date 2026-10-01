@@ -34,6 +34,7 @@ from formal_common import (
     load_cli_contract,
     load_json,
     local_path,
+    native_backend_identity,
     print_error,
     reject_forbidden_path,
     reject_reduced_srs,
@@ -70,7 +71,7 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="reuse an existing setup directory created before the external gat-produce step",
     )
-    p.add_argument("--binary", default="target/release/ezkl")
+    p.add_argument("--binary")
     p.add_argument("--config")
     p.add_argument("--public-statement", help="external verifier-facing public statement")
     p.add_argument("--public-output", help="external verifier-facing public output/Y")
@@ -267,7 +268,7 @@ def main(args: argparse.Namespace) -> int:
     if values.get("trusted_srs_sha256") != trusted_srs_sha:
         abort("canonical secure config trusted_srs_sha256 does not match the selected SRS")
 
-    binary = ensure_relative_arg(args.binary, "binary")
+    binary = ensure_relative_arg(args.binary, "binary", ROOT / "target" / args.backend / "release/ezkl")
     require_file(binary, "official ezkl binary")
     if not os.access(binary, os.X_OK):
         abort(f"official ezkl binary is not executable: {binary}")
@@ -275,6 +276,8 @@ def main(args: argparse.Namespace) -> int:
     receipt = json.loads(require_file(build_receipt, "backend build receipt").read_text())
     if receipt.get("backend") != args.backend:
         abort("build receipt backend does not match requested backend")
+    if receipt.get("binary_path") != baseline_relative(binary, "binary"):
+        abort("build receipt binary path does not match requested binary")
     if receipt.get("binary_sha256") != sha256(binary):
         abort("build receipt binary SHA-256 does not match current binary")
     if receipt.get("source_tree_sha256") != source_tree_hash():
@@ -286,6 +289,8 @@ def main(args: argparse.Namespace) -> int:
     if receipt.get("adapter_contract_sha256") != sha256(CONTRACT):
         abort("build receipt adapter contract digest is stale")
     features = receipt.get("features", [])
+    if args.backend == "gpu" and any(receipt.get(key) != value for key, value in native_backend_identity().items()):
+        abort("GPU build receipt native CUDA library/manifest identity is stale")
     if args.backend == "gpu" and "gpu-accelerated" not in features:
         abort("GPU build receipt lacks the gpu-accelerated feature")
     if args.backend == "cpu" and "gpu-accelerated" in features:
@@ -313,6 +318,7 @@ def main(args: argparse.Namespace) -> int:
     witness = output / "witness.json"
     proof = output / "proof.json"
     env = os.environ.copy()
+    env.pop("ENABLE_ICICLE_GPU", None)
     env["EZKL_WORKING_DIR"] = str(ROOT)
     env["EZKL_GAT_BACKEND"] = args.backend
     env["EZKL_GAT_RUN_DIR"] = str(output)
@@ -322,7 +328,14 @@ def main(args: argparse.Namespace) -> int:
     def cli_path(path: Path, label: str) -> str:
         return baseline_relative(path, label)
 
+    gpu_env = env.copy()
+    if args.backend == "gpu":
+        gpu_env["ENABLE_ICICLE_GPU"] = "1"
     setup_ms = 0.0
+    if args.reuse_setup and (output / "setup_timing.json").is_file():
+        setup_ms = float(load_json(output / "setup_timing.json", "setup timing")["duration_ms"])
+        if not __import__("math").isfinite(setup_ms) or setup_ms <= 0:
+            abort("reused setup timing must be a positive finite duration")
     if not args.reuse_setup:
         setup_command = [
             str(binary),
@@ -344,7 +357,7 @@ def main(args: argparse.Namespace) -> int:
             setup_command,
             logs / "setup.log",
             phase="GAT prepare setup (settings/compile/setup)",
-            env=env,
+            env=gpu_env,
         )
     for path, label in (
         (settings, "settings"),
@@ -474,7 +487,7 @@ def main(args: argparse.Namespace) -> int:
         ],
         logs / "prove.log",
         phase="official ezkl prove",
-        env=env,
+        env=gpu_env,
     )
     require_file(proof, "verifier-facing proof")
 
@@ -533,6 +546,8 @@ def main(args: argparse.Namespace) -> int:
         "status": status,
         "dataset": args.dataset,
         "backend": args.backend,
+        "execution_mode": "mixed" if args.backend == "gpu" else "cpu",
+        "phase_backends": {"prepare_compile": "cpu", "setup": "mixed" if args.backend == "gpu" else "cpu", "public_statement": "cpu", "witness_generation": "cpu", "model_commitment": "cpu", "prove": "mixed" if args.backend == "gpu" else "cpu", "verify": "cpu"},
         "proof_scope": "full_gat",
         "privacy_policy": "model_and_trace_hidden",
         "public_statement_mode": "external",

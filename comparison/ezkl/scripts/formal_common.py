@@ -146,10 +146,10 @@ def resource_manifest_hash() -> str:
 
 def _source_files() -> list[Path]:
     paths: list[Path] = []
-    for relative in ("src", "gat_adapter", ".cargo"):
+    for relative in ("src", "gat_adapter", ".cargo", "vendor"):
         directory = ROOT / relative
         if directory.is_dir():
-            paths.extend(path for path in directory.rglob("*") if path.is_file() and not path.is_symlink())
+            paths.extend(path for path in directory.rglob("*") if path.is_file() and not path.is_symlink() and path.relative_to(ROOT).as_posix() != "vendor/icicle/wrappers/rust/icicle-cuda-runtime/src/bindings.rs" and not {"target", "build", ".git", "__pycache__"}.intersection(path.relative_to(directory).parts))
     for relative in ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain"):
         path = ROOT / relative
         if path.is_file() and not path.is_symlink():
@@ -834,13 +834,57 @@ def validate_artifact_identity(
     return manifest
 
 
+def native_backend_identity() -> dict[str, Any]:
+    manifest_path = ROOT / "artifacts/build/icicle-cuda/native_backend_manifest.json"
+    manifest = load_json(manifest_path, "native ICICLE backend manifest")
+    require_exact_keys(manifest, {"schema_version", "halo2_commit", "frontend_commit", "abi", "device", "architecture", "runtime", "libraries", "native_source_sha256"}, "native ICICLE backend manifest")
+    if manifest["schema_version"] != 1 or manifest["halo2_commit"] != "f441c920be45f8f05d2c06a173d82e8885a5ed4d" or manifest["frontend_commit"] != "5dfe006a0f1bc62ea82ca297709bbf3d22a2ca25":
+        abort("native ICICLE backend is not the pinned Halo2/ICICLE source")
+    source_root = ROOT / "vendor/icicle/icicle"
+    source_hash = hashlib.sha256()
+    for path in sorted(source_root.rglob("*")):
+        if path.is_symlink():
+            abort(f"native ICICLE source must not be symlinked: {path}")
+        if path.is_file():
+            relative = path.relative_to(source_root).as_posix().encode()
+            source_hash.update(len(relative).to_bytes(8, "big"))
+            source_hash.update(relative)
+            source_hash.update(sha256(path).encode())
+    if manifest["native_source_sha256"] != source_hash.hexdigest():
+        abort("native ICICLE libraries were not built from the current authenticated CUDA source")
+    libraries = manifest["libraries"]
+    expected = {f"artifacts/build/icicle-cuda/lib/libingo_{kind}_bn254.a" for kind in ("field", "curve")}
+    if not isinstance(libraries, dict) or set(libraries) != expected:
+        abort("native ICICLE backend does not identify exactly its BN254 CUDA libraries")
+    for name, expected_sha in libraries.items():
+        require_digest(expected_sha, "native ICICLE library SHA-256")
+        if sha256(require_file(local_path(name, "native ICICLE library"), "native ICICLE library")) != expected_sha:
+            abort(f"native ICICLE backend library identity is stale: {name}")
+    for field in ("abi", "device", "architecture", "runtime"):
+        if not isinstance(manifest[field], str) or not manifest[field]:
+            abort(f"native ICICLE backend lacks {field}")
+    return {"native_backend_manifest_sha256": sha256(manifest_path), "native_backend_libraries": libraries, "cuda_architecture": manifest["architecture"], "cuda_runtime": manifest["runtime"]}
+
+
 def validate_gpu_environment() -> dict[str, Any]:
-    install_dir = os.environ.get("ICICLE_BACKEND_INSTALL_DIR", "")
+    expected_dir = ROOT / "artifacts/build/icicle-cuda"
+    for path in (expected_dir, expected_dir.parent, expected_dir.parent.parent):
+        if path.is_symlink():
+            abort(f"native ICICLE installation must not be symlinked: {path}")
+    install_dir = os.environ.get("ICICLE_BACKEND_INSTALL_DIR", str(expected_dir))
     if not install_dir:
-        abort("GPU execution requires ICICLE_BACKEND_INSTALL_DIR")
-    directory = Path(install_dir)
+        abort("GPU execution requires the baseline-local ICICLE backend")
+    directory = Path(install_dir).resolve()
+    if directory != expected_dir.resolve():
+        abort("formal GPU backend must use the baseline-local source-matched installation")
+    os.environ["ICICLE_BACKEND_INSTALL_DIR"] = str(directory)
+    os.environ["ICICLE_NATIVE_LIB_DIR"] = str(directory / "lib")
     if not directory.is_dir() or directory.is_symlink():
         abort(f"ICICLE_BACKEND_INSTALL_DIR is not a regular directory: {install_dir}")
+    identity = native_backend_identity()
+    os.environ["ICICLE_NATIVE_MANIFEST_SHA256"] = identity["native_backend_manifest_sha256"]
+    for name in ("libingo_field_bn254.a", "libingo_curve_bn254.a"):
+        require_file(directory / "lib" / name, "native ICICLE CUDA library")
     try:
         probe = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
@@ -907,6 +951,8 @@ def validate_gpu_evidence_document(evidence: Any, *, backend: str) -> dict[str, 
             if not isinstance(value, str) or not value:
                 abort(f"GPU evidence provenance is missing {key}")
         require_digest(provenance["manifest_sha256"], "GPU backend manifest_sha256")
+        if provenance["manifest_sha256"] != native_backend_identity()["native_backend_manifest_sha256"]:
+            abort("GPU evidence is not bound to the authenticated native CUDA installation")
     elif (
         evidence.get("backend") != "CPU" or evidence.get("gpu_backend") != "none" or evidence.get("backend_loaded") is not True or
         evidence.get("cpu_fallback") is not False or evidence.get("device_synchronized") is not True or evidence["gpu_kernel_invocation_count"] != 0 or

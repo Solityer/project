@@ -6,6 +6,8 @@
 //! lookup and equality layouts.  No witness is accepted without a matching
 //! circuit relation.
 
+use std::collections::HashMap;
+
 use halo2_proofs::circuit::Value;
 use halo2curves::bn256::Fr as Fp;
 use halo2curves::ff::Field;
@@ -147,10 +149,19 @@ impl GatOp {
         region: &mut RegionCtx<Fp>,
         input: &ValTensor<Fp>,
         table: &ExactTable,
+        assigned_tables: &mut HashMap<String, layouts::AssignedDynamicLookupTable>,
     ) -> Result<ValTensor<Fp>, CircuitError> {
         let output = Self::unknown_or_map(input, input.dims(), |x| table.lookup(x))?;
-        let (keys, values) = Self::table(table)?;
-        let (_, checked_output) = layouts::dynamic_lookup(config, region, &[input, &output], &[&keys, &values])?;
+        let identity = format!("{}:{}", table.table_id, table.digest);
+        let token = if let Some(token) = assigned_tables.get(&identity) {
+            *token
+        } else {
+            let (keys, values) = Self::table(table)?;
+            let token = layouts::assign_dynamic_lookup_table(config, region, &[&keys, &values])?;
+            assigned_tables.insert(identity, token);
+            token
+        };
+        let (_, checked_output) = layouts::dynamic_lookup_from_table(config, region, &[input, &output], token)?;
         Ok(checked_output)
     }
 
@@ -637,6 +648,7 @@ impl GatOp {
         region: &mut RegionCtx<Fp>,
         values: &ValTensor<Fp>,
         bounds: &BoundFamily,
+        assigned_tables: &mut HashMap<String, layouts::AssignedDynamicLookupTable>,
     ) -> Result<ValTensor<Fp>, CircuitError> {
         let claimed = if values.any_unknowns()? {
             Self::unknown_tensor(&[1])?
@@ -649,12 +661,12 @@ impl GatOp {
         let one = Self::constant_i128(&vec![1; values.len()], values.dims())?;
         let max_minus_one = layouts::pairwise(config, region, &[&claimed_repeated, &one], BaseOp::Sub)?;
         let w = layouts::pairwise(config, region, &[values, &max_minus_one], BaseOp::Sub)?;
-        let y = self.exact_lookup(config, region, &w, &self.spec.tables.max_relu)?;
+        let y = self.exact_lookup(config, region, &w, &self.spec.tables.max_relu, assigned_tables)?;
         let y = layouts::boolean_identity(config, region, &[&y], true)?;
         let y_sum = layouts::sum(config, region, &[&y])?;
         let one_scalar = Self::constant_i128(&[1], &[1])?;
         let deficit = layouts::pairwise(config, region, &[&one_scalar, &y_sum], BaseOp::Sub)?;
-        let zero_or_one = self.exact_lookup(config, region, &deficit, &self.spec.tables.max_relu)?;
+        let zero_or_one = self.exact_lookup(config, region, &deficit, &self.spec.tables.max_relu, assigned_tables)?;
         let zero = Self::constant_i128(&[0], &[1])?;
         layouts::enforce_equality(config, region, &[&zero_or_one, &zero])?;
         Ok(claimed)
@@ -677,6 +689,7 @@ impl GatOp {
         projected_scale: i32,
         attention_src_scale: i32,
         attention_dst_scale: i32,
+        assigned_tables: &mut HashMap<String, layouts::AssignedDynamicLookupTable>,
     ) -> Result<ValTensor<Fp>, CircuitError> {
         let graph = &self.spec.graph;
         Self::require_dims(projected, &[graph.n, channels], "projected tensor")?;
@@ -698,19 +711,19 @@ impl GatOp {
         let mut score = layouts::pairwise(config, region, &[&src_score, &dst_score], BaseOp::Add)?;
         score.set_scale(self.spec.scales.s_delta);
         layouts::range_check(config, region, &[&score], &(-bounds.max_score_abs, bounds.max_score_abs),)?;
-        let mut score = self.exact_lookup(config, region, &score, &self.spec.tables.lrelu)?;
+        let mut score = self.exact_lookup(config, region, &score, &self.spec.tables.lrelu, assigned_tables)?;
         score.set_scale(self.spec.scales.s_delta);
         layouts::range_check(config, region, &[&score], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
         let mut node_values = vec![None; graph.n * channels];
         for (node, start, end) in graph.destination_groups().map_err(|_| CircuitError::UnsupportedOp)? {
             let group_score = Self::flatten_slice(&score, start, end, &[end - start])?;
-            let max = self.exact_group_max(config, region, &group_score, bounds)?;
+            let max = self.exact_group_max(config, region, &group_score, bounds, assigned_tables)?;
             let max_repeated = Self::repeated_scalar(&max, group_score.dims())?;
             let score_group = Self::flatten_slice(&score, start, end, &[end - start])?;
             let mut delta = layouts::pairwise(config, region, &[&max_repeated, &score_group], BaseOp::Sub)?;
             delta.set_scale(self.spec.scales.s_delta);
             layouts::range_check(config, region, &[&delta], &(0, bounds.max_delta))?;
-            let mut exp = self.exact_lookup(config, region, &delta, &self.spec.tables.exp)?;
+            let mut exp = self.exact_lookup(config, region, &delta, &self.spec.tables.exp, assigned_tables)?;
             exp.set_scale(self.spec.scales.s_exp);
             layouts::range_check(config, region, &[&exp], &(1, bounds.max_exp))?;
             let mut denominator = layouts::sum(config, region, &[&exp])?;
@@ -756,7 +769,7 @@ impl GatOp {
                 let q = if use_elu {
                     let mut q = q;
                     q.set_scale(recovery_scale);
-                    let mut elu = self.exact_lookup(config, region, &q, &self.spec.tables.elu)?;
+                    let mut elu = self.exact_lookup(config, region, &q, &self.spec.tables.elu, assigned_tables)?;
                     elu.set_scale(elu_output_scale);
                     elu
                 } else {
@@ -788,6 +801,7 @@ impl Op<Fp> for GatOp {
             return Err(CircuitError::DimMismatch("GAT requires six public inputs".into(),));
         }
         self.spec.validate_for_compile().map_err(|e| CircuitError::DimMismatch(format!("invalid canonical GAT: {}", e)))?;
+        let mut assigned_tables = HashMap::new();
         let graph = &self.spec.graph;
         for (value, dims, label) in [
             (values[FEATURE_INPUT], &[graph.n_total, self.spec.feature_dim][..], "feature input"),
@@ -848,6 +862,7 @@ impl Op<Fp> for GatOp {
                     self.spec.scales.s_h_prime[layer_idx][head_idx],
                     self.spec.scales.s_a_src_hidden[layer_idx][head_idx],
                     self.spec.scales.s_a_dst_hidden[layer_idx][head_idx],
+                    &mut assigned_tables,
                 )?;
                 heads.push(aggregated);
             }
@@ -885,6 +900,7 @@ impl Op<Fp> for GatOp {
                 self.spec.scales.s_y_prime[head_idx],
                 self.spec.scales.s_a_src_output[head_idx],
                 self.spec.scales.s_a_dst_output[head_idx],
+                &mut assigned_tables,
             )?;
             let out_head_multiplier = scale_exponent_to_multiplier(self.spec.scales.s_out_head).map_err(|_| CircuitError::UnsupportedOp)?;
             let out_head_multiplier = i128::try_from(out_head_multiplier).map_err(|_| CircuitError::UnsupportedOp)?;

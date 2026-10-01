@@ -1480,104 +1480,68 @@ fn one_hot<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(
 ///
 /// The dynamic lookup approach is more flexible than static lookups and enables
 /// ZK circuits to perform operations that would otherwise require more complex constraint systems.
-pub(crate) fn dynamic_lookup<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(
-    config: &BaseConfig<F>,
-    region: &mut RegionCtx<F>,
-    lookups: &[&ValTensor<F>; 2],
-    tables: &[&ValTensor<F>; 2],
-) -> Result<(ValTensor<F>, ValTensor<F>), CircuitError> {
-    // if not all lookups same length err
-    if lookups[0].len() != lookups[1].len() {
-        return Err(CircuitError::MismatchedLookupLength(
-            lookups[0].len(),
-            lookups[1].len(),
-        ));
-    }
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AssignedDynamicLookupTable {
+    index: usize,
+    block: usize,
+}
 
-    // if not all inputs same length err
+pub(crate) fn assign_dynamic_lookup_table<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(config: &BaseConfig<F>, region: &mut RegionCtx<F>, tables: &[&ValTensor<F>; 2]) -> Result<AssignedDynamicLookupTable, CircuitError> {
     if tables[0].len() != tables[1].len() {
-        return Err(CircuitError::MismatchedLookupTableLength(
-            tables[0].len(),
-            tables[1].len(),
-        ));
+        return Err(CircuitError::MismatchedLookupTableLength(tables[0].len(), tables[1].len()));
     }
-
-    let dynamic_lookup_index = region.dynamic_lookup_index();
-
-    let (lookup_0, lookup_1) = (lookups[0], lookups[1]);
-    let (table_0, table_1) = (tables[0], tables[1]);
-
-    let (table_0, flush_len_0) =
-        region.assign_dynamic_lookup(&config.dynamic_lookups.tables[0], table_0)?;
-    let (_table_1, flush_len_1) =
-        region.assign_dynamic_lookup(&config.dynamic_lookups.tables[1], table_1)?;
+    let index = region.dynamic_lookup_index();
+    let start = region.combined_dynamic_shuffle_coord();
+    let (table_0, flush_len_0) = region.assign_dynamic_lookup(&config.dynamic_lookups.tables[0], tables[0])?;
+    let (_, flush_len_1) = region.assign_dynamic_lookup(&config.dynamic_lookups.tables[1], tables[1])?;
     if flush_len_0 != flush_len_1 {
-        return Err(CircuitError::MismatchedLookupTableLength(
-            flush_len_0,
-            flush_len_1,
-        ));
+        return Err(CircuitError::MismatchedLookupTableLength(flush_len_0, flush_len_1));
     }
     let table_len = table_0.len();
-
-    // now create a vartensor of constants for the dynamic lookup index
-    let table_index = create_constant_tensor(F::from(dynamic_lookup_index as u64), table_len);
-    let _table_index =
-        region.assign_dynamic_lookup(&config.dynamic_lookups.tables[2], &table_index)?;
-
-    let lookup_0 = region.assign(&config.dynamic_lookups.inputs[0], lookup_0)?;
-    let lookup_1 = region.assign(&config.dynamic_lookups.inputs[1], lookup_1)?;
-    let lookup_len = lookup_0.len();
-
-    // now set the lookup index
-    let lookup_index = create_constant_tensor(F::from(dynamic_lookup_index as u64), lookup_len);
-
-    let _lookup_index = region.assign(&config.dynamic_lookups.inputs[2], &lookup_index)?;
-
-    let mut lookup_block = 0;
-
+    let table_index = create_constant_tensor(F::from(index as u64), table_len);
+    region.assign_dynamic_lookup(&config.dynamic_lookups.tables[2], &table_index)?;
+    let (block, _, _) = config.dynamic_lookups.tables[0].cartesian_coord(start + flush_len_0);
     if !region.is_dummy() {
-        (0..table_len)
-            .map(|i| {
-                let (x, _, z) = config.dynamic_lookups.tables[0]
-                    .cartesian_coord(region.combined_dynamic_shuffle_coord() + i + flush_len_0);
-
-                if lookup_block != x {
-                    lookup_block = x;
-                }
-
-                let table_selector = config.dynamic_lookups.table_selectors[lookup_block];
-                region.enable(Some(&table_selector), z)?;
-
-                Ok(())
-            })
-            .collect::<Result<Vec<_>, CircuitError>>()?;
+        for i in 0..table_len {
+            let (x, _, z) = config.dynamic_lookups.tables[0].cartesian_coord(start + i + flush_len_0);
+            if x != block {
+                return Err(CircuitError::DimMismatch("dynamic lookup table crosses a native table block".into()));
+            }
+            let selector = config.dynamic_lookups.table_selectors.get(block).ok_or_else(|| CircuitError::MissingSelectors(format!("dynamic table block {}", block)))?;
+            region.enable(Some(selector), z)?;
+        }
     }
-
-    if !region.is_dummy() {
-        // Enable the selectors
-        (0..lookup_len)
-            .map(|i| {
-                let (x, y, z) =
-                    config.dynamic_lookups.inputs[0].cartesian_coord(region.linear_coord() + i);
-
-                let lookup_selector = config
-                    .dynamic_lookups
-                    .lookup_selectors
-                    .get(&(lookup_block, (x, y)))
-                    .ok_or(CircuitError::MissingSelectors(format!("{:?}", (x, y))))?;
-
-                region.enable(Some(lookup_selector), z)?;
-
-                Ok(())
-            })
-            .collect::<Result<Vec<_>, CircuitError>>()?;
-    }
-
     region.increment_dynamic_lookup_col_coord(table_len + flush_len_0);
     region.increment_dynamic_lookup_index(1);
-    region.increment(lookup_len);
+    Ok(AssignedDynamicLookupTable { index, block })
+}
 
+pub(crate) fn dynamic_lookup_from_table<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(config: &BaseConfig<F>, region: &mut RegionCtx<F>, lookups: &[&ValTensor<F>; 2], table: AssignedDynamicLookupTable) -> Result<(ValTensor<F>, ValTensor<F>), CircuitError> {
+    if lookups[0].len() != lookups[1].len() {
+        return Err(CircuitError::MismatchedLookupLength(lookups[0].len(), lookups[1].len()));
+    }
+    let lookup_0 = region.assign(&config.dynamic_lookups.inputs[0], lookups[0])?;
+    let lookup_1 = region.assign(&config.dynamic_lookups.inputs[1], lookups[1])?;
+    let lookup_len = lookup_0.len();
+    let lookup_index = create_constant_tensor(F::from(table.index as u64), lookup_len);
+    region.assign(&config.dynamic_lookups.inputs[2], &lookup_index)?;
+    if !region.is_dummy() {
+        for i in 0..lookup_len {
+            let (x, y, z) = config.dynamic_lookups.inputs[0].cartesian_coord(region.linear_coord() + i);
+            let selector = config.dynamic_lookups.lookup_selectors.get(&(table.block, (x, y))).ok_or_else(|| CircuitError::MissingSelectors(format!("{:?}", (table.block, (x, y)))))?;
+            region.enable(Some(selector), z)?;
+        }
+    }
+    region.increment(lookup_len);
     Ok((lookup_0, lookup_1))
+}
+
+pub(crate) fn dynamic_lookup<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(config: &BaseConfig<F>, region: &mut RegionCtx<F>, lookups: &[&ValTensor<F>; 2], tables: &[&ValTensor<F>; 2]) -> Result<(ValTensor<F>, ValTensor<F>), CircuitError> {
+    if lookups[0].len() != lookups[1].len() {
+        return Err(CircuitError::MismatchedLookupLength(lookups[0].len(), lookups[1].len()));
+    }
+    let table = assign_dynamic_lookup_table(config, region, tables)?;
+    dynamic_lookup_from_table(config, region, lookups, table)
 }
 
 /// Implements a permutation (shuffle) argument to verify one tensor is a permutation of another.

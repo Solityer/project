@@ -350,24 +350,32 @@ def refresh_resource_identity() -> None:
     )
     if completed.returncode != 0:
         fail(f"resource manifest refresh failed after SRS binding: {completed.stdout.strip()}")
-    receipt_path = ROOT / "artifacts" / "build" / "cpu" / "build_receipt.json"
-    if receipt_path.is_symlink() or not receipt_path.is_file():
-        fail(f"CPU build receipt is missing after native SRS provisioning: {receipt_path}")
-    try:
+    from formal_common import CONTRACT, load_cli_contract, source_tree_hash
+    source_hash = source_tree_hash()
+    for backend in ("cpu", "gpu"):
+        receipt_path = ROOT / "artifacts" / "build" / backend / "build_receipt.json"
+        if receipt_path.is_symlink() or not receipt_path.is_file():
+            continue
         receipt = json.loads(receipt_path.read_text())
-    except json.JSONDecodeError as exc:
-        fail(f"CPU build receipt is invalid JSON: {exc}")
-    if not isinstance(receipt, dict):
-        fail("CPU build receipt must be a JSON object")
-    manifest_path = ROOT / "resources" / "resource_manifest.json"
-    receipt["resource_manifest_sha256"] = digest(manifest_path)
-    atomic_write(receipt_path, receipt)
+        if not isinstance(receipt, dict):
+            fail(f"{backend} build receipt must be a JSON object")
+        binary_rel = receipt.get("binary_path", "")
+        binary = ROOT / binary_rel
+        if not binary_rel or Path(binary_rel).is_absolute() or ".." in Path(binary_rel).parts or binary.is_symlink() or not binary.is_file():
+            continue
+        if receipt.get("backend") != backend or receipt.get("source_tree_sha256") != source_hash or receipt.get("binary_sha256") != digest(binary):
+            continue
+        if not CONTRACT.is_file() or receipt.get("adapter_contract_sha256") != digest(CONTRACT) or receipt.get("adapter_contract_id") != load_cli_contract()["contract_id"]:
+            continue
+        receipt["resource_manifest_sha256"] = digest(ROOT / "resources" / "resource_manifest.json")
+        atomic_write(receipt_path, receipt)
 
 
 def main(args: argparse.Namespace) -> int:
     if any(flag in sys.argv[1:] for flag in ("--source", "--sha256", "--dataset", "--replace", "gen-srs")):
         fail("manual SRS source/hash and dummy gen-srs inputs are forbidden")
-    local_binary(args.binary)
+    if args.binary is not None:
+        local_binary(args.binary)
     source_url, logrows, expected = source_contract()
     destination, size, actual = install_shared_srs(source_url, logrows, expected)
     relative = destination.relative_to(ROOT).as_posix()
@@ -423,7 +431,7 @@ def main(args: argparse.Namespace) -> int:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--binary", default="target/release/ezkl", help="current baseline-local ezkl binary")
+    result.add_argument("--binary", help="optional current baseline-local ezkl binary; SRS identity comes from pinned source")
     return result
 
 

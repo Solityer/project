@@ -96,7 +96,7 @@ pyo3-stub-gen = { version = "0.6.0", optional = true }
 jemallocator = { version = "0.5", optional = true }
 mimalloc = { version = "0.1", optional = true }
 # GPU / device related things (optional - only enabled with gpu-accelerated feature)
-icicle-runtime = { git = "https://github.com/ingonyama-zk/icicle", branch="emir/gate_eval_2", package="icicle-runtime", optional = true }
+
 
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
@@ -256,7 +256,7 @@ mv-lookup = ["halo2_proofs/mv-lookup", "snark-verifier/mv-lookup"]
 asm = ["halo2curves/asm", "halo2_proofs/asm"]
 precompute-coset = ["halo2_proofs/precompute-coset"]
 det-prove = []
-gpu-accelerated = ["halo2_proofs/icicle_gpu", "dep:icicle-runtime"]
+gpu-accelerated = ["halo2_proofs/icicle_gpu"]
 empty-cmd = []
 no-banner = []
 no-update = []
@@ -284,3 +284,12 @@ opt-level = 3
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-O4", "--flexible-inline-max-function-size", "4294967295"]
+
+[patch."https://github.com/zkonduit/halo2"]
+halo2_proofs = { path = "vendor/halo2/halo2_proofs" }
+halo2_gadgets = { path = "vendor/halo2/halo2_gadgets" }
+
+[patch."https://github.com/ingonyama-zk/icicle"]
+icicle-core = { path = "vendor/icicle/wrappers/rust/icicle-core" }
+icicle-bn254 = { path = "vendor/icicle/wrappers/rust/icicle-curves/icicle-bn254" }
+icicle-cuda-runtime = { path = "vendor/icicle/wrappers/rust/icicle-cuda-runtime" }

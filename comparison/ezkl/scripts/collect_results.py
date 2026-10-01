@@ -145,8 +145,8 @@ def parser() -> argparse.ArgumentParser:
         "--backends",
         nargs="+",
         choices=BACKENDS,
-        default=list(BACKENDS),
-        help="backend axis to collect; default requires the strict CPU/GPU matrix",
+        default=["gpu"],
+        help="native backend axis to collect; default requires the five mixed cells",
     )
     return result
 
@@ -197,7 +197,7 @@ def validate_proof_instances(result: dict[str, Any], proof: Path) -> dict[str, A
 
 def validate_cell(path: Path) -> dict[str, Any]:
     result = load_json(path, f"result cell {path}")
-    unknown = set(result) - REQUIRED_RESULT_KEYS
+    unknown = set(result) - REQUIRED_RESULT_KEYS - {"execution_mode", "phase_backends"}
     if unknown:
         abort(f"{path} has unknown result fields: {sorted(unknown)}")
     missing = REQUIRED_RESULT_KEYS - set(result)
@@ -209,6 +209,11 @@ def validate_cell(path: Path) -> dict[str, Any]:
     backend = result["backend"]
     if dataset not in DATASETS or backend not in BACKENDS:
         abort(f"{path} has an unknown dataset/backend")
+    if backend == "gpu" or "execution_mode" in result or "phase_backends" in result:
+        expected_mode = "mixed" if backend == "gpu" else "cpu"
+        expected_phases = {"prepare_compile": "cpu", "setup": expected_mode, "public_statement": "cpu", "witness_generation": "cpu", "model_commitment": "cpu", "prove": expected_mode, "verify": "cpu"}
+        if result.get("execution_mode") != expected_mode or result.get("phase_backends") != expected_phases:
+            abort(f"{path} has an invalid native phase device schedule")
     if result["proof_scope"] != CANONICAL_PROOF_SCOPE:
         abort(f"{path} is not full_gat")
     if result["privacy_policy"] != CANONICAL_PRIVACY:
@@ -336,6 +341,16 @@ def validate_cell(path: Path) -> dict[str, Any]:
     if result["srs_provenance"] != artifact["srs_provenance"]:
         abort(f"{path} SRS provenance does not match artifact identity")
     validate_gpu_evidence_from_result(result)
+    if backend == "gpu":
+        record = load_json(proof.parent / "gpu_prover_record.json", "native GPU prover record")
+        require_exact_keys(record, {"proof_sha256", "msm_calls", "ntt_calls", "synchronized_calls", "device_id", "evidence"}, "native GPU prover record")
+        counts = [record[key] for key in ("msm_calls", "ntt_calls", "synchronized_calls", "device_id")]
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
+            abort("native GPU prover record has invalid device/call counters")
+        calls = record["msm_calls"] + record["ntt_calls"]
+        if record["proof_sha256"] != result["proof_sha256"] or calls <= 0 or record["synchronized_calls"] != calls or record["evidence"] != result["gpu_evidence"] or result["gpu_evidence"]["gpu_kernel_invocation_count"] != calls:
+            abort("native GPU prover record is not synchronized and bound to the verified proof")
+
     if result["source_tree_sha256"] != source_tree_hash() or result["resource_manifest_sha256"] != resource_manifest_hash():
         abort(f"{path} source/resource identity is stale")
     result["_result_path"] = path.relative_to(ROOT).as_posix()

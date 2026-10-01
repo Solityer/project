@@ -20,13 +20,17 @@ esac
 export PYTHONPATH="$ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}"
 python3 - "$backend" <<'PY'
 import sys
-from formal_common import validate_resources, validate_gpu_environment
+from formal_common import validate_resources
 
 backend = sys.argv[1]
 validate_resources()
-if backend == "gpu":
-    validate_gpu_environment()
 PY
+
+if [[ "$backend" == gpu ]]; then
+  bash "$ROOT/setup-gpu.sh" --yes
+  source "$ROOT/artifacts/build/icicle-cuda/env.sh"
+  python3 -c "from formal_common import validate_gpu_environment; validate_gpu_environment()"
+fi
 
 features=(ezkl)
 if [[ "$backend" == gpu ]]; then
@@ -34,9 +38,9 @@ if [[ "$backend" == gpu ]]; then
 fi
 
 echo "building official ezkl Cargo target: backend=$backend features=${features[*]}" >&2
-cargo build --release --features "$(IFS=,; echo "${features[*]}")"
+cargo build --offline --release --target-dir "$ROOT/target/$backend" --features "$(IFS=,; echo "${features[*]}")"
 
-binary="$ROOT/target/release/ezkl"
+binary="$ROOT/target/$backend/release/ezkl"
 [[ -f "$binary" && ! -L "$binary" && -x "$binary" ]] || {
   echo "build prerequisite failed: official ezkl binary is missing or not executable: $binary" >&2
   exit 2
@@ -70,7 +74,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from formal_common import CONTRACT, ROOT, load_cli_contract, resource_manifest_hash, sha256, source_tree_hash
+from formal_common import CONTRACT, ROOT, load_cli_contract, native_backend_identity, resource_manifest_hash, sha256, source_tree_hash
 
 backend, binary_text, receipt_text = sys.argv[1:]
 binary = Path(binary_text)
@@ -94,6 +98,8 @@ payload = {
     "rustc": command_text("rustc", "--version"),
     "cargo": command_text("cargo", "--version"),
 }
+if backend == "gpu":
+    payload.update(native_backend_identity())
 receipt.write_text(json.dumps(payload, indent=2) + "\n")
 print(f"wrote {receipt}")
 PY

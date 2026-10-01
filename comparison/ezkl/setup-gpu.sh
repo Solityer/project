@@ -1,229 +1,28 @@
-#!/bin/bash
-
-set -e
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Default installation directory
-DEFAULT_INSTALL_DIR="/opt/icicle/lib/backend/halo2"
-
-# Halo2 repository details
-HALO2_REPO="https://github.com/zkonduit/halo2"
-HALO2_BRANCH="ac/conditional-compilation-icicle2"
-
-# Parse command line arguments
-AUTO_YES=false
-for arg in "$@"; do
-    case $arg in
-        -y|--yes)
-            AUTO_YES=true
-            shift
-            ;;
-        -h|--help)
-            echo "Usage: $0 [OPTIONS]"
-            echo "Options:"
-            echo "  -y, --yes    Automatically answer 'yes' to all prompts"
-            echo "  -h, --help   Show this help message"
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $arg"
-            echo "Use -h or --help for usage information"
-            exit 1
-            ;;
-    esac
-done
-
-echo -e "${GREEN}EZKL GPU Setup Script${NC}"
-echo -e "${GREEN}=====================${NC}"
-echo ""
-
-# Parse commit hash from Cargo.lock
-echo "Parsing halo2 commit hash from Cargo.lock..."
-if [ ! -f "Cargo.lock" ]; then
-    echo -e "${RED}Error: Cargo.lock not found. Please run this script from the project root.${NC}"
-    exit 1
-fi
-
-HALO2_COMMIT=$(grep "github\.com/zkonduit/halo2?" Cargo.lock | grep -v "halo2wrong" | head -1 | grep -o "#[a-f0-9]\{40\}" | cut -c2-)
-
-if [ -z "$HALO2_COMMIT" ]; then
-    echo -e "${RED}Error: Could not parse halo2 commit hash from Cargo.lock${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}Found halo2 commit: $HALO2_COMMIT${NC}"
-echo ""
-echo "This script will:"
-echo "1. Sparse checkout the halo2 repository at commit $HALO2_COMMIT"
-echo "2. Extract only the icicle/backend/cuda/ directory"
-echo "3. Set the ICICLE_BACKEND_INSTALL_DIR environment variable"
-echo ""
-
-# Check if user wants to override the default directory
-if [ "$AUTO_YES" = true ]; then
-    INSTALL_DIR="$DEFAULT_INSTALL_DIR"
-    echo -e "${GREEN}Using default installation directory: ${INSTALL_DIR}${NC}"
-else
-    echo -e "${YELLOW}Default installation directory: ${DEFAULT_INSTALL_DIR}${NC}"
-    read -p "Do you want to use a different directory? [y/N]: " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        read -p "Enter the installation directory: " INSTALL_DIR
-        INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"  # Expand ~ to $HOME
-    else
-        INSTALL_DIR="$DEFAULT_INSTALL_DIR"
-    fi
-
-    # Confirm the installation directory
-    echo ""
-    echo -e "${YELLOW}Installation directory: ${INSTALL_DIR}${NC}"
-    read -p "Continue with this directory? [y/N]: " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${RED}Setup cancelled by user.${NC}"
-        exit 1
-    fi
-fi
-
-# Check if ICICLE_BACKEND_INSTALL_DIR is already set
-if [ ! -z "$ICICLE_BACKEND_INSTALL_DIR" ] && [ "$AUTO_YES" = false ]; then
-    echo ""
-    echo -e "${YELLOW}Warning: ICICLE_BACKEND_INSTALL_DIR is already set to: $ICICLE_BACKEND_INSTALL_DIR${NC}"
-    read -p "Do you want to override it? [y/N]: " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${RED}Setup cancelled by user.${NC}"
-        exit 1
-    fi
-elif [ ! -z "$ICICLE_BACKEND_INSTALL_DIR" ] && [ "$AUTO_YES" = true ]; then
-    echo -e "${GREEN}Overriding existing ICICLE_BACKEND_INSTALL_DIR (was: $ICICLE_BACKEND_INSTALL_DIR)${NC}"
-fi
-
-echo ""
-echo -e "${GREEN}Starting GPU setup...${NC}"
-
-# Create installation directory
-echo "Creating installation directory..."
-mkdir -p "$INSTALL_DIR"
-
-# Create temporary directory for sparse checkout
-TEMP_DIR=$(mktemp -d)
-echo "Using temporary directory: $TEMP_DIR"
-
-# Clone with sparse checkout
-echo "Cloning halo2 repository with sparse checkout..."
-cd "$TEMP_DIR"
-git clone --filter=blob:none --sparse "$HALO2_REPO" halo2
-cd halo2
-
-# Checkout the specific branch and commit
-echo "Checking out branch $HALO2_BRANCH at commit $HALO2_COMMIT..."
-git checkout "$HALO2_BRANCH"
-git checkout "$HALO2_COMMIT"
-
-# Configure sparse checkout
-echo "Configuring sparse checkout for icicle/backend/cuda/..."
-git sparse-checkout init --cone
-git sparse-checkout set icicle/backend/cuda/
-
-# Copy the icicle directory to the installation location
-if [ -d "icicle/backend/cuda" ]; then
-    echo "Copying icicle/backend/cuda/ to $INSTALL_DIR..."
-    cp -r icicle/backend/cuda/* "$INSTALL_DIR/"
-    echo -e "${GREEN}Files copied successfully!${NC}"
-else
-    echo -e "${RED}Error: icicle/backend/cuda directory not found in the repository${NC}"
-    exit 1
-fi
-
-# Clean up temporary directory
-echo "Cleaning up temporary files..."
-rm -rf "$TEMP_DIR"
-
-# Ask user about setting environment variable permanently
-SETUP_PERMANENT_ENV=false
-if [ "$AUTO_YES" = true ]; then
-    SETUP_PERMANENT_ENV=true
-    echo ""
-    echo -e "${GREEN}Setting ICICLE_BACKEND_INSTALL_DIR environment variable permanently...${NC}"
-else
-    echo ""
-    echo -e "${YELLOW}Do you want to set ICICLE_BACKEND_INSTALL_DIR environment variable permanently?${NC}"
-    echo "This will add 'export ICICLE_BACKEND_INSTALL_DIR=\"$INSTALL_DIR\"' to your shell configuration file."
-    read -p "Set environment variable permanently? [y/N]: " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        SETUP_PERMANENT_ENV=true
-    fi
-fi
-
-if [ "$SETUP_PERMANENT_ENV" = true ]; then
-    echo "Setting ICICLE_BACKEND_INSTALL_DIR environment variable..."
-
-    # Detect shell and set environment variable accordingly
-    if [ -n "$ZSH_VERSION" ]; then
-        SHELL_RC="$HOME/.zshrc"
-    elif [ -n "$BASH_VERSION" ]; then
-        SHELL_RC="$HOME/.bashrc"
-    else
-        # Try to detect based on $SHELL
-        case "$SHELL" in
-            */zsh)
-                SHELL_RC="$HOME/.zshrc"
-                ;;
-            */bash)
-                SHELL_RC="$HOME/.bashrc"
-                ;;
-            *)
-                SHELL_RC="$HOME/.profile"
-                ;;
-        esac
-    fi
-
-    # Add environment variable to shell configuration
-    ENV_EXPORT="export ICICLE_BACKEND_INSTALL_DIR=\"$INSTALL_DIR\""
-
-    # Check if the variable is already set in the file
-    if [ -f "$SHELL_RC" ] && grep -q "ICICLE_BACKEND_INSTALL_DIR" "$SHELL_RC"; then
-        # Replace existing line
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            # macOS
-            sed -i '' "s|export ICICLE_BACKEND_INSTALL_DIR=.*|$ENV_EXPORT|" "$SHELL_RC"
-        else
-            # Linux
-            sed -i "s|export ICICLE_BACKEND_INSTALL_DIR=.*|$ENV_EXPORT|" "$SHELL_RC"
-        fi
-        echo "Updated existing ICICLE_BACKEND_INSTALL_DIR in $SHELL_RC"
-    else
-        # Add new line
-        echo "$ENV_EXPORT" >> "$SHELL_RC"
-        echo "Added ICICLE_BACKEND_INSTALL_DIR to $SHELL_RC"
-    fi
-
-    echo -e "${GREEN}Environment variable set permanently.${NC}"
-else
-    echo "Skipping permanent environment variable setup."
-fi
-
-# Export for current session regardless
-export ICICLE_BACKEND_INSTALL_DIR="$INSTALL_DIR"
-echo "Environment variable set for current session."
-
-echo ""
-echo -e "${GREEN}GPU setup completed successfully!${NC}"
-echo ""
-echo -e "${YELLOW}Important:${NC}"
-echo "1. The ICICLE_BACKEND_INSTALL_DIR environment variable has been set to: $INSTALL_DIR"
-if [ "$SETUP_PERMANENT_ENV" = true ]; then
-    echo "2. Please restart your terminal or run: source $SHELL_RC"
-else
-    echo "2. To use GPU features, set: export ICICLE_BACKEND_INSTALL_DIR=\"$INSTALL_DIR\""
-fi
-echo "3. You can now build with GPU support using: cargo build --features gpu-accelerated"
-echo ""
-echo -e "${GREEN}Setup complete!${NC}"
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+[[ $# -eq 0 || ( $# -eq 1 && ( "$1" == -y || "$1" == --yes ) ) ]] || { echo "usage: $0 [--yes]" >&2; exit 2; }
+CUDA_ARCH=${CUDA_ARCH:-$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')}
+[[ "$CUDA_ARCH" =~ ^[0-9]+$ ]] || { echo "cannot determine CUDA architecture" >&2; exit 2; }
+BUILD_DIR="$ROOT/artifacts/build/icicle-cuda"
+cmake -S "$ROOT/vendor/icicle/icicle" -B "$BUILD_DIR" -DCURVE=bn254 -DCUDA_ARCH="$CUDA_ARCH" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF
+cmake --build "$BUILD_DIR" --target icicle_curve --parallel "${CARGO_BUILD_JOBS:-4}"
+python3 - "$ROOT" "$CUDA_ARCH" <<'PYTHON'
+import hashlib,json,subprocess,sys
+from pathlib import Path
+root=Path(sys.argv[1]);directory=root/'artifacts/build/icicle-cuda'
+files={}
+for name in ['libingo_field_bn254.a','libingo_curve_bn254.a']:
+ path=directory/'lib'/name
+ files[path.relative_to(root).as_posix()]=hashlib.sha256(path.read_bytes()).hexdigest()
+source_hash=hashlib.sha256()
+for path in sorted((root/'vendor/icicle/icicle').rglob('*')):
+ if path.is_file():
+  relative=path.relative_to(root/'vendor/icicle/icicle').as_posix().encode();source_hash.update(len(relative).to_bytes(8,'big'));source_hash.update(relative);source_hash.update(hashlib.sha256(path.read_bytes()).hexdigest().encode())
+manifest={'schema_version':1,'native_source_sha256':source_hash.hexdigest(),'halo2_commit':'f441c920be45f8f05d2c06a173d82e8885a5ed4d','frontend_commit':'5dfe006a0f1bc62ea82ca297709bbf3d22a2ca25','abi':'icicle-2.8.0-bn254-static-cuda','device':subprocess.check_output(['nvidia-smi','--query-gpu=name','--format=csv,noheader'],text=True).strip(),'architecture':'sm_'+sys.argv[2],'runtime':subprocess.check_output(['nvcc','--version'],text=True).strip(),'libraries':files}
+(directory/'native_backend_manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2)+'\n')
+environment={'ICICLE_BACKEND_INSTALL_DIR':str(directory),'ICICLE_NATIVE_LIB_DIR':str(directory/'lib'),'CUDA_ARCH':sys.argv[2],'ICICLE_NATIVE_MANIFEST_SHA256':hashlib.sha256((directory/'native_backend_manifest.json').read_bytes()).hexdigest()}
+import shlex
+(directory/'env.sh').write_text(''.join('export '+key+'='+shlex.quote(value)+'\n' for key,value in environment.items()))
+print('native ICICLE CUDA backend prepared:',directory)
+PYTHON

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the baseline-local ezkl CPU formal chain for all five datasets.
+"""Run the baseline-local ezkl formal chain for all five datasets.
 
 The command authenticates the prepared five-dataset resources and official
 native ``get-srs`` cache, reuses a source-matched CPU build or builds it once,
@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from formal_common import (
     ContractError,
     abort,
     local_path,
+    native_backend_identity,
     load_cli_contract,
     load_json,
     parse_cfg,
@@ -36,23 +38,32 @@ from formal_common import (
     source_tree_hash,
     validate_config,
     validate_native_srs_manifest,
+    validate_gpu_environment,
     validate_resources,
 )
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--binary", default="target/release/ezkl")
+    result.add_argument("--backend", choices=("cpu", "gpu"), default="cpu")
+    result.add_argument("--binary")
     result.add_argument("--output-root", default="runs/formal")
     result.add_argument("--matrix", default="results/formal_matrix.json")
     return result
 
 
-def run(command: list[str], label: str) -> None:
-    print(f"[ezkl-cpu] {label}: {' '.join(command)}", flush=True)
-    completed = subprocess.run(command, cwd=ROOT, check=False)
+def run(command: list[str], label: str, *, gpu: bool = False) -> float:
+    print(f"[ezkl-formal] {label}: {' '.join(command)}", flush=True)
+    env = os.environ.copy()
+    env.pop("ENABLE_ICICLE_GPU", None)
+    if gpu:
+        env["ENABLE_ICICLE_GPU"] = "1"
+        env["EZKL_GAT_BACKEND"] = "gpu"
+    started = time.monotonic()
+    completed = subprocess.run(command, cwd=ROOT, env=env, check=False)
     if completed.returncode != 0:
         abort(f"{label} failed with exit code {completed.returncode}")
+    return (time.monotonic() - started) * 1000.0
 
 
 def local_cli(path: Path, label: str) -> str:
@@ -62,8 +73,8 @@ def local_cli(path: Path, label: str) -> str:
         abort(f"{label} is outside the ezkl baseline: {path}")
 
 
-def reusable_build(binary: Path) -> bool:
-    receipt_path = ROOT / "artifacts/build/cpu/build_receipt.json"
+def reusable_build(binary: Path, backend: str) -> bool:
+    receipt_path = ROOT / "artifacts" / "build" / backend / "build_receipt.json"
     if not binary.is_file() or binary.is_symlink() or not os.access(binary, os.X_OK):
         return False
     if not receipt_path.is_file() or receipt_path.is_symlink() or not CONTRACT.is_file():
@@ -71,14 +82,16 @@ def reusable_build(binary: Path) -> bool:
     receipt = load_json(receipt_path, "CPU build receipt")
     contract = load_cli_contract()
     expected = {
-        "backend": "cpu", "binary_sha256": sha256(binary),
+        "backend": backend, "binary_path": binary.relative_to(ROOT).as_posix(), "binary_sha256": sha256(binary),
         "source_tree_sha256": source_tree_hash(), "resource_manifest_sha256": resource_manifest_hash(),
         "adapter_contract_id": contract["contract_id"], "adapter_contract_sha256": sha256(CONTRACT),
     }
-    return all(receipt.get(key) == value for key, value in expected.items()) and receipt.get("features") == ["ezkl"]
+    if backend == "gpu":
+        expected.update(native_backend_identity())
+    return all(receipt.get(key) == value for key, value in expected.items()) and receipt.get("features") == ["ezkl"] + (["gpu-accelerated"] if backend == "gpu" else [])
 
 
-def check_output_paths(output_root: Path, matrix: Path) -> None:
+def check_output_paths(output_root: Path, matrix: Path, backend: str) -> None:
     for path, label in ((output_root, "output-root"), (matrix.parent, "matrix parent")):
         for parent in (path, *path.parents):
             if parent == ROOT.parent:
@@ -88,7 +101,7 @@ def check_output_paths(output_root: Path, matrix: Path) -> None:
     if matrix.exists() and not matrix.is_file():
         abort(f"matrix is not a regular file: {matrix}")
     for dataset in DATASETS:
-        output = output_root / dataset / "cpu"
+        output = output_root / dataset / backend
         for path in (output_root / dataset, output, output_root / ".incomplete", output_root / ".incomplete" / dataset):
             if path.is_symlink() or (path.exists() and not path.is_dir()):
                 abort(f"formal output path is not a regular directory: {path}")
@@ -97,8 +110,8 @@ def check_output_paths(output_root: Path, matrix: Path) -> None:
             abort(f"formal output already exists; refusing to mix runs: {output}")
 
 
-def prepare_output_dir(output_root: Path, dataset: str) -> Path:
-    output = output_root / dataset / "cpu"
+def prepare_output_dir(output_root: Path, dataset: str, backend: str) -> Path:
+    output = output_root / dataset / backend
     if not (output.exists() or output.is_symlink()):
         output.mkdir(parents=True)
         return output
@@ -120,17 +133,17 @@ def prepare_output_dir(output_root: Path, dataset: str) -> Path:
             abort(f"incomplete archive dataset path is not a directory or is symlinked: {dataset_archive}")
     else:
         dataset_archive.mkdir()
-    archive = dataset_archive / datetime.now(timezone.utc).strftime("cpu-%Y%m%dT%H%M%S%fZ")
+    archive = dataset_archive / datetime.now(timezone.utc).strftime(f"{backend}-%Y%m%dT%H%M%S%fZ")
     if archive.exists() or archive.is_symlink():
         abort(f"incomplete archive already exists; refusing to overwrite: {archive}")
     output.rename(archive)
-    print(f"[ezkl-cpu] archived incomplete formal output: {output} -> {archive}")
+    print(f"[ezkl-formal] archived incomplete formal output: {output} -> {archive}")
     output.mkdir(parents=True)
     return output
 
 
 def main(args: argparse.Namespace) -> int:
-    binary = local_path(args.binary, "binary")
+    binary = local_path(args.binary or f"target/{args.backend}/release/ezkl", "binary")
     output_root = local_path(args.output_root, "output-root")
     matrix = local_path(args.matrix, "matrix")
     if binary.exists() and binary.is_symlink():
@@ -151,7 +164,7 @@ def main(args: argparse.Namespace) -> int:
         if not path.is_file():
             abort(f"missing formal runner component: {path}")
 
-    check_output_paths(output_root, matrix)
+    check_output_paths(output_root, matrix, args.backend)
     try:
         importlib.import_module("numpy")
     except (ImportError, OSError) as exc:
@@ -174,8 +187,12 @@ def main(args: argparse.Namespace) -> int:
             abort(f"{dataset} graph_count must be positive")
         if graph_count > 1:
             require_file(data_dir / "node_ptr.txt", f"{dataset} canonical graph boundaries")
-    print("[ezkl-cpu] authenticated prepared five-dataset resources/configs", flush=True)
-    srs_manifest = validate_native_srs_manifest()
+    print("[ezkl-formal] authenticated prepared five-dataset resources/configs", flush=True)
+    try:
+        srs_manifest = validate_native_srs_manifest()
+    except ContractError:
+        run([python, "scripts/provision_srs.py"], "provision source-authenticated official SRS")
+        srs_manifest = validate_native_srs_manifest()
     entries = srs_manifest["entries"]
     shared_paths = {entry["path"] for entry in entries.values()}
     if len(shared_paths) != 1:
@@ -183,18 +200,21 @@ def main(args: argparse.Namespace) -> int:
     srs = ROOT / next(iter(shared_paths))
     if not srs.is_file() or srs.is_symlink():
         abort(f"shared official SRS is missing or symlinked: {srs}")
-    print(f"[ezkl-cpu] reuse authenticated official SRS: {local_cli(srs, 'SRS')}", flush=True)
-    if not reusable_build(binary):
-        if binary != ROOT / "target/release/ezkl":
-            abort("stale custom --binary cannot be rebuilt by build_ezkl.sh; use target/release/ezkl")
-        run(["bash", local_cli(build, "build script"), "--cpu"], "build source-matched official ezkl CPU binary")
-        if not reusable_build(binary):
-            abort("CPU build did not produce a matching binary/resource/adapter receipt")
+    print(f"[ezkl-formal] reuse authenticated official SRS: {local_cli(srs, 'SRS')}", flush=True)
+    if args.backend == "gpu":
+        run(["bash", "setup-gpu.sh", "--yes"], "prepare source-matched native ICICLE CUDA libraries")
+        validate_gpu_environment()
+    if not reusable_build(binary, args.backend):
+        if binary != ROOT / "target" / args.backend / "release/ezkl":
+            abort(f"stale custom --binary cannot be rebuilt; use target/{args.backend}/release/ezkl")
+        run(["bash", local_cli(build, "build script"), f"--{args.backend}"], "build source-matched official ezkl native binary")
+        if not reusable_build(binary, args.backend):
+            abort("native build did not produce a matching binary/resource/adapter receipt")
     else:
-        print("[ezkl-cpu] reuse source-matched official ezkl CPU build", flush=True)
+        print("[ezkl-formal] reuse source-matched official ezkl native build", flush=True)
 
     for dataset in DATASETS:
-        output = prepare_output_dir(output_root, dataset)
+        output = prepare_output_dir(output_root, dataset, args.backend)
         setup = [
             local_cli(binary, "binary"),
             "gat-prepare",
@@ -209,7 +229,10 @@ def main(args: argparse.Namespace) -> int:
             "--srs-path",
             local_cli(srs, "SRS"),
         ]
-        run(setup, f"{dataset} native setup")
+        if args.backend == "gpu":
+            setup.append("--gpu")
+        setup_ms = run(setup, f"{dataset} native setup", gpu=args.backend == "gpu")
+        (output / "setup_timing.json").write_text(json.dumps({"duration_ms": setup_ms}) + "\n")
         run(
             [
                 python,
@@ -240,7 +263,7 @@ def main(args: argparse.Namespace) -> int:
                 "--dataset",
                 dataset,
                 "--backend",
-                "cpu",
+                args.backend,
                 "--execute-formal",
                 "--reuse-setup",
                 "--config",
@@ -268,9 +291,9 @@ def main(args: argparse.Namespace) -> int:
             "--output",
             local_cli(matrix, "matrix"),
             "--backends",
-            "cpu",
+            args.backend,
         ],
-        "collect CPU result matrix",
+        "collect five-dataset result matrix",
     )
     run(
         [
@@ -279,11 +302,11 @@ def main(args: argparse.Namespace) -> int:
             "--matrix",
             local_cli(matrix, "matrix"),
             "--backends",
-            "cpu",
+            args.backend,
         ],
-        "validate CPU result matrix",
+        "validate five-dataset result matrix",
     )
-    print(f"validated CPU matrix: {matrix.relative_to(ROOT)}")
+    print(f"validated {args.backend} native matrix: {matrix.relative_to(ROOT)}")
     print(f"view: python3 -m json.tool {matrix.relative_to(ROOT)}")
     return 0
 

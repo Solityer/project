@@ -31,8 +31,6 @@ use colored::Colorize;
 #[cfg(unix)]
 use gag::Gag;
 use halo2_proofs::dev::VerifyFailure;
-#[cfg(feature = "gpu-accelerated")]
-use halo2_proofs::icicle::try_load_and_set_backend_device;
 use halo2_proofs::plonk::{self, Circuit};
 use halo2_proofs::poly::commitment::Verifier;
 use halo2_proofs::poly::commitment::{CommitmentScheme, Params};
@@ -49,8 +47,6 @@ use halo2_solidity_verifier;
 use halo2curves::bn256::{Bn256, Fr, G1Affine};
 use halo2curves::ff::{FromUniformBytes, WithSmallOrderMulGroup};
 use halo2curves::serde::SerdeObject;
-#[cfg(feature = "gpu-accelerated")]
-use icicle_runtime::{stream::IcicleStream, warmup};
 use indicatif::{ProgressBar, ProgressStyle};
 use instant::Instant;
 use itertools::Itertools;
@@ -91,18 +87,9 @@ lazy_static! {
 
 /// Set the device used for computation.
 #[cfg(feature = "gpu-accelerated")]
-pub fn set_device() {
-    if std::env::var("ICICLE_BACKEND_INSTALL_DIR").is_ok() {
-        info!("Running with ICICLE GPU");
-        try_load_and_set_backend_device("CUDA");
-        match warmup(&IcicleStream::default()) {
-            Ok(_) => info!("GPU warmed :)"),
-            Err(e) => log::error!("GPU warmup failed: {:?}", e),
-        }
-    } else {
-        info!("Running with CPU: 'ICICLE_BACKEND_INSTALL_DIR' not set");
-        try_load_and_set_backend_device("CPU");
-    }
+pub fn set_device() -> Result<(), EZKLError> {
+    if std::env::var_os("ENABLE_ICICLE_GPU").is_some() { crate::gat_adapter::gpu::initialize()?; }
+    Ok(())
 }
 
 /// A wrapper for execution errors
@@ -127,7 +114,7 @@ lazy_static::lazy_static! {
 /// Run an ezkl command with given args
 pub async fn run(command: Commands) -> Result<String, EZKLError> {
     #[cfg(feature = "gpu-accelerated")]
-    set_device();
+    set_device()?;
     // set working dir
     std::env::set_current_dir(WORKING_DIR.as_path())?;
 
@@ -1608,30 +1595,7 @@ fn enforce_gat_gpu(requested: bool) -> Result<(), EZKLError> {
         return Ok(());
     }
     #[cfg(feature = "gpu-accelerated")]
-    {
-        let backend = std::env::var("ICICLE_BACKEND_INSTALL_DIR")
-            .map_err(|_| "GPU formal run requires ICICLE_BACKEND_INSTALL_DIR".to_string())?;
-        let backend_path = Path::new(&backend);
-        if !backend_path.is_dir() {
-            return Err(format!(
-                "GPU formal run requires an ICICLE backend directory: {}",
-                backend
-            )
-            .into());
-        }
-        let device = std::env::var("CUDA_VISIBLE_DEVICES")
-            .or_else(|_| std::env::var("ICICLE_DEVICE_ID"))
-            .map_err(|_| {
-                "GPU formal run requires CUDA_VISIBLE_DEVICES or ICICLE_DEVICE_ID".to_string()
-            })?;
-        if device.trim().is_empty() {
-            return Err("GPU formal run requires a non-empty CUDA device selection".into());
-        }
-        let _ = (backend_path, device);
-        return Err(
-            "GPU formal blocked: this official snapshot exposes no reliable native kernel-invocation counter and device-synchronization attestation hook; refusing to label a run GPU".into(),
-        );
-    }
+    { crate::gat_adapter::gpu::validate_backend() }
     #[cfg(not(feature = "gpu-accelerated"))]
     {
         Err("GPU formal run requested but ezkl was not built with gpu-accelerated".into())
@@ -3224,6 +3188,11 @@ pub(crate) fn prove(
 
     if let Some(proof_path) = proof_path {
         snark.save(&proof_path)?;
+        #[cfg(feature = "gpu-accelerated")]
+        if std::env::var("EZKL_GAT_BACKEND").as_deref() == Ok("gpu") {
+            let directory = std::env::var("EZKL_GAT_RUN_DIR").map(PathBuf::from).map_err(|_| "GPU formal proof requires EZKL_GAT_RUN_DIR")?;
+            crate::gat_adapter::gpu::write_proof_record(&directory, &proof_path)?;
+        }
         if let Ok(run_dir) = std::env::var("EZKL_GAT_RUN_DIR") {
             let artifact_path = PathBuf::from(run_dir).join("artifact_manifest.json");
             let mut artifact = ArtifactManifest::load(&artifact_path).map_err(EZKLError::from)?;
@@ -3684,7 +3653,7 @@ pub(crate) fn verify_with_formal_inputs(
         EvmTranscript<G1Affine, _, _, _>,
         GraphCircuit,
         _,
-    >(proof_path, circuit_settings, vk_path, &params, logrows)?;
+    >(proof_path.clone(), circuit_settings, vk_path, &params, logrows)?;
     if let Some((
         statement,
         artifact,
@@ -3730,29 +3699,13 @@ pub(crate) fn verify_with_formal_inputs(
             run_dir.join("core_run_manifest.json"),
             serde_json::to_vec_pretty(&core)?,
         )?;
-        let trace = if backend == "cpu" {
-            &b"ezkl-native-cpu"[..]
+        let evidence = if backend == "gpu" {
+            #[cfg(feature = "gpu-accelerated")]
+            { crate::gat_adapter::gpu::read_proof_evidence(&run_dir, &proof_path)? }
+            #[cfg(not(feature = "gpu-accelerated"))]
+            { return Err("GPU formal verifier requires the matching GPU-capable native binary".into()); }
         } else {
-            &b"gpu-blocked"[..]
-        };
-        let evidence = GpuEvidence {
-            backend: if backend == "gpu" {
-                "CUDA".into()
-            } else {
-                "CPU".into()
-            },
-            gpu_backend: if backend == "gpu" {
-                "icicle-cuda".into()
-            } else {
-                "none".into()
-            },
-            backend_loaded: backend == "cpu",
-            cpu_fallback: false,
-            device_synchronized: backend == "cpu",
-            gpu_kernel_invocation_count: 0,
-            provenance: None,
-            invocation_trace_sha256: crate::gat_adapter::schema::sha256_digest(trace)
-                .map_err(EZKLError::from)?,
+            GpuEvidence { backend: "CPU".into(), gpu_backend: "none".into(), backend_loaded: true, cpu_fallback: false, device_synchronized: true, gpu_kernel_invocation_count: 0, provenance: None, invocation_trace_sha256: crate::gat_adapter::schema::sha256_digest(b"ezkl-native-cpu").map_err(EZKLError::from)? }
         };
         std::fs::write(
             run_dir.join("gpu_evidence.json"),

@@ -38,7 +38,7 @@ def parser() -> argparse.ArgumentParser:
         nargs="+",
         choices=BACKENDS,
         default=None,
-        help="backend axis expected in the matrix; default requires the strict CPU/GPU matrix",
+        help="native backend axis expected in the matrix; default requires the five mixed cells",
     )
     return result
 
@@ -47,7 +47,7 @@ def main(args: argparse.Namespace) -> int:
     selected_datasets = tuple(args.datasets)
     if len(set(selected_datasets)) != len(selected_datasets):
         abort("--datasets must not contain duplicates")
-    selected_backends = tuple(args.backends) if args.backends is not None else BACKENDS
+    selected_backends = tuple(args.backends) if args.backends is not None else ("gpu",)
     if len(set(selected_backends)) != len(selected_backends):
         abort("--backends must not contain duplicates")
     matrix_path = local_path(args.matrix, "formal matrix")
@@ -127,6 +127,7 @@ def main(args: argparse.Namespace) -> int:
         f"validated {len(refreshed)} ezkl result cells: external statement/Y, native instances, "
         f"circuit artifacts, timing, and {pair_label} are consistent"
     )
+    print(f"FINAL_VALIDATION_OK cells={len(refreshed)}")
     return 0
 
 

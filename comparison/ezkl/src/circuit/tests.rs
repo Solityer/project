@@ -2642,3 +2642,6 @@ mod lookup_ultra_overflow {
         assert!(prover.is_ok());
     }
 }
+
+#[path = "../../tests/dynamic_lookup_reuse.rs"]
+mod dynamic_lookup_reuse;

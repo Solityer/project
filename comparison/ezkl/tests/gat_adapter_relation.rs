@@ -1,5 +1,6 @@
+use ezkl::gat_adapter::schema::HiddenLayerSpec;
 use ezkl::gat_adapter::{
-    evaluate_signed_division, scale_exponent_to_multiplier, CanonicalGat, CanonicalModel, ExactTable, GatOp, HeadWeights, HiddenLayerSpec, ModelBinding,
+    evaluate_signed_division, scale_exponent_to_multiplier, CanonicalGat, CanonicalModel, ExactTable, GatOp, HeadWeights, ModelBinding,
     RoundingMode,
 };
 
@@ -99,4 +100,39 @@ fn redaction_keeps_parameter_shape_but_removes_private_values() {
     assert!(op.spec.model.flattened_params().iter().all(|value| *value == 0));
     assert!(op.spec.private_params_redacted);
     assert_eq!(op.spec.model_binding.hash_domain, "ezkl-gat-model-v1");
+}
+
+#[test]
+fn actual_gat_layout_reuses_tables_with_identical_known_and_unknown_shape() {
+    use ezkl::circuit::region::RegionSettings;
+    use ezkl::graph::{GraphCircuit, GraphWitness};
+    use ezkl::tensor::{Tensor, ValTensor};
+    use halo2_proofs::circuit::Value;
+    use halo2curves::bn256::Fr;
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gat_lookup_reuse");
+    let circuit = GraphCircuit::load(fixture.join("compiled.circuit")).unwrap();
+    let witness = GraphWitness::from_path(fixture.join("witness.json")).unwrap();
+    let mut known_inputs = witness.get_input_tensor().into_iter().map(|input| input.map(|value| Value::known(value)).into()).collect::<Vec<ValTensor<Fr>>>();
+    let mut known_params = witness.get_param_tensor().into_iter().map(|input| input.map(|value| Value::known(value)).into()).collect::<Vec<ValTensor<Fr>>>();
+    for (i, input) in known_inputs.iter_mut().enumerate() {
+        input.reshape(&circuit.model().graph.input_shapes().unwrap()[i]).unwrap();
+        input.set_scale(circuit.settings().model_input_scales[i]);
+    }
+    for (input, shape) in known_params.iter_mut().zip(circuit.model().graph.param_shapes().unwrap()) {
+        input.reshape(&shape).unwrap();
+        input.set_scale(circuit.settings().run_args.param_scale);
+    }
+    let unknown_inputs = known_inputs.iter().map(|input| Tensor::new(Some(&vec![Value::<Fr>::unknown(); input.len()]), input.dims()).unwrap().into()).collect::<Vec<ValTensor<Fr>>>();
+    let unknown_params = known_params.iter().map(|input| Tensor::new(Some(&vec![Value::<Fr>::unknown(); input.len()]), input.dims()).unwrap().into()).collect::<Vec<ValTensor<Fr>>>();
+    let args = &circuit.settings().run_args;
+    let _ = env_logger::try_init();
+    let settings = RegionSettings::all_false(args.decomp_base, args.decomp_legs);
+    let known = circuit.model().dummy_layout_with_runtime_params(args, &known_inputs, &known_params, settings.clone()).unwrap();
+    let unknown = circuit.model().dummy_layout_with_runtime_params(args, &unknown_inputs, &unknown_params, settings).unwrap();
+    assert_eq!(known.linear_coord, unknown.linear_coord);
+    assert_eq!(known.dynamic_lookup_params, unknown.dynamic_lookup_params);
+    assert_eq!(known.shuffle_params, unknown.shuffle_params);
+    assert_eq!(known.einsum_params, unknown.einsum_params);
+    assert_eq!(known.total_const_size, unknown.total_const_size);
+    assert!(known.dynamic_lookup_params.num_dynamic_lookups < 64);
 }

@@ -33,8 +33,10 @@ class PackagingScriptsTest(unittest.TestCase):
     def test_matrix_defaults_to_dry_run(self) -> None:
         completed = self.run_script("run_formal_matrix.py")
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("dry-run", completed.stdout)
-        self.assertEqual(completed.stdout.count("--dry-run"), 10)
+        self.assertIn("no setup/prove/verify was run", completed.stdout)
+        self.assertIn("five-dataset mixed chain", completed.stdout)
+        self.assertIn("--backend gpu", completed.stdout)
+        self.assertIn("target/gpu/release/ezkl", completed.stdout)
 
     def test_single_runner_dry_run_does_not_require_contract(self) -> None:
         completed = self.run_script("run_single_dataset.py", "--dataset", "cora", "--backend", "cpu", "--dry-run")

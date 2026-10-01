@@ -36,3 +36,7 @@ pub use schema::{
     ExactTable, HeadWeights, IntegerBoundLedger, ModelBinding, PublicInstanceBinding, ScaleChain, StaticTables, GAT_SCHEMA_VERSION,
 };
 pub use statement::{output_digest, PublicEzkl, PublicStatement};
+
+/// Pinned native CUDA backend initialization and proof execution evidence.
+#[cfg(feature = "gpu-accelerated")]
+pub mod gpu;
