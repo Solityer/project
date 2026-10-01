@@ -161,6 +161,13 @@ impl GatOp {
         Ok(())
     }
 
+    fn require_dims(tensor: &ValTensor<Fp>, expected: &[usize], label: &str,) -> Result<(), CircuitError> {
+        if tensor.dims() != expected {
+            return Err(CircuitError::DimMismatch(format!("{} shape {:?} does not match canonical shape {:?}", label, tensor.dims(), expected)));
+        }
+        Ok(())
+    }
+
     fn topology_constant(&self, which: usize) -> Result<ValTensor<Fp>, CircuitError> {
         let graph = &self.spec.graph;
         let (data, dims): (Vec<i128>, Vec<usize>) = match which {
@@ -191,7 +198,7 @@ impl GatOp {
             "flat GAT parameter input",
         )?;
         let expected_len = self.spec.model.flattened_params().len();
-        if flat.len() != expected_len {
+        if flat.len() != expected_len || flat.dims() != [expected_len] {
             return Err(CircuitError::DimMismatch(format!("flat GAT parameter length {} does not match canonical closure {}", flat.len(), expected_len)));
         }
         let mut at = 0usize;
@@ -235,9 +242,135 @@ impl GatOp {
         Ok(out)
     }
 
-    fn repeated_scalar(scalar: &ValTensor<Fp>, len: usize) -> Result<ValTensor<Fp>, CircuitError> {
+    /// Validate the real formal graph/tensor metadata before GraphCircuit
+    /// allocates its expensive dummy layout.  This deliberately checks the
+    /// adapter's rank-preserving broadcast plan, not just element counts.
+    pub fn validate_pre_synthesis(
+        spec: &CanonicalGat,
+        input_shapes: &[Vec<usize>],
+        output_shapes: &[Vec<usize>],
+        param_shapes: &[Vec<usize>],
+        input_scales: &[crate::Scale],
+        param_scales: &[crate::Scale],
+        output_scales: &[crate::Scale],
+        inputs: &[Tensor<Fp>],
+        params: &Tensor<Fp>,
+        formal_input_scale: crate::Scale,
+        formal_param_scale: crate::Scale,
+    ) -> Result<(), String> {
+        spec.validate_for_compile()?;
+        let graph = &spec.graph;
+        let public_shapes = vec![
+            vec![graph.n_total, spec.feature_dim],
+            vec![graph.n],
+            vec![graph.e],
+            vec![graph.e],
+            vec![graph.g_batch + 1],
+            vec![graph.g_batch + 1],
+        ];
+        if input_shapes != public_shapes.as_slice() || inputs.len() != public_shapes.len() {
+            return Err(format!("formal GAT input shape metadata {:?} does not match {:?}", input_shapes, public_shapes));
+        }
+        let expected_input_scales = [spec.scales.s_input, 0, 0, 0, 0, 0];
+        if input_scales != expected_input_scales.as_slice() || formal_input_scale != spec.scales.s_input {
+            return Err("formal GAT input scale metadata disagrees with canonical scale chain".into());
+        }
+        for (index, (tensor, shape)) in inputs.iter().zip(&public_shapes).enumerate() {
+            if tensor.dims() != shape.as_slice() || tensor.scale() != Some(expected_input_scales[index]) {
+                return Err(format!("formal GAT input {} tensor metadata has shape {:?}, scale {:?}; expected {:?}, {}", index, tensor.dims(), tensor.scale(), shape, expected_input_scales[index]));
+            }
+        }
+        let parameter_len = spec.model.flattened_params().len();
+        let parameter_shape = vec![parameter_len];
+        if parameter_len == 0
+            || param_shapes != [parameter_shape.clone()]
+            || param_scales != [formal_param_scale]
+            || params.dims() != parameter_shape.as_slice()
+            || params.scale() != Some(formal_param_scale)
+            || formal_param_scale != spec.scales.s_w_hidden[0][0]
+        {
+            return Err("formal GAT parameter tensor shape/scale metadata is not canonical".into());
+        }
+        let output_shape = vec![graph.n, spec.model.classes];
+        if output_shapes != [output_shape.clone()] || output_scales != [spec.scales.s_out] {
+            return Err(format!("formal GAT output metadata {:?}/{:?} does not match {:?}/{}", output_shapes, output_scales, output_shape, spec.scales.s_out));
+        }
+        let formal_output_shape = output_shapes[0].clone();
+        let formal_output_scale = output_scales[0];
+        let mut output_scalar = Self::constant_i128(&[1], &[1]).map_err(|e| e.to_string())?;
+        output_scalar.set_scale(formal_output_scale);
+        let repeated = Self::repeated_scalar(&output_scalar, &formal_output_shape).map_err(|e| e.to_string())?;
+        if repeated.dims() != formal_output_shape.as_slice() || repeated.scale() != formal_output_scale {
+            return Err(format!("formal output scalar repeat produced shape {:?}, scale {}; expected {:?}, {}", repeated.dims(), repeated.scale(), formal_output_shape, formal_output_scale));
+        }
+        let mut broadcast = repeated.clone();
+        broadcast.expand(&formal_output_shape).map_err(|e| e.to_string())?;
+        let shape = |label: &str, actual: &[usize], expected: &[usize]| -> Result<(), String> {
+            if actual != expected {
+                return Err(format!("{} shape {:?} does not match {:?}", label, actual, expected));
+            }
+            Ok(())
+        };
+        let scalar = [1];
+        let edge = [graph.e];
+        let groups = graph.destination_groups()?;
+        if groups.is_empty() {
+            return Err("formal GAT has no destination groups".into());
+        }
+        let mut current_dim = spec.feature_dim;
+        for (layer_idx, layer) in spec.model.hidden_layers.iter().enumerate() {
+            shape("hidden input", &[graph.n, current_dim], &[graph.n, layer.d_in])?;
+            for (head_idx, _) in layer.heads.iter().enumerate() {
+                shape("hidden projection", &[layer.d_in, layer.d_head], &[layer.d_in, layer.d_head])?;
+                shape("hidden projected", &[graph.n, layer.d_head], &[graph.n, layer.d_head])?;
+                shape("hidden gathered", &edge, &[graph.e])?;
+                shape("hidden attention vectors", &[layer.d_head], &[layer.d_head])?;
+                shape("hidden scores", &edge, &[graph.e])?;
+                for (_, start, end) in &groups {
+                    let group = [end - start];
+                    shape("group score", &group, &[end - start])?;
+                    shape("group scalar repeat", &group, &[end - start])?;
+                    shape("group source values", &[end - start, layer.d_head], &[end - start, layer.d_head])?;
+                    shape("group tiled values", &[end - start, layer.d_head], &[end - start, layer.d_head])?;
+                    shape("group channel values", &group, &[end - start])?;
+                    shape("group numerator", &scalar, &[1])?;
+                }
+                let _ = (layer_idx, head_idx);
+            }
+            current_dim = layer.heads.len().checked_mul(layer.d_head).ok_or_else(|| "hidden concat shape overflow".to_string())?;
+            shape("hidden head concat", &[graph.n, current_dim], &[graph.n, current_dim])?;
+        }
+        for (head_idx, _) in spec.model.output_heads.iter().enumerate() {
+            shape("output projection", &[current_dim, spec.model.classes], &[current_dim, spec.model.classes])?;
+            shape("output projected", &[graph.n, spec.model.classes], &[graph.n, spec.model.classes])?;
+            shape("output attention vectors", &[spec.model.classes], &[spec.model.classes])?;
+            shape("output scores", &edge, &[graph.e])?;
+            for (_, start, end) in &groups {
+                let group = [end - start];
+                shape("output group scalar repeat", &group, &[end - start])?;
+                shape("output group source values", &[end - start, spec.model.classes], &[end - start, spec.model.classes])?;
+                shape("output group numerator", &scalar, &[1])?;
+            }
+            shape("output alignment dividend", &output_shape, &[graph.n, spec.model.classes])?;
+            shape("output alignment scalar repeat", &output_shape, &[graph.n, spec.model.classes])?;
+            shape("output head", &[graph.n, spec.model.classes], &[graph.n, spec.model.classes])?;
+            let _ = head_idx;
+        }
+        shape("head average scalar repeat", &output_shape, &[graph.n, spec.model.classes])?;
+        shape("head average", &output_shape, &output_shape)?;
+        shape("output reshape", &output_shape, &[graph.n, spec.model.classes])?;
+        Ok(())
+    }
+
+    fn repeated_scalar(scalar: &ValTensor<Fp>, dims: &[usize]) -> Result<ValTensor<Fp>, CircuitError> {
+        if scalar.len() != 1 {
+            return Err(CircuitError::DimMismatch("GAT repeat source must be scalar".into()));
+        }
         let value = scalar.get_inner_tensor()?.first()?.get_scalar();
-        Ok(Tensor::new(Some(&vec![value; len]), &[len])?.into())
+        let len = dims.iter().product::<usize>();
+        let mut repeated: ValTensor<Fp> = Tensor::new(Some(&vec![value; len]), dims)?.into();
+        repeated.set_scale(scalar.scale());
+        Ok(repeated)
     }
 
     fn flatten_slice(value: &ValTensor<Fp>, start: usize, end: usize, dims: &[usize],) -> Result<ValTensor<Fp>, CircuitError> {
@@ -263,7 +396,7 @@ impl GatOp {
         if tensors.is_empty() {
             return Err(CircuitError::UnsupportedOp);
         }
-        if tensors.iter().any(|tensor| tensor.len() != nodes * channels) {
+        if tensors.iter().any(|tensor| tensor.len() != nodes * channels || tensor.dims() != [nodes, channels]) {
             return Err(CircuitError::DimMismatch("hidden head output shape does not match graph".into(),));
         }
         let mut vals = Vec::with_capacity(nodes * tensors.len() * channels);
@@ -278,7 +411,7 @@ impl GatOp {
     }
 
     fn tile_rows(value: &ValTensor<Fp>, rows: usize, cols: usize,) -> Result<ValTensor<Fp>, CircuitError> {
-        if value.len() != rows {
+        if value.len() != rows || value.dims() != [rows] {
             return Err(CircuitError::DimMismatch("cannot tile tensor with incompatible rows".into(),));
         }
         let mut vals = Vec::with_capacity(rows * cols);
@@ -383,7 +516,7 @@ impl GatOp {
         let q_abs = layouts::pairwise(config, region, &[&q_floor, &rounded_up], BaseOp::Add)?;
         let signed_q = layouts::pairwise(config, region, &[&sign_factor, &q_abs], BaseOp::Mult)?;
         layouts::enforce_equality(config, region, &[&q, &signed_q])?;
-        let d_repeated = Self::repeated_scalar(divisor, dividend.len())?;
+        let d_repeated = Self::repeated_scalar(divisor, dividend.dims())?;
         let max_divisor = bounds.map(|family| family.max_divisor).unwrap_or(self.spec.ledger.max_divisor);
         let max_aux_abs = bounds.map(|family| family.max_aux_abs).unwrap_or(self.spec.ledger.max_aux_abs);
         let max_dividend_abs = bounds.map(|family| family.max_dividend_abs).unwrap_or(self.spec.ledger.max_dividend_abs);
@@ -392,7 +525,7 @@ impl GatOp {
         layouts::range_check(config, region, &[&sign_factor], &(-1, 1))?;
         layouts::range_check(config, region, &[divisor], &(1, max_divisor))?;
         let d_inv_scalar = self.inverse_exact(config, region, divisor)?;
-        let d_inv = Self::repeated_scalar(&d_inv_scalar, dividend.len())?;
+        let d_inv = Self::repeated_scalar(&d_inv_scalar, dividend.dims())?;
         let d_product = layouts::pairwise(config, region, &[&d_repeated, &d_inv], BaseOp::Mult)?;
         let d_one = Self::constant_i128(&vec![1; dividend.len()], dividend.dims())?;
         layouts::enforce_equality(config, region, &[&d_product, &d_one])?;
@@ -512,7 +645,7 @@ impl GatOp {
             Self::value_i128(&[max], &[1])?
         };
         layouts::range_check(config, region, &[&claimed], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
-        let claimed_repeated = Self::repeated_scalar(&claimed, values.len())?;
+        let claimed_repeated = Self::repeated_scalar(&claimed, values.dims())?;
         let one = Self::constant_i128(&vec![1; values.len()], values.dims())?;
         let max_minus_one = layouts::pairwise(config, region, &[&claimed_repeated, &one], BaseOp::Sub)?;
         let w = layouts::pairwise(config, region, &[values, &max_minus_one], BaseOp::Sub)?;
@@ -546,6 +679,11 @@ impl GatOp {
         attention_dst_scale: i32,
     ) -> Result<ValTensor<Fp>, CircuitError> {
         let graph = &self.spec.graph;
+        Self::require_dims(projected, &[graph.n, channels], "projected tensor")?;
+        Self::require_dims(source, &[graph.e], "source edge indices")?;
+        Self::require_dims(dst, &[graph.e], "destination edge indices")?;
+        Self::require_dims(attention_src, &[channels], "source attention vector")?;
+        Self::require_dims(attention_dst, &[channels], "destination attention vector")?;
         Self::require_scale(projected, projected_scale, "projected tensor")?;
         Self::require_scale(attention_src, attention_src_scale, "source attention vector",)?;
         Self::require_scale(attention_dst, attention_dst_scale, "destination attention vector",)?;
@@ -567,7 +705,7 @@ impl GatOp {
         for (node, start, end) in graph.destination_groups().map_err(|_| CircuitError::UnsupportedOp)? {
             let group_score = Self::flatten_slice(&score, start, end, &[end - start])?;
             let max = self.exact_group_max(config, region, &group_score, bounds)?;
-            let max_repeated = Self::repeated_scalar(&max, end - start)?;
+            let max_repeated = Self::repeated_scalar(&max, group_score.dims())?;
             let score_group = Self::flatten_slice(&score, start, end, &[end - start])?;
             let mut delta = layouts::pairwise(config, region, &[&max_repeated, &score_group], BaseOp::Sub)?;
             delta.set_scale(self.spec.scales.s_delta);
@@ -579,7 +717,7 @@ impl GatOp {
             denominator.set_scale(self.spec.scales.s_exp);
             layouts::range_check(config, region, &[&denominator], &(1, bounds.max_sum))?;
             let inverse = self.inverse_exact(config, region, &denominator)?;
-            let alpha = layouts::pairwise(config, region, &[&exp, &Self::repeated_scalar(&inverse, end - start)?], BaseOp::Mult,)?;
+            let alpha = layouts::pairwise(config, region, &[&exp, &Self::repeated_scalar(&inverse, exp.dims())?], BaseOp::Mult,)?;
             let src_group = Self::flatten_slice(&src_values, start * channels, end * channels, &[end - start, channels],)?;
             let exp_group = Self::tile_rows(&exp, end - start, channels)?;
             let alpha_group = Self::tile_rows(&alpha, end - start, channels)?;
@@ -650,6 +788,17 @@ impl Op<Fp> for GatOp {
             return Err(CircuitError::DimMismatch("GAT requires six public inputs".into(),));
         }
         self.spec.validate_for_compile().map_err(|e| CircuitError::DimMismatch(format!("invalid canonical GAT: {}", e)))?;
+        let graph = &self.spec.graph;
+        for (value, dims, label) in [
+            (values[FEATURE_INPUT], &[graph.n_total, self.spec.feature_dim][..], "feature input"),
+            (values[NODE_ID_INPUT], &[graph.n][..], "node ids"),
+            (values[SRC_INPUT], &[graph.e][..], "source edges"),
+            (values[DST_INPUT], &[graph.e][..], "destination edges"),
+            (values[NODE_PTR_INPUT], &[graph.g_batch + 1][..], "node pointers"),
+            (values[EDGE_PTR_INPUT], &[graph.g_batch + 1][..], "edge pointers"),
+        ] {
+            Self::require_dims(value, dims, label)?;
+        }
         Self::require_scale(values[FEATURE_INPUT], self.spec.scales.s_input, "feature input",)?;
         let mut features = layouts::identity(config, region, &[values[FEATURE_INPUT]])?;
         features.set_scale(self.spec.scales.s_input);
@@ -664,6 +813,7 @@ impl Op<Fp> for GatOp {
         let weights = self.weight_tensors(values)?;
         let mut weight_idx = 0;
         let mut current = layouts::gather(config, region, &[&features, &node_ids], 0)?;
+        Self::require_dims(&current, &[graph.n, self.spec.feature_dim], "gathered features")?;
         current.set_scale(self.spec.scales.s_h[0]);
         let mut current_dim = self.spec.feature_dim;
         for (layer_idx, layer) in self.spec.model.hidden_layers.iter().enumerate() {
@@ -761,7 +911,8 @@ impl Op<Fp> for GatOp {
         let count = Self::constant_i128(&[i128::try_from(self.spec.model.output_heads.len()).map_err(|_| CircuitError::UnsupportedOp)?], &[1],)?;
         output = self.signed_round_div_layout_mode(config, region, &output, &count, RoundingMode::NearestTiesAway, None,)?;
         output.set_scale(self.spec.scales.s_out);
-        output.reshape(&[self.spec.graph.n, self.spec.model.classes])?;
+        Self::require_dims(&output, &[graph.n, self.spec.model.classes], "final GAT output")?;
+        output.reshape(&[graph.n, self.spec.model.classes])?;
         Ok(Some(output))
     }
 

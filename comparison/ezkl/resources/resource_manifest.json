@@ -4,8 +4,8 @@
   "resource_root": "resources/canonical",
   "source_snapshot": {
     "root": "/home/pzh/project/comparison/ezkl",
-    "git_commit": "3d7396cd698a512af0adfe0191bd32be752ca533",
-    "git_tree": "c95b921899e54fec1f690c6bf088e83ead0036c3"
+    "git_commit": "ba85a1c5b002c5d29f05b646a9c99464b8b5ee4d",
+    "git_tree": "2289cc9324b5b555cb7f473bf4b0a58cd441379c"
   },
   "files": [
     {

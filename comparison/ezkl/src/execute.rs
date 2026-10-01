@@ -11,7 +11,7 @@ use crate::eth::{get_contract_artifacts, verify_proof_via_solidity};
 use crate::gat_adapter::{
     build_model_for_run_args, load_dataset_with_manifest, load_relation_resources_with_manifest,
     write_generated_metadata, ArtifactFile, ArtifactManifest, BoundCircuitRef, CoreRunManifest,
-    FormalCliContract, GpuEvidence, PublicStatement, RoundingMode, SrsProvenance,
+    FormalCliContract, GatOp, GpuEvidence, PublicStatement, RoundingMode, SrsProvenance,
 };
 use crate::graph::input::GraphData;
 use crate::graph::modules::ModuleForwardResult;
@@ -2237,6 +2237,40 @@ fn gat_prepare_setup(
         )
         .into());
     }
+    let formal_inputs = gat_input_tensors(&loaded.spec)?;
+    let formal_params = gat_parameter_tensor(&loaded.spec)?;
+    let input_shapes = model.graph.input_shapes()?;
+    let output_shapes = model.graph.output_shapes()?;
+    let param_shapes = model.graph.param_shapes()?;
+    let input_scales = model.graph.get_input_scales();
+    let param_scales = model
+        .graph
+        .param_inputs
+        .iter()
+        .map(|index| {
+            model
+                .graph
+                .nodes
+                .get(index)
+                .and_then(|node| node.out_scales().first().copied())
+                .ok_or_else(|| EZKLError::from(format!("formal GAT parameter input {} has no scale metadata", index)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let output_scales = model.graph.get_output_scales()?;
+    GatOp::validate_pre_synthesis(
+        &loaded.spec,
+        &input_shapes,
+        &output_shapes,
+        &param_shapes,
+        &input_scales,
+        &param_scales,
+        &output_scales,
+        &formal_inputs,
+        &formal_params,
+        run_args.input_scale,
+        run_args.param_scale,
+    )
+    .map_err(EZKLError::from)?;
     info!("canonical GAT setup logrows: {}", run_args.logrows);
     let circuit = GraphCircuit::new(model, &run_args)?;
     let settings_path = output_dir.join("settings.json");
