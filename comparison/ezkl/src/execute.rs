@@ -2080,6 +2080,7 @@ fn public_instances_from_statement(
     witness.processed_params = Some(ModuleForwardResult {
         poseidon_hash: Some(vec![canonical_string_to_fr(&statement.public_ezkl.model_hash)
             .map_err(EZKLError::from)?]),
+        poseidon_hash_duration: None,
         polycommit: None,
     });
     circuit.load_graph_witness(&witness)?;
@@ -3121,6 +3122,21 @@ fn gat_witness(
         );
     }
     witness.save(output.clone())?;
+    let commitment_duration = witness
+        .processed_params
+        .as_ref()
+        .and_then(|x| x.poseidon_hash_duration)
+        .filter(|duration| !duration.is_zero())
+        .ok_or_else(|| "native parameter Poseidon execution timing is missing".to_string())?;
+    let commitment_metrics = serde_json::json!({
+        "schema_version": 1,
+        "dataset": dataset,
+        "operation": "native_poseidon_model_hash",
+        "included_in": "witness_generation",
+        "model_hash": native_hash,
+        "duration_ms": commitment_duration.as_secs_f64() * 1000.0,
+    });
+    std::fs::write(output.with_file_name("commitment_metrics.json"), serde_json::to_vec_pretty(&commitment_metrics)?)?;
     Ok(output.display().to_string())
 }
 

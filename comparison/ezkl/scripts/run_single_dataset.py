@@ -48,6 +48,7 @@ from formal_common import (
     source_tree_hash,
     validate_artifact_identity,
     validate_config,
+    validate_commitment_metrics,
     validate_gpu_environment,
     validate_gpu_evidence,
     validate_native_srs_manifest,
@@ -451,6 +452,8 @@ def main(args: argparse.Namespace) -> int:
         env=env,
     )
     require_file(witness, "private witness")
+    commitment_path = output / "commitment_metrics.json"
+    commitment = validate_commitment_metrics(commitment_path, dataset=args.dataset, model_hash=statement_document["public_ezkl"]["model_hash"])
 
     prove_ms = run_command(
         [
@@ -568,6 +571,13 @@ def main(args: argparse.Namespace) -> int:
         "verifier_reads_witness": False,
         "proof_contains_private_witness": False,
         "core_run_manifest_sha256": sha256(core_manifest),
+        "commitment_time_ms": commitment["duration_ms"],
+        "commitment_metric": {
+            "operation": commitment["operation"],
+            "included_in": commitment["included_in"],
+            "path": baseline_relative(commitment_path, "native commitment metrics"),
+            "sha256": sha256(commitment_path),
+        },
         "phase_timings_ms": {
             "prepare_compile_setup": round(prepare_ms, 3),
             "witness_generation": round(witness_ms, 3),

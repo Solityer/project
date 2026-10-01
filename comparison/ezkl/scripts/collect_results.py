@@ -42,6 +42,7 @@ from formal_common import (
     sha256,
     source_tree_hash,
     validate_artifact_identity,
+    validate_commitment_metrics,
     validate_gpu_evidence,
     validate_gpu_evidence_document,
     validate_public_output,
@@ -78,6 +79,8 @@ REQUIRED_RESULT_KEYS = {
     "native_verify_result",
     "native_public_instance_binding",
     "phase_timings_ms",
+    "commitment_time_ms",
+    "commitment_metric",
     "gpu_evidence",
     "circuit_ref",
     "proof_instances",
@@ -250,6 +253,19 @@ def validate_cell(path: Path) -> dict[str, Any]:
     )
     if public_output_values(public_output, dataset=dataset) != statement_document["public_ezkl"]["y"]:
         abort(f"{path} public output Y disagrees element-by-element with statement")
+    metric = require_exact_keys(result["commitment_metric"], {"operation", "included_in", "path", "sha256"}, "result commitment metric")
+    commitment_path = path_from_result(metric["path"], "native commitment metrics")
+    if commitment_path != path.parent / "commitment_metrics.json":
+        abort(f"{path} commitment metrics do not belong to this formal cell")
+    require_digest(metric["sha256"], "native commitment metrics digest")
+    if sha256(commitment_path) != metric["sha256"]:
+        abort(f"{path} native commitment metrics digest mismatch")
+    commitment = validate_commitment_metrics(commitment_path, dataset=dataset, model_hash=statement_document["public_ezkl"]["model_hash"])
+    if metric["operation"] != commitment["operation"] or metric["included_in"] != commitment["included_in"]:
+        abort(f"{path} native commitment measurement scope mismatch")
+    duration = result["commitment_time_ms"]
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0 or duration != commitment["duration_ms"]:
+        abort(f"{path} commitment_time_ms does not match the native measured duration")
     validate_proof_instances(result, proof)
     artifact_manifest = path_from_result(result["artifact_manifest_path"], "artifact identity manifest")
     artifact = validate_artifact_identity(

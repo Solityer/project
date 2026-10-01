@@ -112,6 +112,9 @@ impl ModuleConfigs {
 pub struct ModuleForwardResult {
     /// The inputs of the forward pass for poseidon
     pub poseidon_hash: Option<Vec<Fp>>,
+    /// Native hash execution time, excluded from witness serialization.
+    #[serde(skip)]
+    pub poseidon_hash_duration: Option<std::time::Duration>,
     /// The outputs of the forward pass for PolyCommit
     pub polycommit: Option<Vec<Vec<G1Affine>>>,
 }
@@ -314,14 +317,17 @@ impl GraphModules {
         srs: Option<&Scheme::ParamsProver>,
     ) -> Result<ModuleForwardResult, GraphError> {
         let mut poseidon_hash = None;
+        let mut poseidon_hash_duration = None;
         let mut polycommit = None;
 
         if element_visibility.is_hashed() {
+            let hash_start = std::time::Instant::now();
             let field_elements = inputs.iter().fold(vec![], |mut acc, x| {
                 let res = ModulePoseidon::run(x.to_vec()).unwrap()[0].clone();
                 acc.extend(res);
                 acc
             });
+            poseidon_hash_duration = Some(hash_start.elapsed());
             poseidon_hash = Some(field_elements);
         }
 
@@ -350,6 +356,7 @@ impl GraphModules {
 
         Ok(ModuleForwardResult {
             poseidon_hash,
+            poseidon_hash_duration,
             polycommit,
         })
     }

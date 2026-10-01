@@ -441,6 +441,7 @@ def validate_native_srs_manifest() -> dict[str, Any]:
     shared_path: str | None = None
     shared_id: str | None = None
     shared_digest: str | None = None
+    file_digests: dict[Path, str] = {}
     for dataset in DATASETS:
         entry = entries[dataset]
         require_exact_keys(entry, expected_entry_keys, f"native SRS entry {dataset}")
@@ -462,7 +463,9 @@ def validate_native_srs_manifest() -> dict[str, Any]:
         path = local_path(entry["path"], f"native SRS entry {dataset} path")
         reject_forbidden_path(path, f"native SRS entry {dataset} path")
         require_formal_srs(path, f"native SRS entry {dataset} file")
-        if path.stat().st_size != entry["size"] or sha256(path) != entry["sha256"]:
+        if path not in file_digests:
+            file_digests[path] = sha256(path)
+        if path.stat().st_size != entry["size"] or file_digests[path] != entry["sha256"]:
             abort(f"native SRS entry {dataset} file digest/size mismatch")
         if shared_path is None:
             shared_path = entry["path"]
@@ -928,6 +931,19 @@ def require_positive_timings(timings: Any, label: str = "phase timings") -> dict
             abort(f"{label}.{key} must be a positive finite duration")
         result[key] = float(value)
     return result
+
+
+def validate_commitment_metrics(path: Path, *, dataset: str, model_hash: str) -> dict[str, Any]:
+    metrics = load_json(path, "native commitment metrics")
+    require_exact_keys(metrics, {"schema_version", "dataset", "operation", "included_in", "model_hash", "duration_ms"}, "native commitment metrics")
+    if metrics["schema_version"] != 1 or metrics["dataset"] != dataset or metrics["model_hash"] != model_hash:
+        abort("native commitment metrics do not match the dataset/model statement")
+    if metrics["operation"] != "native_poseidon_model_hash" or metrics["included_in"] != "witness_generation":
+        abort("native commitment metrics do not measure the parameter Poseidon witness substage")
+    duration = metrics["duration_ms"]
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+        abort("native commitment duration_ms must be a positive finite measured duration")
+    return metrics
 
 
 def require_circuit_ref(value: Any, label: str = "circuit_ref") -> dict[str, str]:
