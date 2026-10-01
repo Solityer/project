@@ -16,3 +16,5 @@ comparison/zkGPT/results/.formal-preflight-*/
 # Local core execution regression artifacts
 tests/.core_execution/
 comparison/ezkl/resources/canonical/tables/**/*.bin
+
+comparison/ezkl/resources
