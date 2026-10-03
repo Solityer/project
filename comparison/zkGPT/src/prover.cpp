@@ -1,5 +1,6 @@
 #include "prover.hpp"
 #include <iostream>
+#include <limits>
 #include <utils.hpp>
 
 using namespace mcl::bn;
@@ -33,6 +34,33 @@ void prover::init()
     tmp_mult_array[0].resize(1);
     tmp_mult_array[1].resize(1);
 
+}
+
+std::size_t prover::sumcheck_storage_capacity_bytes() const {
+    std::size_t bytes = 0;
+    const auto add_capacity = [&bytes](const auto& values) {
+        if (values.capacity() > std::numeric_limits<std::size_t>::max() / sizeof(linear_poly))
+            throw std::overflow_error("native GKR sumcheck storage byte count overflows");
+        const std::size_t current = values.capacity() * sizeof(linear_poly);
+        if (current > std::numeric_limits<std::size_t>::max() - bytes) throw std::overflow_error("native GKR sumcheck storage byte count overflows");
+        bytes += current;
+    };
+    for (unsigned lane = 0; lane < 2; ++lane) {
+        add_capacity(V_mult[lane]);
+        add_capacity(mult_array[lane]);
+        add_capacity(tmp_V_mult[lane]);
+        add_capacity(tmp_mult_array[lane]);
+    }
+    return bytes;
+}
+
+void prover::release_sumcheck_storage() {
+    for (unsigned lane = 0; lane < 2; ++lane) {
+        zkgpt::NativeVector<linear_poly>().swap(V_mult[lane]);
+        zkgpt::NativeVector<linear_poly>().swap(mult_array[lane]);
+        zkgpt::NativeVector<linear_poly>().swap(tmp_V_mult[lane]);
+        zkgpt::NativeVector<linear_poly>().swap(tmp_mult_array[lane]);
+    }
 }
 
 /**
@@ -121,7 +149,6 @@ void prover::sumcheckInitPhase1(const F &relu_rou_0)
     r_u[sumcheck_id].resize(cur.max_bl_u);
     for (unsigned lane = 0; lane < 2; ++lane) {
         if (total_size[lane] > total[lane]) throw std::logic_error("native GKR phase1 active prefix exceeds its domain");
-        if ((total_size[lane] == 0) != (total[lane] == 0)) throw std::logic_error("native GKR phase1 lane has inconsistent empty-domain metadata");
     }
     for (unsigned lane = 0; lane < 2; ++lane) {
         const std::size_t active_extent = zkgpt::native_gkr::checked_extent(total_size[lane], "native GKR phase1 active prefix");
@@ -130,6 +157,7 @@ void prover::sumcheckInitPhase1(const F &relu_rou_0)
         mult_array[lane].resize(std::max<std::size_t>(1, active_extent));
         tmp_V_mult[lane].resize(fold_extent);
         tmp_mult_array[lane].resize(fold_extent);
+        if (active_extent == 0) { V_mult[lane][0].clear(); mult_array[lane][0].clear(); }
     }
     timer useless_t;
     useless_t.start();
@@ -277,7 +305,6 @@ void prover::sumcheckInitPhase2()
     r_v[sumcheck_id].resize(cur.max_bl_v);
     for (unsigned lane = 0; lane < 2; ++lane) {
         if (total_size[lane] > total[lane]) throw std::logic_error("native GKR phase2 active prefix exceeds its domain");
-        if ((total_size[lane] == 0) != (total[lane] == 0)) throw std::logic_error("native GKR phase2 lane has inconsistent empty-domain metadata");
     }
     for (unsigned lane = 0; lane < 2; ++lane) {
         const std::size_t active_extent = zkgpt::native_gkr::checked_extent(total_size[lane], "native GKR phase2 active prefix");
@@ -286,6 +313,7 @@ void prover::sumcheckInitPhase2()
         mult_array[lane].resize(std::max<std::size_t>(1, active_extent));
         tmp_V_mult[lane].resize(fold_extent);
         tmp_mult_array[lane].resize(fold_extent);
+        if (active_extent == 0) { V_mult[lane][0].clear(); mult_array[lane][0].clear(); }
     }
 
 

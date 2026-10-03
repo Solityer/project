@@ -46,6 +46,7 @@ struct NativeLassoFamilyPublic {
 
 struct NativeLassoFamilyProver : NativeLassoFamilyPublic {
     zkgpt::NativeVector<std::uint64_t> selected_table_rows;
+    std::function<std::uint64_t(std::uint64_t)> selected_table_row_at;
     std::vector<F> queries;
     std::vector<F> legacy_clear_matrix;
 };
@@ -53,7 +54,7 @@ struct NativeLassoFamilyProver : NativeLassoFamilyPublic {
 using NativeLassoSparseEntryCallback = std::function<void(std::uint64_t, const F&)>;
 
 struct NativeLassoSparseView {
-    // All callbacks borrow the source family's selected_table_rows; keep the family alive and stable while using the view.
+    // The callbacks borrow source-family private storage; keep it alive and stable while using the view.
     std::uint64_t full_domain = 0;
     std::uint64_t nonzero_count = 0;
     std::function<void(const NativeLassoSparseEntryCallback&)> for_each_nonzero;
@@ -61,8 +62,32 @@ struct NativeLassoSparseView {
     std::function<F(const std::vector<F>&)> evaluate_mle;
 };
 
+// Per-family native Lasso data bytes; family peaks include this family's ledger and exclude shared tensor, Hyrax, and transcript buffers.
+struct NativeLassoCapacityProfile {
+    std::uint64_t padded_queries = 0;
+    std::uint64_t table_domain = 0;
+    std::uint64_t full_domain = 0;
+    std::uint64_t rows = 0;
+    std::uint64_t columns = 0;
+    bool t2_booleanity = false;
+    std::uint64_t private_witness_entries = 0;
+    std::uint64_t private_witness_element_bytes = 0;
+    std::uint64_t private_witness_bytes = 0;
+    std::uint64_t row_blinding_bytes = 0;
+    std::uint64_t row_commitment_bytes = 0;
+    std::uint64_t column_generator_bytes = 0;
+    std::uint64_t row_fold_weights_bytes = 0;
+    std::uint64_t row_fold_values_bytes = 0;
+    std::uint64_t row_ledger_retained_bytes = 0;
+    std::uint64_t commit_peak_bytes = 0;
+    std::uint64_t booleanity_peak_bytes = 0;
+    std::uint64_t opening_peak_bytes = 0;
+    std::uint64_t family_peak_bytes = 0;
+};
+
 NativeLassoFamilyPublic::MatrixDescriptor native_lasso_balanced_matrix_layout(std::uint64_t padded_queries, std::uint64_t table_domain);
 NativeLassoSparseView native_lasso_sparse_view(const NativeLassoFamilyProver& family);
+NativeLassoCapacityProfile native_lasso_capacity_profile(std::uint64_t padded_queries, std::uint64_t table_domain);
 
 struct NativeLassoQueryProver {
     G1 G;

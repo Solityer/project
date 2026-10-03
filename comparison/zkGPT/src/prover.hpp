@@ -7,6 +7,7 @@
 #include "hyrax.hpp"
 #include "native_gkr_sumcheck.hpp"
 #include "../gat_adapter/native_storage.hpp"
+#include <cstddef>
 using std::unique_ptr;
 
 class neuralNetwork;
@@ -36,6 +37,8 @@ public:
     void sumcheckDotProdInitPhase1();
     void sumcheckInitPhase1(const F &relu_rou_0);
     void sumcheckInitPhase2();
+    std::size_t sumcheck_storage_capacity_bytes() const;
+    void release_sumcheck_storage();
 
     cubic_poly sumcheckDotProdUpdate1(const F &previous_random);
     quadratic_poly sumcheckUpdate1(const F &previous_random);

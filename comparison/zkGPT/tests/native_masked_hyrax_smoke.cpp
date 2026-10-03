@@ -29,6 +29,68 @@ std::vector<Fr> mle_basis(const std::vector<Fr>& point) {
     return basis;
 }
 
+bool tensor_tail_rounds_match_dense_reference(const std::vector<Fr>& values, std::uint64_t logical_length, std::uint64_t active_domain, const std::vector<Fr>& beta, const std::vector<Fr>& challenges, const std::vector<std::vector<Fr>>& trace) {
+    if (values.size() != logical_length || beta.size() != challenges.size() || trace.size() != challenges.size()) return false;
+    std::vector<Fr> private_values(static_cast<std::size_t>(active_domain), Fr(0)), public_values(static_cast<std::size_t>(active_domain), Fr(0));
+    const std::vector<Fr> beta_weights = mle_basis(beta);
+    for (std::uint64_t index = 0; index < logical_length; ++index) private_values[static_cast<std::size_t>(index)] = values[static_cast<std::size_t>(index)];
+    for (std::uint64_t index = logical_length; index < active_domain; ++index) public_values[static_cast<std::size_t>(index)] = beta_weights[static_cast<std::size_t>(index)];
+    for (std::size_t round = 0; round < challenges.size(); ++round) {
+        const std::uint64_t block_size = std::uint64_t(1) << round;
+        const std::size_t remaining = static_cast<std::size_t>(active_domain / block_size);
+        const std::vector<Fr> low_point(challenges.begin(), challenges.begin() + static_cast<std::ptrdiff_t>(round));
+        const std::vector<Fr> low_weights = mle_basis(low_point);
+        std::vector<Fr> folded_private(remaining, Fr(0)), folded_public(remaining, Fr(0));
+        for (std::size_t suffix = 0; suffix < remaining; ++suffix) {
+            for (std::uint64_t low = 0; low < block_size; ++low) {
+                const std::size_t index = suffix * static_cast<std::size_t>(block_size) + static_cast<std::size_t>(low);
+                folded_private[suffix] += low_weights[static_cast<std::size_t>(low)] * private_values[index];
+                folded_public[suffix] += low_weights[static_cast<std::size_t>(low)] * public_values[index];
+            }
+        }
+        std::vector<Fr> expected(3, Fr(0));
+        for (std::size_t pair = 0; pair < remaining; pair += 2) {
+            const Fr &v0 = folded_private[pair], &v1 = folded_private[pair + 1];
+            const Fr &a0 = folded_public[pair], &a1 = folded_public[pair + 1];
+            expected[0] += v0 * a0;
+            expected[1] += v1 * a1;
+            expected[2] += (Fr(2) * v1 - v0) * (Fr(2) * a1 - a0);
+        }
+        if (trace[round] != expected) return false;
+    }
+    return true;
+}
+
+bool tensor_zero_interval_rounds_match_dense_reference(const std::vector<Fr> &values, std::uint64_t logical_length, std::uint64_t active_domain, const hyrax::HyraxTensorZeroInterval &interval, const std::vector<Fr> &beta, const std::vector<Fr> &challenges, const std::vector<std::vector<Fr>> &trace) {
+    if (values.size() != logical_length || interval.begin >= interval.end || interval.end > logical_length || beta.size() != challenges.size() || trace.size() != challenges.size()) return false;
+    std::vector<Fr> private_values(static_cast<std::size_t>(active_domain), Fr(0)), public_values(static_cast<std::size_t>(active_domain), Fr(0));
+    const std::vector<Fr> beta_weights = mle_basis(beta);
+    for (std::uint64_t index = 0; index < logical_length; ++index) private_values[static_cast<std::size_t>(index)] = values[static_cast<std::size_t>(index)];
+    for (std::uint64_t index = interval.begin; index < interval.end; ++index) public_values[static_cast<std::size_t>(index)] = beta_weights[static_cast<std::size_t>(index)];
+    for (std::size_t round = 0; round < challenges.size(); ++round) {
+        const std::uint64_t block_size = std::uint64_t(1) << round;
+        const std::size_t remaining = static_cast<std::size_t>(active_domain / block_size);
+        const std::vector<Fr> low_point(challenges.begin(), challenges.begin() + static_cast<std::ptrdiff_t>(round));
+        const std::vector<Fr> low_weights = mle_basis(low_point);
+        std::vector<Fr> folded_private(remaining, Fr(0)), folded_public(remaining, Fr(0));
+        for (std::size_t suffix = 0; suffix < remaining; ++suffix) for (std::uint64_t low = 0; low < block_size; ++low) {
+            const std::size_t index = suffix * static_cast<std::size_t>(block_size) + static_cast<std::size_t>(low);
+            folded_private[suffix] += low_weights[static_cast<std::size_t>(low)] * private_values[index];
+            folded_public[suffix] += low_weights[static_cast<std::size_t>(low)] * public_values[index];
+        }
+        std::vector<Fr> expected(3, Fr(0));
+        for (std::size_t pair = 0; pair < remaining; pair += 2) {
+            const Fr &v0 = folded_private[pair], &v1 = folded_private[pair + 1];
+            const Fr &a0 = folded_public[pair], &a1 = folded_public[pair + 1];
+            expected[0] += v0 * a0;
+            expected[1] += v1 * a1;
+            expected[2] += (Fr(2) * v1 - v0) * (Fr(2) * a1 - a0);
+        }
+        if (trace[round] != expected) return false;
+    }
+    return true;
+}
+
 NativeProofStatement make_statement(const std::string& basis_digest, std::uint64_t dimension) {
     const std::string zeros = "0000000000000000000000000000000000000000000000000000000000000011";
     return NativeProofStatement{zeros, "mcl-bn254-fr-v1", zeros, zeros, zeros, zeros, zeros, zeros, basis_digest, dimension, zeros};
@@ -254,10 +316,8 @@ bool run_tensor_case() {
     std::vector<Fr> beta, tail_point;
     NativeMaskedSumcheckResult tail_sumcheck;
     hyrax::MaskedMleOpening tail_opening;
-    if (!hyrax::prove_hyrax_tensor_zero_tail_certificate_with_session(view, commitment, state, provider, session, prover_position, scalar_basis, beta,
-                                                                     tail_point, tail_sumcheck, tail_opening, &reason) ||
-        prover_position != session.checkpoint() || beta.size() != 3 || tail_point.size() != 4 || tail_sumcheck.challenges.size() != 3 ||
-        tail_opening.raw_evaluation_opening.value != tail_sumcheck.unmasked_terminal_openings[0].value) return false;
+    std::vector<std::vector<Fr>> tail_round_trace;
+    if (!hyrax::prove_hyrax_tensor_zero_tail_certificate_with_session(view, commitment, state, provider, session, prover_position, scalar_basis, beta, tail_point, tail_sumcheck, tail_opening, &reason, &tail_round_trace) || prover_position != session.checkpoint() || beta.size() != 3 || tail_point.size() != 4 || tail_sumcheck.challenges.size() != 3 || tail_opening.raw_evaluation_opening.value != tail_sumcheck.unmasked_terminal_openings[0].value || !tensor_tail_rounds_match_dense_reference(values, logical_length, 8, beta, tail_sumcheck.challenges, tail_round_trace)) return false;
     std::vector<Fr> dense_private_weights = mle_basis(tail_sumcheck.challenges);
     Fr dense_private_evaluation(0), dense_public_evaluation(0);
     for (std::uint64_t index = 0; index < 8; ++index) {
@@ -327,11 +387,8 @@ bool run_tensor_tail_certificate_case(std::uint64_t full_domain, std::uint64_t l
     std::vector<Fr> beta, terminal_point;
     NativeMaskedSumcheckResult sumcheck;
     hyrax::MaskedMleOpening terminal_opening;
-    if (!hyrax::prove_hyrax_tensor_zero_tail_certificate_with_session(view, commitment, state, provider, session, prover_position, scalar_basis, beta,
-                                                                     terminal_point, sumcheck, terminal_opening, &reason) ||
-        prover_position != session.checkpoint() || beta.size() != active_bits || terminal_point.size() != full_bits ||
-        sumcheck.challenges.size() != active_bits || sumcheck.unmasked_terminal_openings.size() != 1 ||
-        terminal_opening.raw_evaluation_opening.value != sumcheck.unmasked_terminal_openings[0].value) return false;
+    std::vector<std::vector<Fr>> round_trace;
+    if (!hyrax::prove_hyrax_tensor_zero_tail_certificate_with_session(view, commitment, state, provider, session, prover_position, scalar_basis, beta, terminal_point, sumcheck, terminal_opening, &reason, &round_trace) || prover_position != session.checkpoint() || beta.size() != active_bits || terminal_point.size() != full_bits || sumcheck.challenges.size() != active_bits || sumcheck.unmasked_terminal_openings.size() != 1 || terminal_opening.raw_evaluation_opening.value != sumcheck.unmasked_terminal_openings[0].value || !tensor_tail_rounds_match_dense_reference(values, logical_length, active_domain, beta, sumcheck.challenges, round_trace)) return false;
     const std::vector<Fr> point_weights = mle_basis(sumcheck.challenges);
     Fr private_eval(0), public_eval(0);
     for (std::uint64_t index = 0; index < active_domain; ++index) {
@@ -352,11 +409,102 @@ bool run_tensor_tail_certificate_case(std::uint64_t full_domain, std::uint64_t l
     return true;
 }
 
+bool run_tensor_zero_interval_case(std::uint64_t full_domain, std::uint64_t logical_length, const std::vector<hyrax::HyraxTensorZeroInterval> &intervals, bool nonzero_interval_witness = false) {
+    const std::string basis_id = "00000000000000000000000000000000000000000000000000000000000000de";
+    const std::string generator_label = "masked-hyrax-smoke/zero-interval-column";
+    const std::string derivation_id = "hashAndMapToG1(canonical_basis_label+/coordinate/+canonical_absolute_index_decimal);absolute-index-u64;v1";
+    std::uint64_t active_domain = 1;
+    while (active_domain < logical_length) active_domain <<= 1;
+    std::size_t full_bits = 0, active_bits = 0;
+    for (std::uint64_t size = full_domain; size > 1; size >>= 1) ++full_bits;
+    for (std::uint64_t size = active_domain; size > 1; size >>= 1) ++active_bits;
+    const std::uint64_t columns = std::uint64_t(1) << (active_bits / 2), rows = active_domain / columns;
+    std::vector<Fr> values(static_cast<std::size_t>(logical_length));
+    for (std::uint64_t index = 0; index < logical_length; ++index) values[static_cast<std::size_t>(index)] = Fr(static_cast<int>(index + 7));
+    if (!nonzero_interval_witness) for (const auto &interval : intervals) for (std::uint64_t index = interval.begin; index < interval.end && index < logical_length; ++index) values[static_cast<std::size_t>(index)] = Fr(0);
+    const G1 H = hyrax::derive_pedersen_blinding_generator(basis_id);
+    std::vector<G1> column_generators(static_cast<std::size_t>(columns));
+    for (std::uint64_t index = 0; index < columns; ++index) hashAndMapToG1(column_generators[static_cast<std::size_t>(index)], generator_label + "/coordinate/" + std::to_string(index));
+    hyrax::HyraxTensorMleView view;
+    view.full_domain = full_domain;
+    view.logical_length = logical_length;
+    view.active_domain = active_domain;
+    view.rows = rows;
+    view.columns = columns;
+    view.role = "canonical/L_qry";
+    view.basis_id = basis_id;
+    view.column_generators.size = columns;
+    view.column_generators.canonical_id = NativeProofStatement::basis_descriptor_digest_for(H, generator_label, basis_id, derivation_id, full_domain);
+    view.column_generators.scheme = hyrax::HyraxGeneratorProviderScheme::CanonicalAbsoluteHashToCurveV1;
+    view.column_generators.at = [&column_generators](std::uint64_t index) { return column_generators.at(static_cast<std::size_t>(index)); };
+    const hyrax::HyraxScalarProvider provider{logical_length, [&values](std::uint64_t index) { return values.at(static_cast<std::size_t>(index)); }};
+    hyrax::HyraxTensorMleCommitment commitment;
+    hyrax::HyraxTensorMleProverState state;
+    std::string reason;
+    if (!hyrax::commit_hyrax_tensor_mle(view, provider, commitment, state, &reason)) return false;
+    NativeProofStatement statement = make_statement(view.column_generators.canonical_id, full_domain);
+    statement.l_digest = commitment.root_digest;
+    statement.statement_root_digest = statement.structured_root();
+    const zkgpt::native_pedersen::PedersenBasis scalar_basis = zkgpt::native_pedersen::derive_basis("zkgpt/masked-sumcheck/v2/" + statement.root());
+    NativeProofSession session("masked-hyrax-smoke-zero-interval-v1", statement);
+    std::size_t prover_position = session.checkpoint();
+    std::vector<hyrax::HyraxTensorZeroIntervalCertificate> certificates;
+    std::vector<std::vector<std::vector<Fr>>> traces;
+    const bool proved = hyrax::prove_hyrax_tensor_zero_interval_certificates_with_session(view, commitment, state, provider, intervals, session, prover_position, scalar_basis, certificates, &reason, &traces);
+    if (nonzero_interval_witness) {
+        if (!proved) return true;
+        if (prover_position != session.checkpoint()) return false;
+        const auto *public_positions = session.message_positions("tensor/L_qry/zero-gap/public");
+        if (public_positions == nullptr || public_positions->size() != 1) return false;
+        std::size_t verifier_position = public_positions->front();
+        std::vector<hyrax::HyraxTensorZeroIntervalCertificate> rejected_certificates;
+        return !hyrax::verify_hyrax_tensor_zero_interval_certificates_with_session(view, commitment, intervals, session, verifier_position, scalar_basis, rejected_certificates, &reason);
+    }
+    if (!proved || prover_position != session.checkpoint() || certificates.size() != intervals.size() || traces.size() != intervals.size()) return false;
+    for (std::size_t item = 0; item < intervals.size(); ++item) {
+        const auto &certificate = certificates[item];
+        if (certificate.begin != intervals[item].begin || certificate.end != intervals[item].end || certificate.beta.size() != active_bits || certificate.sumcheck_challenges.size() != active_bits || certificate.full_terminal_point.size() != full_bits || !tensor_zero_interval_rounds_match_dense_reference(values, logical_length, active_domain, intervals[item], certificate.beta, certificate.sumcheck_challenges, traces[item])) return false;
+        for (std::size_t bit = 0; bit < active_bits; ++bit) if (certificate.full_terminal_point[bit] != certificate.sumcheck_challenges[bit]) return false;
+        for (std::size_t bit = active_bits; bit < full_bits; ++bit) if (certificate.full_terminal_point[bit] != Fr(0)) return false;
+    }
+    const auto *public_positions = session.message_positions("tensor/L_qry/zero-gap/public");
+    if (public_positions == nullptr || public_positions->size() != 1) return false;
+    std::size_t verifier_position = public_positions->front();
+    std::vector<hyrax::HyraxTensorZeroIntervalCertificate> verified_certificates;
+    if (!hyrax::verify_hyrax_tensor_zero_interval_certificates_with_session(view, commitment, intervals, session, verifier_position, scalar_basis, verified_certificates, &reason) || verifier_position != prover_position || verified_certificates.size() != certificates.size()) return false;
+    for (std::size_t item = 0; item < certificates.size(); ++item) if (verified_certificates[item].beta != certificates[item].beta || verified_certificates[item].full_terminal_point != certificates[item].full_terminal_point || verified_certificates[item].sumcheck_challenges != certificates[item].sumcheck_challenges) return false;
+    if (!intervals.empty()) {
+        std::vector<hyrax::HyraxTensorZeroInterval> wrong_intervals = intervals;
+        --wrong_intervals[0].end;
+        verifier_position = public_positions->front();
+        if (hyrax::verify_hyrax_tensor_zero_interval_certificates_with_session(view, commitment, wrong_intervals, session, verifier_position, scalar_basis, verified_certificates, &reason)) return false;
+    }
+    std::vector<NativeProofMessage> tampered_messages = session.messages();
+    for (NativeProofMessage &message : tampered_messages) if (message.label == "tensor/L_qry/zero-gap/public") { message.payload += "|tamper"; break; }
+    NativeProofSession tampered_session;
+    if (NativeProofSession::from_messages(session.domain(), session.statement(), tampered_messages, tampered_session, &reason)) {
+        verifier_position = public_positions->front();
+        if (hyrax::verify_hyrax_tensor_zero_interval_certificates_with_session(view, commitment, intervals, tampered_session, verifier_position, scalar_basis, verified_certificates, &reason)) return false;
+    }
+    if (!intervals.empty()) {
+        tampered_messages = session.messages();
+        bool changed_interval_proof = false;
+        for (NativeProofMessage &message : tampered_messages) if (message.label == "tensor/L_qry/zero-gap/0/opening/column/claim") { message.payload += "|tamper"; changed_interval_proof = true; break; }
+        NativeProofSession tampered_interval_session;
+        if (!changed_interval_proof) return false;
+        if (NativeProofSession::from_messages(session.domain(), session.statement(), tampered_messages, tampered_interval_session, &reason)) {
+            verifier_position = public_positions->front();
+            if (hyrax::verify_hyrax_tensor_zero_interval_certificates_with_session(view, commitment, intervals, tampered_interval_session, verifier_position, scalar_basis, verified_certificates, &reason)) return false;
+        }
+    }
+    return true;
+}
+
 }
 
 int main() {
     initPairing(mcl::BN254);
-    if (!run_provider_case(1, 1) || !run_provider_case(8, 1) || !run_provider_case(8, 3) || !run_provider_case(16, 5) || !run_provider_case(32, 9) || !run_legacy_wrapper_case(1) || !run_legacy_wrapper_case(4) || !run_tensor_case() || !run_tensor_tail_certificate_case(8, 8, "canonical/L_qry") || !run_tensor_tail_certificate_case(1, 1, "canonical/Aux")) {
+    if (!run_provider_case(1, 1) || !run_provider_case(8, 1) || !run_provider_case(8, 3) || !run_provider_case(16, 5) || !run_provider_case(32, 9) || !run_legacy_wrapper_case(1) || !run_legacy_wrapper_case(4) || !run_tensor_case() || !run_tensor_tail_certificate_case(16, 6, "canonical/L_qry") || !run_tensor_tail_certificate_case(32, 9, "canonical/L_qry") || !run_tensor_tail_certificate_case(std::uint64_t(1) << 37, 5, "canonical/Aux") || !run_tensor_tail_certificate_case(8, 8, "canonical/L_qry") || !run_tensor_tail_certificate_case(1, 1, "canonical/Aux") || !run_tensor_zero_interval_case(8, 8, {{2, 6}}) || !run_tensor_zero_interval_case(16, 16, {{0, 4}, {6, 10}, {12, 16}}) || !run_tensor_zero_interval_case(std::uint64_t(1) << 37, 5, {{1, 3}, {4, 5}}) || !run_tensor_zero_interval_case(8, 8, {}) || !run_tensor_zero_interval_case(1, 1, {{0, 1}}) || !run_tensor_zero_interval_case(8, 8, {{2, 6}}, true)) {
         std::cerr << "native masked Hyrax compact opening check failed\n";
         return 1;
     }

@@ -92,10 +92,19 @@ struct NativeGkrMatmulWitness {
     std::function<F(std::uint64_t)> right_value_at;
 };
 
+struct NativeGkrInputSupportInterval {
+    std::uint64_t begin = 0;
+    std::uint64_t end = 0;
+};
+
+using NativeGkrInputSupport = std::array<std::vector<NativeGkrInputSupportInterval>, 4>;
+
 struct NativeGkrInputProvider {
     std::uint64_t full_size = 0;
     std::uint64_t segment_domain = 0;
     std::array<std::uint64_t, 4> logical_lengths{};
+    NativeGkrInputSupport segment_support;
+    bool support_complete = false;
     std::function<F(std::uint64_t)> value_at;
 };
 
@@ -151,6 +160,7 @@ bool verify_masked_gkr_transcript(
     const zkgpt::NativeFieldVector &public_output,
     const std::vector<NativeGkrMatmulShape> &matmuls,
     std::size_t start, std::size_t *end, std::string *reason,
-    NativeGkrInputBinding *input_binding = nullptr);
+    NativeGkrInputBinding *input_binding = nullptr,
+    const NativeGkrInputSupport *input_support = nullptr);
 
 #endif //ZKCNN_CONVVERIFIER_HPP

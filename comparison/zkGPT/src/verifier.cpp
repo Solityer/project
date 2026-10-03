@@ -2043,32 +2043,259 @@ zkgpt::NativeFieldVector masked_equality_weights(const std::vector<F> &point) {
     return weights;
 }
 
+std::array<std::uint64_t, 4> masked_input_source_support_extents(
+    const std::vector<MaskedGkrInputSource> &sources,
+    std::uint64_t input_size, std::uint64_t segment_domain,
+    const std::vector<std::size_t> &logical_lengths) {
+    if (logical_lengths.size() != 4 || segment_domain == 0 ||
+        (segment_domain & (segment_domain - 1)) != 0 ||
+        segment_domain > std::numeric_limits<std::uint64_t>::max() / 4 ||
+        4 * segment_domain != input_size)
+        throw std::invalid_argument(
+            "masked GKR source support layout is invalid");
+
+    std::array<std::uint64_t, 4> extents{};
+    for (const MaskedGkrInputSource &source : sources) {
+        if (source.kind == MaskedGkrInputSource::Kind::LayerU0 ||
+            source.kind == MaskedGkrInputSource::Kind::LayerV0 ||
+            source.kind == MaskedGkrInputSource::Kind::LayerCanonicalCopy) {
+            const zkgpt::NativeVector<u64> *coordinates = nullptr;
+            try {
+                coordinates = &masked_source_input_coordinates(source);
+            } catch (const std::exception &) {
+                throw std::invalid_argument(
+                    "masked GKR direct source support map is missing");
+            }
+            for (const std::uint64_t coordinate : *coordinates) {
+                if (coordinate >= input_size)
+                    throw std::out_of_range(
+                        "masked GKR direct source support exceeds input domain");
+                const std::uint64_t segment = coordinate / segment_domain;
+                const std::uint64_t local = coordinate % segment_domain;
+                if (segment >= extents.size())
+                    throw std::out_of_range(
+                        "masked GKR direct source support segment is invalid");
+                if (local < logical_lengths[static_cast<std::size_t>(segment)])
+                    extents[static_cast<std::size_t>(segment)] = std::max(
+                        extents[static_cast<std::size_t>(segment)], local + 1);
+            }
+            continue;
+        }
+
+        std::string validation_reason;
+        if (!masked_validate_matmul_segment(source.shape, input_size,
+                                            &validation_reason))
+            throw std::invalid_argument(validation_reason.empty()
+                                            ? "masked GKR FCONN source support is invalid"
+                                            : validation_reason);
+        const NativeGkrMatmulShape &shape = source.shape;
+        const bool left = source.kind == MaskedGkrInputSource::Kind::FconnLeft;
+        const std::string &segment_name =
+            left ? shape.lhs_segment : shape.rhs_segment;
+        const std::uint64_t local_begin = left
+            ? static_cast<std::uint64_t>(shape.lhs_segment_offset)
+            : static_cast<std::uint64_t>(shape.rhs_segment_offset);
+        const std::uint64_t span = left
+            ? static_cast<std::uint64_t>(shape.rows) * shape.inner
+            : static_cast<std::uint64_t>(shape.inner) * shape.cols;
+        const std::size_t segment = masked_segment_index(segment_name);
+        if (segment >= extents.size() || local_begin > logical_lengths[segment] ||
+            span > logical_lengths[segment] - local_begin)
+            throw std::out_of_range(
+                "masked GKR FCONN source support exceeds logical segment");
+        extents[segment] = std::max(extents[segment], local_begin + span);
+    }
+    return extents;
+}
+
+struct MaskedInputFoldBlock {
+    std::uint64_t begin = 0;
+    zkgpt::NativeFieldVector values;
+    std::uint64_t end() const { return begin + static_cast<std::uint64_t>(values.size()); }
+};
+
+using MaskedInputFoldBlocks = std::vector<MaskedInputFoldBlock>;
+
+std::vector<NativeGkrInputSupportInterval> masked_pair_support(
+    const std::vector<NativeGkrInputSupportInterval> &support) {
+    std::vector<NativeGkrInputSupportInterval> pairs;
+    pairs.reserve(support.size());
+    for (const NativeGkrInputSupportInterval &interval : support) {
+        if (interval.begin >= interval.end) continue;
+        pairs.push_back({interval.begin / 2, interval.end / 2 + interval.end % 2});
+    }
+    std::vector<NativeGkrInputSupportInterval> merged;
+    merged.reserve(pairs.size());
+    for (const NativeGkrInputSupportInterval &interval : pairs) {
+        if (!merged.empty() && interval.begin <= merged.back().end)
+            merged.back().end = std::max(merged.back().end, interval.end);
+        else
+            merged.push_back(interval);
+    }
+    return merged;
+}
+
+const MaskedInputFoldBlock *masked_find_fold_block(
+    const MaskedInputFoldBlocks &blocks, std::uint64_t index) {
+    const auto found = std::upper_bound(
+        blocks.begin(), blocks.end(), index,
+        [](std::uint64_t coordinate, const MaskedInputFoldBlock &block) {
+            return coordinate < block.begin;
+        });
+    if (found == blocks.begin()) return nullptr;
+    const MaskedInputFoldBlock &candidate = *std::prev(found);
+    return index < candidate.end() ? &candidate : nullptr;
+}
+
+F masked_fold_block_value(const MaskedInputFoldBlocks &blocks,
+                          std::uint64_t index) {
+    const MaskedInputFoldBlock *block = masked_find_fold_block(blocks, index);
+    return block == nullptr ? F_ZERO
+                            : block->values[static_cast<std::size_t>(index - block->begin)];
+}
+
+bool masked_support_contains(
+    const std::vector<NativeGkrInputSupportInterval> &support,
+    std::uint64_t index) {
+    const auto found = std::upper_bound(
+        support.begin(), support.end(), index,
+        [](std::uint64_t coordinate, const NativeGkrInputSupportInterval &interval) {
+            return coordinate < interval.begin;
+        });
+    if (found == support.begin()) return false;
+    const NativeGkrInputSupportInterval &candidate = *std::prev(found);
+    return index >= candidate.begin && index < candidate.end;
+}
+
+template <class ValueAt>
+MaskedInputFoldBlocks masked_fold_blocks(
+    const MaskedInputFoldBlocks &current,
+    const std::vector<NativeGkrInputSupportInterval> &support,
+    std::uint64_t old_domain, const F &challenge, bool materialized,
+    ValueAt value_at) {
+    const std::vector<NativeGkrInputSupportInterval> ranges =
+        masked_pair_support(materialized ? [&]() {
+            std::vector<NativeGkrInputSupportInterval> result;
+            result.reserve(current.size());
+            for (const MaskedInputFoldBlock &block : current)
+                result.push_back({block.begin, block.end()});
+            return result;
+        }() : support);
+    MaskedInputFoldBlocks next;
+    next.reserve(ranges.size());
+    for (const NativeGkrInputSupportInterval &range : ranges) {
+        if (range.begin >= range.end || range.end > old_domain / 2 + old_domain % 2)
+            throw std::logic_error("masked GKR folded support exceeds its active domain");
+        if (range.end - range.begin > std::numeric_limits<std::size_t>::max())
+            throw std::length_error("masked GKR folded support exceeds host storage");
+        MaskedInputFoldBlock block;
+        block.begin = range.begin;
+        block.values.resize(static_cast<std::size_t>(range.end - range.begin));
+        for (std::uint64_t index = range.begin; index < range.end; ++index) {
+            const std::uint64_t even_index = index * 2;
+            const F even = value_at(current, support, even_index, materialized);
+            const F odd = even_index + 1 < old_domain
+                              ? value_at(current, support, even_index + 1, materialized)
+                              : F_ZERO;
+            block.values[static_cast<std::size_t>(index - range.begin)] =
+                even * (F_ONE - challenge) + odd * challenge;
+        }
+        next.push_back(std::move(block));
+    }
+    return next;
+}
+
+bool masked_fold_blocks_in_place(MaskedInputFoldBlocks& blocks,
+                                 std::uint64_t old_domain,
+                                 const F& challenge) {
+    std::vector<NativeGkrInputSupportInterval> support;
+    support.reserve(blocks.size());
+    for (const MaskedInputFoldBlock& block : blocks)
+        support.push_back({block.begin, block.end()});
+    const std::vector<NativeGkrInputSupportInterval> ranges =
+        masked_pair_support(support);
+    if (ranges.size() != blocks.size()) return false;
+    for (std::size_t block_index = 0; block_index < blocks.size(); ++block_index) {
+        MaskedInputFoldBlock& block = blocks[block_index];
+        const std::uint64_t old_begin = block.begin;
+        const std::uint64_t old_end = block.end();
+        const std::uint64_t next_begin = old_begin / 2;
+        const std::uint64_t next_end = old_end / 2 + old_end % 2;
+        if (ranges[block_index].begin != next_begin ||
+            ranges[block_index].end != next_end || old_end > old_domain ||
+            next_end - next_begin > std::numeric_limits<std::size_t>::max())
+            return false;
+    }
+    for (MaskedInputFoldBlock& block : blocks) {
+        const std::uint64_t old_begin = block.begin;
+        const std::uint64_t old_end = block.end();
+        const std::uint64_t next_begin = old_begin / 2;
+        const std::uint64_t next_end = old_end / 2 + old_end % 2;
+        const std::uint64_t next_size = next_end - next_begin;
+        for (std::uint64_t index = 0; index < next_size; ++index) {
+            const std::uint64_t pair = next_begin + index;
+            const std::uint64_t even_coordinate = pair * 2;
+            const std::uint64_t odd_coordinate = even_coordinate + 1;
+            const F even = even_coordinate >= old_begin && even_coordinate < old_end
+                ? block.values[static_cast<std::size_t>(even_coordinate - old_begin)] : F_ZERO;
+            const F odd = odd_coordinate < old_domain && odd_coordinate >= old_begin && odd_coordinate < old_end
+                ? block.values[static_cast<std::size_t>(odd_coordinate - old_begin)] : F_ZERO;
+            block.values[static_cast<std::size_t>(index)] =
+                even * (F_ONE - challenge) + odd * challenge;
+        }
+        block.begin = next_begin;
+        block.values.resize(static_cast<std::size_t>(next_size));
+    }
+    return true;
+}
+
+void masked_validate_input_support(
+    const NativeGkrInputSupport &support,
+    const std::array<std::uint64_t, 4> &logical_lengths,
+    std::uint64_t segment_domain) {
+    for (std::size_t segment = 0; segment < support.size(); ++segment) {
+        std::uint64_t previous_end = 0;
+        for (const NativeGkrInputSupportInterval &interval : support[segment]) {
+            if (interval.begin >= interval.end || interval.end > logical_lengths[segment] ||
+                interval.end > segment_domain || interval.begin < previous_end)
+                throw std::invalid_argument("masked GKR trusted support intervals are invalid");
+            previous_end = interval.end;
+        }
+    }
+}
+
+NativeGkrInputSupport masked_input_default_support(
+    const std::array<std::uint64_t, 4> &logical_lengths) {
+    NativeGkrInputSupport support;
+    for (std::size_t segment = 0; segment < support.size(); ++segment)
+        if (logical_lengths[segment] != 0)
+            support[segment].push_back({0, logical_lengths[segment]});
+    return support;
+}
+
 class MaskedInputWitnessFold {
   public:
     explicit MaskedInputWitnessFold(const NativeGkrInputProvider &provider)
         : segment_domain_(provider.segment_domain),
-          logical_lengths_(provider.logical_lengths), value_at_(provider.value_at) {
+          logical_lengths_(provider.logical_lengths), value_at_(provider.value_at),
+          support_(provider.support_complete ? provider.segment_support :
+                   masked_input_default_support(provider.logical_lengths)) {
         if (provider.full_size == 0 || segment_domain_ == 0 ||
             (segment_domain_ & (segment_domain_ - 1)) != 0 ||
             segment_domain_ > std::numeric_limits<std::uint64_t>::max() / 4 ||
             provider.full_size != 4 * segment_domain_ || !value_at_)
             throw std::invalid_argument("masked GKR witness provider domain is invalid");
-        for (std::size_t segment = 0; segment < folded_lengths_.size(); ++segment) {
-            if (logical_lengths_[segment] > segment_domain_ ||
-                logical_lengths_[segment] >
-                    static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+        for (std::uint64_t length : logical_lengths_)
+            if (length > segment_domain_)
                 throw std::invalid_argument("masked GKR witness segment extent is invalid");
-            folded_lengths_[segment] = logical_lengths_[segment];
-        }
+        masked_validate_input_support(support_, logical_lengths_, segment_domain_);
     }
 
-    std::uint64_t segment_size(std::size_t segment) const {
-        return folded_lengths_.at(segment);
-    }
     F segment_value(std::size_t segment, std::uint64_t index) const {
         if (segment >= segments_.size()) throw std::out_of_range("masked GKR witness segment is invalid");
-        if (index >= folded_lengths_[segment]) return F_ZERO;
-        if (materialized_) return segments_[segment].at(static_cast<std::size_t>(index));
+        if (index >= (segment_domain_ >> local_rounds_)) return F_ZERO;
+        if (materialized_) return masked_fold_block_value(segments_[segment], index);
+        if (!masked_support_contains(support_[segment], index)) return F_ZERO;
         return value_at_(static_cast<std::uint64_t>(segment) * segment_domain_ + index);
     }
     const zkgpt::NativeFieldVector &selectors() const { return selectors_; }
@@ -2082,28 +2309,22 @@ class MaskedInputWitnessFold {
     void fold_round(const F &challenge, std::uint64_t round,
                     std::uint64_t local_bits) {
         if (round < local_bits) {
+            const std::uint64_t old_domain = segment_domain_ >> round;
             for (std::size_t segment = 0; segment < segments_.size(); ++segment) {
-                const std::uint64_t old_size = folded_lengths_[segment];
-                const std::uint64_t next_size = old_size / 2 + (old_size & 1U);
-                if (!materialized_) {
-                    segments_[segment].resize(static_cast<std::size_t>(next_size));
-                    for (std::uint64_t index = 0; index < next_size; ++index) {
-                        const F even = segment_value(segment, index * 2);
-                        const F odd = index * 2 + 1 < old_size ? value_at_(static_cast<std::uint64_t>(segment) * segment_domain_ + index * 2 + 1) : F_ZERO;
-                        segments_[segment][static_cast<std::size_t>(index)] = even * (F_ONE - challenge) + odd * challenge;
-                    }
-                } else {
-                    auto &values = segments_[segment];
-                    for (std::uint64_t index = 0; index < next_size; ++index) {
-                        const F even = values[static_cast<std::size_t>(index * 2)];
-                        const F odd = index * 2 + 1 < old_size ? values[static_cast<std::size_t>(index * 2 + 1)] : F_ZERO;
-                        values[static_cast<std::size_t>(index)] = even * (F_ONE - challenge) + odd * challenge;
-                    }
-                    values.resize(static_cast<std::size_t>(next_size));
-                }
-                folded_lengths_[segment] = next_size;
+                if (!materialized_ || !masked_fold_blocks_in_place(segments_[segment], old_domain, challenge))
+                    segments_[segment] = masked_fold_blocks(
+                        segments_[segment], support_[segment], old_domain,
+                        challenge, materialized_,
+                        [this, segment](const MaskedInputFoldBlocks &current,
+                                        const std::vector<NativeGkrInputSupportInterval> &,
+                                        std::uint64_t index, bool materialized) {
+                            if (materialized) return masked_fold_block_value(current, index);
+                            if (!masked_support_contains(support_[segment], index)) return F_ZERO;
+                            return value_at_(static_cast<std::uint64_t>(segment) * segment_domain_ + index);
+                        });
             }
             materialized_ = true;
+            local_rounds_ = round + 1;
             return;
         }
         if (selectors_.empty() || (selectors_.size() & 1U) != 0)
@@ -2123,21 +2344,25 @@ class MaskedInputWitnessFold {
 
   private:
     std::uint64_t segment_domain_ = 0;
+    std::uint64_t local_rounds_ = 0;
     std::array<std::uint64_t, 4> logical_lengths_{};
-    std::array<std::uint64_t, 4> folded_lengths_{};
     std::function<F(std::uint64_t)> value_at_;
-    std::array<zkgpt::NativeFieldVector, 4> segments_;
+    NativeGkrInputSupport support_;
+    std::array<MaskedInputFoldBlocks, 4> segments_;
     zkgpt::NativeFieldVector selectors_;
     bool materialized_ = false;
 };
 
 class MaskedInputCoefficientOracle {
   public:
-    MaskedInputCoefficientOracle(std::uint64_t input_size,
-                                 std::uint64_t segment_domain,
-                                 const std::vector<std::size_t> &logical_lengths)
+    MaskedInputCoefficientOracle(
+        std::uint64_t input_size, std::uint64_t segment_domain,
+        const std::vector<std::size_t> &logical_lengths,
+        const NativeGkrInputSupport &support,
+        const std::vector<MaskedGkrInputSource> &sources)
         : input_size_(input_size), segment_domain_(segment_domain),
-          logical_lengths_(logical_lengths.begin(), logical_lengths.end()) {
+          logical_lengths_(logical_lengths.begin(), logical_lengths.end()),
+          support_(support) {
         if (logical_lengths.size() != coefficients_.size() || segment_domain_ == 0 ||
             (segment_domain_ & (segment_domain_ - 1)) != 0 ||
             segment_domain_ > std::numeric_limits<std::uint64_t>::max() / 4 ||
@@ -2146,30 +2371,57 @@ class MaskedInputCoefficientOracle {
         local_bits_ = 0;
         for (std::uint64_t size = segment_domain_; size > 1; size >>= 1)
             ++local_bits_;
+        masked_validate_input_support(support_, support_logical_lengths(logical_lengths), segment_domain_);
+        const std::array<std::uint64_t, 4> source_extents =
+            masked_input_source_support_extents(sources, input_size_, segment_domain_, logical_lengths);
         for (std::size_t segment = 0; segment < coefficients_.size(); ++segment) {
-            if (logical_lengths_[segment] > segment_domain_)
-                throw std::invalid_argument("masked GKR input coefficient logical extent exceeds its segment");
-            coefficients_[segment].assign(
-                logical_lengths_[segment], F_ZERO);
+            if (source_extents[segment] > logical_lengths_[segment])
+                throw std::invalid_argument("masked GKR input coefficient source extent exceeds its segment");
+            if (segment != 3) {
+                if (source_extents[segment] != 0)
+                    coefficients_[segment].push_back(make_zero_block(0, source_extents[segment]));
+                continue;
+            }
+            for (const NativeGkrInputSupportInterval &interval : support_[segment]) {
+                if (interval.begin >= source_extents[segment]) continue;
+                if (!power_of_two_interval(interval.begin, interval.end))
+                    throw std::invalid_argument("masked GKR L_qry coefficient support is not a canonical padded query block");
+                coefficients_[segment].push_back(make_zero_block(interval.begin, interval.end));
+            }
         }
         selector_coefficients_.assign(4, F_ZERO);
     }
 
     std::uint64_t size() const { return input_size_; }
     std::uint64_t segment_domain() const { return segment_domain_; }
-    const std::vector<std::size_t> &logical_lengths() const {
-        return logical_lengths_;
-    }
+    const std::vector<std::size_t> &logical_lengths() const { return logical_lengths_; }
 
-    void add(std::uint64_t coordinate, const F &value) {
-        if (coordinate >= input_size_)
-            throw std::out_of_range("masked GKR coefficient coordinate exceeds the canonical input");
+    bool add(std::uint64_t coordinate, const F &value, std::string *reason) {
+        if (coordinate >= input_size_) {
+            masked_set_reason(reason, "masked GKR source coefficient exceeds the canonical input domain");
+            return false;
+        }
         const std::uint64_t segment = coordinate / segment_domain_;
         const std::uint64_t local = coordinate % segment_domain_;
-        if (segment >= coefficients_.size())
-            throw std::out_of_range("masked GKR coefficient segment is invalid");
-        if (local < logical_lengths_[static_cast<std::size_t>(segment)])
-            coefficients_[static_cast<std::size_t>(segment)][static_cast<std::size_t>(local)] += value;
+        if (segment >= coefficients_.size()) {
+            masked_set_reason(reason, "masked GKR source coefficient segment is invalid");
+            return false;
+        }
+        if (local >= logical_lengths_[static_cast<std::size_t>(segment)]) {
+            masked_set_reason(reason, "masked GKR source coefficient lands in canonical zero padding");
+            return false;
+        }
+        if (!masked_support_contains(support_[static_cast<std::size_t>(segment)], local)) {
+            masked_set_reason(reason, "masked GKR source coefficient falls outside its trusted live support interval");
+            return false;
+        }
+        MaskedInputFoldBlock *block = find_block(coefficients_[static_cast<std::size_t>(segment)], local);
+        if (block == nullptr) {
+            masked_set_reason(reason, "masked GKR source coefficient has no allocated trusted support block");
+            return false;
+        }
+        block->values[static_cast<std::size_t>(local - block->begin)] += value;
+        return true;
     }
 
     F value_at(std::uint64_t coordinate) const {
@@ -2177,22 +2429,22 @@ class MaskedInputCoefficientOracle {
             throw std::out_of_range("masked GKR coefficient query exceeds the canonical input");
         const std::uint64_t segment = coordinate / segment_domain_;
         const std::uint64_t local = coordinate % segment_domain_;
-        if (segment >= coefficients_.size() ||
-            local >= coefficients_[static_cast<std::size_t>(segment)].size())
-            return F_ZERO;
-        return coefficients_[static_cast<std::size_t>(segment)][static_cast<std::size_t>(local)];
+        if (segment >= coefficients_.size()) return F_ZERO;
+        return masked_fold_block_value(coefficients_[static_cast<std::size_t>(segment)], local);
     }
 
     F evaluate_mle(const std::vector<F> &point) const {
         if (point.size() != static_cast<std::size_t>(local_bits_ + 2))
             throw std::invalid_argument("masked GKR coefficient point has the wrong dimension");
-        std::vector<F> segment_values(coefficients_.size(), F_ZERO);
-        const std::vector<F> local_point(point.begin(), point.begin() + local_bits_);
-        for (std::size_t segment = 0; segment < coefficients_.size(); ++segment) {
-            if (!coefficients_[segment].empty())
-                segment_values[segment] = zkgpt::native_mle_evaluate(
-                    coefficients_[segment], local_point);
+        if (!folded_challenges_.empty()) {
+            if (folded_challenges_ != point || folded_challenges_.size() != input_rounds())
+                throw std::logic_error("masked GKR folded coefficient MLE requested at another point");
+            return terminal_value();
         }
+        std::array<F, 4> segment_values{};
+        const std::vector<F> local_point(point.begin(), point.begin() + static_cast<std::ptrdiff_t>(local_bits_));
+        for (std::size_t segment = 0; segment < coefficients_.size(); ++segment)
+            segment_values[segment] = evaluate_blocks_mle(coefficients_[segment], local_point);
         const F s2 = point[local_bits_];
         const F s1 = point[local_bits_ + 1];
         const F low = segment_values[0] * (F_ONE - s2) + segment_values[1] * s2;
@@ -2203,8 +2455,7 @@ class MaskedInputCoefficientOracle {
     void round_sums(const MaskedInputWitnessFold &witness,
                     std::uint64_t active, std::uint64_t round, F &even_sum,
                     F &odd_sum, F &at_two_sum) const {
-        if (active == 0 || (active & (active - 1)) != 0 ||
-            round >= input_rounds())
+        if (active == 0 || (active & (active - 1)) != 0 || round >= input_rounds())
             throw std::invalid_argument("masked GKR coefficient round domain is invalid");
         even_sum = F_ZERO;
         odd_sum = F_ZERO;
@@ -2214,88 +2465,75 @@ class MaskedInputCoefficientOracle {
             if (local_domain < 2 || active != 4 * local_domain)
                 throw std::logic_error("masked GKR local coefficient fold is inconsistent");
             for (std::size_t segment = 0; segment < coefficients_.size(); ++segment) {
-                const auto &values = coefficients_[segment];
-                const std::uint64_t witness_size = witness.segment_size(segment);
-                const std::uint64_t coefficient_size = static_cast<std::uint64_t>(values.size());
-                const std::uint64_t pair_count = std::max(coefficient_size, witness_size) / 2 + (std::max(coefficient_size, witness_size) & 1U);
-                for (std::uint64_t pair = 0; pair < pair_count; ++pair) {
-                    const std::uint64_t even_index = pair * 2;
-                    const std::uint64_t odd_index = even_index + 1;
-                    const F public_even = even_index < coefficient_size ? values[static_cast<std::size_t>(even_index)] : F_ZERO;
-                    const F public_odd = odd_index < coefficient_size ? values[static_cast<std::size_t>(odd_index)] : F_ZERO;
-                    const F witness_even = witness.segment_value(segment, even_index);
-                    const F witness_odd = witness.segment_value(segment, odd_index);
-                    even_sum += public_even * witness_even;
-                    odd_sum += public_odd * witness_odd;
-                    at_two_sum += (F(2) * public_odd - public_even) *
-                                  (F(2) * witness_odd - witness_even);
-                }
+                std::vector<NativeGkrInputSupportInterval> ranges;
+                ranges.reserve(coefficients_[segment].size());
+                for (const MaskedInputFoldBlock &block : coefficients_[segment])
+                    ranges.push_back({block.begin, block.end()});
+                for (const NativeGkrInputSupportInterval &pairs : masked_pair_support(ranges))
+                    for (std::uint64_t pair = pairs.begin; pair < pairs.end; ++pair) {
+                        const std::uint64_t even_index = pair * 2;
+                        const std::uint64_t odd_index = even_index + 1;
+                        const F public_even = value_at(segment, even_index);
+                        const F public_odd = value_at(segment, odd_index);
+                        const F witness_even = witness.segment_value(segment, even_index);
+                        const F witness_odd = witness.segment_value(segment, odd_index);
+                        even_sum += public_even * witness_even;
+                        odd_sum += public_odd * witness_odd;
+                        at_two_sum += (F(2) * public_odd - public_even) * (F(2) * witness_odd - witness_even);
+                    }
             }
             return;
         }
-        if (active != selector_coefficients_.size() ||
-            active != (std::uint64_t(4) >> (round - local_bits_)))
+        if (active != selector_coefficients_.size() || active != (std::uint64_t(4) >> (round - local_bits_)))
             throw std::logic_error("masked GKR selector coefficient fold is inconsistent");
         const auto &selector_values = witness.selectors();
         if (selector_values.size() != active)
             throw std::logic_error("masked GKR selector witness fold has the wrong dimension");
         for (std::uint64_t index = 0; index < active; ++index) {
-            const F product = selector_coefficients_[static_cast<std::size_t>(index)] *
-                              selector_values[static_cast<std::size_t>(index)];
-            if (index & 1U) odd_sum += product;
-            else even_sum += product;
+            const F product = selector_coefficients_[static_cast<std::size_t>(index)] * selector_values[static_cast<std::size_t>(index)];
+            if (index & 1U) odd_sum += product; else even_sum += product;
         }
         for (std::uint64_t index = 0; index < active; index += 2) {
-            const F public_slope =
-                F(2) * selector_coefficients_[static_cast<std::size_t>(index + 1)] -
-                selector_coefficients_[static_cast<std::size_t>(index)];
-            const F witness_slope = F(2) * selector_values[static_cast<std::size_t>(index + 1)] -
-                                    selector_values[static_cast<std::size_t>(index)];
+            const F public_slope = F(2) * selector_coefficients_[static_cast<std::size_t>(index + 1)] - selector_coefficients_[static_cast<std::size_t>(index)];
+            const F witness_slope = F(2) * selector_values[static_cast<std::size_t>(index + 1)] - witness.selectors()[static_cast<std::size_t>(index)];
             at_two_sum += public_slope * witness_slope;
         }
     }
 
     void fold_round(const F &challenge, std::uint64_t active,
-                    std::uint64_t round,
-                    MaskedInputWitnessFold &witness) {
-        if (active < 2 || (active & 1U) != 0 ||
-            round >= input_rounds())
+                    std::uint64_t round, MaskedInputWitnessFold &witness) {
+        if (active < 2 || (active & 1U) != 0 || round >= input_rounds())
             throw std::invalid_argument("masked GKR coefficient fold domain is invalid");
+        folded_challenges_.push_back(challenge);
         if (round < local_bits_) {
-            for (auto &values : coefficients_) {
-                const std::size_t next_size = (values.size() + 1) / 2;
-                for (std::size_t index = 0; index < next_size; ++index) {
-                    const F even = values[index * 2];
-                    const F odd = index * 2 + 1 < values.size()
-                                      ? values[index * 2 + 1]
-                                      : F_ZERO;
-                    values[index] = even * (F_ONE - challenge) + odd * challenge;
-                }
-                values.resize(next_size);
-            }
+            const std::uint64_t old_domain = segment_domain_ >> round;
+            for (std::size_t segment = 0; segment < coefficients_.size(); ++segment)
+                if (!masked_fold_blocks_in_place(coefficients_[segment], old_domain, challenge))
+                    coefficients_[segment] = masked_fold_blocks(
+                        coefficients_[segment], support_[segment], old_domain,
+                        challenge, true,
+                        [](const MaskedInputFoldBlocks &current,
+                           const std::vector<NativeGkrInputSupportInterval> &,
+                           std::uint64_t index, bool) {
+                            return masked_fold_block_value(current, index);
+                        });
             witness.fold_round(challenge, round, local_bits_);
         } else {
             if (active != selector_coefficients_.size())
                 throw std::logic_error("masked GKR selector fold size mismatch");
             const std::size_t selector_half = selector_coefficients_.size() / 2;
             for (std::size_t index = 0; index < selector_half; ++index)
-                selector_coefficients_[index] =
-                    selector_coefficients_[index * 2] * (F_ONE - challenge) +
-                    selector_coefficients_[index * 2 + 1] * challenge;
+                selector_coefficients_[index] = selector_coefficients_[index * 2] * (F_ONE - challenge) + selector_coefficients_[index * 2 + 1] * challenge;
             selector_coefficients_.resize(selector_half);
             witness.fold_round(challenge, round, local_bits_);
         }
     }
 
-    void begin_selector_fold(std::uint64_t active,
-                             MaskedInputWitnessFold &witness) {
-        if (active != 4 || selector_coefficients_.size() != 4 ||
-            local_bits_ >= input_rounds())
+    void begin_selector_fold(std::uint64_t active, MaskedInputWitnessFold &witness) {
+        if (active != 4 || selector_coefficients_.size() != 4 || local_bits_ >= input_rounds())
             throw std::logic_error("masked GKR selector fold cannot begin");
         for (std::size_t segment = 0; segment < coefficients_.size(); ++segment)
-            selector_coefficients_[segment] = coefficients_[segment].empty()
-                                                   ? F_ZERO
-                                                   : coefficients_[segment].front();
+            selector_coefficients_[segment] = value_at(segment, 0);
         witness.begin_selector_fold();
     }
 
@@ -2307,12 +2545,61 @@ class MaskedInputCoefficientOracle {
     }
 
   private:
+    static std::array<std::uint64_t, 4> support_logical_lengths(const std::vector<std::size_t> &lengths) {
+        if (lengths.size() != 4) throw std::invalid_argument("masked GKR logical segment count is invalid");
+        return {{static_cast<std::uint64_t>(lengths[0]), static_cast<std::uint64_t>(lengths[1]),
+                 static_cast<std::uint64_t>(lengths[2]), static_cast<std::uint64_t>(lengths[3])}};
+    }
+
+    static MaskedInputFoldBlock *find_block(MaskedInputFoldBlocks &blocks, std::uint64_t index) {
+        return const_cast<MaskedInputFoldBlock *>(masked_find_fold_block(blocks, index));
+    }
+
+    static bool power_of_two_interval(std::uint64_t begin, std::uint64_t end) {
+        const std::uint64_t length = end - begin;
+        return length != 0 && (length & (length - 1)) == 0 && begin % length == 0;
+    }
+
+    static MaskedInputFoldBlock make_zero_block(std::uint64_t begin, std::uint64_t end) {
+        if (begin >= end || end - begin > std::numeric_limits<std::size_t>::max())
+            throw std::length_error("masked GKR coefficient support exceeds host storage");
+        MaskedInputFoldBlock block;
+        block.begin = begin;
+        block.values.assign(static_cast<std::size_t>(end - begin), F_ZERO);
+        return block;
+    }
+
+    static F evaluate_blocks_mle(const MaskedInputFoldBlocks &blocks,
+                                 const std::vector<F> &point) {
+        F total = F_ZERO;
+        for (const MaskedInputFoldBlock &block : blocks) {
+            if (block.begin == 0) {
+                total += zkgpt::native_mle_evaluate(block.values, point);
+                continue;
+            }
+            const std::uint64_t length = static_cast<std::uint64_t>(block.values.size());
+            if (length == 0 || (length & (length - 1)) != 0 || block.begin % length != 0)
+                throw std::logic_error("masked GKR nonzero support block is not aligned for MLE evaluation");
+            std::size_t low_bits = 0;
+            for (std::uint64_t size = length; size > 1; size >>= 1) ++low_bits;
+            if (low_bits > point.size()) throw std::logic_error("masked GKR support block exceeds MLE point");
+            const std::vector<F> low_point(point.begin(), point.begin() + static_cast<std::ptrdiff_t>(low_bits));
+            F high = F_ONE;
+            for (std::size_t bit = low_bits; bit < point.size(); ++bit)
+                high *= ((block.begin >> bit) & 1U) ? point[bit] : F_ONE - point[bit];
+            total += high * zkgpt::native_mle_evaluate(block.values, low_point);
+        }
+        return total;
+    }
+
     std::uint64_t input_size_ = 0;
     std::uint64_t segment_domain_ = 0;
     std::uint64_t local_bits_ = 0;
     std::vector<std::size_t> logical_lengths_;
-    std::array<zkgpt::NativeFieldVector, 4> coefficients_;
+    NativeGkrInputSupport support_;
+    std::array<MaskedInputFoldBlocks, 4> coefficients_;
     zkgpt::NativeFieldVector selector_coefficients_;
+    std::vector<F> folded_challenges_;
 };
 
 std::shared_ptr<const NativeMaskedPublicProvider>
@@ -2352,11 +2639,14 @@ bool masked_add_input_source_weights(
         }
         bool valid = true;
         zkgpt::native_for_each_equality_weight(source.point, coordinates->size(), [&](std::size_t index, const F& weight) {
-            const std::size_t coordinate = coordinates->at(index);
+            const std::uint64_t coordinate = coordinates->at(index);
             if (coordinate >= coefficients.size()) { valid = false; return; }
-            coefficients.add(coordinate, rho * weight);
+            if (!coefficients.add(coordinate, rho * weight, reason)) valid = false;
         });
-        if (!valid) { masked_set_reason(reason, "masked GKR direct input source coordinate/segment is invalid"); return false; }
+        if (!valid) {
+            if (reason == nullptr || reason->empty()) masked_set_reason(reason, "masked GKR direct input source coordinate/segment is invalid");
+            return false;
+        }
         return true;
     }
 
@@ -2385,8 +2675,9 @@ bool masked_add_input_source_weights(
                                       "masked FCONN LHS coordinate is out of range");
                     return false;
                 }
-                coefficients.add(coordinate,
-                                 rho * outer_weights[row] * inner_weights[term]);
+                if (!coefficients.add(coordinate,
+                                      rho * outer_weights[row] * inner_weights[term], reason))
+                    return false;
             }
         return true;
     }
@@ -2404,8 +2695,9 @@ bool masked_add_input_source_weights(
                                   "masked FCONN RHS coordinate is out of range");
                 return false;
             }
-            coefficients.add(coordinate,
-                             rho * inner_weights[term] * outer_weights[col]);
+            if (!coefficients.add(coordinate,
+                                  rho * inner_weights[term] * outer_weights[col], reason))
+                return false;
         }
     return true;
 }
@@ -3765,6 +4057,7 @@ bool prove_masked_gkr_transcript(
             masked_gkr_progress("layer=" + std::to_string(layer_id) +
                                 " end");
         }
+        native_prover.release_sumcheck_storage();
         if (next_matmul != 0)
             throw std::runtime_error("masked GKR FCONN descriptor was not consumed");
         if (input_sources.empty())
@@ -3783,8 +4076,12 @@ bool prove_masked_gkr_transcript(
                        masked_input_source_ledger(input_sources, input_size,
                                                   input_segment_domain,
                                                   input_segment_logical_lengths));
+        const NativeGkrInputSupport input_support = input_provider->support_complete
+            ? input_provider->segment_support
+            : masked_input_default_support(input_provider->logical_lengths);
         auto input_coefficients = std::make_shared<MaskedInputCoefficientOracle>(
-            input_size, input_segment_domain, input_segment_logical_lengths);
+            input_size, input_segment_domain, input_segment_logical_lengths,
+            input_support, input_sources);
         std::vector<F> source_rhos;
         std::vector<ScalarOpening> source_masked_openings;
         std::vector<ScalarOpening> source_unmasked_openings;
@@ -3889,7 +4186,8 @@ bool verify_masked_gkr_transcript(
     const zkgpt::NativeFieldVector &public_output,
     const std::vector<NativeGkrMatmulShape> &matmuls,
     std::size_t start, std::size_t *end, std::string *reason,
-    NativeGkrInputBinding *input_binding) {
+    NativeGkrInputBinding *input_binding,
+    const NativeGkrInputSupport *input_support) {
     try {
         if (!session.valid(reason) || !session.replay(reason) ||
             !masked_validate_circuit(circuit, public_output, reason))
@@ -4443,8 +4741,16 @@ bool verify_masked_gkr_transcript(
                               "masked GKR canonical input source ledger mismatch");
             return false;
         }
+        const NativeGkrInputSupport trusted_input_support = input_support == nullptr
+            ? masked_input_default_support({{
+                  static_cast<std::uint64_t>(input_segment_logical_lengths[0]),
+                  static_cast<std::uint64_t>(input_segment_logical_lengths[1]),
+                  static_cast<std::uint64_t>(input_segment_logical_lengths[2]),
+                  static_cast<std::uint64_t>(input_segment_logical_lengths[3])}})
+            : *input_support;
         auto input_coefficients = std::make_shared<MaskedInputCoefficientOracle>(
-            input_size, input_segment_domain, input_segment_logical_lengths);
+            input_size, input_segment_domain, input_segment_logical_lengths,
+            trusted_input_support, input_sources);
         std::vector<F> source_rhos;
         std::vector<ScalarCommitment> source_masked_commitments;
         std::vector<ScalarCommitment> source_unmasked_commitments;

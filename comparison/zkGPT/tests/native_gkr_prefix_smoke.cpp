@@ -95,6 +95,11 @@ void virtual_37_bit_domain() {
         mult[index] = linear_poly(F(static_cast<int>(index + 4)));
         values[index] = linear_poly(F(static_cast<int>(index * 2 + 1)));
     }
+    std::vector<linear_poly> reference_mult(logical), reference_values(logical);
+    for (std::uint64_t index = 0; index < logical; ++index) {
+        reference_mult[index] = linear_poly(F(static_cast<int>(index + 4)));
+        reference_values[index] = linear_poly(F(static_cast<int>(index * 2 + 1)));
+    }
     F claim = F_ZERO;
     for (std::uint64_t index = 0; index < logical; ++index)
         claim += mult[index].b * values[index].b;
@@ -107,10 +112,33 @@ void virtual_37_bit_domain() {
             zkgpt::native_gkr::fold_prefix_product_round(
                 mult, values, folded_mult, folded_values, active_extent,
                 previous_random);
+        quadratic_poly dense_reference;
+        dense_reference.clear();
+        const std::uint64_t reference_fold_extent = reference_mult.size() / 2 + reference_mult.size() % 2;
+        for (std::uint64_t pair = 0; pair < reference_fold_extent; ++pair) {
+            const std::uint64_t even = pair * 2, odd = even + 1;
+            const F mult_zero = reference_mult[even].eval(previous_random);
+            const F mult_one = odd < reference_mult.size() ? reference_mult[odd].eval(previous_random) : F_ZERO;
+            const F value_zero = reference_values[even].eval(previous_random);
+            const F value_one = odd < reference_values.size() ? reference_values[odd].eval(previous_random) : F_ZERO;
+            dense_reference = dense_reference + linear_poly(mult_one - mult_zero, mult_zero) * linear_poly(value_one - value_zero, value_zero);
+        }
+        require_equal(polynomial, dense_reference, "37-bit virtual fold differs from independent dense-support reference");
         require(polynomial.eval(F_ZERO) + polynomial.eval(F_ONE) == claim,
                 "37-round prefix fold changed the sumcheck claim");
         const F challenge(round + 3);
         claim = polynomial.eval(challenge);
+        for (std::uint64_t pair = 0; pair < reference_fold_extent; ++pair) {
+            const std::uint64_t even = pair * 2, odd = even + 1;
+            const F mult_zero = reference_mult[even].eval(previous_random);
+            const F mult_one = odd < reference_mult.size() ? reference_mult[odd].eval(previous_random) : F_ZERO;
+            const F value_zero = reference_values[even].eval(previous_random);
+            const F value_one = odd < reference_values.size() ? reference_values[odd].eval(previous_random) : F_ZERO;
+            reference_mult[pair] = linear_poly(mult_one - mult_zero, mult_zero);
+            reference_values[pair] = linear_poly(value_one - value_zero, value_zero);
+        }
+        reference_mult.resize(static_cast<std::size_t>(reference_fold_extent));
+        reference_values.resize(static_cast<std::size_t>(reference_fold_extent));
         previous_random = challenge;
         mult.swap(folded_mult);
         values.swap(folded_values);
@@ -121,6 +149,16 @@ void virtual_37_bit_domain() {
             "37-bit prefix fold stopped before the original terminal round");
     require(mult[0].eval(previous_random) * values[0].eval(previous_random) == claim,
             "37-bit prefix fold terminal differs from the challenged claim");
+    require(reference_mult[0].eval(previous_random) * reference_values[0].eval(previous_random) == claim,
+            "37-bit virtual terminal differs from independent dense-support reference");
+}
+
+void empty_lane_zero_terminal() {
+    zkgpt::NativeVector<linear_poly> mult, values, folded_mult, folded_values;
+    quadratic_poly polynomial = zkgpt::native_gkr::fold_prefix_product_round(mult, values, folded_mult, folded_values, 0, F(7));
+    require(polynomial.eval(F_ZERO).isZero() && polynomial.eval(F_ONE).isZero(), "empty lane contributed to a sumcheck round");
+    require(folded_mult.size() == 1 && folded_values.size() == 1, "empty lane lacks its zero terminal slot");
+    require(folded_mult[0].eval(F(11)).isZero() && folded_values[0].eval(F(13)).isZero(), "empty lane terminal slot is nonzero");
 }
 
 } // namespace
@@ -129,5 +167,6 @@ int main() {
     initPairing(mcl::BN_SNARK1);
     dense_round_equivalence();
     virtual_37_bit_domain();
-    std::cout << "NATIVE_GKR_PREFIX_OK rounds=37 logical=3 full_domain=2^37\n";
+    empty_lane_zero_terminal();
+    std::cout << "NATIVE_GKR_PREFIX_OK rounds=37 logical=3 full_domain=2^37 Fr_bytes=" << sizeof(F) << " linear_poly_bytes=" << sizeof(linear_poly) << "\n";
 }

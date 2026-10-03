@@ -129,6 +129,12 @@ struct HyraxTensorMleProverState
     std::vector<Fr> row_blindings;
 };
 
+struct HyraxTensorZeroInterval
+{
+    std::uint64_t begin = 0;
+    std::uint64_t end = 0;
+};
+
 struct ChunkedMleChunkWire
 {
     std::uint64_t offset = 0;
@@ -191,6 +197,15 @@ struct MaskedMleOpening
     zkgpt::native_pedersen::ScalarOpening masked_evaluation_opening;
 };
 
+struct HyraxTensorZeroIntervalCertificate
+{
+    std::uint64_t begin = 0;
+    std::uint64_t end = 0;
+    std::vector<Fr> beta;
+    std::vector<Fr> sumcheck_challenges;
+    std::vector<Fr> full_terminal_point;
+};
+
 struct PedersenMleCommitment
 {
     G1 commitment;
@@ -203,8 +218,10 @@ bool commit_hyrax_tensor_mle(const HyraxTensorMleView &view, const HyraxScalarPr
 bool open_hyrax_tensor_mle_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason = nullptr, const std::string &mask_identity = "", const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
 bool open_hyrax_tensor_mle_with_claim(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, const Fr &masked_evaluation, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason = nullptr, const std::string &mask_identity = "", const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
 bool verify_hyrax_tensor_mle_opening_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const std::vector<Fr> &full_point, const G1 &evaluation_mask_commitment, const Fr &masked_evaluation, const NativeProofSession &session, const std::string &label, std::string *reason = nullptr, bool allow_trailing_unrelated = false, const std::string &mask_identity = "", const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr, const zkgpt::native_pedersen::ScalarCommitment *expected_raw_evaluation_commitment = nullptr, const zkgpt::native_pedersen::ScalarCommitment *expected_masked_evaluation_commitment = nullptr);
-bool prove_hyrax_tensor_zero_tail_certificate_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const HyraxScalarProvider &values, NativeProofSession &session, std::size_t &exact_position, const zkgpt::native_pedersen::PedersenBasis &scalar_basis, std::vector<Fr> &beta, std::vector<Fr> &full_terminal_point, ::NativeMaskedSumcheckResult &sumcheck_result, MaskedMleOpening &terminal_opening, std::string *reason = nullptr);
+bool prove_hyrax_tensor_zero_tail_certificate_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const HyraxScalarProvider &values, NativeProofSession &session, std::size_t &exact_position, const zkgpt::native_pedersen::PedersenBasis &scalar_basis, std::vector<Fr> &beta, std::vector<Fr> &full_terminal_point, ::NativeMaskedSumcheckResult &sumcheck_result, MaskedMleOpening &terminal_opening, std::string *reason = nullptr, std::vector<std::vector<Fr>> *unmasked_round_trace = nullptr);
 bool verify_hyrax_tensor_zero_tail_certificate_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const NativeProofSession &session, std::size_t &exact_position, const zkgpt::native_pedersen::PedersenBasis &scalar_basis, std::vector<Fr> &beta, std::vector<Fr> &full_terminal_point, ::NativeMaskedSumcheckResult &sumcheck_result, std::string *reason = nullptr);
+bool prove_hyrax_tensor_zero_interval_certificates_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const HyraxScalarProvider &values, const std::vector<HyraxTensorZeroInterval> &trusted_intervals, NativeProofSession &session, std::size_t &exact_position, const zkgpt::native_pedersen::PedersenBasis &scalar_basis, std::vector<HyraxTensorZeroIntervalCertificate> &certificates, std::string *reason = nullptr, std::vector<std::vector<std::vector<Fr>>> *unmasked_round_traces = nullptr);
+bool verify_hyrax_tensor_zero_interval_certificates_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const std::vector<HyraxTensorZeroInterval> &trusted_intervals, const NativeProofSession &session, std::size_t &exact_position, const zkgpt::native_pedersen::PedersenBasis &scalar_basis, std::vector<HyraxTensorZeroIntervalCertificate> &certificates, std::string *reason = nullptr);
 
 G1 derive_pedersen_blinding_generator(const std::string &basis_id);
 G1 derive_pedersen_evaluation_generator(const std::string &basis_id, const std::string &label);

@@ -472,7 +472,12 @@ struct GatProofArtifact {
     bool valid_wire(std::string* reason = nullptr, const NativeProofSession* authenticated_session = nullptr) const;
     bool native_session(NativeProofSession& out, std::string* reason = nullptr) const;
     bool write(const std::string& path, std::string* reason = nullptr) const;
+    bool write(const std::string& path, std::uint64_t max_wire_bytes,
+               std::string* reason = nullptr) const;
     static bool read(const std::string& path, GatProofArtifact& out, std::string* reason = nullptr);
+    static bool read(const std::string& path, GatProofArtifact& out,
+                     std::uint64_t max_wire_bytes,
+                     std::string* reason = nullptr);
 };
 
 struct VerifierContext {
@@ -505,6 +510,8 @@ VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public
                                       const std::string& privacy_profile = "masked_full");
 
 std::string verifier_context_digest(const VerifierContext& context);
+std::uint64_t gat_proof_artifact_wire_limit(const VerifierContext& context,
+                                            std::string* reason = nullptr);
 
 std::size_t compact_plan_recipe_bytes(const GatCircuitPlan& plan);
 std::size_t verifier_context_payload_bytes(const VerifierContext& context);

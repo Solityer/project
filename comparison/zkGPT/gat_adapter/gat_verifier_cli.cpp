@@ -266,6 +266,19 @@ int main(int argc, char** argv) {
             return 1;
         }
         const std::string statement_digest = zkgpt::gat::verifier_context_digest(context);
+        std::string artifact_limit_reason;
+        const std::uint64_t artifact_wire_limit =
+            zkgpt::gat::gat_proof_artifact_wire_limit(context,
+                                                       &artifact_limit_reason);
+        if (artifact_wire_limit == 0) {
+            const std::string report = report_json(
+                "REJECTED", artifact_limit_reason, statement_digest,
+                context_rel, logits_rel, artifact_rel, artifact_path, &context,
+                nullptr);
+            write_report(options.report, report);
+            std::cout << report;
+            return 1;
+        }
 
         const Tensor2D external_logits = parse_public_logits(read_text(logits_path, "public logits"), context.public_logits);
         if (external_logits.rows != context.public_logits.rows || external_logits.cols != context.public_logits.cols ||
@@ -280,7 +293,8 @@ int main(int argc, char** argv) {
         std::unique_ptr<GatProofArtifact> artifact_storage(new GatProofArtifact());
         GatProofArtifact& artifact = *artifact_storage;
         std::string artifact_reason;
-        if (!GatProofArtifact::read(artifact_path, artifact, &artifact_reason)) {
+        if (!GatProofArtifact::read(artifact_path, artifact, artifact_wire_limit,
+                                    &artifact_reason)) {
             const std::string report =
                 report_json("REJECTED", artifact_reason, statement_digest, context_rel, logits_rel, artifact_rel, artifact_path, &context, nullptr);
             write_report(options.report, report);

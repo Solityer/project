@@ -808,6 +808,11 @@ int main(int argc, char** argv) {
         record.prover_secret_path = run_rel + "/com_W.prover.secret";
 
         VerifierContext context = make_verifier_context(graph, features, quant, tables, forward.logits, registration, plan, record.privacy_profile);
+        std::string artifact_limit_reason;
+        const std::uint64_t artifact_wire_limit =
+            gat_proof_artifact_wire_limit(context, &artifact_limit_reason);
+        if (artifact_wire_limit == 0)
+            throw std::runtime_error("trusted proof artifact capacity is unavailable: " + artifact_limit_reason);
 
         context.backend = options.backend;
         context.full_dataset_identity = record.full_dataset_identity;
@@ -841,9 +846,12 @@ int main(int argc, char** argv) {
         const std::string artifact_file = run_dir + "/proof.artifact";
         const auto serialize_begin = Clock::now();
         std::string artifact_reason;
-        if (!proved.artifact.write(artifact_file, &artifact_reason)) throw std::runtime_error("proof artifact serialization failed: " + artifact_reason);
+        if (!proved.artifact.write(artifact_file, artifact_wire_limit,
+                                   &artifact_reason))
+            throw std::runtime_error("proof artifact serialization failed: " + artifact_reason);
         GatProofArtifact artifact;
-        if (!GatProofArtifact::read(artifact_file, artifact, &artifact_reason))
+        if (!GatProofArtifact::read(artifact_file, artifact, artifact_wire_limit,
+                                    &artifact_reason))
             throw std::runtime_error("serialized proof artifact cannot be read: " + artifact_reason);
         record.serialize_ms = elapsed_ms(serialize_begin, Clock::now());
         record.artifact_path = run_rel + "/proof.artifact";

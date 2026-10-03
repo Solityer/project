@@ -286,12 +286,13 @@ bool validate_public_family(const NativeLassoFamilyPublic& family, std::string* 
 }
 
 bool validate_prover_family(const NativeLassoFamilyProver& family, std::string* reason) {
-    if (!validate_public_family(family, reason) || family.selected_table_rows.size() != family.padded_queries) {
+    if (!validate_public_family(family, reason) || (!family.selected_table_row_at && family.selected_table_rows.size() != family.padded_queries) ||
+        (family.selected_table_row_at && !family.selected_table_rows.empty())) {
         set_reason(reason, "native Lasso prover witness dimensions are invalid");
         return false;
     }
     for (std::size_t row = 0; row < family.padded_queries; ++row) {
-        const std::uint64_t selected = family.selected_table_rows[row];
+        const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(row) : family.selected_table_rows[row];
         if (selected >= family.table.size() || (!family.queries.empty() && family.queries.size() != family.padded_queries) ||
             (!family.queries.empty() && family.queries[row] != family.table[selected])) {
             set_reason(reason, "native Lasso selected table row is invalid");
@@ -307,7 +308,8 @@ bool validate_prover_family(const NativeLassoFamilyProver& family, std::string* 
 
 F selected_query_value(const NativeLassoFamilyProver& family, std::uint64_t row) {
     if (row >= family.padded_queries) throw std::out_of_range("native Lasso selected query row is out of range");
-    return family.table[static_cast<std::size_t>(family.selected_table_rows[static_cast<std::size_t>(row)])];
+    const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(row) : family.selected_table_rows[static_cast<std::size_t>(row)];
+    return family.table[static_cast<std::size_t>(selected)];
 }
 
 bool validate_query(const NativeLassoQueryProver& query, std::string* reason) {
@@ -575,7 +577,8 @@ NativeLassoSparseView native_lasso_sparse_view(const NativeLassoFamilyProver& fa
     const std::uint64_t queries = family.padded_queries;
     const std::uint64_t table_domain = family.table.size();
     std::uint64_t full_domain = 0;
-    if (family.selected_table_rows.size() != queries || !checked_product(queries, table_domain, full_domain))
+    if ((!family.selected_table_row_at && family.selected_table_rows.size() != queries) ||
+        (family.selected_table_row_at && !family.selected_table_rows.empty()) || !checked_product(queries, table_domain, full_domain))
         throw std::invalid_argument("native Lasso sparse M_f witness dimensions are invalid");
     NativeLassoSparseView view;
     view.full_domain = full_domain;
@@ -584,7 +587,7 @@ NativeLassoSparseView native_lasso_sparse_view(const NativeLassoFamilyProver& fa
     view.for_each_nonzero = [witness, queries, table_domain](const NativeLassoSparseEntryCallback& callback) {
         if (!callback) throw std::invalid_argument("native Lasso sparse M_f callback is empty");
         for (std::uint64_t query = 0; query < queries; ++query) {
-            const std::uint64_t selected = witness->selected_table_rows[static_cast<std::size_t>(query)];
+            const std::uint64_t selected = witness->selected_table_row_at ? witness->selected_table_row_at(query) : witness->selected_table_rows[static_cast<std::size_t>(query)];
             if (selected >= table_domain || selected > (std::numeric_limits<std::uint64_t>::max() - query) / queries)
                 throw std::overflow_error("native Lasso sparse M_f support index overflows");
             callback(selected * queries + query, F_ONE);
@@ -594,22 +597,24 @@ NativeLassoSparseView native_lasso_sparse_view(const NativeLassoFamilyProver& fa
         if (index >= full_domain) throw std::out_of_range("native Lasso sparse M_f index is out of range");
         const std::uint64_t query = index % queries;
         const std::uint64_t selected = index / queries;
-        return selected < table_domain && witness->selected_table_rows[static_cast<std::size_t>(query)] == selected ? F_ONE : F_ZERO;
+        const std::uint64_t actual = witness->selected_table_row_at ? witness->selected_table_row_at(query) : witness->selected_table_rows[static_cast<std::size_t>(query)];
+        return selected < table_domain && actual == selected ? F_ONE : F_ZERO;
     };
     view.evaluate_mle = [witness, queries, table_domain, full_domain](const std::vector<F>& point) {
         if (point.empty() || point.size() >= 64 || (std::uint64_t(1) << point.size()) != full_domain)
             throw std::invalid_argument("native Lasso sparse M_f evaluation point is invalid");
         F result = F_ZERO;
-        for (std::uint64_t query = 0; query < queries; ++query) {
-            const std::uint64_t selected = witness->selected_table_rows[static_cast<std::size_t>(query)];
-            if (selected >= table_domain || selected > (std::numeric_limits<std::uint64_t>::max() - query) / queries)
-                throw std::overflow_error("native Lasso sparse M_f support index overflows");
-            const std::uint64_t index = selected * queries + query;
-            F coefficient = F_ONE;
-            for (std::size_t bit = 0; bit < point.size(); ++bit)
-                coefficient *= ((index >> bit) & 1U) != 0 ? point[bit] : F_ONE - point[bit];
-            result += coefficient;
-        }
+        const std::size_t query_bits = log2_power(static_cast<std::size_t>(queries));
+        const std::vector<F> query_point(point.begin(), point.begin() + query_bits);
+        const std::vector<F> table_point(point.begin() + query_bits, point.end());
+        zkgpt::native_for_each_equality_weight(query_point, static_cast<std::size_t>(queries), [&](std::size_t query, const F& query_weight) {
+            const std::uint64_t selected = witness->selected_table_row_at ? witness->selected_table_row_at(query) : witness->selected_table_rows[query];
+            if (selected >= table_domain) throw std::out_of_range("native Lasso sparse M_f selected column is out of range");
+            F table_weight = F_ONE;
+            for (std::size_t bit = 0; bit < table_point.size(); ++bit)
+                table_weight *= ((selected >> bit) & 1U) != 0 ? table_point[bit] : F_ONE - table_point[bit];
+            result += query_weight * table_weight;
+        });
         return result;
     };
     return view;
@@ -1413,7 +1418,7 @@ struct SparseValue {
     std::size_t remaining_zero_factors = 0;
 };
 
-using SparseMatrixValues = std::vector<SparseValue>;
+using SparseMatrixValues = zkgpt::NativeVector<SparseValue>;
 
 F equality_boolean_factor(const F& beta, bool bit) { return bit ? beta : F_ONE - beta; }
 
@@ -1454,24 +1459,16 @@ SparseMatrixValues sparse_matrix_values(const NativeLassoFamilyProver& family, c
     return values;
 }
 
+// round_trace is local smoke instrumentation only and is never absorbed into the proof transcript.
 void append_weighted_boolean_round(NativeMaskedSumcheckProver& prover, SparseMatrixValues& values, const std::vector<F>& beta,
-                                  std::size_t round, F& prefix_weight, std::string* reason, F* challenge_out = nullptr) {
+                                  std::size_t round, F& prefix_weight, std::string* reason, F* challenge_out = nullptr,
+                                  std::vector<F>* round_trace = nullptr) {
     if (round >= beta.size()) throw std::invalid_argument("native Lasso booleanity round is out of range");
     std::vector<F> polynomial(4, F_ZERO);
     const F zero_factor = F_ONE - beta[round];
     const F one_factor = beta[round];
     const F zero_factor_inverse = zero_factor.isZero() ? F_ZERO : F_ONE / zero_factor;
     const F one_factor_inverse = one_factor.isZero() ? F_ZERO : F_ONE / one_factor;
-    SparseMatrixValues next;
-    struct PairData {
-        std::uint64_t index;
-        F zero;
-        F one;
-        F suffix_nonzero_product;
-        std::size_t suffix_zero_factors;
-    };
-    std::vector<PairData> pairs;
-    pairs.reserve(values.size());
     std::size_t cursor = 0;
     while (cursor < values.size()) {
         const std::uint64_t pair = values[cursor].index >> 1;
@@ -1506,23 +1503,117 @@ void append_weighted_boolean_round(NativeMaskedSumcheckProver& prover, SparseMat
             const F other_suffix_weight = other_zero_factors == 0 ? other_nonzero_product : F_ZERO;
             if (other_suffix_weight != suffix_weight) throw std::logic_error("native Lasso sparse equality tails disagree");
         }
-        pairs.push_back({pair, zero, one, suffix_nonzero_product, suffix_zero_factors});
     }
+    if (round_trace != nullptr) *round_trace = polynomial;
     F challenge;
     if (!prover.append_round(polynomial, &challenge, reason)) throw std::runtime_error(reason != nullptr ? *reason : "weighted Lasso booleanity round failed");
-    for (const PairData& pair : pairs) {
-        const F folded = pair.zero + challenge * (pair.one - pair.zero);
+    cursor = 0;
+    std::size_t write = 0;
+    while (cursor < values.size()) {
+        const std::uint64_t pair_index = values[cursor].index >> 1;
+        const SparseValue* even = nullptr;
+        const SparseValue* odd = nullptr;
+        while (cursor < values.size() && (values[cursor].index >> 1) == pair_index) {
+            if ((values[cursor].index & 1U) == 0) even = &values[cursor];
+            else odd = &values[cursor];
+            ++cursor;
+        }
+        const F zero = even == nullptr ? F_ZERO : even->value;
+        const F one = odd == nullptr ? F_ZERO : odd->value;
+        const F folded = zero + challenge * (one - zero);
         if (folded.isZero()) continue;
-        SparseValue entry;
-        entry.value = folded;
-        entry.remaining_nonzero_product = pair.suffix_nonzero_product;
-        entry.remaining_zero_factors = pair.suffix_zero_factors;
-        entry.index = pair.index;
-        next.push_back(entry);
+        const SparseValue& suffix_source = even == nullptr ? *odd : *even;
+        const bool source_bit = even == nullptr;
+        F suffix_nonzero_product;
+        std::size_t suffix_zero_factors = 0;
+        remove_equality_factor(suffix_source, source_bit ? one_factor : zero_factor, source_bit ? one_factor_inverse : zero_factor_inverse,
+                               suffix_nonzero_product, suffix_zero_factors);
+        if (even != nullptr && odd != nullptr) {
+            F other_nonzero_product;
+            std::size_t other_zero_factors = 0;
+            remove_equality_factor(*odd, one_factor, one_factor_inverse, other_nonzero_product, other_zero_factors);
+            if (other_nonzero_product != suffix_nonzero_product || other_zero_factors != suffix_zero_factors)
+                throw std::logic_error("native Lasso sparse equality tails disagree after fold");
+        }
+        SparseValue entry{pair_index, folded, suffix_nonzero_product, suffix_zero_factors};
+        values[write++] = entry;
     }
     prefix_weight *= F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * challenge;
-    values.swap(next);
+    values.resize(write);
     if (challenge_out != nullptr) *challenge_out = challenge;
+}
+
+struct WeightedBooleanityFold {
+    F matrix_value = F_ZERO;
+    std::vector<F> point;
+};
+
+std::vector<F> weighted_booleanity_t2_round_polynomial(const zkgpt::NativeFieldVector& column_one, const std::vector<F>& beta, std::size_t round, const F& prefix_weight) {
+    if (beta.empty() || round >= beta.size()) throw std::invalid_argument("native Lasso T2 Booleanity round is out of range");
+    const std::size_t query_bits = beta.size() - 1;
+    std::vector<F> polynomial(4, F_ZERO);
+    if (round < query_bits) {
+        const std::size_t pair_count = column_one.size() / 2;
+        if (column_one.size() != (std::size_t(1) << (query_bits - round))) throw std::invalid_argument("native Lasso T2 query fold size is invalid");
+        const std::vector<F> suffix_point(beta.begin() + round + 1, beta.begin() + query_bits);
+        zkgpt::native_for_each_equality_weight(suffix_point, pair_count, [&](std::size_t pair, const F& suffix_weight) {
+            const F zero = column_one[pair * 2], one = column_one[pair * 2 + 1];
+            for (std::size_t evaluation = 0; evaluation < polynomial.size(); ++evaluation) {
+                const F x(static_cast<int>(evaluation));
+                const F matrix_value = zero + x * (one - zero);
+                const F current_weight = F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * x;
+                polynomial[evaluation] += prefix_weight * suffix_weight * current_weight * matrix_value * (matrix_value - F_ONE);
+            }
+        });
+        return polynomial;
+    }
+    if (column_one.size() != 1) throw std::invalid_argument("native Lasso T2 column fold is not scalar");
+    const F b = column_one[0], m0 = F_ONE - b, m1 = b;
+    for (std::size_t evaluation = 0; evaluation < polynomial.size(); ++evaluation) {
+        const F x(static_cast<int>(evaluation));
+        const F matrix_value = m0 + x * (m1 - m0);
+        const F column_weight = F_ONE - beta[query_bits] + (F(2) * beta[query_bits] - F_ONE) * x;
+        polynomial[evaluation] = prefix_weight * column_weight * matrix_value * (matrix_value - F_ONE);
+    }
+    return polynomial;
+}
+
+WeightedBooleanityFold append_weighted_booleanity_t2(NativeMaskedSumcheckProver& prover, const NativeLassoFamilyProver& family,
+                                                      const std::vector<F>& beta, std::string* reason) {
+    const std::uint64_t queries = family.padded_queries;
+    const std::size_t query_bits = relation_rounds(static_cast<std::size_t>(queries));
+    if (family.table.size() != 2 || beta.size() != query_bits + 1) throw std::invalid_argument("native Lasso T2 Booleanity dimensions are invalid");
+    zkgpt::NativeFieldVector column_one;
+    column_one.resize(static_cast<std::size_t>(queries));
+    for (std::uint64_t query = 0; query < queries; ++query) {
+        const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(query) : family.selected_table_rows[static_cast<std::size_t>(query)];
+        if (selected >= 2) throw std::invalid_argument("native Lasso T2 selected column is invalid");
+        column_one[static_cast<std::size_t>(query)] = selected == 1 ? F_ONE : F_ZERO;
+    }
+    WeightedBooleanityFold result;
+    result.point.reserve(beta.size());
+    F prefix_weight = F_ONE;
+    for (std::size_t round = 0; round < query_bits; ++round) {
+        const std::size_t pair_count = column_one.size() / 2;
+        const std::vector<F> polynomial = weighted_booleanity_t2_round_polynomial(column_one, beta, round, prefix_weight);
+        F challenge;
+        if (!prover.append_round(polynomial, &challenge, reason)) throw std::runtime_error(reason != nullptr ? *reason : "native Lasso T2 query Booleanity round failed");
+        for (std::size_t pair = 0; pair < pair_count; ++pair) {
+            const F zero = column_one[pair * 2], one = column_one[pair * 2 + 1];
+            column_one[pair] = zero + challenge * (one - zero);
+        }
+        column_one.resize(pair_count);
+        prefix_weight *= F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * challenge;
+        result.point.push_back(challenge);
+    }
+    const F b = column_one[0];
+    const F m0 = F_ONE - b, m1 = b;
+    const std::vector<F> polynomial = weighted_booleanity_t2_round_polynomial(column_one, beta, query_bits, prefix_weight);
+    F column_challenge;
+    if (!prover.append_round(polynomial, &column_challenge, reason)) throw std::runtime_error(reason != nullptr ? *reason : "native Lasso T2 column Booleanity round failed");
+    result.point.push_back(column_challenge);
+    result.matrix_value = m0 + column_challenge * (m1 - m0);
+    return result;
 }
 
 std::shared_ptr<const NativeMaskedPublicProvider> equality_weight_provider(const std::vector<F>& beta) {
@@ -1562,28 +1653,23 @@ hyrax::HyraxGeneratorProvider matrix_generators(const NativeLassoFamilyPublic& f
 
 void commit_family_rows(const NativeLassoFamilyProver& family, MaskedFamilyState& state) {
     const std::uint64_t rows = family.matrix_layout.rows;
-    const std::uint64_t columns = family.matrix_layout.columns;
-    std::vector<std::vector<std::uint64_t>> row_columns(static_cast<std::size_t>(rows));
     const NativeLassoSparseView sparse = native_lasso_sparse_view(family);
-    sparse.for_each_nonzero([&](std::uint64_t index, const F& value) {
-        if (value != F_ONE) throw std::invalid_argument("native Lasso M_f is not one-hot");
-        const std::uint64_t row = index >> family.matrix_layout.column_bits;
-        const std::uint64_t column = index & (columns - 1);
-        if (row >= rows) throw std::out_of_range("native Lasso M_f row is out of range");
-        row_columns[static_cast<std::size_t>(row)].push_back(column);
-    });
     const G1 H = hyrax::derive_pedersen_blinding_generator(state.basis_id);
     state.row_commitments.reserve(static_cast<std::size_t>(rows));
     state.row_blindings.reserve(static_cast<std::size_t>(rows));
     for (std::uint64_t row = 0; row < rows; ++row) {
         F rho;
         rho.setByCSPRNG();
-        G1 commitment = H * rho;
-        for (std::uint64_t column : row_columns[static_cast<std::size_t>(row)])
-            commitment += family.matrix_layout.column_generators[static_cast<std::size_t>(column)];
-        state.row_commitments.push_back(commitment);
+        state.row_commitments.push_back(H * rho);
         state.row_blindings.push_back(rho);
     }
+    sparse.for_each_nonzero([&](std::uint64_t index, const F& value) {
+        if (value != F_ONE) throw std::invalid_argument("native Lasso M_f is not one-hot");
+        const std::uint64_t row = index >> family.matrix_layout.column_bits;
+        const std::uint64_t column = index & (family.matrix_layout.columns - 1);
+        if (row >= rows) throw std::out_of_range("native Lasso M_f row is out of range");
+        state.row_commitments[static_cast<std::size_t>(row)] += family.matrix_layout.column_generators[static_cast<std::size_t>(column)];
+    });
 }
 
 struct MatrixRowFold {
@@ -1742,11 +1828,11 @@ std::vector<F> row_mle(const std::vector<F>& matrix, std::size_t rows, std::size
 std::vector<F> selected_table_row_mle(const NativeLassoFamilyProver& family, const std::vector<F>& query_point) {
     if (query_point.size() != log2_power(family.padded_queries))
         throw std::invalid_argument("native Lasso selected-row point dimension is invalid");
-    const std::vector<F> query_weights = mle_basis(query_point);
-    if (query_weights.size() != family.padded_queries) throw std::invalid_argument("native Lasso selected-row weight count is invalid");
     std::vector<F> result(family.table.size(), F_ZERO);
-    for (std::uint64_t row = 0; row < family.padded_queries; ++row)
-        result[static_cast<std::size_t>(family.selected_table_rows[static_cast<std::size_t>(row)])] += query_weights[static_cast<std::size_t>(row)];
+    zkgpt::native_for_each_equality_weight(query_point, static_cast<std::size_t>(family.padded_queries), [&](std::size_t row, const F& weight) {
+        const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(row) : family.selected_table_rows[row];
+        result[static_cast<std::size_t>(selected)] += weight;
+    });
     return result;
 }
 
@@ -2178,6 +2264,200 @@ bool advance_masked_scope(const NativeProofSession& session, const std::string& 
 
 }
 
+std::size_t native_lasso_sparse_entry_bytes_for_smoke() { return sizeof(SparseValue); }
+
+NativeLassoCapacityProfile native_lasso_capacity_profile(std::uint64_t padded_queries, std::uint64_t table_domain) {
+    const NativeLassoFamilyPublic::MatrixDescriptor layout = native_lasso_balanced_matrix_layout(padded_queries, table_domain);
+    const auto bytes = [](std::uint64_t count, std::size_t element_size) {
+        if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t)) {
+            if (element_size > static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())) throw std::length_error("native Lasso capacity profile element size overflows u64");
+        }
+        if (element_size != 0 && count > std::numeric_limits<std::uint64_t>::max() / static_cast<std::uint64_t>(element_size))
+            throw std::length_error("native Lasso capacity profile byte count overflows u64");
+        const std::uint64_t result = count * static_cast<std::uint64_t>(element_size);
+        if (result > std::numeric_limits<std::size_t>::max()) throw std::length_error("native Lasso capacity profile exceeds native storage width");
+        return result;
+    };
+    const auto add = [](std::uint64_t left, std::uint64_t right) {
+        if (right > std::numeric_limits<std::uint64_t>::max() - left) throw std::length_error("native Lasso capacity profile sum overflows u64");
+        const std::uint64_t result = left + right;
+        if (result > std::numeric_limits<std::size_t>::max()) throw std::length_error("native Lasso capacity profile sum exceeds native storage width");
+        return result;
+    };
+    NativeLassoCapacityProfile profile;
+    profile.padded_queries = padded_queries;
+    profile.table_domain = table_domain;
+    profile.full_domain = layout.vector_size;
+    profile.rows = layout.rows;
+    profile.columns = layout.columns;
+    profile.t2_booleanity = table_domain == 2;
+    profile.private_witness_entries = padded_queries;
+    profile.private_witness_element_bytes = profile.t2_booleanity ? sizeof(F) : sizeof(SparseValue);
+    profile.private_witness_bytes = bytes(profile.private_witness_entries, static_cast<std::size_t>(profile.private_witness_element_bytes));
+    profile.row_blinding_bytes = bytes(profile.rows, sizeof(F));
+    profile.row_commitment_bytes = bytes(profile.rows, sizeof(G1));
+    profile.column_generator_bytes = bytes(profile.columns, sizeof(G1));
+    profile.row_fold_weights_bytes = bytes(profile.rows, sizeof(F));
+    profile.row_fold_values_bytes = bytes(profile.columns, sizeof(F));
+    profile.row_ledger_retained_bytes = add(profile.row_blinding_bytes, profile.column_generator_bytes);
+    profile.commit_peak_bytes = add(profile.row_ledger_retained_bytes, profile.row_commitment_bytes);
+    profile.booleanity_peak_bytes = add(profile.row_ledger_retained_bytes, profile.private_witness_bytes);
+    profile.opening_peak_bytes = add(profile.row_ledger_retained_bytes, add(profile.row_fold_weights_bytes, profile.row_fold_values_bytes));
+    profile.family_peak_bytes = std::max(profile.commit_peak_bytes, std::max(profile.booleanity_peak_bytes, profile.opening_peak_bytes));
+    return profile;
+}
+
+bool native_lasso_sparse_booleanity_dense_reference_smoke() {
+    try {
+        const std::vector<std::uint64_t> selected = {0, 1, 2, 3};
+        const std::vector<F> beta = {F_ZERO, F_ONE, F(3), F_ONE};
+        NativeLassoFamilyProver family;
+        family.table = {F(5), F(7), F(11), F(13)};
+        family.padded_queries = selected.size();
+        family.selected_table_row_at = [selected](std::uint64_t row) { return selected.at(static_cast<std::size_t>(row)); };
+        const NativeLassoSparseView sparse = native_lasso_sparse_view(family);
+        SparseMatrixValues sparse_values = sparse_matrix_values(family, beta);
+        std::vector<F> dense(static_cast<std::size_t>(sparse.full_domain), F_ZERO);
+        for (std::size_t query = 0; query < selected.size(); ++query) dense[static_cast<std::size_t>(selected[query] * selected.size() + query)] = F_ONE;
+        bool saw_zero_factor = false, saw_different_column_pair = false;
+        for (const SparseValue& value : sparse_values) saw_zero_factor = saw_zero_factor || value.remaining_zero_factors != 0;
+        F initial_claim = F_ZERO;
+        for (std::uint64_t index = 0; index < sparse.full_domain; ++index) {
+            F weight = F_ONE;
+            for (std::size_t bit = 0; bit < beta.size(); ++bit) weight *= ((index >> bit) & 1U) != 0 ? beta[bit] : F_ONE - beta[bit];
+            initial_claim += weight * dense[static_cast<std::size_t>(index)] * (dense[static_cast<std::size_t>(index)] - F_ONE);
+        }
+        if (!saw_zero_factor || !initial_claim.isZero() || sparse_values.size() != selected.size()) return false;
+        const std::string zero_digest(64, '0');
+        const NativeProofStatement statement{zero_digest, "mcl-bn254-fr-v1", zero_digest, zero_digest, zero_digest, zero_digest, zero_digest, zero_digest, zero_digest, 4, zero_digest};
+        NativeProofSession session("native-lasso-sparse-booleanity-dense-v1", statement);
+        session.absorb_fields("lasso/smoke/booleanity/weights", beta);
+        const zkgpt::native_pedersen::PedersenBasis scalar_basis = lasso_scalar_basis(session);
+        NativeMaskedTerminalSpec terminal_spec;
+        terminal_spec.kind = NativeMaskedTerminalKind::Product3Public;
+        terminal_spec.public_provider = equality_weight_provider(beta);
+        terminal_spec.has_external_binding = true;
+        terminal_spec.public_initial_claim = true;
+        terminal_spec.initial_opening = public_scalar_opening(scalar_basis, initial_claim);
+        terminal_spec.initial_commitment = terminal_spec.initial_opening.commitment;
+        NativeMaskedSumcheckProver sumcheck(session, "lasso/smoke/booleanity/sum", 3, initial_claim, terminal_spec);
+        const auto dense_claim = [&beta](const std::vector<F>& values, std::size_t first_bit, const F& prefix_weight) {
+            F claim = F_ZERO;
+            for (std::size_t index = 0; index < values.size(); ++index) {
+                F weight = prefix_weight;
+                for (std::size_t bit = first_bit; bit < beta.size(); ++bit)
+                    weight *= ((index >> (bit - first_bit)) & 1U) != 0 ? beta[bit] : F_ONE - beta[bit];
+                claim += weight * values[index] * (values[index] - F_ONE);
+            }
+            return claim;
+        };
+        const auto interpolate = [](const std::vector<F>& evaluations, const F& point) {
+            F result = F_ZERO;
+            for (std::size_t i = 0; i < evaluations.size(); ++i) {
+                F basis = F_ONE;
+                for (std::size_t j = 0; j < evaluations.size(); ++j)
+                    if (i != j) basis *= (point - F(static_cast<int>(j))) / F(static_cast<int>(i) - static_cast<int>(j));
+                result += evaluations[i] * basis;
+            }
+            return result;
+        };
+        F prefix_weight = F_ONE, running_claim = initial_claim;
+        for (std::size_t round = 0; round < beta.size(); ++round) {
+            if (running_claim != dense_claim(dense, round, prefix_weight)) return false;
+            const F prefix_before = prefix_weight;
+            std::vector<F> actual_polynomial;
+            F challenge;
+            const std::size_t previous_support = sparse_values.size();
+            if (round == 2) for (std::size_t index = 1; index < sparse_values.size(); ++index) saw_different_column_pair = saw_different_column_pair || sparse_values[index - 1].index / 2 == sparse_values[index].index / 2;
+            append_weighted_boolean_round(sumcheck, sparse_values, beta, round, prefix_weight, nullptr, &challenge, &actual_polynomial);
+            std::vector<F> reference_polynomial(4, F_ZERO);
+            for (std::size_t pair = 0; pair < dense.size() / 2; ++pair) {
+                F suffix_weight = F_ONE;
+                for (std::size_t bit = round + 1; bit < beta.size(); ++bit)
+                    suffix_weight *= ((pair >> (bit - round - 1)) & 1U) != 0 ? beta[bit] : F_ONE - beta[bit];
+                for (std::size_t evaluation = 0; evaluation < reference_polynomial.size(); ++evaluation) {
+                    const F x(static_cast<int>(evaluation));
+                    const F matrix_value = dense[2 * pair] + x * (dense[2 * pair + 1] - dense[2 * pair]);
+                    const F current_weight = F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * x;
+                    reference_polynomial[evaluation] += prefix_before * suffix_weight * current_weight * matrix_value * (matrix_value - F_ONE);
+                }
+            }
+            if (actual_polynomial != reference_polynomial || actual_polynomial[0] + actual_polynomial[1] != running_claim) return false;
+            running_claim = interpolate(reference_polynomial, challenge);
+            for (std::size_t pair = 0; pair < dense.size() / 2; ++pair)
+                dense[pair] += challenge * (dense[2 * pair + 1] - dense[2 * pair]);
+            dense.resize(dense.size() / 2);
+            prefix_weight *= F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * challenge;
+            if (running_claim != dense_claim(dense, round + 1, prefix_weight)) return false;
+            if (round == 2 && sparse_values.size() >= previous_support) return false;
+        }
+        if (!saw_different_column_pair || dense.size() != 1 || sparse_values.size() > 1 || (!sparse_values.empty() && sparse_values.front().index != 0)) return false;
+        const F matrix_value = sparse_values.empty() ? F_ZERO : sparse_values.front().value;
+        if (dense.front() != matrix_value || running_claim != prefix_weight * matrix_value * (matrix_value - F_ONE)) return false;
+        terminal_spec.unmasked_terminal_openings = {scalar_evaluation_opening(scalar_basis, matrix_value), scalar_evaluation_opening(scalar_basis, matrix_value - F_ONE)};
+        if (!sumcheck.set_terminal_spec(terminal_spec, nullptr)) return false;
+        NativeMaskedSumcheckResult proved;
+        if (!sumcheck.finish({matrix_value, matrix_value - F_ONE}, &proved, nullptr) || proved.challenges.size() != beta.size() || proved.unmasked_claim_opening.value != running_claim) return false;
+        NativeMaskedTerminalSpec verify_spec = terminal_spec;
+        verify_spec.initial_opening = {};
+        verify_spec.unmasked_terminal_openings.clear();
+        verify_spec.terminal_commitments = proved.terminal_commitments;
+        NativeMaskedSumcheckResult verified;
+        if (!native_masked_sumcheck_verify(session, "lasso/smoke/booleanity/sum", 3, beta.size(), initial_claim, verify_spec, &verified, nullptr) || verified.challenges != proved.challenges || verified.terminal_values != proved.terminal_values || !verified.external_binding_verified || !session.replay(nullptr)) return false;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool native_lasso_t2_booleanity_dense_reference_smoke() {
+    try {
+        const std::vector<std::uint64_t> selected = {1, 0, 1, 0};
+        const std::vector<F> beta = {F(2), F(3), F(5)};
+        const F challenges[3] = {F(7), F(11), F(13)};
+        zkgpt::NativeFieldVector column_one(selected.size());
+        std::vector<F> dense(8, F_ZERO);
+        for (std::size_t query = 0; query < selected.size(); ++query) {
+            column_one[query] = selected[query] == 1 ? F_ONE : F_ZERO;
+            dense[query] = selected[query] == 0 ? F_ONE : F_ZERO;
+            dense[query + selected.size()] = selected[query] == 1 ? F_ONE : F_ZERO;
+        }
+        F prefix_weight = F_ONE;
+        for (std::size_t round = 0; round < beta.size(); ++round) {
+            const std::vector<F> actual = weighted_booleanity_t2_round_polynomial(column_one, beta, round, prefix_weight);
+            std::vector<F> reference(4, F_ZERO);
+            for (std::size_t pair = 0; pair < dense.size() / 2; ++pair) {
+                F suffix_weight = F_ONE;
+                for (std::size_t bit = round + 1; bit < beta.size(); ++bit) {
+                    const bool set = ((pair >> (bit - round - 1)) & 1U) != 0;
+                    suffix_weight *= set ? beta[bit] : F_ONE - beta[bit];
+                }
+                for (std::size_t evaluation = 0; evaluation < reference.size(); ++evaluation) {
+                    const F x(static_cast<int>(evaluation));
+                    const F matrix_value = dense[2 * pair] + x * (dense[2 * pair + 1] - dense[2 * pair]);
+                    const F current_weight = F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * x;
+                    reference[evaluation] += prefix_weight * suffix_weight * current_weight * matrix_value * (matrix_value - F_ONE);
+                }
+            }
+            if (actual != reference) return false;
+            if (round + 1 < beta.size()) {
+                const std::size_t pair_count = column_one.size() / 2;
+                for (std::size_t pair = 0; pair < pair_count; ++pair)
+                    column_one[pair] += challenges[round] * (column_one[pair * 2 + 1] - column_one[pair * 2]);
+                column_one.resize(pair_count);
+            }
+            for (std::size_t pair = 0; pair < dense.size() / 2; ++pair)
+                dense[pair] += challenges[round] * (dense[pair * 2 + 1] - dense[pair * 2]);
+            dense.resize(dense.size() / 2);
+            prefix_weight *= F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * challenges[round];
+        }
+        const F terminal_matrix_value = F_ONE - column_one[0] + challenges[beta.size() - 1] * (F(2) * column_one[0] - F_ONE);
+        return dense.size() == 1 && column_one.size() == 1 && dense[0] == terminal_matrix_value;
+    } catch (...) {
+        return false;
+    }
+}
+
 bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLassoFamilyProver>& families, NativeLassoQueryProver& query,
                                NativeLassoBundleResult* result, std::string* reason, const NativeLassoTensorTailProveHook& tensor_tail_stage) {
     SessionCheckpointGuard checkpoint_guard(session);
@@ -2261,18 +2541,25 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
             boolean_spec.initial_commitment = boolean_spec.initial_opening.commitment;
             session.absorb_field(prefix + "/b-boolean/claim", F_ZERO);
             NativeMaskedSumcheckProver boolean_prover(session, prefix + "/b-boolean/sum", 3, F_ZERO, boolean_spec);
-            SparseMatrixValues boolean_values = sparse_matrix_values(family, booleanity_weights[family_index]);
-            F prefix_weight = F_ONE;
             std::vector<F> boolean_point;
             boolean_point.reserve(booleanity_weights[family_index].size());
-            for (std::size_t round = 0; round < booleanity_weights[family_index].size(); ++round) {
-                F challenge;
-                append_weighted_boolean_round(boolean_prover, boolean_values, booleanity_weights[family_index], round, prefix_weight, reason, &challenge);
-                boolean_point.push_back(challenge);
+            F boolean_value = F_ZERO;
+            if (family.table.size() == 2) {
+                WeightedBooleanityFold folded = append_weighted_booleanity_t2(boolean_prover, family, booleanity_weights[family_index], reason);
+                boolean_point = std::move(folded.point);
+                boolean_value = folded.matrix_value;
+            } else {
+                SparseMatrixValues boolean_values = sparse_matrix_values(family, booleanity_weights[family_index]);
+                F prefix_weight = F_ONE;
+                for (std::size_t round = 0; round < booleanity_weights[family_index].size(); ++round) {
+                    F challenge;
+                    append_weighted_boolean_round(boolean_prover, boolean_values, booleanity_weights[family_index], round, prefix_weight, reason, &challenge);
+                    boolean_point.push_back(challenge);
+                }
+                if (boolean_values.size() > 1 || (!boolean_values.empty() && boolean_values.front().index != 0))
+                    throw std::logic_error("native Lasso weighted Booleanity terminal fold is not scalar");
+                boolean_value = boolean_values.empty() ? F_ZERO : boolean_values.front().value;
             }
-            if (boolean_values.size() > 1 || (!boolean_values.empty() && boolean_values.front().index != 0))
-                throw std::logic_error("native Lasso weighted Booleanity terminal fold is not scalar");
-            const F boolean_value = boolean_values.empty() ? F_ZERO : boolean_values.front().value;
             const F complement_value = boolean_value - F_ONE;
             const zkgpt::native_pedersen::ScalarOpening boolean_raw_opening = scalar_evaluation_opening(scalar_basis, boolean_value);
             const zkgpt::native_pedersen::ScalarOpening complement_raw_opening = scalar_evaluation_opening(scalar_basis, complement_value);
@@ -2281,16 +2568,18 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
             NativeMaskedSumcheckResult boolean_result;
             if (!boolean_prover.finish({boolean_value, complement_value}, &boolean_result, reason)) return false;
             hyrax::MaskedMleOpening boolean_opening;
-            MatrixRowFold boolean_fold = fold_family_rows(family, states[family_index], boolean_point);
-            if (!hyrax::open_masked_mle_with_claim(boolean_fold.commitment, boolean_fold.view, boolean_fold.values,
-                                                   boolean_result.terminal_values[0], session, prefix + "/c-boolean-open", boolean_opening, reason, false, "",
-                                                   &scalar_basis, &boolean_result.terminal_openings[0], &boolean_raw_opening))
-                return false;
-            MatrixRowFold complement_fold = fold_family_rows(family, states[family_index], boolean_point, true);
-            if (!hyrax::open_masked_mle_with_claim(complement_fold.commitment, complement_fold.view, complement_fold.values,
-                                                   boolean_result.terminal_values[1], session, prefix + "/c-boolean-complement-open", boolean_opening,
-                                                   reason, false, "", &scalar_basis, &boolean_result.terminal_openings[1], &complement_raw_opening))
-                return false;
+            {
+                MatrixRowFold boolean_fold = fold_family_rows(family, states[family_index], boolean_point);
+                if (!hyrax::open_masked_mle_with_claim(boolean_fold.commitment, boolean_fold.view, boolean_fold.values, boolean_result.terminal_values[0], session,
+                                                       prefix + "/c-boolean-open", boolean_opening, reason, false, "", &scalar_basis,
+                                                       &boolean_result.terminal_openings[0], &boolean_raw_opening)) return false;
+            }
+            {
+                MatrixRowFold complement_fold = fold_family_rows(family, states[family_index], boolean_point, true);
+                if (!hyrax::open_masked_mle_with_claim(complement_fold.commitment, complement_fold.view, complement_fold.values,
+                                                       boolean_result.terminal_values[1], session, prefix + "/c-boolean-complement-open", boolean_opening,
+                                                       reason, false, "", &scalar_basis, &boolean_result.terminal_openings[1], &complement_raw_opening)) return false;
+            }
 
             std::vector<F> onehot_left = selected_table_row_mle(family, row_point);
             session.absorb_field(prefix + "/d-onehot/claim", F_ONE);
@@ -2320,11 +2609,12 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
             NativeMaskedSumcheckResult onehot_result;
             if (!onehot_prover.finish({onehot_current.front()}, &onehot_result, reason)) return false;
             hyrax::MaskedMleOpening onehot_opening;
-            MatrixRowFold onehot_fold = fold_family_rows(family, states[family_index], onehot_point);
-            if (!hyrax::open_masked_mle_with_claim(onehot_fold.commitment, onehot_fold.view, onehot_fold.values, onehot_result.final_claim, session,
-                                                   prefix + "/e-onehot-open", onehot_opening, reason, false, "", &scalar_basis,
-                                                   &onehot_result.terminal_openings[0], &onehot_raw_opening))
-                return false;
+            {
+                MatrixRowFold onehot_fold = fold_family_rows(family, states[family_index], onehot_point);
+                if (!hyrax::open_masked_mle_with_claim(onehot_fold.commitment, onehot_fold.view, onehot_fold.values, onehot_result.final_claim, session,
+                                                       prefix + "/e-onehot-open", onehot_opening, reason, false, "", &scalar_basis,
+                                                       &onehot_result.terminal_openings[0], &onehot_raw_opening)) return false;
+            }
 
             const std::vector<F>& left = onehot_left;
             F ell = F_ZERO;
@@ -2376,21 +2666,21 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
             NativeMaskedSumcheckResult lookup_result;
             if (!lookup_prover.finish({lookup_left.front()}, &lookup_result, reason)) return false;
             hyrax::MaskedMleOpening lookup_opening;
-            MatrixRowFold lookup_fold = fold_family_rows(family, states[family_index], lookup_point);
-            if (!hyrax::open_masked_mle_with_claim(lookup_fold.commitment, lookup_fold.view, lookup_fold.values, lookup_result.terminal_values[0],
-                                                   session, prefix + "/g-matrix-open", lookup_opening, reason, false, "", &scalar_basis,
-                                                   &lookup_result.terminal_openings[0], &lookup_raw_opening))
-                return false;
+            {
+                MatrixRowFold lookup_fold = fold_family_rows(family, states[family_index], lookup_point);
+                if (!hyrax::open_masked_mle_with_claim(lookup_fold.commitment, lookup_fold.view, lookup_fold.values, lookup_result.terminal_values[0],
+                                                       session, prefix + "/g-matrix-open", lookup_opening, reason, false, "", &scalar_basis,
+                                                       &lookup_result.terminal_openings[0], &lookup_raw_opening)) return false;
+            }
 
-            std::vector<F> row_basis = mle_basis(row_point);
             F query_eval = F_ZERO;
-            for (std::size_t row = 0; row < rows; ++row) {
+            zkgpt::native_for_each_equality_weight(row_point, rows, [&](std::size_t row, const F& row_weight) {
                 const std::uint64_t absolute = family.segment_offset + row;
                 const F selected = selected_query_value(family, row);
                 if (!query.value_provider.at || absolute >= query.value_provider.size || query.value_provider.at(absolute) != selected)
                     throw std::runtime_error("native Lasso selected query differs from L_qry provider");
-                query_eval += row_basis[row] * selected;
-            }
+                query_eval += row_weight * selected;
+            });
             if (lookup_initial_opening.value != query_eval) throw std::runtime_error("native Lasso lookup/query claim mismatch");
             session.absorb_field(prefix + "/h-input/claim", lookup_result.final_claim);
             hyrax::MaskedMleOpening input_opening;

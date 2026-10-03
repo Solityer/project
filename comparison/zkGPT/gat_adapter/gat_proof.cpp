@@ -41,6 +41,10 @@ std::once_flag field_once;
 const std::size_t kArtifactMaxString = 1ULL << 26;
 const std::size_t kArtifactMaxMessages = 1ULL << 20;
 const std::uint64_t kArtifactMaxWireBytes = 1ULL << 30;
+const std::uint64_t kArtifactHardMaxWireBytes = 4ULL << 30;
+const std::uint64_t kArtifactRowPointBytesPerCopy = 284;
+const std::uint64_t kArtifactRowHeaderBytesPerFamily = 64ULL << 10;
+const std::uint64_t kArtifactRowChunkBytesPerCopy = 2048;
 
 const std::uint64_t kContextMaxWireBytes = 2ULL << 30;
 const char kCanonicalGeneratorDerivationId[] = "hashAndMapToG1(canonical_basis_label+/coordinate/+canonical_absolute_index_decimal);absolute-index-u64;v1";
@@ -283,6 +287,51 @@ hyrax::HyraxScalarProvider canonical_input_scalar_provider(
                    : Fr(0);
     };
     return provider;
+}
+
+NativeGkrInputSupport canonical_gkr_input_support(const GatCircuitPlan& plan) {
+    if (plan.input_layout.segments.size() != 4 || plan.input_layout.n_in == 0)
+        throw std::invalid_argument("canonical GKR input support needs the four-segment layout");
+    NativeGkrInputSupport support;
+    for (std::size_t segment = 0; segment < 3; ++segment) {
+        const std::uint64_t length = plan.input_layout.segments.at(segment).logical_length;
+        if (length != 0) support[segment].push_back({0, length});
+    }
+    const InputSegment& l_segment = plan.input_layout.segments.at(3);
+    for (const LassoFamilyDescriptor& family : plan.lasso) {
+        if (family.query_offset < l_segment.offset || family.padded_queries == 0)
+            throw std::invalid_argument("canonical L_qry family support has an invalid offset");
+        const std::uint64_t begin = family.query_offset - l_segment.offset;
+        const std::uint64_t length = family.padded_queries;
+        if (begin > l_segment.logical_length || length > l_segment.logical_length - begin)
+            throw std::invalid_argument("canonical L_qry family support exceeds its logical extent");
+        support[3].push_back({begin, begin + length});
+    }
+    std::sort(support[3].begin(), support[3].end(), [](const NativeGkrInputSupportInterval& left, const NativeGkrInputSupportInterval& right) {
+        return left.begin < right.begin;
+    });
+    std::uint64_t previous_end = 0;
+    for (const NativeGkrInputSupportInterval& interval : support[3]) {
+        if (interval.begin < previous_end) throw std::invalid_argument("canonical L_qry family support overlaps");
+        previous_end = interval.end;
+    }
+    return support;
+}
+
+std::vector<hyrax::HyraxTensorZeroInterval> canonical_l_query_zero_intervals(
+    const GatCircuitPlan& plan) {
+    if (plan.input_layout.segments.size() != 4)
+        throw std::invalid_argument("canonical L_qry zero intervals need the four-segment layout");
+    const std::uint64_t logical_length = plan.input_layout.segments.at(3).logical_length;
+    const NativeGkrInputSupport support = canonical_gkr_input_support(plan);
+    std::vector<hyrax::HyraxTensorZeroInterval> intervals;
+    std::uint64_t cursor = 0;
+    for (const NativeGkrInputSupportInterval& live : support[3]) {
+        if (cursor < live.begin) intervals.push_back({cursor, live.begin});
+        cursor = live.end;
+    }
+    if (cursor < logical_length) intervals.push_back({cursor, logical_length});
+    return intervals;
 }
 
 std::size_t checked_add(std::size_t left, std::size_t right, const char* what) {
@@ -3762,6 +3811,213 @@ void append_canonical_range_query_indices(IndexVector& indices,
         throw std::logic_error("canonical range profile coverage is incomplete");
 }
 
+struct CanonicalLassoPairBlock {
+    std::uint64_t begin = 0;
+    std::uint64_t count = 0;
+    const std::vector<Int>* x = nullptr;
+    const std::vector<Int>* y = nullptr;
+};
+
+std::uint64_t canonical_lasso_pair_row(
+    const std::vector<CanonicalLassoPairBlock>& blocks,
+    const std::map<std::pair<Int, Int>, std::uint64_t>& table_indices,
+    std::uint64_t real_queries, std::uint64_t padded_queries,
+    std::uint64_t padding_index, std::uint64_t row) {
+    if (row >= padded_queries)
+        throw std::out_of_range("canonical Lasso selected query row is invalid");
+    if (row >= real_queries) return padding_index;
+    const auto found_block = std::upper_bound(
+        blocks.begin(), blocks.end(), row,
+        [](std::uint64_t index, const CanonicalLassoPairBlock& block) {
+            return index < block.begin;
+        });
+    if (found_block == blocks.begin())
+        throw std::out_of_range("canonical function Lasso query row has no source block");
+    const CanonicalLassoPairBlock& block = *std::prev(found_block);
+    const std::uint64_t local = row - block.begin;
+    if (local >= block.count || block.x == nullptr || block.y == nullptr ||
+        local >= block.x->size() || local >= block.y->size())
+        throw std::out_of_range("canonical function Lasso query source row is invalid");
+    const auto found = table_indices.find({block.x->at(static_cast<std::size_t>(local)),
+                                           block.y->at(static_cast<std::size_t>(local))});
+    if (found == table_indices.end())
+        throw std::invalid_argument("canonical Lasso query is absent from static table");
+    return found->second;
+}
+
+struct CanonicalRangeBitBlock {
+    enum class Kind { Tuple, Vector, Division } kind = Kind::Vector;
+    std::uint64_t begin = 0;
+    std::uint64_t count = 0;
+    const std::vector<Int>* first = nullptr;
+    const std::vector<Int>* second = nullptr;
+    const std::vector<DivisionWitness>* divisions = nullptr;
+    Int bound_x = 0;
+    Int bound_y = 0;
+    unsigned width_x = 0;
+    unsigned width_y = 0;
+    std::array<unsigned, 5> division_widths{};
+};
+
+std::array<Int, 5> canonical_division_values(const DivisionWitness& division) {
+    return {{division.a, division.q, division.r, division.delta, division.denominator}};
+}
+
+void append_canonical_range_tuple_block(
+    std::vector<CanonicalRangeBitBlock>& blocks, std::uint64_t& cursor,
+    const std::vector<Int>& x, const std::vector<Int>& y,
+    const std::vector<TablePoint>& table) {
+    if (x.size() != y.size())
+        throw std::logic_error("canonical range tuple source dimensions differ");
+    const auto bounds = lookup_rectangle(table);
+    const unsigned width_x = nonnegative_bit_width(2 * static_cast<Wide>(bounds.first));
+    const unsigned width_y = nonnegative_bit_width(2 * static_cast<Wide>(bounds.second));
+    const std::uint64_t bits_per_tuple = 2ULL * width_x + 2ULL * width_y;
+    if (bits_per_tuple == 0 || x.size() > std::numeric_limits<std::uint64_t>::max() / bits_per_tuple)
+        throw std::overflow_error("canonical range tuple query block overflows u64");
+    CanonicalRangeBitBlock block;
+    block.kind = CanonicalRangeBitBlock::Kind::Tuple;
+    block.begin = cursor;
+    block.count = static_cast<std::uint64_t>(x.size()) * bits_per_tuple;
+    block.first = &x;
+    block.second = &y;
+    block.bound_x = bounds.first;
+    block.bound_y = bounds.second;
+    block.width_x = width_x;
+    block.width_y = width_y;
+    if (block.count > std::numeric_limits<std::uint64_t>::max() - cursor)
+        throw std::overflow_error("canonical range tuple query cursor overflows u64");
+    cursor += block.count;
+    if (block.count != 0) blocks.push_back(block);
+}
+
+void append_canonical_range_vector_block(
+    std::vector<CanonicalRangeBitBlock>& blocks, std::uint64_t& cursor,
+    const std::vector<Int>& values, unsigned width) {
+    if (width == 0 || values.size() > std::numeric_limits<std::uint64_t>::max() / width)
+        throw std::overflow_error("canonical range vector query block overflows u64");
+    CanonicalRangeBitBlock block;
+    block.kind = CanonicalRangeBitBlock::Kind::Vector;
+    block.begin = cursor;
+    block.count = static_cast<std::uint64_t>(values.size()) * width;
+    block.first = &values;
+    block.width_x = width;
+    if (block.count > std::numeric_limits<std::uint64_t>::max() - cursor)
+        throw std::overflow_error("canonical range vector query cursor overflows u64");
+    cursor += block.count;
+    if (block.count != 0) blocks.push_back(block);
+}
+
+void append_canonical_range_division_block(
+    std::vector<CanonicalRangeBitBlock>& blocks, std::uint64_t& cursor,
+    const std::vector<DivisionWitness>& divisions,
+    const std::array<unsigned, 5>& profile) {
+    const std::uint64_t bits_per_division = std::accumulate(
+        profile.begin(), profile.end(), std::uint64_t(0));
+    if (bits_per_division == 0 || divisions.size() > std::numeric_limits<std::uint64_t>::max() / bits_per_division)
+        throw std::overflow_error("canonical range division query block overflows u64");
+    CanonicalRangeBitBlock block;
+    block.kind = CanonicalRangeBitBlock::Kind::Division;
+    block.begin = cursor;
+    block.count = static_cast<std::uint64_t>(divisions.size()) * bits_per_division;
+    block.divisions = &divisions;
+    block.division_widths = profile;
+    if (block.count > std::numeric_limits<std::uint64_t>::max() - cursor)
+        throw std::overflow_error("canonical range division query cursor overflows u64");
+    cursor += block.count;
+    if (block.count != 0) blocks.push_back(block);
+}
+
+void append_canonical_range_attention_blocks(
+    std::vector<CanonicalRangeBitBlock>& blocks, std::uint64_t& cursor,
+    const AttentionTrace& trace, bool hidden, const StaticTables& tables,
+    const std::array<unsigned, 5>& profile) {
+    append_canonical_range_tuple_block(blocks, cursor, trace.raw_score,
+                                       trace.leaky_score, tables.lrelu);
+    append_canonical_range_tuple_block(blocks, cursor, trace.delta,
+                                       trace.exp, tables.exp);
+    if (hidden)
+        append_canonical_range_tuple_block(blocks, cursor, trace.recovered,
+                                           trace.activated, tables.elu);
+    append_canonical_range_vector_block(
+        blocks, cursor, trace.delta,
+        nonnegative_bit_width(2 * static_cast<Wide>(lookup_rectangle(tables.lrelu).second)));
+    append_canonical_range_division_block(blocks, cursor, trace.divisions,
+                                          profile);
+}
+
+std::uint64_t canonical_range_bit_value(
+    const std::vector<CanonicalRangeBitBlock>& blocks,
+    std::uint64_t real_queries, std::uint64_t padded_queries,
+    std::uint64_t padding_index, std::uint64_t row) {
+    if (row >= padded_queries)
+        throw std::out_of_range("canonical range Lasso query row is invalid");
+    if (row >= real_queries) return padding_index;
+    const auto found = std::upper_bound(
+        blocks.begin(), blocks.end(), row,
+        [](std::uint64_t index, const CanonicalRangeBitBlock& block) {
+            return index < block.begin;
+        });
+    if (found == blocks.begin())
+        throw std::out_of_range("canonical range Lasso query row has no source block");
+    const CanonicalRangeBitBlock& block = *std::prev(found);
+    const std::uint64_t local = row - block.begin;
+    if (local >= block.count)
+        throw std::out_of_range("canonical range Lasso query source row is invalid");
+    Wide value = 0;
+    unsigned bit = 0;
+    unsigned width = 0;
+    if (block.kind == CanonicalRangeBitBlock::Kind::Tuple) {
+        const std::uint64_t tuple_bits = 2ULL * block.width_x + 2ULL * block.width_y;
+        const std::uint64_t tuple = local / tuple_bits;
+        const std::uint64_t within = local % tuple_bits;
+        if (tuple >= block.first->size() || tuple >= block.second->size())
+            throw std::out_of_range("canonical range tuple source row is invalid");
+        const Wide x = block.first->at(static_cast<std::size_t>(tuple));
+        const Wide y = block.second->at(static_cast<std::size_t>(tuple));
+        const Wide x_plus = x + block.bound_x;
+        const Wide x_minus = static_cast<Wide>(block.bound_x) - x;
+        const Wide y_plus = y + block.bound_y;
+        const Wide y_minus = static_cast<Wide>(block.bound_y) - y;
+        if (within < block.width_x) { value = x_plus; bit = static_cast<unsigned>(within); width = block.width_x; }
+        else if (within < 2ULL * block.width_x) { value = x_minus; bit = static_cast<unsigned>(within - block.width_x); width = block.width_x; }
+        else if (within < 2ULL * block.width_x + block.width_y) { value = y_plus; bit = static_cast<unsigned>(within - 2ULL * block.width_x); width = block.width_y; }
+        else { value = y_minus; bit = static_cast<unsigned>(within - 2ULL * block.width_x - block.width_y); width = block.width_y; }
+    } else if (block.kind == CanonicalRangeBitBlock::Kind::Vector) {
+        const std::uint64_t element = local / block.width_x;
+        bit = static_cast<unsigned>(local % block.width_x);
+        width = block.width_x;
+        if (element >= block.first->size())
+            throw std::out_of_range("canonical range scalar source row is invalid");
+        value = block.first->at(static_cast<std::size_t>(element));
+    } else {
+        std::uint64_t bits_per_division = 0;
+        for (unsigned width : block.division_widths) bits_per_division += width;
+        const std::uint64_t division_index = local / bits_per_division;
+        std::uint64_t within = local % bits_per_division;
+        if (division_index >= block.divisions->size())
+            throw std::out_of_range("canonical range division source row is invalid");
+        const std::array<Int, 5> values = canonical_division_values(
+            block.divisions->at(static_cast<std::size_t>(division_index)));
+        std::size_t field = 0;
+        while (field < block.division_widths.size() && within >= block.division_widths[field]) {
+            within -= block.division_widths[field];
+            ++field;
+        }
+        if (field == block.division_widths.size())
+            throw std::out_of_range("canonical range division bit selector is invalid");
+        value = values[field];
+        bit = static_cast<unsigned>(within);
+        width = block.division_widths[field];
+    }
+    if (value < 0 || value > static_cast<Wide>(std::numeric_limits<Int>::max()))
+        throw std::invalid_argument("canonical range value is outside the nonnegative signed-63-bit domain");
+    if (width == 0 || width > 63 || bit >= width ||
+        (width < 63 && value >= (static_cast<Wide>(1) << width)))
+        throw std::logic_error("canonical range query bit exceeds its authenticated width");
+    return static_cast<std::uint64_t>((value >> bit) & 1);
+}
+
 struct LassoAdapterBundle {
     std::shared_ptr<std::vector<NativeLassoFamilyProver>> families =
         std::make_shared<std::vector<NativeLassoFamilyProver>>();
@@ -3810,11 +4066,37 @@ LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan& plan, const ForwardR
             family.table = {Fr(0), Fr(1)};
             family.padding_index = 0;
             family.padding_value = Fr(0);
-            family.selected_table_rows.reserve(family.padded_queries);
-            append_canonical_range_query_indices(family.selected_table_rows,
-                                                 plan, forward, tables);
-            if (family.selected_table_rows.size() != descriptor.real_queries)
+            std::vector<CanonicalRangeBitBlock> blocks;
+            std::uint64_t cursor = 0;
+            std::size_t profile_index = 0;
+            for (const HiddenLayerTrace& layer : forward.trace.hidden_layers)
+                for (const AttentionTrace& head : layer.heads)
+                    append_canonical_range_attention_blocks(
+                        blocks, cursor, head, true, tables,
+                        plan.division_range_bits.at(profile_index++));
+            for (const OutputHeadTrace& head : forward.trace.output_heads) {
+                append_canonical_range_attention_blocks(
+                    blocks, cursor, head.attention, false, tables,
+                    plan.division_range_bits.at(profile_index++));
+                append_canonical_range_division_block(
+                    blocks, cursor, head.alignment_divisions,
+                    plan.division_range_bits.at(profile_index++));
+            }
+            append_canonical_range_division_block(
+                blocks, cursor, forward.trace.final_average_divisions,
+                plan.division_range_bits.at(profile_index++));
+            if (profile_index != plan.division_range_bits.size() ||
+                cursor != descriptor.real_queries)
                 throw std::invalid_argument("canonical range Lasso query count does not match plan");
+            auto range_blocks = std::make_shared<std::vector<CanonicalRangeBitBlock>>(std::move(blocks));
+            const std::uint64_t real_queries = descriptor.real_queries;
+            const std::uint64_t padded_queries = family.padded_queries;
+            const std::uint64_t padding_index = family.padding_index;
+            family.selected_table_row_at = [range_blocks, real_queries,
+                                            padded_queries, padding_index](std::uint64_t row) {
+                return canonical_range_bit_value(*range_blocks, real_queries,
+                                                 padded_queries, padding_index, row);
+            };
         } else {
             const std::vector<TablePoint>& points = table_points_for(tables, descriptor.family_id);
             Int bx = 0, by = 0;
@@ -3828,48 +4110,47 @@ LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan& plan, const ForwardR
             while (family.table.size() < descriptor.table_domain) family.table.push_back(family.table.front());
             family.padding_index = 0;
             family.padding_value = family.table[0];
-            std::map<std::pair<Int, Int>, std::uint64_t> table_indices;
+            auto table_indices = std::make_shared<std::map<std::pair<Int, Int>, std::uint64_t>>();
             for (std::uint64_t index = 0; index < points.size(); ++index)
-                table_indices.emplace(std::make_pair(points[static_cast<std::size_t>(index)].x,
-                                                     points[static_cast<std::size_t>(index)].y),
-                                      index);
-            const auto append_pair = [&](Int x, Int y) {
-                const auto found = table_indices.find(std::make_pair(x, y));
-                if (found == table_indices.end())
-                    throw std::invalid_argument("Lasso query is absent from static table");
-                const Fr query = packed_table_value(x, y, bx, by);
-                if (found->second >= family.table.size() ||
-                    family.table[static_cast<std::size_t>(found->second)] != query)
-                    throw std::logic_error("Lasso table coordinate index is inconsistent");
-                family.selected_table_rows.push_back(found->second);
-            };
+                table_indices->emplace(std::make_pair(points[static_cast<std::size_t>(index)].x,
+                                                      points[static_cast<std::size_t>(index)].y),
+                                       index);
+            std::vector<CanonicalLassoPairBlock> query_blocks;
+            std::uint64_t query_cursor = 0;
             const auto append_attention_queries = [&](const AttentionTrace& trace,
                                                        bool hidden) {
-                if (descriptor.family_id == "function/lrelu") {
-                    for (std::size_t index = 0; index < trace.raw_score.size(); ++index)
-                        append_pair(trace.raw_score[index], trace.leaky_score[index]);
-                } else if (descriptor.family_id == "function/exp") {
-                    for (std::size_t index = 0; index < trace.delta.size(); ++index)
-                        append_pair(trace.delta[index], trace.exp[index]);
-                } else if (descriptor.family_id == "function/elu" && hidden) {
-                    for (std::size_t index = 0; index < trace.recovered.size(); ++index)
-                        append_pair(trace.recovered[index], trace.activated[index]);
-                }
+                const std::vector<Int>* x = nullptr;
+                const std::vector<Int>* y = nullptr;
+                if (descriptor.family_id == "function/lrelu") { x = &trace.raw_score; y = &trace.leaky_score; }
+                else if (descriptor.family_id == "function/exp") { x = &trace.delta; y = &trace.exp; }
+                else if (descriptor.family_id == "function/elu" && hidden) { x = &trace.recovered; y = &trace.activated; }
+                if (x == nullptr) return;
+                if (x->size() != y->size() || x->size() > std::numeric_limits<std::uint64_t>::max() - query_cursor)
+                    throw std::overflow_error("canonical function Lasso query source extent overflows");
+                if (!x->empty()) query_blocks.push_back({query_cursor, static_cast<std::uint64_t>(x->size()), x, y});
+                query_cursor += static_cast<std::uint64_t>(x->size());
             };
-            family.selected_table_rows.reserve(family.padded_queries);
             for (const HiddenLayerTrace& layer : forward.trace.hidden_layers)
                 for (const AttentionTrace& head : layer.heads)
                     append_attention_queries(head, true);
             if (descriptor.family_id != "function/elu")
                 for (const OutputHeadTrace& head : forward.trace.output_heads)
                     append_attention_queries(head.attention, false);
-            if (family.selected_table_rows.size() != descriptor.real_queries)
+            if (query_cursor != descriptor.real_queries)
                 throw std::invalid_argument("canonical function Lasso query count does not match plan");
+            const std::uint64_t real_queries = descriptor.real_queries;
+            const std::uint64_t padded_queries = family.padded_queries;
+            const std::uint64_t padding_index = family.padding_index;
+            family.selected_table_row_at = [query_blocks = std::move(query_blocks),
+                                            table_indices, real_queries,
+                                            padded_queries, padding_index](std::uint64_t row) {
+                return canonical_lasso_pair_row(query_blocks, *table_indices,
+                                                real_queries, padded_queries,
+                                                padding_index, row);
+            };
         }
-        while (family.selected_table_rows.size() < family.padded_queries)
-            family.selected_table_rows.push_back(family.padding_index);
-        if (family.selected_table_rows.size() != family.padded_queries)
-            throw std::invalid_argument("canonical Lasso selected-row vector has the wrong size");
+        if (!family.selected_table_rows.empty() || !family.selected_table_row_at)
+            throw std::invalid_argument("canonical Lasso formal selected-row provider is not lazy");
         family.matrix_layout = native_lasso_balanced_matrix_layout(
             family.padded_queries, family.table.size());
         family.matrix_layout.trusted_generator_id =
@@ -3907,8 +4188,9 @@ LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan& plan, const ForwardR
                 const NativeLassoFamilyProver& family =
                     family_storage->at(family_index);
                 const std::uint64_t row = index - begin;
-                const std::uint64_t selected =
-                    family.selected_table_rows.at(static_cast<std::size_t>(row));
+                const std::uint64_t selected = family.selected_table_row_at
+                    ? family.selected_table_row_at(row)
+                    : family.selected_table_rows.at(static_cast<std::size_t>(row));
                 if (selected >= family.table.size())
                     throw std::out_of_range("canonical L_qry selected table row is invalid");
                 return family.table[static_cast<std::size_t>(selected)];
@@ -4553,14 +4835,15 @@ bool read_exact(std::ifstream& in, char* buffer, std::size_t size) {
     return in.good() && static_cast<std::size_t>(in.gcount()) == size;
 }
 
-bool wire_size_within_limit(std::ifstream& in) {
+bool wire_size_within_limit(std::ifstream& in, std::uint64_t max_wire_bytes) {
     const std::istream::pos_type origin = in.tellg();
     if (origin == std::istream::pos_type(-1)) return false;
     in.seekg(0, std::ios::end);
     const std::istream::pos_type end = in.tellg();
     in.seekg(origin);
     if (end == std::istream::pos_type(-1) || end < origin) return false;
-    return static_cast<std::uint64_t>(end) <= kArtifactMaxWireBytes;
+    const std::uint64_t size = static_cast<std::uint64_t>(end);
+    return size <= max_wire_bytes && size <= kArtifactHardMaxWireBytes;
 }
 
 void write_u8(std::ofstream& out, std::uint8_t value) {
@@ -6970,6 +7253,16 @@ bool GatProofArtifact::valid_wire(std::string* reason, const NativeProofSession*
 }
 
 bool GatProofArtifact::write(const std::string& path, std::string* reason) const {
+    return write(path, kArtifactMaxWireBytes, reason);
+}
+
+bool GatProofArtifact::write(const std::string& path,
+                             std::uint64_t max_wire_bytes,
+                             std::string* reason) const {
+    if (max_wire_bytes == 0 || max_wire_bytes > kArtifactHardMaxWireBytes) {
+        set_reason(reason, "proof artifact writer byte limit is invalid");
+        return false;
+    }
     if (!valid_wire(reason)) return false;
     std::ofstream out(path.c_str(), std::ios::binary | std::ios::trunc);
     if (!out) {
@@ -7004,17 +7297,35 @@ bool GatProofArtifact::write(const std::string& path, std::string* reason) const
         set_reason(reason, "proof artifact write failed");
         return false;
     }
+    const std::ofstream::pos_type end = out.tellp();
+    out.close();
+    if (end == std::ofstream::pos_type(-1) ||
+        static_cast<std::uint64_t>(end) > max_wire_bytes) {
+        std::remove(path.c_str());
+        set_reason(reason, "proof artifact exceeds trusted-context byte limit");
+        return false;
+    }
     return true;
 }
 
 bool GatProofArtifact::read(const std::string& path, GatProofArtifact& out, std::string* reason) {
+    return read(path, out, kArtifactMaxWireBytes, reason);
+}
+
+bool GatProofArtifact::read(const std::string& path, GatProofArtifact& out,
+                            std::uint64_t max_wire_bytes,
+                            std::string* reason) {
+    if (max_wire_bytes == 0 || max_wire_bytes > kArtifactHardMaxWireBytes) {
+        set_reason(reason, "proof artifact reader byte limit is invalid");
+        return false;
+    }
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in) {
         set_reason(reason, "cannot open proof artifact");
         return false;
     }
-    if (!wire_size_within_limit(in)) {
-        set_reason(reason, "proof artifact exceeds size limit");
+    if (!wire_size_within_limit(in, max_wire_bytes)) {
+        set_reason(reason, "proof artifact exceeds trusted-context size limit");
         return false;
     }
     in.seekg(0, std::ios::beg);
@@ -7148,6 +7459,48 @@ VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public
 }
 
 std::string verifier_context_digest(const VerifierContext& context) { return canonical_digest64(context_encoding(context)); }
+
+std::uint64_t gat_proof_artifact_wire_limit(const VerifierContext& context,
+                                            std::string* reason) {
+    try {
+        unsigned __int128 rows = 0;
+        unsigned __int128 chunks = 0;
+        for (const LassoFamilyDescriptor& family : context.plan.lasso) {
+            const std::uint64_t padded_queries =
+                static_cast<std::uint64_t>(family.padded_queries);
+            const std::uint64_t table_domain =
+                static_cast<std::uint64_t>(family.table_domain);
+            if (static_cast<std::size_t>(padded_queries) !=
+                    family.padded_queries ||
+                static_cast<std::size_t>(table_domain) !=
+                    family.table_domain)
+                throw std::overflow_error(
+                    "trusted Lasso dimensions exceed u64 artifact bound");
+            const NativeLassoFamilyPublic::MatrixDescriptor layout =
+                native_lasso_balanced_matrix_layout(padded_queries,
+                                                    table_domain);
+            rows += layout.rows;
+            chunks += layout.rows / 4096 +
+                      static_cast<std::uint64_t>(layout.rows % 4096 != 0);
+        }
+        const unsigned __int128 max_wire =
+            static_cast<unsigned __int128>(kArtifactMaxWireBytes) +
+            rows * kArtifactRowPointBytesPerCopy * 2 +
+            chunks * kArtifactRowChunkBytesPerCopy * 2 +
+            static_cast<unsigned __int128>(context.plan.lasso.size()) *
+                kArtifactRowHeaderBytesPerFamily;
+        if (max_wire > kArtifactHardMaxWireBytes ||
+            max_wire > std::numeric_limits<std::size_t>::max()) {
+            set_reason(reason,
+                       "trusted Q/T row commitments exceed the absolute 4 GiB proof artifact limit");
+            return 0;
+        }
+        return static_cast<std::uint64_t>(max_wire);
+    } catch (const std::exception& error) {
+        set_reason(reason, error.what());
+        return 0;
+    }
+}
 
 namespace {
 
@@ -7744,9 +8097,12 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
         const zkgpt::native_pedersen::PedersenBasis scalar_basis =
             zkgpt::native_pedersen::derive_basis(
                 "zkgpt/masked-sumcheck/v2/" + session.statement_digest());
+        const std::vector<hyrax::HyraxTensorZeroInterval> l_query_zero_intervals =
+            canonical_l_query_zero_intervals(plan);
         const NativeLassoTensorTailProveHook tensor_tail_stage =
             [&aux_commit_view, &aux_tensor_commitment, &aux_tensor_state,
-             &aux_commit_values, &scalar_basis, &lasso_digest](
+             &aux_commit_values, &scalar_basis, &lasso_digest,
+             l_query_zero_intervals](
                 NativeProofSession& proof_session,
                 const NativeLassoQueryProver& query,
                 std::string* tail_reason) {
@@ -7780,6 +8136,16 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
                         exact_position, scalar_basis, beta, terminal_point,
                         sumcheck, terminal_opening, tail_reason))
                     return false;
+                beta.clear();
+                terminal_point.clear();
+                sumcheck = NativeMaskedSumcheckResult{};
+                std::vector<hyrax::HyraxTensorZeroIntervalCertificate> gap_certificates;
+                if (!hyrax::prove_hyrax_tensor_zero_interval_certificates_with_session(
+                        query.tensor_view, query.tensor_commitment,
+                        query.tensor_state, query.value_provider,
+                        l_query_zero_intervals, proof_session, exact_position,
+                        scalar_basis, gap_certificates, tail_reason))
+                    return false;
                 return exact_position == proof_session.checkpoint();
             };
         NativeLassoBundleResult lasso_result;
@@ -7798,6 +8164,8 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
         auto input_provider = std::make_shared<NativeGkrInputProvider>();
         input_provider->full_size = circuit_witness.input_layer_size;
         input_provider->segment_domain = plan.input_layout.n_in;
+        input_provider->segment_support = canonical_gkr_input_support(plan);
+        input_provider->support_complete = true;
         for (std::size_t segment = 0; segment < 4; ++segment)
             input_provider->logical_lengths[segment] =
                 plan.input_layout.segments.at(segment).logical_length;
@@ -8366,7 +8734,8 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
             zkgpt::native_pedersen::derive_basis(
                 "zkgpt/masked-sumcheck/v2/" + session.statement_digest());
         const NativeLassoTensorTailVerifyHook tensor_tail_stage =
-            [&trusted_aux_tensor_view, &artifact, &scalar_basis](
+            [&trusted_aux_tensor_view, &artifact, &scalar_basis,
+             l_query_zero_intervals = canonical_l_query_zero_intervals(context.plan)](
                 const NativeProofSession& proof_session,
                 const NativeLassoQueryPublic& query,
                 std::size_t& exact_position,
@@ -8395,6 +8764,15 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
                         query.tensor_view, query.tensor_commitment,
                         proof_session, exact_position, scalar_basis, beta,
                         terminal_point, sumcheck, tail_reason))
+                    return false;
+                beta.clear();
+                terminal_point.clear();
+                sumcheck = NativeMaskedSumcheckResult{};
+                std::vector<hyrax::HyraxTensorZeroIntervalCertificate> gap_certificates;
+                if (!hyrax::verify_hyrax_tensor_zero_interval_certificates_with_session(
+                        query.tensor_view, query.tensor_commitment,
+                        l_query_zero_intervals, proof_session, exact_position,
+                        scalar_basis, gap_certificates, tail_reason))
                     return false;
                 return true;
             };
@@ -8449,7 +8827,10 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
 
         std::size_t gkr_end = session.messages().size();
         NativeGkrInputBinding verified_gkr_binding;
-        if (!verify_masked_gkr_transcript(session, context.plan.circuit, public_output, matmuls, gkr_start, &gkr_end, reason, &verified_gkr_binding)) {
+        const NativeGkrInputSupport trusted_gkr_input_support =
+            canonical_gkr_input_support(context.plan);
+        if (!verify_masked_gkr_transcript(session, context.plan.circuit, public_output, matmuls, gkr_start, &gkr_end, reason,
+                                          &verified_gkr_binding, &trusted_gkr_input_support)) {
             if (reason != nullptr && reason->empty()) set_reason(reason, "native GKR verifier rejected without a diagnostic");
             return false;
         }
