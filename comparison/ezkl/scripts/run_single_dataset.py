@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one ezkl GAT CPU/GPU formal cell with explicit fail-closed gates.
+"""Internal per-dataset native runner for the hybrid formal chain and local CPU checks.
 
 Without ``--execute-formal`` this command is a non-executing plan.  A formal
 cell runs native setup first, then consumes an externally produced public
@@ -27,6 +27,8 @@ from formal_common import (
     CANONICAL_RELATION,
     CANONICAL_STATEMENT_MODE,
     CONTRACT,
+    FORMAL_BACKEND,
+    FORMAL_PHASE_BACKENDS,
     ROOT,
     ContractError,
     abort,
@@ -63,7 +65,7 @@ DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", choices=DATASETS, required=True)
-    p.add_argument("--backend", choices=BACKENDS, required=True)
+    p.add_argument("--backend", choices=BACKENDS, required=True, help="native engine selection; GPU execution records a hybrid result")
     p.add_argument("--execute-formal", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
@@ -213,7 +215,7 @@ def validate_core_manifest(
 
 def print_plan(args: argparse.Namespace, config: Path, output: Path) -> None:
     print("formal execution not requested; no setup, statement wait, final, prove, verify or full dataset work was run")
-    print(f"dataset={args.dataset} backend={args.backend}")
+    print(f"dataset={args.dataset} native_backend={args.backend} result_backend={FORMAL_BACKEND if args.backend == 'gpu' else args.backend}")
     print(f"config={baseline_relative(config, 'config')}")
     print(f"output_dir={baseline_relative(output, 'output-dir')}")
     print("execution order: gat-prepare --phase setup -> independent public-statement producer -> gat-prepare --phase final -> gat-witness -> prove -> verify")
@@ -226,7 +228,7 @@ def main(args: argparse.Namespace) -> int:
     output = ensure_relative_arg(
         args.output_dir,
         "output-dir",
-        ROOT / "runs" / "formal" / args.dataset / args.backend,
+        ROOT / "runs" / "formal" / args.dataset / (FORMAL_BACKEND if args.backend == "gpu" else args.backend),
     )
     if not args.execute_formal:
         print_plan(args, config, output)
@@ -547,9 +549,10 @@ def main(args: argparse.Namespace) -> int:
         "schema_version": 1,
         "status": status,
         "dataset": args.dataset,
-        "backend": args.backend,
-        "execution_mode": "mixed" if args.backend == "gpu" else "cpu",
-        "phase_backends": {"prepare_compile": "cpu", "setup": "mixed" if args.backend == "gpu" else "cpu", "public_statement": "cpu", "witness_generation": "cpu", "model_commitment": "cpu", "prove": "mixed" if args.backend == "gpu" else "cpu", "verify": "cpu"},
+        "backend": FORMAL_BACKEND if args.backend == "gpu" else args.backend,
+        "native_backend": args.backend,
+        "execution_mode": FORMAL_BACKEND if args.backend == "gpu" else "cpu",
+        "phase_backends": FORMAL_PHASE_BACKENDS if args.backend == "gpu" else {phase: {"cpu": True, "gpu": False} for phase in FORMAL_PHASE_BACKENDS},
         "proof_scope": "full_gat",
         "privacy_policy": "model_and_trace_hidden",
         "public_statement_mode": "external",

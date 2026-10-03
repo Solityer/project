@@ -99,6 +99,7 @@ NativeProofSession rebuild(const NativeProofSession& source, const std::vector<s
 }
 
 std::vector<F> basis_for(const std::vector<F>& point) {
+    if (point.empty()) return {F_ONE};
     std::vector<F> result(1ULL << point.size());
     result[0] = F(1) - point[0];
     result[1] = point[0];
@@ -111,6 +112,102 @@ std::vector<F> basis_for(const std::vector<F>& point) {
         }
     }
     return result;
+}
+
+bool weighted_booleanity_regression() {
+    std::vector<F> values(16, F_ZERO);
+    values[0] = F(2);
+    for (std::size_t index = 1; index <= 8; ++index) values[index] = F(1) / F(2);
+    std::vector<F> beta(4, F_ZERO);
+    F unweighted = F_ZERO;
+    F weighted = F_ZERO;
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        const F booleanity = values[index] * (values[index] - F_ONE);
+        unweighted += booleanity;
+        F eq = F_ONE;
+        for (std::size_t bit = 0; bit < beta.size(); ++bit)
+            eq *= ((index >> bit) & 1U) != 0 ? beta[bit] : F_ONE - beta[bit];
+        weighted += eq * booleanity;
+    }
+    return unweighted.isZero() && weighted == F(2);
+}
+
+F interpolate_round_polynomial(const std::vector<F>& evaluations, const F& point) {
+    if (evaluations.size() != 4) throw std::invalid_argument("weighted Booleanity reference degree is not three");
+    F result = F_ZERO;
+    for (std::size_t i = 0; i < evaluations.size(); ++i) {
+        F basis = F_ONE;
+        for (std::size_t j = 0; j < evaluations.size(); ++j) {
+            if (i == j) continue;
+            basis *= (point - F(static_cast<int>(j))) / F(static_cast<int>(i) - static_cast<int>(j));
+        }
+        result += evaluations[i] * basis;
+    }
+    return result;
+}
+
+bool dense_weighted_booleanity_degree3_reference() {
+    std::vector<F> values(16, F_ZERO);
+    values[0] = F(2);
+    for (std::size_t index = 1; index <= 8; ++index) values[index] = F(1) / F(2);
+    const std::vector<F> beta = {F(2), F(3), F(5), F(7)};
+    const F challenges[4] = {F(11), F(13), F(17), F(19)};
+    F running = F_ZERO;
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        F weight = F_ONE;
+        for (std::size_t bit = 0; bit < beta.size(); ++bit)
+            weight *= ((index >> bit) & 1U) != 0 ? beta[bit] : F_ONE - beta[bit];
+        running += weight * values[index] * (values[index] - F_ONE);
+    }
+
+    for (std::size_t round = 0; round < beta.size(); ++round) {
+        const std::size_t half = values.size() / 2;
+        std::vector<F> polynomial(4, F_ZERO);
+        F prefix_weight = F_ONE;
+        for (std::size_t bit = 0; bit < round; ++bit)
+            prefix_weight *= F_ONE - beta[bit] + (F(2) * beta[bit] - F_ONE) * challenges[bit];
+        for (std::size_t pair = 0; pair < half; ++pair) {
+            F suffix_weight = F_ONE;
+            for (std::size_t bit = round + 1; bit < beta.size(); ++bit) {
+                const bool set = ((pair >> (bit - round - 1)) & 1U) != 0;
+                suffix_weight *= set ? beta[bit] : F_ONE - beta[bit];
+            }
+            for (std::size_t evaluation = 0; evaluation < polynomial.size(); ++evaluation) {
+                const F x(static_cast<int>(evaluation));
+                const F matrix_value = values[2 * pair] + x * (values[2 * pair + 1] - values[2 * pair]);
+                const F current_weight = F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * x;
+                polynomial[evaluation] += prefix_weight * suffix_weight * current_weight * matrix_value * (matrix_value - F_ONE);
+            }
+        }
+        if (polynomial[0] + polynomial[1] != running) return false;
+        running = interpolate_round_polynomial(polynomial, challenges[round]);
+        for (std::size_t pair = 0; pair < half; ++pair)
+            values[pair] += challenges[round] * (values[2 * pair + 1] - values[2 * pair]);
+        values.resize(half);
+    }
+    F terminal_weight = F_ONE;
+    for (std::size_t bit = 0; bit < beta.size(); ++bit)
+        terminal_weight *= F_ONE - beta[bit] + (F(2) * beta[bit] - F_ONE) * challenges[bit];
+    return values.size() == 1 && running == terminal_weight * values[0] * (values[0] - F_ONE);
+}
+
+bool balanced_row_fold_matches_dense(const NativeLassoFamilyPublic::MatrixDescriptor& layout, const std::vector<F>& dense, const std::vector<F>& point) {
+    if (dense.size() != layout.vector_size || point.size() != layout.row_bits + layout.column_bits) return false;
+    const std::vector<F> column_point(point.begin(), point.begin() + layout.column_bits);
+    const std::vector<F> row_point(point.begin() + layout.column_bits, point.end());
+    const std::vector<F> column_weights = basis_for(column_point);
+    const std::vector<F> row_weights = basis_for(row_point);
+    std::vector<F> folded(static_cast<std::size_t>(layout.columns), F_ZERO);
+    for (std::uint64_t row = 0; row < layout.rows; ++row)
+        for (std::uint64_t column = 0; column < layout.columns; ++column)
+            folded[static_cast<std::size_t>(column)] += row_weights[static_cast<std::size_t>(row)] * dense[static_cast<std::size_t>(row * layout.columns + column)];
+    F split_evaluation = F_ZERO;
+    for (std::uint64_t column = 0; column < layout.columns; ++column)
+        split_evaluation += column_weights[static_cast<std::size_t>(column)] * folded[static_cast<std::size_t>(column)];
+    const std::vector<F> dense_weights = basis_for(point);
+    F dense_evaluation = F_ZERO;
+    for (std::size_t index = 0; index < dense.size(); ++index) dense_evaluation += dense_weights[index] * dense[index];
+    return split_evaluation == dense_evaluation;
 }
 
 }
@@ -131,15 +228,39 @@ int main() {
         family.resource_id = "resource-a-v1";
         family.registration_id = "registration-a-v1";
         family.table = tables[family_index];
-        family.matrix_generators = generators("native-lasso/M/" + family.family_id, 4);
+        family.matrix_layout = native_lasso_balanced_matrix_layout(2, family.table.size());
+        family.matrix_layout.trusted_generator_id = "native-lasso/M/" + family.family_id + "/column-v2";
+        family.matrix_layout.column_generators = generators(family.matrix_layout.trusted_generator_id, family.matrix_layout.columns);
         family.segment_offset = 0;
         family.logical_queries = 2;
         family.padded_queries = 2;
         family.padding_index = 0;
         family.padding_value = family.table[0];
-        family.queries = family.table;
-        family.matrix.assign(4, Fr(0));
-        for (std::size_t row = 0; row < 2; ++row) family.matrix[row + row * 2] = Fr(1);
+        family.selected_table_rows = {0, 1};
+    }
+    if (!weighted_booleanity_regression()) {
+        std::cerr << "native Lasso weighted booleanity cancellation regression failed\n";
+        return 10;
+    }
+    if (!dense_weighted_booleanity_degree3_reference()) {
+        std::cerr << "native Lasso weighted degree-three dense reference failed\n";
+        return 10;
+    }
+    const NativeLassoSparseView sparse = native_lasso_sparse_view(families.front());
+    std::vector<F> dense_matrix(4, F_ZERO);
+    for (std::uint64_t row = 0; row < families.front().padded_queries; ++row)
+        dense_matrix[static_cast<std::size_t>(row + families.front().selected_table_rows[static_cast<std::size_t>(row)] * families.front().padded_queries)] = F_ONE;
+    const std::vector<F> split_point = {F(2), F(3)};
+    const std::vector<F> dense_basis = basis_for(split_point);
+    F dense_evaluation = F_ZERO;
+    for (std::size_t index = 0; index < dense_matrix.size(); ++index) dense_evaluation += dense_basis[index] * dense_matrix[index];
+    if (sparse.evaluate_mle(split_point) != dense_evaluation) {
+        std::cerr << "native Lasso sparse flat-index MLE differs from dense reference\n";
+        return 11;
+    }
+    if (!balanced_row_fold_matches_dense(families.front().matrix_layout, dense_matrix, split_point)) {
+        std::cerr << "native Lasso low-column/high-row split differs from dense flat-index reference\n";
+        return 12;
     }
     std::vector<NativeLassoFamilyPublic> public_families;
     for (const NativeLassoFamilyProver& family : families) public_families.push_back(family);
@@ -230,6 +351,38 @@ int main() {
             return 6;
         }
     }
+    for (std::size_t index = 0; index < produced.messages().size(); ++index)
+        if (produced.messages()[index].label.compare(0, sizeof("lasso/a/commitment/rows/") - 1, "lasso/a/commitment/rows/") == 0 &&
+            index >= first_challenge) {
+            std::cerr << "row commitment chunk was not fixed before the first challenge\n";
+            return 6;
+        }
+    std::size_t last_booleanity_weight = 0;
+    std::size_t first_query_round = produced.messages().size();
+    bool have_booleanity_weight = false;
+    for (std::size_t round = 0; round < 2; ++round) {
+        const std::string label = "challenge/lasso/a/booleanity/weight/" + std::to_string(round);
+        bool found = false;
+        std::size_t weight_index = 0;
+        for (std::size_t index = 0; index < produced.messages().size(); ++index)
+            if (produced.messages()[index].label == label) {
+                found = true;
+                weight_index = index;
+                break;
+            }
+        if (!found || (have_booleanity_weight && weight_index <= last_booleanity_weight)) {
+            std::cerr << "weighted Booleanity challenge is missing or out of order\n";
+            return 7;
+        }
+        last_booleanity_weight = weight_index;
+        have_booleanity_weight = true;
+    }
+    for (std::size_t index = 0; index < produced.messages().size(); ++index)
+        if (produced.messages()[index].label == "challenge/lasso/a/a-query/r/0") first_query_round = index;
+    if (first_query_round <= last_booleanity_weight) {
+        std::cerr << "weighted Booleanity challenge schedule is not fixed before query rounds\n";
+        return 7;
+    }
 
     const std::string path = "/tmp/zkgpt-native-lasso-range.bin";
     if (!produced.write(path, &reason)) {
@@ -278,7 +431,7 @@ int main() {
         return 12;
     }
     std::vector<NativeLassoFamilyPublic> wrong_matrix = public_families;
-    hashAndMapToG1(wrong_matrix[0].matrix_generators[0], "native-lasso/wrong-M");
+    hashAndMapToG1(wrong_matrix[0].matrix_layout.column_generators[0], "native-lasso/wrong-M");
     if (native_lasso_verify_bundle(restored, wrong_matrix, public_query, nullptr, &reason)) {
         std::cerr << "M_f basis identity tamper was accepted\n";
         std::remove(path.c_str());

@@ -53,7 +53,19 @@ bool valid_layout(const InputLayout& layout, std::string* reason) {
 }
 
 SegmentedInputOracle::SegmentedInputOracle(const InputLayout& layout, std::array<std::vector<Fr>, 4> segments)
-    : layout_(layout), segments_(std::move(segments)) {
+    : layout_(layout) {
+    for (std::size_t segment = 0; segment < segments.size(); ++segment) {
+        segments_[segment].reserve(segments[segment].size());
+        for (const Fr& value : segments[segment]) segments_[segment].push_back(value);
+    }
+    std::string reason;
+    if (!valid(&reason)) throw std::invalid_argument("invalid segmented input oracle: " + reason);
+}
+
+SegmentedInputOracle::SegmentedInputOracle(
+    const InputLayout& layout, std::array<zkgpt::NativeFieldVector, 4> segments,
+    std::array<SegmentValueProvider, 4> providers)
+    : layout_(layout), segments_(std::move(segments)), providers_(std::move(providers)) {
     std::string reason;
     if (!valid(&reason)) throw std::invalid_argument("invalid segmented input oracle: " + reason);
 }
@@ -70,7 +82,13 @@ SegmentedInputOracle SegmentedInputOracle::from_int_segments(const InputLayout& 
 bool SegmentedInputOracle::valid(std::string* reason) const {
     if (!valid_layout(layout_, reason)) return false;
     for (std::size_t index = 0; index < segments_.size(); ++index) {
-        if (segments_[index].size() != layout_.segments[index].logical_length) {
+        if (providers_[index]) {
+            if (!segments_[index].empty() &&
+                segments_[index].size() != layout_.segments[index].logical_length) {
+                if (reason != nullptr) *reason = "segmented input oracle provider and storage lengths disagree";
+                return false;
+            }
+        } else if (segments_[index].size() != layout_.segments[index].logical_length) {
             if (reason != nullptr) *reason = "segmented input oracle logical length mismatch";
             return false;
         }
@@ -89,6 +107,8 @@ Fr SegmentedInputOracle::value_at(std::size_t global_coordinate) const {
 Fr SegmentedInputOracle::segment_value(std::size_t segment, std::size_t local_coordinate) const {
     if (segment >= segments_.size()) throw std::out_of_range("segmented input oracle segment is out of range");
     if (local_coordinate >= layout_.n_in) throw std::out_of_range("segmented input oracle local coordinate is out of range");
+    if (local_coordinate >= layout_.segments[segment].logical_length) return Fr(0);
+    if (providers_[segment]) return providers_[segment](local_coordinate);
     if (local_coordinate >= segments_[segment].size()) return Fr(0);
     return segments_[segment][local_coordinate];
 }
@@ -112,14 +132,14 @@ Fr SegmentedInputOracle::evaluate_mle(std::size_t segment, const std::vector<Fr>
     if (point.size() != oracle_log2(layout_.n_in)) throw std::invalid_argument("segmented input oracle MLE point has the wrong dimension");
     Fr result = Fr(0);
 
-    for (std::size_t index = 0; index < segments_[segment].size(); ++index) {
+    for (std::size_t index = 0; index < layout_.segments[segment].logical_length; ++index) {
         Fr weight = Fr(1);
         std::size_t coordinate = index;
         for (const Fr& challenge : point) {
             weight *= (coordinate & 1U) != 0 ? challenge : (Fr(1) - challenge);
             coordinate >>= 1;
         }
-        result += segments_[segment][index] * weight;
+        result += segment_value(segment, index) * weight;
     }
     return result;
 }
@@ -178,7 +198,7 @@ bool SegmentedInputOracle::fold_chunks(std::size_t segment, const std::vector<Fr
         const std::uint64_t length = std::min<std::uint64_t>(chunk_entries, remaining - offset);
         if (length > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) return fail("segmented input oracle fold chunk exceeds host size");
         std::vector<Fr> chunk(static_cast<std::size_t>(length), Fr(0));
-        for (std::size_t index = 0; index < segments_[segment].size(); ++index) {
+        for (std::size_t index = 0; index < layout_.segments[segment].logical_length; ++index) {
             Fr weight = Fr(1);
             std::uint64_t coordinate = static_cast<std::uint64_t>(index);
             for (const Fr& challenge : prefix) {
@@ -186,7 +206,7 @@ bool SegmentedInputOracle::fold_chunks(std::size_t segment, const std::vector<Fr
                 coordinate >>= 1;
             }
             if (coordinate >= offset && coordinate - offset < length)
-                chunk[static_cast<std::size_t>(coordinate - offset)] += segments_[segment][index] * weight;
+                chunk[static_cast<std::size_t>(coordinate - offset)] += segment_value(segment, index) * weight;
         }
         std::string callback_reason;
         if (!callback(offset, chunk, &callback_reason)) {
@@ -203,7 +223,8 @@ Fr SegmentedInputOracle::weighted_sum(std::size_t segment, const std::function<F
     if (segment >= segments_.size()) throw std::out_of_range("segmented input oracle weighted-sum segment is invalid");
     if (!weight) throw std::invalid_argument("segmented input oracle weight callback is empty");
     Fr result = Fr(0);
-    for (std::size_t index = 0; index < segments_[segment].size(); ++index) result += segments_[segment][index] * weight(index);
+    for (std::size_t index = 0; index < layout_.segments[segment].logical_length; ++index)
+        result += segment_value(segment, index) * weight(index);
     return result;
 }
 

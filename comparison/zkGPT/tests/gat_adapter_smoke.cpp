@@ -244,8 +244,36 @@ void write_standalone_fixture(const std::string& directory, const VerifierContex
     if (!output.good()) throw std::runtime_error("cannot finalize standalone fixture");
 }
 
-int run_formal_fixture(const std::string& standalone_dir) {
+void run_signed_round_div_gate_boundary_checks() {
+    for (RoundingMode mode : {RoundingMode::TOWARD_ZERO, RoundingMode::NEAREST_TIES_AWAY}) {
+        for (Int dividend : {-5, -4, -3, -1, 0, 1, 3, 4, 5}) {
+            const DivisionResult exact = signed_round_div(dividend, 2, mode);
+            std::string reason;
+            if (!evaluate_signed_round_div_gate_assignment(dividend, 2, exact, mode, &reason)) throw std::runtime_error("native division boundary rejected: " + reason);
+            DivisionResult corrupt = exact;
+            corrupt.witness.r += 1;
+            if (evaluate_signed_round_div_gate_assignment(dividend, 2, corrupt, mode, &reason)) throw std::runtime_error("native division boundary corruption accepted");
+            corrupt = exact;
+            corrupt.witness.delta = -1;
+            if (evaluate_signed_round_div_gate_assignment(dividend, 2, corrupt, mode, &reason)) throw std::runtime_error("native negative division slack accepted");
+        }
+    }
+    std::cout << "native_division_boundary_checks: PASS both modes positive/negative/zero/exact/ties\n";
+}
+
+int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only) {
     const auto stage = [](const char* name) { std::cerr << "gat_adapter_formal_stage: " << name << '\n'; };
+    if (proof_verify_only && standalone_dir.empty()) {
+        std::cerr << "formal proof/verify fixture requires a fresh standalone directory\n";
+        return 1;
+    }
+    if (!standalone_dir.empty()) {
+        struct stat info{};
+        if (::stat(standalone_dir.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) {
+            std::cerr << "formal standalone directory must exist before proof generation\n";
+            return 1;
+        }
+    }
     stage("graph");
     Graph formal_graph;
     formal_graph.num_nodes = 1;
@@ -304,6 +332,34 @@ int run_formal_fixture(const std::string& standalone_dir) {
     assert(formal_forward.trace.relation_ok);
     stage("plan");
     const GatCircuitPlan formal_plan = build_gat_circuit_plan(formal_graph, formal_model, formal_quant, formal_forward);
+    if (!proof_verify_only) {
+        stage("native-gate-negative-checks");
+        const GatCircuitWitness assignment = build_gat_circuit_witness(formal_plan, formal_graph, formal_features, formal_model, formal_quant, formal_forward);
+        std::string assignment_reason;
+        if (!evaluate_gat_circuit_assignment(formal_plan, assignment.input_layer, formal_forward.logits, &assignment_reason)) throw std::runtime_error("honest native gate assignment rejected: " + assignment_reason);
+        const auto checkpoint = [&](const std::string& suffix) { for (const CheckpointDescriptor& item : formal_plan.checkpoints) if (item.id == suffix) return item.coordinate_offset; throw std::runtime_error("missing native negative-check checkpoint: " + suffix); };
+        const auto corrupt_coordinate = [&](const std::string& name, std::size_t coordinate, const Fr& increment = Fr(1)) { zkgpt::NativeFieldVector corrupted = assignment.input_layer; corrupted.at(coordinate) += increment; std::string reason; if (evaluate_gat_circuit_assignment(formal_plan, corrupted, formal_forward.logits, &reason) || reason.find("residual mismatches public target") == std::string::npos) throw std::runtime_error("native constraint corruption was not rejected: " + name + ": " + reason); };
+        const std::size_t division = checkpoint("rounding/hidden/hidden/layer0/head0");
+        corrupt_coordinate("public feature Aux copy", formal_plan.input_layout.segments.at(2).offset);
+        corrupt_coordinate("hidden concat", checkpoint("concat/hidden/layer0"));
+        corrupt_coordinate("group inverse", checkpoint("attention.softmax/hidden/layer0/head0.group_inverse"));
+        corrupt_coordinate("division inverse", division + 7);
+        corrupt_coordinate("zero iff", division + 1);
+        corrupt_coordinate("absolute dividend", division + 2);
+        corrupt_coordinate("remainder", division + 4);
+        corrupt_coordinate("remainder slack", division + 5);
+        corrupt_coordinate("max delta", checkpoint("attention.softmax/hidden/layer0/head0.delta"));
+        for (const LassoFamilyDescriptor& family : formal_plan.lasso) {
+            if (family.family_id == "function/lrelu") corrupt_coordinate("lookup tuple", family.query_offset);
+            if (family.family_id == "range/all") { corrupt_coordinate("bit decomposition", family.query_offset); corrupt_coordinate("nonboolean bit", family.query_offset, Fr(2)); }
+        }
+        corrupt_coordinate("output fixed denominator", checkpoint("rounding/output_alignment/output/head0") + 8);
+        corrupt_coordinate("final fixed denominator", checkpoint("output/final_average") + 8);
+        std::cout << "native_gate_negative_checks: PASS tuple/range/inverse/division/max/fixed-denominator\n";
+        run_signed_round_div_gate_boundary_checks();
+    } else {
+        stage("complete-relation-proof-verify");
+    }
     stage("registration");
     const ModelRegistration formal_registration = register_model(formal_model, formal_quant, formal_plan.input_layout, formal_model.manifest.model_arch_id);
     stage("context");
@@ -321,13 +377,15 @@ int run_formal_fixture(const std::string& standalone_dir) {
         return 1;
     }
     assert(!formal.artifact.has_private_payload());
-    const std::string formal_path = "/tmp/zkgpt-masked-full-formal-smoke.artifact";
+    const std::string formal_path = standalone_dir.empty() ? "/tmp/zkgpt-masked-full-formal-smoke.artifact" : standalone_dir + "/proof.artifact";
     std::string formal_reason;
     stage("artifact-write");
-    assert(formal.artifact.write(formal_path, &formal_reason));
+    if (standalone_dir.empty()) assert(formal.artifact.write(formal_path, &formal_reason));
     if (!standalone_dir.empty()) {
         try {
             write_standalone_fixture(standalone_dir, formal_context, formal.artifact);
+            std::cout << "gat_adapter_formal_fixture: GENERATED for independent verification\n";
+            return 0;
         } catch (const std::exception& error) {
             std::cerr << "standalone fixture generation failed: " << error.what() << "\n";
             return 1;
@@ -335,8 +393,25 @@ int run_formal_fixture(const std::string& standalone_dir) {
     }
     GatProofArtifact parsed_formal;
     stage("independent-verify");
-    assert(GatProofArtifact::read(formal_path, parsed_formal, &formal_reason));
-    assert(verify_gat(formal_context, parsed_formal, &formal_reason));
+    if (proof_verify_only) {
+        if (!GatProofArtifact::read(formal_path, parsed_formal, &formal_reason)) {
+            std::cerr << "masked_full artifact readback failed: " << formal_reason << "\n";
+            return 1;
+        }
+        if (!verify_gat(formal_context, parsed_formal, &formal_reason)) {
+            std::cerr << "masked_full verifier rejected artifact: " << formal_reason << "\n";
+            return 1;
+        }
+    } else {
+        assert(GatProofArtifact::read(formal_path, parsed_formal, &formal_reason));
+        assert(verify_gat(formal_context, parsed_formal, &formal_reason));
+    }
+
+    if (proof_verify_only) {
+        std::remove(formal_path.c_str());
+        std::cout << "gat_adapter_formal_proof_verify: PASS masked_full artifact roundtrip and verifier call\n";
+        return 0;
+    }
 
     VerifierContext y_tampered = formal_context;
     y_tampered.public_logits.values.at(0) += 1;
@@ -382,11 +457,18 @@ int run_formal_fixture(const std::string& standalone_dir) {
 
 int main(int argc, char** argv) {
     bool formal = false;
+    bool proof_verify_only = false;
+    bool division_boundary_only = false;
     std::string standalone_dir;
     for (int index = 1; index < argc; ++index) {
         const std::string argument(argv[index]);
         if (argument == "--formal") {
             formal = true;
+        } else if (argument == "--formal-proof-verify") {
+            formal = true;
+            proof_verify_only = true;
+        } else if (argument == "--division-boundary-only") {
+            division_boundary_only = true;
         } else if (argument == "--standalone-dir" && index + 1 < argc) {
             standalone_dir = argv[++index];
         } else {
@@ -394,7 +476,11 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    if (formal) return run_formal_fixture(standalone_dir);
+    if (division_boundary_only) {
+        run_signed_round_div_gate_boundary_checks();
+        return 0;
+    }
+    if (formal) return run_formal_fixture(standalone_dir, proof_verify_only);
     const DivisionResult tie = signed_round_div(-5, 2);
     assert(tie.value == -3 && tie.witness.valid(RoundingMode::NEAREST_TIES_AWAY));
     const DivisionResult exact = signed_round_div(4, 2);
@@ -711,7 +797,7 @@ int main(int argc, char** argv) {
 
     VerifierContext synthetic_context = context;
     synthetic_context.public_logits.values.assign(result.logits.values.size(), Int(1));
-    std::vector<F> gkr_output(result.logits.values.size(), Fr(1));
+    zkgpt::NativeFieldVector gkr_output(result.logits.values.size(), Fr(1));
     prover synthetic;
     synthetic.C.init(0, 2);
     synthetic.C.circuit[0].ty = layerType::INPUT;
@@ -725,10 +811,10 @@ int main(int argc, char** argv) {
     for (u32 index = 0; index < gkr_output.size(); ++index) synthetic.C.circuit[1].uni_gates.emplace_back(index, index, 0, 1);
     synthetic.C.initSubset();
     synthetic.val.resize(2);
-    synthetic.val[0] = gkr_output;
-    synthetic.val[1] = gkr_output;
+    synthetic.val[0].assign(gkr_output.begin(), gkr_output.end());
+    synthetic.val[1].assign(gkr_output.begin(), gkr_output.end());
     const GkrOnlyArtifactResult gkr_result =
-        prove_gkr_only_artifact(synthetic, synthetic_context, com_aux, com_L, basis_G, basis_generators, basis_scalars, 4, gkr_output, {});
+        prove_gkr_only_artifact(synthetic, synthetic_context, com_aux, com_L, basis_G, basis_generators, basis_scalars, 4, std::vector<F>(gkr_output.begin(), gkr_output.end()), {});
     assert(gkr_result.generated);
     assert(gkr_result.artifact.privacy_profile == "gkr_only_diagnostic");
     const std::string artifact_path = "/tmp/zkgpt-gkr-only-smoke.artifact";

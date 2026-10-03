@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the five full datasets with CPU GAT preparation/verification and native GPU proving."""
+"""The production entry for five hybrid CPU+GPU full-dataset results."""
 
 from __future__ import annotations
 
@@ -25,9 +25,7 @@ def main(args: argparse.Namespace) -> int:
         abort("--dry-run cannot be combined with --execute-formal")
     command = [
         sys.executable,
-        "scripts/run_cpu_formal.py",
-        "--backend",
-        "gpu",
+        "scripts/run_hybrid_formal.py",
         "--binary",
         args.binary,
         "--output-root",
@@ -37,12 +35,12 @@ def main(args: argparse.Namespace) -> int:
     ]
     if not args.execute_formal:
         print("ezkl formal entry point: no setup/prove/verify was run")
-        print("run the following command to execute the five-dataset mixed chain:")
-        print(" ".join(command))
+        print("run the following command to execute the five-dataset hybrid CPU+GPU chain:")
+        print(" ".join([sys.executable, "scripts/run_formal_matrix.py", "--execute-formal", "--binary", args.binary, "--output-root", args.output_root, "--matrix", args.matrix]))
         return 0
     completed = subprocess.run(command, cwd=ROOT, check=False)
     if completed.returncode != 0:
-        abort(f"mixed formal runner failed with exit code {completed.returncode}")
+        abort(f"hybrid formal runner failed with exit code {completed.returncode}")
     return 0
 
 

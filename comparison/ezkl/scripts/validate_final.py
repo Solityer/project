@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a complete ezkl result matrix without declaring readiness."""
+"""Validate exactly five canonical hybrid CPU+GPU ezkl formal results."""
 
 from __future__ import annotations
 
@@ -8,11 +8,12 @@ import json
 import sys
 from pathlib import Path
 
-from collect_results import PAIR_FIELDS, check_pair_consistency, validate_cell
+from collect_results import check_pair_consistency, validate_cell
 from formal_common import (
     BACKENDS,
     CANONICAL_RELATION,
     DATASETS,
+    FORMAL_BACKEND,
     ROOT,
     ContractError,
     abort,
@@ -26,31 +27,22 @@ from formal_common import (
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--matrix", default="results/formal_matrix.json")
-    result.add_argument(
-        "--datasets",
-        nargs="+",
-        choices=DATASETS,
-        default=list(DATASETS),
-        help="dataset axis expected in the matrix; default requires the strict five-dataset matrix",
-    )
-    result.add_argument(
-        "--backends",
-        nargs="+",
-        choices=BACKENDS,
-        default=None,
-        help="native backend axis expected in the matrix; default requires the five mixed cells",
-    )
     return result
 
 
 def main(args: argparse.Namespace) -> int:
-    selected_datasets = tuple(args.datasets)
-    if len(set(selected_datasets)) != len(selected_datasets):
-        abort("--datasets must not contain duplicates")
-    selected_backends = tuple(args.backends) if args.backends is not None else ("gpu",)
-    if len(set(selected_backends)) != len(selected_backends):
-        abort("--backends must not contain duplicates")
-    matrix_path = local_path(args.matrix, "formal matrix")
+    return validate_matrix(local_path(args.matrix, "formal matrix"))
+
+
+def validate_matrix(
+    matrix_path: Path,
+    *,
+    selected_datasets: tuple[str, ...] = DATASETS,
+    selected_backends: tuple[str, ...] = (FORMAL_BACKEND,),
+) -> int:
+    """Validate recorded artifacts; explicit native selections serve local tiny checks."""
+    if FORMAL_BACKEND in selected_backends and (selected_backends != (FORMAL_BACKEND,) or selected_datasets != DATASETS):
+        abort("formal validation requires exactly the five canonical hybrid results")
     if not matrix_path.is_file() or matrix_path.is_symlink():
         abort(f"missing formal matrix: {matrix_path}")
     try:
@@ -88,7 +80,7 @@ def main(args: argparse.Namespace) -> int:
         abort("formal matrix dataset/backend axes are not canonical")
     cells = matrix["cells"]
     if not isinstance(cells, list) or len(cells) != len(selected_datasets) * len(selected_backends):
-        abort("formal matrix does not contain the requested dataset/backend cells")
+        abort("formal matrix does not contain the required result cells")
     expected_pair_check = set(selected_backends) == set(BACKENDS)
     if matrix["cell_count"] != len(cells) or matrix["pair_consistency_checked"] is not expected_pair_check:
         abort("formal matrix cell count/pair attestation is invalid")
@@ -112,6 +104,8 @@ def main(args: argparse.Namespace) -> int:
         except ValueError:
             abort(f"formal matrix result path escapes baseline: {result_path}")
         refreshed_cell = validate_cell(result_path)
+        if set(cell) != set(refreshed_cell):
+            abort(f"formal matrix cell fields are stale for {key}")
         for field in cell:
             if field.startswith("_"):
                 continue
@@ -122,10 +116,10 @@ def main(args: argparse.Namespace) -> int:
     if keys != expected:
         abort(f"formal matrix is missing or has extra cells: expected={sorted(expected)}, got={sorted(keys)}")
     check_pair_consistency(refreshed)
-    pair_label = "CPU/GPU relation" if expected_pair_check else "single-backend relation"
+    execution_label = "hybrid CPU+GPU execution" if selected_backends == (FORMAL_BACKEND,) else "native local execution"
     print(
         f"validated {len(refreshed)} ezkl result cells: external statement/Y, native instances, "
-        f"circuit artifacts, timing, and {pair_label} are consistent"
+        f"circuit artifacts, timing, and {execution_label} are consistent"
     )
     print(f"FINAL_VALIDATION_OK cells={len(refreshed)}")
     return 0

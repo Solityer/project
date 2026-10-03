@@ -5,6 +5,8 @@
 #include "circuit.h"
 #include "polynomial.h"
 #include "hyrax.hpp"
+#include "native_gkr_sumcheck.hpp"
+#include "../gat_adapter/native_storage.hpp"
 using std::unique_ptr;
 
 class neuralNetwork;
@@ -21,11 +23,11 @@ class prover {
 public:
     int fc_row[100],fc_col[100],fc_start_id[100], fc_input_row[100],fc_input_col[100],fc_input_id[100];
     int fc_real_row[100],fc_real_col[100],fc_real_input_row[100],fc_real_input_col[100]; // padded
-    u32 total[2], total_size[2];
-    vector<linear_poly> mult_array[2];
-    vector<linear_poly> V_mult[2];
-    vector<linear_poly> tmp_mult_array[2];
-    vector<linear_poly> tmp_V_mult[2];
+    u64 total[2], total_size[2];
+    zkgpt::NativeVector<linear_poly> mult_array[2];
+    zkgpt::NativeVector<linear_poly> V_mult[2];
+    zkgpt::NativeVector<linear_poly> tmp_mult_array[2];
+    zkgpt::NativeVector<linear_poly> tmp_V_mult[2];
     int** mat_val;
     void init();
 
@@ -39,7 +41,7 @@ public:
     quadratic_poly sumcheckUpdate1(const F &previous_random);
     quadratic_poly sumcheckUpdate2(const F &previous_random);
 
-    F Vres(const vector<F>::const_iterator &r, u32 output_size, u8 r_size,int layer_id,int start=0) ;
+    F Vres(const vector<F>::const_iterator &r, u64 output_size, u8 r_size,int layer_id,u64 start=0) ;
     vector<F> lasso_mult_v,lasso_v_mult;
     void sumcheckDotProdFinalize1(const F &previous_random, F &claim_1);
     void sumcheckFinalize1(const F &previous_random, F &claim_0, F &claim_1);
@@ -59,8 +61,12 @@ public:
     double polyProofSize() const { return 0;}//{ return poly_p -> getPS(); }
     
     layeredCircuit C;
+    const layeredCircuit* native_circuit = nullptr;
+    const layeredCircuit& activeCircuit() const { return native_circuit != nullptr ? *native_circuit : C; }
     vector<vector<F>> val;        // the output of each gate
-    F getCirValue(u8 layer_id, const vector<u32> &ori, u32 u);
+    const std::vector<zkgpt::NativeFieldVector>* native_values = nullptr;
+    std::function<F(u64)> native_input_value_at;
+    F getCirValue(u8 layer_id, const zkgpt::NativeVector<u64> &ori, u64 u);
     u64 proof_size;
     vector<G> gens;
     Commit_return cc;
@@ -70,10 +76,8 @@ private:
     quadratic_poly sumcheckUpdate(const F &previous_random, vector<F> &r_arr);
     
 
-    vector<F>::iterator r_0, r_1;         // current positions
+    vector<F> beta_point_0, beta_point_1;
     vector<vector<F>> r_u, r_v;             // next positions
-
-    vector<F> beta_g;
     
     F add_term;
     

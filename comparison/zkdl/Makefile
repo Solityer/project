@@ -14,12 +14,21 @@ SRCS := $(wildcard *.cu)
 TARGETS := $(SRCS:.cu=)
 GAT_TARGET := gat_runner
 GAT_SRC := gat_adapter/gat_runner.cu gat_adapter/gat_native_bridge.cu gat_adapter/gat_native_core.cu
+GAT_RESOURCE_TARGET := gat_resource_setup
+BLST_LIBRARY := third_party/blst/libblst.a
+BLST_SOURCES := $(shell find third_party/blst/src third_party/blst/build third_party/blst/bindings -type f)
 
 .PHONY: all baseline-local-build test-short segmented-fixture-check clean
 
-all: $(TARGETS) $(GAT_TARGET)
+all: $(TARGETS) $(GAT_TARGET) $(GAT_RESOURCE_TARGET)
 
-baseline-local-build: $(GAT_TARGET)
+baseline-local-build: $(GAT_TARGET) $(GAT_RESOURCE_TARGET)
+
+$(BLST_LIBRARY): $(BLST_SOURCES) third_party/blst/build.sh
+	cd third_party/blst && ./build.sh
+
+$(GAT_RESOURCE_TARGET): gat_adapter/gat_resource_setup.cu $(BLST_LIBRARY)
+	$(CXX) -O2 -std=c++17 -x c++ -I. $< -x none $(BLST_LIBRARY) -lcrypto -o $@
 
 test-short: tests/core_smoke
 
@@ -32,11 +41,14 @@ tests/segmented_lookup_fixture: tests/segmented_lookup_fixture.cu zkrelation-pro
 tests/core_smoke: tests/core_smoke.cu proof.cuh commitment.cuh fr-tensor.cuh g1-tensor.cuh
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
 
+tests/pointwise_algebra_check: tests/pointwise_algebra_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp
+	$(NVCC) $(NVCC_FLAGS) -std=c++17 $(INCLUDES) $(LIBS) -I. -Igat_adapter $< -o $@
+
 %: %.cu
 	$(NVCC)  $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
 
-$(GAT_TARGET): $(GAT_SRC) gat_adapter/gat_native_resources.cu gat_adapter/gat_adapter.hpp gat_adapter/gat_native_abi.hpp gat_adapter/gat_native_bridge.hpp gat_adapter/gat_native_core.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_sparse_route.cuh g1-wire.cuh zkrelation-proof.cuh commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh zkmatmul.cuh zkprod.cuh
-	$(NVCC) $(NVCC_FLAGS) -std=c++17 $(INCLUDES) $(LIBS) -I. -Igat_adapter $(GAT_SRC) -o $@
+$(GAT_TARGET): $(GAT_SRC) gat_adapter/gat_native_resources.cu gat_adapter/gat_adapter.hpp gat_adapter/gat_native_abi.hpp gat_adapter/gat_family_storage.hpp gat_adapter/gat_native_bridge.hpp gat_adapter/gat_native_core.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_sparse_route.cuh g1-wire.cuh zkrelation-proof.cuh commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh zkmatmul.cuh zkprod.cuh $(BLST_LIBRARY)
+	$(NVCC) $(NVCC_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $(GAT_SRC) $(BLST_LIBRARY) -o $@
 
 clean:
-	rm -f $(TARGETS) $(GAT_TARGET) tests/core_smoke
+	rm -f $(TARGETS) $(GAT_TARGET) $(GAT_RESOURCE_TARGET) tests/core_smoke

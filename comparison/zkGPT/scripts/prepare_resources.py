@@ -21,6 +21,7 @@ from common import (
     baseline_root,
     config_with_auth,
     sha256_file,
+    invalidate_results,
     verify_cache,
     verify_checkpoint,
     verify_sidecar,
@@ -57,6 +58,7 @@ def main(argv: List[str]) -> int:
     del args
     root = baseline_root()
     try:
+        invalidate_results(root, ("formal_preflight.json", "collected_results.json", "final_validation.json"))
         datasets: Dict[str, Any] = {}
         for dataset in DATASETS:
             datasets[dataset] = inspect_dataset(root, dataset)

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 project(zkCNN)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     set(CMAKE_CXX_FLAGS "-mcmodel=large -O3 -lpthread -pthread")
 else()

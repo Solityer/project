@@ -6,8 +6,8 @@ prints the operator command and does not modify resources.  With the flag it
 regenerates the deterministic exact tables/ledgers from this baseline's
 canonical cache/checkpoint bundles, updates their local registry fields, and
 then writes and verifies a SHA-256 resource manifest.  It never creates an
-SRS; the formal runner stages trusted ceremony material through the native
-``get-srs`` command in ``provision_srs.py`` after the CPU binary is built.
+SRS; the formal entry authenticates trusted official ceremony material
+through ``provision_srs.py`` using the pinned native ``get-srs`` source identity.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def main(args: argparse.Namespace) -> int:
     if not args.commit_manifest:
         print("PREPARE/BLOCKED: exact five-dataset resource preparation was not run")
         print("rerun with: python3 scripts/prepare_gat_resources.py --commit-manifest")
-        print("native official SRS is provisioned by run_cpu_formal.py")
+        print("native official SRS is provisioned by run_formal_matrix.py --execute-formal")
         return 2
 
     for dataset in DATASETS:
@@ -56,7 +56,7 @@ def main(args: argparse.Namespace) -> int:
         "--require-complete",
     ])
     print("authenticated five-dataset ezkl GAT tables/ledgers and resource manifest")
-    print("native official SRS will be provisioned by scripts/run_cpu_formal.py")
+    print("native official SRS will be provisioned by scripts/run_formal_matrix.py --execute-formal")
     return 0
 
 

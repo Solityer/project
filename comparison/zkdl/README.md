@@ -1,69 +1,26 @@
 # zkDL GAT baseline-local adapter
 
-This directory is self-contained.  It uses the restored CUDA/C++ zkDL core
-and the GAT adapter under `gat_adapter/`; it does not import code, assets, or
-runtime state from another baseline or from the main experiment.
+The formal path uses the baseline-local native CUDA/C++ project and its CPU backend for commitment, full GAT relation proving and independent verification. Inputs, models, resources, sources, binaries and results stay under this directory.
 
-## Build and inspect
+Run the five complete datasets with this single user command:
 
 ```bash
 cd /home/pzh/project/comparison/zkdl
-make baseline-local-build
-./gat_runner inspect --config configs/cora_secure.cfg
+ZKDL_ALLOW_FULL_DATASET_RUN=1 bash scripts/run_five.sh cpu
 ```
 
-The short fixture checks live under `tests/` only.  They are not inputs to a
-formal run.
+The entry first checks all five input configurations, snapshots the inputs/checkpoint metadata and creates session-specific configs and resources. It force-builds the native binaries under a build lock, freezes both binaries inside the session and records their source/binary hashes. Each dataset receives fresh model registration randomness and its own registry. It then prepares and authenticates all five resource sets and native relation plans before proving any dataset. Each proof is independently verified; collection and final validation only read the new session directory. Setup, preparation, proving, verification and their logs are recorded separately.
 
-## Formal preparation and runs
+The native Pedersen/Hyrax basis is sampled from the operating-system CSPRNG using independent nonzero BLS12-381 scalars. This is an honest local trusted setup and requires destruction of its secret scalars; it is not a transparent setup. The baseline-local resource helper uses the pinned blst dependency for equivalent group arithmetic and strict point decoding. It does not change the native proof relation or commitment scheme. `setup_register.sh` automatically creates missing authenticated resources inside this baseline.
 
-Preparation computes a content-addressed `asset_manifest.json` beside the
-run and then writes the native relation plan:
+Artifacts are under `runs/formal_<UTC timestamp>_<unique suffix>/<dataset>_cpu/`; stage logs and elapsed seconds are under the same session's `logs/`. The matching collection is `results/<session>/collected.json` and `.csv`. Success requires `final_validation=PASS records=5 selected_backend=cpu independent_verify=5` followed by `formal_run=PASS` with the exact output paths. A failed stage exits nonzero and prints its name and log directory.
+
+For independent verification of an existing session cell:
 
 ```bash
-scripts/prepare_local.sh configs/cora_secure.cfg
+bash scripts/verify_single.sh configs/<session>_cora.cfg runs/<session>/cora_cpu
 ```
 
-Full-dataset proving is intentionally authorization-gated.  After reviewing
-the copied assets, SRS, and source identity, run one backend with:
+The privacy claim is conditional on the native zero-knowledge masking/composition and Fiat–Shamir random-oracle assumptions for a semi-honest verifier. Registries are used within one inference session; no repeated registered-model, multi-session privacy guarantee is claimed. Private weights and model blinding material are authenticated on the prover side and omitted from verifier/collector file access.
 
-```bash
-ZKDL_ALLOW_FULL_DATASET_RUN=1 \
-  scripts/run_single.sh configs/cora_secure.cfg cpu runs/cora_cpu
-
-ZKDL_ALLOW_FULL_DATASET_RUN=1 \
-  scripts/run_single.sh configs/cora_secure.cfg gpu runs/cora_gpu
-```
-
-The five-dataset runner uses the same explicit gate:
-
-```bash
-ZKDL_ALLOW_FULL_DATASET_RUN=1 scripts/run_five.sh cpu
-ZKDL_ALLOW_FULL_DATASET_RUN=1 scripts/run_five.sh gpu
-```
-
-Verification reads the public statement, public output/proof artifacts, and
-the configured verification boundary:
-
-```bash
-scripts/verify_single.sh configs/cora_secure.cfg runs/cora_cpu
-```
-
-Results are collected and then validated without inferring proof success from
-timings:
-
-```bash
-python3 scripts/collect_results.py --runs runs --output results/collected.json
-python3 scripts/final_validate.py --runs runs --require-pairs
-```
-
-`setup_register.sh` refuses to generate or register a replacement when the
-configured authenticated SRS is absent.  It is therefore expected to exit
-non-zero in the current restored tree; this is a real readiness blocker, not
-a successful setup.
-
-## Current readiness boundary
-
-The native bridge is fail-closed until the official core supplies the complete
-GAT operation-family verifier and authenticated SRS path.  A `BLOCKED` record
-is not a proof and must not be renamed to `VERIFIED`.
+`run_matrix.sh` is a compatibility wrapper for the same five-dataset CPU entry. Development checks remain under `tests/`; formal execution does not use test fixtures.

@@ -20,12 +20,14 @@ from common import (
     build_binary,
     formal_backend_capability,
     load_json,
+    invalidate_results,
     require_fixed_digest,
     require_manifest,
     resource_identity,
     sha256_file,
     validate_formal_cell,
     verifier_binary,
+    verify_build_provenance,
 )
 
 
@@ -47,11 +49,13 @@ def _validate_preflight(root: Path, backend: str, preflight: Dict[str, Any], res
     if not isinstance(capacities, dict) or set(capacities) != set(DATASETS):
         raise ChainError("formal preflight capacity matrix is incomplete")
     for dataset in DATASETS:
-        if not isinstance(capacities[dataset], dict) or capacities[dataset].get("status") != "READY":
+        if not isinstance(capacities[dataset], dict) or (capacities[dataset].get("status") != "READY" or capacities[dataset].get("proof_path") != "native_layered_gkr" or capacities[dataset].get("full_relation_bound") is not True):
             raise ChainError(f"formal preflight capacity is not READY for {dataset}")
     entry = preflight.get("backends", {}).get(backend)
     if not isinstance(entry, dict) or entry.get("ready") is not True:
         raise ChainError(f"formal preflight backend is not READY: {backend}")
+    if entry.get("source_tree_sha256") != verify_build_provenance(root, backend):
+        raise ChainError("formal preflight source identity is stale")
     prover = build_binary(root, backend)
     verifier = verifier_binary(root, backend)
     if entry.get("prover_fingerprint") != {"sha256": sha256_file(prover), "size_bytes": prover.stat().st_size, "mtime_ns": prover.stat().st_mtime_ns}:
@@ -66,6 +70,7 @@ def main(argv: Sequence[str]) -> int:
     args = parser.parse_args(list(argv))
     root = baseline_root()
     try:
+        invalidate_results(root)
         backends = selection(args.backends, FORMAL_BACKENDS, "backends")
         resource_manifest = require_manifest(root, "resource_manifest.json", RESOURCE_MANIFEST_SCHEMA)
         del resource_manifest

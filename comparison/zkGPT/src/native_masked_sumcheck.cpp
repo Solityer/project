@@ -59,17 +59,19 @@ F interpolate_at(const std::vector<F>& values, const F& point) {
     return result;
 }
 
-F mle_eval(const std::vector<F>& values, const std::vector<F>& point) {
-    if (values.empty() || (values.size() & (values.size() - 1)) != 0 || values.size() != (std::size_t(1) << point.size()))
-        throw std::invalid_argument("masked public MLE dimensions are invalid");
-    std::vector<F> current = values;
-    for (const F& r : point) {
-        const std::size_t half = current.size() / 2;
-        std::vector<F> next(half);
-        for (std::size_t i = 0; i < half; ++i) next[i] = current[2 * i] + r * (current[2 * i + 1] - current[2 * i]);
-        current.swap(next);
+template<class Vector> F mle_eval(const Vector& values, const std::vector<F>& point) {
+    if (point.size() >= std::numeric_limits<std::size_t>::digits || values.empty() || (values.size() & (values.size() - 1)) != 0 || values.size() != (std::size_t(1) << point.size())) throw std::invalid_argument("masked public MLE dimensions are invalid");
+    return zkgpt::native_mle_evaluate(values, point);
+}
+
+F public_mle_eval(const NativeMaskedTerminalSpec& spec, const std::vector<F>& point) {
+    if (spec.public_provider != nullptr) {
+        if (!spec.public_provider->evaluate_mle || point.size() >= std::numeric_limits<std::uint64_t>::digits ||
+            spec.public_provider->size != (std::uint64_t(1) << point.size()))
+            throw std::invalid_argument("masked public provider MLE dimensions are invalid");
+        return spec.public_provider->evaluate_mle(point);
     }
-    return current.front();
+    return spec.public_storage ? mle_eval(*spec.public_storage, point) : mle_eval(spec.public_vector, point);
 }
 
 void append_string(std::string& out, const std::string& value) {
@@ -279,8 +281,16 @@ bool terminal_shape(const NativeMaskedTerminalSpec& spec, std::size_t degree, st
         }
         break;
     case NativeMaskedTerminalKind::Product2Public:
-        arity = 1;
-        if (spec.public_vector.empty() || (spec.public_vector.size() & (spec.public_vector.size() - 1)) != 0) {
+    case NativeMaskedTerminalKind::Product3Public:
+        arity = spec.kind == NativeMaskedTerminalKind::Product2Public ? 1 : 2;
+        if (spec.public_provider != nullptr) {
+            if (spec.public_provider->size == 0 || (spec.public_provider->size & (spec.public_provider->size - 1)) != 0 ||
+                !spec.public_provider->evaluate_mle) {
+                set_reason(reason, "masked public product relation needs a valid public provider");
+                return false;
+            }
+        } else if ((spec.public_storage ? spec.public_storage->empty() || (spec.public_storage->size() & (spec.public_storage->size() - 1)) != 0 :
+                                             spec.public_vector.empty() || (spec.public_vector.size() & (spec.public_vector.size() - 1)) != 0)) {
             set_reason(reason, "masked public product relation needs a power-of-two vector");
             return false;
         }
@@ -298,7 +308,8 @@ bool terminal_shape(const NativeMaskedTerminalSpec& spec, std::size_t degree, st
         return false;
     }
     if ((spec.kind == NativeMaskedTerminalKind::Product2 && degree != 2) || (spec.kind == NativeMaskedTerminalKind::Product3 && degree != 3) ||
-        (spec.kind == NativeMaskedTerminalKind::Product2Public && degree != 2) || (spec.kind == NativeMaskedTerminalKind::GkrPredicate && degree != 2) ||
+        (spec.kind == NativeMaskedTerminalKind::Product2Public && degree != 2) || (spec.kind == NativeMaskedTerminalKind::Product3Public && degree != 3) ||
+        (spec.kind == NativeMaskedTerminalKind::GkrPredicate && degree != 2) ||
         ((spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU || spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedV) && degree != 2)) {
         set_reason(reason, "masked terminal relation degree mismatch");
         return false;
@@ -561,7 +572,10 @@ bool native_masked_sumcheck_verify(const NativeProofSession& session, const std:
             has_mask = true;
         }
         NativeMaskedTerminalSpec effective = terminal_spec;
-        if (effective.kind == NativeMaskedTerminalKind::Product2Public) effective.public_evaluation = mle_eval(effective.public_vector, local.challenges);
+        if (effective.kind == NativeMaskedTerminalKind::Product2Public || effective.kind == NativeMaskedTerminalKind::Product3Public) {
+            effective.public_evaluation = public_mle_eval(effective, local.challenges);
+            effective.has_public_evaluation = true;
+        }
         if (!verify_unmasked_terminal_relation(session, basis, label, effective, cursor, &local, reason)) return false;
         const NativeProofMessage* terminal_message = nullptr;
         if (!expect_message(session, cursor, NativeProofMessageKind::FieldVector, label + "/terminal/values", &terminal_message, reason)) return false;
@@ -705,8 +719,12 @@ bool finish_state(NativeMaskedSumcheckProverState& state, const std::vector<F>& 
     if (!terminal_shape(state.terminal_spec, state.degree, arity, reason) || unmasked_terminal.size() != arity) return false;
     if (!external_shape(state.terminal_spec, state.basis, arity, true, reason)) return false;
     NativeMaskedTerminalSpec masked_spec = state.terminal_spec;
-    if (masked_spec.kind == NativeMaskedTerminalKind::Product2Public)
-        masked_spec.public_evaluation = mle_eval(masked_spec.public_vector, state.result.challenges);
+    if (masked_spec.kind == NativeMaskedTerminalKind::Product2Public || masked_spec.kind == NativeMaskedTerminalKind::Product3Public) {
+        masked_spec.public_evaluation = public_mle_eval(masked_spec, state.result.challenges);
+        masked_spec.has_public_evaluation = true;
+        state.terminal_spec.public_evaluation = masked_spec.public_evaluation;
+        state.terminal_spec.has_public_evaluation = true;
+    }
     if (!check_terminal(state.terminal_spec, state.unmasked_running, unmasked_terminal, true, reason)) return false;
     if (!sample_terminal(masked_spec, state.masked_running, state.result.terminal_values, reason)) return false;
     masked_spec.unmasked_fixed_values.clear();
@@ -936,6 +954,9 @@ bool verify_unmasked_terminal_relation(const NativeProofSession& session, const 
     case NativeMaskedTerminalKind::Product2Public:
         arity = 1;
         break;
+    case NativeMaskedTerminalKind::Product3Public:
+        arity = 2;
+        break;
     case NativeMaskedTerminalKind::GkrPredicateFixedU:
     case NativeMaskedTerminalKind::GkrPredicateFixedV:
         arity = 2;
@@ -1002,6 +1023,17 @@ bool verify_unmasked_terminal_relation(const NativeProofSession& session, const 
     case NativeMaskedTerminalKind::Product2Public:
         return verify_linear_block(session, basis, cursor, label + "/terminal/unmasked/public-product", {values[0], claim}, {spec.public_evaluation, -F_ONE},
                                    F_ZERO, reason);
+    case NativeMaskedTerminalKind::Product3Public: {
+        ScalarCommitment product;
+        if (!verify_opening_block(session, basis, cursor, label + "/terminal/unmasked/public-product/intermediate", product, reason)) return false;
+        const MultiplicationLinks links{label + "/terminal/unmasked/value/0", label + "/terminal/unmasked/value/1",
+                                        label + "/terminal/unmasked/public-product/intermediate"};
+        return zkgpt::native_pedersen::verify_multiplication(session, basis, label + "/terminal/unmasked/public-product/mul", values[0], values[1], product,
+                                                             links, reason) &&
+               consume_multiplication_block(session, cursor, label + "/terminal/unmasked/public-product/mul", reason) &&
+               verify_linear_block(session, basis, cursor, label + "/terminal/unmasked/public-product/bind", {product, claim},
+                                   {spec.public_evaluation, -F_ONE}, F_ZERO, reason);
+    }
     case NativeMaskedTerminalKind::GkrPredicate:
     case NativeMaskedTerminalKind::GkrPredicateFixedU:
     case NativeMaskedTerminalKind::GkrPredicateFixedV: {
@@ -1207,6 +1239,26 @@ bool verify_terminal_relation(const NativeProofSession& session, const PedersenB
         if (!verify_linear_block(session, basis, cursor, label + "/terminal/public-product", {terminal_commitments[0], anchor},
                                  {spec.public_evaluation, -F_ONE}, F_ZERO, reason) ||
             !verify_linear_block(session, basis, cursor, label + "/terminal/anchor-bind", {anchor}, {F_ONE}, running, reason) || !verify_claim_binding(anchor))
+            return false;
+        break;
+    }
+    case NativeMaskedTerminalKind::Product3Public: {
+        ScalarCommitment intermediate, anchor;
+        if (!verify_opening_block(session, basis, cursor, label + "/terminal/intermediate", intermediate, reason) ||
+            !verify_opening_block(session, basis, cursor, label + "/terminal/anchor", anchor, reason))
+            return false;
+        if (result != nullptr) {
+            result->operand_commitments.push_back(intermediate);
+            result->operand_commitments.push_back(anchor);
+        }
+        const MultiplicationLinks links{label + "/terminal/value/0", label + "/terminal/value/1", label + "/terminal/intermediate"};
+        if (!zkgpt::native_pedersen::verify_multiplication(session, basis, label + "/terminal/public-product/mul", terminal_commitments[0],
+                                                           terminal_commitments[1], intermediate, links, reason) ||
+            !consume_multiplication_block(session, cursor, label + "/terminal/public-product/mul", reason) ||
+            !verify_linear_block(session, basis, cursor, label + "/terminal/public-product/bind", {intermediate, anchor},
+                                 {spec.public_evaluation, -F_ONE}, F_ZERO, reason) ||
+            !verify_linear_block(session, basis, cursor, label + "/terminal/anchor-bind", {anchor}, {F_ONE}, running, reason) ||
+            !verify_claim_binding(anchor))
             return false;
         break;
     }
@@ -1526,32 +1578,6 @@ F random_nonzero_field() {
 }
 
 bool sample_terminal(const NativeMaskedTerminalSpec& spec, const F& running, std::vector<F>& terminal, std::string* reason) {
-    std::size_t arity = 0;
-    if (!terminal_shape(spec, 1, arity, reason)) {
-        switch (spec.kind) {
-        case NativeMaskedTerminalKind::Scalar:
-            arity = 1;
-            break;
-        case NativeMaskedTerminalKind::Product2:
-        case NativeMaskedTerminalKind::Product2Public:
-        case NativeMaskedTerminalKind::GkrPredicateFixedU:
-        case NativeMaskedTerminalKind::GkrPredicateFixedV:
-            arity = spec.kind == NativeMaskedTerminalKind::Product2 ? 2 : (spec.kind == NativeMaskedTerminalKind::Product2Public ? 1 : 2);
-            break;
-        case NativeMaskedTerminalKind::Product3:
-            arity = 3;
-            break;
-        case NativeMaskedTerminalKind::Claims:
-            arity = 2;
-            break;
-        case NativeMaskedTerminalKind::GkrPredicate:
-            arity = 4;
-            break;
-        default:
-            break;
-        }
-    }
-    (void)arity;
     if (spec.defer_terminal_relation &&
         (spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU || spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedV)) {
         const bool valid = spec.kind == NativeMaskedTerminalKind::GkrPredicateFixedU ? deferred_fixed_u_spec(spec) : deferred_fixed_v_spec(spec);
@@ -1611,6 +1637,18 @@ bool sample_terminal(const NativeMaskedTerminalSpec& spec, const F& running, std
             terminal = {random_field()};
         } else {
             terminal = {running / spec.public_evaluation};
+        }
+        return true;
+    case NativeMaskedTerminalKind::Product3Public:
+        if (spec.public_evaluation.isZero()) {
+            if (!running.isZero()) {
+                set_reason(reason, "masked public Product3 has a zero public factor");
+                return false;
+            }
+            terminal = {random_field(), random_field()};
+        } else {
+            const F left = random_nonzero_field();
+            terminal = {left, running / (spec.public_evaluation * left)};
         }
         return true;
     case NativeMaskedTerminalKind::GkrPredicate: {
@@ -1723,6 +1761,9 @@ bool check_terminal(const NativeMaskedTerminalSpec& spec, const F& running, cons
     case NativeMaskedTerminalKind::Product2Public:
         arity = 1;
         break;
+    case NativeMaskedTerminalKind::Product3Public:
+        arity = 2;
+        break;
     case NativeMaskedTerminalKind::GkrPredicateFixedU:
     case NativeMaskedTerminalKind::GkrPredicateFixedV:
         arity = 2;
@@ -1775,6 +1816,12 @@ bool check_terminal(const NativeMaskedTerminalSpec& spec, const F& running, cons
     case NativeMaskedTerminalKind::Product2Public:
         if (terminal[0] * spec.public_evaluation != running) {
             set_reason(reason, "masked public Product2 terminal relation failed");
+            return false;
+        }
+        return true;
+    case NativeMaskedTerminalKind::Product3Public:
+        if (terminal[0] * terminal[1] * spec.public_evaluation != running) {
+            set_reason(reason, "masked public Product3 terminal relation failed");
             return false;
         }
         return true;
@@ -2054,6 +2101,16 @@ bool prove_unmasked_terminal_relation(NativeMaskedSumcheckProverState& state, co
     case NativeMaskedTerminalKind::Product2Public:
         return emit_linear(*state.session, state.basis, label + "/terminal/unmasked/public-product", {terminal_openings[0], claim_opening},
                            {spec.public_evaluation, -F_ONE}, F_ZERO, reason);
+    case NativeMaskedTerminalKind::Product3Public: {
+        const ScalarOpening product = state_commit_fresh(state, terminal_openings[0].value * terminal_openings[1].value);
+        if (!emit_opening(*state.session, state.basis, label + "/terminal/unmasked/public-product/intermediate", product, reason)) return false;
+        const MultiplicationLinks links{label + "/terminal/unmasked/value/0", label + "/terminal/unmasked/value/1",
+                                        label + "/terminal/unmasked/public-product/intermediate"};
+        return zkgpt::native_pedersen::prove_multiplication(*state.session, state.basis, label + "/terminal/unmasked/public-product/mul", terminal_openings[0],
+                                                            terminal_openings[1], product, links, nullptr, reason) &&
+               emit_linear(*state.session, state.basis, label + "/terminal/unmasked/public-product/bind", {product, claim_opening},
+                           {spec.public_evaluation, -F_ONE}, F_ZERO, reason);
+    }
     case NativeMaskedTerminalKind::GkrPredicate:
     case NativeMaskedTerminalKind::GkrPredicateFixedU:
     case NativeMaskedTerminalKind::GkrPredicateFixedV: {
@@ -2221,6 +2278,23 @@ bool prove_terminal_relation(NativeMaskedSumcheckProverState& state, const std::
                          F_ZERO, reason))
             return false;
         if (!emit_linear(*state.session, state.basis, label + "/terminal/anchor-bind", {anchor}, {F_ONE}, state.masked_running, reason)) return false;
+        return bind_masked_claim(state, state.result.unmasked_claim_opening, anchor, operands, reason);
+    }
+    case NativeMaskedTerminalKind::Product3Public: {
+        const ScalarOpening intermediate = state_commit_fresh(state, masked_terminal[0] * masked_terminal[1]);
+        const ScalarOpening anchor = state_commit_fresh(state, state.masked_running);
+        if (!emit_opening(*state.session, state.basis, label + "/terminal/intermediate", intermediate, reason) ||
+            !emit_opening(*state.session, state.basis, label + "/terminal/anchor", anchor, reason))
+            return false;
+        operands.push_back(intermediate);
+        operands.push_back(anchor);
+        const MultiplicationLinks links{label + "/terminal/value/0", label + "/terminal/value/1", label + "/terminal/intermediate"};
+        if (!zkgpt::native_pedersen::prove_multiplication(*state.session, state.basis, label + "/terminal/public-product/mul", terminal_openings[0],
+                                                          terminal_openings[1], intermediate, links, nullptr, reason) ||
+            !emit_linear(*state.session, state.basis, label + "/terminal/public-product/bind", {intermediate, anchor},
+                         {spec.public_evaluation, -F_ONE}, F_ZERO, reason) ||
+            !emit_linear(*state.session, state.basis, label + "/terminal/anchor-bind", {anchor}, {F_ONE}, state.masked_running, reason))
+            return false;
         return bind_masked_claim(state, state.result.unmasked_claim_opening, anchor, operands, reason);
     }
     case NativeMaskedTerminalKind::GkrPredicate:

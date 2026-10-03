@@ -12,10 +12,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Iterable
 
 from validate_resources import validate_blinders, validate_registry, validate_srs
+from formal_provenance import validate_manifest
 
 
 def fail(message: str) -> None:
@@ -138,7 +140,19 @@ def main() -> int:
             fail(f"BLOCKED: authenticated relation resource is missing: {relation_path}")
         selected.append(relation_path)
         relation_digests[key] = sha256(relation_path)
-    asset_entries = files_under((cache, checkpoint), root)
+    asset_entries = files_under((cache,), root)
+    public_model = checkpoint / "manifest.json"
+    if public_model.is_symlink() or not public_model.is_file():
+        fail("public checkpoint metadata is missing")
+    asset_entries.append({"path": public_model.relative_to(root).as_posix(), "bytes": public_model.stat().st_size, "sha256": sha256(public_model)})
+    private_entries = [entry for entry in files_under((checkpoint,), root) if entry["path"] != public_model.relative_to(root).as_posix()]
+    private_by_path = {entry["path"]: entry for entry in private_entries}
+    checkpoint_digests = {}
+    for name, key in (("tensors.txt", "checkpoint_tensors_txt_digest"), ("tensors.npz", "checkpoint_tensors_npz_digest")):
+        relative = (checkpoint / name).relative_to(root).as_posix()
+        if relative not in private_by_path:
+            fail(f"private checkpoint tensor export is missing: {relative}")
+        checkpoint_digests[key] = private_by_path[relative]["sha256"]
     for path in selected:
         if path.is_symlink():
             fail(f"configuration asset is a symlink: {path}")
@@ -161,7 +175,7 @@ def main() -> int:
             root, values, srs_path, srs_manifest, generator_digest)
         validate_blinders(root, values, registry, _registry_digest)
         asset_entries.extend(files_under((srs_path,), root))
-        for resource_path in (model_registry_path, local_path(root, model_blinder_path_raw, "model_blinder_sidecar_path")):
+        for resource_path in (model_registry_path,):
             asset_entries.append({
                 "path": resource_path.relative_to(root).as_posix(),
                 "bytes": resource_path.stat().st_size,
@@ -185,9 +199,26 @@ def main() -> int:
                 "bytes": model_registry_path.stat().st_size,
                 "sha256": sha256(model_registry_path),
             })
+    output = (args.output or (local_path(root, values["export_dir"], "export_dir") / "asset_manifest.json")).resolve()
+    output.relative_to(root)
+    build_path = output.parent / "build_manifest.json"
+    build = validate_manifest(root, build_path)
+    asset_entries.append({"path": build_path.relative_to(root).as_posix(), "bytes": build_path.stat().st_size, "sha256": sha256(build_path)})
+    existing_entries = {entry["path"]: entry for entry in asset_entries}
+    for build_entry in build["sources"] + build["binaries"]:
+        entry = {key: build_entry[key] for key in ("path", "bytes", "sha256")}
+        if entry["path"] in existing_entries:
+            if existing_entries[entry["path"]] != entry:
+                fail(f"conflicting formal source asset: {entry['path']}")
+        else:
+            asset_entries.append(entry)
+            existing_entries[entry["path"]] = entry
     asset_entries.sort(key=lambda entry: str(entry["path"]))
     payload = {
         "schema": "zkDL_gat_asset_manifest_v1",
+        "build_manifest": build_path.relative_to(root).as_posix(),
+        "build_manifest_digest": sha256(build_path),
+        "source_digest": build["source_digest"],
         "dataset": values["dataset"],
         "quant_cfg_id": values["quant_cfg_id"],
         "baseline_root": ".",
@@ -197,10 +228,11 @@ def main() -> int:
         "srs_manifest_digest": srs_manifest_digest,
         "model_registry_path": model_registry_path_raw,
         "model_registry_digest": model_registry_digest,
-        "model_blinder_sidecar_path": values.get("model_blinder_sidecar_path", "UNAVAILABLE"),
-        "model_blinder_sidecar_digest": values.get("model_blinder_sidecar_digest", "UNAVAILABLE"),
+        "model_blinder_sidecar_path": "UNAVAILABLE",
+        "model_blinder_sidecar_digest": "UNAVAILABLE",
         "files": asset_entries,
     }
+    payload.update(checkpoint_digests)
     if relation_keys[0] in relation_digests:
         payload["static_table_descriptor"] = values[relation_keys[0]]
         payload["static_table_descriptor_digest"] = relation_digests[relation_keys[0]]
@@ -217,6 +249,14 @@ def main() -> int:
     except ValueError:
         fail("output escapes baseline root")
     output.parent.mkdir(parents=True, exist_ok=True)
+    sidecar = local_path(root, model_blinder_path_raw, "model_blinder_sidecar_path")
+    private_entries.append({"path": sidecar.relative_to(root).as_posix(), "bytes": sidecar.stat().st_size, "sha256": sha256(sidecar)})
+    private_payload = {"schema": "zkDL_gat_private_asset_manifest_v1", "dataset": values["dataset"], "registry_digest": model_registry_digest, "files": sorted(private_entries, key=lambda entry: str(entry["path"]))}
+    private_path = output.parent / "private_asset_manifest.json"
+    fd = os.open(private_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps(private_payload, indent=2, sort_keys=True) + "\n")
+    private_path.chmod(0o600)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"asset_manifest={output} files={len(asset_entries)}")
     return 0

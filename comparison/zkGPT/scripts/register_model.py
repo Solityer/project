@@ -47,11 +47,8 @@ def main(argv: List[str]) -> int:
         secret_relative = f"{run_relative}/com_W.prover.secret"
         registration_path = run_path / "model_registration.json"
         secret_path = run_path / "com_W.prover.secret"
-        if registration_path.exists() or secret_path.exists():
-            raise ChainError(
-                f"refusing to overwrite existing registration/secret in {run_relative}; "
-                "remove the incomplete run explicitly before re-registering"
-            )
+        if registration_path.exists() != secret_path.exists():
+            raise ChainError(f"incomplete model registration pair in {run_relative}")
         config_relative = str(config_path.relative_to(root))
         completed = launch_native(
             root, args.dataset, args.backend, config_relative, operation="register",

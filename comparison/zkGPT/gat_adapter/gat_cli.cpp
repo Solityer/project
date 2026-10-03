@@ -83,6 +83,9 @@ struct Record {
     double load_ms = 0.0;
     double registration_ms = 0.0;
     double witness_ms = 0.0;
+    double commitment_ms = 0.0;
+    double prove_total_ms = 0.0;
+    double self_verify_ms = 0.0;
     double prove_ms = 0.0;
     double verify_ms = 0.0;
     double serialize_ms = 0.0;
@@ -274,12 +277,12 @@ bool json_size_field(const std::string& json, const std::string& key, std::size_
     } catch (...) { return false; }
 }
 
-ModelRegistration read_registration(const std::string& path, const std::string& dataset) {
+ModelRegistration read_registration(const std::string& path, const std::string& dataset, bool allow_legacy = false) {
     const std::string json = read_regular_text(path, "model registration");
     ModelRegistration registration;
     std::string schema;
     std::string commitment_scheme;
-    if (!json_string_field(json, "schema", schema) || schema != "zkgpt-gat-model-registration-v1" ||
+    if (!json_string_field(json, "schema", schema) || (schema != "zkgpt-gat-model-registration-v2" && !(allow_legacy && schema == "zkgpt-gat-model-registration-v1")) ||
         !json_string_field(json, "dataset", registration.dataset) || !json_string_field(json, "status", registration.status) ||
         !json_string_field(json, "model_arch_id", registration.model_arch_id) || !json_string_field(json, "quant_cfg_id", registration.quant_cfg_id) ||
         !json_string_field(json, "static_tables_id", registration.static_tables_id) || !json_string_field(json, "field_id", registration.field_id) ||
@@ -411,6 +414,9 @@ void write_result(const std::string& path, const Record& record) {
     out << "    \"load\": " << std::fixed << std::setprecision(3) << record.load_ms << ",\n";
     out << "    \"registration\": " << record.registration_ms << ",\n";
     out << "    \"witness\": " << record.witness_ms << ",\n";
+    out << "    \"commitment\": " << record.commitment_ms << ",\n";
+    out << "    \"prove_total\": " << record.prove_total_ms << ",\n";
+    out << "    \"self_verify\": " << record.self_verify_ms << ",\n";
     out << "    \"prove\": " << record.prove_ms << ",\n";
     out << "    \"verify\": " << record.verify_ms << ",\n";
     out << "    \"serialize\": " << record.serialize_ms << "\n";
@@ -435,7 +441,8 @@ void write_logits(const std::string& path, const Tensor2D& logits) {
 void write_registration(const std::string& path, const ModelRegistration& registration, const std::string& root, const std::string& dataset) {
     std::ostringstream out;
     out << "{\n";
-    json_string(out, "schema", "zkgpt-gat-model-registration-v1");
+    json_string(out, "schema", "zkgpt-gat-model-registration-v2");
+    json_string(out, "plan_recipe", "canonical_plan_recipe_v3");
     json_string(out, "dataset", dataset);
     json_string(out, "status", registration.status);
 
@@ -513,8 +520,20 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     out << "  \"context_payload_bytes_bound\": " << report.context_payload_bytes_bound << ",\n";
     json_bool(out, "ppi_node_ptr_boundary", report.ppi_node_ptr_boundary);
     json_bool(out, "ppi_edge_ptr_boundary", report.ppi_edge_ptr_boundary);
+    out << "  \"masked_lasso_matrix_entries\": " << report.masked_lasso_matrix_entries << ",\n";
+    out << "  \"masked_response_entries_lower_bound\": " << report.masked_response_entries_lower_bound << ",\n";
+    out << "  \"masked_proof_bytes_lower_bound\": " << report.masked_proof_bytes_lower_bound << ",\n";
+    out << "  \"maximum_masked_response_entries\": " << report.maximum_masked_response_entries << ",\n";
+    out << "  \"native_response_vector_limit\": " << (1ULL << 20) << ",\n";
+    out << "  \"lasso_family_domains\": [";
+    for (std::size_t index = 0; index < report.lasso_family_domains.size(); ++index) { if (index != 0) out << ','; out << '[' << report.lasso_family_domains[index][0] << ',' << report.lasso_family_domains[index][1] << ']'; }
+    out << "],\n";
+    json_string(out, "proof_path", report.proof_path);
+    json_bool(out, "full_relation_bound", report.full_relation_bound);
     json_bool(out, "ready", report.ready);
     json_string(out, "status", report.ready ? "READY" : "BLOCKED");
+    out << "  \"native_message_string_limit_bytes\": " << (1ULL << 26) << ",\n";
+    out << "  \"native_artifact_wire_limit_bytes\": " << (1ULL << 30) << ",\n";
     json_string(out, "reason", report.reason, false);
     out << "}\n";
     std::cout << out.str();
@@ -693,8 +712,8 @@ int main(int argc, char** argv) {
         }
 
         if (options.register_only) {
-            if (path_exists(registration_file) || path_exists(com_w_secret_file)) {
-                throw std::runtime_error("refusing to overwrite an existing model registration or com_W prover secret");
+            if (path_exists(registration_file) != path_exists(com_w_secret_file)) {
+                throw std::runtime_error("incomplete model registration pair; refusing to replace an unpaired artifact");
             }
             const auto registration_begin = Clock::now();
             const Graph graph = load_graph(cache_dir, config);
@@ -704,6 +723,20 @@ int main(int argc, char** argv) {
 
             const Model model = Model::load(bundle_dir);
             model.validate_identity(config);
+            if (path_exists(registration_file)) {
+                const ModelRegistration previous = read_registration(registration_file, options.dataset, true);
+                require_owner_secret_file(com_w_secret_file);
+                Fr previous_blinder;
+                std::string previous_reason;
+                if (!read_prover_commitment_secret(previous, com_w_secret_file, previous_blinder, &previous_reason))
+                    throw std::runtime_error("existing registration secret is invalid: " + previous_reason);
+                std::string previous_schema;
+                json_string_field(read_regular_text(registration_file, "model registration"), "schema", previous_schema);
+                if (previous_schema == "zkgpt-gat-model-registration-v2" && registration_matches_model(model, quant, layout, previous)) {
+                    std::cout << "REGISTERED dataset=" << options.dataset << " backend=" << options.backend << " registration=" << registration_rel << " reused=true\n";
+                    return 0;
+                }
+            }
             const ModelRegistration registration = register_model(model, quant, layout, model.manifest.model_arch_id);
             record.registration_ms = elapsed_ms(registration_begin, Clock::now());
             record.com_w_point = registration.com_W.point_hex;
@@ -712,12 +745,27 @@ int main(int argc, char** argv) {
             record.registration_layout_digest = registration.layout_digest;
             record.registration_path = run_rel + "/model_registration.json";
             record.checkpoint_identity = "baseline-local/checkpoints/" + options.dataset + "_gat/integrity.sha256";
-            write_registration(registration_file, registration, root, options.dataset);
+            const std::string staged_registration = registration_file + ".staged." + std::to_string(::getpid());
+            const std::string staged_secret = com_w_secret_file + ".staged." + std::to_string(::getpid());
             std::string secret_reason;
-            if (!write_prover_commitment_secret(registration, com_w_secret_file, &secret_reason)) {
-                throw std::runtime_error("cannot persist com_W prover secret: " + secret_reason);
+            try {
+                write_registration(staged_registration, registration, root, options.dataset);
+                if (!write_prover_commitment_secret(registration, staged_secret, &secret_reason))
+                    throw std::runtime_error("cannot stage com_W prover secret: " + secret_reason);
+                require_owner_secret_file(staged_secret);
+                const ModelRegistration staged = read_registration(staged_registration, options.dataset);
+                Fr staged_blinder;
+                if (!registration_matches_model(model, quant, layout, staged) ||
+                    !read_prover_commitment_secret(staged, staged_secret, staged_blinder, &secret_reason))
+                    throw std::runtime_error("staged model registration validation failed: " + secret_reason);
+                if (::rename(staged_secret.c_str(), com_w_secret_file.c_str()) != 0 ||
+                    ::rename(staged_registration.c_str(), registration_file.c_str()) != 0)
+                    throw std::runtime_error("cannot atomically install staged registration files");
+            } catch (...) {
+                ::unlink(staged_registration.c_str());
+                ::unlink(staged_secret.c_str());
+                throw;
             }
-            require_owner_secret_file(com_w_secret_file);
             std::cout << "REGISTERED dataset=" << options.dataset << " backend=" << options.backend << " registration=" << record.registration_path << '\n';
             return 0;
         }
@@ -777,7 +825,10 @@ int main(int argc, char** argv) {
 
         const auto prove_begin = Clock::now();
         const ProveResult proved = prove_gat(plan, graph, features, model, quant, forward, registration, record.privacy_profile);
-        record.prove_ms = elapsed_ms(prove_begin, Clock::now());
+        record.prove_total_ms = elapsed_ms(prove_begin, Clock::now());
+        record.commitment_ms = proved.commitment_ms;
+        record.self_verify_ms = proved.self_verify_ms;
+        record.prove_ms = std::max(0.0, record.prove_total_ms - record.commitment_ms - record.self_verify_ms);
         if (proved.status != ProveStatus::GENERATED || !proved.has_artifact) {
             record.status = proved.status == ProveStatus::UNSUPPORTED_PRIVACY_PROFILE ? "UNSUPPORTED" : "FAILED";
             record.verification_status = record.status;

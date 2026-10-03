@@ -25,6 +25,7 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
+#include <functional>
 #include <unordered_map>
 #include <utility>
 
@@ -1002,7 +1003,7 @@ void aggregate_head(const Config &config, const Graph &graph, const StaticTables
             BigNum rhs;
             BigNum residual;
             if (!BN_mod_mul(rhs.get(), field_from_i64(denominator_by_node[node], field_context).get(), value.get(), scalar_modulus(), field_context) ||
-                !BN_mod_sub(residual.get(), integer_value.get(), rhs.get(), scalar_modulus(), field_context)) {
+                !BN_mod_sub(residual.get(), rhs.get(), integer_value.get(), scalar_modulus(), field_context)) {
                 BN_CTX_free(field_context);
                 fail("aggregate consistency field arithmetic failed");
             }
@@ -1110,7 +1111,7 @@ void aggregate_output_head(const Config &config, const Graph &graph, const Stati
             BigNum residual;
             BigNum denominator = field_from_i64(denominator_by_node[node], field_context);
             if (!BN_mod_mul(rhs.get(), denominator.get(), value.get(), scalar_modulus(), field_context) ||
-                !BN_mod_sub(residual.get(), integer_value.get(), rhs.get(), scalar_modulus(), field_context)) {
+                !BN_mod_sub(residual.get(), rhs.get(), integer_value.get(), scalar_modulus(), field_context)) {
                 BN_CTX_free(field_context);
                 fail("output aggregate consistency field arithmetic failed");
             }
@@ -1780,10 +1781,9 @@ AssetManifest load_asset_manifest(const Config &config) {
     if (result.config != expected_config) fail("asset manifest config identity mismatch");
     const auto expected_srs_path = std::filesystem::relative(std::filesystem::path(config.srs_path), config.baseline_root).generic_string();
     const auto expected_registry_path = std::filesystem::relative(config.model_registry_path, config.baseline_root).generic_string();
-    const auto expected_sidecar_path = std::filesystem::relative(config.model_blinder_sidecar_path, config.baseline_root).generic_string();
     if (result.srs_path != expected_srs_path || result.srs_manifest_digest != config.srs_manifest_digest ||
         result.model_registry_path != expected_registry_path || result.model_registry_digest != config.verifier_registry_digest ||
-        result.model_blinder_sidecar_path != expected_sidecar_path || result.model_blinder_sidecar_digest != config.model_blinder_sidecar_digest) {
+        result.model_blinder_sidecar_path != "UNAVAILABLE" || result.model_blinder_sidecar_digest != "UNAVAILABLE") {
         fail("asset manifest authenticated native resource identity mismatch");
     }
     result.digest = sha256_file(config.asset_manifest_path);
@@ -1802,14 +1802,8 @@ AssetManifest load_asset_manifest(const Config &config) {
             if (component == "..") fail("asset manifest file path escapes baseline root: " + file.path);
         }
         if (!paths.insert(file.path).second) fail("duplicate asset manifest file: " + file.path);
+        if (file.path.rfind("artifacts/model_blinders/", 0U) == 0U || file.path.find("/model_blinders/") != std::string::npos || file.path.find("/.private_native/") != std::string::npos || std::filesystem::path(file.path).filename() == "private_asset_manifest.json" || (!checkpoint_prefix.empty() && file.path.rfind(checkpoint_prefix, 0U) == 0U && file.path != checkpoint_prefix + "manifest.json")) fail("public asset manifest contains private prover material");
         const auto resolved = local_path(config.baseline_root, file.path, "asset manifest file");
-        const bool private_checkpoint_asset = config.public_verifier_mode && !checkpoint_prefix.empty() && file.path.rfind(checkpoint_prefix, 0U) == 0U &&
-                                              file.path != checkpoint_prefix + "manifest.json";
-        if (private_checkpoint_asset) {
-
-            result.files.push_back(std::move(file));
-            continue;
-        }
         if (std::filesystem::is_symlink(resolved) || !std::filesystem::is_regular_file(resolved)) {
             fail("asset manifest file is missing or symlinked: " + file.path);
         }
@@ -1824,8 +1818,7 @@ AssetManifest load_asset_manifest(const Config &config) {
     require_entry(result.config);
     require_entry("configs/quantization_scale_chain.cfg");
     require_entry((std::filesystem::relative(config.checkpoint_bundle, config.baseline_root) / "manifest.json").generic_string());
-    require_entry((std::filesystem::relative(config.checkpoint_bundle, config.baseline_root) / "tensors.txt").generic_string());
-    require_entry((std::filesystem::relative(config.checkpoint_bundle, config.baseline_root) / "tensors.npz").generic_string());
+    if (!is_digest(json_string_field(manifest, "checkpoint_tensors_txt_digest")) || !is_digest(json_string_field(manifest, "checkpoint_tensors_npz_digest"))) fail("public asset manifest checkpoint identities are not SHA-256 digests");
     require_entry((std::filesystem::relative(config.cache_root / config.dataset, config.baseline_root) / "meta.cfg").generic_string());
     require_entry(std::filesystem::relative(config.static_table_descriptor_path, config.baseline_root).generic_string());
     require_entry(std::filesystem::relative(config.sorted_lookup_descriptor_path, config.baseline_root).generic_string());
@@ -2104,6 +2097,13 @@ Config load_config(const std::filesystem::path &path) {
 
 ModelBundle load_model_bundle(const Config &config) {
     const auto assets = load_asset_manifest(config);
+    const auto private_manifest_path = config.run_root / "private_asset_manifest.json";
+    if (std::filesystem::is_symlink(private_manifest_path) || !std::filesystem::is_regular_file(private_manifest_path)) fail("private checkpoint asset manifest is missing or symlinked");
+    const auto private_permissions = std::filesystem::status(private_manifest_path).permissions();
+    if ((private_permissions & (std::filesystem::perms::group_all | std::filesystem::perms::others_all)) != std::filesystem::perms::none) fail("private checkpoint asset manifest must be owner-only");
+    const auto private_manifest = file_text(private_manifest_path);
+    if (json_string_field(private_manifest, "schema") != "zkDL_gat_private_asset_manifest_v1" || json_string_field(private_manifest, "dataset") != config.dataset || json_string_field(private_manifest, "registry_digest") != config.verifier_registry_digest) fail("private checkpoint asset manifest identity mismatch");
+    const auto public_manifest = file_text(config.asset_manifest_path);
     if (!std::filesystem::is_directory(config.checkpoint_bundle)) fail("checkpoint bundle is not a directory");
     const auto manifest_path = config.checkpoint_bundle / "manifest.json";
     const auto manifest = file_text(manifest_path);
@@ -2120,9 +2120,19 @@ ModelBundle load_model_bundle(const Config &config) {
     model.tensor_count_manifest = json_u64_field(manifest, "tensor_count");
     const auto asset_digest = [&](const std::filesystem::path &path) -> std::string {
         const auto relative = std::filesystem::relative(path, config.baseline_root).generic_string();
-        for (const auto &file : assets.files)
-            if (file.path == relative) return file.sha256;
-        fail("asset manifest does not authenticate checkpoint file: " + relative);
+        const std::regex entry("\\{\\s*\"bytes\"\\s*:\\s*([0-9]+)\\s*,\\s*\"path\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"sha256\"\\s*:\\s*\"([0-9a-fA-F]{64})\"\\s*\\}");
+        std::string expected;
+        u64 expected_bytes = 0U;
+        for (std::sregex_iterator iterator(private_manifest.begin(), private_manifest.end(), entry), end; iterator != end; ++iterator) {
+            if ((*iterator)[2].str() != relative) continue;
+            if (!expected.empty()) fail("duplicate private checkpoint asset: " + relative);
+            expected = (*iterator)[3].str();
+            expected_bytes = parse_u64((*iterator)[1].str(), "private checkpoint bytes");
+        }
+        if (expected.empty() || std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path) || std::filesystem::file_size(path) != expected_bytes || sha256_file(path) != expected) fail("private asset manifest does not authenticate checkpoint file: " + relative);
+        if (path.filename() == "tensors.txt" && expected != json_string_field(public_manifest, "checkpoint_tensors_txt_digest")) fail("private checkpoint text identity does not match public statement resources");
+        if (path.filename() == "tensors.npz" && expected != json_string_field(public_manifest, "checkpoint_tensors_npz_digest")) fail("private checkpoint archive identity does not match public statement resources");
+        return expected;
     };
     model.tensors_text_digest = asset_digest(config.checkpoint_bundle / "tensors.txt");
     model.tensors_npz_digest = asset_digest(config.checkpoint_bundle / "tensors.npz");
@@ -2173,8 +2183,7 @@ ModelBundle load_model_bundle(const Config &config) {
 }
 
 ModelBundle load_model_metadata(const Config &config) {
-
-    const auto assets = load_asset_manifest(config);
+    (void)load_asset_manifest(config);
     if (!std::filesystem::is_directory(config.checkpoint_bundle)) fail("checkpoint bundle is not a directory");
     const auto manifest_path = config.checkpoint_bundle / "manifest.json";
     if (std::filesystem::is_symlink(manifest_path) || !std::filesystem::is_regular_file(manifest_path))
@@ -2192,22 +2201,9 @@ ModelBundle load_model_metadata(const Config &config) {
     model.static_table_id = config.static_table_id;
     model.manifest_digest = sha256_file(manifest_path);
     model.tensor_count_manifest = json_u64_field(manifest, "tensor_count");
-    const auto recorded_digest = [&](const std::filesystem::path &path) -> std::string {
-        const auto relative = std::filesystem::relative(path, config.baseline_root).generic_string();
-        for (const auto &file : assets.files)
-            if (file.path == relative) return file.sha256;
-        fail("asset manifest does not authenticate checkpoint metadata: " + relative);
-    };
-
-    model.tensors_text_digest = recorded_digest(config.checkpoint_bundle / "tensors.txt");
-    model.tensors_npz_digest = recorded_digest(config.checkpoint_bundle / "tensors.npz");
-    const auto best_model = config.checkpoint_bundle / "best_model.pt";
-    const auto best_relative = std::filesystem::relative(best_model, config.baseline_root).generic_string();
-    for (const auto &file : assets.files)
-        if (file.path == best_relative) {
-            model.best_model_digest = file.sha256;
-            break;
-        }
+    const auto public_manifest = file_text(config.asset_manifest_path);
+    model.tensors_text_digest = json_string_field(public_manifest, "checkpoint_tensors_txt_digest");
+    model.tensors_npz_digest = json_string_field(public_manifest, "checkpoint_tensors_npz_digest");
     return model;
 }
 
@@ -2769,7 +2765,8 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         if (id.empty() || logical.empty() || !tensor_ids.insert(id).second) fail("duplicate/empty relation operation view family: " + id);
         TensorFamily family;
         family.id = id;
-        family.visibility = "witness";
+        const auto public_boundary = [&](const std::string &suffix) { return id.size() >= suffix.size() && id.compare(id.size() - suffix.size(), suffix.size(), suffix) == 0U; };
+        family.visibility = public_boundary("/view/group_new") || public_boundary("/view/group_end") ? "public" : "witness";
         family.mle_order = "operation-view-row-major";
         family.stack_axis = axis;
         family.logical_shape = logical;
@@ -3166,6 +3163,7 @@ NativeFrWire native_fr_from_signed_i64(i64 value) {
     if (value >= 0) {
         NativeFrWire output{};
         output[0] = static_cast<std::uint32_t>(value);
+        output[1] = static_cast<std::uint32_t>(static_cast<std::uint64_t>(value) >> 32U);
         return output;
     }
     const std::uint64_t magnitude = static_cast<std::uint64_t>(-(value + 1)) + 1U;
@@ -3257,71 +3255,7 @@ void populate_authenticated_resource_wire(const Config &config, NativeRelationWi
     output.model_blinders_authenticated = blinders.authenticated;
 }
 
-std::vector<NativeFrWire> native_u64_values(const std::vector<u64> &values, const std::string &label) {
-    std::vector<NativeFrWire> result;
-    result.reserve(values.size());
-    for (const auto value : values) {
-        if (value > static_cast<u64>(std::numeric_limits<i64>::max())) fail("unsigned graph boundary exceeds field wire signed range: " + label);
-        result.push_back(native_wire(static_cast<i64>(value)));
-    }
-    return result;
-}
-
-std::vector<NativeFrWire> native_field_values(const std::vector<FieldValue> &values) {
-    std::vector<NativeFrWire> result;
-    result.reserve(values.size());
-    for (const auto &value : values) result.push_back(native_wire(value));
-    return result;
-}
-
 std::vector<NativeFrWire> native_matrix_values(const Matrix &matrix) { return native_i64_values(matrix.values); }
-
-std::vector<NativeFrWire> native_field_matrix_values(const FieldMatrix &matrix) { return native_field_values(matrix.values); }
-
-std::vector<NativeFrWire> native_broadcast_node_vector(const Graph &graph, const std::vector<i64> &node_values) {
-    if (node_values.size() != graph.nodes || graph.dst.size() != graph.edges) fail("node-to-edge broadcast shape mismatch");
-    std::vector<i64> values(graph.edges, 0);
-    for (u64 edge = 0U; edge < graph.edges; ++edge) {
-        if (graph.dst[edge] >= graph.nodes) fail("graph destination is outside node domain");
-        values[edge] = node_values.at(graph.dst[edge]);
-    }
-    return native_i64_values(values);
-}
-
-std::vector<NativeFrWire> native_broadcast_node_matrix(const Graph &graph, const Matrix &matrix) {
-    if (matrix.rows != graph.nodes || graph.dst.size() != graph.edges) fail("node-to-edge matrix broadcast shape mismatch");
-    std::vector<i64> values;
-    values.reserve(static_cast<std::size_t>(graph.edges * matrix.cols));
-    for (u64 edge = 0U; edge < graph.edges; ++edge) {
-        if (graph.dst[edge] >= graph.nodes) fail("graph destination is outside node domain");
-        for (u64 column = 0U; column < matrix.cols; ++column) values.push_back(matrix.at(graph.dst[edge], column));
-    }
-    return native_i64_values(values);
-}
-
-std::vector<NativeFrWire> native_broadcast_node_field_matrix(const Graph &graph, const FieldMatrix &matrix) {
-    if (matrix.rows != graph.nodes || graph.dst.size() != graph.edges) fail("node-to-edge field matrix broadcast shape mismatch");
-    std::vector<NativeFrWire> values;
-    values.reserve(static_cast<std::size_t>(graph.edges * matrix.cols));
-    for (u64 edge = 0U; edge < graph.edges; ++edge) {
-        if (graph.dst[edge] >= graph.nodes) fail("graph destination is outside node domain");
-        for (u64 column = 0U; column < matrix.cols; ++column)
-            values.push_back(native_wire(matrix.values.at(static_cast<std::size_t>(graph.dst[edge] * matrix.cols + column))));
-    }
-    return values;
-}
-
-std::vector<NativeFrWire> native_route_matrix(const Graph &graph, const Matrix &matrix, bool source) {
-    if (matrix.rows != graph.nodes || graph.src.size() != graph.edges || graph.dst.size() != graph.edges) fail("route matrix shape mismatch");
-    std::vector<i64> values;
-    values.reserve(static_cast<std::size_t>(graph.edges * matrix.cols));
-    for (u64 edge = 0U; edge < graph.edges; ++edge) {
-        const u64 node = source ? graph.src[edge] : graph.dst[edge];
-        if (node >= graph.nodes) fail("graph route index is outside node domain");
-        for (u64 column = 0U; column < matrix.cols; ++column) values.push_back(matrix.at(node, column));
-    }
-    return native_i64_values(values);
-}
 
 std::vector<i64> native_node_values_from_edges(const Graph &graph, const std::vector<i64> &edge_values) {
     if (edge_values.size() != graph.edges || graph.node_edge_ptr.size() != graph.nodes + 1U) fail("edge-to-node trace shape mismatch");
@@ -3355,115 +3289,61 @@ std::vector<std::uint8_t> native_group_end(const Graph &graph) {
     return result;
 }
 
-std::vector<NativeFrWire> native_repeat_edge_bits(const std::vector<std::uint8_t> &edge_values, u64 width) {
-    std::vector<NativeFrWire> result;
-    result.reserve(edge_values.size() * static_cast<std::size_t>(width));
-    for (const auto value : edge_values)
-        for (u64 index = 0U; index < width; ++index) result.push_back(native_wire(value));
-    return result;
-}
-
-std::vector<NativeFrWire> native_repeat_node_bits(const std::vector<std::uint8_t> &node_values, u64 width) {
-    std::vector<NativeFrWire> result;
-    result.reserve(node_values.size() * static_cast<std::size_t>(width));
-    for (const auto value : node_values)
-        for (u64 index = 0U; index < width; ++index) result.push_back(native_wire(value));
-    return result;
-}
-
-std::vector<NativeFrWire> native_edge_feature_from_scalar(const std::vector<i64> &values, u64 width) {
-    std::vector<NativeFrWire> result;
-    result.reserve(values.size() * static_cast<std::size_t>(width));
-    for (const auto value : values)
-        for (u64 index = 0U; index < width; ++index) result.push_back(native_wire(value));
-    return result;
-}
-
-std::vector<NativeFrWire> native_node_feature_from_scalar(const std::vector<i64> &values, u64 width) {
-    std::vector<NativeFrWire> result;
-    result.reserve(values.size() * static_cast<std::size_t>(width));
-    for (const auto value : values)
-        for (u64 index = 0U; index < width; ++index) result.push_back(native_wire(value));
-    return result;
-}
-
-std::vector<NativeFrWire> native_bit_column(const std::vector<i64> &values, u64 bit, const std::string &label) {
-    std::vector<NativeFrWire> result;
-    result.reserve(values.size());
-    for (const auto value : values) {
-        if (value < 0) fail("invalid bounded bit source: " + label);
-        result.push_back(native_wire(static_cast<i64>((static_cast<std::uint64_t>(value) >> bit) & 1U)));
-    }
-    return result;
-}
-
-std::vector<NativeFrWire> native_edge_feature_from_node_matrix(const Graph &graph, const Matrix &matrix) { return native_broadcast_node_matrix(graph, matrix); }
-
-std::vector<NativeFrWire> native_edge_feature_from_matrix(const Matrix &matrix) { return native_matrix_values(matrix); }
-
-std::vector<NativeFrWire> native_prefix(const std::vector<NativeFrWire> &input, const std::vector<std::uint8_t> &group_new, u64 width, bool previous) {
-    if (input.size() != group_new.size() * static_cast<std::size_t>(width)) fail("segmented prefix input shape mismatch");
-    std::vector<NativeFrWire> result(input.size());
-    for (u64 edge = 0U; edge < group_new.size(); ++edge) {
-        for (u64 column = 0U; column < width; ++column) {
-            const std::size_t index = static_cast<std::size_t>(edge * width + column);
-            if (previous && (edge == 0U || group_new[edge] != 0U)) {
-                result[index] = NativeFrWire{};
-            } else if (previous) {
-                result[index] = result.at(static_cast<std::size_t>((edge - 1U) * width + column));
-            } else {
-                const NativeFrWire prior = (edge == 0U || group_new[edge] != 0U) ? NativeFrWire{} :
-                                                                                   result.at(static_cast<std::size_t>((edge - 1U) * width + column));
-                result[index] = native_fr_add(prior, input[index]);
-            }
-        }
-    }
-    return result;
-}
-
-std::vector<NativeFrWire> native_field_prefix(const std::vector<NativeFrWire> &input, const std::vector<std::uint8_t> &group_new, u64 width, bool previous) {
-    return native_prefix(input, group_new, width, previous);
-}
-
 NativeRelationWitnessInput build_native_relation_witness(const Config &config, const Graph &graph, const ModelBundle &model, const StaticTables &tables,
                                                          const RelationPlan &plan, const GatTrace &trace) {
     std::map<std::string, const TensorFamily *> families;
     for (const auto &family : plan.tensor_families) {
         if (!families.emplace(family.id, &family).second) fail("duplicate canonical witness family: " + family.id);
     }
-    std::map<std::string, std::vector<NativeFrWire>> logical;
+    std::map<std::string, std::shared_ptr<const NativeFamilyStorage>> logical;
+    const auto storage_directory = config.run_root / ".private_native";
+    if (std::filesystem::is_symlink(storage_directory)) fail("private native storage directory is symlinked");
+    std::filesystem::create_directories(storage_directory);
+    std::filesystem::permissions(storage_directory, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
     std::vector<NativeSortedLookupProviderInput> sorted_lookup_providers;
     const auto family_for = [&](const std::string &id) -> const TensorFamily & {
         const auto found = families.find(id);
         if (found == families.end()) fail("canonical witness family is not in RelationPlan: " + id);
         return *found->second;
     };
-    const auto put = [&](const std::string &id, std::vector<NativeFrWire> values) {
+    struct NativeValues {
+        std::uint64_t count;
+        std::uint32_t encoding;
+        std::function<NativeFrWire(std::uint64_t)> reader;
+        std::uint64_t size() const { return count; }
+        NativeFrWire operator[](std::uint64_t index) const { if (index >= count) fail("streamed witness read exceeds logical domain"); return reader(index); }
+    };
+    const auto view = [](std::uint64_t count, std::uint32_t encoding, auto reader) { return NativeValues{count, encoding, reader}; };
+    const auto native_i64_values = [&](const auto &values) { return view(values.size(), 2U, [&values](std::uint64_t index) { return native_wire(static_cast<i64>(values.at(index))); }); };
+    const auto native_field_values = [&](const std::vector<FieldValue> &values) { return view(values.size(), 3U, [&values](std::uint64_t index) { return native_wire(values.at(index)); }); };
+    const auto native_matrix_values = [&](const Matrix &matrix) { return native_i64_values(matrix.values); };
+    const auto native_field_matrix_values = [&](const FieldMatrix &matrix) { return native_field_values(matrix.values); };
+    const auto native_bit_column = [&](const std::vector<i64> &values, u64 bit, const std::string &label) { return view(values.size(), 1U, [&values, bit, label](std::uint64_t index) { const auto value = values.at(index); if (value < 0 || bit >= 64U) fail("invalid bounded bit source: " + label); return native_wire(static_cast<i64>((static_cast<std::uint64_t>(value) >> bit) & 1U)); }); };
+    const auto native_repeat_edge_bits = [&](const std::vector<std::uint8_t> &values, u64 width) { return view(values.size() * width, 1U, [&values, width](std::uint64_t index) { return native_wire(static_cast<i64>(values.at(index / width))); }); };
+    const auto native_edge_feature_from_scalar = [&](const std::vector<i64> &values, u64 width) { return view(values.size() * width, 2U, [&values, width](std::uint64_t index) { return native_wire(values.at(index / width)); }); };
+    const auto native_broadcast_node_vector = [&](const Graph &g, const std::vector<i64> &values) { if (values.size() != g.nodes) fail("node-to-edge broadcast shape mismatch"); return view(g.edges, 2U, [&g, &values](std::uint64_t index) { return native_wire(values.at(g.dst.at(index))); }); };
+    const auto native_broadcast_node_matrix = [&](const Graph &g, const Matrix &matrix) { if (matrix.rows != g.nodes) fail("node-to-edge matrix broadcast shape mismatch"); return view(g.edges * matrix.cols, 2U, [&g, &matrix](std::uint64_t index) { return native_wire(matrix.at(g.dst.at(index / matrix.cols), index % matrix.cols)); }); };
+    const auto native_broadcast_node_field_matrix = [&](const Graph &g, const FieldMatrix &matrix) { if (matrix.rows != g.nodes) fail("node-to-edge field broadcast shape mismatch"); return view(g.edges * matrix.cols, 3U, [&g, &matrix](std::uint64_t index) { return native_wire(matrix.values.at(g.dst.at(index / matrix.cols) * matrix.cols + index % matrix.cols)); }); };
+    const auto native_route_matrix = [&](const Graph &g, const Matrix &matrix, bool source) { if (matrix.rows != g.nodes) fail("route matrix shape mismatch"); return view(g.edges * matrix.cols, 2U, [&g, &matrix, source](std::uint64_t index) { return native_wire(matrix.at((source ? g.src : g.dst).at(index / matrix.cols), index % matrix.cols)); }); };
+    const auto native_prefix = [&](NativeValues input, const std::vector<std::uint8_t> &group_bits, u64 width, bool previous) {
+        if (input.size() != group_bits.size() * width || width == 0U) fail("segmented prefix input shape mismatch");
+        return view(input.size(), 3U, [input, &group_bits, width, previous, running = std::vector<NativeFrWire>(width)](std::uint64_t index) mutable { const auto edge = index / width, column = index % width; if (edge == 0U || group_bits.at(edge) != 0U) running.at(column) = NativeFrWire{}; const auto prior = running.at(column); running.at(column) = native_fr_add(prior, input[index]); return previous ? prior : running.at(column); });
+    };
+    const auto put = [&](const std::string &id, const auto &values) {
         const auto &family = family_for(id);
         if (values.size() != native_shape_product(family.logical_shape, id + ".logical")) fail("canonical witness logical value count mismatch: " + id);
-        if (!logical.emplace(id, std::move(values)).second) fail("duplicate canonical witness values: " + id);
+        std::uint32_t encoding = 0U;
+        if constexpr (std::is_same_v<std::decay_t<decltype(values)>, NativeValues>) encoding = values.encoding;
+        if (!logical.emplace(id, NativeFamilyStorage::persist_generated(storage_directory, values.size(), encoding, [&](std::uint64_t index) { return values[index]; })).second) fail("duplicate canonical witness values: " + id);
     };
-    const auto put_i64 = [&](const std::string &id, const std::vector<i64> &values) { put(id, native_i64_values(values)); };
-    const auto put_u64 = [&](const std::string &id, const std::vector<u64> &values) { put(id, native_u64_values(values, id)); };
+    const auto put_i64 = [&](const std::string &id, const auto &values) { put(id, native_i64_values(values)); };
+    const auto put_u64 = [&](const std::string &id, const std::vector<u64> &values) { put(id, view(values.size(), 2U, [&values, id](std::uint64_t index) { if (values.at(index) > static_cast<u64>(std::numeric_limits<i64>::max())) fail("unsigned graph boundary exceeds field wire signed range: " + id); return native_wire(static_cast<i64>(values.at(index))); })); };
     const auto put_matrix = [&](const std::string &id, const Matrix &matrix) { put(id, native_matrix_values(matrix)); };
     const auto put_field = [&](const std::string &id, const std::vector<FieldValue> &values) { put(id, native_field_values(values)); };
     const auto put_field_matrix = [&](const std::string &id, const FieldMatrix &matrix) { put(id, native_field_matrix_values(matrix)); };
-    const auto scalar_matrix = [&](const std::vector<i64> &values, u64 width) {
-        Matrix matrix = make_matrix(values.size(), width);
-        for (u64 row = 0U; row < values.size(); ++row)
-            for (u64 column = 0U; column < width; ++column) matrix.at(row, column) = values[row];
-        return matrix;
-    };
     const auto bits_for = [&](const std::vector<i64> &values, u64 width, const std::string &label) {
-        std::vector<NativeFrWire> result;
-        result.reserve(values.size() * static_cast<std::size_t>(width));
-        for (const auto value : values) {
-            if (value < 0) fail("negative value cannot be decomposed into canonical bits: " + label);
-            const auto unsigned_value = static_cast<std::uint64_t>(value);
-            if (width < 63U && (unsigned_value >> width) != 0U) fail("value exceeds bounded bit decomposition: " + label);
-            for (u64 bit = 0U; bit < width; ++bit) result.push_back(native_wire(static_cast<i64>((unsigned_value >> bit) & 1U)));
-        }
-        return result;
+        if (width == 0U || width > 64U) fail("invalid bounded bit width: " + label);
+        return view(values.size() * width, 1U, [&values, width, label](std::uint64_t index) { const auto value = values.at(index / width); if (value < 0 || (width < 63U && (static_cast<std::uint64_t>(value) >> width) != 0U)) fail("value exceeds bounded bit decomposition: " + label); return native_wire(static_cast<i64>((static_cast<std::uint64_t>(value) >> (index % width)) & 1U)); });
     };
     const auto group_new = native_group_new(graph);
     const auto group_end = native_group_end(graph);
@@ -3471,28 +3351,16 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
     const auto edge_group_end_bits = [&](u64 width) { return native_repeat_edge_bits(group_end, width); };
     const auto node_vector_from_edges = [&](const std::vector<i64> &values) { return native_node_values_from_edges(graph, values); };
 
-    std::vector<i64> route;
-    route.reserve(static_cast<std::size_t>(graph.edges * 2U));
-    for (u64 edge = 0U; edge < graph.edges; ++edge) {
-        route.push_back(static_cast<i64>(graph.src.at(static_cast<std::size_t>(edge))));
-        route.push_back(static_cast<i64>(graph.dst.at(static_cast<std::size_t>(edge))));
-    }
-    std::vector<i64> selectors;
-    selectors.reserve(static_cast<std::size_t>(graph.edges * 2U));
-    for (u64 edge = 0U; edge < graph.edges; ++edge) {
-        selectors.push_back(group_new.at(static_cast<std::size_t>(edge)));
-        selectors.push_back(group_end.at(static_cast<std::size_t>(edge)));
-    }
     put_matrix("input_features", graph.feature_values);
-    put_i64("sparse_route", route);
-    put_i64("group_selectors", selectors);
+    put("sparse_route", view(graph.edges * 2U, 2U, [&](std::uint64_t index) { return native_wire(static_cast<i64>((index % 2U == 0U ? graph.src : graph.dst).at(index / 2U))); }));
+    put("group_selectors", view(graph.edges * 2U, 1U, [&](std::uint64_t index) { return native_wire(static_cast<i64>((index % 2U == 0U ? group_new : group_end).at(index / 2U))); }));
     put_u64("node_ptr", graph.node_ptr);
     put_u64("edge_ptr", graph.edge_ptr);
     put_u64("node_edge_ptr", graph.node_edge_ptr);
     put_i64("static_lrelu", tables.lrelu);
     put_i64("static_elu", tables.elu);
     put_i64("static_exp", tables.exp);
-    put_i64("output_head_count", {static_cast<i64>(config.architecture.output_heads)});
+    put_i64("output_head_count", std::vector<i64>{static_cast<i64>(config.architecture.output_heads)});
 
     const auto round_aux = [&](const SignedRoundDivWitness &witness) {
         if (witness.rows == 0U || witness.cols == 0U || witness.rows != graph.nodes) {
@@ -3503,31 +3371,11 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             witness.delta.size() != count || witness.divisor.size() != count) {
             fail("SignedRoundDiv auxiliary witness is incomplete");
         }
-        std::vector<NativeFrWire> values;
-        values.reserve(count * 8U);
-        for (u64 row = 0U; row < witness.rows; ++row) {
-            for (u64 column = 0U; column < witness.cols; ++column) {
-                const std::size_t index = static_cast<std::size_t>(row * witness.cols + column);
-                values.push_back(native_wire(static_cast<i64>(witness.sigma[index])));
-                values.push_back(native_wire(static_cast<i64>(witness.z[index])));
-                values.push_back(native_wire(witness.a[index]));
-                values.push_back(native_wire(witness.q[index]));
-                values.push_back(native_wire(witness.r[index]));
-                values.push_back(native_wire(witness.delta[index]));
-                values.push_back(native_wire(witness.divisor[index]));
-                values.push_back(NativeFrWire{});
-            }
-        }
-        return values;
+        return view(count * 8U, 2U, [&witness](std::uint64_t index) { const auto cell = index / 8U; switch (index % 8U) { case 0U: return native_wire(static_cast<i64>(witness.sigma.at(cell))); case 1U: return native_wire(static_cast<i64>(witness.z.at(cell))); case 2U: return native_wire(witness.a.at(cell)); case 3U: return native_wire(witness.q.at(cell)); case 4U: return native_wire(witness.r.at(cell)); case 5U: return native_wire(witness.delta.at(cell)); case 6U: return native_wire(witness.divisor.at(cell)); default: return NativeFrWire{}; } });
     };
     const auto lookup_bits = [&](const std::vector<i64> &query, i64 minimum, i64 maximum, u64 width, const std::string &label) {
-        std::vector<i64> offsets;
-        offsets.reserve(query.size());
-        for (const auto value : query) {
-            if (value < minimum || value > maximum) fail("lookup query is outside authenticated table domain: " + label);
-            offsets.push_back(checked_i128(static_cast<__int128>(value) - minimum, label + ".offset"));
-        }
-        return bits_for(offsets, width, label + ".bits");
+        if (width == 0U || width > 64U) fail("invalid lookup bit width: " + label);
+        return view(query.size() * width, 1U, [&query, minimum, maximum, width, label](std::uint64_t index) { const auto value = query.at(index / width); if (value < minimum || value > maximum) fail("lookup query is outside authenticated table domain: " + label); const auto offset = static_cast<std::uint64_t>(checked_i128(static_cast<__int128>(value) - minimum, label + ".offset")); if (width < 63U && (offset >> width) != 0U) fail("lookup offset exceeds bounded bit decomposition: " + label); return native_wire(static_cast<i64>((offset >> (index % width)) & 1U)); });
     };
 
     const auto write_sorted_lookup_provider = [&](const std::string &operation, const std::vector<i64> &query, i64 input_min,
@@ -3543,9 +3391,10 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             U128 key = 0U;
             U128 x = 0U;
             U128 y = 0U;
-            std::uint8_t source = 0U;
+            std::uint64_t table_count = 0U;
+            std::uint64_t query_count = 0U;
         };
-        std::map<U128, std::vector<LookupRow>> ordered;
+        std::map<U128, LookupRow> ordered;
         const U128 y_base = static_cast<U128>(1U) << plan_query->y_bits;
         const U128 key_limit = (static_cast<U128>(1U) << (plan_query->x_bits + plan_query->y_bits));
         const auto add_row = [&](i64 raw_x, i64 raw_y, std::uint8_t source) {
@@ -3555,7 +3404,9 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             if ((x >= (static_cast<U128>(1U) << plan_query->x_bits)) || (y >= y_base) || ((x << plan_query->y_bits) | y) >= key_limit)
                 fail("sorted lookup packed coordinate exceeds descriptor bounds: " + operation);
             const U128 key = (x << plan_query->y_bits) | y;
-            ordered[key].push_back(LookupRow{key, x, y, source});
+            auto &row = ordered[key];
+            row.key = key; row.x = x; row.y = y;
+            if (source == 1U) ++row.table_count; else ++row.query_count;
         };
         std::set<U128> table_keys;
         for (std::size_t index = 0; index < table.size(); ++index) {
@@ -3667,12 +3518,12 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             U128 previous_key = 0U;
             u64 prefix = 0U;
             u64 emitted = 0U;
-            for (const auto &[key, rows] : ordered) {
-                for (const auto &row : rows) {
+            for (const auto &[key, row] : ordered) {
+                for (u64 index = 0U; index < row.table_count + row.query_count; ++index) {
                     const U128 delta = previous ? key - previous_key : 0U;
                     const std::uint8_t marker = (!previous || key != previous_key) ? 1U : 0U;
                     if (marker) ++prefix;
-                    write_record(stream, key, delta, row.x, row.y, prefix, 1U, marker, row.source, context);
+                    write_record(stream, key, delta, row.x, row.y, prefix, 1U, marker, index < row.table_count ? 1U : 2U, context);
                     previous = true;
                     previous_key = key;
                     ++emitted;
@@ -3808,21 +3659,11 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         const auto &concat = trace.hidden_layers.at(layer).concat;
         const u64 head_count = config.architecture.hidden_heads.at(layer);
         const u64 width = config.architecture.hidden_dims.at(layer);
-        std::vector<NativeFrWire> values;
-        values.reserve(static_cast<std::size_t>(graph.nodes * head_count * width));
-        for (u64 node = 0U; node < graph.nodes; ++node)
-            for (u64 head = 0U; head < head_count; ++head)
-                for (u64 column = 0U; column < width; ++column) values.push_back(native_wire(concat.at(node, head * width + column)));
-        put("hidden/layer" + std::to_string(layer) + "/concat", std::move(values));
+        put("hidden/layer" + std::to_string(layer) + "/concat", native_matrix_values(concat));
     }
     for (u64 head = 0U; head < config.architecture.output_heads; ++head)
         put_stage_base("output/head" + std::to_string(head), config.architecture.hidden_dims.size(), head, true);
-    std::vector<NativeFrWire> output_heads;
-    output_heads.reserve(static_cast<std::size_t>(graph.nodes * config.architecture.output_heads * config.architecture.classes));
-    for (u64 node = 0U; node < graph.nodes; ++node)
-        for (const auto &head : trace.output_heads)
-            for (u64 cls = 0U; cls < config.architecture.classes; ++cls) output_heads.push_back(native_wire(head.output.at(node, cls)));
-    put("output_heads", std::move(output_heads));
+    put("output_heads", view(graph.nodes * config.architecture.output_heads * config.architecture.classes, 2U, [&](std::uint64_t index) { const auto cls = index % config.architecture.classes, row = index / config.architecture.classes, head = row % config.architecture.output_heads, node = row / config.architecture.output_heads; return native_wire(trace.output_heads.at(head).output.at(node, cls)); }));
     put_matrix("output_sum", trace.output_sum);
     put_matrix("public_Y", trace.logits);
 
@@ -3836,19 +3677,15 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             witness.delta.size() != count || witness.divisor.size() != count || witness.a_inverse.size() != count || witness.divisor_inverse.size() != count) {
             fail("SignedRoundDiv view witness is incomplete: " + operation);
         }
-        std::vector<i64> signed_numerator;
-        signed_numerator.reserve(count);
-        for (const auto value : numerator.values)
-            signed_numerator.push_back(checked_i128(static_cast<__int128>(value) * numerator_scale, operation + ".signed_numerator"));
-        put_i64(operation + "/view/signed_numerator", signed_numerator);
+        put(operation + "/view/signed_numerator", view(count, 2U, [&numerator, numerator_scale, operation](std::uint64_t index) { return native_wire(checked_i128(static_cast<__int128>(numerator.values.at(index)) * numerator_scale, operation + ".signed_numerator")); }));
         put_i64(operation + "/view/divisor", witness.divisor);
         put_matrix(operation + "/view/signed_quotient", quotient);
         put_i64(operation + "/view/a", witness.a);
         put_i64(operation + "/view/q_abs", witness.q);
         put_i64(operation + "/view/r", witness.r);
         put_i64(operation + "/view/delta", witness.delta);
-        put_i64(operation + "/view/sigma", std::vector<i64>(witness.sigma.begin(), witness.sigma.end()));
-        put_i64(operation + "/view/z", std::vector<i64>(witness.z.begin(), witness.z.end()));
+        put_i64(operation + "/view/sigma", witness.sigma);
+        put_i64(operation + "/view/z", witness.z);
         put_field(operation + "/view/a_inverse", witness.a_inverse);
         put_field(operation + "/view/divisor_inverse", witness.divisor_inverse);
         for (u64 bit = 0U; bit < config.range_bits; ++bit) {
@@ -3875,13 +3712,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         const auto group_end_width = edge_group_end_bits(width);
         const auto denominator_nodes = node_vector_from_edges(head_trace.denominator);
         const auto denominator_edges = native_broadcast_node_vector(graph, denominator_nodes);
-        const auto denominator_broadcast = [&]() {
-            std::vector<NativeFrWire> result;
-            result.reserve(static_cast<std::size_t>(graph.edges * width));
-            for (const auto value : denominator_edges)
-                for (u64 column = 0U; column < width; ++column) result.push_back(value);
-            return result;
-        }();
+        const auto denominator_broadcast = view(graph.edges * width, 2U, [denominator_edges, width](std::uint64_t index) { return denominator_edges[index / width]; });
         const std::string group = stage + "/group_sum";
         put(group + "/view/group_new", group_new_width);
         put(group + "/view/group_end", group_end_width);
@@ -3900,7 +3731,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         put(inverse + "/view/output0", native_field_values(head_trace.inverse_field));
         put(inverse + "/view/output1", native_field_values(head_trace.alpha_field));
 
-        const auto put_segmented = [&](const std::string &operation, const std::vector<NativeFrWire> &input, const std::vector<NativeFrWire> &output_values) {
+        const auto put_segmented = [&](const std::string &operation, NativeValues input, NativeValues output_values) {
             put(operation + "/view/group_new", group_new_width);
             put(operation + "/view/group_end", group_end_width);
             put(operation + "/view/input0", input);
@@ -3919,8 +3750,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         put_segmented(stage + "/integer_numerator", pu, native_broadcast_node_matrix(graph, head_trace.aggregate_num));
 
         const std::string consistency = stage + "/consistency";
-        const auto denominator_matrix = scalar_matrix(denominator_nodes, width);
-        put(consistency + "/view/input0", native_matrix_values(denominator_matrix));
+        put(consistency + "/view/input0", native_edge_feature_from_scalar(denominator_nodes, width));
         put(consistency + "/view/input1", native_field_matrix_values(head_trace.aggregate_pre_field));
         put(consistency + "/view/input2", native_matrix_values(head_trace.aggregate_num));
         put(consistency + "/view/output0", native_field_matrix_values(head_trace.consistency_residual_field));
@@ -3942,27 +3772,11 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             }
             put_i64(max + "/view/selector", max_selector);
             put(max + "/view/delta", native_i64_values(head_trace.delta));
-            put(max + "/view/group_new", native_i64_values(std::vector<i64>(group_new.begin(), group_new.end())));
-            put(max + "/view/group_end", native_i64_values(std::vector<i64>(group_end.begin(), group_end.end())));
-            put_i64(max + "/view/selector_prefix", [&]() {
-                std::vector<i64> prefix(graph.edges, 0);
-                i64 running = 0;
-                for (u64 edge = 0U; edge < graph.edges; ++edge) {
-                    if (group_new[edge]) running = 0;
-                    running += max_selector[edge];
-                    prefix[edge] = running;
-                }
-                return prefix;
-            }());
-            put_i64(max + "/view/selector_prev", [&]() {
-                std::vector<i64> previous(graph.edges, 0);
-                i64 running = 0;
-                for (u64 edge = 0U; edge < graph.edges; ++edge) {
-                    previous[edge] = group_new[edge] ? 0 : running;
-                    running = previous[edge] + max_selector[edge];
-                }
-                return previous;
-            }());
+            put(max + "/view/group_new", native_i64_values(group_new));
+            put(max + "/view/group_end", native_i64_values(group_end));
+            const auto selector_prefix = [&](bool previous) { return view(graph.edges, 2U, [&max_selector, &group_new, previous, running = i64{0}](std::uint64_t index) mutable { if (index == 0U || group_new.at(index) != 0U) running = 0; const auto prior = running; running += max_selector.at(index); return native_wire(previous ? prior : running); }); };
+            put(max + "/view/selector_prefix", selector_prefix(false));
+            put(max + "/view/selector_prev", selector_prefix(true));
             for (u64 bit = 0U; bit < config.range_bits; ++bit)
                 put(max + "/view/range_bit/" + std::to_string(bit), native_bit_column(head_trace.delta, bit, max + ".range" + std::to_string(bit)));
         };
@@ -3980,13 +3794,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
                 table_width <<= 1U;
                 ++depth;
             }
-            std::vector<i64> offsets;
-            offsets.reserve(query.size());
-            for (const auto value : query) {
-                if (value < minimum || value > maximum) fail("lookup view query outside authenticated table: " + operation);
-                offsets.push_back(checked_i128(static_cast<__int128>(value) - minimum, operation + ".offset"));
-            }
-            for (u64 bit = 0U; bit < depth; ++bit) put(operation + "/view/bit/" + std::to_string(bit), native_bit_column(offsets, bit, operation + ".bit"));
+            for (u64 bit = 0U; bit < depth; ++bit) put(operation + "/view/bit/" + std::to_string(bit), view(query.size(), 1U, [&query, minimum, maximum, bit, operation](std::uint64_t index) { const auto value = query.at(index); if (value < minimum || value > maximum) fail("lookup view query outside authenticated table: " + operation); const auto offset = static_cast<std::uint64_t>(checked_i128(static_cast<__int128>(value) - minimum, operation + ".offset")); return native_wire(static_cast<i64>((offset >> bit) & 1U)); }));
         };
         put_table(stage + "/leaky_relu", head_trace.score, tables.lrelu_min, tables.lrelu_max, head_trace.leaky_relu, tables.lrelu);
         put_table(stage + "/exp_map", head_trace.delta, 0, static_cast<i64>(tables.exp_max), head_trace.exp_weight, tables.exp);
@@ -4020,11 +3828,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
                             head_trace.aligned);
             const std::string bias = stage + "/output_bias";
             put(bias + "/view/input0", native_matrix_values(head_trace.aligned));
-            std::vector<NativeFrWire> bias_values;
-            bias_values.reserve(static_cast<std::size_t>(graph.nodes * width));
-            for (u64 node = 0U; node < graph.nodes; ++node)
-                for (u64 column = 0U; column < width; ++column) bias_values.push_back(native_wire(head_trace.bias.at(static_cast<std::size_t>(column))));
-            put(bias + "/view/input1", std::move(bias_values));
+            put(bias + "/view/input1", view(graph.nodes * width, 2U, [&head_trace, width](std::uint64_t index) { return native_wire(head_trace.bias.at(index % width)); }));
             put(bias + "/view/output0", native_matrix_values(head_trace.output));
         }
     };
@@ -4039,18 +3843,12 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         const std::string concat = "hidden/layer" + std::to_string(layer) + "/concat";
         const u64 head_count = config.architecture.hidden_heads.at(layer);
         const Matrix &concat_matrix = trace.hidden_layers.at(layer).concat;
-        std::vector<NativeFrWire> concat_output = native_matrix_values(concat_matrix);
-        std::vector<NativeFrWire> expected_concat(static_cast<std::size_t>(graph.nodes * head_count * width));
         for (u64 head = 0U; head < head_count; ++head) {
-            std::vector<NativeFrWire> input(expected_concat.size());
             const Matrix &source = trace.hidden_layers.at(layer).heads.at(head).aggregate;
             if (source.rows != graph.nodes || source.cols != width) fail("hidden concat source shape mismatch");
-            for (u64 node = 0U; node < graph.nodes; ++node)
-                for (u64 column = 0U; column < width; ++column)
-                    input.at(static_cast<std::size_t>((node * head_count + head) * width + column)) = native_wire(source.at(node, column));
-            put(concat + "/view/input" + std::to_string(head), std::move(input));
+            put(concat + "/view/input" + std::to_string(head), view(graph.nodes * head_count * width, 2U, [&source, head, head_count, width](std::uint64_t index) { const auto column = index % width, row = index / width; return row % head_count == head ? native_wire(source.at(row / head_count, column)) : NativeFrWire{}; }));
         }
-        put(concat + "/view/output", std::move(concat_output));
+        put(concat + "/view/output", native_matrix_values(concat_matrix));
     }
     for (u64 head = 0U; head < config.architecture.output_heads; ++head) {
         const std::string stage = "output/head" + std::to_string(head);
@@ -4068,7 +3866,10 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         tensor.id = family.id;
         tensor.visibility = family.visibility == "public" ? 1U : (family.id.find("/model/") != std::string::npos ? 2U : 3U);
         tensor.domain_size = static_cast<std::uint32_t>(native_shape_product(family.padded_shape, family.id + ".domain"));
-        tensor.values = native_embed_zero_padded(family, found->second);
+        if (family.id == "public_Y") {
+            std::string storage_error;
+            for (std::uint64_t offset = 0U; offset < tensor.domain_size; offset += (1U << 18U)) { std::vector<NativeFrWire> block; const auto count = static_cast<std::uint32_t>(std::min<std::uint64_t>(1U << 18U, tensor.domain_size - offset)); if (!found->second->read_padded(family.logical_shape, family.padded_shape, offset, count, block, &storage_error)) fail(storage_error); tensor.values.insert(tensor.values.end(), block.begin(), block.end()); }
+        } else { tensor.storage = found->second; tensor.logical_shape = family.logical_shape; tensor.padded_shape = family.padded_shape; }
         result.tensors.push_back(std::move(tensor));
 
         NativeTensorShapeInput shape;

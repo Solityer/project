@@ -9,6 +9,10 @@
 #include "hyrax.hpp"
 #include "proof_session.hpp"
 #include "native_masked_sumcheck.hpp"
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <memory>
 using namespace hyrax;
 using std::unique_ptr;
 class verifier 
@@ -80,12 +84,27 @@ struct NativeGkrMatmulShape {
 
 struct NativeGkrMatmulWitness {
     NativeGkrMatmulShape shape;
-    std::vector<F> left;
-    std::vector<F> right;
+    // Dense vectors remain for bounded legacy fixtures. Formal providers
+    // reconstruct canonical operands by absolute input coordinate.
+    zkgpt::NativeFieldVector left;
+    zkgpt::NativeFieldVector right;
+    std::function<F(std::uint64_t)> left_value_at;
+    std::function<F(std::uint64_t)> right_value_at;
+};
+
+struct NativeGkrInputProvider {
+    std::uint64_t full_size = 0;
+    std::uint64_t segment_domain = 0;
+    std::array<std::uint64_t, 4> logical_lengths{};
+    std::function<F(std::uint64_t)> value_at;
 };
 
 struct NativeLayeredGkrWitness {
-    std::vector<std::vector<F>> layer_values;
+    std::vector<zkgpt::NativeFieldVector> layer_values;
+    std::vector<zkgpt::NativeFieldVector>* layer_values_view = nullptr;
+    std::vector<zkgpt::NativeFieldVector>& values() { return layer_values_view != nullptr ? *layer_values_view : layer_values; }
+    const std::vector<zkgpt::NativeFieldVector>& values() const { return layer_values_view != nullptr ? *layer_values_view : layer_values; }
+    std::shared_ptr<const NativeGkrInputProvider> input_provider;
     std::vector<NativeGkrMatmulWitness> matmuls;
 };
 
@@ -109,27 +128,27 @@ struct NativeGkrProverResult {
 
 bool prove_masked_gkr_transcript(
     NativeProofSession &session, const layeredCircuit &circuit,
-    const NativeLayeredGkrWitness &witness,
-    const std::vector<F> &public_output, std::string *reason = nullptr,
+    NativeLayeredGkrWitness &witness,
+    const zkgpt::NativeFieldVector &public_output, std::string *reason = nullptr,
     NativeGkrInputBinding *input_binding = nullptr,
     NativeGkrProverResult *prover_result = nullptr);
 
 bool verify_gkr_transcript(const NativeProofSession &session,
                            const layeredCircuit &circuit,
-                           const std::vector<F> &public_output,
+                           const zkgpt::NativeFieldVector &public_output,
                            const std::vector<NativeGkrMatmulShape> &matmuls,
                            std::string *reason = nullptr);
 
 bool verify_masked_gkr_transcript(
     const NativeProofSession &session, const layeredCircuit &circuit,
-    const std::vector<F> &public_output,
+    const zkgpt::NativeFieldVector &public_output,
     const std::vector<NativeGkrMatmulShape> &matmuls,
     std::string *reason = nullptr,
     NativeGkrInputBinding *input_binding = nullptr);
 
 bool verify_masked_gkr_transcript(
     const NativeProofSession &session, const layeredCircuit &circuit,
-    const std::vector<F> &public_output,
+    const zkgpt::NativeFieldVector &public_output,
     const std::vector<NativeGkrMatmulShape> &matmuls,
     std::size_t start, std::size_t *end, std::string *reason,
     NativeGkrInputBinding *input_binding = nullptr);

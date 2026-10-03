@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Collect baseline-local ezkl result cells fail-closed.
 
-Collection is an audit step, not an assertion of readiness.  Missing cells,
-missing artifacts, unverified native instances, stale identities, or CPU/GPU
-relation mismatches terminate with a non-zero status.
+Formal collection requires the five canonical hybrid CPU+GPU results.
+Missing artifacts, unverified native instances, or stale identities fail closed.
+Explicit native CPU/GPU selections remain available for local component checks.
 """
 
 from __future__ import annotations
@@ -24,6 +24,9 @@ from formal_common import (
     CANONICAL_RELATION,
     CANONICAL_STATEMENT_MODE,
     DATASETS,
+    FORMAL_BACKEND,
+    FORMAL_PHASE_BACKENDS,
+    NATIVE_FORMAL_BACKEND,
     ROOT,
     ContractError,
     abort,
@@ -144,9 +147,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--backends",
         nargs="+",
-        choices=BACKENDS,
-        default=["gpu"],
-        help="native backend axis to collect; default requires the five mixed cells",
+        choices=(*BACKENDS, FORMAL_BACKEND),
+        default=[FORMAL_BACKEND],
+        help="formal default: five hybrid results; explicit cpu/gpu selections are local checks",
     )
     return result
 
@@ -197,7 +200,7 @@ def validate_proof_instances(result: dict[str, Any], proof: Path) -> dict[str, A
 
 def validate_cell(path: Path) -> dict[str, Any]:
     result = load_json(path, f"result cell {path}")
-    unknown = set(result) - REQUIRED_RESULT_KEYS - {"execution_mode", "phase_backends"}
+    unknown = set(result) - REQUIRED_RESULT_KEYS - {"execution_mode", "phase_backends", "native_backend"}
     if unknown:
         abort(f"{path} has unknown result fields: {sorted(unknown)}")
     missing = REQUIRED_RESULT_KEYS - set(result)
@@ -207,13 +210,25 @@ def validate_cell(path: Path) -> dict[str, Any]:
         abort(f"{path} is not a verified native result")
     dataset = result["dataset"]
     backend = result["backend"]
-    if dataset not in DATASETS or backend not in BACKENDS:
+    if dataset not in DATASETS or backend not in (*BACKENDS, FORMAL_BACKEND):
         abort(f"{path} has an unknown dataset/backend")
-    if backend == "gpu" or "execution_mode" in result or "phase_backends" in result:
+    native_backend = NATIVE_FORMAL_BACKEND if backend == FORMAL_BACKEND else backend
+    if backend == FORMAL_BACKEND:
+        if result.get("native_backend") != native_backend or result.get("execution_mode") != FORMAL_BACKEND:
+            abort(f"{path} does not identify the formal hybrid execution/native engine")
+        if canonical_json_digest(result.get("phase_backends")) != canonical_json_digest(FORMAL_PHASE_BACKENDS):
+            abort(f"{path} has an invalid hybrid phase device schedule")
+        if path.parent.name != FORMAL_BACKEND or path.parent.parent.name != dataset:
+            abort(f"{path} is outside its canonical dataset/hybrid result directory")
+    elif "execution_mode" in result or "phase_backends" in result:
         expected_mode = "mixed" if backend == "gpu" else "cpu"
-        expected_phases = {"prepare_compile": "cpu", "setup": expected_mode, "public_statement": "cpu", "witness_generation": "cpu", "model_commitment": "cpu", "prove": expected_mode, "verify": "cpu"}
-        if result.get("execution_mode") != expected_mode or result.get("phase_backends") != expected_phases:
+        legacy_phases = {"prepare_compile": "cpu", "setup": expected_mode, "public_statement": "cpu", "witness_generation": "cpu", "model_commitment": "cpu", "prove": expected_mode, "verify": "cpu"}
+        cpu_phases = {phase: {"cpu": True, "gpu": False} for phase in FORMAL_PHASE_BACKENDS}
+        allowed_phases = (legacy_phases, cpu_phases) if backend == "cpu" else (legacy_phases,)
+        if result.get("execution_mode") != expected_mode or result.get("phase_backends") not in allowed_phases:
             abort(f"{path} has an invalid native phase device schedule")
+    if "native_backend" in result and result["native_backend"] != native_backend:
+        abort(f"{path} has inconsistent native engine identity")
     if result["proof_scope"] != CANONICAL_PROOF_SCOPE:
         abort(f"{path} is not full_gat")
     if result["privacy_policy"] != CANONICAL_PRIVACY:
@@ -276,7 +291,7 @@ def validate_cell(path: Path) -> dict[str, Any]:
     artifact = validate_artifact_identity(
         artifact_manifest,
         dataset=dataset,
-        backend=backend,
+        backend=native_backend,
         binary=path_from_result(result["binary_path"], "binary"),
         srs=path_from_result(result["srs_path"], "SRS"),
         settings=path_from_result(result["settings_path"], "settings"),
@@ -319,7 +334,7 @@ def validate_cell(path: Path) -> dict[str, Any]:
         "core run manifest",
     )
     if (
-        core["schema_version"] != 1 or core["relation_id"] != CANONICAL_RELATION or core["dataset"] != dataset or core["backend"] != backend or
+        core["schema_version"] != 1 or core["relation_id"] != CANONICAL_RELATION or core["dataset"] != dataset or core["backend"] != native_backend or
         core["proof_scope"] != CANONICAL_PROOF_SCOPE or core["privacy_policy"] != CANONICAL_PRIVACY or
         core["public_statement_mode"] != CANONICAL_STATEMENT_MODE or core["output_mode"] != CANONICAL_OUTPUT_MODE or core["native_verify_result"] is not True or
         core["native_public_instance_binding"] is not True or core["verifier_reads_witness"] is not False or
@@ -341,7 +356,7 @@ def validate_cell(path: Path) -> dict[str, Any]:
     if result["srs_provenance"] != artifact["srs_provenance"]:
         abort(f"{path} SRS provenance does not match artifact identity")
     validate_gpu_evidence_from_result(result)
-    if backend == "gpu":
+    if native_backend == "gpu":
         record = load_json(proof.parent / "gpu_prover_record.json", "native GPU prover record")
         require_exact_keys(record, {"proof_sha256", "msm_calls", "ntt_calls", "synchronized_calls", "device_id", "evidence"}, "native GPU prover record")
         counts = [record[key] for key in ("msm_calls", "ntt_calls", "synchronized_calls", "device_id")]
@@ -358,7 +373,7 @@ def validate_cell(path: Path) -> dict[str, Any]:
 
 
 def validate_gpu_evidence_from_result(result: dict[str, Any]) -> None:
-    validate_gpu_evidence_document(result["gpu_evidence"], backend=result["backend"])
+    validate_gpu_evidence_document(result["gpu_evidence"], backend=NATIVE_FORMAL_BACKEND if result["backend"] == FORMAL_BACKEND else result["backend"])
 
 
 def check_pair_consistency(cells: list[dict[str, Any]]) -> None:
@@ -380,6 +395,8 @@ def main(args: argparse.Namespace) -> int:
     selected_backends = tuple(args.backends)
     if len(set(selected_backends)) != len(selected_backends):
         abort("--backends must not contain duplicates")
+    if FORMAL_BACKEND in selected_backends and (selected_backends != (FORMAL_BACKEND,) or selected_datasets != DATASETS):
+        abort("formal collection requires exactly the five canonical hybrid results")
     runs_root = local_path(args.runs_root, "runs-root")
     output = local_path(args.output, "collector output")
     reject_forbidden_path(output, "collector output")
@@ -390,7 +407,10 @@ def main(args: argparse.Namespace) -> int:
         for backend in selected_backends:
             result_path = runs_root / dataset / backend / "result.json"
             reject_forbidden_path(result_path, f"{dataset}/{backend} result")
-            cells.append(validate_cell(result_path))
+            cell = validate_cell(result_path)
+            if (cell["dataset"], cell["backend"]) != (dataset, backend):
+                abort(f"result identity does not match its collection path: {result_path}")
+            cells.append(cell)
     if len(cells) != len(selected_datasets) * len(selected_backends):
         abort("collector did not obtain the requested dataset/backend cells")
     check_pair_consistency(cells)

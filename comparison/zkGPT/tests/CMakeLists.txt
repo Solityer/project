@@ -1,5 +1,6 @@
 add_executable(gat_adapter_smoke gat_adapter_smoke.cpp)
 target_link_libraries(gat_adapter_smoke PRIVATE gat_adapter)
+target_compile_options(gat_adapter_smoke PRIVATE -UNDEBUG)
 add_test(NAME gat_adapter_smoke COMMAND gat_adapter_smoke)
 add_test(NAME gat_adapter_formal_smoke COMMAND gat_adapter_smoke --formal)
 
@@ -22,6 +23,11 @@ add_test(NAME native_masked_hyrax_smoke COMMAND native_masked_hyrax_smoke)
 add_executable(native_gkr_matmul_session_smoke native_gkr_matmul_session_smoke.cpp)
 target_link_libraries(native_gkr_matmul_session_smoke PRIVATE gat_adapter)
 add_test(NAME native_gkr_matmul_session_smoke COMMAND native_gkr_matmul_session_smoke)
+
+add_executable(native_gkr_prefix_smoke native_gkr_prefix_smoke.cpp)
+target_link_libraries(native_gkr_prefix_smoke PRIVATE gpt_lib gat_adapter mcl mclbn256)
+target_compile_options(native_gkr_prefix_smoke PRIVATE -UNDEBUG)
+add_test(NAME native_gkr_prefix_smoke COMMAND native_gkr_prefix_smoke)
 
 add_executable(native_lasso_range_smoke native_lasso_range_smoke.cpp)
 target_link_libraries(native_lasso_range_smoke PRIVATE gat_adapter)

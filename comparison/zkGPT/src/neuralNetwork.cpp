@@ -1536,7 +1536,7 @@ int neuralNetwork::getNextBit(int layer_id) {
 void neuralNetwork::printLayerValues(prover &pr) {
     for (i64 i = 0; i < SIZE; ++i) 
     {
-        for (i64 j = 0; j < std::min(200u, pr.C.circuit[i].size); ++j)
+        for (i64 j = 0; j < std::min<u64>(200, pr.C.circuit[i].size); ++j)
             if (!pr.val[i][j].isZero()) cerr << pr.val[i][j] << ' ';
         cerr << endl;
         for (i64 j = pr.C.circuit[i].zero_start_id; j < pr.C.circuit[i].size; ++j)

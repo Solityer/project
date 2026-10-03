@@ -1,6 +1,8 @@
 #include "gat_types.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cybozu/sha2.hpp>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -55,9 +57,16 @@ std::string sha256_hex(const std::string& bytes) {
 std::string sha256_file(const std::string& path) {
     require_file(path);
     std::ifstream in(path.c_str(), std::ios::binary);
-    std::ostringstream contents;
-    contents << in.rdbuf();
-    return sha256_hex(contents.str());
+    cybozu::Sha256 hasher;
+    std::array<char, 1U << 20> buffer;
+    while (in) { in.read(buffer.data(), static_cast<std::streamsize>(buffer.size())); const std::streamsize count = in.gcount(); if (count > 0) hasher.update(buffer.data(), static_cast<std::size_t>(count)); }
+    if (!in.eof()) throw std::runtime_error("cannot stream canonical file SHA-256: " + path);
+    unsigned char digest[32] = {};
+    if (hasher.digest(digest, sizeof(digest), nullptr, 0) != sizeof(digest)) throw std::runtime_error("SHA-256 implementation failed");
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (unsigned char byte : digest) out << std::setw(2) << static_cast<unsigned>(byte);
+    return out.str();
 }
 
 std::string basename_of(const std::string& path) {

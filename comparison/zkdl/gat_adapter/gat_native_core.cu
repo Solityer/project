@@ -1696,13 +1696,7 @@ relation::OperationDescriptor canonical_operation(const Config &config, const St
                 !bind_output_view(operation, plan_operation, output, 0U, domains, error))
                 return relation::OperationDescriptor{};
             sort_fac_bindings(operation);
-            relation::ConstraintDescriptor consistency;
-            consistency.id = operation.id + "/field-integer";
-            consistency.degree = 2U;
-            consistency.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, inputs[0]), local_ref(operation, inputs[1])}));
-            consistency.terms.push_back(monomial(relation::fr_from_signed_i64(-1), {local_ref(operation, inputs[2])}));
-            consistency.terms.push_back(monomial(relation::fr_from_signed_i64(-1), {local_ref(operation, output)}));
-            operation.constraints.push_back(std::move(consistency));
+            operation.constraints = relation::field_integer_consistency_constraints(operation.id, local_ref(operation, inputs[0]), local_ref(operation, inputs[1]), local_ref(operation, inputs[2]), local_ref(operation, output));
         } else if (plan_operation.kind == "tensor_product_sumcheck") {
             operation.kind = relation::RelationKind::Product;
             if (plan_operation.inputs.size() < 2U || plan_operation.outputs.size() != 1U) return unsupported("two aligned input tensors and one output tensor");
@@ -1844,6 +1838,11 @@ bool build_canonical_operations(const Config &config, const StaticTables &tables
             if (error) *error = "duplicate canonical native operation id: " + operation.id;
             return false;
         }
+        if (!operation.constraints.empty()) {
+            const auto shape = families.find(operation.tensor_refs.front());
+            if (shape == families.end() || shape->second == nullptr) { if (error) *error = "pointwise operation is missing authenticated active shape: " + operation.id; return false; }
+            for (auto& constraint : operation.constraints) { constraint.logical_shape = shape->second->logical_shape; constraint.padded_shape = shape->second->padded_shape; }
+        }
         operations.push_back(std::move(operation));
     }
     return !operations.empty();
@@ -1974,116 +1973,39 @@ bool shape_contract_from_witness(const RelationPlan &plan, const NativeRelationW
 
 bool graph_public_descriptor_id(const std::string &id) {
     const auto suffix = [&](const std::string &value) { return id.size() >= value.size() && id.compare(id.size() - value.size(), value.size(), value) == 0U; };
-    return id == "input_features" || id == "sparse_route" || id == "group_selectors" || id == "node_ptr" || id == "edge_ptr" || id == "node_edge_ptr" ||
+    return id == "input_features" || (id.rfind("hidden/layer0/head", 0U) == 0U && suffix("/trace/input")) || id == "sparse_route" || id == "group_selectors" || id == "node_ptr" || id == "edge_ptr" || id == "node_edge_ptr" ||
            suffix("/view/group_new") || suffix("/view/group_end");
 }
 
-bool graph_public_values(const Graph &graph, const relation::TensorDescriptor &descriptor, std::vector<FrWire> &values, std::string *error) {
-    values.assign(descriptor.domain_size, FrWire{});
-    const auto suffix = [&](const std::string &value) {
-        return descriptor.id.size() >= value.size() && descriptor.id.compare(descriptor.id.size() - value.size(), value.size(), value) == 0U;
-    };
-    const bool csr_boundary_view = suffix("/view/group_new") || suffix("/view/group_end");
-    const auto from_u64 = [&](std::uint64_t value, FrWire &out) {
-        if (value > std::numeric_limits<std::uint32_t>::max()) return false;
-        out = zkdl::fr_from_u32(static_cast<std::uint32_t>(value));
-        return true;
-    };
-    if (descriptor.id == "input_features") {
-        if (descriptor.padded_shape.size() != 2U || descriptor.padded_shape[0] < graph.feature_values.rows ||
-            descriptor.padded_shape[1] < graph.feature_values.cols || graph.feature_values.rows != graph.nodes || graph.feature_values.cols != graph.features ||
-            descriptor.domain_size != descriptor.padded_shape[0] * descriptor.padded_shape[1]) {
-            if (error) *error = "public input_features shape is incompatible with graph feature material";
-            return false;
-        }
-        for (std::uint64_t row = 0U; row < graph.feature_values.rows; ++row)
-            for (std::uint64_t column = 0U; column < graph.feature_values.cols; ++column) {
-                const std::int64_t value = graph.feature_values.at(row, column);
-                values[static_cast<std::size_t>(row * descriptor.padded_shape[1] + column)] = relation::fr_from_signed_i64(value);
-            }
-        return true;
-    }
-    if (descriptor.id == "sparse_route" || descriptor.id == "group_selectors") {
-        if (descriptor.padded_shape.size() != 2U || descriptor.padded_shape[1] != 2U || descriptor.padded_shape[0] < graph.edges ||
-            graph.src.size() != graph.edges || graph.dst.size() != graph.edges) {
-            if (error) *error = "public graph tensor shape is incompatible with src/dst selector material";
-            return false;
-        }
-        for (std::uint64_t edge = 0U; edge < graph.edges; ++edge) {
-            const std::uint64_t base = edge * 2U;
-            if (descriptor.id == "sparse_route") {
-                if (!from_u64(graph.src[edge], values[base]) || !from_u64(graph.dst[edge], values[base + 1U])) return false;
-            } else {
-                const std::uint32_t destination = graph.dst[edge];
-                if (destination >= graph.nodes || graph.node_edge_ptr.size() != graph.nodes + 1U) {
-                    if (error) *error = "public group selector graph boundary is malformed";
-                    return false;
-                }
-                const bool first = edge == graph.node_edge_ptr[destination];
-                const bool last = edge + 1U == graph.node_edge_ptr[destination + 1U];
-                values[base] = zkdl::fr_from_u32(first ? 1U : 0U);
-                values[base + 1U] = zkdl::fr_from_u32(last ? 1U : 0U);
-            }
-        }
-        return true;
-    }
-    if (csr_boundary_view) {
-        if (graph.dst.size() != graph.edges || graph.node_edge_ptr.size() != graph.nodes + 1U || graph.node_edge_ptr.empty() ||
-            graph.node_edge_ptr.front() != 0U || graph.node_edge_ptr.back() != graph.edges || descriptor.padded_shape.empty() ||
-            descriptor.padded_shape.front() < graph.edges) {
-            if (error) *error = "public CSR group-boundary view has an incompatible graph/domain";
-            return false;
-        }
-        for (std::size_t node = 0U; node + 1U < graph.node_edge_ptr.size(); ++node) {
-            if (graph.node_edge_ptr[node] > graph.node_edge_ptr[node + 1U] || graph.node_edge_ptr[node + 1U] > graph.edges) {
-                if (error) *error = "public CSR node_edge_ptr is not monotone or bounded";
-                return false;
-            }
-        }
-        std::uint64_t feature_width = 1U;
-        for (std::size_t axis = 1U; axis < descriptor.padded_shape.size(); ++axis) {
-            if (descriptor.padded_shape[axis] == 0U || feature_width > std::numeric_limits<std::uint64_t>::max() / descriptor.padded_shape[axis]) {
-                if (error) *error = "public CSR group-boundary view feature domain overflows";
-                return false;
-            }
-            feature_width *= descriptor.padded_shape[axis];
-        }
-        if (feature_width == 0U || feature_width > std::numeric_limits<std::uint32_t>::max() ||
-            feature_width * descriptor.padded_shape.front() != descriptor.domain_size) {
-            if (error) *error = "public CSR group-boundary view domain does not match its shape";
-            return false;
-        }
-        const bool want_end = suffix("/view/group_end");
-        for (std::uint64_t edge = 0U; edge < graph.edges; ++edge) {
-            const std::uint64_t destination = graph.dst[edge];
-            if (destination >= graph.nodes || edge < graph.node_edge_ptr[destination] || edge >= graph.node_edge_ptr[destination + 1U]) {
-                if (error) *error = "public CSR edge is outside its destination segment";
-                return false;
-            }
-            const bool boundary = want_end ? edge + 1U == graph.node_edge_ptr[destination + 1U] : edge == graph.node_edge_ptr[destination];
-            for (std::uint64_t feature = 0U; feature < feature_width; ++feature)
-                values[static_cast<std::size_t>(edge * feature_width + feature)] = zkdl::fr_from_u32(boundary ? 1U : 0U);
-        }
-        return true;
-    }
-    const std::vector<std::uint64_t> *source = nullptr;
-    if (descriptor.id == "node_ptr")
-        source = &graph.node_ptr;
-    else if (descriptor.id == "edge_ptr")
-        source = &graph.edge_ptr;
-    else if (descriptor.id == "node_edge_ptr")
-        source = &graph.node_edge_ptr;
-    if (source == nullptr) return false;
-    if (source->size() > values.size()) {
-        if (error) *error = "public graph boundary tensor exceeds its padded domain";
-        return false;
-    }
-    for (std::size_t i = 0U; i < source->size(); ++i)
-        if (!from_u64((*source)[i], values[i])) {
-            if (error) *error = "public graph boundary exceeds field wire range";
-            return false;
-        }
+bool public_logical_provider(const relation::TensorDescriptor &descriptor, std::size_t basis_size, std::function<FrWire(std::uint64_t)> reader, relation::SegmentedTensorProvider &provider, std::string *error) {
+    std::uint32_t segment_size = 0U, segment_count = 0U;
+    if (!descriptor.valid(error) || !relation::SegmentedTensorProvider::shape(descriptor.domain_size, basis_size, segment_size, segment_count, error)) return false;
+    provider = relation::SegmentedTensorProvider(descriptor.domain_size, segment_size, [logical = descriptor.logical_shape, padded = descriptor.padded_shape, reader](std::uint64_t offset, std::uint32_t count, std::vector<FrWire> &values, std::string *) { values.assign(count, FrWire{}); for (std::uint32_t index = 0U; index < count; ++index) { std::uint64_t remainder = offset + index, logical_index = 0U, stride = 1U; bool active = true; for (std::size_t axis = logical.size(); axis-- > 0U;) { const auto coordinate = remainder % padded[axis]; remainder /= padded[axis]; if (coordinate >= logical[axis]) { active = false; break; } logical_index += coordinate * stride; stride *= logical[axis]; } if (active) values[index] = reader(logical_index); } return true; });
     return true;
+}
+
+bool graph_public_provider(const Graph &graph, const relation::TensorDescriptor &descriptor, std::size_t basis_size, relation::SegmentedTensorProvider &provider, std::string *error) {
+    const auto from_u64 = [](std::uint64_t value) { if (value > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error("public graph index exceeds field wire range"); return zkdl::fr_from_u32(static_cast<std::uint32_t>(value)); };
+    if (descriptor.id == "input_features" || (descriptor.id.rfind("hidden/layer0/head", 0U) == 0U && descriptor.id.size() >= 12U && descriptor.id.compare(descriptor.id.size() - 12U, 12U, "/trace/input") == 0U)) {
+        if (descriptor.logical_shape != std::vector<std::uint64_t>{graph.nodes, graph.features} || graph.feature_values.rows != graph.nodes || graph.feature_values.cols != graph.features) { if (error) *error = "public input_features shape differs from graph feature material"; return false; }
+        return public_logical_provider(descriptor, basis_size, [&graph](std::uint64_t index) { return relation::fr_from_signed_i64(graph.feature_values.at(index / graph.features, index % graph.features)); }, provider, error);
+    }
+    const auto suffix = [&](const std::string &value) { return descriptor.id.size() >= value.size() && descriptor.id.compare(descriptor.id.size() - value.size(), value.size(), value) == 0U; };
+    const bool boundary_view = suffix("/view/group_new") || suffix("/view/group_end");
+    if (descriptor.id == "sparse_route" || descriptor.id == "group_selectors" || boundary_view) {
+        if (descriptor.logical_shape.empty() || descriptor.logical_shape.front() != graph.edges || graph.src.size() != graph.edges || graph.dst.size() != graph.edges || graph.node_edge_ptr.size() != graph.nodes + 1U || graph.node_edge_ptr.front() != 0U || graph.node_edge_ptr.back() != graph.edges) { if (error) *error = "public route/CSR tensor shape is incompatible with graph"; return false; }
+        if (!boundary_view && descriptor.logical_shape != std::vector<std::uint64_t>{graph.edges, 2U}) { if (error) *error = "public route tensor must have two logical columns"; return false; }
+        for (std::size_t node = 0U; node + 1U < graph.node_edge_ptr.size(); ++node) if (graph.node_edge_ptr[node] > graph.node_edge_ptr[node + 1U] || graph.node_edge_ptr[node + 1U] > graph.edges) { if (error) *error = "public CSR pointers are not monotone and bounded"; return false; }
+        for (std::size_t edge = 0U; edge < graph.dst.size(); ++edge) { const auto node = graph.dst[edge]; if (node >= graph.nodes || graph.src[edge] >= graph.nodes || edge < graph.node_edge_ptr[node] || edge >= graph.node_edge_ptr[node + 1U]) { if (error) *error = "public edge is outside its destination CSR segment"; return false; } }
+        std::uint64_t width = 1U;
+        for (std::size_t axis = 1U; axis < descriptor.logical_shape.size(); ++axis) width *= descriptor.logical_shape[axis];
+        const bool route = descriptor.id == "sparse_route", end = suffix("/view/group_end");
+        return public_logical_provider(descriptor, basis_size, [&graph, width, route, end, boundary_view, from_u64](std::uint64_t index) { const auto edge = index / width, column = index % width; if (route) return from_u64((column == 0U ? graph.src : graph.dst).at(edge)); const auto node = graph.dst.at(edge); const bool want_end = boundary_view ? end : column == 1U; return zkdl::fr_from_u32((want_end ? edge + 1U == graph.node_edge_ptr.at(node + 1U) : edge == graph.node_edge_ptr.at(node)) ? 1U : 0U); }, provider, error);
+    }
+    const std::vector<std::uint64_t> *source = descriptor.id == "node_ptr" ? &graph.node_ptr : descriptor.id == "edge_ptr" ? &graph.edge_ptr : descriptor.id == "node_edge_ptr" ? &graph.node_edge_ptr : nullptr;
+    if (source == nullptr) return false;
+    if (descriptor.logical_shape != std::vector<std::uint64_t>{source->size()}) { if (error) *error = "public graph boundary tensor logical shape differs from Graph"; return false; }
+    return public_logical_provider(descriptor, basis_size, [source, from_u64](std::uint64_t index) { return from_u64(source->at(index)); }, provider, error);
 }
 
 bool authenticated_table_values(const StaticTables &tables, const relation::TensorDescriptor &descriptor, std::vector<FrWire> &values, std::string *error) {
@@ -2723,7 +2645,12 @@ bool decode_native_witness(const NativeRelationWitnessInput &input, NativeRelati
         tensor.id = supplied.id;
         tensor.visibility = supplied.visibility;
         tensor.domain_size = supplied.domain_size;
-        tensor.values.assign(supplied.values.begin(), supplied.values.end());
+        if (supplied.storage) {
+            if (!supplied.values.empty() || supplied.logical_shape.empty() || supplied.logical_shape.size() != supplied.padded_shape.size()) { if (error) *error = "native compact tensor ABI is ambiguous"; return false; }
+            std::uint32_t segment_size = 0U, segment_count = 0U;
+            if (!relation::SegmentedTensorProvider::shape(tensor.domain_size, 1U << 18U, segment_size, segment_count, error)) return false;
+            tensor.stored_provider = relation::SegmentedTensorProvider(tensor.domain_size, segment_size, [storage = supplied.storage, logical = supplied.logical_shape, padded = supplied.padded_shape](std::uint64_t offset, std::uint32_t count, std::vector<FrWire>& output, std::string* reader_error) { return storage->read_padded(logical, padded, offset, count, output, reader_error); });
+        } else tensor.values.assign(supplied.values.begin(), supplied.values.end());
         output.tensors.push_back(std::move(tensor));
     }
     output.tensor_shapes.reserve(input.tensor_shapes.size());
@@ -2832,7 +2759,7 @@ bool context_from_request(const NativeProveRequest &request, relation::ProverCon
     if (!statement_from_adapter(*request.config, *request.graph, *request.model, *request.tables, *request.relation, *request.statement, witness,
                                 context.statement, error))
         return false;
-    context.tensors = witness.tensors;
+    context.tensors = std::move(witness.tensors);
     for (const auto &tensor : context.tensors) {
         if (tensor.visibility == 1U) continue;
         if (tensor.visibility == 2U) {
@@ -2883,23 +2810,17 @@ bool context_from_request(const NativeProveRequest &request, relation::ProverCon
     context.registered_model_commitments = witness.registered_model_commitments;
     context.hiding_commitment_records = witness.hiding_commitment_records;
     context.blinding_scalars = witness.blinding_scalars;
-    for (const auto &tensor : context.tensors)
-        if (tensor.visibility == 1U) context.public_tensor_values.emplace(tensor.id, tensor.values);
+    for (const auto &tensor : context.tensors) if (tensor.visibility == 1U && !tensor.values.empty()) context.public_tensor_values.emplace(tensor.id, tensor.values);
     for (const auto &descriptor : context.tensor_descriptors) {
-        const bool graph_view = graph_public_descriptor_id(descriptor.id);
-        if (descriptor.visibility != 1U && !graph_view) continue;
-        std::vector<FrWire> expected;
-        if (!graph_public_values(*request.graph, descriptor, expected, error)) {
-            if (graph_view) return false;
-            continue;
-        }
-        if (graph_view) context.graph_public_tensor_ids.insert(descriptor.id);
-        const auto found = context.public_tensor_values.find(descriptor.id);
-        if (found == context.public_tensor_values.end()) {
-            context.public_tensor_values.emplace(descriptor.id, std::move(expected));
-        } else if (found->second != expected) {
-            if (error) *error = "public graph selector tensor witness differs from Graph::src/dst/CSR";
-            return false;
+        if (graph_public_descriptor_id(descriptor.id)) {
+            relation::SegmentedTensorProvider provider;
+            if (!graph_public_provider(*request.graph, descriptor, context.ipa_generators.size(), provider, error)) return false;
+            context.public_tensor_providers.emplace(descriptor.id, provider);
+            context.graph_public_tensor_ids.insert(descriptor.id);
+        } else if (descriptor.id == "output_head_count") {
+            relation::SegmentedTensorProvider provider;
+            if (descriptor.logical_shape != std::vector<std::uint64_t>{1U} || !public_logical_provider(descriptor, context.ipa_generators.size(), [heads = request.config->architecture.output_heads](std::uint64_t) { return relation::fr_from_signed_i64(static_cast<std::int64_t>(heads)); }, provider, error)) return false;
+            context.public_tensor_providers.emplace(descriptor.id, provider);
         }
     }
     if (!bind_authenticated_public_material(*request.tables, context.tensor_descriptors, context.public_tensor_values, error)) return false;
@@ -3044,22 +2965,17 @@ bool context_from_verify(const NativeVerifyRequest &request, relation::VerifierC
     if (!sorted_lookup_build_verifier_context(*request.tables, *request.relation, *request.statement, context.operations, context, error)) return false;
     context.registered_model_commitments = supplied.registered_model_commitments;
     context.hiding_commitment_records = supplied.hiding_commitment_records;
-    for (const auto &tensor : supplied.tensors) context.public_tensor_values.emplace(tensor.id, tensor.values);
+    for (const auto &tensor : supplied.tensors) if (!tensor.values.empty()) context.public_tensor_values.emplace(tensor.id, tensor.values);
     for (const auto &descriptor : context.tensor_descriptors) {
-        const bool graph_view = graph_public_descriptor_id(descriptor.id);
-        if (descriptor.visibility != 1U && !graph_view) continue;
-        std::vector<FrWire> expected;
-        if (!graph_public_values(*request.graph, descriptor, expected, error)) {
-            if (graph_view) return false;
-            continue;
-        }
-        if (graph_view) context.graph_public_tensor_ids.insert(descriptor.id);
-        const auto found = context.public_tensor_values.find(descriptor.id);
-        if (found == context.public_tensor_values.end()) {
-            context.public_tensor_values.emplace(descriptor.id, std::move(expected));
-        } else if (found->second != expected) {
-            if (error) *error = "independent verifier graph selector values differ from public Graph::src/dst/CSR";
-            return false;
+        if (graph_public_descriptor_id(descriptor.id)) {
+            relation::SegmentedTensorProvider provider;
+            if (!graph_public_provider(*request.graph, descriptor, context.ipa_generators.size(), provider, error)) return false;
+            context.public_tensor_providers.emplace(descriptor.id, provider);
+            context.graph_public_tensor_ids.insert(descriptor.id);
+        } else if (descriptor.id == "output_head_count") {
+            relation::SegmentedTensorProvider provider;
+            if (descriptor.logical_shape != std::vector<std::uint64_t>{1U} || !public_logical_provider(descriptor, context.ipa_generators.size(), [heads = request.config->architecture.output_heads](std::uint64_t) { return relation::fr_from_signed_i64(static_cast<std::int64_t>(heads)); }, provider, error)) return false;
+            context.public_tensor_providers.emplace(descriptor.id, provider);
         }
     }
     if (!bind_authenticated_public_material(*request.tables, context.tensor_descriptors, context.public_tensor_values, error)) return false;

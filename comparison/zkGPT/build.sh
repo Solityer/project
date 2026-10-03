@@ -5,18 +5,21 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 backend="cpu"
 build_type="Release"
 build_dir="${ROOT_DIR}/build/cpu"
-formal_backend_build=0
+developer_tests=0
 
 case "${1:-}" in
     --cpu)
         backend="cpu"
         build_dir="${ROOT_DIR}/build/cpu"
-        formal_backend_build=1
+        ;;
+    --cpu-tests)
+        backend="cpu"
+        build_dir="${ROOT_DIR}/build/cpu"
+        developer_tests=1
         ;;
     --gpu)
         backend="gpu"
         build_dir="${ROOT_DIR}/build/gpu"
-        formal_backend_build=1
         ;;
     Debug|Release|RelWithDebInfo|MinSizeRel)
         build_type="$1"
@@ -25,8 +28,8 @@ case "${1:-}" in
     "")
         ;;
     --help|-h)
-        echo "Usage: $0 --cpu|--gpu"
-        echo "       --cpu also builds the isolated baseline-local formal smoke target"
+        echo "Usage: $0 --cpu|--gpu|--cpu-tests"
+        echo "       --cpu-tests explicitly builds the isolated development proof check"
         echo "       $0 [Debug|Release|RelWithDebInfo|MinSizeRel] (upstream CPU compatibility)"
         exit 0
         ;;
@@ -53,7 +56,7 @@ cmake_args=(
 cmake "${cmake_args[@]}"
 cmake --build "${build_dir}" --target zkgpt_gat_prover zkgpt_gat_verifier --parallel
 
-if [[ "${formal_backend_build}" -eq 1 && "${backend}" == "cpu" ]]; then
+if [[ "${developer_tests}" -eq 1 ]]; then
     smoke_build_dir="${ROOT_DIR}/build/cpu-tests"
     smoke_cmake_args=(
         -S "${ROOT_DIR}"
@@ -68,4 +71,11 @@ if [[ "${formal_backend_build}" -eq 1 && "${backend}" == "cpu" ]]; then
     echo "built isolated gat_adapter_smoke (cpu tests) at ${smoke_build_dir}/tests/"
 fi
 
+if [[ "${build_dir}" == "${ROOT_DIR}/build/${backend}" ]]; then
+    PYTHONPATH="${ROOT_DIR}/scripts" python3 - "${backend}" <<'PYBUILD'
+import sys
+from common import baseline_root, write_build_provenance
+write_build_provenance(baseline_root(), sys.argv[1])
+PYBUILD
+fi
 echo "built zkgpt_gat_prover and zkgpt_gat_verifier (${backend}) at ${build_dir}/gat_adapter/"

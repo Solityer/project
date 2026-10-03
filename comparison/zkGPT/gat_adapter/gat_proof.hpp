@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gat_types.hpp"
+#include "native_storage.hpp"
 #include "hyrax.hpp"
 #include "prover.hpp"
 #include "range_prover.hpp"
@@ -41,10 +42,13 @@ class SegmentedInputOracle {
   public:
     using ChunkCallback = std::function<void(std::size_t, const Fr&)>;
     using FoldChunkCallback = std::function<bool(std::uint64_t, const std::vector<Fr>&, std::string* reason)>;
+    using SegmentValueProvider = std::function<Fr(std::uint64_t)>;
 
     SegmentedInputOracle() = default;
 
     SegmentedInputOracle(const InputLayout& layout, std::array<std::vector<Fr>, 4> segments);
+    SegmentedInputOracle(const InputLayout& layout, std::array<zkgpt::NativeFieldVector, 4> segments,
+                         std::array<SegmentValueProvider, 4> providers = {});
 
     static SegmentedInputOracle from_int_segments(const InputLayout& layout, const std::array<std::vector<Int>, 4>& segments);
 
@@ -70,7 +74,8 @@ class SegmentedInputOracle {
 
   private:
     InputLayout layout_;
-    std::array<std::vector<Fr>, 4> segments_;
+    std::array<zkgpt::NativeFieldVector, 4> segments_;
+    std::array<SegmentValueProvider, 4> providers_;
 };
 
 InputLayout build_gat_input_layout(const Graph& graph, const Model& model, const QuantConfig& quant);
@@ -139,7 +144,10 @@ struct NativeRelationDescriptor {
     std::vector<std::string> equations;
 };
 
-std::vector<Fr> pack_native_gkr_matmul_rhs(const MatMulDescriptor& descriptor, const std::vector<Fr>& canonical_input_layer);
+zkgpt::NativeFieldVector pack_native_gkr_matmul_rhs(const MatMulDescriptor& descriptor, const zkgpt::NativeFieldVector& canonical_input_layer);
+zkgpt::NativeFieldVector pack_native_gkr_matmul_rhs(
+    const MatMulDescriptor& descriptor, std::uint64_t canonical_input_size,
+    const std::function<Fr(std::uint64_t)>& canonical_input_value_at);
 
 struct SparseGkrDescriptor {
     std::string relation_id;
@@ -232,6 +240,13 @@ struct GatCapacityReport {
     bool ppi_node_ptr_boundary = false;
     bool ppi_edge_ptr_boundary = false;
     bool sparse_ready = false;
+    std::uint64_t masked_lasso_matrix_entries = 0;
+    std::uint64_t masked_response_entries_lower_bound = 0;
+    std::uint64_t masked_proof_bytes_lower_bound = 0;
+    std::uint64_t maximum_masked_response_entries = 0;
+    std::vector<std::array<std::uint64_t, 2>> lasso_family_domains;
+    std::string proof_path = "unsupported";
+    bool full_relation_bound = false;
     bool ready = false;
     std::string reason;
 };
@@ -239,7 +254,7 @@ struct GatCapacityReport {
 GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, const QuantConfig& quant);
 
 struct GatCircuitPlan {
-    std::string recipe_schema = "canonical_plan_recipe_v2";
+    std::string recipe_schema = "canonical_plan_recipe_v3";
     std::string relation_schema = "zkgpt-gat-relation-v1";
 
     std::string sparse_relation_schema = kSparseGkrRelationSchema;
@@ -275,6 +290,9 @@ struct GatCircuitPlan {
 
     std::size_t public_output_coordinates = 0;
     std::size_t residual_coordinates = 0;
+    zkgpt::NativeVector<Int> residual_targets;
+    std::string residual_target_digest;
+    std::vector<std::array<unsigned, 5>> division_range_bits;
     bool official_layered = false;
     bool has_placeholder = false;
 };
@@ -286,11 +304,11 @@ GatCircuitPlan build_gat_circuit_plan(const Graph& graph, const Model& model, co
 bool validate_gat_circuit_plan(const GatCircuitPlan& plan, std::string* reason = nullptr);
 
 struct GatCircuitWitness {
-    std::vector<Fr> input_layer;
-    std::vector<Fr> canonical_input_layer;
-    std::vector<std::vector<Fr>> values;
-    std::vector<Fr> public_output;
-    std::vector<Fr> residuals;
+    zkgpt::NativeFieldVector input_layer;
+    std::uint64_t input_layer_size = 0;
+    std::vector<zkgpt::NativeFieldVector> values;
+    zkgpt::NativeFieldVector public_output;
+    zkgpt::NativeFieldVector residuals;
 
     std::shared_ptr<SegmentedInputOracle> input_oracle;
     bool relation_ok = false;
@@ -298,15 +316,23 @@ struct GatCircuitWitness {
 
 GatCircuitWitness build_gat_circuit_witness(const GatCircuitPlan& plan, const Graph& graph, const Tensor2D& public_features, const Model& model,
                                             const QuantConfig& quant, const ForwardResult& forward);
+GatCircuitWitness build_gat_circuit_witness(const GatCircuitPlan& plan, const Graph& graph, const Tensor2D& public_features, const Model& model,
+                                            const QuantConfig& quant, const ForwardResult& forward,
+                                            const hyrax::HyraxScalarProvider& l_query_values);
 
 bool evaluate_gat_circuit_witness(const GatCircuitPlan& plan, const GatCircuitWitness& witness, std::string* reason = nullptr);
+bool evaluate_signed_round_div_gate_assignment(Int dividend, Int denominator, const DivisionResult& result, RoundingMode mode, std::string* reason = nullptr);
+
+bool evaluate_gat_circuit_assignment(const GatCircuitPlan& plan, const zkgpt::NativeFieldVector& input, const Tensor2D& public_logits, std::string* reason = nullptr);
 
 struct CommitmentWire {
     std::string scheme = "hyrax-pedersen-bn254";
     std::string basis_id;
-    std::size_t logical_size = 0;
-    std::size_t padded_size = 0;
+    std::uint64_t logical_size = 0;
+    std::uint64_t padded_size = 0;
     std::string point_hex;
+    bool has_tensor_commitment = false;
+    hyrax::HyraxTensorMleCommitment tensor_commitment;
 
     bool valid() const;
 };
@@ -423,8 +449,8 @@ struct SparseGkrProofWire {
 };
 
 struct GatProofArtifact {
-    std::uint32_t version = 6;
-    std::string schema = "zkgpt-gat-proof-v6";
+    std::uint32_t version = 8;
+    std::string schema = "zkgpt-gat-proof-v8";
     std::string relation_id = "R_GAT-zkGPT";
     std::string privacy_profile;
     std::string statement_digest;
@@ -436,7 +462,7 @@ struct GatProofArtifact {
     ProofSection Pi_combine{"Pi_combine", {}};
     ProofSection Pi_open{"Pi_open", {}};
 
-    std::string native_domain = "zkgpt-native-gat-fs-v4";
+    std::string native_domain = "zkgpt-native-gat-fs-v6";
     NativeProofStatement native_statement;
     std::vector<NativeProofMessage> native_messages;
     std::string transcript_digest;
@@ -489,6 +515,8 @@ bool read_verifier_context(const std::string& path, VerifierContext& context, st
 
 NativeProofStatement make_native_proof_statement(const VerifierContext& context, const CommitmentWire& com_aux, const CommitmentWire& com_L, const G1& G,
                                                  const std::vector<G1>& generators, const std::vector<Fr>& basis, std::size_t l_dimension);
+NativeProofStatement make_native_proof_statement(const VerifierContext& context, const CommitmentWire& com_aux, const CommitmentWire& com_L, const G1& H,
+                                                 const std::string& canonical_basis_label, const std::string& canonical_basis_id, std::uint64_t full_domain);
 
 enum class ProveStatus { GENERATED, UNSUPPORTED_PRIVACY_PROFILE, REJECTED };
 
@@ -498,6 +526,8 @@ struct ProveResult {
     ProveStatus status = ProveStatus::REJECTED;
     std::string diagnostic;
     bool has_artifact = false;
+    double commitment_ms = 0.0;
+    double self_verify_ms = 0.0;
     GatProofArtifact artifact;
 };
 
@@ -540,7 +570,7 @@ struct MaskedCoreWitness {
     std::vector<Fr> w;
     std::vector<Fr> aux;
     std::vector<Fr> l_qry;
-    std::vector<Fr> public_output;
+    zkgpt::NativeFieldVector public_output;
     std::vector<std::vector<Fr>> gkr_round_polys;
     std::vector<Fr> gkr_terminal_values;
     std::vector<Fr> gkr_coefficients;

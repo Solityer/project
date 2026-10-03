@@ -11,17 +11,33 @@
 #include <string>
 #include <vector>
 
+static constexpr std::uint32_t kNativeLassoMatrixLayoutVersion = 2;
+
 struct NativeLassoFamilyPublic {
     std::string family_id;
     std::string table_id;
     std::string resource_id;
     std::string registration_id;
     std::vector<F> table;
-    std::vector<G1> matrix_generators;
-    std::size_t segment_offset = 0;
-    std::size_t logical_queries = 0;
-    std::size_t padded_queries = 0;
-    std::size_t padding_index = 0;
+    struct MatrixDescriptor {
+        std::uint32_t version = kNativeLassoMatrixLayoutVersion;
+        std::uint64_t padded_queries = 0;
+        std::uint64_t table_domain = 0;
+        std::uint64_t vector_size = 0;
+        std::uint64_t rows = 0;
+        std::uint64_t columns = 0;
+        std::uint32_t row_bits = 0;
+        std::uint32_t column_bits = 0;
+        std::string flatten_order = "zkgpt-lasso-q-plus-table-times-Q-lsb-first-balanced-v2";
+        std::string generator_scheme = "CanonicalAbsoluteHashToCurveV1";
+        std::vector<G1> column_generators;
+        std::string trusted_generator_id;
+    } matrix_layout;
+    std::vector<G1> legacy_clear_matrix_generators;
+    std::uint64_t segment_offset = 0;
+    std::uint64_t logical_queries = 0;
+    std::uint64_t padded_queries = 0;
+    std::uint64_t padding_index = 0;
     F padding_value = F_ZERO;
 
     std::string statement_tables_digest;
@@ -29,14 +45,30 @@ struct NativeLassoFamilyPublic {
 };
 
 struct NativeLassoFamilyProver : NativeLassoFamilyPublic {
-    std::vector<F> matrix;
+    zkgpt::NativeVector<std::uint64_t> selected_table_rows;
     std::vector<F> queries;
+    std::vector<F> legacy_clear_matrix;
 };
+
+using NativeLassoSparseEntryCallback = std::function<void(std::uint64_t, const F&)>;
+
+struct NativeLassoSparseView {
+    // All callbacks borrow the source family's selected_table_rows; keep the family alive and stable while using the view.
+    std::uint64_t full_domain = 0;
+    std::uint64_t nonzero_count = 0;
+    std::function<void(const NativeLassoSparseEntryCallback&)> for_each_nonzero;
+    std::function<F(std::uint64_t)> value_at;
+    std::function<F(const std::vector<F>&)> evaluate_mle;
+};
+
+NativeLassoFamilyPublic::MatrixDescriptor native_lasso_balanced_matrix_layout(std::uint64_t padded_queries, std::uint64_t table_domain);
+NativeLassoSparseView native_lasso_sparse_view(const NativeLassoFamilyProver& family);
 
 struct NativeLassoQueryProver {
     G1 G;
     std::vector<G1> generators;
     std::vector<F> values;
+    hyrax::HyraxGeneratorProvider generator_provider;
     G1 commitment;
 
     std::string basis_id;
@@ -44,6 +76,10 @@ struct NativeLassoQueryProver {
     F commitment_blinding = F_ZERO;
     bool has_commitment_blinding = false;
     std::string statement_l_digest;
+    hyrax::HyraxTensorMleView tensor_view;
+    hyrax::HyraxTensorMleCommitment tensor_commitment;
+    hyrax::HyraxTensorMleProverState tensor_state;
+    hyrax::HyraxScalarProvider value_provider;
 };
 
 struct NativeLassoQueryPublic {
@@ -52,7 +88,13 @@ struct NativeLassoQueryPublic {
     G1 commitment;
     std::string basis_id;
     std::string statement_l_digest;
+    hyrax::HyraxGeneratorProvider generator_provider;
+    hyrax::HyraxTensorMleView tensor_view;
+    hyrax::HyraxTensorMleCommitment tensor_commitment;
 };
+
+using NativeLassoTensorTailProveHook = std::function<bool(NativeProofSession&, const NativeLassoQueryProver&, std::string*)>;
+using NativeLassoTensorTailVerifyHook = std::function<bool(const NativeProofSession&, const NativeLassoQueryPublic&, std::size_t&, std::string*)>;
 
 struct NativeLassoBundleResult {
     std::vector<std::vector<F>> family_query_points;
@@ -130,12 +172,18 @@ std::string native_lasso_table_digest(const NativeLassoFamilyPublic& family);
 std::string native_lasso_tables_digest(const std::vector<NativeLassoFamilyPublic>& families);
 std::string native_lasso_resources_digest(const std::vector<NativeLassoFamilyPublic>& families);
 std::string native_lasso_query_digest(const G1& commitment, std::size_t size);
+std::string native_lasso_tensor_query_digest(const hyrax::HyraxTensorMleView& view, const hyrax::HyraxTensorMleCommitment& commitment);
 std::string native_lasso_generator_digest(const G1& G, const std::vector<G1>& generators);
+std::string native_lasso_matrix_layout_digest(const NativeLassoFamilyPublic::MatrixDescriptor& layout);
 
 bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLassoFamilyProver>& families, NativeLassoQueryProver& query,
-                               NativeLassoBundleResult* result = nullptr, std::string* reason = nullptr);
+                               NativeLassoBundleResult* result = nullptr, std::string* reason = nullptr,
+                               // Required by the formal typed-tensor path; runs Aux then L_qry after all M_f row chunks and before M_f β challenges.
+                               const NativeLassoTensorTailProveHook& tensor_tail_stage = {});
 
 bool native_lasso_verify_bundle(const NativeProofSession& session, const std::vector<NativeLassoFamilyPublic>& families, const NativeLassoQueryPublic& query,
-                                NativeLassoBundleResult* result = nullptr, std::string* reason = nullptr);
+                                NativeLassoBundleResult* result = nullptr, std::string* reason = nullptr,
+                                // Required by the formal typed-tensor path; consumes Aux then L_qry tail scopes at the exact transcript cursor.
+                                const NativeLassoTensorTailVerifyHook& tensor_tail_stage = {});
 
 #endif

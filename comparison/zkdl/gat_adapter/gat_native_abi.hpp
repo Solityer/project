@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "gat_family_storage.hpp"
 
 namespace zkdl_gat {
 
@@ -18,6 +19,9 @@ struct NativeTensorWitnessInput {
     std::uint32_t visibility = 0U;
     std::uint32_t domain_size = 0U;
     std::vector<NativeFieldWire> values;
+    std::shared_ptr<const NativeFamilyStorage> storage;
+    std::vector<std::uint64_t> logical_shape;
+    std::vector<std::uint64_t> padded_shape;
 };
 
 struct NativeTensorShapeInput {

@@ -110,41 +110,24 @@ bool transcript_claims(const NativeProofSession &session,
     return true;
 }
 
-F transcript_mle_eval(const std::vector<F> &values, const std::vector<F> &point) {
-    if (point.empty()) {
-        if (values.size() != 1) throw std::invalid_argument("GKR scalar output domain is invalid");
-        return values[0];
-    }
-    if (point.size() >= sizeof(std::size_t) * 8)
-        throw std::invalid_argument("GKR output point dimension is invalid");
-    const std::size_t domain = std::size_t(1) << point.size();
-    if (values.size() > domain) throw std::invalid_argument("GKR output exceeds MLE domain");
-    std::vector<F> folded(domain, F_ZERO);
-    std::copy(values.begin(), values.end(), folded.begin());
-    std::size_t active = domain;
-    for (const F &coordinate : point) {
-        const std::size_t half = active >> 1;
-        for (std::size_t index = 0; index < half; ++index)
-            folded[index] = folded[index * 2] * (F_ONE - coordinate) +
-                            folded[index * 2 + 1] * coordinate;
-        active = half;
-    }
-    return folded[0];
+template<class Vector> F transcript_mle_eval(const Vector &values, const std::vector<F> &point) {
+    if (point.empty() && values.size() != 1) throw std::invalid_argument("GKR scalar output domain is invalid");
+    return zkgpt::native_mle_evaluate(values, point);
 }
 
-void transcript_beta_phase1(const layer &current, std::size_t depth,
+template<class Vector> void transcript_beta_phase1(const layer &current, std::size_t depth,
                             const std::vector<F> &r0,
                             const std::vector<F> &r1,
                             const std::vector<F> &ru,
                             const F &alpha, const F &beta,
                             const F &relu_rou,
-                            std::vector<F> &beta_g,
-                            std::vector<F> &beta_u) {
+                            Vector &beta_g,
+                            Vector &beta_u) {
     beta_g.resize(std::size_t(1) << current.bit_length);
     initBetaTable(beta_g, current.bit_length, r0.begin(), r1.begin(),
                   alpha, beta);
     if (current.zero_start_id < current.size)
-        for (u32 gate = current.zero_start_id;
+        for (u64 gate = current.zero_start_id;
              gate < (std::size_t(1) << current.bit_length); ++gate)
             beta_g[gate] *= relu_rou;
     beta_u.resize(std::size_t(1) << current.max_bl_u);
@@ -152,9 +135,9 @@ void transcript_beta_phase1(const layer &current, std::size_t depth,
     (void)depth;
 }
 
-F transcript_predicate_phase1(const layer &current,
-                              const std::vector<F> &beta_g,
-                              const std::vector<F> &beta_u,
+template<class Vector> F transcript_predicate_phase1(const layer &current,
+                              const Vector &beta_g,
+                              const Vector &beta_u,
                               std::vector<F> &uni,
                               std::vector<F> &bin) {
     uni.assign(2, F_ZERO);
@@ -166,10 +149,10 @@ F transcript_predicate_phase1(const layer &current,
     return F_ZERO;
 }
 
-void transcript_predicate_phase2(const layer &current,
-                                 const std::vector<F> &beta_g,
-                                 const std::vector<F> &beta_u,
-                                 const std::vector<F> &beta_v,
+template<class Vector> void transcript_predicate_phase2(const layer &current,
+                                 const Vector &beta_g,
+                                 const Vector &beta_u,
+                                 const Vector &beta_v,
                                  std::vector<F> &uni,
                                  std::vector<F> &bin) {
     if (!beta_v.empty()) {
@@ -278,7 +261,7 @@ void verifier::betaInitPhase2(u8 depth) {
 }
 
 static ThreadSafeQueue<int> workerq,endq;
-void pred1_worker(const vector<uniGate> &beg, vector<F>& uni_value,vector<F>& beta_g, vector<F>& beta_u,int*&L,int*&R) //F*& uni_value, layer &cur_layer,
+void pred1_worker(const zkgpt::NativeVector<uniGate> &beg, vector<F>& uni_value,vector<F>& beta_g, vector<F>& beta_u,int*&L,int*&R) //F*& uni_value, layer &cur_layer,
 {
     int idx;
     while (true)
@@ -295,7 +278,7 @@ void pred1_worker(const vector<uniGate> &beg, vector<F>& uni_value,vector<F>& be
         endq.Push(idx);
     }
 }
-void pred2_worker(const vector<binGate> &beg, vector<F>& bin_value,vector<F>& beta_g, vector<F>& beta_u,int*&L,int*&R) //F*& uni_value, layer &cur_layer,
+void pred2_worker(const zkgpt::NativeVector<binGate> &beg, vector<F>& bin_value,vector<F>& beta_g, vector<F>& beta_u,int*&L,int*&R) //F*& uni_value, layer &cur_layer,
 {
     int idx;
     while (true)
@@ -1017,7 +1000,7 @@ bool verifier::verifyGKR()
 
 bool verify_gkr_transcript(const NativeProofSession &session,
                            const layeredCircuit &circuit,
-                           const std::vector<F> &public_output,
+                           const zkgpt::NativeFieldVector &public_output,
                            const std::vector<NativeGkrMatmulShape> &matmuls,
                            std::string *reason) {
     try {
@@ -1081,9 +1064,9 @@ bool verify_gkr_transcript(const NativeProofSession &session,
                 }
                 const NativeGkrMatmulShape shape = matmuls[--next_matmul];
                 if (!masked_fconn_shape_matches(current, shape, reason)) return false;
-                const int n = ceilPow2BitLength(static_cast<u32>(shape.rows));
-                const int m = ceilPow2BitLength(static_cast<u32>(shape.inner));
-                const int k = ceilPow2BitLength(static_cast<u32>(shape.cols));
+                const int n = ceilPow2BitLength(static_cast<u64>(shape.rows));
+                const int m = ceilPow2BitLength(static_cast<u64>(shape.inner));
+                const int k = ceilPow2BitLength(static_cast<u64>(shape.cols));
                 if (r_u[layer_id + 1].size() < static_cast<std::size_t>(m + k)) {
                     if (reason != nullptr) *reason = "FCONN predecessor point is too short";
                     return false;
@@ -1183,7 +1166,8 @@ bool verify_gkr_transcript(const NativeProofSession &session,
                 r0.resize(current.bit_length, F_ZERO);
             if (r1.size() < static_cast<std::size_t>(current.bit_length))
                 r1.resize(current.bit_length, F_ZERO);
-            std::vector<F> beta_g, beta_u, uni, bin;
+            zkgpt::NativeFieldVector beta_g, beta_u;
+            std::vector<F> uni, bin;
             transcript_beta_phase1(current, layer_id, r0, r1,
                                    r_u[layer_id], alpha, beta, relu_rou,
                                    beta_g, beta_u);
@@ -1216,7 +1200,7 @@ bool verify_gkr_transcript(const NativeProofSession &session,
                 }
                 final_claim_v0[layer_id] = phase2_claims[0];
                 final_claim_v1 = phase2_claims[1];
-                std::vector<F> beta_v;
+                zkgpt::NativeFieldVector beta_v;
                 beta_v.resize(std::size_t(1) << current.max_bl_v);
                 initBetaTable(beta_v, current.max_bl_v,
                               r_v[layer_id].begin(), F_ONE);
@@ -1604,8 +1588,8 @@ struct MaskedGkrInputSource {
     std::size_t layer_id = 0;
     std::uint32_t layer_type = 0;
     std::size_t descriptor_index = 0;
-    const std::vector<u32> *input_coordinates = nullptr;
-    std::vector<u32> canonical_copy_coordinates;
+    const zkgpt::NativeVector<u64> *input_coordinates = nullptr;
+    zkgpt::NativeVector<u64> canonical_copy_coordinates;
     NativeGkrMatmulShape shape;
     std::vector<F> point;
     std::vector<F> outer_point;
@@ -1615,6 +1599,9 @@ struct MaskedGkrInputSource {
     ScalarCommitment unmasked_commitment;
     F masked_value = F_ZERO;
 };
+
+void masked_append_u64(zkgpt::NativeStreamingDigest& output, std::uint64_t value) { output.u64(value); }
+void masked_append_string(zkgpt::NativeStreamingDigest& output, const std::string& value) { output.string(value); }
 
 void masked_append_u64(std::string &output, std::uint64_t value) {
     for (unsigned byte = 0; byte < 8; ++byte)
@@ -1648,11 +1635,11 @@ std::size_t masked_segment_index(const std::string &name) {
 }
 
 std::string masked_input_coordinate_map_digest(
-    const std::vector<u32> &coordinates, std::size_t input_size,
+    const zkgpt::NativeVector<u64> &coordinates, std::size_t input_size,
     std::size_t segment_domain,
     const std::vector<std::size_t> &segment_logical_lengths);
 
-const std::vector<u32> &masked_source_input_coordinates(
+const zkgpt::NativeVector<u64> &masked_source_input_coordinates(
     const MaskedGkrInputSource &source) {
     if (source.kind == MaskedGkrInputSource::Kind::LayerCanonicalCopy)
         return source.canonical_copy_coordinates;
@@ -1665,7 +1652,7 @@ bool masked_canonical_input_copy_coordinates(
     const layer &current, std::size_t input_size,
     std::size_t segment_domain,
     const std::vector<std::size_t> &segment_logical_lengths,
-    std::vector<u32> &coordinates, std::string *reason) {
+    zkgpt::NativeVector<u64> &coordinates, std::string *reason) {
     coordinates.clear();
     if (current.ty != layerType::ADD_BIAS || current.size == 0 ||
         current.need_phase2 || !current.bin_gates.empty() ||
@@ -1685,7 +1672,7 @@ bool masked_canonical_input_copy_coordinates(
         return false;
     }
     coordinates.resize(current.size);
-    std::vector<bool> output_seen(current.size, false);
+    zkgpt::NativeVector<unsigned char> output_seen(current.size, 0);
     for (const uniGate &gate : current.uni_gates) {
         if (gate.g >= current.size || output_seen[gate.g] || gate.lu != 0 ||
             gate.sc != 1 || gate.u >= current.ori_id_u.size()) {
@@ -1696,13 +1683,12 @@ bool masked_canonical_input_copy_coordinates(
         const std::size_t coordinate = current.ori_id_u[gate.u];
         if (coordinate < aux_base || coordinate - aux_base >=
                                          segment_logical_lengths[2] ||
-            coordinate >= input_size || coordinate >
-                std::numeric_limits<u32>::max()) {
+            coordinate >= input_size) {
             masked_set_reason(reason,
                               "masked GKR input-only copy source is not canonical Aux");
             return false;
         }
-        coordinates[gate.g] = static_cast<u32>(coordinate);
+        coordinates[gate.g] = coordinate;
         output_seen[gate.g] = true;
     }
     if (std::find(output_seen.begin(), output_seen.end(), false) !=
@@ -1716,10 +1702,11 @@ bool masked_canonical_input_copy_coordinates(
 
 std::string masked_input_copy_branch_identity(
     std::size_t layer_id, const layer &current,
-    const std::vector<u32> &coordinates, std::size_t input_size,
+    const zkgpt::NativeVector<u64> &coordinates, std::size_t input_size,
     std::size_t segment_domain,
     const std::vector<std::size_t> &segment_logical_lengths) {
-    std::string encoded = "zkgpt-gkr-input-copy-branch-anchor-v1";
+    zkgpt::NativeStreamingDigest encoded("zkgpt-gkr-input-copy-branch-anchor-v2");
+    masked_append_u64(encoded, 2);
     masked_append_u64(encoded, static_cast<std::uint64_t>(layer_id));
     masked_append_u64(encoded, static_cast<std::uint64_t>(current.ty));
     masked_append_u64(encoded, static_cast<std::uint64_t>(current.size));
@@ -1736,7 +1723,7 @@ std::string masked_input_copy_branch_identity(
         masked_append_u64(encoded, static_cast<std::uint64_t>(length));
     masked_append_u64(encoded,
                       static_cast<std::uint64_t>(current.ori_id_u.size()));
-    for (const u32 coordinate : current.ori_id_u)
+    for (const u64 coordinate : current.ori_id_u)
         masked_append_u64(encoded, coordinate);
     masked_append_u64(encoded,
                       static_cast<std::uint64_t>(current.uni_gates.size()));
@@ -1751,7 +1738,7 @@ std::string masked_input_copy_branch_identity(
                      coordinates, input_size, segment_domain,
                      segment_logical_lengths));
     masked_append_string(encoded, "output-MLE-point-pulls-back-to-ordered-Aux-source-map-v1");
-    return encoded;
+    return encoded.finish();
 }
 
 bool masked_input_segment_domain(
@@ -1928,10 +1915,11 @@ std::string masked_source_kind_name(MaskedGkrInputSource::Kind kind) {
 }
 
 std::string masked_input_coordinate_map_digest(
-    const std::vector<u32> &coordinates, std::size_t input_size,
+    const zkgpt::NativeVector<u64> &coordinates, std::size_t input_size,
     std::size_t segment_domain,
     const std::vector<std::size_t> &segment_logical_lengths) {
-    std::string encoded = "zkgpt-masked-gkr-input-map-v1";
+    zkgpt::NativeStreamingDigest encoded("zkgpt-masked-gkr-input-map-v2");
+    masked_append_u64(encoded, 2);
     masked_append_u64(encoded, static_cast<std::uint64_t>(input_size));
     masked_append_u64(encoded, static_cast<std::uint64_t>(segment_domain));
     masked_append_u64(encoded,
@@ -1939,7 +1927,7 @@ std::string masked_input_coordinate_map_digest(
     for (const std::size_t length : segment_logical_lengths)
         masked_append_u64(encoded, static_cast<std::uint64_t>(length));
     masked_append_u64(encoded, static_cast<std::uint64_t>(coordinates.size()));
-    for (u32 coordinate : coordinates) {
+    for (u64 coordinate : coordinates) {
         masked_append_u64(encoded, coordinate);
         if (segment_domain != 0 && coordinate < input_size) {
             const std::size_t segment = coordinate / segment_domain;
@@ -1955,9 +1943,7 @@ std::string masked_input_coordinate_map_digest(
             masked_append_u64(encoded, 1);
         }
     }
-    F digest;
-    digest.setHashOf(encoded.data(), encoded.size());
-    return digest.getStr(16);
+    return encoded.finish();
 }
 
 std::string masked_input_source_ledger(
@@ -1983,7 +1969,7 @@ std::string masked_input_source_ledger(
         if (source.kind == MaskedGkrInputSource::Kind::LayerU0 ||
             source.kind == MaskedGkrInputSource::Kind::LayerV0 ||
             source.kind == MaskedGkrInputSource::Kind::LayerCanonicalCopy) {
-            const std::vector<u32> &coordinates =
+            const zkgpt::NativeVector<u64> &coordinates =
                 masked_source_input_coordinates(source);
             masked_append_string(
                 encoded,
@@ -2043,8 +2029,8 @@ std::string masked_input_source_ledger(
     return digest.getStr(16);
 }
 
-std::vector<F> masked_equality_weights(const std::vector<F> &point) {
-    std::vector<F> weights(1, F_ONE);
+zkgpt::NativeFieldVector masked_equality_weights(const std::vector<F> &point) {
+    zkgpt::NativeFieldVector weights(1, F_ONE);
     for (const F &challenge : point) {
         const std::size_t old_size = weights.size();
         weights.resize(old_size * 2);
@@ -2057,15 +2043,302 @@ std::vector<F> masked_equality_weights(const std::vector<F> &point) {
     return weights;
 }
 
+class MaskedInputWitnessFold {
+  public:
+    explicit MaskedInputWitnessFold(const NativeGkrInputProvider &provider)
+        : segment_domain_(provider.segment_domain),
+          logical_lengths_(provider.logical_lengths), value_at_(provider.value_at) {
+        if (provider.full_size == 0 || segment_domain_ == 0 ||
+            (segment_domain_ & (segment_domain_ - 1)) != 0 ||
+            segment_domain_ > std::numeric_limits<std::uint64_t>::max() / 4 ||
+            provider.full_size != 4 * segment_domain_ || !value_at_)
+            throw std::invalid_argument("masked GKR witness provider domain is invalid");
+        for (std::size_t segment = 0; segment < folded_lengths_.size(); ++segment) {
+            if (logical_lengths_[segment] > segment_domain_ ||
+                logical_lengths_[segment] >
+                    static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+                throw std::invalid_argument("masked GKR witness segment extent is invalid");
+            folded_lengths_[segment] = logical_lengths_[segment];
+        }
+    }
+
+    std::uint64_t segment_size(std::size_t segment) const {
+        return folded_lengths_.at(segment);
+    }
+    F segment_value(std::size_t segment, std::uint64_t index) const {
+        if (segment >= segments_.size()) throw std::out_of_range("masked GKR witness segment is invalid");
+        if (index >= folded_lengths_[segment]) return F_ZERO;
+        if (materialized_) return segments_[segment].at(static_cast<std::size_t>(index));
+        return value_at_(static_cast<std::uint64_t>(segment) * segment_domain_ + index);
+    }
+    const zkgpt::NativeFieldVector &selectors() const { return selectors_; }
+
+    void begin_selector_fold() {
+        selectors_.resize(4);
+        for (std::size_t segment = 0; segment < segments_.size(); ++segment)
+            selectors_[segment] = segment_value(segment, 0);
+    }
+
+    void fold_round(const F &challenge, std::uint64_t round,
+                    std::uint64_t local_bits) {
+        if (round < local_bits) {
+            for (std::size_t segment = 0; segment < segments_.size(); ++segment) {
+                const std::uint64_t old_size = folded_lengths_[segment];
+                const std::uint64_t next_size = old_size / 2 + (old_size & 1U);
+                if (!materialized_) {
+                    segments_[segment].resize(static_cast<std::size_t>(next_size));
+                    for (std::uint64_t index = 0; index < next_size; ++index) {
+                        const F even = segment_value(segment, index * 2);
+                        const F odd = index * 2 + 1 < old_size ? value_at_(static_cast<std::uint64_t>(segment) * segment_domain_ + index * 2 + 1) : F_ZERO;
+                        segments_[segment][static_cast<std::size_t>(index)] = even * (F_ONE - challenge) + odd * challenge;
+                    }
+                } else {
+                    auto &values = segments_[segment];
+                    for (std::uint64_t index = 0; index < next_size; ++index) {
+                        const F even = values[static_cast<std::size_t>(index * 2)];
+                        const F odd = index * 2 + 1 < old_size ? values[static_cast<std::size_t>(index * 2 + 1)] : F_ZERO;
+                        values[static_cast<std::size_t>(index)] = even * (F_ONE - challenge) + odd * challenge;
+                    }
+                    values.resize(static_cast<std::size_t>(next_size));
+                }
+                folded_lengths_[segment] = next_size;
+            }
+            materialized_ = true;
+            return;
+        }
+        if (selectors_.empty() || (selectors_.size() & 1U) != 0)
+            throw std::logic_error("masked GKR selector witness fold is inconsistent");
+        const std::size_t next_size = selectors_.size() / 2;
+        for (std::size_t index = 0; index < next_size; ++index)
+            selectors_[index] = selectors_[index * 2] * (F_ONE - challenge) +
+                                selectors_[index * 2 + 1] * challenge;
+        selectors_.resize(next_size);
+    }
+
+    F terminal_value() const {
+        if (selectors_.size() != 1)
+            throw std::logic_error("masked GKR witness fold is incomplete");
+        return selectors_.front();
+    }
+
+  private:
+    std::uint64_t segment_domain_ = 0;
+    std::array<std::uint64_t, 4> logical_lengths_{};
+    std::array<std::uint64_t, 4> folded_lengths_{};
+    std::function<F(std::uint64_t)> value_at_;
+    std::array<zkgpt::NativeFieldVector, 4> segments_;
+    zkgpt::NativeFieldVector selectors_;
+    bool materialized_ = false;
+};
+
+class MaskedInputCoefficientOracle {
+  public:
+    MaskedInputCoefficientOracle(std::uint64_t input_size,
+                                 std::uint64_t segment_domain,
+                                 const std::vector<std::size_t> &logical_lengths)
+        : input_size_(input_size), segment_domain_(segment_domain),
+          logical_lengths_(logical_lengths.begin(), logical_lengths.end()) {
+        if (logical_lengths.size() != coefficients_.size() || segment_domain_ == 0 ||
+            (segment_domain_ & (segment_domain_ - 1)) != 0 ||
+            segment_domain_ > std::numeric_limits<std::uint64_t>::max() / 4 ||
+            4 * segment_domain_ != input_size_)
+            throw std::invalid_argument("masked GKR input coefficient layout is invalid");
+        local_bits_ = 0;
+        for (std::uint64_t size = segment_domain_; size > 1; size >>= 1)
+            ++local_bits_;
+        for (std::size_t segment = 0; segment < coefficients_.size(); ++segment) {
+            if (logical_lengths_[segment] > segment_domain_)
+                throw std::invalid_argument("masked GKR input coefficient logical extent exceeds its segment");
+            coefficients_[segment].assign(
+                logical_lengths_[segment], F_ZERO);
+        }
+        selector_coefficients_.assign(4, F_ZERO);
+    }
+
+    std::uint64_t size() const { return input_size_; }
+    std::uint64_t segment_domain() const { return segment_domain_; }
+    const std::vector<std::size_t> &logical_lengths() const {
+        return logical_lengths_;
+    }
+
+    void add(std::uint64_t coordinate, const F &value) {
+        if (coordinate >= input_size_)
+            throw std::out_of_range("masked GKR coefficient coordinate exceeds the canonical input");
+        const std::uint64_t segment = coordinate / segment_domain_;
+        const std::uint64_t local = coordinate % segment_domain_;
+        if (segment >= coefficients_.size())
+            throw std::out_of_range("masked GKR coefficient segment is invalid");
+        if (local < logical_lengths_[static_cast<std::size_t>(segment)])
+            coefficients_[static_cast<std::size_t>(segment)][static_cast<std::size_t>(local)] += value;
+    }
+
+    F value_at(std::uint64_t coordinate) const {
+        if (coordinate >= input_size_)
+            throw std::out_of_range("masked GKR coefficient query exceeds the canonical input");
+        const std::uint64_t segment = coordinate / segment_domain_;
+        const std::uint64_t local = coordinate % segment_domain_;
+        if (segment >= coefficients_.size() ||
+            local >= coefficients_[static_cast<std::size_t>(segment)].size())
+            return F_ZERO;
+        return coefficients_[static_cast<std::size_t>(segment)][static_cast<std::size_t>(local)];
+    }
+
+    F evaluate_mle(const std::vector<F> &point) const {
+        if (point.size() != static_cast<std::size_t>(local_bits_ + 2))
+            throw std::invalid_argument("masked GKR coefficient point has the wrong dimension");
+        std::vector<F> segment_values(coefficients_.size(), F_ZERO);
+        const std::vector<F> local_point(point.begin(), point.begin() + local_bits_);
+        for (std::size_t segment = 0; segment < coefficients_.size(); ++segment) {
+            if (!coefficients_[segment].empty())
+                segment_values[segment] = zkgpt::native_mle_evaluate(
+                    coefficients_[segment], local_point);
+        }
+        const F s2 = point[local_bits_];
+        const F s1 = point[local_bits_ + 1];
+        const F low = segment_values[0] * (F_ONE - s2) + segment_values[1] * s2;
+        const F high = segment_values[2] * (F_ONE - s2) + segment_values[3] * s2;
+        return low * (F_ONE - s1) + high * s1;
+    }
+
+    void round_sums(const MaskedInputWitnessFold &witness,
+                    std::uint64_t active, std::uint64_t round, F &even_sum,
+                    F &odd_sum, F &at_two_sum) const {
+        if (active == 0 || (active & (active - 1)) != 0 ||
+            round >= input_rounds())
+            throw std::invalid_argument("masked GKR coefficient round domain is invalid");
+        even_sum = F_ZERO;
+        odd_sum = F_ZERO;
+        at_two_sum = F_ZERO;
+        if (round < local_bits_) {
+            const std::uint64_t local_domain = segment_domain_ >> round;
+            if (local_domain < 2 || active != 4 * local_domain)
+                throw std::logic_error("masked GKR local coefficient fold is inconsistent");
+            for (std::size_t segment = 0; segment < coefficients_.size(); ++segment) {
+                const auto &values = coefficients_[segment];
+                const std::uint64_t witness_size = witness.segment_size(segment);
+                const std::uint64_t coefficient_size = static_cast<std::uint64_t>(values.size());
+                const std::uint64_t pair_count = std::max(coefficient_size, witness_size) / 2 + (std::max(coefficient_size, witness_size) & 1U);
+                for (std::uint64_t pair = 0; pair < pair_count; ++pair) {
+                    const std::uint64_t even_index = pair * 2;
+                    const std::uint64_t odd_index = even_index + 1;
+                    const F public_even = even_index < coefficient_size ? values[static_cast<std::size_t>(even_index)] : F_ZERO;
+                    const F public_odd = odd_index < coefficient_size ? values[static_cast<std::size_t>(odd_index)] : F_ZERO;
+                    const F witness_even = witness.segment_value(segment, even_index);
+                    const F witness_odd = witness.segment_value(segment, odd_index);
+                    even_sum += public_even * witness_even;
+                    odd_sum += public_odd * witness_odd;
+                    at_two_sum += (F(2) * public_odd - public_even) *
+                                  (F(2) * witness_odd - witness_even);
+                }
+            }
+            return;
+        }
+        if (active != selector_coefficients_.size() ||
+            active != (std::uint64_t(4) >> (round - local_bits_)))
+            throw std::logic_error("masked GKR selector coefficient fold is inconsistent");
+        const auto &selector_values = witness.selectors();
+        if (selector_values.size() != active)
+            throw std::logic_error("masked GKR selector witness fold has the wrong dimension");
+        for (std::uint64_t index = 0; index < active; ++index) {
+            const F product = selector_coefficients_[static_cast<std::size_t>(index)] *
+                              selector_values[static_cast<std::size_t>(index)];
+            if (index & 1U) odd_sum += product;
+            else even_sum += product;
+        }
+        for (std::uint64_t index = 0; index < active; index += 2) {
+            const F public_slope =
+                F(2) * selector_coefficients_[static_cast<std::size_t>(index + 1)] -
+                selector_coefficients_[static_cast<std::size_t>(index)];
+            const F witness_slope = F(2) * selector_values[static_cast<std::size_t>(index + 1)] -
+                                    selector_values[static_cast<std::size_t>(index)];
+            at_two_sum += public_slope * witness_slope;
+        }
+    }
+
+    void fold_round(const F &challenge, std::uint64_t active,
+                    std::uint64_t round,
+                    MaskedInputWitnessFold &witness) {
+        if (active < 2 || (active & 1U) != 0 ||
+            round >= input_rounds())
+            throw std::invalid_argument("masked GKR coefficient fold domain is invalid");
+        if (round < local_bits_) {
+            for (auto &values : coefficients_) {
+                const std::size_t next_size = (values.size() + 1) / 2;
+                for (std::size_t index = 0; index < next_size; ++index) {
+                    const F even = values[index * 2];
+                    const F odd = index * 2 + 1 < values.size()
+                                      ? values[index * 2 + 1]
+                                      : F_ZERO;
+                    values[index] = even * (F_ONE - challenge) + odd * challenge;
+                }
+                values.resize(next_size);
+            }
+            witness.fold_round(challenge, round, local_bits_);
+        } else {
+            if (active != selector_coefficients_.size())
+                throw std::logic_error("masked GKR selector fold size mismatch");
+            const std::size_t selector_half = selector_coefficients_.size() / 2;
+            for (std::size_t index = 0; index < selector_half; ++index)
+                selector_coefficients_[index] =
+                    selector_coefficients_[index * 2] * (F_ONE - challenge) +
+                    selector_coefficients_[index * 2 + 1] * challenge;
+            selector_coefficients_.resize(selector_half);
+            witness.fold_round(challenge, round, local_bits_);
+        }
+    }
+
+    void begin_selector_fold(std::uint64_t active,
+                             MaskedInputWitnessFold &witness) {
+        if (active != 4 || selector_coefficients_.size() != 4 ||
+            local_bits_ >= input_rounds())
+            throw std::logic_error("masked GKR selector fold cannot begin");
+        for (std::size_t segment = 0; segment < coefficients_.size(); ++segment)
+            selector_coefficients_[segment] = coefficients_[segment].empty()
+                                                   ? F_ZERO
+                                                   : coefficients_[segment].front();
+        witness.begin_selector_fold();
+    }
+
+    std::uint64_t input_rounds() const { return local_bits_ + 2; }
+    F terminal_value() const {
+        if (selector_coefficients_.size() != 1)
+            throw std::logic_error("masked GKR public coefficient fold is incomplete");
+        return selector_coefficients_.front();
+    }
+
+  private:
+    std::uint64_t input_size_ = 0;
+    std::uint64_t segment_domain_ = 0;
+    std::uint64_t local_bits_ = 0;
+    std::vector<std::size_t> logical_lengths_;
+    std::array<zkgpt::NativeFieldVector, 4> coefficients_;
+    zkgpt::NativeFieldVector selector_coefficients_;
+};
+
+std::shared_ptr<const NativeMaskedPublicProvider>
+masked_input_public_provider(
+    const std::shared_ptr<MaskedInputCoefficientOracle> &oracle) {
+    if (oracle == nullptr)
+        throw std::invalid_argument("masked GKR public coefficient provider is missing");
+    auto provider = std::make_shared<NativeMaskedPublicProvider>();
+    provider->size = oracle->size();
+    provider->value_at = [oracle](std::uint64_t coordinate) {
+        return oracle->value_at(coordinate);
+    };
+    provider->evaluate_mle = [oracle](const std::vector<F> &point) {
+        return oracle->evaluate_mle(point);
+    };
+    return provider;
+}
+
 bool masked_add_input_source_weights(
     const MaskedGkrInputSource &source, const F &rho,
-    std::vector<F> &coefficients, std::size_t segment_domain,
-    const std::vector<std::size_t> &segment_logical_lengths,
+    MaskedInputCoefficientOracle &coefficients,
     std::string *reason) {
     if (source.kind == MaskedGkrInputSource::Kind::LayerU0 ||
         source.kind == MaskedGkrInputSource::Kind::LayerV0 ||
         source.kind == MaskedGkrInputSource::Kind::LayerCanonicalCopy) {
-        const std::vector<u32> *coordinates = nullptr;
+        const zkgpt::NativeVector<u64> *coordinates = nullptr;
         try {
             coordinates = &masked_source_input_coordinates(source);
         } catch (const std::exception &) {
@@ -2073,46 +2346,25 @@ bool masked_add_input_source_weights(
                               "masked GKR direct input source map is missing");
             return false;
         }
-        const std::vector<F> weights = masked_equality_weights(source.point);
-        if (coordinates->size() > weights.size()) {
-            masked_set_reason(reason,
-                              "masked GKR direct input source exceeds its lane domain");
+        if (source.point.size() >= std::numeric_limits<std::size_t>::digits || coordinates->size() > (std::size_t(1) << source.point.size())) {
+            masked_set_reason(reason, "masked GKR direct input source exceeds its lane domain");
             return false;
         }
-        for (std::size_t index = 0;
-             index < coordinates->size(); ++index) {
-            const std::size_t coordinate =
-                coordinates->at(index);
-            if (coordinate >= coefficients.size()) {
-                masked_set_reason(reason,
-                                  "masked GKR direct input coordinate is out of range");
-                return false;
-            }
-            if (segment_domain != 0) {
-                if (segment_logical_lengths.size() != 4) {
-                    masked_set_reason(reason,
-                                      "masked GKR input segment lengths are incomplete");
-                    return false;
-                }
-                const std::size_t segment = coordinate / segment_domain;
-                const std::size_t local = coordinate % segment_domain;
-                if (segment >= 4) {
-                    masked_set_reason(reason,
-                                      "masked GKR direct input segment is out of range");
-                    return false;
-                }
-                if (local >= segment_logical_lengths[segment]) continue;
-            }
-            coefficients[coordinate] += rho * weights[index];
-        }
+        bool valid = true;
+        zkgpt::native_for_each_equality_weight(source.point, coordinates->size(), [&](std::size_t index, const F& weight) {
+            const std::size_t coordinate = coordinates->at(index);
+            if (coordinate >= coefficients.size()) { valid = false; return; }
+            coefficients.add(coordinate, rho * weight);
+        });
+        if (!valid) { masked_set_reason(reason, "masked GKR direct input source coordinate/segment is invalid"); return false; }
         return true;
     }
 
     const NativeGkrMatmulShape &shape = source.shape;
-    if (!masked_validate_matmul_segment(shape, coefficients.size(), reason))
+    if (!masked_validate_matmul_segment(shape, static_cast<std::size_t>(coefficients.size()), reason))
         return false;
-    const std::vector<F> inner_weights = masked_equality_weights(source.point);
-    const std::vector<F> outer_weights =
+    const zkgpt::NativeFieldVector inner_weights = masked_equality_weights(source.point);
+    const zkgpt::NativeFieldVector outer_weights =
         masked_equality_weights(source.outer_point);
     if (inner_weights.size() < shape.inner) {
         masked_set_reason(reason, "masked FCONN inner point has the wrong dimension");
@@ -2125,15 +2377,16 @@ bool masked_add_input_source_weights(
         }
         for (std::size_t row = 0; row < shape.rows; ++row)
             for (std::size_t term = 0; term < shape.inner; ++term) {
-                const std::size_t coordinate =
-                    shape.lhs_offset + row * shape.inner + term;
+                const std::uint64_t coordinate =
+                    static_cast<std::uint64_t>(shape.lhs_offset) +
+                    static_cast<std::uint64_t>(row) * shape.inner + term;
                 if (coordinate >= coefficients.size()) {
                     masked_set_reason(reason,
                                       "masked FCONN LHS coordinate is out of range");
                     return false;
                 }
-                coefficients[coordinate] +=
-                    rho * outer_weights[row] * inner_weights[term];
+                coefficients.add(coordinate,
+                                 rho * outer_weights[row] * inner_weights[term]);
             }
         return true;
     }
@@ -2143,15 +2396,16 @@ bool masked_add_input_source_weights(
     }
     for (std::size_t term = 0; term < shape.inner; ++term)
         for (std::size_t col = 0; col < shape.cols; ++col) {
-            const std::size_t coordinate =
-                shape.rhs_offset + term * shape.cols + col;
+            const std::uint64_t coordinate =
+                static_cast<std::uint64_t>(shape.rhs_offset) +
+                static_cast<std::uint64_t>(term) * shape.cols + col;
             if (coordinate >= coefficients.size()) {
                 masked_set_reason(reason,
                                   "masked FCONN RHS coordinate is out of range");
                 return false;
             }
-            coefficients[coordinate] +=
-                rho * inner_weights[term] * outer_weights[col];
+            coefficients.add(coordinate,
+                             rho * inner_weights[term] * outer_weights[col]);
         }
     return true;
 }
@@ -2198,7 +2452,8 @@ bool masked_fconn_output_binding_shape(
 std::string masked_fconn_output_binding_identity(
     std::size_t binding_layer_id, const layer &binding,
     const NativeGkrMatmulShape &shape) {
-    std::string encoded = "zkgpt-gkr-fconn-output-binding-anchor-v1";
+    zkgpt::NativeStreamingDigest encoded("zkgpt-gkr-fconn-output-binding-anchor-v2");
+    masked_append_u64(encoded, 2);
     masked_append_u64(encoded, static_cast<std::uint64_t>(binding_layer_id));
     masked_append_u64(encoded,
                       static_cast<std::uint64_t>(binding_layer_id - 1));
@@ -2247,7 +2502,7 @@ std::string masked_fconn_output_binding_identity(
         masked_append_u64(encoded, static_cast<std::uint64_t>(
             binding.ori_id_u[input.u]));
     }
-    return encoded;
+    return encoded.finish();
 }
 
 bool masked_public_product_prove(
@@ -2255,20 +2510,31 @@ bool masked_public_product_prove(
     const PedersenBasis &basis,
     const std::shared_ptr<const zkgpt::native_pedersen::ProverFastPath>
         &fast_path,
-    const std::vector<F> &public_vector, const std::vector<F> &witness,
+    const std::shared_ptr<MaskedInputCoefficientOracle> &public_oracle,
+    const std::shared_ptr<const NativeGkrInputProvider> &input_provider,
     const F &masked_initial, const F &unmasked_initial,
     const ScalarOpening &unmasked_initial_opening,
     const ScalarOpening &masked_initial_opening,
     NativeMaskedSumcheckResult &result, std::string *reason) {
-    if (public_vector.empty() || public_vector.size() != witness.size() ||
-        !masked_power_of_two(public_vector.size())) {
+    if (public_oracle == nullptr || input_provider == nullptr ||
+        public_oracle->size() != input_provider->full_size ||
+        !masked_power_of_two(input_provider->full_size)) {
         masked_set_reason(reason,
                           "masked GKR input aggregation domain is invalid");
         return false;
     }
+    MaskedInputWitnessFold witness(*input_provider);
+    std::uint64_t expected_rounds = 0;
+    for (std::uint64_t active = public_oracle->size(); active > 1; active >>= 1)
+        ++expected_rounds;
+    if (public_oracle->input_rounds() != expected_rounds) {
+        masked_set_reason(reason,
+                          "masked GKR input coefficient round count is invalid");
+        return false;
+    }
     NativeMaskedTerminalSpec spec;
     spec.kind = NativeMaskedTerminalKind::Product2Public;
-    spec.public_vector = public_vector;
+    spec.public_provider = masked_input_public_provider(public_oracle);
     spec.has_external_binding = true;
     spec.public_initial_claim = false;
     spec.initial_opening = unmasked_initial_opening;
@@ -2279,24 +2545,13 @@ bool masked_public_product_prove(
     NativeMaskedSumcheckProver sumcheck(
         session, label, 2, masked_initial, spec, &unmasked_initial, &basis,
         fast_path);
-    std::vector<F> public_fold = public_vector;
-    std::vector<F> witness_fold = witness;
-    std::size_t active = public_vector.size();
-    for (std::size_t round = 0; active > 1; ++round) {
-        const std::size_t half = active >> 1;
+    std::uint64_t active = public_oracle->size();
+    for (std::uint64_t round = 0; active > 1; ++round) {
+        if (round + 2 == public_oracle->input_rounds())
+            public_oracle->begin_selector_fold(active, witness);
         F even_sum = F_ZERO, odd_sum = F_ZERO, at_two_sum = F_ZERO;
-        for (std::size_t index = 0; index < half; ++index) {
-            const F public_slope =
-                F(2) * public_fold[index * 2 + 1] - public_fold[index * 2];
-            const F witness_slope =
-                F(2) * witness_fold[index * 2 + 1] - witness_fold[index * 2];
-            at_two_sum += public_slope * witness_slope;
-        }
-        for (std::size_t index = 0; index < active; ++index) {
-            const F product = public_fold[index] * witness_fold[index];
-            if (index & 1) odd_sum += product;
-            else even_sum += product;
-        }
+        public_oracle->round_sums(witness, active, round, even_sum, odd_sum,
+                                  at_two_sum);
         const F quadratic = (at_two_sum + even_sum) / F(2) - odd_sum;
         const F linear = F(2) * odd_sum - at_two_sum / F(2) -
                          F(3) * even_sum / F(2);
@@ -2306,23 +2561,16 @@ bool masked_public_product_prove(
                  F(4) * quadratic + F(2) * linear + even_sum},
                 &challenge, reason))
             return false;
-        std::vector<F> next_public(half), next_witness(half);
-        for (std::size_t index = 0; index < half; ++index) {
-            next_public[index] = public_fold[index * 2] * (F_ONE - challenge) +
-                                 public_fold[index * 2 + 1] * challenge;
-            next_witness[index] = witness_fold[index * 2] * (F_ONE - challenge) +
-                                  witness_fold[index * 2 + 1] * challenge;
-        }
-        public_fold.swap(next_public);
-        witness_fold.swap(next_witness);
-        active = half;
+        public_oracle->fold_round(challenge, active, round, witness);
+        active >>= 1;
     }
-    spec.public_evaluation = public_fold.front();
+    spec.public_evaluation = public_oracle->terminal_value();
+    spec.has_public_evaluation = true;
+    const F terminal_value = witness.terminal_value();
     spec.unmasked_terminal_openings = {
-        zkgpt::native_pedersen::commit_fresh(basis, witness_fold.front(),
-                                             fast_path)};
+        zkgpt::native_pedersen::commit_fresh(basis, terminal_value, fast_path)};
     if (!sumcheck.set_terminal_spec(spec, reason) ||
-        !sumcheck.finish({witness_fold.front()}, &result, reason))
+        !sumcheck.finish({terminal_value}, &result, reason))
         return false;
     return true;
 }
@@ -2576,16 +2824,8 @@ bool masked_scope_challenges(const NativeProofSession &session,
     return true;
 }
 
-bool masked_decode_public_output(const NativeProofMessage *message,
-                                 const std::vector<F> &expected,
-                                 std::string *reason) {
-    std::vector<F> decoded;
-    if (message == nullptr ||
-        message->kind != NativeProofMessageKind::FieldVector ||
-        !decode_transcript_fields(message->payload, decoded) || decoded != expected) {
-        masked_set_reason(reason, "masked GKR public output binding failed");
-        return false;
-    }
+bool masked_decode_public_output(const NativeProofMessage *message, const zkgpt::NativeFieldVector &expected, std::string *reason) {
+    if (message == nullptr || message->kind != NativeProofMessageKind::Data || message->payload != zkgpt::native_field_vector_digest(expected, "zkgpt-gkr-public-output-v2")) { masked_set_reason(reason, "masked GKR public output binding failed"); return false; }
     return true;
 }
 
@@ -2599,79 +2839,90 @@ bool masked_power_domain(std::size_t bits, std::size_t &domain,
     return true;
 }
 
-std::vector<F> masked_fold_outer(const std::vector<F> &values,
-                                 std::size_t inner_bits, std::size_t outer_bits,
-                                 const std::vector<F> &point) {
-    const std::size_t total_bits = inner_bits + outer_bits;
-    const std::size_t full_domain = std::size_t(1) << total_bits;
-    if (values.size() != full_domain || point.size() != total_bits)
-        throw std::invalid_argument("masked FCONN witness MLE dimensions are invalid");
-    std::vector<F> current = values;
-    std::size_t active = full_domain;
-    for (std::size_t round = 0; round < outer_bits; ++round) {
-        const F &challenge = point[total_bits - 1 - round];
-        const std::size_t half = active >> 1;
-        std::vector<F> next(half);
-        for (std::size_t index = 0; index < half; ++index)
-            next[index] = current[index] * (F_ONE - challenge) +
-                          current[index + half] * challenge;
-        current.swap(next);
-        active = half;
-    }
-    return current;
-}
-
-bool masked_matmul_witness_vectors(const NativeGkrMatmulWitness &witness,
-                                   std::size_t &rows_domain,
-                                   std::size_t &inner_domain,
-                                   std::size_t &cols_domain,
-                                   std::vector<F> &left,
-                                   std::vector<F> &right,
-                                   std::string *reason) {
+bool masked_fold_matmul_operands(const NativeGkrMatmulWitness &witness,
+                                 const std::vector<F> &left_point,
+                                 const std::vector<F> &right_point,
+                                 std::size_t &inner_domain,
+                                 zkgpt::NativeFieldVector &left,
+                                 zkgpt::NativeFieldVector &right,
+                                 std::string *reason) {
     const auto &shape = witness.shape;
-    if (shape.rows == 0 || shape.inner == 0 || shape.cols == 0 ||
-        shape.rows > std::numeric_limits<std::uint32_t>::max() ||
-        shape.inner > std::numeric_limits<std::uint32_t>::max() ||
-        shape.cols > std::numeric_limits<std::uint32_t>::max()) {
+    if (shape.rows == 0 || shape.inner == 0 || shape.cols == 0) {
         masked_set_reason(reason, "masked FCONN descriptor dimensions are invalid");
         return false;
     }
     const std::size_t row_bits = ceilPow2BitLength(
-        static_cast<std::uint32_t>(shape.rows));
+        static_cast<u64>(shape.rows));
     const std::size_t inner_bits = ceilPow2BitLength(
-        static_cast<std::uint32_t>(shape.inner));
+        static_cast<u64>(shape.inner));
     const std::size_t col_bits = ceilPow2BitLength(
-        static_cast<std::uint32_t>(shape.cols));
+        static_cast<u64>(shape.cols));
+    std::size_t rows_domain = 0, cols_domain = 0;
     if (!masked_power_domain(row_bits, rows_domain, reason) ||
         !masked_power_domain(inner_bits, inner_domain, reason) ||
         !masked_power_domain(col_bits, cols_domain, reason))
         return false;
+    if (shape.rows > std::numeric_limits<std::size_t>::max() / shape.inner ||
+        inner_domain > std::numeric_limits<std::size_t>::max() / cols_domain) {
+        masked_set_reason(reason, "masked FCONN witness dimensions overflow");
+        return false;
+    }
     const std::size_t canonical_left_size = shape.rows * shape.inner;
     const std::size_t padded_right_size = inner_domain * cols_domain;
-    if (witness.left.size() != canonical_left_size ||
-        witness.right.size() != padded_right_size) {
+    if (left_point.size() != inner_bits + row_bits ||
+        right_point.size() != inner_bits + col_bits) {
+        masked_set_reason(reason, "masked FCONN fold point dimensions are invalid");
+        return false;
+    }
+    if ((!witness.left_value_at && witness.left.size() != canonical_left_size) ||
+        (!witness.right_value_at && witness.right.size() != padded_right_size) ||
+        (witness.left_value_at && !witness.left.empty()) ||
+        (witness.right_value_at && !witness.right.empty())) {
         masked_set_reason(reason, "masked FCONN witness matrix dimensions are invalid");
         return false;
     }
-    left.assign(rows_domain * inner_domain, F_ZERO);
-    right.assign(inner_domain * cols_domain, F_ZERO);
-    for (std::size_t row = 0; row < shape.rows; ++row)
-        for (std::size_t term = 0; term < shape.inner; ++term)
-            left[row * inner_domain + term] =
-                witness.left[row * shape.inner + term];
-    for (std::size_t col = 0; col < shape.cols; ++col)
-        for (std::size_t term = 0; term < shape.inner; ++term)
-            right[col * inner_domain + term] =
-                witness.right[col * inner_domain + term];
     for (std::size_t col = 0; col < cols_domain; ++col)
         for (std::size_t term = 0; term < inner_domain; ++term) {
-            const bool padding = col >= shape.cols || term >= shape.inner;
-            if (padding && !witness.right[col * inner_domain + term].isZero()) {
+            if (col < shape.cols && term < shape.inner) continue;
+            const std::size_t index = col * inner_domain + term;
+            const F value = witness.right_value_at
+                ? witness.right_value_at(index)
+                : witness.right[index];
+            if (!value.isZero()) {
                 masked_set_reason(reason,
                                   "masked FCONN RHS padding is not zero");
                 return false;
             }
         }
+    left.assign(inner_domain, F_ZERO);
+    right.assign(inner_domain, F_ZERO);
+    for (std::size_t row = 0; row < shape.rows; ++row) {
+        F row_weight = F_ONE;
+        for (std::size_t bit = 0; bit < row_bits; ++bit) {
+            const F &challenge = left_point[inner_bits + bit];
+            row_weight *= ((row >> bit) & 1U) ? challenge : F_ONE - challenge;
+        }
+        for (std::size_t term = 0; term < shape.inner; ++term) {
+            const F value = witness.left_value_at
+                ? witness.left_value_at(row * shape.inner + term)
+                : witness.left[row * shape.inner + term];
+            left[term] += row_weight * value;
+        }
+    }
+    for (std::size_t col = 0; col < shape.cols; ++col) {
+        F col_weight = F_ONE;
+        for (std::size_t bit = 0; bit < col_bits; ++bit) {
+            const F &challenge = right_point[inner_bits + bit];
+            col_weight *= ((col >> bit) & 1U) ? challenge : F_ONE - challenge;
+        }
+        for (std::size_t term = 0; term < shape.inner; ++term) {
+            const std::size_t index = col * inner_domain + term;
+            const F value = witness.right_value_at
+                ? witness.right_value_at(index)
+                : witness.right[index];
+            right[term] += col_weight * value;
+        }
+    }
     return true;
 }
 
@@ -2679,8 +2930,8 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
                           const PedersenBasis &basis,
                           const std::shared_ptr<const
                               zkgpt::native_pedersen::ProverFastPath> &fast_path,
-                          const std::vector<F> &left,
-                          const std::vector<F> &right,
+                          zkgpt::NativeFieldVector left,
+                          zkgpt::NativeFieldVector right,
                           std::size_t inner_bits,
                           const F &masked_initial, const F &unmasked_initial,
                           const ScalarOpening &initial_opening,
@@ -2704,8 +2955,8 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
     NativeMaskedSumcheckProver sumcheck(
         session, label, 2, masked_initial, spec, &unmasked_initial, &basis,
         fast_path);
-    std::vector<F> f = left;
-    std::vector<F> g = right;
+    zkgpt::NativeFieldVector f = std::move(left);
+    zkgpt::NativeFieldVector g = std::move(right);
     F previous_random = F_ZERO;
     std::size_t active = f.size();
     for (std::size_t round = 0; round < inner_bits; ++round) {
@@ -2728,7 +2979,7 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
                                     F(4) * a + F(2) * b + c},
                                    &challenge, reason))
             return false;
-        std::vector<F> next_f(half), next_g(half);
+        zkgpt::NativeFieldVector next_f(half), next_g(half);
         for (std::size_t index = 0; index < half; ++index) {
             next_f[index] = f[index * 2] * (F_ONE - challenge) +
                             f[index * 2 + 1] * challenge;
@@ -2750,16 +3001,39 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
     return sumcheck.finish({f[0], g[0]}, &result, reason);
 }
 
+F masked_eq_at(const std::vector<F> &point, u64 index) {
+    if (point.size() >= 64 || (point.size() < 64 && (index >> point.size()) != 0))
+        return F_ZERO;
+    F value = F_ONE;
+    for (std::size_t bit = 0; bit < point.size(); ++bit)
+        value *= ((index >> bit) & 1) != 0 ? point[bit] : F_ONE - point[bit];
+    return value;
+}
+
 std::vector<F> masked_gkr_coefficients(const layer &current,
                                         const std::vector<F> &r0,
                                         const std::vector<F> &r1,
                                         const std::vector<F> &ru,
                                         const F &alpha, const F &beta,
-                                        const F &relu_rou) {
-    std::vector<F> beta_g, beta_u, uni, bin;
-    transcript_beta_phase1(current, 0, r0, r1, ru, alpha, beta, relu_rou,
-                           beta_g, beta_u);
-    transcript_predicate_phase1(current, beta_g, beta_u, uni, bin);
+                                        const F &relu_rou,
+                                        const std::vector<F> *rv = nullptr) {
+    F uni[2] = {F_ZERO, F_ZERO};
+    F bin[3] = {F_ZERO, F_ZERO, F_ZERO};
+    const auto gate_weight = [&](u64 gate, u64 input, u64 right) {
+        F weight = (alpha * masked_eq_at(r0, gate) +
+                    beta * masked_eq_at(r1, gate)) *
+                   masked_eq_at(ru, input);
+        if (current.zero_start_id < current.size && gate >= current.zero_start_id)
+            weight *= relu_rou;
+        if (rv != nullptr) weight *= masked_eq_at(*rv, right);
+        return weight;
+    };
+    for (const uniGate &gate : current.uni_gates) {
+        F weight = gate_weight(gate.g, gate.u, 0);
+        uni[gate.lu] += weight * gate.sc;
+    }
+    for (const binGate &gate : current.bin_gates)
+        bin[gate.l] += gate_weight(gate.g, gate.u, gate.v) * gate.sc;
     return {bin[0], bin[1], bin[2], uni[0], uni[1]};
 }
 
@@ -2779,7 +3053,7 @@ F masked_fixed_v_predicate(const std::vector<F> &coefficients,
 }
 
 bool masked_validate_circuit(const layeredCircuit &circuit,
-                             const std::vector<F> &public_output,
+                             const zkgpt::NativeFieldVector &public_output,
                              std::string *reason) {
     if (circuit.size != circuit.circuit.size() || circuit.size < 2) {
         masked_set_reason(reason, "masked GKR circuit shape is invalid");
@@ -2830,8 +3104,8 @@ void masked_gkr_progress(const std::string &message) {
 
 bool prove_masked_gkr_transcript(
     NativeProofSession &session, const layeredCircuit &circuit,
-    const NativeLayeredGkrWitness &witness,
-    const std::vector<F> &public_output, std::string *reason,
+    NativeLayeredGkrWitness &witness,
+    const zkgpt::NativeFieldVector &public_output, std::string *reason,
     NativeGkrInputBinding *input_binding,
     NativeGkrProverResult *prover_result) {
     const std::size_t checkpoint = session.checkpoint();
@@ -2843,16 +3117,31 @@ bool prove_masked_gkr_transcript(
         }
         if (!session.valid(reason) || !masked_validate_circuit(circuit, public_output, reason))
             return false;
-        if (witness.layer_values.size() != circuit.circuit.size()) {
+        if (witness.values().size() != circuit.circuit.size()) {
             masked_set_reason(reason, "masked GKR layer witness count mismatch");
             return false;
         }
-        for (std::size_t index = 0; index < circuit.circuit.size(); ++index)
-            if (witness.layer_values[index].size() != circuit.circuit[index].size) {
+        if (witness.input_provider != nullptr &&
+            (!witness.input_provider->value_at ||
+             witness.input_provider->full_size != circuit.circuit.front().size)) {
+            masked_set_reason(reason, "masked GKR canonical input provider is malformed");
+            return false;
+        }
+        if (witness.input_provider != nullptr && !witness.values().front().empty()) {
+            masked_set_reason(reason, "masked GKR input layer must use its segmented provider");
+            return false;
+        }
+        if (witness.input_provider == nullptr &&
+            witness.values().front().size() != circuit.circuit.front().size) {
+            masked_set_reason(reason, "masked GKR legacy input layer shape mismatch");
+            return false;
+        }
+        for (std::size_t index = 1; index < circuit.circuit.size(); ++index)
+            if (witness.values()[index].size() != circuit.circuit[index].size) {
                 masked_set_reason(reason, "masked GKR layer witness shape mismatch");
                 return false;
             }
-        if (witness.layer_values.back() != public_output) {
+        if (witness.values().back().size() != public_output.size() || !std::equal(public_output.begin(), public_output.end(), witness.values().back().begin())) {
             masked_set_reason(reason, "masked GKR public output does not match layer witness");
             return false;
         }
@@ -2866,7 +3155,7 @@ bool prove_masked_gkr_transcript(
         masked_gkr_progress("begin layers=" + std::to_string(circuit.size) +
                             " fconn=" + std::to_string(fconn_count));
 
-        session.absorb_fields("gkr/public-output", public_output);
+        session.absorb("gkr/public-output-digest-v2", zkgpt::native_field_vector_digest(public_output, "zkgpt-gkr-public-output-v2"));
         std::vector<std::vector<F>> r_u(circuit.size + 1);
         std::vector<std::vector<F>> r_v(circuit.size + 1);
         const layer &last = circuit.circuit.back();
@@ -2880,7 +3169,14 @@ bool prove_masked_gkr_transcript(
         const PedersenBasis basis = masked_basis(session);
         const auto fast_path =
             zkgpt::native_pedersen::make_prover_fast_path(session, basis);
-        const std::size_t input_size = witness.layer_values.front().size();
+        const std::uint64_t input_size_u64 =
+            witness.input_provider != nullptr
+                ? witness.input_provider->full_size
+                : witness.values().front().size();
+        if (input_size_u64 >
+            static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+            throw std::runtime_error("masked GKR input domain exceeds host indexing");
+        const std::size_t input_size = static_cast<std::size_t>(input_size_u64);
         if (!masked_power_of_two(input_size))
             throw std::runtime_error(
                 "masked GKR canonical input domain is not a power of two");
@@ -2897,6 +3193,34 @@ bool prove_masked_gkr_transcript(
                                          input_segment_domain,
                                          input_segment_logical_lengths, reason))
             throw std::runtime_error(*reason);
+        std::shared_ptr<const NativeGkrInputProvider> input_provider =
+            witness.input_provider;
+        if (input_provider == nullptr) {
+            auto legacy_provider = std::make_shared<NativeGkrInputProvider>();
+            legacy_provider->full_size = input_size;
+            legacy_provider->segment_domain = input_segment_domain;
+            if (input_segment_logical_lengths.size() != 4)
+                throw std::runtime_error("masked GKR legacy segment metadata is incomplete");
+            std::copy(input_segment_logical_lengths.begin(),
+                      input_segment_logical_lengths.end(),
+                      legacy_provider->logical_lengths.begin());
+            const zkgpt::NativeFieldVector *legacy_input =
+                &witness.values().front();
+            legacy_provider->value_at =
+                [legacy_input, input_size](std::uint64_t coordinate) {
+                    if (coordinate >= input_size)
+                        throw std::out_of_range("masked GKR legacy input coordinate is invalid");
+                    return legacy_input->at(static_cast<std::size_t>(coordinate));
+                };
+            input_provider = legacy_provider;
+        }
+        if (input_segment_logical_lengths.size() != 4 ||
+            input_provider->segment_domain != input_segment_domain ||
+            !std::equal(input_segment_logical_lengths.begin(),
+                        input_segment_logical_lengths.end(),
+                        input_provider->logical_lengths.begin()))
+            throw std::runtime_error(
+                "masked GKR input provider extents do not match canonical FCONN segments");
         const ScalarOpening public_base{
             zkgpt::native_pedersen::commit(basis, F_ZERO, F_ZERO),
             F_ZERO, F_ZERO};
@@ -2922,8 +3246,10 @@ bool prove_masked_gkr_transcript(
         F alpha = F_ONE, beta = F_ZERO;
 
         prover native_prover;
-        native_prover.C = circuit;
-        native_prover.val = witness.layer_values;
+        native_prover.native_circuit = &circuit;
+        native_prover.native_values = &witness.values();
+        if (input_provider != nullptr)
+            native_prover.native_input_value_at = input_provider->value_at;
         native_prover.init();
         native_prover.sumcheckInitAll(r_u[circuit.size].begin());
 
@@ -2966,7 +3292,7 @@ bool prove_masked_gkr_transcript(
                     for (int bit = 0; bit < current.bit_length; ++bit)
                         branch_point[bit] = session.challenge(
                             anchor_label + "/r/" + std::to_string(bit));
-                    if (!transcript_mle_eval(witness.layer_values[layer_id],
+                    if (!transcript_mle_eval(witness.values()[layer_id],
                                              branch_point).isZero())
                         throw std::runtime_error(
                             "masked GKR FCONN residual branch is not zero at its bound point");
@@ -2978,7 +3304,7 @@ bool prove_masked_gkr_transcript(
                     previous_masked_opening = public_base;
                     public_zero_branch_anchor = true;
                 } else {
-                    std::vector<u32> canonical_copy_coordinates;
+                    zkgpt::NativeVector<u64> canonical_copy_coordinates;
                     if (!masked_canonical_input_copy_coordinates(
                             current, input_size, input_segment_domain,
                             input_segment_logical_lengths,
@@ -2998,7 +3324,7 @@ bool prove_masked_gkr_transcript(
                         branch_point[bit] = session.challenge(
                             anchor_label + "/r/" + std::to_string(bit));
                     const F unmasked_branch_claim = transcript_mle_eval(
-                        witness.layer_values[layer_id], branch_point);
+                        witness.values()[layer_id], branch_point);
                     F branch_mask;
                     branch_mask.setByCSPRNG();
                     const F masked_branch_claim =
@@ -3054,17 +3380,12 @@ bool prove_masked_gkr_transcript(
                 if (!masked_validate_matmul_segment(matmul.shape, input_size,
                                                     reason))
                     throw std::runtime_error(*reason);
-                std::size_t rows_domain = 0, inner_domain = 0, cols_domain = 0;
-                std::vector<F> left, right;
-                if (!masked_matmul_witness_vectors(matmul, rows_domain, inner_domain,
-                                                   cols_domain, left, right, reason))
-                    throw std::runtime_error(*reason);
                 const std::size_t n = ceilPow2BitLength(
-                    static_cast<std::uint32_t>(matmul.shape.rows));
+                    static_cast<u64>(matmul.shape.rows));
                 const std::size_t m = ceilPow2BitLength(
-                    static_cast<std::uint32_t>(matmul.shape.inner));
+                    static_cast<u64>(matmul.shape.inner));
                 const std::size_t k = ceilPow2BitLength(
-                    static_cast<std::uint32_t>(matmul.shape.cols));
+                    static_cast<u64>(matmul.shape.cols));
                 if (r_u[layer_id + 1].size() < n + k)
                     throw std::runtime_error("masked GKR FCONN predecessor point is too short");
                 r_u[layer_id].assign(m + n, F_ZERO);
@@ -3079,10 +3400,15 @@ bool prove_masked_gkr_transcript(
                     r_u[layer_id][bit] = session.challenge(label);
                     r_v[layer_id][bit] = r_u[layer_id][bit];
                 }
-                const std::vector<F> left_mle = masked_fold_outer(
-                    left, m, n, r_u[layer_id]);
-                const std::vector<F> right_mle = masked_fold_outer(
-                    right, m, k, r_v[layer_id]);
+                std::size_t inner_domain = 0;
+                zkgpt::NativeFieldVector left_mle, right_mle;
+                if (!masked_fold_matmul_operands(
+                        matmul, r_u[layer_id], r_v[layer_id], inner_domain,
+                        left_mle, right_mle, reason))
+                    throw std::runtime_error(*reason);
+                if (inner_domain != (std::size_t(1) << m))
+                    throw std::runtime_error(
+                        "masked GKR FCONN folded inner dimension mismatch");
                 const F initial_unmasked = have_previous_u1
                     ? previous_u1_unmasked : previous_unmasked;
                 const F initial_masked = have_previous_u1
@@ -3090,7 +3416,7 @@ bool prove_masked_gkr_transcript(
                 NativeMaskedSumcheckResult product_result;
                 if (!masked_product_prove(session, prefix + "/matmul", basis,
                                            fast_path,
-                                           left_mle, right_mle, m, initial_masked,
+                                           std::move(left_mle), std::move(right_mle), m, initial_masked,
                                            initial_unmasked,
                                            have_previous_u1
                                                ? previous_u1_unmasked_opening
@@ -3277,18 +3603,12 @@ bool prove_masked_gkr_transcript(
                 F claim_v0 = F_ZERO, claim_v1 = F_ZERO;
                 native_prover.sumcheckFinalize2(previous_random, claim_v0, claim_v1);
                 r_v[layer_id] = phase2.result().challenges;
-                std::vector<F> beta_v(std::size_t(1) << current.max_bl_v);
-                initBetaTable(beta_v, current.max_bl_v, r_v[layer_id].begin(), F_ONE);
-                std::vector<F> beta_g, beta_u, uni, bin;
-                transcript_beta_phase1(current, layer_id, r0, r1,
-                                       r_u[layer_id], alpha, beta, relu_rou,
-                                       beta_g, beta_u);
-                transcript_predicate_phase1(current, beta_g, beta_u, uni, bin);
-                transcript_predicate_phase2(current, beta_g, beta_u, beta_v,
-                                            uni, bin);
+                const std::vector<F> phase2_coefficients = masked_gkr_coefficients(
+                    current, r0, r1, r_u[layer_id], alpha, beta, relu_rou,
+                    &r_v[layer_id]);
                 NativeMaskedTerminalSpec phase2_spec;
                 phase2_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedU;
-                phase2_spec.gkr_coefficients = {bin[0], bin[1], bin[2], uni[0], uni[1]};
+                phase2_spec.gkr_coefficients = phase2_coefficients;
                 phase2_spec.fixed_values = phase1_result.terminal_values;
                 phase2_spec.defer_terminal_relation =
                     phase2_spec.gkr_coefficients.size() == 5 &&
@@ -3463,7 +3783,8 @@ bool prove_masked_gkr_transcript(
                        masked_input_source_ledger(input_sources, input_size,
                                                   input_segment_domain,
                                                   input_segment_logical_lengths));
-        std::vector<F> input_coefficients(input_size, F_ZERO);
+        auto input_coefficients = std::make_shared<MaskedInputCoefficientOracle>(
+            input_size, input_segment_domain, input_segment_logical_lengths);
         std::vector<F> source_rhos;
         std::vector<ScalarOpening> source_masked_openings;
         std::vector<ScalarOpening> source_unmasked_openings;
@@ -3477,10 +3798,7 @@ bool prove_masked_gkr_transcript(
                 index, input_sources.size()));
             const MaskedGkrInputSource &source = input_sources[index];
             if (!masked_add_input_source_weights(source, rho,
-                                                 input_coefficients,
-                                                 input_segment_domain,
-                                                 input_segment_logical_lengths,
-                                                 reason))
+                                                 *input_coefficients, reason))
                 throw std::runtime_error(*reason);
             source_rhos.push_back(rho);
             source_masked_openings.push_back(source.masked_opening);
@@ -3504,7 +3822,7 @@ bool prove_masked_gkr_transcript(
         NativeMaskedSumcheckResult input_result;
         if (!masked_public_product_prove(
                 session, "gkr/input/aggregate", basis, fast_path,
-                input_coefficients, witness.layer_values.front(),
+                input_coefficients, input_provider,
                 masked_aggregate_initial, unmasked_aggregate_initial,
                 unmasked_aggregate_opening, masked_aggregate_opening,
                 input_result, reason))
@@ -3517,8 +3835,7 @@ bool prove_masked_gkr_transcript(
             !input_result.has_claim_opening)
             throw std::runtime_error(
                 "masked GKR canonical input aggregate terminal is incomplete");
-        const F input_weight_evaluation = transcript_mle_eval(
-            input_coefficients, input_result.challenges);
+        const F input_weight_evaluation = input_coefficients->terminal_value();
         session.absorb_fields("gkr/input/point", input_result.challenges);
         const ScalarOpening input_mask = zkgpt::native_pedersen::commit_fresh(
             basis, input_result.claim_opening.value -
@@ -3569,7 +3886,7 @@ bool prove_masked_gkr_transcript(
 
 bool verify_masked_gkr_transcript(
     const NativeProofSession &session, const layeredCircuit &circuit,
-    const std::vector<F> &public_output,
+    const zkgpt::NativeFieldVector &public_output,
     const std::vector<NativeGkrMatmulShape> &matmuls,
     std::size_t start, std::size_t *end, std::string *reason,
     NativeGkrInputBinding *input_binding) {
@@ -3583,8 +3900,8 @@ bool verify_masked_gkr_transcript(
         }
         std::size_t cursor = start;
         const NativeProofMessage *output_message = nullptr;
-        if (!masked_expect_message(session, cursor, NativeProofMessageKind::FieldVector,
-                                   "gkr/public-output", &output_message, reason) ||
+        if (!masked_expect_message(session, cursor, NativeProofMessageKind::Data,
+                                   "gkr/public-output-digest-v2", &output_message, reason) ||
             !masked_decode_public_output(output_message, public_output, reason))
             return false;
         const std::size_t input_size = circuit.circuit.front().size;
@@ -3701,7 +4018,7 @@ bool verify_masked_gkr_transcript(
                     previous_masked_commitment = public_base;
                     public_zero_branch_anchor = true;
                 } else {
-                    std::vector<u32> canonical_copy_coordinates;
+                    zkgpt::NativeVector<u64> canonical_copy_coordinates;
                     if (!masked_canonical_input_copy_coordinates(
                             current, input_size, input_segment_domain,
                             input_segment_logical_lengths,
@@ -3791,11 +4108,11 @@ bool verify_masked_gkr_transcript(
                 const NativeGkrMatmulShape &shape = matmuls[--next_matmul];
                 if (!masked_fconn_shape_matches(current, shape, reason)) return false;
                 const std::size_t n = ceilPow2BitLength(
-                    static_cast<std::uint32_t>(shape.rows));
+                    static_cast<u64>(shape.rows));
                 const std::size_t m = ceilPow2BitLength(
-                    static_cast<std::uint32_t>(shape.inner));
+                    static_cast<u64>(shape.inner));
                 const std::size_t k = ceilPow2BitLength(
-                    static_cast<std::uint32_t>(shape.cols));
+                    static_cast<u64>(shape.cols));
                 if (r_u[layer_id + 1].size() < n + k) {
                     masked_set_reason(
                         reason,
@@ -3966,19 +4283,12 @@ bool verify_masked_gkr_transcript(
                             session, phase2_label + "/r/" + std::to_string(bit),
                             r_v[layer_id][bit], reason))
                         return false;
-                std::vector<F> beta_v(std::size_t(1) << current.max_bl_v);
-                initBetaTable(beta_v, current.max_bl_v,
-                              r_v[layer_id].begin(), F_ONE);
-                std::vector<F> beta_g, beta_u, uni, bin;
-                transcript_beta_phase1(current, layer_id, r0, r1,
-                                       r_u[layer_id], alpha, beta, relu_rou,
-                                       beta_g, beta_u);
-                transcript_predicate_phase1(current, beta_g, beta_u, uni, bin);
-                transcript_predicate_phase2(current, beta_g, beta_u, beta_v,
-                                            uni, bin);
+                const std::vector<F> phase2_coefficients = masked_gkr_coefficients(
+                    current, r0, r1, r_u[layer_id], alpha, beta, relu_rou,
+                    &r_v[layer_id]);
                 NativeMaskedTerminalSpec fixed_u_spec;
                 fixed_u_spec.kind = NativeMaskedTerminalKind::GkrPredicateFixedU;
-                fixed_u_spec.gkr_coefficients = {bin[0], bin[1], bin[2], uni[0], uni[1]};
+                fixed_u_spec.gkr_coefficients = phase2_coefficients;
                 fixed_u_spec.fixed_values = phase1_result.terminal_values;
                 if (phase1_result.terminal_values.size() != 2 ||
                     phase1_result.terminal_commitments.size() != 2) {
@@ -4133,7 +4443,8 @@ bool verify_masked_gkr_transcript(
                               "masked GKR canonical input source ledger mismatch");
             return false;
         }
-        std::vector<F> input_coefficients(input_size, F_ZERO);
+        auto input_coefficients = std::make_shared<MaskedInputCoefficientOracle>(
+            input_size, input_segment_domain, input_segment_logical_lengths);
         std::vector<F> source_rhos;
         std::vector<ScalarCommitment> source_masked_commitments;
         std::vector<ScalarCommitment> source_unmasked_commitments;
@@ -4150,8 +4461,7 @@ bool verify_masked_gkr_transcript(
                 return false;
             const MaskedGkrInputSource &source = input_sources[index];
             if (!masked_add_input_source_weights(
-                    source, rho, input_coefficients, input_segment_domain,
-                    input_segment_logical_lengths, reason))
+                    source, rho, *input_coefficients, reason))
                 return false;
             source_rhos.push_back(rho);
             source_masked_commitments.push_back(source.masked_commitment);
@@ -4175,7 +4485,9 @@ bool verify_masked_gkr_transcript(
             ++input_rounds;
         NativeMaskedTerminalSpec input_spec;
         input_spec.kind = NativeMaskedTerminalKind::Product2Public;
-        input_spec.public_vector = input_coefficients;
+        const std::shared_ptr<const NativeMaskedPublicProvider> input_public_provider =
+            masked_input_public_provider(input_coefficients);
+        input_spec.public_provider = input_public_provider;
         NativeMaskedSumcheckResult input_result;
         if (!masked_consume_scope(
                 session, "gkr/input/aggregate", 2, input_rounds,
@@ -4189,8 +4501,8 @@ bool verify_masked_gkr_transcript(
                               "masked GKR input Product2Public aggregation failed");
             return false;
         }
-        const F input_weight_evaluation = transcript_mle_eval(
-            input_coefficients, input_result.challenges);
+        const F input_weight_evaluation = input_public_provider->evaluate_mle(
+            input_result.challenges);
         std::vector<F> encoded_input_point;
         const NativeProofMessage *input_point_message = nullptr;
         if (!masked_expect_message(session, cursor,
@@ -4247,7 +4559,7 @@ bool verify_masked_gkr_transcript(
 
 bool verify_masked_gkr_transcript(
     const NativeProofSession &session, const layeredCircuit &circuit,
-    const std::vector<F> &public_output,
+    const zkgpt::NativeFieldVector &public_output,
     const std::vector<NativeGkrMatmulShape> &matmuls, std::string *reason,
     NativeGkrInputBinding *input_binding) {
     std::size_t end = 0;

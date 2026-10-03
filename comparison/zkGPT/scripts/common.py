@@ -16,7 +16,9 @@ import re
 import secrets
 import stat
 import subprocess
+import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -37,6 +39,7 @@ VOLATILE_RUN_FILES = frozenset({
     "result.json", "verifier_context.bin", "public_statement.json",
     "public_logits.txt", "proof.artifact", "verifier_report.json",
     "execution.json", "run_provenance.json", "fixture.json",
+    "final_verifier_report.json", "final-verifier.stdout.log", "final-verifier.stderr.log",
     "capacity.json", "prover.stdout.log", "prover.stderr.log",
     "verifier.stdout.log", "verifier.stderr.log",
     "registration.stdout.log", "registration.stderr.log",
@@ -184,6 +187,60 @@ def cleanup_run_outputs(root: Path, run_path: Path) -> Dict[str, Any]:
         if preserved.exists():
             _reject_path_alias(preserved, "preserved registration artifact")
     return {"removed": removed, "preserved": sorted(PRESERVED_REGISTRATION_FILES)}
+
+
+def invalidate_results(root: Path, names: Sequence[str] = ("collected_results.json", "final_validation.json")) -> None:
+    for name in names:
+        if name not in ("formal_preflight.json", "collected_results.json", "final_validation.json"):
+            raise ChainError(f"unsupported aggregate output: {name}")
+        path = local_path(root, f"results/{name}", "aggregate output")
+        if path.exists():
+            require_regular(path, "aggregate output").unlink()
+
+
+def run_logged(command: Sequence[str], root: Path, stdout_path: Path, stderr_path: Path, label: str, telemetry: Optional[Dict[str, Any]] = None) -> int:
+    """Stream native output to disk and terminal without retaining it in RAM."""
+    ensure_directory(stdout_path.parent, "native log directory", root)
+    for path in (stdout_path, stderr_path):
+        local_path(root, relative_path(root, path, "native log"), "native log")
+    with stdout_path.open("w", encoding="utf-8") as stdout_log, stderr_path.open("w", encoding="utf-8") as stderr_log:
+        process = subprocess.Popen(list(command), cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        failures: List[BaseException] = []
+        def pump(stream: Any, output: Any, terminal: Any) -> None:
+            try:
+                for line in iter(stream.readline, ""):
+                    output.write(line)
+                    output.flush()
+                    print(f"[{label}] {line}", end="", file=terminal, flush=True)
+            except BaseException as exc:
+                failures.append(exc)
+                process.terminate()
+            finally:
+                stream.close()
+        threads = [threading.Thread(target=pump, args=(process.stdout, stdout_log, sys.stdout)), threading.Thread(target=pump, args=(process.stderr, stderr_log, sys.stderr))]
+        for thread in threads:
+            thread.start()
+        try:
+            if telemetry is not None and hasattr(os, "wait4"):
+                _, status, usage = os.wait4(process.pid, 0)
+                returncode = os.waitstatus_to_exitcode(status)
+                process.returncode = returncode
+                telemetry.update({"exit_code": returncode, "peak_rss_bytes": int(usage.ru_maxrss) * (1 if sys.platform == "darwin" else 1024), "cpu_user_seconds": usage.ru_utime, "cpu_system_seconds": usage.ru_stime})
+            else:
+                returncode = process.wait()
+                if telemetry is not None:
+                    raise ChainError("native per-process resource accounting requires wait4")
+        except BaseException:
+            if process.returncode is None:
+                process.terminate()
+                process.wait()
+            raise
+        finally:
+            for thread in threads:
+                thread.join()
+        if failures:
+            raise ChainError(f"native output logging failed: {failures[0]}")
+        return returncode
 
 
 def new_run_nonce() -> str:
@@ -399,16 +456,36 @@ def verifier_binary(root: Path, backend: str) -> Path:
     raise ChainError(f"missing source-matched {backend} independent verifier executable; run ./build.sh --{backend}")
 
 
-def smoke_binary(root: Path, backend: str = "cpu") -> Path:
-    if backend != "cpu":
-        raise ChainError("only the CPU formal smoke is supported")
-    candidate = root / "build" / "cpu-tests" / "tests" / "gat_adapter_smoke"
-    if candidate.exists():
-        require_regular(candidate, "CPU formal smoke executable")
-        if not os.access(candidate, os.X_OK):
-            raise ChainError(f"CPU formal smoke executable is not executable: {candidate}")
-        return candidate
-    raise ChainError("missing source-matched CPU formal smoke executable; run ./build.sh --cpu")
+def source_tree_sha256(root: Path) -> str:
+    """Hash native build inputs, excluding generated build artifacts."""
+    suffixes = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".cu", ".cuh", ".S", ".s", ".asm", ".cmake", ".txt", ".py", ".sh", ".in", ".mak"}
+    inputs = [root / "CMakeLists.txt", root / "build.sh"]
+    for directory in ("src", "gat_adapter", "3rd"):
+        for path in (root / directory).rglob("*"):
+            if path.is_file() and not any(part in ("CMakeFiles", "__pycache__", ".git", "build") for part in path.relative_to(root / directory).parts) and (path.suffix in suffixes or path.name in ("Makefile", "CMakeLists.txt")):
+                inputs.append(path)
+    digest = hashlib.sha256()
+    for path in sorted(set(inputs), key=lambda value: value.relative_to(root).as_posix()):
+        require_regular(path, "native build source")
+        digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0" + sha256_file(path).encode("ascii") + b"\n")
+    return digest.hexdigest()
+
+
+def write_build_provenance(root: Path, backend: str) -> None:
+    prover = build_binary(root, backend)
+    verifier = verifier_binary(root, backend)
+    payload = {"schema": "zkgpt-gat-build-v1", "backend": backend, "source_tree_sha256": source_tree_sha256(root), "prover_sha256": sha256_file(prover), "verifier_sha256": sha256_file(verifier)}
+    atomic_write_json(root / "build" / backend / "build_provenance.json", payload, root)
+
+
+def verify_build_provenance(root: Path, backend: str) -> str:
+    path = local_path(root, f"build/{backend}/build_provenance.json", "native build provenance")
+    payload = load_json(path, "native build provenance")
+    source_digest = source_tree_sha256(root)
+    expected = {"schema": "zkgpt-gat-build-v1", "backend": backend, "source_tree_sha256": source_digest, "prover_sha256": sha256_file(build_binary(root, backend)), "verifier_sha256": sha256_file(verifier_binary(root, backend))}
+    if payload != expected:
+        raise ChainError(f"native build source/binary provenance is stale; run ./build.sh --{backend}")
+    return source_digest
 
 
 def binary_fingerprint(path: Path, description: str) -> Dict[str, Any]:
@@ -571,9 +648,21 @@ def require_timing(result: Mapping[str, Any], path: Any) -> Dict[str, float]:
     if not isinstance(timing, dict):
         raise ChainError(f"{path} is missing timing_ms")
     normalized: Dict[str, float] = {}
-    for key in ("load", "registration", "witness", "prove", "verify", "serialize"):
+    for key in ("load", "registration", "witness", "commitment", "prove", "verify", "serialize"):
         normalized[key] = finite_nonnegative(timing.get(key), f"timing_ms.{key}", path)
+    for key, value in timing.items():
+        if not isinstance(key, str):
+            raise ChainError(f"{path} has invalid timing field")
+        normalized[key] = finite_nonnegative(value, f"timing_ms.{key}", path)
     return normalized
+
+
+def paper_metrics(result: Mapping[str, Any], report: Mapping[str, Any], where: Any) -> Dict[str, Any]:
+    timing = require_timing(result, where)
+    size = result.get("proof_size_bytes")
+    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        raise ChainError(f"{where} has invalid proof_size_bytes")
+    return {"commitment_time_ms": timing["commitment"], "prove_time_ms": timing["prove"], "verify_time_ms": finite_nonnegative(report.get("crypto_verify_ms"), "crypto_verify_ms", where), "proof_size_bytes": size, "timing_scope": "native_crypto; witness generation, serialization and reusable model registration recorded separately"}
 
 
 def parse_prover_secret_metadata(path: Path) -> Dict[str, Any]:
@@ -638,8 +727,10 @@ def validate_registration_artifact(
     for key in required:
         if key not in registration:
             raise ChainError(f"model registration missing {key}: {registration_path}")
-    if registration["schema"] != "zkgpt-gat-model-registration-v1":
+    if registration["schema"] != "zkgpt-gat-model-registration-v2":
         raise ChainError(f"unsupported model registration schema: {registration_path}")
+    if registration.get("plan_recipe") != "canonical_plan_recipe_v3":
+        raise ChainError(f"unsupported model registration plan recipe: {registration_path}")
     if registration["dataset"] != dataset or registration["status"] != "registered_long_lived_com_W":
         raise ChainError(f"model registration dataset/status mismatch: {registration_path}")
     if registration.get("backend") not in (None, "", backend):
@@ -744,6 +835,9 @@ def validate_formal_cell(
     capability = formal_backend_capability(backend)
     if not capability["supported"] or backend not in FORMAL_BACKENDS:
         raise ChainError(capability["reason"])
+    entry = preflight.get("backends", {}).get(backend)
+    if not isinstance(entry, dict) or entry.get("ready") is not True or entry.get("source_tree_sha256") != verify_build_provenance(root, backend):
+        raise ChainError("formal cell source/preflight binding is stale")
     resource = resource_identity(root, dataset)
     config = resource["config"]
     run_relative = f"{config.get('export_dir') or f'baseline-local/runs/{dataset}_secure'}/{backend}"
@@ -916,8 +1010,20 @@ def validate_formal_cell(
         raise ChainError(f"execution file fingerprints do not match current artifacts: {execution_path}")
     assert_fresh_files((result_path, statement_path, context_path, logits_path, artifact_path, report_path, execution_path), started_ns, "formal cell output")
     wall = {key: finite_nonnegative(execution.get(key), key, execution_path) for key in ("prover_wall_ms", "verifier_wall_ms")}
+    metrics = paper_metrics(result, report, report_path)
+    if execution.get("paper_metrics") != metrics or execution.get("preflight_sha256") != sha256_file(root / "results" / "formal_preflight.json"):
+        raise ChainError("execution metrics/preflight binding is stale")
+    stages = execution.get("process_telemetry")
+    if not isinstance(stages, dict) or set(stages) != {"prover", "verifier"}:
+        raise ChainError("execution native process telemetry is missing")
+    for stage in stages.values():
+        if not isinstance(stage, dict) or stage.get("exit_code") != 0 or isinstance(stage.get("peak_rss_bytes"), bool) or not isinstance(stage.get("peak_rss_bytes"), int) or stage["peak_rss_bytes"] <= 0:
+            raise ChainError("native process did not exit successfully or has invalid RSS")
+        for key in ("cpu_user_seconds", "cpu_system_seconds"):
+            finite_nonnegative(stage.get(key), key, execution_path)
     return {
-        "dataset": dataset, "backend": backend,
+        "dataset": dataset, "backend": backend, "status": "VERIFY_OK", "proof_generated": True, "independent_verifier": True,
+        "paper_metrics": metrics, "process_telemetry": stages,
         "result_path": str(result_path.relative_to(root)), "verifier_report_path": str(report_path.relative_to(root)),
         "statement_path": statement_rel, "verifier_context_path": context_rel, "public_logits_path": logits_rel,
         "registration_path": registration_rel, "prover_secret_path": secret_rel,

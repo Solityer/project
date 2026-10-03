@@ -42,6 +42,20 @@ if [[ -n "$run_dir" ]]; then
     runner_args=(--run-dir "$run_path")
 fi
 
+if [[ -z "${ZKDL_BUILD_MANIFEST:-}" ]]; then
+    echo "prepare-local: a matched formal build is required; use scripts/run_five.sh cpu or scripts/run_single.sh" >&2
+    exit 2
+fi
+python3 "$script_dir/formal_provenance.py" --check "$ZKDL_BUILD_MANIFEST"
+if [[ -n "$run_dir" ]]; then
+    if [[ "$(realpath -- "$ZKDL_BUILD_MANIFEST")" != "$run_path/build_manifest.json" ]]; then
+        cp -- "$ZKDL_BUILD_MANIFEST" "$run_path/build_manifest.json"
+    fi
+else
+    echo "prepare-local: an explicit fresh run directory is required" >&2
+    exit 2
+fi
 python3 "$script_dir/validate_resources.py" --config "$config_path"
 python3 "$script_dir/asset_manifest.py" --config "$config_path" "${manifest_args[@]}"
-"$root/gat_runner" prepare --config "$config_path" "${runner_args[@]}"
+runner="$(python3 "$script_dir/formal_provenance.py" --check "$run_path/build_manifest.json" --binary gat_runner)"
+"$runner" prepare --config "$config_path" "${runner_args[@]}"

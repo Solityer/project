@@ -2,10 +2,12 @@
 #define ZKGPT_NATIVE_MASKED_SUMCHECK_HPP
 
 #include "proof_session.hpp"
+#include "../gat_adapter/native_storage.hpp"
 #include "native_pedersen_relation.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
@@ -22,6 +24,16 @@ enum class NativeMaskedTerminalKind : std::uint8_t {
 
     GkrPredicateFixedU = 7,
     GkrPredicateFixedV = 8,
+
+    // Two private terminal values multiplied by one public MLE coefficient.
+    // Keep existing values stable because kind is included in transcript scopes.
+    Product3Public = 9,
+};
+
+struct NativeMaskedPublicProvider {
+    std::uint64_t size = 0;
+    std::function<F(std::uint64_t)> value_at;
+    std::function<F(const std::vector<F>&)> evaluate_mle;
 };
 
 struct NativeMaskedTerminalSpec {
@@ -30,6 +42,9 @@ struct NativeMaskedTerminalSpec {
     std::vector<F> gkr_coefficients;
 
     std::vector<F> public_vector;
+    std::shared_ptr<const zkgpt::NativeFieldVector> public_storage;
+    std::shared_ptr<const NativeMaskedPublicProvider> public_provider;
+    bool has_public_evaluation = false;
 
     F public_evaluation = F_ZERO;
 

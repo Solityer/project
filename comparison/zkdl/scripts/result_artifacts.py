@@ -16,6 +16,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from formal_provenance import validate_manifest
+
 
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 BACKENDS = ("cpu", "gpu")
@@ -166,8 +168,7 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
     """Require authenticated native resources, never an UNAVAILABLE marker."""
     for field in (
         "srs_path", "srs_manifest_digest", "model_registry_path",
-        "model_registry_digest", "model_blinder_sidecar_path",
-        "model_blinder_sidecar_digest",
+        "model_registry_digest",
     ):
         value = manifest.get(field)
         if not isinstance(value, str) or not value or value == "UNAVAILABLE":
@@ -303,14 +304,8 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
     if sha256_file(registry_path) != manifest["model_registry_digest"]:
         raise ArtifactError("model registry digest does not match asset manifest")
     _digest(manifest["model_registry_digest"], "model_registry_digest")
-    sidecar_path = _local(root, manifest["model_blinder_sidecar_path"], "model blinder sidecar path")
-    _regular(sidecar_path, "model blinder sidecar")
-    if sha256_file(sidecar_path) != manifest["model_blinder_sidecar_digest"]:
-        raise ArtifactError("model blinder sidecar digest does not match asset manifest")
-    _digest(manifest["model_blinder_sidecar_digest"], "model_blinder_sidecar_digest")
-    if sidecar_path.stat().st_mode & 0o077:
-        raise ArtifactError("model blinder sidecar is not owner-only")
-
+    if manifest.get("model_blinder_sidecar_path") != "UNAVAILABLE" or manifest.get("model_blinder_sidecar_digest") != "UNAVAILABLE":
+        raise ArtifactError("public assets expose private model registration material")
     lookup_raw = manifest.get("sorted_lookup_descriptor")
     lookup_digest = manifest.get("sorted_lookup_descriptor_digest")
     if (not isinstance(lookup_raw, str) or not lookup_raw or
@@ -343,8 +338,29 @@ def _audit_assets(root: Path, run_dir: Path, statement: dict[str, str]) -> tuple
     asset_digest = sha256_file(manifest_path)
     if statement.get("asset_manifest_digest") != asset_digest:
         raise ArtifactError("statement asset_manifest_digest does not match asset manifest")
+    config_raw = manifest.get("config")
+    config_path = _local(root, config_raw if isinstance(config_raw, str) else "", "config")
+    config_values = {key.strip(): value.strip() for key, value in read_kv(config_path).items()}
+    checkpoint = config_values.get("checkpoint_bundle", "").strip() + "/"
+    for entry in manifest.get("files", []):
+        raw = entry.get("path", "") if isinstance(entry, dict) else ""
+        if "/model_blinders/" in raw or raw.endswith("/private_asset_manifest.json") or (raw.startswith(checkpoint) and raw != checkpoint + "manifest.json"):
+            raise ArtifactError("public assets contain private checkpoint or opening material")
     digests = _manifest_files(root, manifest, manifest_path)
     _resource_manifest(root, manifest, manifest_path, digests)
+    build_path = _local(root, manifest.get("build_manifest", ""), "build manifest")
+    if build_path != run_dir / "build_manifest.json":
+        raise ArtifactError("formal build manifest must be run-local")
+    try:
+        build = validate_manifest(root, build_path)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ArtifactError(f"formal build provenance is invalid: {exc}") from exc
+    build_digest = sha256_file(build_path)
+    if manifest.get("build_manifest_digest") != build_digest or digests.get(build_path.relative_to(root).as_posix()) != build_digest or manifest.get("source_digest") != build["source_digest"]:
+        raise ArtifactError("formal build/source identity is not asset-bound")
+    for entry in build["sources"] + build["binaries"]:
+        if digests.get(entry["path"]) != entry["sha256"]:
+            raise ArtifactError(f"formal build source/binary is not asset-bound: {entry['path']}")
 
     for field in (
         "scale_chain_digest", "static_table_descriptor_digest",
@@ -369,6 +385,10 @@ def _audit_assets(root: Path, run_dir: Path, statement: dict[str, str]) -> tuple
             raise ArtifactError(f"statement resource identity mismatch for {field}")
     if statement.get("verifier_registry_digest") != manifest.get("model_registry_digest"):
         raise ArtifactError("statement verifier registry digest mismatch")
+    for field in ("checkpoint_tensors_txt_digest", "checkpoint_tensors_npz_digest"):
+        _digest(manifest.get(field), field)
+        if statement.get(field) != manifest[field]:
+            raise ArtifactError(f"statement checkpoint identity mismatch for {field}")
     if statement.get("scale_chain_digest") != manifest.get("scale_chain_digest"):
         raise ArtifactError("statement scale-chain digest mismatch")
     if statement.get("proof_scope") != "full_gat_forward":
@@ -554,6 +574,10 @@ def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
     if statement.get("privacy_policy") != "model_and_trace_hidden":
         raise ArtifactError("statement privacy policy is not the canonical hidden-model/trace profile")
 
+    with proof_path.open("rb") as stream:
+        native_header = stream.read(8)
+    if native_header != b"GATR" + (7).to_bytes(4, "little"):
+        raise ArtifactError("formal proof is not the segmented matmul/public-output GATR v7 protocol")
     proof_digest = sha256_file(proof_path)
     if proof_digest != envelope.get("proof_id") or proof_digest != record.get("proof_id"):
         raise ArtifactError("proof_id is not the SHA-256 digest of proof.bin")
@@ -611,6 +635,8 @@ def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
         "verification_result_digest": sha256_file(verification_path),
         "asset_manifest_digest": asset_digest,
         "asset_manifest_schema": str(manifest.get("schema")),
+        "build_manifest_digest": str(manifest.get("build_manifest_digest")),
+        "source_digest": str(manifest.get("source_digest")),
         "native_core_api": envelope["native_core_api"],
         "independent_verification": "1",
     }

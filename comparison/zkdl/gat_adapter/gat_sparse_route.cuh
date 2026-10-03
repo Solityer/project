@@ -112,7 +112,7 @@ inline bool sparse_route_aggregate_opening_inputs(const TensorWitness &tensor, c
         return false;
     }
     SegmentedTensorProvider provider;
-    if (!SegmentedTensorProvider::from_values(tensor.values, generators.size(), provider, error)) return false;
+    if (!tensor.segmented(generators.size(), provider, error)) return false;
     ZkRelationSegmentLayout layout;
     if (!zktr_segment_layout(provider.logical_domain(), generators.size(), layout, error) || point.size() != log2_exact(layout.logical_domain)) return false;
     SegmentCommitmentMaterial material;
@@ -201,7 +201,7 @@ inline bool prove_sparse_route(const OperationDescriptor &descriptor, const std:
                                                    blinders, segment_blinding_scalars, output_values, output_aggregate_blinder, output_value, output_xi, error))
             return false;
         const std::uint32_t domain = std::max(2U, source->domain_size);
-        std::vector<FrWire> source_values = source->values;
+        std::vector<FrWire> source_values = source->materialize();
 
         if (source_values.size() == 1U) source_values.push_back(source_values.front());
         std::vector<FrWire> zero_selector(domain);

@@ -1,3 +1,4 @@
+#include "../gat_adapter/native_storage.hpp"
 #ifndef HYRAX_DEFINE
 #define HYRAX_DEFINE
 #include <iostream>
@@ -17,6 +18,7 @@
 using namespace std;
 using namespace mcl::bn;
 class NativeProofSession;
+struct NativeMaskedSumcheckResult;
 struct Hyrax_first_round
 {
     //transmitted data
@@ -54,6 +56,78 @@ namespace hyrax
 static constexpr const char *kChunkedMleSchema = "zkgpt-hyrax-chunked-mle-v1";
 static constexpr std::uint32_t kChunkedMleVersion = 1;
 static constexpr std::uint64_t kChunkedMleEntries = 1ULL << 12;
+static constexpr const char *kHyraxTensorMleMethod = "hyrax-balanced-blinded-row-column-full-mle";
+static constexpr std::uint32_t kHyraxTensorMleVersion = 2;
+static constexpr const char *kHyraxTensorMleSchema = "zkgpt-hyrax-balanced-tensor-full-mle-v2";
+
+struct HyraxScalarProvider
+{
+    std::uint64_t size = 0;
+    std::function<Fr(std::uint64_t)> at;
+};
+
+enum class HyraxGeneratorProviderScheme : std::uint8_t
+{
+    OpaqueProvider = 0,
+    CanonicalAbsoluteHashToCurveV1 = 1
+};
+
+struct HyraxGeneratorProvider
+{
+    std::uint64_t size = 0;
+    std::string canonical_id;
+    HyraxGeneratorProviderScheme scheme = HyraxGeneratorProviderScheme::OpaqueProvider;
+    std::function<G1(std::uint64_t)> at;
+};
+
+struct HyraxMleBasisView
+{
+    std::uint64_t full_domain = 0;
+    std::uint64_t logical_length = 0;
+    std::uint64_t active_domain = 0;
+    std::string role;
+    std::string basis_id;
+    std::vector<Fr> point;
+    HyraxGeneratorProvider generators;
+};
+
+struct HyraxTensorMleView
+{
+    std::string schema = kHyraxTensorMleSchema;
+    std::string method = kHyraxTensorMleMethod;
+    std::uint32_t version = kHyraxTensorMleVersion;
+    std::uint64_t full_domain = 0;
+    std::uint64_t logical_length = 0;
+    std::uint64_t active_domain = 0;
+    std::uint64_t rows = 0;
+    std::uint64_t columns = 0;
+    std::string role;
+    std::string basis_id;
+    HyraxGeneratorProvider column_generators;
+};
+
+struct HyraxTensorMleCommitment
+{
+    std::string schema = kHyraxTensorMleSchema;
+    std::string method = kHyraxTensorMleMethod;
+    std::uint32_t version = kHyraxTensorMleVersion;
+    std::string role;
+    std::string basis_id;
+    HyraxGeneratorProviderScheme column_generator_scheme = HyraxGeneratorProviderScheme::CanonicalAbsoluteHashToCurveV1;
+    std::string column_generator_id;
+    std::uint64_t full_domain = 0;
+    std::uint64_t logical_length = 0;
+    std::uint64_t active_domain = 0;
+    std::uint64_t rows = 0;
+    std::uint64_t columns = 0;
+    std::vector<G1> row_commitments;
+    std::string root_digest;
+};
+
+struct HyraxTensorMleProverState
+{
+    std::vector<Fr> row_blindings;
+};
 
 struct ChunkedMleChunkWire
 {
@@ -125,19 +199,52 @@ struct PedersenMleCommitment
     std::string basis_id;
 };
 
+bool commit_hyrax_tensor_mle(const HyraxTensorMleView &view, const HyraxScalarProvider &values, HyraxTensorMleCommitment &commitment, HyraxTensorMleProverState &state, std::string *reason = nullptr);
+bool open_hyrax_tensor_mle_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason = nullptr, const std::string &mask_identity = "", const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
+bool open_hyrax_tensor_mle_with_claim(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, const Fr &masked_evaluation, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason = nullptr, const std::string &mask_identity = "", const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
+bool verify_hyrax_tensor_mle_opening_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const std::vector<Fr> &full_point, const G1 &evaluation_mask_commitment, const Fr &masked_evaluation, const NativeProofSession &session, const std::string &label, std::string *reason = nullptr, bool allow_trailing_unrelated = false, const std::string &mask_identity = "", const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr, const zkgpt::native_pedersen::ScalarCommitment *expected_raw_evaluation_commitment = nullptr, const zkgpt::native_pedersen::ScalarCommitment *expected_masked_evaluation_commitment = nullptr);
+bool prove_hyrax_tensor_zero_tail_certificate_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const HyraxScalarProvider &values, NativeProofSession &session, std::size_t &exact_position, const zkgpt::native_pedersen::PedersenBasis &scalar_basis, std::vector<Fr> &beta, std::vector<Fr> &full_terminal_point, ::NativeMaskedSumcheckResult &sumcheck_result, MaskedMleOpening &terminal_opening, std::string *reason = nullptr);
+bool verify_hyrax_tensor_zero_tail_certificate_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const NativeProofSession &session, std::size_t &exact_position, const zkgpt::native_pedersen::PedersenBasis &scalar_basis, std::vector<Fr> &beta, std::vector<Fr> &full_terminal_point, ::NativeMaskedSumcheckResult &sumcheck_result, std::string *reason = nullptr);
+
 G1 derive_pedersen_blinding_generator(const std::string &basis_id);
 G1 derive_pedersen_evaluation_generator(const std::string &basis_id, const std::string &label);
+G1 derive_masked_response_ipa_base(const std::string &basis_id);
 
 G1 derive_shared_pedersen_evaluation_generator(const std::string &identity);
+
+Fr hyrax_mle_basis_at(const HyraxMleBasisView &view, std::uint64_t canonical_index);
+std::string hyrax_generator_set_digest(const HyraxMleBasisView &view);
+
+PedersenMleCommitment pedersen_commit_mle(const HyraxMleBasisView &view, const HyraxScalarProvider &values);
 
 bool make_mle_evaluation_opening(const zkgpt::native_pedersen::PedersenBasis &scalar_basis, const std::vector<Fr> &point, const std::vector<Fr> &values,
                                  zkgpt::native_pedersen::ScalarOpening &opening, std::string *reason = nullptr);
 
+bool make_mle_evaluation_opening(const zkgpt::native_pedersen::PedersenBasis &scalar_basis, const std::vector<Fr> &point, const zkgpt::NativeFieldVector &values,
+                                 zkgpt::native_pedersen::ScalarOpening &opening, std::string *reason = nullptr);
+
 PedersenMleCommitment pedersen_commit_mle(const std::vector<G1> &generators, const std::vector<Fr> &values, const std::string &basis_id);
+
+PedersenMleCommitment pedersen_commit_mle(const std::vector<G1> &generators, const zkgpt::NativeFieldVector &values, const std::string &basis_id);
 
 bool open_masked_mle_with_session(const PedersenMleCommitment &commitment, const std::vector<G1> &generators, const std::vector<Fr> &point,
                                   const std::vector<Fr> &values, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening,
                                   std::string *reason = nullptr, bool enforce_statement_basis = true, const std::string &mask_identity = "",
+                                  const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
+                                  const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr,
+                                  const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
+
+bool open_masked_mle_with_session(const PedersenMleCommitment &commitment, const std::vector<G1> &generators, const std::vector<Fr> &point,
+                                  const zkgpt::NativeFieldVector &values, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening,
+                                  std::string *reason = nullptr, bool enforce_statement_basis = true, const std::string &mask_identity = "",
+                                  const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
+                                  const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr,
+                                  const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
+
+bool open_masked_mle_with_session(const PedersenMleCommitment &commitment, const HyraxMleBasisView &view,
+                                  const HyraxScalarProvider &values, NativeProofSession &session, const std::string &label,
+                                  MaskedMleOpening &opening, std::string *reason = nullptr, bool enforce_statement_basis = true,
+                                  const std::string &mask_identity = "",
                                   const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
                                   const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr,
                                   const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
@@ -149,10 +256,34 @@ bool open_masked_mle_with_claim(const PedersenMleCommitment &commitment, const s
                                 const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr,
                                 const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
 
+bool open_masked_mle_with_claim(const PedersenMleCommitment &commitment, const std::vector<G1> &generators, const std::vector<Fr> &point,
+                                const zkgpt::NativeFieldVector &values, const Fr &masked_evaluation, NativeProofSession &session, const std::string &label,
+                                MaskedMleOpening &opening, std::string *reason = nullptr, bool enforce_statement_basis = true,
+                                const std::string &mask_identity = "", const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
+                                const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr,
+                                const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
+
+bool open_masked_mle_with_claim(const PedersenMleCommitment &commitment, const HyraxMleBasisView &view,
+                                const HyraxScalarProvider &values, const Fr &masked_evaluation, NativeProofSession &session,
+                                const std::string &label, MaskedMleOpening &opening, std::string *reason = nullptr,
+                                bool enforce_statement_basis = true, const std::string &mask_identity = "",
+                                const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
+                                const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening = nullptr,
+                                const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening = nullptr);
+
 bool verify_masked_mle_opening_with_session(const G1 &commitment, const G1 &evaluation_mask_commitment, const Fr &masked_evaluation,
                                             const std::string &basis_id, const std::vector<G1> &generators, const std::vector<Fr> &point,
                                             const NativeProofSession &session, const std::string &label, std::string *reason = nullptr,
                                             bool enforce_statement_basis = true, bool allow_trailing_unrelated = false, const std::string &mask_identity = "",
+                                            const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
+                                            const zkgpt::native_pedersen::ScalarCommitment *expected_raw_evaluation_commitment = nullptr,
+                                            const zkgpt::native_pedersen::ScalarCommitment *expected_masked_evaluation_commitment = nullptr);
+
+bool verify_masked_mle_opening_with_session(const G1 &commitment, const G1 &evaluation_mask_commitment,
+                                            const Fr &masked_evaluation, const HyraxMleBasisView &view,
+                                            const NativeProofSession &session, const std::string &label,
+                                            std::string *reason = nullptr, bool enforce_statement_basis = true,
+                                            bool allow_trailing_unrelated = false, const std::string &mask_identity = "",
                                             const zkgpt::native_pedersen::PedersenBasis *scalar_basis = nullptr,
                                             const zkgpt::native_pedersen::ScalarCommitment *expected_raw_evaluation_commitment = nullptr,
                                             const zkgpt::native_pedersen::ScalarCommitment *expected_masked_evaluation_commitment = nullptr);

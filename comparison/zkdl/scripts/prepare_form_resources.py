@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -24,6 +25,8 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
+
+from formal_provenance import native_binary
 
 
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
@@ -228,23 +231,59 @@ def point_add(left: tuple[int, int] | None, right: tuple[int, int] | None) -> tu
     if x1 == x2:
         if (y1 + y2) % P == 0:
             return None
-        slope = (3 * x1 * x1) * pow(2 * y1, P - 2, P) % P
+        slope = (3 * x1 * x1) * pow(2 * y1, -1, P) % P
     else:
-        slope = (y2 - y1) * pow((x2 - x1) % P, P - 2, P) % P
+        slope = (y2 - y1) * pow((x2 - x1) % P, -1, P) % P
     x3 = (slope * slope - x1 - x2) % P
     return x3, (slope * (x1 - x3) - y1) % P
 
 
 def point_mul(point: tuple[int, int] | None, scalar: int) -> tuple[int, int] | None:
-    result: tuple[int, int] | None = None
-    base = point
+    """Exact BLS12-381 scalar multiplication with projective intermediates."""
     scalar %= R
-    while scalar:
-        if scalar & 1:
-            result = point_add(result, base)
-        base = point_add(base, base)
-        scalar >>= 1
-    return result
+    if point is None or scalar == 0:
+        return None
+    px, py = point
+    if scalar > R // 2:
+        scalar, py = R - scalar, (-py) % P
+    x, y, z = 0, 1, 0
+    for bit in bin(scalar)[2:]:
+        if z:
+            aa, bb = x * x % P, y * y % P
+            cc = bb * bb % P
+            dd = 2 * ((x + bb) ** 2 - aa - cc) % P
+            ee = 3 * aa % P
+            xx = (ee * ee - 2 * dd) % P
+            x, y, z = xx, (ee * (dd - xx) - 8 * cc) % P, 2 * y * z % P
+        if bit == '1':
+            if not z:
+                x, y, z = px, py, 1
+                continue
+            zz = z * z % P
+            hh = (px * zz - x) % P
+            rr = 2 * (py * z * zz - y) % P
+            if hh == 0:
+                if rr != 0:
+                    x, y, z = 0, 1, 0
+                else:
+                    aa, bb = x * x % P, y * y % P
+                    cc = bb * bb % P
+                    dd = 2 * ((x + bb) ** 2 - aa - cc) % P
+                    ee = 3 * aa % P
+                    xx = (ee * ee - 2 * dd) % P
+                    x, y, z = xx, (ee * (dd - xx) - 8 * cc) % P, 2 * y * z % P
+                continue
+            h2 = hh * hh % P
+            ii = 4 * h2 % P
+            jj = hh * ii % P
+            vv = x * ii % P
+            xx = (rr * rr - jj - 2 * vv) % P
+            x, y, z = xx, (rr * (vv - xx) - 2 * y * jj) % P, ((z + hh) ** 2 - zz - h2) % P
+    if not z:
+        return None
+    inverse = pow(z, -1, P)
+    inverse2 = inverse * inverse % P
+    return x * inverse2 % P, y * inverse2 * inverse % P
 
 
 def encode_g1(point: tuple[int, int] | None) -> bytes:
@@ -656,6 +695,44 @@ def load_tensors(path: Path) -> list[tuple[str, list[int], list[float]]]:
     return result
 
 
+def registered_model_segment_blinders(tensor_id: str, total_blinder: int, domain: int, segment_size: int, segment_count: int, srs_manifest_digest: str) -> list[int]:
+    if not 0 < total_blinder < R or domain < 1 or domain > MAX_NATIVE_DOMAIN or domain & (domain - 1) or segment_size < 1 or segment_size > NATIVE_BASIS_DOMAIN or segment_size & (segment_size - 1) or segment_count < 1 or segment_count > 4096 or domain != segment_size * segment_count or not re.fullmatch(r"[0-9a-f]{64}", srs_manifest_digest):
+        die("registered model segment blinder inputs are invalid")
+    if segment_count == 1:
+        return [total_blinder]
+    key = total_blinder.to_bytes(32, "little")
+    prefix = append_string("zkdl.registered-model.segment-blinders.v1") + append_string(tensor_id) + append_u32(domain) + append_u32(segment_size) + append_u32(segment_count) + bytes.fromhex(srs_manifest_digest)
+    for nonce in range(1 << 16):
+        shares = [0] * segment_count
+        for segment_index in range(1, segment_count):
+            for attempt in range(1 << 16):
+                raw = hmac.new(key, prefix + append_u32(nonce) + append_u32(segment_index) + append_u32(attempt), hashlib.sha256).digest()
+                scalar = int.from_bytes(raw, "little")
+                if 0 < scalar < R:
+                    shares[segment_index] = scalar
+                    break
+            else:
+                die("registered model segment blinder rejection bound exceeded")
+        shares[0] = (total_blinder - sum(shares[1:])) % R
+        if shares[0] != 0:
+            return shares
+    die("registered model segment blinder nonce bound exceeded")
+
+
+def cartesian_model_values(logical: list[int], padded: list[int], values: list[int]) -> list[int]:
+    if not logical or len(logical) != len(padded) or any(left < 1 or right < left or right & (right - 1) for left, right in zip(logical, padded)) or math.prod(logical) != len(values):
+        die("model tensor logical/padded shape is inconsistent")
+    result = [0] * math.prod(padded)
+    for index, value in enumerate(values):
+        remaining, destination, stride = index, 0, 1
+        for left, right in reversed(list(zip(logical, padded))):
+            destination += (remaining % left) * stride
+            remaining //= left
+            stride *= right
+        result[destination] = value
+    return result
+
+
 def model_entries(root: Path, values: dict[str, str],
                   h_point: tuple[int, int], u_point: tuple[int, int],
                   blinders: dict[str, int], generators: list[tuple[int, int]],
@@ -679,10 +756,7 @@ def model_entries(root: Path, values: dict[str, str],
         logical = shape[1:] if len(shape) == 3 and shape[0] == 1 else shape
         padded = [next_pow2(int(axis)) for axis in logical]
         domain = math.prod(padded)
-        quantized = [round_away(value * scale) % R for value in floats]
-        if len(quantized) > domain:
-            die(f"model tensor logical values exceed padded domain: {mapped}")
-        quantized.extend([0] * (domain - len(quantized)))
+        quantized = cartesian_model_values(logical, padded, [round_away(value * scale) % R for value in floats])
         segment_size = min(domain, len(generators))
         if segment_size < 1 or domain % segment_size != 0 or segment_size & (segment_size - 1):
             die(f"model tensor domain is not covered by authenticated IPA segments: {mapped}")
@@ -692,6 +766,7 @@ def model_entries(root: Path, values: dict[str, str],
             1 << (segment_size.bit_length()))
         basis_digest_text = ipa_basis_digest(
             generators, h_point, u_point, 1 << (len(generators).bit_length()))
+        segment_blinders = registered_model_segment_blinders(mapped, blinders[mapped], domain, segment_size, segment_count, srs_manifest_digest)
         segments: list[dict[str, Any]] = []
         for segment_index in range(segment_count):
             offset = segment_index * segment_size
@@ -702,9 +777,7 @@ def model_entries(root: Path, values: dict[str, str],
                     segment_point,
                     point_mul(generators[index], quantized_value))
 
-            if segment_index == 0:
-                segment_point = point_add(segment_point,
-                                          point_mul(h_point, blinders[mapped]))
+            segment_point = point_add(segment_point, point_mul(h_point, segment_blinders[segment_index]))
             if segment_point is None:
                 die(f"model tensor segment commitment is the identity: {mapped}/{segment_index}")
             actual_length = min(segment_size, domain - offset)
@@ -797,24 +870,26 @@ def read_srs_frame_prefix(srs_dir: Path, descriptor: dict[str, Any], label: str,
     path, _, declared_count, _ = srs_frame_path(srs_dir, descriptor, label)
     if required_count < 1 or required_count > declared_count:
         die(f"local SRS {label} frame does not cover required model domain")
+    root = Path(__file__).resolve().parent.parent
+    helper = native_binary(root, "gat_resource_setup")
+    if helper.is_symlink() or not helper.is_file():
+        die("baseline-local native SRS decoder is missing")
     try:
-        with path.open("rb") as stream:
-            header = stream.read(SRS_FRAME_HEADER_BYTES)
-            if len(header) != SRS_FRAME_HEADER_BYTES or header[:8] != b"GATZKG1C":
-                die(f"local SRS {label} frame header is invalid")
-            version, point_size, count, domain, degree = struct.unpack("<IIQQQ", header[8:])
-            if (version != 1 or point_size != G1_POINT_BYTES or count != declared_count or
-                    domain < 1 or domain & (domain - 1) or degree < max(0, domain - 1)):
-                die(f"local SRS {label} frame metadata is invalid")
-            points: list[tuple[int, int]] = []
-            for index in range(required_count):
-                raw = stream.read(G1_POINT_BYTES)
-                if len(raw) != G1_POINT_BYTES:
-                    die(f"local SRS {label} frame is truncated at point {index}")
-                points.append(decode_g1(raw, f"{label}[{index}]"))
-            return points
-    except OSError as exc:
-        die(f"cannot read local SRS {label} frame: {exc}")
+        result = subprocess.run([str(helper), "export-srs-prefix", "--frame", str(path), "--count", str(required_count), "--baseline-root", str(root)], cwd=root, check=True, stdout=subprocess.PIPE, text=True)
+        exported = json.loads(result.stdout)
+        if exported.get("schema") != "zkDL_gat_srs_prefix_v1" or not isinstance(exported.get("points"), list) or len(exported["points"]) != required_count:
+            die(f"native SRS {label} prefix export identity/count mismatch")
+        points = []
+        for raw in exported["points"]:
+            if not isinstance(raw, list) or len(raw) != 2 or any(not isinstance(axis, str) or not re.fullmatch(r"[0-9]+", axis) for axis in raw):
+                die(f"native SRS {label} prefix has malformed affine coordinates")
+            x, y = int(raw[0]), int(raw[1])
+            if not (0 <= x < P and 0 <= y < P) or y * y % P != (x * x * x + 4) % P:
+                die(f"native SRS {label} prefix has invalid affine coordinates")
+            points.append((x, y))
+        return points
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        die(f"cannot decode authenticated native SRS {label} frame: {exc}")
 
 
 def basis_digest(g_meta: dict[str, Any], h_meta: dict[str, Any], u_meta: dict[str, Any]) -> str:
@@ -1175,58 +1250,24 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
         die(f"SRS materialization needs {estimated_bytes} bytes but only {free_bytes} are available")
     domain = common_domain
     temp_dir = Path(tempfile.mkdtemp(prefix=f".{srs_dir.name}.tmp-", dir=srs_dir.parent))
-    seen_points: set[bytes] = set()
-
-    def random_point(label: str) -> tuple[bytes, tuple[int, int]]:
-        for _ in range(128):
-            scalar = fresh_scalar()
-            point = point_mul(G, scalar)
-            encoded = encode_g1(point)
-            if point is not None and encoded not in seen_points:
-                seen_points.add(encoded)
-                return encoded, point
-        die(f"CSPRNG point sampling exhausted uniqueness attempts for {label}")
-
-    def write_frame(label: str, payloads: Iterable[bytes], count: int) -> dict[str, Any]:
-        """Stream one authenticated common frame without retaining points."""
+    helper = native_binary(root, "gat_resource_setup")
+    if helper.is_symlink() or not helper.is_file():
+        shutil.rmtree(temp_dir)
+        die("matched baseline-local gat_resource_setup is missing; run the formal build entry")
+    def frame_metadata(label: str, count: int) -> dict[str, Any]:
         relative = Path("wildcard") / f"{label}.chunk0.bin"
-        materialized_bytes = srs_frame_bytes(count)
-        header = b"GATZKG1C" + struct.pack(
-            "<IIQQQ", 1, G1_POINT_BYTES, count, domain, domain - 1
-        )
         path = temp_dir / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256()
-        written = 0
-        try:
-            with path.open("wb") as stream:
-                stream.write(header)
-                digest.update(header)
-                for point in payloads:
-                    if len(point) != G1_POINT_BYTES:
-                        die(f"SRS common {label} point has an invalid encoded size")
-                    stream.write(point)
-                    digest.update(point)
-                    written += 1
-        except (OSError, MemoryError, OverflowError) as exc:
-            die(f"SRS common {label} frame materialization failed: {exc}")
-        if written != count:
-            die(f"SRS common {label} frame point count mismatch: {written} != {count}")
-        return {"path": relative.as_posix(), "count": count,
-                "bytes": materialized_bytes, "sha256": digest.hexdigest()}
-
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != srs_frame_bytes(count):
+            die(f"native SRS helper produced an invalid {label} frame")
+        with path.open("rb") as stream:
+            header = stream.read(SRS_FRAME_HEADER_BYTES)
+        if header != b"GATZKG1C" + struct.pack("<IIQQQ", 1, G1_POINT_BYTES, count, domain, domain - 1):
+            die(f"native SRS helper produced an invalid {label} header")
+        return {"path": relative.as_posix(), "count": count, "bytes": srs_frame_bytes(count), "sha256": sha256_file(path)}
     try:
-        h_encoded, _ = random_point("H")
-        u_encoded, _ = random_point("U")
-
-        def generator_points() -> Iterable[bytes]:
-            for index in range(domain):
-                encoded, _ = random_point(f"G[{index}]")
-                yield encoded
-
-        g_meta = write_frame("G", generator_points(), domain)
-        h_meta = write_frame("H", (h_encoded for _ in range(1)), 1)
-        u_meta = write_frame("U", (u_encoded for _ in range(1)), 1)
+        print(f"native_srs_setup=START generators={domain} output={srs_dir}", flush=True)
+        subprocess.run([str(helper), "generate-srs", "--output", str(temp_dir), "--baseline-root", str(root)], cwd=root, check=True)
+        g_meta, h_meta, u_meta = frame_metadata("G", domain), frame_metadata("H", 1), frame_metadata("U", 1)
         basis = basis_digest(g_meta, h_meta, u_meta)
         generator_id = "zkDL_native_local_csprng_g1_v1"
         families: list[dict[str, Any]] = []
@@ -1331,7 +1372,7 @@ def existing_blinders(root: Path, values: dict[str, str], tensor_ids: set[str]) 
         raw = entry.get("blinder")
         if tensor_id not in tensor_ids or tensor_id in result or not isinstance(raw, str) or not re.fullmatch(r"[0-9a-f]{64}", raw):
             return None
-        scalar = int(raw, 16)
+        scalar = int.from_bytes(bytes.fromhex(raw), "little")
         if scalar <= 0 or scalar >= R:
             return None
         result[tensor_id] = scalar

@@ -1,5 +1,6 @@
 #include "hyrax.hpp"
 #include "proof_session.hpp"
+#include "native_masked_sumcheck.hpp"
 #include "timer.hpp"
 #include <cmath>
 #include <thread>
@@ -695,9 +696,10 @@ std::size_t log2_size(std::size_t value) {
 }
 
 std::vector<Fr> mle_basis_from_point(const std::vector<Fr> &point) {
-    if (point.empty() || point.size() >= sizeof(std::size_t) * 8)
+    if (point.size() >= sizeof(std::size_t) * 8)
         throw std::invalid_argument("masked Hyrax evaluation point is invalid");
     const std::size_t size = std::size_t(1) << point.size();
+    if (point.empty()) return std::vector<Fr>{Fr(1)};
     std::vector<Fr> basis(size);
     basis[0] = Fr(1) - point[0];
     basis[1] = point[0];
@@ -710,19 +712,6 @@ std::vector<Fr> mle_basis_from_point(const std::vector<Fr> &point) {
         }
     }
     return basis;
-}
-
-std::string masked_basis_payload(const G1 &commitment, const G1 &H,
-                                 const G1 &J, const std::string &basis_id,
-                                 const std::vector<G1> &generators,
-                                 const std::vector<Fr> &basis) {
-    std::ostringstream payload;
-    payload << point_encoding(commitment) << '|' << point_encoding(H) << '|'
-            << point_encoding(J) << '|' << basis_id << '|' << generators.size();
-    for (std::size_t index = 0; index < generators.size(); ++index)
-        payload << '|' << point_encoding(generators[index]) << '|'
-                << basis[index].getStr(16);
-    return payload.str();
 }
 
 std::string masked_claim_payload(
@@ -1075,13 +1064,285 @@ G1 derive_shared_pedersen_evaluation_generator(const std::string &identity) {
     return result;
 }
 
-bool make_mle_evaluation_opening(
+G1 derive_masked_response_ipa_base(const std::string &basis_id) {
+    if (basis_id.empty() || basis_id.size() > 128)
+        throw std::invalid_argument("masked response IPA basis identity is invalid");
+    G1 result;
+    hashAndMapToG1(result, "zkGPT/hyrax/masked-response-ipa/evaluation-base/v2/" + basis_id);
+    if (!valid_point(result, true))
+        throw std::runtime_error("masked response IPA base is invalid");
+    return result;
+}
+
+namespace {
+
+bool safe_open_text(const std::string &value, std::size_t maximum) {
+    return !value.empty() && value.size() <= maximum &&
+           value.find('|') == std::string::npos &&
+           value.find('\n') == std::string::npos &&
+           value.find('\r') == std::string::npos;
+}
+
+std::uint64_t next_power_of_two_u64(std::uint64_t value) {
+    if (value == 0 || value > (std::uint64_t(1) << 62))
+        throw std::invalid_argument("masked Hyrax logical extent is invalid");
+    std::uint64_t result = 1;
+    while (result < value) result <<= 1;
+    return result;
+}
+
+void validate_masked_view(const HyraxMleBasisView &view) {
+    if (view.point.size() >= 63 ||
+        view.full_domain != (std::uint64_t(1) << view.point.size()) ||
+        view.logical_length == 0 || view.logical_length > view.full_domain ||
+        view.active_domain != next_power_of_two_u64(view.logical_length) ||
+        view.active_domain > view.full_domain ||
+        view.active_domain > static_cast<std::uint64_t>(
+            std::numeric_limits<std::size_t>::max() / sizeof(G1)) ||
+        view.active_domain > static_cast<std::uint64_t>(
+            std::numeric_limits<std::size_t>::max() / sizeof(Fr)) ||
+        view.generators.size != view.full_domain || !view.generators.at ||
+        (view.generators.scheme != HyraxGeneratorProviderScheme::OpaqueProvider &&
+         view.generators.scheme != HyraxGeneratorProviderScheme::CanonicalAbsoluteHashToCurveV1) ||
+        !safe_open_text(view.role, 128) || !safe_open_text(view.basis_id, 128) ||
+        !safe_open_text(view.generators.canonical_id, 128))
+        throw std::invalid_argument("masked Hyrax canonical basis view is invalid");
+}
+
+Fr mle_coefficient_at(const std::vector<Fr> &point, std::uint64_t index) {
+    Fr coefficient(1);
+    for (std::size_t bit = 0; bit < point.size(); ++bit)
+        coefficient *= ((index >> bit) & 1) ? point[bit] : Fr(1) - point[bit];
+    return coefficient;
+}
+
+struct PreparedMaskedView {
+    zkgpt::NativeVector<G1> generators;
+    zkgpt::NativeFieldVector coefficients;
+    std::string generator_set_digest;
+};
+
+template<class ScalarAt>
+G1 masked_provider_commit(const zkgpt::NativeVector<G1> &generators, std::uint64_t count, ScalarAt scalar_at, std::uint64_t generator_offset = 0) {
+    if (count == 0 || generator_offset > generators.size() || count > generators.size() - generator_offset)
+        throw std::invalid_argument("masked provider commitment length is invalid");
+    constexpr std::uint64_t chunk_limit = 1ULL << 16;
+    const std::size_t chunk_size = static_cast<std::size_t>(
+        std::min(count, chunk_limit));
+    zkgpt::NativeFieldVector scalars(chunk_size);
+    G1 result;
+    result.clear();
+    for (std::uint64_t offset = 0; offset < count; offset += chunk_limit) {
+        const std::uint64_t actual = std::min(chunk_limit, count - offset);
+        for (std::uint64_t index = 0; index < actual; ++index)
+            scalars[static_cast<std::size_t>(index)] = scalar_at(offset + index);
+        result += perdersen_commit(const_cast<G1 *>(generators.data() + static_cast<std::size_t>(generator_offset + offset)), scalars.data(), static_cast<int>(actual));
+    }
+    return result;
+}
+
+PreparedMaskedView prepare_masked_view(const HyraxMleBasisView &view) {
+    validate_masked_view(view);
+    const std::size_t active = static_cast<std::size_t>(view.active_domain);
+    PreparedMaskedView prepared{zkgpt::NativeVector<G1>(active),
+                                zkgpt::NativeFieldVector(active), {}};
+    zkgpt::native_storage::native_for_each_equality_weight(view.point, active, [&prepared](std::size_t index, const Fr &coefficient) { prepared.coefficients[index] = coefficient; });
+    zkgpt::NativeStreamingDigest digest("zkgpt-hyrax-masked-canonical-generator-set-v2");
+    digest.u64(view.full_domain);
+    digest.u64(view.logical_length);
+    digest.u64(view.active_domain);
+    digest.u64(static_cast<std::uint64_t>(view.generators.scheme));
+    digest.string(view.role);
+    digest.string(view.basis_id);
+    digest.string(view.generators.canonical_id);
+    for (std::uint64_t index = 0; index < view.active_domain; ++index) {
+        G1 generator = view.generators.at(index);
+        if (!valid_point(generator, true))
+            throw std::invalid_argument("masked Hyrax canonical generator is invalid");
+        prepared.generators[static_cast<std::size_t>(index)] = generator;
+        if (view.generators.scheme == HyraxGeneratorProviderScheme::OpaqueProvider) {
+            digest.u64(index);
+            digest.string(generator.serializeToHexStr());
+        }
+    }
+    prepared.generator_set_digest = digest.finish();
+    return prepared;
+}
+
+std::string masked_view_payload(const char *marker, const HyraxMleBasisView &view,
+                                const std::string &generator_set_digest,
+                                const G1 *commitment, const G1 *H, const G1 *J,
+                                const G1 *Q) {
+    std::ostringstream payload;
+    payload << marker;
+    payload << '|' << static_cast<std::uint64_t>(view.generators.scheme);
+    if (commitment != nullptr && H != nullptr && J != nullptr)
+        payload << '|' << point_encoding(*commitment) << '|' << point_encoding(*H)
+                << '|' << point_encoding(*J);
+    if (Q != nullptr) payload << '|' << point_encoding(*Q);
+    payload << '|' << view.basis_id << '|' << view.role << '|'
+            << view.generators.canonical_id << '|' << view.full_domain << '|'
+            << view.logical_length << '|' << view.active_domain << '|'
+            << view.point.size();
+    for (const Fr &coordinate : view.point)
+        payload << '|' << coordinate.getStr(16);
+    payload << '|' << generator_set_digest;
+    return payload.str();
+}
+
+void bullet_reduce_masked_response(
+    G1 gamma, zkgpt::NativeVector<G1> &generators,
+    zkgpt::NativeFieldVector &basis, zkgpt::NativeFieldVector &response,
+    const G1 &evaluation_base, Fr evaluation, NativeProofSession &session,
+    const std::string &label) {
+    std::size_t size = response.size();
+    std::size_t round = 0;
+    while (size > 1) {
+        const std::size_t half = size / 2;
+        Fr cross_left(0), cross_right(0);
+        for (std::size_t index = 0; index < half; ++index) {
+            cross_left += response[index] * basis[index + half];
+            cross_right += response[index + half] * basis[index];
+        }
+        const G1 gamma_minus1 = evaluation_base * cross_left + masked_provider_commit(generators, half, [&response](std::uint64_t index) { return response[static_cast<std::size_t>(index)]; }, half);
+        const G1 gamma_1 = evaluation_base * cross_right +
+            masked_provider_commit(generators, half,
+                [&response, half](std::uint64_t index) {
+                    return response[static_cast<std::size_t>(half + index)];
+                });
+        absorb_fold(session, label + "/fold/" + std::to_string(round),
+                    gamma_minus1, gamma_1, cross_left, cross_right);
+        const Fr challenge = session.challenge(label + "/c/" + std::to_string(round));
+        if (challenge.isZero())
+            throw std::runtime_error("masked response IPA challenge is zero");
+        Fr inverse;
+        Fr::inv(inverse, challenge);
+        gamma = gamma_minus1 * challenge * challenge +
+                gamma_1 * inverse * inverse + gamma;
+        evaluation = challenge * challenge * cross_left +
+                     inverse * inverse * cross_right + evaluation;
+        for (std::size_t index = 0; index < half; ++index) {
+            basis[index] = basis[index] * inverse + basis[index + half] * challenge;
+            generators[index] = generators[index] * inverse +
+                                generators[index + half] * challenge;
+            response[index] = challenge * response[index] +
+                              inverse * response[index + half];
+        }
+        size = half;
+        ++round;
+    }
+    if (size != 1 || evaluation != response[0] * basis[0] ||
+        gamma != generators[0] * response[0] + evaluation_base * evaluation)
+        throw std::runtime_error("masked response IPA terminal relation failed");
+    std::ostringstream terminal;
+    terminal << point_encoding(gamma) << '|' << point_encoding(generators[0])
+             << '|' << basis[0].getStr(16) << '|' << response[0].getStr(16)
+             << '|' << evaluation.getStr(16);
+    session.absorb(label + "/terminal", terminal.str());
+}
+
+bool verify_masked_response_ipa(
+    G1 initial_gamma, zkgpt::NativeVector<G1> &generators,
+    zkgpt::NativeFieldVector &basis,
+    const G1 &evaluation_base, const NativeProofSession &session,
+    std::size_t &cursor, const std::string &label, std::string *reason) {
+    std::size_t size = generators.size();
+    std::size_t round_count = 0;
+    for (std::size_t count = size; count > 1; count >>= 1) ++round_count;
+    G1 gamma = initial_gamma;
+    for (std::size_t round = 0; round < round_count; ++round) {
+        const NativeProofMessage *fold = consume_masked_message(
+            session, cursor, NativeProofMessageKind::Data,
+            label + "/fold/" + std::to_string(round), reason);
+        const NativeProofMessage *challenge_message = consume_masked_message(
+            session, cursor, NativeProofMessageKind::Challenge,
+            "challenge/" + label + "/c/" + std::to_string(round), reason);
+        if (fold == nullptr || challenge_message == nullptr) return false;
+        std::vector<std::string> parts;
+        G1 gamma_minus1, gamma_1;
+        Fr challenge;
+        if (!split_open_payload(fold->payload, 2, parts) ||
+            !decode_open_point(parts[0], gamma_minus1) ||
+            !decode_open_point(parts[1], gamma_1) ||
+            !decode_open_field(challenge_message->payload, challenge) ||
+            challenge.isZero()) {
+            set_open_reason(reason, "malformed masked response IPA fold");
+            return false;
+        }
+        Fr inverse;
+        Fr::inv(inverse, challenge);
+        gamma = gamma_minus1 * challenge * challenge +
+                gamma_1 * inverse * inverse + gamma;
+        const std::size_t half = size / 2;
+        for (std::size_t index = 0; index < half; ++index) {
+            basis[index] = basis[index] * inverse + basis[index + half] * challenge;
+            generators[index] = generators[index] * inverse +
+                                generators[index + half] * challenge;
+        }
+        size = half;
+    }
+    const NativeProofMessage *terminal = consume_masked_message(
+        session, cursor, NativeProofMessageKind::Data, label + "/terminal", reason);
+    if (terminal == nullptr) return false;
+    std::vector<std::string> terminal_parts;
+    G1 terminal_gamma, terminal_generator;
+    Fr terminal_basis, terminal_response, terminal_evaluation;
+    if (!split_open_payload(terminal->payload, 5, terminal_parts) ||
+        !decode_open_point(terminal_parts[0], terminal_gamma) ||
+        !decode_open_point(terminal_parts[1], terminal_generator) ||
+        !decode_open_field(terminal_parts[2], terminal_basis) ||
+        !decode_open_field(terminal_parts[3], terminal_response) ||
+        !decode_open_field(terminal_parts[4], terminal_evaluation) ||
+        size != 1 || terminal_gamma != gamma ||
+        terminal_generator != generators[0] || terminal_basis != basis[0] ||
+        terminal_evaluation != terminal_response * terminal_basis ||
+        terminal_gamma != terminal_generator * terminal_response +
+                              evaluation_base * terminal_evaluation) {
+        set_open_reason(reason, "masked response IPA terminal relation failed");
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+Fr hyrax_mle_basis_at(const HyraxMleBasisView &view,
+                      std::uint64_t canonical_index) {
+    validate_masked_view(view);
+    if (canonical_index >= view.active_domain)
+        throw std::out_of_range("masked Hyrax active coordinate is out of range");
+    return mle_coefficient_at(view.point, canonical_index);
+}
+
+std::string hyrax_generator_set_digest(const HyraxMleBasisView &view) {
+    validate_masked_view(view);
+    zkgpt::NativeStreamingDigest digest("zkgpt-hyrax-masked-canonical-generator-set-v2");
+    digest.u64(view.full_domain);
+    digest.u64(view.logical_length);
+    digest.u64(view.active_domain);
+    digest.u64(static_cast<std::uint64_t>(view.generators.scheme));
+    digest.string(view.role);
+    digest.string(view.basis_id);
+    digest.string(view.generators.canonical_id);
+    if (view.generators.scheme == HyraxGeneratorProviderScheme::OpaqueProvider) {
+        for (std::uint64_t index = 0; index < view.active_domain; ++index) {
+            const G1 generator = view.generators.at(index);
+            if (!valid_point(generator, true))
+                throw std::invalid_argument("masked Hyrax opaque generator is invalid");
+            digest.u64(index);
+            digest.string(generator.serializeToHexStr());
+        }
+    }
+    return digest.finish();
+}
+
+template<class Values> bool make_mle_evaluation_opening_impl(
     const zkgpt::native_pedersen::PedersenBasis &scalar_basis,
-    const std::vector<Fr> &point, const std::vector<Fr> &values,
+    const std::vector<Fr> &point, const Values &values,
     zkgpt::native_pedersen::ScalarOpening &opening, std::string *reason) {
     try {
         if (!scalar_basis.valid(reason) || values.empty() ||
-            !power_of_two_size(values.size()) || point.empty() ||
+            !power_of_two_size(values.size()) ||
             point.size() >= sizeof(std::size_t) * 8 ||
             values.size() != (std::size_t(1) << point.size()))
             throw std::invalid_argument("MLE scalar evaluation dimensions are invalid");
@@ -1097,8 +1358,11 @@ bool make_mle_evaluation_opening(
     }
 }
 
-PedersenMleCommitment pedersen_commit_mle(
-    const std::vector<G1> &generators, const std::vector<Fr> &values,
+bool make_mle_evaluation_opening(const zkgpt::native_pedersen::PedersenBasis& basis, const std::vector<Fr>& point, const std::vector<Fr>& values, zkgpt::native_pedersen::ScalarOpening& opening, std::string* reason) { return make_mle_evaluation_opening_impl(basis, point, values, opening, reason); }
+bool make_mle_evaluation_opening(const zkgpt::native_pedersen::PedersenBasis& basis, const std::vector<Fr>& point, const zkgpt::NativeFieldVector& values, zkgpt::native_pedersen::ScalarOpening& opening, std::string* reason) { return make_mle_evaluation_opening_impl(basis, point, values, opening, reason); }
+
+template<class Values> PedersenMleCommitment pedersen_commit_mle_impl(
+    const std::vector<G1> &generators, const Values &values,
     const std::string &basis_id) {
     if (generators.empty() || generators.size() != values.size() ||
         !power_of_two_size(values.size()) || values.size() >
@@ -1121,10 +1385,35 @@ PedersenMleCommitment pedersen_commit_mle(
     return result;
 }
 
-static bool open_masked_mle_impl(
-    const PedersenMleCommitment &commitment,
-    const std::vector<G1> &generators, const std::vector<Fr> &point,
-    const std::vector<Fr> &values, const Fr *forced_masked_evaluation,
+PedersenMleCommitment pedersen_commit_mle(const std::vector<G1>& generators, const std::vector<Fr>& values, const std::string& basis_id) { return pedersen_commit_mle_impl(generators, values, basis_id); }
+PedersenMleCommitment pedersen_commit_mle(const std::vector<G1>& generators, const zkgpt::NativeFieldVector& values, const std::string& basis_id) { return pedersen_commit_mle_impl(generators, values, basis_id); }
+
+PedersenMleCommitment pedersen_commit_mle(const HyraxMleBasisView &view,
+                                         const HyraxScalarProvider &values) {
+    PreparedMaskedView prepared = prepare_masked_view(view);
+    if (!values.at || values.size != view.full_domain)
+        throw std::invalid_argument("provider Pedersen MLE values are invalid");
+    const G1 H = derive_pedersen_blinding_generator(view.basis_id);
+    Fr rho;
+    rho.setByCSPRNG();
+    PedersenMleCommitment result;
+    result.commitment = masked_provider_commit(
+        prepared.generators, view.active_domain,
+        [&values, &view](std::uint64_t index) {
+            const Fr value = values.at(index);
+            if (index >= view.logical_length && !value.isZero())
+                throw std::invalid_argument("provider Pedersen MLE public zero extension is nonzero");
+            return value;
+        }) + H * rho;
+    result.blinding_generator = H;
+    result.blinding = rho;
+    result.basis_id = view.basis_id;
+    return result;
+}
+
+static bool open_masked_mle_provider_impl(
+    const PedersenMleCommitment &commitment, const HyraxMleBasisView &view,
+    const HyraxScalarProvider &values, const Fr *forced_masked_evaluation,
     NativeProofSession &session, const std::string &label,
     MaskedMleOpening &opening, std::string *reason,
     bool enforce_statement_basis, const std::string &mask_identity,
@@ -1133,59 +1422,56 @@ static bool open_masked_mle_impl(
     const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
     const std::size_t checkpoint = session.checkpoint();
     try {
-        if (label.empty() || values.empty() || values.size() != generators.size() ||
-            !power_of_two_size(values.size()) || values.size() < 2 ||
-            point.empty() || point.size() >= sizeof(std::size_t) * 8 ||
-            (std::size_t(1) << point.size()) != values.size())
-            throw std::invalid_argument("masked Hyrax MLE dimensions are invalid");
-        if (commitment.basis_id.empty() || commitment.basis_id.size() > 128 ||
+        validate_masked_view(view);
+        if (label.empty() || commitment.basis_id != view.basis_id ||
+            !values.at || values.size != view.full_domain ||
             !valid_point(commitment.blinding_generator, true) ||
-            commitment.blinding_generator !=
-                derive_pedersen_blinding_generator(commitment.basis_id))
-            throw std::invalid_argument("masked Hyrax commitment blinding identity is invalid");
-        for (const G1 &generator : generators)
-            if (!valid_point(generator, true))
-                throw std::invalid_argument("masked Hyrax commitment basis is invalid");
-        const std::vector<Fr> basis = mle_basis_from_point(point);
-        if (basis.size() != values.size())
-            throw std::invalid_argument("masked Hyrax MLE basis size mismatch");
+            commitment.blinding_generator != derive_pedersen_blinding_generator(view.basis_id))
+            throw std::invalid_argument("masked Hyrax provider opening dimensions are invalid");
         if (enforce_statement_basis &&
-            session.statement().basis_digest != NativeProofStatement::basis_digest_for(
-                commitment.blinding_generator, generators, basis, values.size()))
-            throw std::invalid_argument("masked Hyrax statement basis mismatch");
-        opening = MaskedMleOpening{};
+            view.generators.canonical_id != session.statement().basis_digest)
+            throw std::invalid_argument("masked Hyrax provider identity does not match the statement");
 
-        const G1 expected_commitment =
-            perdersen_commit(const_cast<G1 *>(generators.data()),
-                             const_cast<Fr *>(values.data()),
-                             static_cast<int>(values.size())) +
-            commitment.blinding_generator * commitment.blinding;
-        if (expected_commitment != commitment.commitment)
-            throw std::invalid_argument("masked Hyrax commitment does not bind the witness");
-
+        PreparedMaskedView prepared = prepare_masked_view(view);
+        const G1 H = commitment.blinding_generator;
         const G1 J = mask_identity.empty()
-            ? derive_pedersen_evaluation_generator(commitment.basis_id, label)
+            ? derive_pedersen_evaluation_generator(view.basis_id, label)
             : derive_shared_pedersen_evaluation_generator(mask_identity);
-        if (J == commitment.blinding_generator)
-            throw std::invalid_argument("masked Hyrax evaluation generator is not independent");
-        for (const G1 &generator : generators)
-            if (generator == commitment.blinding_generator || generator == J)
-                throw std::invalid_argument("masked Hyrax generators are not domain separated");
+        const G1 Q = derive_masked_response_ipa_base(view.basis_id);
+        if (J == H || Q == H || Q == J)
+            throw std::invalid_argument("masked Hyrax auxiliary generators are not independent");
+        if (scalar_basis != nullptr && (!scalar_basis->valid() || Q == scalar_basis->G || Q == scalar_basis->H))
+            throw std::invalid_argument("masked response IPA base overlaps the scalar binding basis");
+        for (const G1 &generator : prepared.generators)
+            if (generator == H || generator == J || generator == Q)
+                throw std::invalid_argument("masked Hyrax generator domain separation failed");
+
+        const std::size_t active = static_cast<std::size_t>(view.active_domain);
+        const G1 expected_commitment = masked_provider_commit(
+            prepared.generators, view.active_domain,
+            [&values, &view](std::uint64_t index) {
+                const Fr value = values.at(index);
+                if (index >= view.logical_length && !value.isZero())
+                    throw std::invalid_argument("masked Hyrax public zero extension is nonzero");
+                return value;
+            }) + H * commitment.blinding;
+        if (expected_commitment != commitment.commitment)
+            throw std::invalid_argument("masked Hyrax commitment does not bind the active witness");
+
         Fr raw_evaluation(0);
-        for (std::size_t index = 0; index < values.size(); ++index)
-            raw_evaluation += basis[index] * values[index];
+        for (std::size_t index = 0; index < active; ++index)
+            raw_evaluation += prepared.coefficients[index] * values.at(index);
         Fr mu;
-        if (forced_masked_evaluation != nullptr) {
+        if (forced_masked_evaluation != nullptr)
             mu = *forced_masked_evaluation - raw_evaluation;
-        } else {
+        else
             mu.setByCSPRNG();
-        }
+        opening = MaskedMleOpening{};
         opening.evaluation_mask_commitment = J * mu;
         opening.masked_evaluation = raw_evaluation + mu;
-        if (scalar_basis == nullptr && forced_masked_opening != nullptr)
+        if (scalar_basis == nullptr &&
+            (forced_masked_opening != nullptr || forced_raw_opening != nullptr))
             throw std::invalid_argument("masked scalar opening requires a scalar basis");
-        if (scalar_basis == nullptr && forced_raw_opening != nullptr)
-            throw std::invalid_argument("raw scalar opening requires a scalar basis");
         if (scalar_basis != nullptr) {
             if (!scalar_basis->valid())
                 throw std::invalid_argument("masked scalar binding basis is invalid");
@@ -1194,8 +1480,7 @@ static bool open_masked_mle_impl(
             if (forced_raw_opening != nullptr) {
                 if (!forced_raw_opening->valid(*scalar_basis) ||
                     forced_raw_opening->value != raw_evaluation)
-                    throw std::invalid_argument(
-                        label + ": forced raw scalar opening does not match the MLE evaluation");
+                    throw std::invalid_argument("forced raw scalar opening does not match the MLE evaluation");
                 opening.raw_evaluation_opening = *forced_raw_opening;
             } else {
                 opening.raw_evaluation_opening =
@@ -1204,88 +1489,197 @@ static bool open_masked_mle_impl(
             if (forced_masked_opening != nullptr) {
                 if (!forced_masked_opening->valid(*scalar_basis) ||
                     forced_masked_opening->value != opening.masked_evaluation)
-                    throw std::invalid_argument(
-                        "forced masked scalar opening does not match the claim");
+                    throw std::invalid_argument("forced masked scalar opening does not match the claim");
                 opening.masked_evaluation_opening = *forced_masked_opening;
             } else {
                 opening.masked_evaluation_opening =
-                    zkgpt::native_pedersen::commit_fresh(
-                        *scalar_basis, opening.masked_evaluation);
+                    zkgpt::native_pedersen::commit_fresh(*scalar_basis, opening.masked_evaluation);
             }
-        } else {
-            opening.has_scalar_binding = false;
         }
 
-        std::vector<Fr> random_vector(values.size());
-        for (Fr &value : random_vector) value.setByCSPRNG();
-        Fr random_rho;
-        Fr random_mu;
+        zkgpt::NativeFieldVector random_response(active);
+        for (Fr &value : random_response) value.setByCSPRNG();
+        Fr random_rho, random_mu;
         random_rho.setByCSPRNG();
         random_mu.setByCSPRNG();
-        const G1 announce_commitment =
-            perdersen_commit(const_cast<G1 *>(generators.data()),
-                             random_vector.data(),
-                             static_cast<int>(random_vector.size())) +
-            commitment.blinding_generator * random_rho;
+        const G1 announce_commitment = masked_provider_commit(
+            prepared.generators, view.active_domain,
+            [&random_response](std::uint64_t index) {
+                return random_response[static_cast<std::size_t>(index)];
+            }) + H * random_rho;
         const G1 announce_mask = J * random_mu;
         Fr announce_eval = random_mu;
-        for (std::size_t index = 0; index < values.size(); ++index)
-            announce_eval += basis[index] * random_vector[index];
-        G1 raw_announce;
-        G1 masked_announce;
-        Fr random_raw_blinding;
-        Fr random_masked_blinding;
+        for (std::size_t index = 0; index < active; ++index)
+            announce_eval += prepared.coefficients[index] * random_response[index];
+        G1 raw_announce, masked_announce;
+        Fr random_raw_blinding, random_masked_blinding;
         if (opening.has_scalar_binding) {
-            Fr random_raw_eval = F_ZERO;
-            for (std::size_t index = 0; index < values.size(); ++index)
-                random_raw_eval += basis[index] * random_vector[index];
+            const auto &sb = opening.scalar_basis;
             random_raw_blinding.setByCSPRNG();
             random_masked_blinding.setByCSPRNG();
-            const auto &sb = opening.scalar_basis;
-            raw_announce = sb.G * random_raw_eval + sb.H * random_raw_blinding;
-            masked_announce = sb.G * (random_raw_eval + random_mu) +
-                              sb.H * random_masked_blinding;
+            raw_announce = sb.G * (announce_eval - random_mu) +
+                           sb.H * random_raw_blinding;
+            masked_announce = sb.G * announce_eval + sb.H * random_masked_blinding;
         }
 
         session.absorb(label + "/basis",
-                       masked_basis_payload(commitment.commitment,
-                                            commitment.blinding_generator, J,
-                                            commitment.basis_id, generators, basis));
+                       masked_view_payload("zkgpt-hyrax-masked-response-ipa-v2",
+                                           view, prepared.generator_set_digest,
+                                           &commitment.commitment, &H, &J, nullptr));
         session.absorb(label + "/claim",
                        masked_claim_payload(opening.evaluation_mask_commitment,
                                             opening.masked_evaluation,
                                             opening.has_scalar_binding
-                                                ? &opening.raw_evaluation_opening
-                                                : nullptr,
+                                                ? &opening.raw_evaluation_opening : nullptr,
                                             opening.has_scalar_binding
-                                                ? &opening.masked_evaluation_opening
-                                                : nullptr));
+                                                ? &opening.masked_evaluation_opening : nullptr));
         session.absorb(label + "/announce",
                        masked_announce_payload(announce_commitment, announce_mask,
                                                announce_eval,
-                                               opening.has_scalar_binding
-                                                   ? &raw_announce : nullptr,
-                                               opening.has_scalar_binding
-                                                   ? &masked_announce : nullptr));
+                                               opening.has_scalar_binding ? &raw_announce : nullptr,
+                                               opening.has_scalar_binding ? &masked_announce : nullptr));
         const Fr challenge = session.challenge(label + "/c");
-        std::vector<Fr> response(values.size() +
-                                 (opening.has_scalar_binding ? 4 : 2));
-        for (std::size_t index = 0; index < values.size(); ++index)
-            response[index] = random_vector[index] + challenge * values[index];
-        response[values.size()] = random_rho + challenge * commitment.blinding;
-        response[values.size() + 1] = random_mu + challenge * mu;
+        if (challenge.isZero())
+            throw std::runtime_error("masked Hyrax outer challenge is zero");
+        const Fr response_rho = random_rho + challenge * commitment.blinding;
+        const Fr response_mu = random_mu + challenge * mu;
+        for (std::size_t index = 0; index < active; ++index)
+            random_response[index] += challenge * values.at(index);
+        std::vector<Fr> scalar_response;
+        scalar_response.reserve(opening.has_scalar_binding ? 4 : 2);
+        scalar_response.push_back(response_rho);
+        scalar_response.push_back(response_mu);
         if (opening.has_scalar_binding) {
-            response[values.size() + 2] =
-                random_raw_blinding + challenge *
-                    opening.raw_evaluation_opening.blinding;
-            response[values.size() + 3] =
-                random_masked_blinding + challenge *
-                    opening.masked_evaluation_opening.blinding;
+            scalar_response.push_back(random_raw_blinding + challenge *
+                                      opening.raw_evaluation_opening.blinding);
+            scalar_response.push_back(random_masked_blinding + challenge *
+                                      opening.masked_evaluation_opening.blinding);
         }
-        session.absorb_fields(label + "/response", response);
+        session.absorb_fields(label + "/response", scalar_response);
+
+        const G1 response_commitment = announce_commitment + commitment.commitment * challenge;
+        const G1 D = response_commitment - H * response_rho;
+        const Fr response_evaluation = announce_eval +
+            opening.masked_evaluation * challenge - response_mu;
+        session.absorb(label + "/response-ipa/basis_ref",
+                       masked_view_payload("zkgpt-hyrax-known-basis-ipa-v2",
+                                           view, prepared.generator_set_digest,
+                                           nullptr, nullptr, nullptr, &Q));
+        session.absorb(label + "/response-ipa/evaluation",
+                       point_encoding(D) + "|" + response_evaluation.getStr(16));
+        const Fr randomizer = session.challenge(
+            label + "/response-ipa/evaluation-base");
+        if (randomizer.isZero())
+            throw std::runtime_error("masked response IPA evaluation-base challenge is zero");
+        const G1 U = Q * randomizer;
+        if (!valid_point(U, true) || U == H || U == J)
+            throw std::runtime_error("masked response IPA randomized base is invalid");
+        if (scalar_basis != nullptr && (U == scalar_basis->G || U == scalar_basis->H))
+            throw std::runtime_error("masked response IPA randomized base overlaps the scalar binding basis");
+        for (const G1 &generator : prepared.generators)
+            if (generator == U)
+                throw std::runtime_error("masked response IPA base collides with a canonical generator");
+        bullet_reduce_masked_response(
+            D + U * response_evaluation, prepared.generators,
+            prepared.coefficients, random_response, U, response_evaluation,
+            session, label + "/response-ipa");
         return true;
     } catch (const std::exception &error) {
         session.rollback(checkpoint);
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
+}
+
+bool open_masked_mle_with_session(
+    const PedersenMleCommitment &commitment, const HyraxMleBasisView &view,
+    const HyraxScalarProvider &values, NativeProofSession &session,
+    const std::string &label, MaskedMleOpening &opening, std::string *reason,
+    bool enforce_statement_basis, const std::string &mask_identity,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
+    const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening,
+    const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
+    return open_masked_mle_provider_impl(commitment, view, values, nullptr,
+                                         session, label, opening, reason,
+                                         enforce_statement_basis, mask_identity,
+                                         scalar_basis, forced_masked_opening,
+                                         forced_raw_opening);
+}
+
+bool open_masked_mle_with_claim(
+    const PedersenMleCommitment &commitment, const HyraxMleBasisView &view,
+    const HyraxScalarProvider &values, const Fr &masked_evaluation,
+    NativeProofSession &session, const std::string &label,
+    MaskedMleOpening &opening, std::string *reason,
+    bool enforce_statement_basis, const std::string &mask_identity,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
+    const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening,
+    const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
+    return open_masked_mle_provider_impl(commitment, view, values,
+                                         &masked_evaluation, session, label,
+                                         opening, reason, enforce_statement_basis,
+                                         mask_identity, scalar_basis,
+                                         forced_masked_opening, forced_raw_opening);
+}
+
+template<class Values>
+HyraxMleBasisView legacy_masked_view(const std::vector<G1> &generators,
+                                    const std::vector<Fr> &point,
+                                    const Values &values,
+                                    const PedersenMleCommitment &commitment,
+                                    NativeProofSession &session) {
+    HyraxMleBasisView view;
+    view.full_domain = generators.size();
+    view.logical_length = values.size();
+    view.active_domain = view.full_domain;
+    view.role = "legacy-masked-mle";
+    view.basis_id = commitment.basis_id;
+    view.point = point;
+    view.generators.size = generators.size();
+    view.generators.canonical_id = session.statement().basis_digest;
+    view.generators.at = [&generators](std::uint64_t index) {
+        return generators.at(static_cast<std::size_t>(index));
+    };
+    return view;
+}
+
+template<class Values>
+HyraxScalarProvider legacy_masked_values(const Values &values) {
+    HyraxScalarProvider provider;
+    provider.size = values.size();
+    provider.at = [&values](std::uint64_t index) {
+        return values.at(static_cast<std::size_t>(index));
+    };
+    return provider;
+}
+
+template<class Values>
+bool legacy_open_masked_mle(
+    const PedersenMleCommitment &commitment, const std::vector<G1> &generators,
+    const std::vector<Fr> &point, const Values &values,
+    const Fr *forced_masked_evaluation, NativeProofSession &session,
+    const std::string &label, MaskedMleOpening &opening, std::string *reason,
+    bool enforce_statement_basis, const std::string &mask_identity,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
+    const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening,
+    const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
+    try {
+        if (generators.empty() || values.size() != generators.size() ||
+            !power_of_two_size(values.size()) ||
+            point.size() >= sizeof(std::size_t) * 8 ||
+            (std::size_t(1) << point.size()) != values.size())
+            throw std::invalid_argument("masked Hyrax MLE dimensions are invalid");
+        const std::vector<Fr> basis = mle_basis_from_point(point);
+        if (enforce_statement_basis &&
+            session.statement().basis_digest != NativeProofStatement::basis_digest_for(
+                commitment.blinding_generator, generators, basis, values.size()))
+            throw std::invalid_argument("masked Hyrax statement basis mismatch");
+        return open_masked_mle_provider_impl(
+            commitment, legacy_masked_view(generators, point, values, commitment, session),
+            legacy_masked_values(values), forced_masked_evaluation, session,
+            label, opening, reason, enforce_statement_basis, mask_identity,
+            scalar_basis, forced_masked_opening, forced_raw_opening);
+    } catch (const std::exception &error) {
         if (reason != nullptr) *reason = error.what();
         return false;
     }
@@ -1300,11 +1694,27 @@ bool open_masked_mle_with_session(
     const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
     const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening,
     const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
-    return open_masked_mle_impl(commitment, generators, point, values, nullptr,
-                                session, label, opening, reason,
-                                enforce_statement_basis, mask_identity,
-                                scalar_basis, forced_masked_opening,
-                                forced_raw_opening);
+    return legacy_open_masked_mle(commitment, generators, point, values,
+                                  nullptr, session, label, opening, reason,
+                                  enforce_statement_basis, mask_identity,
+                                  scalar_basis, forced_masked_opening,
+                                  forced_raw_opening);
+}
+
+bool open_masked_mle_with_session(
+    const PedersenMleCommitment &commitment,
+    const std::vector<G1> &generators, const std::vector<Fr> &point,
+    const zkgpt::NativeFieldVector &values, NativeProofSession &session,
+    const std::string &label, MaskedMleOpening &opening, std::string *reason,
+    bool enforce_statement_basis, const std::string &mask_identity,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
+    const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening,
+    const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
+    return legacy_open_masked_mle(commitment, generators, point, values,
+                                  nullptr, session, label, opening, reason,
+                                  enforce_statement_basis, mask_identity,
+                                  scalar_basis, forced_masked_opening,
+                                  forced_raw_opening);
 }
 
 bool open_masked_mle_with_claim(
@@ -1317,17 +1727,33 @@ bool open_masked_mle_with_claim(
     const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
     const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening,
     const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
-    return open_masked_mle_impl(commitment, generators, point, values,
-                                &masked_evaluation, session, label, opening,
-                                reason, enforce_statement_basis, mask_identity,
-                                scalar_basis, forced_masked_opening,
-                                forced_raw_opening);
+    return legacy_open_masked_mle(commitment, generators, point, values,
+                                  &masked_evaluation, session, label, opening,
+                                  reason, enforce_statement_basis, mask_identity,
+                                  scalar_basis, forced_masked_opening,
+                                  forced_raw_opening);
+}
+
+bool open_masked_mle_with_claim(
+    const PedersenMleCommitment &commitment,
+    const std::vector<G1> &generators, const std::vector<Fr> &point,
+    const zkgpt::NativeFieldVector &values, const Fr &masked_evaluation,
+    NativeProofSession &session, const std::string &label,
+    MaskedMleOpening &opening, std::string *reason,
+    bool enforce_statement_basis, const std::string &mask_identity,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
+    const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening,
+    const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
+    return legacy_open_masked_mle(commitment, generators, point, values,
+                                  &masked_evaluation, session, label, opening,
+                                  reason, enforce_statement_basis, mask_identity,
+                                  scalar_basis, forced_masked_opening,
+                                  forced_raw_opening);
 }
 
 bool verify_masked_mle_opening_with_session(
     const G1 &commitment, const G1 &evaluation_mask_commitment,
-    const Fr &masked_evaluation, const std::string &basis_id,
-    const std::vector<G1> &generators, const std::vector<Fr> &point,
+    const Fr &masked_evaluation, const HyraxMleBasisView &view,
     const NativeProofSession &session, const std::string &label,
     std::string *reason, bool enforce_statement_basis,
     bool allow_trailing_unrelated, const std::string &mask_identity,
@@ -1344,29 +1770,27 @@ bool verify_masked_mle_opening_with_session(
              !expected_raw_evaluation_commitment->valid(*scalar_basis, reason) ||
              !expected_masked_evaluation_commitment->valid(*scalar_basis, reason)))
             throw std::invalid_argument("masked scalar binding commitment is invalid");
-        if (label.empty() || basis_id.empty() || point.empty() ||
-            point.size() >= sizeof(std::size_t) * 8 || generators.empty() ||
-            generators.size() != (std::size_t(1) << point.size()) ||
-            !power_of_two_size(generators.size()) || generators.size() < 2)
-            throw std::invalid_argument("masked Hyrax verifier dimensions are invalid");
-        const std::vector<Fr> basis = mle_basis_from_point(point);
-        if (basis.size() != generators.size())
-            throw std::invalid_argument("masked Hyrax verifier basis size mismatch");
-        const G1 H = derive_pedersen_blinding_generator(basis_id);
+        validate_masked_view(view);
+        if (label.empty() || !valid_point(commitment, false) ||
+            !valid_point(evaluation_mask_commitment, false) ||
+            (enforce_statement_basis &&
+             view.generators.canonical_id != session.statement().basis_digest))
+            throw std::invalid_argument("masked Hyrax verifier context is invalid");
+
+        PreparedMaskedView prepared = prepare_masked_view(view);
+        const G1 H = derive_pedersen_blinding_generator(view.basis_id);
         const G1 J = mask_identity.empty()
-            ? derive_pedersen_evaluation_generator(basis_id, label)
+            ? derive_pedersen_evaluation_generator(view.basis_id, label)
             : derive_shared_pedersen_evaluation_generator(mask_identity);
-        if (!valid_point(commitment, false) || !valid_point(evaluation_mask_commitment, false) ||
-            !valid_point(H, true) || !valid_point(J, true) || H == J)
-            throw std::invalid_argument("masked Hyrax verifier point is invalid");
-        for (const G1 &generator : generators) {
-            if (!valid_point(generator, true) || generator == H || generator == J)
-                throw std::invalid_argument("masked Hyrax verifier basis is not domain separated");
-        }
-        if (enforce_statement_basis &&
-            session.statement().basis_digest != NativeProofStatement::basis_digest_for(
-                H, generators, basis, generators.size()))
-            throw std::invalid_argument("masked Hyrax verifier statement basis mismatch");
+        const G1 Q = derive_masked_response_ipa_base(view.basis_id);
+        if (!valid_point(H, true) || !valid_point(J, true) ||
+            !valid_point(Q, true) || H == J || H == Q || J == Q)
+            throw std::invalid_argument("masked Hyrax auxiliary basis is invalid");
+        if (scalar_binding && (Q == scalar_basis->G || Q == scalar_basis->H))
+            throw std::invalid_argument("masked response IPA base overlaps the scalar binding basis");
+        for (const G1 &generator : prepared.generators)
+            if (generator == H || generator == J || generator == Q)
+                throw std::invalid_argument("masked Hyrax basis is not domain separated");
         if (!session.replay(reason)) return false;
 
         const std::vector<std::size_t> *basis_positions =
@@ -1384,34 +1808,26 @@ bool verify_masked_mle_opening_with_session(
             set_open_reason(reason, "masked Hyrax basis message index is out of range");
             return false;
         }
+        const std::string opening_prefix = label + "/";
+        const std::string challenge_prefix = "challenge/" + label + "/";
+        for (std::size_t index = 0; index < position; ++index) {
+            const std::string &message_label = session.messages()[index].label;
+            if (has_prefix(message_label, opening_prefix) ||
+                has_prefix(message_label, challenge_prefix)) {
+                set_open_reason(reason, "masked Hyrax opening has a non-adjacent prelude");
+                return false;
+            }
+        }
+
         std::size_t cursor = position;
         const NativeProofMessage *basis_message = consume_masked_message(
             session, cursor, NativeProofMessageKind::Data, label + "/basis", reason);
         if (basis_message == nullptr) return false;
-        std::vector<std::string> basis_parts;
-        if (!split_open_payload(basis_message->payload, 5 + 2 * generators.size(),
-                                basis_parts)) {
-            set_open_reason(reason, "malformed masked Hyrax basis message");
+        if (basis_message->payload != masked_view_payload(
+                "zkgpt-hyrax-masked-response-ipa-v2", view,
+                prepared.generator_set_digest, &commitment, &H, &J, nullptr)) {
+            set_open_reason(reason, "masked Hyrax canonical basis header mismatch");
             return false;
-        }
-        G1 encoded_commitment, encoded_H, encoded_J;
-        if (!decode_open_point(basis_parts[0], encoded_commitment) ||
-            !decode_open_point(basis_parts[1], encoded_H) ||
-            !decode_open_point(basis_parts[2], encoded_J) ||
-            encoded_commitment != commitment || encoded_H != H || encoded_J != J ||
-            basis_parts[3] != basis_id || basis_parts[4] != std::to_string(generators.size())) {
-            set_open_reason(reason, "masked Hyrax basis identity mismatch");
-            return false;
-        }
-        for (std::size_t index = 0; index < generators.size(); ++index) {
-            G1 encoded_generator;
-            Fr encoded_basis;
-            if (!decode_open_point(basis_parts[5 + 2 * index], encoded_generator) ||
-                !decode_open_field(basis_parts[6 + 2 * index], encoded_basis) ||
-                encoded_generator != generators[index] || encoded_basis != basis[index]) {
-                set_open_reason(reason, "masked Hyrax basis coordinate mismatch");
-                return false;
-            }
         }
 
         const NativeProofMessage *claim_message = consume_masked_message(
@@ -1467,58 +1883,99 @@ bool verify_masked_mle_opening_with_session(
             set_open_reason(reason, "malformed masked Hyrax scalar announcement");
             return false;
         }
+
         const NativeProofMessage *challenge_message = consume_masked_message(
             session, cursor, NativeProofMessageKind::Challenge,
             "challenge/" + label + "/c", reason);
         if (challenge_message == nullptr) return false;
         Fr challenge;
-        if (!decode_open_field(challenge_message->payload, challenge) || challenge.isZero()) {
-            set_open_reason(reason, "masked Hyrax challenge is invalid");
+        if (!decode_open_field(challenge_message->payload, challenge) ||
+            challenge.isZero()) {
+            set_open_reason(reason, "masked Hyrax outer challenge is invalid");
             return false;
         }
         const NativeProofMessage *response_message = consume_masked_message(
-            session, cursor, NativeProofMessageKind::FieldVector, label + "/response", reason);
+            session, cursor, NativeProofMessageKind::FieldVector,
+            label + "/response", reason);
         if (response_message == nullptr) return false;
         std::vector<Fr> response;
         if (!decode_field_vector_payload(response_message->payload, response) ||
-            response.size() != generators.size() + (scalar_binding ? 4 : 2)) {
-            set_open_reason(reason, "masked Hyrax response vector is invalid");
+            response.size() != (scalar_binding ? 4 : 2)) {
+            set_open_reason(reason, "masked Hyrax scalar response is invalid");
             return false;
         }
-        const Fr &response_rho = response[generators.size()];
-        const Fr &response_mu = response[generators.size() + 1];
-        G1 response_commitment = perdersen_commit(
-            const_cast<G1 *>(generators.data()), response.data(),
-            static_cast<int>(generators.size()));
-        response_commitment += H * response_rho;
-        if (response_commitment != announce_commitment + commitment * challenge) {
-            set_open_reason(reason, "masked Hyrax Pedersen relation failed");
-            return false;
-        }
-        if (J * response_mu != announce_mask + evaluation_mask_commitment * challenge) {
+        const Fr &response_rho = response[0];
+        const Fr &response_mu = response[1];
+        if (J * response_mu !=
+            announce_mask + evaluation_mask_commitment * challenge) {
             set_open_reason(reason, "masked Hyrax evaluation-mask relation failed");
             return false;
         }
-        Fr response_eval = response_mu;
-        for (std::size_t index = 0; index < generators.size(); ++index)
-            response_eval += basis[index] * response[index];
-        if (response_eval != announce_eval + masked_evaluation * challenge) {
-            set_open_reason(reason, "masked Hyrax MLE evaluation relation failed");
+
+        const G1 D = announce_commitment + commitment * challenge - H * response_rho;
+        const Fr response_evaluation =
+            announce_eval + masked_evaluation * challenge - response_mu;
+        const NativeProofMessage *basis_ref_message = consume_masked_message(
+            session, cursor, NativeProofMessageKind::Data,
+            label + "/response-ipa/basis_ref", reason);
+        if (basis_ref_message == nullptr) return false;
+        if (basis_ref_message->payload != masked_view_payload(
+                "zkgpt-hyrax-known-basis-ipa-v2", view,
+                prepared.generator_set_digest, nullptr, nullptr, nullptr, &Q)) {
+            set_open_reason(reason, "masked response IPA basis reference mismatch");
             return false;
         }
+        const NativeProofMessage *evaluation_message = consume_masked_message(
+            session, cursor, NativeProofMessageKind::Data,
+            label + "/response-ipa/evaluation", reason);
+        if (evaluation_message == nullptr) return false;
+        if (evaluation_message->payload !=
+            point_encoding(D) + "|" + response_evaluation.getStr(16)) {
+            set_open_reason(reason, "masked response IPA fixed statement mismatch");
+            return false;
+        }
+        const NativeProofMessage *base_challenge_message = consume_masked_message(
+            session, cursor, NativeProofMessageKind::Challenge,
+            "challenge/" + label + "/response-ipa/evaluation-base", reason);
+        if (base_challenge_message == nullptr) return false;
+        Fr randomizer;
+        if (!decode_open_field(base_challenge_message->payload, randomizer) ||
+            randomizer.isZero()) {
+            set_open_reason(reason, "masked response IPA base challenge is invalid");
+            return false;
+        }
+        const G1 U = Q * randomizer;
+        if (!valid_point(U, true) || U == H || U == J) {
+            set_open_reason(reason, "masked response IPA randomized base is invalid");
+            return false;
+        }
+        if (scalar_binding && (U == scalar_basis->G || U == scalar_basis->H)) {
+            set_open_reason(reason, "masked response IPA randomized base overlaps the scalar binding basis");
+            return false;
+        }
+        for (const G1 &generator : prepared.generators)
+            if (generator == U) {
+                set_open_reason(reason, "masked response IPA base collides with a canonical generator");
+                return false;
+            }
+
+        if (!verify_masked_response_ipa(D + U * response_evaluation,
+                                        prepared.generators,
+                                        prepared.coefficients, U, session,
+                                        cursor, label + "/response-ipa", reason))
+            return false;
+
         if (scalar_binding) {
             const auto &sb = *scalar_basis;
-            const Fr &response_raw_blinding = response[generators.size() + 2];
-            const Fr &response_masked_blinding = response[generators.size() + 3];
-            Fr scalar_response_eval = Fr(0);
-            for (std::size_t index = 0; index < generators.size(); ++index)
-                scalar_response_eval += basis[index] * response[index];
-            if (sb.G * scalar_response_eval + sb.H * response_raw_blinding !=
-                    raw_announce + expected_raw_evaluation_commitment->point * challenge) {
+            const Fr &response_raw_blinding = response[2];
+            const Fr &response_masked_blinding = response[3];
+            if (sb.G * response_evaluation + sb.H * response_raw_blinding !=
+                    raw_announce +
+                        expected_raw_evaluation_commitment->point * challenge) {
                 set_open_reason(reason, "masked Hyrax raw evaluation relation failed");
                 return false;
             }
-            if (sb.G * (scalar_response_eval + response_mu) +
+            if (sb.G * (response_evaluation + response_mu) +
                     sb.H * response_masked_blinding !=
                     masked_announce +
                         expected_masked_evaluation_commitment->point * challenge) {
@@ -1536,6 +1993,591 @@ bool verify_masked_mle_opening_with_session(
         }
         return reject_masked_trailing(session, cursor, label,
                                       allow_trailing_unrelated, reason);
+    } catch (const std::exception &error) {
+        set_open_reason(reason, error.what());
+        return false;
+    }
+}
+
+bool verify_masked_mle_opening_with_session(
+    const G1 &commitment, const G1 &evaluation_mask_commitment,
+    const Fr &masked_evaluation, const std::string &basis_id,
+    const std::vector<G1> &generators, const std::vector<Fr> &point,
+    const NativeProofSession &session, const std::string &label,
+    std::string *reason, bool enforce_statement_basis,
+    bool allow_trailing_unrelated, const std::string &mask_identity,
+    const zkgpt::native_pedersen::PedersenBasis *scalar_basis,
+    const zkgpt::native_pedersen::ScalarCommitment *expected_raw_evaluation_commitment,
+    const zkgpt::native_pedersen::ScalarCommitment *expected_masked_evaluation_commitment) {
+    try {
+        if (generators.empty() || !power_of_two_size(generators.size()) ||
+            point.size() >= sizeof(std::size_t) * 8 ||
+            (std::size_t(1) << point.size()) != generators.size())
+            throw std::invalid_argument("masked Hyrax verifier dimensions are invalid");
+        const G1 H = derive_pedersen_blinding_generator(basis_id);
+        const std::vector<Fr> basis = mle_basis_from_point(point);
+        if (enforce_statement_basis &&
+            session.statement().basis_digest != NativeProofStatement::basis_digest_for(
+                H, generators, basis, generators.size()))
+            throw std::invalid_argument("masked Hyrax verifier statement basis mismatch");
+        HyraxMleBasisView view;
+        view.full_domain = generators.size();
+        view.logical_length = generators.size();
+        view.active_domain = generators.size();
+        view.role = "legacy-masked-mle";
+        view.basis_id = basis_id;
+        view.point = point;
+        view.generators.size = generators.size();
+        view.generators.canonical_id = session.statement().basis_digest;
+        view.generators.scheme = HyraxGeneratorProviderScheme::OpaqueProvider;
+        view.generators.at = [&generators](std::uint64_t index) {
+            return generators.at(static_cast<std::size_t>(index));
+        };
+        return verify_masked_mle_opening_with_session(
+            commitment, evaluation_mask_commitment, masked_evaluation, view,
+            session, label, reason, enforce_statement_basis,
+            allow_trailing_unrelated, mask_identity, scalar_basis,
+            expected_raw_evaluation_commitment,
+            expected_masked_evaluation_commitment);
+    } catch (const std::exception &error) {
+        set_open_reason(reason, error.what());
+        return false;
+    }
+}
+
+namespace {
+
+struct HyraxTensorShape { std::size_t full_bits; std::size_t active_bits; std::size_t row_bits; std::size_t column_bits; };
+
+std::size_t tensor_log2(std::uint64_t value) {
+    if (value == 0 || (value & (value - 1)) != 0) throw std::invalid_argument("Hyrax tensor domain is not a power of two");
+    std::size_t bits = 0;
+    while (value > 1) { value >>= 1; ++bits; }
+    return bits;
+}
+
+HyraxTensorShape validate_tensor_view(const HyraxTensorMleView &view, const std::vector<Fr> *point = nullptr) {
+    if (view.schema != kHyraxTensorMleSchema || view.method != kHyraxTensorMleMethod || view.version != kHyraxTensorMleVersion || view.full_domain == 0 || view.full_domain > (std::uint64_t(1) << 62) || view.logical_length == 0 || view.logical_length > view.full_domain || !safe_open_text(view.role, 110) || !safe_open_text(view.basis_id, 128) || view.column_generators.scheme != HyraxGeneratorProviderScheme::CanonicalAbsoluteHashToCurveV1 || !view.column_generators.at || !safe_open_text(view.column_generators.canonical_id, 128))
+        throw std::invalid_argument("Hyrax tensor MLE view is invalid");
+    const std::uint64_t active = next_power_of_two_u64(view.logical_length);
+    const std::size_t full_bits = tensor_log2(view.full_domain), active_bits = tensor_log2(active), column_bits = active_bits / 2;
+    const std::uint64_t columns = std::uint64_t(1) << column_bits, rows = active / columns;
+    if (active > view.full_domain || view.active_domain != active || view.rows != rows || view.columns != columns || view.column_generators.size != columns || columns > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(G1)) || rows > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(G1)) || rows > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(Fr)))
+        throw std::invalid_argument("Hyrax tensor MLE shape is invalid");
+    if (point != nullptr && point->size() != full_bits) throw std::invalid_argument("Hyrax tensor full point arity is invalid");
+    return HyraxTensorShape{full_bits, active_bits, active_bits - column_bits, column_bits};
+}
+
+zkgpt::NativeVector<G1> tensor_column_generators(const HyraxTensorMleView &view) {
+    const G1 H = derive_pedersen_blinding_generator(view.basis_id);
+    zkgpt::NativeVector<G1> generators(static_cast<std::size_t>(view.columns));
+    for (std::uint64_t column = 0; column < view.columns; ++column) {
+        const G1 generator = view.column_generators.at(column);
+        if (!valid_point(generator, true) || generator == H) throw std::invalid_argument("Hyrax tensor canonical column generator is invalid");
+        generators[static_cast<std::size_t>(column)] = generator;
+    }
+    return generators;
+}
+
+std::string tensor_root_digest(const HyraxTensorMleCommitment &commitment) {
+    zkgpt::NativeStreamingDigest digest("zkgpt-hyrax-balanced-tensor-root-v2");
+    digest.u64(commitment.version);
+    digest.string(commitment.schema);
+    digest.string(commitment.method);
+    digest.string(commitment.role);
+    digest.u64(commitment.full_domain);
+    digest.u64(commitment.logical_length);
+    digest.u64(commitment.active_domain);
+    digest.u64(commitment.rows);
+    digest.u64(commitment.columns);
+    digest.string(commitment.basis_id);
+    digest.u64(static_cast<std::uint64_t>(commitment.column_generator_scheme));
+    digest.string(commitment.column_generator_id);
+    digest.u64(commitment.row_commitments.size());
+    for (std::size_t row = 0; row < commitment.row_commitments.size(); ++row) {
+        digest.u64(row);
+        digest.string(commitment.row_commitments[row].serializeToHexStr());
+    }
+    return digest.finish();
+}
+
+void validate_tensor_commitment(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment) {
+    (void)validate_tensor_view(view);
+    if (commitment.schema != view.schema || commitment.method != view.method || commitment.version != view.version ||
+        commitment.role != view.role || commitment.basis_id != view.basis_id ||
+        commitment.column_generator_scheme != view.column_generators.scheme || commitment.column_generator_id != view.column_generators.canonical_id ||
+        commitment.full_domain != view.full_domain || commitment.logical_length != view.logical_length || commitment.active_domain != view.active_domain ||
+        commitment.rows != view.rows || commitment.columns != view.columns || commitment.row_commitments.size() != view.rows ||
+        commitment.root_digest.size() != 64)
+        throw std::invalid_argument("Hyrax tensor commitment descriptor does not match trusted context");
+    for (const G1 &row_commitment : commitment.row_commitments)
+        if (!valid_point(row_commitment, false)) throw std::invalid_argument("Hyrax tensor row commitment is invalid");
+    if (tensor_root_digest(commitment) != commitment.root_digest) throw std::invalid_argument("Hyrax tensor row commitment root mismatch");
+}
+
+std::string tensor_public_payload(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const std::vector<Fr> &point) {
+    std::ostringstream payload;
+    payload << "zkgpt-hyrax-tensor-full-mle-opening-v2" << '|' << view.method << '|' << view.schema << '|' << view.version << '|' << view.role << '|' << view.basis_id;
+    payload << '|' << view.full_domain << '|' << view.logical_length << '|' << view.active_domain << '|' << view.rows << '|' << view.columns;
+    payload << '|' << static_cast<std::uint64_t>(view.column_generators.scheme) << '|' << view.column_generators.canonical_id << '|' << commitment.root_digest << '|' << point.size();
+    for (const Fr &coordinate : point) payload << '|' << coordinate.getStr(16);
+    return payload.str();
+}
+
+HyraxMleBasisView tensor_column_view(const HyraxTensorMleView &view, const std::vector<Fr> &full_point, const HyraxTensorShape &shape) {
+    HyraxMleBasisView result;
+    result.full_domain = view.columns;
+    result.logical_length = view.columns;
+    result.active_domain = view.columns;
+    result.role = view.role + "/tensor-column";
+    result.basis_id = view.basis_id;
+    result.point.assign(full_point.begin(), full_point.begin() + static_cast<std::ptrdiff_t>(shape.column_bits));
+    result.generators = view.column_generators;
+    return result;
+}
+
+zkgpt::NativeFieldVector tensor_row_weights(const std::vector<Fr> &full_point, const HyraxTensorShape &shape, std::uint64_t rows) {
+    std::vector<Fr> row_point(full_point.begin() + static_cast<std::ptrdiff_t>(shape.column_bits), full_point.begin() + static_cast<std::ptrdiff_t>(shape.active_bits));
+    Fr high_zero_factor(1);
+    for (std::size_t bit = shape.active_bits; bit < full_point.size(); ++bit) high_zero_factor *= Fr(1) - full_point[bit];
+    zkgpt::NativeFieldVector weights(static_cast<std::size_t>(rows));
+    zkgpt::native_storage::native_for_each_equality_weight(row_point, static_cast<std::size_t>(rows), [&weights, &high_zero_factor](std::size_t row, const Fr &weight) {
+        weights[row] = high_zero_factor * weight;
+    });
+    return weights;
+}
+
+struct HyraxTensorFoldedColumn { G1 commitment; Fr blinding; zkgpt::NativeFieldVector values; };
+
+HyraxTensorFoldedColumn tensor_fold_prover(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const HyraxTensorShape &shape, const zkgpt::NativeVector<G1> &generators, const HyraxScalarProvider &values, const std::vector<Fr> &full_point) {
+    if (state.row_blindings.size() != view.rows || !values.at || values.size != view.logical_length)
+        throw std::invalid_argument("Hyrax tensor prover state or value provider is invalid");
+    zkgpt::NativeFieldVector weights = tensor_row_weights(full_point, shape, view.rows);
+    HyraxTensorFoldedColumn folded;
+    folded.commitment.clear();
+    folded.blinding = Fr(0);
+    folded.values.resize(static_cast<std::size_t>(view.columns));
+    for (Fr &value : folded.values) value = Fr(0);
+    const G1 H = derive_pedersen_blinding_generator(view.basis_id);
+    for (std::uint64_t row = 0; row < view.rows; ++row) {
+        const Fr rho = state.row_blindings[static_cast<std::size_t>(row)];
+        const G1 expected_row = masked_provider_commit(generators, view.columns, [&values, &view, row](std::uint64_t column) {
+            const std::uint64_t index = row * view.columns + column;
+            return index < view.logical_length ? values.at(index) : Fr(0);
+        }) + H * rho;
+        if (expected_row != commitment.row_commitments[static_cast<std::size_t>(row)]) throw std::invalid_argument("Hyrax tensor row commitment does not match the prover witness");
+        const Fr &weight = weights[static_cast<std::size_t>(row)];
+        folded.commitment += commitment.row_commitments[static_cast<std::size_t>(row)] * weight;
+        folded.blinding += rho * weight;
+        for (std::uint64_t column = 0; column < view.columns; ++column) {
+            const std::uint64_t index = row * view.columns + column;
+            if (index < view.logical_length) folded.values[static_cast<std::size_t>(column)] += weight * values.at(index);
+        }
+    }
+    return folded;
+}
+
+G1 tensor_fold_verifier(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorShape &shape, const std::vector<Fr> &full_point) {
+    zkgpt::NativeFieldVector weights = tensor_row_weights(full_point, shape, view.rows);
+    G1 folded;
+    folded.clear();
+    for (std::uint64_t row = 0; row < view.rows; ++row) folded += commitment.row_commitments[static_cast<std::size_t>(row)] * weights[static_cast<std::size_t>(row)];
+    return folded;
+}
+
+bool verify_tensor_public_frame(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const std::vector<Fr> &point, const NativeProofSession &session, const std::string &label, std::string *reason) {
+    const auto *public_positions = session.message_positions(label + "/tensor/public");
+    const auto *column_positions = session.message_positions(label + "/column/basis");
+    if (public_positions == nullptr || public_positions->size() != 1 || column_positions == nullptr || column_positions->size() != 1) {
+        set_open_reason(reason, "missing or duplicate Hyrax tensor public frame or column opening");
+        return false;
+    }
+    const std::size_t public_position = public_positions->front(), column_position = column_positions->front();
+    if (public_position >= session.messages().size() || public_position + 1 != column_position) {
+        set_open_reason(reason, "Hyrax tensor public frame is not immediately bound to its column opening");
+        return false;
+    }
+    const NativeProofMessage &message = session.messages()[public_position];
+    if (message.kind != NativeProofMessageKind::Data || message.payload != tensor_public_payload(view, commitment, point)) {
+        set_open_reason(reason, "Hyrax tensor public frame does not match trusted opening context");
+        return false;
+    }
+    return true;
+}
+
+bool open_hyrax_tensor_mle_impl(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, const Fr *forced_masked_evaluation, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason, const std::string &mask_identity, const zkgpt::native_pedersen::PedersenBasis *scalar_basis, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
+    const std::size_t checkpoint = session.checkpoint();
+    try {
+        const HyraxTensorShape shape = validate_tensor_view(view, &full_point);
+        validate_tensor_commitment(view, commitment);
+        if (!safe_open_text(label, 200) || !values.at || values.size != view.logical_length) throw std::invalid_argument("Hyrax tensor opening arguments are invalid");
+        const zkgpt::NativeVector<G1> generators = tensor_column_generators(view);
+        HyraxTensorFoldedColumn folded = tensor_fold_prover(view, commitment, state, shape, generators, values, full_point);
+        PedersenMleCommitment column_commitment{folded.commitment, derive_pedersen_blinding_generator(view.basis_id), folded.blinding, view.basis_id};
+        const HyraxMleBasisView column_view = tensor_column_view(view, full_point, shape);
+        const HyraxScalarProvider column_values{view.columns, [&folded](std::uint64_t index) { return folded.values.at(static_cast<std::size_t>(index)); }};
+        session.absorb(label + "/tensor/public", tensor_public_payload(view, commitment, full_point));
+        const bool opened = forced_masked_evaluation == nullptr
+            ? open_masked_mle_with_session(column_commitment, column_view, column_values, session, label + "/column", opening, reason, false, mask_identity, scalar_basis, forced_masked_opening, forced_raw_opening)
+            : open_masked_mle_with_claim(column_commitment, column_view, column_values, *forced_masked_evaluation, session, label + "/column", opening, reason, false, mask_identity, scalar_basis, forced_masked_opening, forced_raw_opening);
+        if (!opened) { session.rollback(checkpoint); return false; }
+        return true;
+    } catch (const std::exception &error) {
+        session.rollback(checkpoint);
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
+}
+
+} // namespace
+
+bool commit_hyrax_tensor_mle(const HyraxTensorMleView &view, const HyraxScalarProvider &values, HyraxTensorMleCommitment &commitment, HyraxTensorMleProverState &state, std::string *reason) {
+    try {
+        (void)validate_tensor_view(view);
+        if (!values.at || values.size != view.logical_length) throw std::invalid_argument("Hyrax tensor commit value provider is invalid");
+        const zkgpt::NativeVector<G1> generators = tensor_column_generators(view);
+        const G1 H = derive_pedersen_blinding_generator(view.basis_id);
+        HyraxTensorMleCommitment next_commitment;
+        next_commitment.role = view.role;
+        next_commitment.basis_id = view.basis_id;
+        next_commitment.column_generator_scheme = view.column_generators.scheme;
+        next_commitment.column_generator_id = view.column_generators.canonical_id;
+        next_commitment.full_domain = view.full_domain;
+        next_commitment.logical_length = view.logical_length;
+        next_commitment.active_domain = view.active_domain;
+        next_commitment.rows = view.rows;
+        next_commitment.columns = view.columns;
+        next_commitment.row_commitments.reserve(static_cast<std::size_t>(view.rows));
+        HyraxTensorMleProverState next_state;
+        next_state.row_blindings.reserve(static_cast<std::size_t>(view.rows));
+        for (std::uint64_t row = 0; row < view.rows; ++row) {
+            Fr rho;
+            rho.setByCSPRNG();
+            const G1 row_commitment = masked_provider_commit(generators, view.columns, [&values, &view, row](std::uint64_t column) {
+                const std::uint64_t index = row * view.columns + column;
+                return index < view.logical_length ? values.at(index) : Fr(0);
+            }) + H * rho;
+            next_commitment.row_commitments.push_back(row_commitment);
+            next_state.row_blindings.push_back(rho);
+        }
+        next_commitment.root_digest = tensor_root_digest(next_commitment);
+        commitment = std::move(next_commitment);
+        state = std::move(next_state);
+        return true;
+    } catch (const std::exception &error) {
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
+}
+
+bool open_hyrax_tensor_mle_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason, const std::string &mask_identity, const zkgpt::native_pedersen::PedersenBasis *scalar_basis, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
+    return open_hyrax_tensor_mle_impl(view, commitment, state, full_point, values, nullptr, session, label, opening, reason, mask_identity, scalar_basis, forced_masked_opening, forced_raw_opening);
+}
+
+bool open_hyrax_tensor_mle_with_claim(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, const Fr &masked_evaluation, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason, const std::string &mask_identity, const zkgpt::native_pedersen::PedersenBasis *scalar_basis, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
+    return open_hyrax_tensor_mle_impl(view, commitment, state, full_point, values, &masked_evaluation, session, label, opening, reason, mask_identity, scalar_basis, forced_masked_opening, forced_raw_opening);
+}
+
+bool verify_hyrax_tensor_mle_opening_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const std::vector<Fr> &full_point, const G1 &evaluation_mask_commitment, const Fr &masked_evaluation, const NativeProofSession &session, const std::string &label, std::string *reason, bool allow_trailing_unrelated, const std::string &mask_identity, const zkgpt::native_pedersen::PedersenBasis *scalar_basis, const zkgpt::native_pedersen::ScalarCommitment *expected_raw_evaluation_commitment, const zkgpt::native_pedersen::ScalarCommitment *expected_masked_evaluation_commitment) {
+    try {
+        const HyraxTensorShape shape = validate_tensor_view(view, &full_point);
+        validate_tensor_commitment(view, commitment);
+        if (!safe_open_text(label, 200) || !session.replay(reason)) return false;
+        if (!verify_tensor_public_frame(view, commitment, full_point, session, label, reason)) return false;
+        const G1 folded_commitment = tensor_fold_verifier(view, commitment, shape, full_point);
+        const HyraxMleBasisView column_view = tensor_column_view(view, full_point, shape);
+        return verify_masked_mle_opening_with_session(folded_commitment, evaluation_mask_commitment, masked_evaluation, column_view, session, label + "/column", reason, false, allow_trailing_unrelated, mask_identity, scalar_basis, expected_raw_evaluation_commitment, expected_masked_evaluation_commitment);
+    } catch (const std::exception &error) {
+        set_open_reason(reason, error.what());
+        return false;
+    }
+}
+
+namespace {
+
+std::string tensor_tail_id(const HyraxTensorMleView &view) {
+    if (view.role == "canonical/Aux") return "aux";
+    if (view.role == "canonical/L_qry") return "L_qry";
+    throw std::invalid_argument("Hyrax tensor zero-tail role is not trusted");
+}
+
+std::string tensor_tail_label(const HyraxTensorMleView &view) { return "tensor/" + tensor_tail_id(view) + "/tail"; }
+
+std::string tensor_tail_public_payload(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment) {
+    std::ostringstream payload;
+    payload << "zkgpt-hyrax-tensor-zero-tail-product2public-v1" << '|' << view.method << '|' << view.schema << '|' << view.version << '|' << tensor_tail_id(view);
+    payload << '|' << view.role << '|' << view.basis_id << '|' << view.full_domain << '|' << view.logical_length << '|' << view.active_domain;
+    payload << '|' << view.rows << '|' << view.columns << '|' << static_cast<std::uint64_t>(view.column_generators.scheme) << '|' << view.column_generators.canonical_id;
+    payload << '|' << commitment.root_digest << "|Product2Public|2|0|" << (view.logical_length == view.active_domain ? 1 : 0);
+    return payload.str();
+}
+
+Fr tensor_weighted_tail_eval(const std::vector<Fr> &beta, const std::vector<Fr> &point, std::uint64_t logical_length) {
+    if (beta.size() != point.size() || beta.size() >= 63) throw std::invalid_argument("Hyrax tensor tail evaluation point is invalid");
+    const std::uint64_t domain = std::uint64_t(1) << beta.size();
+    if (logical_length > domain) throw std::invalid_argument("Hyrax tensor tail logical length is invalid");
+    if (logical_length == domain) return Fr(0);
+    std::vector<Fr> zero(beta.size()), one(beta.size()), lower_total(beta.size() + 1, Fr(1));
+    for (std::size_t bit = 0; bit < beta.size(); ++bit) {
+        zero[bit] = (Fr(1) - beta[bit]) * (Fr(1) - point[bit]);
+        one[bit] = beta[bit] * point[bit];
+        lower_total[bit + 1] = lower_total[bit] * (zero[bit] + one[bit]);
+    }
+    Fr prefix(1), below(0);
+    for (std::size_t cursor = beta.size(); cursor-- > 0;) {
+        if (((logical_length >> cursor) & 1U) != 0) {
+            below += prefix * zero[cursor] * lower_total[cursor];
+            prefix *= one[cursor];
+        } else {
+            prefix *= zero[cursor];
+        }
+    }
+    return lower_total.back() - below;
+}
+
+Fr tensor_tail_weight_at(const std::vector<Fr> &beta, std::uint64_t logical_length, std::uint64_t index) {
+    if (beta.size() >= 63 || index >= (std::uint64_t(1) << beta.size())) throw std::out_of_range("Hyrax tensor tail coefficient index is invalid");
+    if (index < logical_length) return Fr(0);
+    Fr weight(1);
+    for (std::size_t bit = 0; bit < beta.size(); ++bit) weight *= ((index >> bit) & 1U) ? beta[bit] : Fr(1) - beta[bit];
+    return weight;
+}
+
+std::shared_ptr<const NativeMaskedPublicProvider> tensor_tail_public_provider(const std::vector<Fr> &beta, std::uint64_t logical_length) {
+    if (beta.size() >= 63) throw std::invalid_argument("Hyrax tensor tail challenge dimension is invalid");
+    const std::vector<Fr> fixed_beta = beta;
+    auto provider = std::make_shared<NativeMaskedPublicProvider>();
+    provider->size = std::uint64_t(1) << beta.size();
+    provider->value_at = [fixed_beta, logical_length](std::uint64_t index) { return tensor_tail_weight_at(fixed_beta, logical_length, index); };
+    provider->evaluate_mle = [fixed_beta, logical_length](const std::vector<F> &point) { return tensor_weighted_tail_eval(fixed_beta, point, logical_length); };
+    return provider;
+}
+
+void tensor_tail_initial_round(const HyraxScalarProvider &values, const std::vector<Fr> &beta, std::uint64_t logical_length, std::uint64_t active_domain, std::vector<F> &polynomial) {
+    polynomial.assign(3, F(0));
+    bool have_even = false;
+    Fr even_value(0), even_tail(0);
+    zkgpt::native_storage::native_for_each_equality_weight(beta, static_cast<std::size_t>(active_domain), [&](std::size_t index, const Fr &weight) {
+        const Fr tail = static_cast<std::uint64_t>(index) >= logical_length ? weight : Fr(0);
+        const Fr value = static_cast<std::uint64_t>(index) < logical_length ? values.at(index) : Fr(0);
+        if ((index & 1U) == 0) {
+            even_value = value;
+            even_tail = tail;
+            have_even = true;
+        } else {
+            if (!have_even) throw std::logic_error("Hyrax tensor tail equality stream lost pair alignment");
+            const Fr odd_at_two = Fr(2) * value - even_value;
+            const Fr tail_at_two = Fr(2) * tail - even_tail;
+            polynomial[0] += even_value * even_tail;
+            polynomial[1] += value * tail;
+            polynomial[2] += odd_at_two * tail_at_two;
+            have_even = false;
+        }
+    });
+    if (have_even) throw std::logic_error("Hyrax tensor tail equality stream ended on an incomplete pair");
+}
+
+void tensor_tail_fold_initial(const HyraxScalarProvider &values, const std::vector<Fr> &beta, std::uint64_t logical_length, std::uint64_t active_domain, const Fr &challenge, zkgpt::NativeFieldVector &private_folded, zkgpt::NativeFieldVector &public_folded) {
+    private_folded.resize(static_cast<std::size_t>(active_domain / 2));
+    public_folded.resize(static_cast<std::size_t>(active_domain / 2));
+    bool have_even = false;
+    Fr even_value(0), even_tail(0);
+    zkgpt::native_storage::native_for_each_equality_weight(beta, static_cast<std::size_t>(active_domain), [&](std::size_t index, const Fr &weight) {
+        const Fr tail = static_cast<std::uint64_t>(index) >= logical_length ? weight : Fr(0);
+        const Fr value = static_cast<std::uint64_t>(index) < logical_length ? values.at(index) : Fr(0);
+        if ((index & 1U) == 0) {
+            even_value = value;
+            even_tail = tail;
+            have_even = true;
+        } else {
+            if (!have_even) throw std::logic_error("Hyrax tensor tail equality stream lost pair alignment");
+            const std::size_t target = index / 2;
+            private_folded[target] = even_value * (Fr(1) - challenge) + value * challenge;
+            public_folded[target] = even_tail * (Fr(1) - challenge) + tail * challenge;
+            have_even = false;
+        }
+    });
+    if (have_even) throw std::logic_error("Hyrax tensor tail equality stream ended on an incomplete pair");
+}
+
+void tensor_tail_round_poly(const zkgpt::NativeFieldVector &private_values, const zkgpt::NativeFieldVector &public_values, std::size_t length, std::vector<F> &polynomial) {
+    if (length == 0 || (length & 1U) != 0 || private_values.size() < length || public_values.size() < length) throw std::invalid_argument("Hyrax tensor tail folded dimensions are invalid");
+    polynomial.assign(3, F(0));
+    for (std::size_t index = 0; index < length; index += 2) {
+        const Fr &v0 = private_values[index], &v1 = private_values[index + 1];
+        const Fr &t0 = public_values[index], &t1 = public_values[index + 1];
+        polynomial[0] += v0 * t0;
+        polynomial[1] += v1 * t1;
+        polynomial[2] += (Fr(2) * v1 - v0) * (Fr(2) * t1 - t0);
+    }
+}
+
+void tensor_tail_fold_in_place(zkgpt::NativeFieldVector &values, std::size_t length, const Fr &challenge) {
+    const std::size_t half = length / 2;
+    for (std::size_t index = 0; index < half; ++index) values[index] = values[2 * index] * (Fr(1) - challenge) + values[2 * index + 1] * challenge;
+    values.resize(half);
+}
+
+bool tensor_tail_scalar_domain_matches(const NativeProofSession &session, const zkgpt::native_pedersen::PedersenBasis &basis, std::string *reason) {
+    const std::string expected = "zkgpt/masked-sumcheck/v2/" + session.statement_digest();
+    if (!basis.valid(reason) || basis.domain != expected) {
+        set_open_reason(reason, "Hyrax tensor tail scalar basis is not bound to the proof statement");
+        return false;
+    }
+    return true;
+}
+
+bool tensor_tail_parse_opening_claim(const NativeProofSession &session, std::size_t position, const std::string &label, const zkgpt::native_pedersen::PedersenBasis &basis, G1 &mask_commitment, Fr &masked_evaluation, zkgpt::native_pedersen::ScalarCommitment &raw_commitment, zkgpt::native_pedersen::ScalarCommitment &masked_commitment, std::string *reason) {
+    const auto *positions = session.message_positions(label);
+    if (positions == nullptr || positions->size() != 1 || positions->front() != position || position >= session.messages().size()) {
+        set_open_reason(reason, "Hyrax tensor tail terminal claim is missing, duplicated, or out of order");
+        return false;
+    }
+    const NativeProofMessage &message = session.messages()[position];
+    std::vector<std::string> fields;
+    if (message.kind != NativeProofMessageKind::Data || !split_open_payload(message.payload, 5, fields) || fields[2] != basis.domain || !decode_open_point(fields[0], mask_commitment) || !decode_open_field(fields[1], masked_evaluation) || !decode_open_point(fields[4], masked_commitment.point)) {
+        set_open_reason(reason, "malformed Hyrax tensor tail terminal claim");
+        return false;
+    }
+    if (!decode_open_point(fields[3], raw_commitment.point)) { set_open_reason(reason, "malformed Hyrax tensor tail raw scalar commitment"); return false; }
+    raw_commitment.domain = basis.domain;
+    masked_commitment.domain = basis.domain;
+    return raw_commitment.valid(basis, reason) && masked_commitment.valid(basis, reason);
+}
+
+bool tensor_tail_consume_challenges(const NativeProofSession &session, std::size_t &position, const std::string &label, std::size_t count, std::vector<Fr> &beta, std::string *reason) {
+    beta.clear();
+    beta.reserve(count);
+    for (std::size_t bit = 0; bit < count; ++bit) {
+        const std::string challenge_label = "challenge/" + label + "/weight/" + std::to_string(bit);
+        const auto *positions = session.message_positions(challenge_label);
+        Fr challenge;
+        if (positions == nullptr || positions->size() != 1 || positions->front() != position || position >= session.messages().size() || session.messages()[position].kind != NativeProofMessageKind::Challenge || session.messages()[position].label != challenge_label || !decode_open_field(session.messages()[position].payload, challenge)) {
+            set_open_reason(reason, "Hyrax tensor tail challenge schedule is invalid");
+            return false;
+        }
+        beta.push_back(challenge);
+        ++position;
+    }
+    return true;
+}
+
+} // namespace
+
+bool prove_hyrax_tensor_zero_tail_certificate_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const HyraxScalarProvider &values, NativeProofSession &session, std::size_t &exact_position, const zkgpt::native_pedersen::PedersenBasis &scalar_basis, std::vector<Fr> &beta, std::vector<Fr> &full_terminal_point, ::NativeMaskedSumcheckResult &sumcheck_result, MaskedMleOpening &terminal_opening, std::string *reason) {
+    const std::size_t checkpoint = session.checkpoint();
+    try {
+        const HyraxTensorShape shape = validate_tensor_view(view);
+        validate_tensor_commitment(view, commitment);
+        const std::string tail_label = tensor_tail_label(view), sum_label = tail_label + "/sum";
+        if (exact_position != checkpoint || !values.at || values.size != view.logical_length || !tensor_tail_scalar_domain_matches(session, scalar_basis, reason)) throw std::invalid_argument("Hyrax tensor tail prover position, values, or scalar basis is invalid");
+        session.absorb(tail_label + "/public", tensor_tail_public_payload(view, commitment));
+        beta.clear();
+        for (std::size_t bit = 0; bit < shape.active_bits; ++bit) beta.push_back(session.challenge(tail_label + "/weight/" + std::to_string(bit)));
+        const auto public_provider = tensor_tail_public_provider(beta, view.logical_length);
+        const auto initial_opening = zkgpt::native_pedersen::commit_fresh(scalar_basis, Fr(0));
+        NativeMaskedTerminalSpec terminal_spec;
+        terminal_spec.kind = NativeMaskedTerminalKind::Product2Public;
+        terminal_spec.public_provider = public_provider;
+        terminal_spec.has_external_binding = true;
+        terminal_spec.public_initial_claim = true;
+        terminal_spec.initial_opening = initial_opening;
+        terminal_spec.initial_commitment = initial_opening.commitment;
+        NativeMaskedSumcheckProver prover(session, sum_label, 2, Fr(0), terminal_spec, nullptr, &scalar_basis);
+        zkgpt::NativeFieldVector private_folded, public_folded;
+        std::size_t folded_length = 0;
+        std::vector<F> polynomial;
+        if (shape.active_bits > 0) {
+            tensor_tail_initial_round(values, beta, view.logical_length, view.active_domain, polynomial);
+            Fr challenge;
+            if (!prover.append_round(polynomial, &challenge, reason)) throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor tail initial round failed");
+            tensor_tail_fold_initial(values, beta, view.logical_length, view.active_domain, challenge, private_folded, public_folded);
+            folded_length = static_cast<std::size_t>(view.active_domain / 2);
+            for (std::size_t round = 1; round < shape.active_bits; ++round) {
+                tensor_tail_round_poly(private_folded, public_folded, folded_length, polynomial);
+                if (!prover.append_round(polynomial, &challenge, reason)) throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor tail round failed");
+                tensor_tail_fold_in_place(private_folded, folded_length, challenge);
+                tensor_tail_fold_in_place(public_folded, folded_length, challenge);
+                folded_length /= 2;
+            }
+        }
+        const Fr terminal_value = shape.active_bits == 0 ? values.at(0) : private_folded[0];
+        terminal_spec.unmasked_terminal_openings = {zkgpt::native_pedersen::commit_fresh(scalar_basis, terminal_value)};
+        if (!prover.set_terminal_spec(terminal_spec, reason) || !prover.finish({terminal_value}, &sumcheck_result, reason)) throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor tail terminal relation failed");
+        if (sumcheck_result.challenges.size() != shape.active_bits || sumcheck_result.unmasked_terminal_openings.size() != 1)
+            throw std::logic_error("Hyrax tensor tail sumcheck result is incomplete");
+        full_terminal_point = sumcheck_result.challenges;
+        full_terminal_point.resize(shape.full_bits, Fr(0));
+        if (!open_hyrax_tensor_mle_with_session(view, commitment, state, full_terminal_point, values, session, tail_label + "/opening", terminal_opening, reason, "", &scalar_basis, nullptr, &sumcheck_result.unmasked_terminal_openings[0])) throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor tail terminal opening failed");
+        exact_position = session.checkpoint();
+        return true;
+    } catch (const std::exception &error) {
+        session.rollback(checkpoint);
+        exact_position = checkpoint;
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
+}
+
+bool verify_hyrax_tensor_zero_tail_certificate_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const NativeProofSession &session, std::size_t &exact_position, const zkgpt::native_pedersen::PedersenBasis &scalar_basis, std::vector<Fr> &beta, std::vector<Fr> &full_terminal_point, ::NativeMaskedSumcheckResult &sumcheck_result, std::string *reason) {
+    try {
+        const HyraxTensorShape shape = validate_tensor_view(view);
+        validate_tensor_commitment(view, commitment);
+        const std::string tail_label = tensor_tail_label(view), sum_label = tail_label + "/sum";
+        if (!session.replay(reason) || !tensor_tail_scalar_domain_matches(session, scalar_basis, reason) || exact_position >= session.messages().size()) return false;
+        const auto *header_positions = session.message_positions(tail_label + "/public");
+        const NativeProofMessage &header = session.messages()[exact_position];
+        if (header_positions == nullptr || header_positions->size() != 1 || header_positions->front() != exact_position || header.kind != NativeProofMessageKind::Data || header.label != tail_label + "/public" || header.payload != tensor_tail_public_payload(view, commitment)) {
+            set_open_reason(reason, "Hyrax tensor tail public context is missing or mismatched");
+            return false;
+        }
+        ++exact_position;
+        if (!tensor_tail_consume_challenges(session, exact_position, tail_label, shape.active_bits, beta, reason)) return false;
+        NativeMaskedTerminalSpec terminal_spec;
+        terminal_spec.kind = NativeMaskedTerminalKind::Product2Public;
+        terminal_spec.public_provider = tensor_tail_public_provider(beta, view.logical_length);
+        terminal_spec.has_external_binding = true;
+        terminal_spec.public_initial_claim = true;
+        if (exact_position >= session.messages().size() || session.messages()[exact_position].kind != NativeProofMessageKind::Data || session.messages()[exact_position].label != sum_label + "/initial/mode" || session.messages()[exact_position].payload != "zero-mask-v2") {
+            set_open_reason(reason, "Hyrax tensor tail sumcheck does not immediately follow its public challenges");
+            return false;
+        }
+        if (!native_masked_opening_commitment_at(session, scalar_basis, exact_position + 1, sum_label + "/initial/opening", terminal_spec.initial_commitment, reason)) return false;
+        const auto *mode_positions = session.message_positions(sum_label + "/initial/mode");
+        if (mode_positions == nullptr || mode_positions->size() != 1 || mode_positions->front() != exact_position ||
+            !native_masked_sumcheck_verify(session, sum_label, 2, shape.active_bits, Fr(0), terminal_spec, &sumcheck_result, reason)) return false;
+        if (sumcheck_result.challenges.size() != shape.active_bits || sumcheck_result.unmasked_terminal_commitments.size() != 1 || sumcheck_result.transcript_end <= exact_position) {
+            set_open_reason(reason, "Hyrax tensor tail sumcheck result is incomplete");
+            return false;
+        }
+        exact_position = sumcheck_result.transcript_end;
+        full_terminal_point = sumcheck_result.challenges;
+        full_terminal_point.resize(shape.full_bits, Fr(0));
+        const std::string opening_label = tail_label + "/opening";
+        const auto *tensor_public_positions = session.message_positions(opening_label + "/tensor/public");
+        const auto *claim_positions = session.message_positions(opening_label + "/column/claim");
+        if (tensor_public_positions == nullptr || tensor_public_positions->size() != 1 || tensor_public_positions->front() != exact_position || claim_positions == nullptr || claim_positions->size() != 1 || claim_positions->front() != exact_position + 2) {
+            set_open_reason(reason, "Hyrax tensor tail opening does not immediately follow its sumcheck");
+            return false;
+        }
+        G1 mask_commitment;
+        Fr masked_evaluation;
+        zkgpt::native_pedersen::ScalarCommitment raw_commitment, masked_commitment;
+        if (!tensor_tail_parse_opening_claim(session, claim_positions->front(), opening_label + "/column/claim", scalar_basis, mask_commitment, masked_evaluation, raw_commitment, masked_commitment, reason)) return false;
+        const auto &expected_raw = sumcheck_result.unmasked_terminal_commitments[0];
+        if (raw_commitment.domain != expected_raw.domain || raw_commitment.point != expected_raw.point) {
+            set_open_reason(reason, "Hyrax tensor tail opening raw claim differs from Product2Public terminal");
+            return false;
+        }
+        if (!verify_hyrax_tensor_mle_opening_with_session(view, commitment, full_terminal_point, mask_commitment, masked_evaluation, session, opening_label, reason, true, "", &scalar_basis, &expected_raw, &masked_commitment)) return false;
+        const std::string terminal_label = opening_label + "/column/response-ipa/terminal";
+        const auto *terminal_positions = session.message_positions(terminal_label);
+        if (terminal_positions == nullptr || terminal_positions->size() != 1 || terminal_positions->front() < exact_position) {
+            set_open_reason(reason, "Hyrax tensor tail response-IPA terminal is missing");
+            return false;
+        }
+        exact_position = terminal_positions->front() + 1;
+        return true;
     } catch (const std::exception &error) {
         set_open_reason(reason, error.what());
         return false;

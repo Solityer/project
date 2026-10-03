@@ -21,7 +21,7 @@ def main(argv: List[str]) -> int:
     args = parser.parse_args(argv)
     root = baseline_root()
     command = [sys.executable, str(root / "scripts" / "gat_zkgpt_experiment.py"),
-               "--datasets", "all", "--backends", args.backend]
+               "--datasets", "all", "--backends", ",".join(FORMAL_BACKENDS) if args.backend == "all" else args.backend]
     completed = subprocess.run(command, cwd=str(root), check=False)
     return completed.returncode
 

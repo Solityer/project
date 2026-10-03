@@ -21,6 +21,20 @@ COMMAND = re.compile(r"^[a-z][a-z0-9-]*$")
 
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 BACKENDS = ("cpu", "gpu")
+FORMAL_BACKEND = "hybrid"
+NATIVE_FORMAL_BACKEND = "gpu"
+# Setup enables ICICLE but has no persisted per-stage invocation counters.
+# A null GPU value preserves that uncertainty; proving has proof-bound evidence.
+FORMAL_PHASE_BACKENDS = {
+    "prepare_compile": {"cpu": True, "gpu": False},
+    "setup": {"cpu": True, "gpu": None, "gpu_enabled": True},
+    "public_statement": {"cpu": True, "gpu": False},
+    "final_binding": {"cpu": True, "gpu": False},
+    "witness_generation": {"cpu": True, "gpu": False},
+    "model_commitment": {"cpu": True, "gpu": False},
+    "prove": {"cpu": True, "gpu": True},
+    "verify": {"cpu": True, "gpu": False},
+}
 CANONICAL_RELATION = "R_GAT-ezkl"
 CANONICAL_PROOF_SCOPE = "full_gat"
 CANONICAL_PRIVACY = "model_and_trace_hidden"

@@ -20,30 +20,36 @@ int floorPow2BitLengthSigned(double n) {
     return (i8) floor(log2(n));
 }
 
-i8 ceilPow2BitLength(u32 n) 
+i8 ceilPow2BitLength(u64 n) 
 {
-    return n < 1e-9 ? -1 : (i8) ceil(log(n) / log(2.));
+    if (!n) return -1;
+    i8 bits = 0;
+    for (--n; n; n >>= 1) ++bits;
+    return bits;
 }
 
-i8 floorPow2BitLength(u32 n) 
+i8 floorPow2BitLength(u64 n) 
 {
-    return n < 1e-9 ? -1 : (i8) floor(log(n) / log(2.));
+    if (!n) return -1;
+    i8 bits = 0;
+    for (; n >>= 1;) ++bits;
+    return bits;
 }
 
-void initHalfTable(vector<F> &beta_f, vector<F> &beta_s, const vector<F>::const_iterator &r, const F &init, u32 first_half, u32 second_half) {
+void initHalfTable(vector<F> &beta_f, vector<F> &beta_s, const vector<F>::const_iterator &r, const F &init, u64 first_half, u64 second_half) {
     beta_f.at(0) = init;
     beta_s.at(0) = F_ONE;
-    for (u32 i = 0; i < first_half; ++i) 
+    for (u64 i = 0; i < first_half; ++i) 
     {
-        for (u32 j = 0; j < (1ULL << i); ++j) 
+        for (u64 j = 0; j < (1ULL << i); ++j) 
         {
             auto tmp = beta_f.at(j) * r[i];
             beta_f.at(j | (1ULL << i)) = tmp;
             beta_f.at(j) = beta_f[j] - tmp;
         }
     }
-    for (u32 i = 0; i < second_half; ++i) {
-        for (u32 j = 0; j < (1ULL << i); ++j) {
+    for (u64 i = 0; i < second_half; ++i) {
+        for (u64 j = 0; j < (1ULL << i); ++j) {
             auto tmp = beta_s[j] * r[(i + first_half)];
             beta_s[j | (1ULL << i)] = tmp;
             beta_s[j] = beta_s[j] - tmp;
@@ -55,7 +61,7 @@ void initHalfTable(vector<F> &beta_f, vector<F> &beta_s, const vector<F>::const_
 
 
 static ThreadSafeQueue<int> workerq,endq;
-void initBetaTable_worker(vector<F> &beta_g,vector<F> &beta_f,vector<F> &beta_s,int*&L,int*&R,int first_half,int mask_fhalf)
+template<class Vector> void initBetaTable_worker(Vector &beta_g,vector<F> &beta_f,vector<F> &beta_s,u64*&L,u64*&R,int first_half,u64 mask_fhalf)
 {
     int idx;
     while (true)
@@ -63,15 +69,15 @@ void initBetaTable_worker(vector<F> &beta_g,vector<F> &beta_f,vector<F> &beta_s,
         bool ret=workerq.TryPop(idx);
         if(ret==false)
             return;
-        int l=L[idx],r=R[idx];
-        for(int kp=l;kp<r;kp++)
+        u64 l=L[idx],r=R[idx];
+        for(u64 kp=l;kp<r;kp++)
         {
             beta_g[kp] = beta_f[kp & mask_fhalf] * beta_s[kp >> first_half];
         }
         endq.Push(idx);
     }
 }
-void initBetaTable_worker2(vector<F> &beta_g,vector<F> &beta_f,vector<F> &beta_s,int*&L,int*&R,int first_half,int mask_fhalf)
+template<class Vector> void initBetaTable_worker2(Vector &beta_g,vector<F> &beta_f,vector<F> &beta_s,u64*&L,u64*&R,int first_half,u64 mask_fhalf)
 {
     int idx;
     while (true)
@@ -79,33 +85,34 @@ void initBetaTable_worker2(vector<F> &beta_g,vector<F> &beta_f,vector<F> &beta_s
         bool ret=workerq.TryPop(idx);
         if(ret==false)
             return;
-        int l=L[idx],r=R[idx];
-        for(int kp=l;kp<r;kp++)
+        u64 l=L[idx],r=R[idx];
+        for(u64 kp=l;kp<r;kp++)
         {
             beta_g[kp] += beta_f[kp & mask_fhalf] * beta_s[kp >> first_half];
         }
         endq.Push(idx);
     }
 }
-void initBetaTable(vector<F> &beta_g, u8 gLength, const vector<F>::const_iterator &r_0, const vector<F>::const_iterator &r_1,
+template<class Vector> void initBetaTable_impl(Vector &beta_g, u8 gLength, const vector<F>::const_iterator &r_0, const vector<F>::const_iterator &r_1,
               const F &alpha, const F &beta,int thd) 
 {
     u8 first_half = gLength >> 1, second_half = gLength - first_half;
-    u32 mask_fhalf = (1ULL << first_half) - 1;
+    u64 mask_fhalf = (1ULL << first_half) - 1;
 
     vector<F> beta_f(1ULL << first_half), beta_s(1ULL << second_half);
     if (!beta.isZero()) {
         initHalfTable(beta_f, beta_s, r_1, beta, first_half, second_half);
         if(thd==1 || gLength<15)
         {
-            for (u32 i = 0; i < (1ULL << gLength); ++i)
+            for (u64 i = 0; i < (1ULL << gLength); ++i)
                 beta_g[i] = beta_f[i & mask_fhalf] * beta_s[i >> first_half];
         }
         else
         {
             const int k=10;
-            int total_work=(1ULL << gLength);
-            int *L=new int [(1<<k)],*R=new int [(1<<k)];
+            std::vector<std::thread> workers;
+            u64 total_work=(1ULL << gLength);
+            u64 *L=new u64 [(1<<k)],*R=new u64 [(1<<k)];
             for (u64 j = 0; j < (1<<k); ++j) 
             {
                 workerq.Push(j);
@@ -114,30 +121,33 @@ void initBetaTable(vector<F> &beta_g, u8 gLength, const vector<F>::const_iterato
             }
             for(int j=0;j<thd;j++)
             {
-                thread t(initBetaTable_worker,std::ref(beta_g),std::ref(beta_f),std::ref(beta_s),std::ref(L),std::ref(R),first_half,mask_fhalf); 
-                t.detach();
+                workers.emplace_back(initBetaTable_worker<Vector>,std::ref(beta_g),std::ref(beta_f),std::ref(beta_s),std::ref(L),std::ref(R),first_half,mask_fhalf);
             }
             while(!workerq.Empty())
                 this_thread::sleep_for (std::chrono::microseconds(10));
             while(endq.Size()!=(1<<k))
                 this_thread::sleep_for (std::chrono::microseconds(10));
             endq.Clear();
+        for (auto& worker : workers) worker.join();
+        delete[] L;
+        delete[] R;
         }
-    } else for (u32 i = 0; i < (1ULL << gLength); ++i)
+    } else for (u64 i = 0; i < (1ULL << gLength); ++i)
         beta_g[i].clear();
 
     if (alpha.isZero()) return;
     initHalfTable(beta_f, beta_s, r_0, alpha, first_half, second_half);
     if(thd==1 || gLength<15)
     {
-        for (u32 i = 0; i < (1ULL << gLength); ++i)
+        for (u64 i = 0; i < (1ULL << gLength); ++i)
             beta_g[i] += beta_f[i & mask_fhalf] * beta_s[i >> first_half];
     }
     else
         {
             const int k=10;
-            int total_work=(1ULL << gLength);
-            int *L=new int [(1<<k)],*R=new int [(1<<k)];
+            std::vector<std::thread> workers;
+            u64 total_work=(1ULL << gLength);
+            u64 *L=new u64 [(1<<k)],*R=new u64 [(1<<k)];
             for (u64 j = 0; j < (1<<k); ++j) 
             {
                 workerq.Push(j);
@@ -146,24 +156,26 @@ void initBetaTable(vector<F> &beta_g, u8 gLength, const vector<F>::const_iterato
             }
             for(int j=0;j<thd;j++)
             {
-                thread t(initBetaTable_worker2,std::ref(beta_g),std::ref(beta_f),std::ref(beta_s),std::ref(L),std::ref(R),first_half,mask_fhalf); 
-                t.detach();
+                workers.emplace_back(initBetaTable_worker2<Vector>,std::ref(beta_g),std::ref(beta_f),std::ref(beta_s),std::ref(L),std::ref(R),first_half,mask_fhalf);
             }
             while(!workerq.Empty())
                 this_thread::sleep_for (std::chrono::microseconds(10));
             while(endq.Size()!=(1<<k))
                 this_thread::sleep_for (std::chrono::microseconds(10));
             endq.Clear();
+        for (auto& worker : workers) worker.join();
+        delete[] L;
+        delete[] R;
         }
 }
 
 
-void initBetaTable(vector<F> &beta_g, u8 gLength, const vector<F>::const_iterator &r, const F &init,int thd) 
+template<class Vector> void initBetaTable_impl(Vector &beta_g, u8 gLength, const vector<F>::const_iterator &r, const F &init,int thd) 
 {
     if (gLength == -1) 
         return;
     int first_half = gLength >> 1, second_half = gLength - first_half;
-    u32 mask_fhalf = (1ULL << first_half) - 1;
+    u64 mask_fhalf = (1ULL << first_half) - 1;
     vector<F> beta_f(1ULL << first_half), beta_s(1ULL << second_half);
     if (!init.isZero()) 
     {
@@ -171,14 +183,15 @@ void initBetaTable(vector<F> &beta_g, u8 gLength, const vector<F>::const_iterato
         //cout<<"compute beta "<<(int)gLength<<endl;
         if(thd==1 || gLength<15)
         {
-            for (u32 i = 0; i < (1ULL << gLength); ++i)
+            for (u64 i = 0; i < (1ULL << gLength); ++i)
                 beta_g[i] = beta_f[i & mask_fhalf] * beta_s[i >> first_half];
         }
         else
         {
             const int k=10;
-            int total_work=(1ULL << gLength);
-            int *L=new int [(1<<k)],*R=new int [(1<<k)];
+            std::vector<std::thread> workers;
+            u64 total_work=(1ULL << gLength);
+            u64 *L=new u64 [(1<<k)],*R=new u64 [(1<<k)];
             for (u64 j = 0; j < (1<<k); ++j) 
             {
                 workerq.Push(j);
@@ -187,19 +200,26 @@ void initBetaTable(vector<F> &beta_g, u8 gLength, const vector<F>::const_iterato
             }
             for(int j=0;j<thd;j++)
             {
-                thread t(initBetaTable_worker,std::ref(beta_g),std::ref(beta_f),std::ref(beta_s),std::ref(L),std::ref(R),first_half,mask_fhalf); 
-                t.detach();
+                workers.emplace_back(initBetaTable_worker<Vector>,std::ref(beta_g),std::ref(beta_f),std::ref(beta_s),std::ref(L),std::ref(R),first_half,mask_fhalf);
             }
             while(!workerq.Empty())
                 this_thread::sleep_for (std::chrono::microseconds(10));
             while(endq.Size()!=(1<<k))
                 this_thread::sleep_for (std::chrono::microseconds(10));
             endq.Clear();
+        for (auto& worker : workers) worker.join();
+        delete[] L;
+        delete[] R;
         }
     } 
-    else for (u32 i = 0; i < (1ULL << gLength); ++i)
+    else for (u64 i = 0; i < (1ULL << gLength); ++i)
         beta_g[i].clear();
 }
+
+void initBetaTable(vector<F> &values, u8 bits, const vector<F>::const_iterator &r0, const vector<F>::const_iterator &r1, const F &alpha, const F &beta, int threads) { initBetaTable_impl(values, bits, r0, r1, alpha, beta, threads); }
+void initBetaTable(vector<F> &values, u8 bits, const vector<F>::const_iterator &point, const F &initial, int threads) { initBetaTable_impl(values, bits, point, initial, threads); }
+void initBetaTable(zkgpt::NativeFieldVector &values, u8 bits, const vector<F>::const_iterator &r0, const vector<F>::const_iterator &r1, const F &alpha, const F &beta, int threads) { initBetaTable_impl(values, bits, r0, r1, alpha, beta, threads); }
+void initBetaTable(zkgpt::NativeFieldVector &values, u8 bits, const vector<F>::const_iterator &point, const F &initial, int threads) { initBetaTable_impl(values, bits, point, initial, threads); }
 
 bool check(long x, long y, long nx, long ny) 
 {

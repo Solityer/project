@@ -3,6 +3,8 @@
 #include <mcl/bn256.hpp>
 
 #include <iostream>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -120,6 +122,149 @@ static bool fixed_v_binding_fixture() {
     return true;
 }
 
+static std::shared_ptr<const NativeMaskedPublicProvider> constant_public_provider(const F& coefficient) {
+    auto provider = std::make_shared<NativeMaskedPublicProvider>();
+    provider->size = 1;
+    provider->value_at = [coefficient](std::uint64_t index) {
+        if (index != 0) throw std::out_of_range("constant public coefficient index is outside its domain");
+        return coefficient;
+    };
+    provider->evaluate_mle = [coefficient](const std::vector<F>& point) {
+        if (!point.empty()) throw std::invalid_argument("constant public coefficient expects the empty point");
+        return coefficient;
+    };
+    return provider;
+}
+
+static bool product3_public_constant_factor_fixture(const F& coefficient, const F& left, const F& right, const std::string& label) {
+    std::string reason;
+    NativeProofSession session("native-product3-public-constant-v1", statement_fixture());
+    const auto basis = zkgpt::native_pedersen::derive_basis("zkgpt/masked-sumcheck/v2/" + session.statement_digest());
+    const auto initial = zkgpt::native_pedersen::commit_fresh(basis, F_ZERO);
+
+    NativeMaskedTerminalSpec prover_spec;
+    prover_spec.kind = NativeMaskedTerminalKind::Product3Public;
+    prover_spec.public_provider = constant_public_provider(coefficient);
+    prover_spec.has_external_binding = true;
+    prover_spec.public_initial_claim = true;
+    prover_spec.initial_opening = initial;
+    prover_spec.initial_commitment = initial.commitment;
+    prover_spec.unmasked_terminal_openings = {zkgpt::native_pedersen::commit_fresh(basis, left),
+                                              zkgpt::native_pedersen::commit_fresh(basis, right)};
+
+    NativeMaskedSumcheckProver prover(session, label, 3, F_ZERO, prover_spec);
+    NativeMaskedSumcheckResult proved;
+    if (!prover.finish({left, right}, &proved, &reason)) {
+        std::cerr << "Product3Public constant-factor prover failed: " << reason << '\n';
+        return false;
+    }
+
+    NativeMaskedTerminalSpec verify_spec = prover_spec;
+    verify_spec.initial_opening = {};
+    verify_spec.unmasked_terminal_openings.clear();
+    verify_spec.terminal_commitments = proved.terminal_commitments;
+    NativeMaskedSumcheckResult verified;
+    if (!native_masked_sumcheck_verify(session, label, 3, 0, F_ZERO, verify_spec, &verified, &reason)) {
+        std::cerr << "Product3Public constant-factor verifier failed: " << reason << '\n';
+        return false;
+    }
+    return true;
+}
+
+static bool product3_public_degree3_reference_fixture() {
+    std::string reason;
+    const F beta(7);
+    auto provider = std::make_shared<NativeMaskedPublicProvider>();
+    provider->size = 2;
+    provider->value_at = [beta](std::uint64_t index) {
+        if (index > 1) throw std::out_of_range("equality coefficient index is outside its domain");
+        return index == 0 ? F_ONE - beta : beta;
+    };
+    provider->evaluate_mle = [beta](const std::vector<F>& point) {
+        if (point.size() != 1) throw std::invalid_argument("one-coordinate equality coefficient has wrong point arity");
+        return (F_ONE - beta) * (F_ONE - point[0]) + beta * point[0];
+    };
+
+    NativeProofSession session("native-product3-public-degree3-v1", statement_fixture());
+    const auto basis = zkgpt::native_pedersen::derive_basis("zkgpt/masked-sumcheck/v2/" + session.statement_digest());
+    const auto initial = zkgpt::native_pedersen::commit_fresh(basis, F_ZERO);
+    NativeMaskedTerminalSpec prover_spec;
+    prover_spec.kind = NativeMaskedTerminalKind::Product3Public;
+    prover_spec.public_provider = provider;
+    prover_spec.has_external_binding = true;
+    prover_spec.public_initial_claim = true;
+    prover_spec.initial_opening = initial;
+    prover_spec.initial_commitment = initial.commitment;
+    prover_spec.unmasked_terminal_openings = {zkgpt::native_pedersen::commit_fresh(basis, F_ZERO),
+                                              zkgpt::native_pedersen::commit_fresh(basis, F_ZERO)};
+
+    // Dense reference for sum_x eq(beta,x) m(x)(m(x)-1), m=[0,1].
+    // Its one-variable round polynomial is cubic, while its Boolean-cube sum is zero.
+    std::vector<F> round_poly(4);
+    for (std::size_t i = 0; i < round_poly.size(); ++i) {
+        const F t(static_cast<int>(i));
+        const F beta_at_t = (F_ONE - beta) * (F_ONE - t) + beta * t;
+        round_poly[i] = beta_at_t * t * (t - F_ONE);
+    }
+    if (round_poly[0] + round_poly[1] != F_ZERO) {
+        std::cerr << "Product3Public dense reference does not sum to its Boolean-cube claim\n";
+        return false;
+    }
+
+    NativeMaskedSumcheckProver prover(session, "booleanity/weighted/product3", 3, F_ZERO, prover_spec);
+    F challenge;
+    if (!prover.append_round(round_poly, &challenge, &reason)) {
+        std::cerr << "Product3Public degree-three round failed: " << reason << '\n';
+        return false;
+    }
+    const F beta_at_challenge = (F_ONE - beta) * (F_ONE - challenge) + beta * challenge;
+    if (beta_at_challenge.isZero()) {
+        std::cerr << "Product3Public reference challenge hit the zero public factor\n";
+        return false;
+    }
+    prover_spec.unmasked_terminal_openings = {zkgpt::native_pedersen::commit_fresh(basis, challenge),
+                                              zkgpt::native_pedersen::commit_fresh(basis, challenge - F_ONE)};
+    if (!prover.set_terminal_spec(prover_spec, &reason)) {
+        std::cerr << "Product3Public degree-three terminal spec failed: " << reason << '\n';
+        return false;
+    }
+    NativeMaskedSumcheckResult proved;
+    if (!prover.finish({challenge, challenge - F_ONE}, &proved, &reason)) {
+        std::cerr << "Product3Public degree-three prover failed: " << reason << '\n';
+        return false;
+    }
+    if (proved.unmasked_claim_opening.value != beta_at_challenge * challenge * (challenge - F_ONE)) {
+        std::cerr << "Product3Public terminal claim differs from dense reference\n";
+        return false;
+    }
+
+    NativeMaskedTerminalSpec verify_spec = prover_spec;
+    verify_spec.initial_opening = {};
+    verify_spec.unmasked_terminal_openings.clear();
+    verify_spec.terminal_commitments = proved.terminal_commitments;
+    if (!native_masked_sumcheck_verify(session, "booleanity/weighted/product3", 3, 1, F_ZERO, verify_spec, nullptr, &reason)) {
+        std::cerr << "Product3Public degree-three verifier failed: " << reason << '\n';
+        return false;
+    }
+
+    auto tampered_provider = std::make_shared<NativeMaskedPublicProvider>();
+    tampered_provider->size = 2;
+    tampered_provider->value_at = [](std::uint64_t index) {
+        if (index > 1) throw std::out_of_range("tampered coefficient index is outside its domain");
+        return F_ZERO;
+    };
+    tampered_provider->evaluate_mle = [](const std::vector<F>& point) {
+        if (point.size() != 1) throw std::invalid_argument("tampered coefficient point arity mismatch");
+        return F_ZERO;
+    };
+    verify_spec.public_provider = tampered_provider;
+    if (native_masked_sumcheck_verify(session, "booleanity/weighted/product3", 3, 1, F_ZERO, verify_spec, nullptr, &reason)) {
+        std::cerr << "Product3Public coefficient tamper was accepted\n";
+        return false;
+    }
+    return true;
+}
+
 int main() {
     initPairing(mcl::BN254);
     std::string reason;
@@ -207,6 +352,10 @@ int main() {
         return 7;
     }
     if (!fixed_v_binding_fixture()) return 8;
+    if (!product3_public_constant_factor_fixture(F_ZERO, Fr(2), Fr(3), "product3-public/zero")) return 9;
+    if (!product3_public_constant_factor_fixture(F_ONE, F_ZERO, Fr(3), "product3-public/one")) return 10;
+    if (!product3_public_constant_factor_fixture(Fr(7), F_ZERO, Fr(3), "product3-public/general")) return 11;
+    if (!product3_public_degree3_reference_fixture()) return 12;
     std::cout << "native_masked_sumcheck_smoke: PASS\n";
     return 0;
 }

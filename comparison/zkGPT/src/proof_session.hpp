@@ -42,6 +42,8 @@ struct NativeProofStatement {
     std::string root() const;
     std::string structured_root() const;
     static std::string basis_digest_for(const G1& G, const std::vector<G1>& generators, const std::vector<F>& basis, std::uint64_t l_dimension);
+    static std::string basis_descriptor_digest_for(const G1& H, const std::string& canonical_basis_label, const std::string& canonical_basis_id,
+                                                   const std::string& generator_derivation_id, std::uint64_t full_domain);
     bool valid(std::string* reason = nullptr) const;
 };
 
@@ -111,7 +113,13 @@ class NativeProofSession {
 
     std::string message_body_cache_;
     std::unordered_map<std::string, std::vector<std::size_t>> label_positions_;
+    std::unordered_map<std::string, std::uint64_t> challenge_round_last_;
     mutable std::unordered_set<std::string> verified_opening_cache_;
+    mutable std::size_t validated_prefix_size_ = 0;
+    mutable std::unordered_set<std::string> validated_challenge_labels_;
+    mutable std::unordered_map<std::string, std::uint64_t> validated_challenge_round_last_;
+    mutable std::size_t replayed_prefix_size_ = 0;
+    mutable std::string replayed_message_body_;
 
     std::uint64_t content_version_ = 0;
     mutable bool valid_cache_ = false;

@@ -9,25 +9,26 @@
 #include <string>
 #include "global_var.hpp"
 #include "hyrax.hpp"
+#include "../gat_adapter/native_storage.hpp"
 using std::cerr;
 using std::endl;
 using std::vector;
 
 struct uniGate {
-    u32 g, u;
+    u64 g, u;
     u8 lu;
     ll sc;
-    uniGate(u32 _g, u32 _u, u8 _lu, ll _sc) :
+    uniGate(u64 _g, u64 _u, u8 _lu, ll _sc) :
         g(_g), u(_u), lu(_lu), sc(_sc) {
     }
 };
 
 struct binGate 
 {
-    u32 g, u, v;
+    u64 g, u, v;
     u8  l;
     ll sc;
-    binGate(u32 _g, u32 _u, u32 _v, ll _sc, u8 _l):
+    binGate(u64 _g, u64 _u, u64 _v, ll _sc, u8 _l):
         g(_g), u(_u), v(_v), sc(_sc), l(_l) 
         {
     }
@@ -42,25 +43,25 @@ enum class layerType {
 class layer {
 public:
     layerType ty;
-    std::vector<pair<int,int> > uni_interval,bin_interval;
-	u32 size{}, size_u[2]{}, size_v[2]{};
+    std::vector<pair<u64,u64> > uni_interval,bin_interval;
+	u64 size{}, size_u[2]{}, size_v[2]{};
 	i8 bit_length_u[2]{}, bit_length_v[2]{}, bit_length{};
     i8 max_bl_u{}, max_bl_v{};
 
     bool need_phase2;
 
     // bit decomp related
-    u32 zero_start_id;
+    u64 zero_start_id;
 
-    std::vector<uniGate> uni_gates;
-	std::vector<binGate> bin_gates;
+    zkgpt::NativeVector<uniGate> uni_gates;
+	zkgpt::NativeVector<binGate> bin_gates;
 
-    vector<u32> ori_id_u, ori_id_v;
+    zkgpt::NativeVector<u64> ori_id_u, ori_id_v;
     i8 fft_bit_length;
 
     std::string native_relation_id;
     std::string native_family_id;
-    u32 native_rows{}, native_inner{}, native_cols{};
+    u64 native_rows{}, native_inner{}, native_cols{};
     u64 native_lhs_offset{}, native_rhs_offset{}, native_output_offset{};
 
     // iFFT or avg pooling.

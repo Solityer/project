@@ -1,57 +1,51 @@
 #include "circuit.h"
 #include "utils.hpp"
+#include <stdexcept>
+#include <algorithm>
 
 void layeredCircuit::initSubset() 
 {
-    vector<int> visited_uidx(circuit[0].size);  // whether the i-th layer, j-th gate has been visited in the current layer
-    vector<u64> subset_uidx(circuit[0].size);   // the subset index of the i-th layer, j-th gate
-    vector<int> visited_vidx(circuit[0].size);  // whether the i-th layer, j-th gate has been visited in the current layer
-    vector<u64> subset_vidx(circuit[0].size);   // the subset index of the i-th layer, j-th gate
     for (int i = 1; i < size; ++i) 
     {
         auto &cur = circuit[i], &lst = circuit[i - 1];
-        bool has_pre_layer_u = circuit[i].ty == layerType::FFT || circuit[i].ty == layerType::IFFT;
-        bool has_pre_layer_v = false;
-        bool has_v_operand = false;
-        for (auto &gate: cur.uni_gates) 
-        {
-            if (!gate.lu) 
-            {
-                if (visited_uidx[gate.u] != i) 
-                {
-                    visited_uidx[gate.u] = i;
-                    subset_uidx[gate.u] = cur.size_u[0];
-                    cur.ori_id_u.push_back(gate.u);
-                    ++cur.size_u[0];
-                }
-                gate.u = subset_uidx[gate.u];
-            }
-            has_pre_layer_u |= (gate.lu != 0);
+        zkgpt::NativeVector<std::pair<u64, u64>> subset_uidx, subset_vidx;
+        bool has_pre_layer_u = cur.ty == layerType::FFT || cur.ty == layerType::IFFT;
+        bool has_pre_layer_v = false, has_v_operand = false;
+        auto collect = [&](auto& map, u64 coordinate) {
+            if (coordinate >= circuit[0].size) throw std::out_of_range("native GKR input index exceeds domain");
+            map.emplace_back(coordinate, map.size());
+        };
+        for (const auto& gate : cur.uni_gates) {
+            if (!gate.lu) collect(subset_uidx, gate.u);
+            has_pre_layer_u |= gate.lu != 0;
         }
-        for (auto &gate: cur.bin_gates) 
-        {
+        for (const auto& gate : cur.bin_gates) {
             has_v_operand = true;
-            if (!gate.getLayerIdU(i)) 
-            {
-                if (visited_uidx[gate.u] != i) {
-                    visited_uidx[gate.u] = i;
-                    subset_uidx[gate.u] = cur.size_u[0];
-                    cur.ori_id_u.push_back(gate.u);
-                    ++cur.size_u[0];
-                }
-                gate.u = subset_uidx[gate.u];
-            }
-            if (!gate.getLayerIdV(i)) {
-                if (visited_vidx[gate.v] != i) {
-                    visited_vidx[gate.v] = i;
-                    subset_vidx[gate.v] = cur.size_v[0];
-                    cur.ori_id_v.push_back(gate.v);
-                    ++cur.size_v[0];
-                }
-                gate.v = subset_vidx[gate.v];
-            }
-            has_pre_layer_u |= (gate.getLayerIdU(i) != 0);
-            has_pre_layer_v |= (gate.getLayerIdV(i) != 0);
+            if (!gate.getLayerIdU(i)) collect(subset_uidx, gate.u);
+            if (!gate.getLayerIdV(i)) collect(subset_vidx, gate.v);
+            has_pre_layer_u |= gate.getLayerIdU(i) != 0;
+            has_pre_layer_v |= gate.getLayerIdV(i) != 0;
+        }
+        auto finish_map = [](auto& map, auto& original, u64& count) {
+            std::sort(map.begin(), map.end());
+            map.erase(std::unique(map.begin(), map.end(), [](const auto& left, const auto& right) { return left.first == right.first; }), map.end());
+            std::sort(map.begin(), map.end(), [](const auto& left, const auto& right) { return left.second < right.second; });
+            original.reserve(map.size());
+            count = map.size();
+            for (u64 index = 0; index < count; ++index) { original.push_back(map[index].first); map[index].second = index; }
+            std::sort(map.begin(), map.end());
+        };
+        finish_map(subset_uidx, cur.ori_id_u, cur.size_u[0]);
+        finish_map(subset_vidx, cur.ori_id_v, cur.size_v[0]);
+        auto subset_index = [](const auto& map, u64 coordinate) {
+            const auto found = std::lower_bound(map.begin(), map.end(), coordinate, [](const auto& entry, u64 target) { return entry.first < target; });
+            if (found == map.end() || found->first != coordinate) throw std::logic_error("native GKR input subset map is incomplete");
+            return found->second;
+        };
+        for (auto& gate : cur.uni_gates) if (!gate.lu) gate.u = subset_index(subset_uidx, gate.u);
+        for (auto& gate : cur.bin_gates) {
+            if (!gate.getLayerIdU(i)) gate.u = subset_index(subset_uidx, gate.u);
+            if (!gate.getLayerIdV(i)) gate.v = subset_index(subset_vidx, gate.v);
         }
         cur.bit_length_u[0] = ceilPow2BitLength(cur.size_u[0]);
         cur.bit_length_v[0] = ceilPow2BitLength(cur.size_v[0]);

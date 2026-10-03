@@ -342,6 +342,9 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
                 selected = candidate
     if selected is None:
         fail("local random SRS has no selectable chunk")
+    maximum_logical = max(chunk["logical_domain"] for family in families for chunk in family["chunks"])
+    if maximum_logical != logical_domain or selected[2]["logical_domain"] != logical_domain:
+        fail("SRS setup/default logical domain does not cover its family registry exactly")
     return srs, manifest, selected[2]["generator_digest"]
 
 

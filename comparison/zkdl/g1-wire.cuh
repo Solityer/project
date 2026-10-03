@@ -8,11 +8,16 @@
  * form.  A proof wire must not expose that implementation detail: points are
  * encoded as the IETF 48-byte compressed affine form and are checked for
  * canonical field representation, curve membership, and the prime-order
- * subgroup before being admitted.  This header deliberately uses only the
- * local CPU arithmetic below; it has no dependency on a third-party runtime.
+ * subgroup before being admitted.  GAT builds use the pinned baseline-local
+ * blst codec; unchanged upstream helpers retain the portable local codec.
  */
 
 #include "g1-tensor.cuh"
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+namespace zkdl_blst {
+#include "third_party/blst/bindings/blst.h"
+}
+#endif
 
 #include <array>
 #include <cstdint>
@@ -408,6 +413,45 @@ inline Fp sqrt_exponent() {
     return out;
 }
 
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+// Both backends use BLS12-381 Fp Montgomery residues with R=2^384.
+inline zkdl_blst::blst_fp blst_from_native(const blstrs__fp__Fp& value) {
+    static_assert(sizeof(zkdl_blst::blst_fp) == 48U, "unexpected blst Fp representation");
+    zkdl_blst::blst_fp out{};
+    for (std::size_t i = 0U; i < 6U; ++i) out.l[i] = static_cast<std::uint64_t>(value.val[2U * i]) | (static_cast<std::uint64_t>(value.val[2U * i + 1U]) << 32U);
+    return out;
+}
+
+inline blstrs__fp__Fp native_from_blst(const zkdl_blst::blst_fp& value) {
+    blstrs__fp__Fp out{};
+    for (std::size_t i = 0U; i < 6U; ++i) { out.val[2U * i] = static_cast<std::uint32_t>(value.l[i]); out.val[2U * i + 1U] = static_cast<std::uint32_t>(value.l[i] >> 32U); }
+    return out;
+}
+
+inline bool encode(const G1Jacobian_t& native, std::array<byte, 48U>& out, std::string* error = nullptr) {
+    if (compare(native_raw(native.x), kModulus) >= 0 || compare(native_raw(native.y), kModulus) >= 0 || compare(native_raw(native.z), kModulus) >= 0) { if (error) *error = "cannot encode a non-canonical G1 field coordinate"; return false; }
+    if (native_raw(native.z) == Fp{}) {
+        if (native_raw(native.x) != Fp{} || native_raw(native.y) != kMontgomeryOne) { if (error) *error = "cannot encode non-canonical G1 infinity"; return false; }
+        out.fill(0U); out[0] = 0xc0U;
+        return true;
+    }
+    const zkdl_blst::blst_p1 point{blst_from_native(native.x), blst_from_native(native.y), blst_from_native(native.z)};
+    if (!zkdl_blst::blst_p1_on_curve(&point) || !zkdl_blst::blst_p1_in_g1(&point)) { if (error) *error = "cannot encode invalid G1 point"; return false; }
+    zkdl_blst::blst_p1_compress(out.data(), &point);
+    return true;
+}
+
+inline bool decode(const std::array<byte, 48U>& encoded, G1Jacobian_t& native, std::string* error = nullptr) {
+    zkdl_blst::blst_p1_affine point{};
+    if (zkdl_blst::blst_p1_uncompress(&point, encoded.data()) != zkdl_blst::BLST_SUCCESS || !zkdl_blst::blst_p1_affine_on_curve(&point) || !zkdl_blst::blst_p1_affine_in_g1(&point)) { if (error) *error = "G1 decoded point failed canonical curve/subgroup validation"; return false; }
+    std::array<byte, 48U> roundtrip{};
+    zkdl_blst::blst_p1_affine_compress(roundtrip.data(), &point);
+    if (roundtrip != encoded) { if (error) *error = "G1 point failed canonical decode/encode roundtrip"; return false; }
+    if (zkdl_blst::blst_p1_affine_is_inf(&point)) native = G1Jacobian_t{native_from_raw(Fp{}), native_from_raw(kMontgomeryOne), native_from_raw(Fp{})};
+    else native = G1Jacobian_t{native_from_blst(point.x), native_from_blst(point.y), native_from_raw(kMontgomeryOne)};
+    return true;
+}
+#else
 inline bool encode(const G1Jacobian_t& native, std::array<byte, 48U>& out,
                    std::string* error = nullptr) {
     if (compare(native_raw(native.x), kModulus) >= 0 ||
@@ -508,6 +552,8 @@ inline bool decode(const std::array<byte, 48U>& encoded, G1Jacobian_t& native,
     }
     return true;
 }
+
+#endif
 
 }  // namespace zkdl_g1_wire
 

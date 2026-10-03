@@ -37,6 +37,9 @@ from common import (
     formal_backend_capability,
     FORMAL_BACKENDS,
     load_json,
+    paper_metrics,
+    invalidate_results,
+    run_logged,
     local_path,
     new_run_nonce,
     relative_path,
@@ -53,6 +56,7 @@ from common import (
     sha256_file,
     validate_registration_artifact,
     verifier_binary,
+    verify_build_provenance,
 )
 
 
@@ -162,7 +166,7 @@ def ensure_registration(
     secret_exists = secret_path.exists()
     if registration_exists != secret_exists:
         raise ChainError(f"incomplete model registration pair for {dataset}/{backend}")
-    if not registration_exists:
+    if not registration_exists or load_json(registration_path).get("schema") != "zkgpt-gat-model-registration-v2":
         command = [sys.executable, str(root / "scripts" / "register_model.py"),
                    "--dataset", dataset, "--backend", backend]
         registered = subprocess.run(command, cwd=str(root), text=True,
@@ -233,19 +237,13 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     registration_relative, secret_relative, registration = ensure_registration(
         root, dataset, backend, run_relative, run_path, config
     )
+    process_telemetry: Dict[str, Any] = {"prover": {}, "verifier": {}}
     prover_start = time.perf_counter()
-    completed = subprocess.run(
-        [str(prover), "--dataset", dataset, "--backend", backend,
-         "--baseline-root", str(root), "--config", config_relative,
-         "--registration", registration_relative, "--com-w-secret", secret_relative],
-        cwd=str(root), text=True, capture_output=True, check=False,
-    )
+    completed_returncode = run_logged([str(prover), "--dataset", dataset, "--backend", backend, "--baseline-root", str(root), "--config", config_relative, "--registration", registration_relative, "--com-w-secret", secret_relative], root, run_path / "prover.stdout.log", run_path / "prover.stderr.log", f"{dataset}/{backend}/prover", process_telemetry["prover"])
     prover_wall_ms = (time.perf_counter() - prover_start) * 1000.0
-    atomic_write_text(run_path / "prover.stdout.log", completed.stdout, root)
-    atomic_write_text(run_path / "prover.stderr.log", completed.stderr, root)
     result_path = run_path / "result.json"
-    if completed.returncode != 0:
-        raise ChainError(f"native prover failed with {completed.returncode}; see {run_relative}/prover.stderr.log")
+    if completed_returncode != 0:
+        raise ChainError(f"native prover failed with {completed_returncode}; see {run_relative}/prover.stderr.log")
     result = require_result_shape(load_json(result_path, "native result"), result_path)
     if result.get("dataset") != dataset or result.get("backend") != backend or result.get("status") != "VERIFY_OK" or result.get("verification_status") != "VERIFY_OK":
         raise ChainError(f"native result is not a matching VERIFY_OK cell: {result_path}")
@@ -267,17 +265,11 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     assert_fresh_files((result_path, context_path, logits_path, statement_path, artifact), run_started_ns)
     report_rel = f"{run_relative}/verifier_report.json"
     verifier_start = time.perf_counter()
-    verified = subprocess.run(
-        [str(verifier), "--baseline-root", str(root), "--verifier-context", context_rel,
-         "--public-logits", logits_rel, "--artifact", relative_path(root, artifact, "proof artifact"),
-        "--report", report_rel], cwd=str(root), text=True, capture_output=True, check=False,
-    )
+    verified_returncode = run_logged([str(verifier), "--baseline-root", str(root), "--verifier-context", context_rel, "--public-logits", logits_rel, "--artifact", relative_path(root, artifact, "proof artifact"), "--report", report_rel], root, run_path / "verifier.stdout.log", run_path / "verifier.stderr.log", f"{dataset}/{backend}/verifier", process_telemetry["verifier"])
     verifier_wall_ms = (time.perf_counter() - verifier_start) * 1000.0
-    atomic_write_text(run_path / "verifier.stdout.log", verified.stdout, root)
-    atomic_write_text(run_path / "verifier.stderr.log", verified.stderr, root)
     report_path = run_path / "verifier_report.json"
-    if verified.returncode != 0:
-        raise ChainError(f"independent verifier rejected the cell ({verified.returncode}); see {report_rel}")
+    if verified_returncode != 0:
+        raise ChainError(f"independent verifier rejected the cell ({verified_returncode}); see {report_rel}")
     report = load_json(report_path, "independent verifier report")
     if not isinstance(report, dict):
         raise ChainError(f"independent verifier report is not an object: {report_path}")
@@ -293,6 +285,8 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     atomic_write_json(result_path, result, root)
     execution = {
         "schema": EXECUTION_SCHEMA, "dataset": dataset, "backend": backend,
+        "preflight_sha256": sha256_file(root / "results" / "formal_preflight.json"),
+        "paper_metrics": paper_metrics(result, report, report_path), "process_telemetry": process_telemetry,
         "status": "VERIFY_OK", "no_fallback": True, "native_backend": result["native_backend"],
         "run_nonce": run_nonce, "run_started_unix_ns": run_started_ns,
         "result_path": relative_path(root, result_path, "native result"),
@@ -342,12 +336,14 @@ def validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resourc
     entry = preflight.get("backends", {}).get(backend)
     if not isinstance(entry, dict) or entry.get("ready") is not True:
         raise ChainError(f"formal preflight has no ready {backend} backend")
+    if entry.get("source_tree_sha256") != verify_build_provenance(root, backend):
+        raise ChainError("formal preflight source identity is stale")
     prover = build_binary(root, backend)
     verifier = verifier_binary(root, backend)
     if entry.get("prover_fingerprint", {}).get("sha256") != sha256_file(prover) or entry.get("verifier_fingerprint", {}).get("sha256") != sha256_file(verifier):
         raise ChainError("formal preflight binary fingerprint is stale")
     capacities = preflight.get("capacity", {})
-    if set(capacities) != set(DATASETS) or any(not isinstance(capacities[d], dict) or capacities[d].get("status") != "READY" for d in DATASETS):
+    if set(capacities) != set(DATASETS) or any(not isinstance(capacities[d], dict) or (capacities[d].get("status") != "READY" or capacities[d].get("proof_path") != "native_layered_gkr" or capacities[d].get("full_relation_bound") is not True) for d in DATASETS):
         raise ChainError("formal preflight capacity matrix is incomplete")
 
 
@@ -359,14 +355,15 @@ def main(argv: Sequence[str]) -> int:
     args = parser.parse_args(list(argv))
     root = baseline_root()
     try:
+        invalidate_results(root)
         datasets = selection(args.datasets, DATASETS, "datasets")
-        backends = selection(args.backends, BACKENDS, "backends")
+        backends = selection(args.backends, FORMAL_BACKENDS, "backends")
         require_manifest(root, "resource_manifest.json", "zkgpt-gat-resource-manifest-v1")
         resource_manifest_digest = sha256_file(root / "results" / "resource_manifest.json")
         preflight = require_manifest(root, "formal_preflight.json", PREFLIGHT_SCHEMA)
         for backend in backends:
             validate_preflight_binding(root, preflight, resource_manifest_digest, backend)
-    except ChainError as exc:
+    except (ChainError, OSError, ValueError) as exc:
         print(f"EXPERIMENT_BLOCKED: {exc}", file=sys.stderr)
         return 2
     failures: List[str] = []

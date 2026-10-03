@@ -1180,7 +1180,7 @@ def print_plan() -> None:
     print("tiny fixture: mktemp baseline root; two nodes, four edges, nonzero checkpoint tensors")
     print("official chain: get-srs(k<=18) -> gat-prepare setup -> external producer -> gat-prepare final -> gat-witness -> prove -> verify")
     print("post-chain: statement/Y/producer-manifest tamper rejection -> CPU collector/final -> GPU/fallback/stale/missing rejection")
-    print("collector/final axis: --datasets cora --backends cpu (default five-dataset behavior remains unchanged)")
+    print("local CPU collector: --datasets cora --backends cpu; tiny validation uses the internal artifact validator; formal CLI requires five hybrid results")
 
 
 def main(args: argparse.Namespace) -> int:
@@ -1434,13 +1434,11 @@ def main(args: argparse.Namespace) -> int:
             "validate-tiny-cpu",
             [
                 sys.executable,
-                "scripts/validate_final.py",
-                "--matrix",
-                "results/tiny_matrix.json",
-                "--datasets",
-                TINY_DATASET,
-                "--backends",
-                "cpu",
+                "-c",
+                "import sys; from pathlib import Path; sys.path.insert(0, 'scripts'); "
+                "from validate_final import validate_matrix; "
+                "sys.exit(validate_matrix(Path('results/tiny_matrix.json'), "
+                "selected_datasets=('cora',), selected_backends=('cpu',)))",
             ],
             root=temp_root,
             log_dir=setup_output / "logs",

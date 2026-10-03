@@ -15,6 +15,32 @@ const std::size_t kMaxString = 1ULL << 26;
 const std::size_t kMaxMessages = 1ULL << 20;
 const std::uint64_t kMaxWireBytes = 1ULL << 30;
 
+bool decode_challenge_round(const std::string& label, std::string& stream, std::uint64_t& round, bool& is_round) {
+    const std::size_t slash = label.rfind('/');
+    is_round = false;
+    if (slash == std::string::npos) return true;
+    const std::string suffix = label.substr(slash + 1);
+    const std::size_t parent_slash = label.rfind('/', slash - 1);
+    const std::string axis = label.substr(parent_slash == std::string::npos ? 0 : parent_slash + 1, slash - (parent_slash == std::string::npos ? 0 : parent_slash + 1));
+    is_round = axis == "r" || axis == "r_u" || axis == "r_v" || axis == "c" || axis == "row-point" || axis == "sig_u" || axis == "sig_v" || axis == "r_minus" || axis == "weight";
+    const bool decimal = !suffix.empty() && suffix.find_first_not_of("0123456789") == std::string::npos;
+    if (!decimal) return !is_round;
+    if (suffix.size() > 1 && suffix.front() == '0') return false;
+    round = 0;
+    for (char digit : suffix) {
+        const std::uint64_t next = static_cast<std::uint64_t>(digit - '0');
+        if (round > (std::numeric_limits<std::uint64_t>::max() - next) / 10) return false;
+        round = round * 10 + next;
+    }
+    if (is_round) stream = label.substr(0, slash);
+    return true;
+}
+
+bool challenge_round_follows(const std::unordered_map<std::string, std::uint64_t>& rounds, const std::string& stream, std::uint64_t round) {
+    const auto previous = rounds.find(stream);
+    return previous == rounds.end() ? round == 0 : previous->second != std::numeric_limits<std::uint64_t>::max() && round == previous->second + 1;
+}
+
 void set_reason(std::string* reason, const std::string& value) {
     if (reason != nullptr) *reason = value;
 }
@@ -182,6 +208,28 @@ std::string NativeProofStatement::basis_digest_for(const G1& G, const std::vecto
     return std::string(64 - value.size(), '0') + value;
 }
 
+std::string NativeProofStatement::basis_descriptor_digest_for(const G1& H, const std::string& canonical_basis_label,
+                                                               const std::string& canonical_basis_id,
+                                                               const std::string& generator_derivation_id,
+                                                               std::uint64_t full_domain) {
+    if (canonical_basis_label.empty() || canonical_basis_id.empty() || generator_derivation_id.empty() || full_domain == 0 ||
+        (full_domain & (full_domain - 1)) != 0)
+        throw std::invalid_argument("invalid native canonical generator descriptor");
+    std::string encoded;
+    append_string(encoded, "zkgpt-native-basis-descriptor-v2");
+    append_string(encoded, canonical_basis_label);
+    append_string(encoded, canonical_basis_id);
+    append_string(encoded, generator_derivation_id);
+    append_u64(encoded, full_domain);
+    append_string(encoded, H.serializeToHexStr());
+    F digest;
+    digest.setHashOf(encoded.data(), encoded.size());
+    std::string value = digest.getStr(16);
+    if (value.empty()) value = "0";
+    if (value.size() > 64) throw std::runtime_error("native basis descriptor digest overflow");
+    return std::string(64 - value.size(), '0') + value;
+}
+
 bool NativeProofStatement::valid(std::string* reason) const {
     const auto fail = [&](const std::string& message) {
         if (reason != nullptr) *reason = message;
@@ -193,7 +241,9 @@ bool NativeProofStatement::valid(std::string* reason) const {
         return fail("native proof statement has a non-canonical digest");
     if (statement_root_digest != verifier_context_digest) return fail("native proof statement root does not match verifier context digest");
     if (!is_field_id(field_id)) return fail("native proof statement field id is invalid");
-    if (l_dimension == 0 || l_dimension > (1ULL << 30)) return fail("native proof statement L dimension is invalid");
+    if (l_dimension == 0 || (l_dimension & (l_dimension - 1)) != 0 ||
+        l_dimension > std::numeric_limits<std::uint64_t>::max() / 4)
+        return fail("native proof statement L dimension is invalid");
     if (relation_schema != "zkgpt-gat-relation-v1" && relation_schema != "zkgpt-gat-sparse-gkr-v1")
         return fail("native proof statement relation schema is unsupported");
     if (!is_lower_hex_digest(relation_digest)) return fail("native proof statement relation digest is not canonical");
@@ -286,12 +336,17 @@ F NativeProofSession::derive(const std::string& label) const {
 
 F NativeProofSession::challenge(const std::string& label) {
     if (is_challenge_label(label)) throw std::invalid_argument("native proof challenge label already has reserved prefix");
-    const F result = derive(label);
+    std::string round_stream;
+    std::uint64_t round = 0;
+    bool is_round = false;
     const std::string challenge_label = "challenge/" + label;
-    if (!messages_.empty() && messages_.back().kind == NativeProofMessageKind::Challenge && challenge_label <= messages_.back().label)
-        throw std::invalid_argument("native proof challenge order is not monotonic");
+    if (!decode_challenge_round(challenge_label, round_stream, round, is_round)) throw std::invalid_argument("native proof challenge round index is not canonical");
+    if (is_round && !challenge_round_follows(challenge_round_last_, round_stream, round))
+        throw std::invalid_argument("native proof challenge round schedule is not sequential at " + challenge_label);
+    const F result = derive(label);
     messages_.push_back(
         NativeProofMessage{NativeProofMessageKind::Challenge, challenge_label, field_encoding(result), static_cast<std::uint64_t>(messages_.size())});
+    if (is_round) challenge_round_last_[round_stream] = round;
     invalidate_validation_cache();
     label_positions_[messages_.back().label].push_back(messages_.size() - 1);
     append_message_encoding(message_body_cache_, messages_.back());
@@ -310,12 +365,24 @@ bool NativeProofSession::rollback(std::size_t checkpoint, std::string* reason) {
 
 void NativeProofSession::rebuild_message_body_cache() {
     invalidate_validation_cache();
+    validated_prefix_size_ = 0;
+    validated_challenge_labels_.clear();
+    validated_challenge_round_last_.clear();
+    challenge_round_last_.clear();
+    replayed_prefix_size_ = 0;
+    replayed_message_body_.clear();
     message_body_cache_.clear();
     label_positions_.clear();
     label_positions_.reserve(messages_.size());
     for (std::size_t index = 0; index < messages_.size(); ++index) {
         const NativeProofMessage& message = messages_[index];
         label_positions_[message.label].push_back(index);
+        if (message.kind == NativeProofMessageKind::Challenge) {
+            std::string stream;
+            std::uint64_t round = 0;
+            bool is_round = false;
+            if (decode_challenge_round(message.label, stream, round, is_round) && is_round) challenge_round_last_[stream] = round;
+        }
         append_message_encoding(message_body_cache_, message);
     }
 }
@@ -347,26 +414,21 @@ bool NativeProofSession::replay(std::string* reason) const {
 bool NativeProofSession::replay_uncached(std::string* reason) const {
     try {
         if (!valid(reason)) return false;
-        NativeProofSession prefix(domain_, statement_);
-        for (const NativeProofMessage& message : messages_) {
+        for (std::size_t index = replayed_prefix_size_; index < messages_.size(); ++index) {
+            const NativeProofMessage& message = messages_[index];
             if (message.kind == NativeProofMessageKind::Challenge) {
                 F expected;
-                if (!decode_field(message.payload, expected)) {
-                    set_reason(reason, "native proof challenge payload is not a field element");
-                    return false;
-                }
-                const std::string label = message.label.substr(sizeof("challenge/") - 1);
-                const F derived = prefix.derive(label);
-                if (derived != expected) {
-                    set_reason(reason, "native proof Fiat-Shamir challenge mismatch");
-                    return false;
-                }
-                prefix.messages_.push_back(message);
-                append_message_encoding(prefix.message_body_cache_, prefix.messages_.back());
-            } else {
-                prefix.messages_.push_back(message);
-                append_message_encoding(prefix.message_body_cache_, prefix.messages_.back());
+                if (!decode_field(message.payload, expected)) { set_reason(reason, "native proof challenge payload is not a field element"); return false; }
+                std::string encoded;
+                append_transcript_prefix(encoded, domain_, statement_, index);
+                encoded.append(replayed_message_body_);
+                append_string(encoded, message.label.substr(sizeof("challenge/") - 1));
+                F derived;
+                derived.setHashOf(encoded.data(), encoded.size());
+                if (derived != expected) { set_reason(reason, "native proof Fiat-Shamir challenge mismatch"); return false; }
             }
+            append_message_encoding(replayed_message_body_, message);
+            replayed_prefix_size_ = index + 1;
         }
         return true;
     } catch (const std::exception& error) {
@@ -408,9 +470,9 @@ bool NativeProofSession::valid_uncached(std::string* reason) const {
         set_reason(reason, "native proof session has too many messages");
         return false;
     }
-    std::set<std::string> challenge_labels;
-    std::string previous_challenge;
-    for (std::size_t index = 0; index < messages_.size(); ++index) {
+    std::unordered_set<std::string> new_challenge_labels;
+    std::unordered_map<std::string, std::uint64_t> challenge_rounds = validated_challenge_round_last_;
+    for (std::size_t index = validated_prefix_size_; index < messages_.size(); ++index) {
         const NativeProofMessage& message = messages_[index];
         if (message.label.empty() || message.label.size() > kMaxString || message.payload.size() > kMaxString) {
             set_reason(reason, "native proof session message exceeds wire limits");
@@ -424,7 +486,6 @@ bool NativeProofSession::valid_uncached(std::string* reason) const {
             set_reason(reason, "unknown native proof message type");
             return false;
         }
-        if (message.kind != NativeProofMessageKind::Challenge) previous_challenge.clear();
         switch (message.kind) {
         case NativeProofMessageKind::Data:
             if (is_challenge_label(message.label)) {
@@ -457,19 +518,22 @@ bool NativeProofSession::valid_uncached(std::string* reason) const {
             break;
         }
         case NativeProofMessageKind::Challenge: {
-            if (!is_challenge_label(message.label) || message.label == "challenge/") {
+            std::string round_stream;
+            std::uint64_t round = 0;
+            bool is_round = false;
+            if (!is_challenge_label(message.label) || message.label == "challenge/" || !decode_challenge_round(message.label, round_stream, round, is_round)) {
                 set_reason(reason, "challenge message label is invalid");
                 return false;
             }
-            if (!challenge_labels.insert(message.label).second) {
+            if (validated_challenge_labels_.count(message.label) != 0 || !new_challenge_labels.insert(message.label).second) {
                 set_reason(reason, "duplicate native proof challenge label");
                 return false;
             }
-            if (!previous_challenge.empty() && message.label <= previous_challenge) {
-                set_reason(reason, "native proof challenge order is not monotonic");
+            if (is_round && !challenge_round_follows(challenge_rounds, round_stream, round)) {
+                set_reason(reason, "native proof challenge round schedule is not sequential at " + message.label);
                 return false;
             }
-            previous_challenge = message.label;
+            if (is_round) challenge_rounds[round_stream] = round;
             F challenge_value;
             if (!decode_field(message.payload, challenge_value)) {
                 set_reason(reason, "challenge message is not canonical");
@@ -483,6 +547,9 @@ bool NativeProofSession::valid_uncached(std::string* reason) const {
             return false;
         }
     }
+    validated_challenge_labels_.insert(new_challenge_labels.begin(), new_challenge_labels.end());
+    validated_challenge_round_last_.swap(challenge_rounds);
+    validated_prefix_size_ = messages_.size();
     return true;
 }
 
