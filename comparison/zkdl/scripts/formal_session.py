@@ -17,7 +17,8 @@ def session_updates(dataset: str, session: str) -> dict[str, str]:
     resources = session + '/resources'
     return {'data_root': resources + '/data', 'cache_root': resources + '/cache', 'checkpoint_bundle': resources + '/checkpoints/' + dataset + '_gat', 'export_dir': session + '/' + dataset + '_cpu', 'static_table_descriptor': resources + '/canonical/tables/' + dataset + '_gat_static_tables.json', 'sorted_lookup_descriptor': resources + '/canonical/tables/' + dataset + '_gat_sorted_lookup.json', 'integer_bound_ledger': resources + '/canonical/ledgers/' + dataset + '_gat_integer_ledger.json', 'srs_id': Path(session).name + '_' + dataset + '_formal_srs', 'srs_path': resources + '/srs/' + dataset, 'srs_manifest_digest': 'CEREMONY_REQUIRED', 'model_registry_path': resources + '/verifier_registry/' + dataset + '.json', 'verifier_registry_digest': 'CEREMONY_REQUIRED', 'model_blinder_sidecar_path': resources + '/model_blinders/' + dataset + '.json', 'model_blinder_sidecar_digest': 'CEREMONY_REQUIRED', 'auto_prepare_dataset': 'false', 'dump_trace': 'false'}
 
-def snapshot(root: Path, session: Path, dataset: str, source_config: Path | None = None) -> Path:
+def snapshot(root: Path, session: Path, dataset: str, source_config: Path | None = None,
+             expected_input_identity: dict[str, object] | None = None) -> Path:
     original = source_config or root / 'configs' / (dataset + '_secure.cfg')
     values = read_config(original)
     reject_source_path_values(values)
@@ -42,6 +43,17 @@ def snapshot(root: Path, session: Path, dataset: str, source_config: Path | None
     run = root / updates['export_dir']
     run.mkdir(parents=True)
     (run / 'formal_config.path').write_text(config_path.relative_to(root).as_posix() + '\n')
+    if expected_input_identity is not None:
+        from formal_preflight import check_config
+        snapshot_evidence = check_config(root, dataset, config_path)
+        actual_identity = json.loads(json.dumps(snapshot_evidence.get('input_identity')))
+        expected_identity = json.loads(json.dumps(expected_input_identity))
+        for identity in (actual_identity, expected_identity):
+            manifest_identity = identity.get('checkpoint_files', {}).get('manifest.json')
+            if isinstance(manifest_identity, dict):
+                manifest_identity['bytes'] = None
+        if actual_identity != expected_identity:
+            raise ValueError(f'formal snapshot input identity differs from successful preflight: {dataset}')
     print(f'formal_session_snapshot=PASS dataset={dataset} config={config_path} run={run}', flush=True)
     return config_path
 
@@ -68,8 +80,23 @@ def main() -> int:
         (session / 'formal_config.path').write_text(config_path.relative_to(root).as_posix() + '\n')
         (session / 'formal_run.path').write_text(relative + '/' + dataset + '_cpu\n')
     else:
+        report_path = session / 'dataset_prerequisites.json'
+        if report_path.is_symlink() or not report_path.is_file():
+            raise SystemExit('formal-session: successful all-five preflight report is missing, non-regular or symlinked')
+        try:
+            report = json.loads(report_path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f'formal-session: successful all-five preflight report is missing or invalid: {exc}')
+        if report.get('schema') != 'zkDL_formal_input_preflight_v1' or not isinstance(report.get('datasets'), dict):
+            raise SystemExit('formal-session: all-five preflight report schema is invalid')
+        dataset_reports = report['datasets']
+        if set(dataset_reports) != set(DATASETS):
+            raise SystemExit('formal-session: all-five preflight report dataset set is incomplete')
         for dataset in DATASETS:
-            snapshot(root, session, dataset)
+            item = dataset_reports.get(dataset)
+            if not isinstance(item, dict) or item.get('dataset') != dataset or not isinstance(item.get('input_identity'), dict):
+                raise SystemExit(f'formal-session: preflight input identity is malformed: {dataset}')
+            snapshot(root, session, dataset, expected_input_identity=item['input_identity'])
     return 0
 
 if __name__ == '__main__':

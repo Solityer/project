@@ -33,7 +33,9 @@ run_step() {
     printf '%s\t%s\t%s\n' "$step" "$((finished - started))" "$status" >> "$session/logs/stages.tsv"
     return "$status"
 }
-run_step static_inputs python3 "$script_dir/formal_preflight.py"
+export ZKDL_PREFLIGHT_REPORT="$session/dataset_prerequisites.json"
+run_step dataset_prerequisites python3 "$script_dir/formal_preflight.py"
+unset ZKDL_PREFLIGHT_REPORT
 run_step snapshots python3 "$script_dir/formal_session.py" --session "$session"
 run_step build python3 "$script_dir/formal_provenance.py" --output "$session/build_manifest.json"
 export ZKDL_BUILD_MANIFEST="$session/build_manifest.json"

@@ -108,11 +108,35 @@ struct NativeGkrInputProvider {
     std::function<F(std::uint64_t)> value_at;
 };
 
+// Conservative peak storage bound for the bounded masked-GKR input fold
+// oracle. The existing producer supplies the canonical-copy entry count,
+// input-source count, and full canonical input-domain bit width.
+std::uint64_t native_masked_gkr_input_fold_storage_bytes(
+    std::uint64_t canonical_copy_entries, std::uint64_t source_count,
+    std::uint64_t input_bits);
+
 struct NativeLayeredGkrWitness {
     std::vector<zkgpt::NativeFieldVector> layer_values;
     std::vector<zkgpt::NativeFieldVector>* layer_values_view = nullptr;
     std::vector<zkgpt::NativeFieldVector>& values() { return layer_values_view != nullptr ? *layer_values_view : layer_values; }
     const std::vector<zkgpt::NativeFieldVector>& values() const { return layer_values_view != nullptr ? *layer_values_view : layer_values; }
+    zkgpt::NativeFieldView terminal_output;
+    zkgpt::NativeFieldView terminal_values_view() const {
+        const auto& layer_values = values();
+        if (layer_values.empty()) throw std::logic_error("native GKR witness has no terminal layer");
+        if (terminal_output.configured()) {
+            if (!terminal_output.valid()) throw std::logic_error("native GKR terminal output view is not live");
+            if (!layer_values.back().empty()) throw std::logic_error("native GKR terminal output is duplicated in layer storage");
+            return terminal_output;
+        }
+        return zkgpt::NativeFieldView::from_vector(layer_values.back());
+    }
+    zkgpt::NativeFieldView layer_values_view_at(std::size_t layer_index) const {
+        const auto& layer_values = values();
+        if (layer_index >= layer_values.size()) throw std::out_of_range("native GKR witness layer index exceeds layer count");
+        if (layer_index + 1 == layer_values.size()) return terminal_values_view();
+        return zkgpt::NativeFieldView::from_vector(layer_values[layer_index]);
+    }
     std::shared_ptr<const NativeGkrInputProvider> input_provider;
     std::vector<NativeGkrMatmulWitness> matmuls;
 };
@@ -138,9 +162,22 @@ struct NativeGkrProverResult {
 bool prove_masked_gkr_transcript(
     NativeProofSession &session, const layeredCircuit &circuit,
     NativeLayeredGkrWitness &witness,
+    const zkgpt::NativeFieldView &public_output, std::string *reason = nullptr,
+    NativeGkrInputBinding *input_binding = nullptr,
+    NativeGkrProverResult *prover_result = nullptr);
+
+bool prove_masked_gkr_transcript(
+    NativeProofSession &session, const layeredCircuit &circuit,
+    NativeLayeredGkrWitness &witness,
     const zkgpt::NativeFieldVector &public_output, std::string *reason = nullptr,
     NativeGkrInputBinding *input_binding = nullptr,
     NativeGkrProverResult *prover_result = nullptr);
+
+bool verify_gkr_transcript(const NativeProofSession &session,
+                           const layeredCircuit &circuit,
+                           const zkgpt::NativeFieldView &public_output,
+                           const std::vector<NativeGkrMatmulShape> &matmuls,
+                           std::string *reason = nullptr);
 
 bool verify_gkr_transcript(const NativeProofSession &session,
                            const layeredCircuit &circuit,
@@ -150,10 +187,25 @@ bool verify_gkr_transcript(const NativeProofSession &session,
 
 bool verify_masked_gkr_transcript(
     const NativeProofSession &session, const layeredCircuit &circuit,
+    const zkgpt::NativeFieldView &public_output,
+    const std::vector<NativeGkrMatmulShape> &matmuls,
+    std::string *reason = nullptr,
+    NativeGkrInputBinding *input_binding = nullptr);
+
+bool verify_masked_gkr_transcript(
+    const NativeProofSession &session, const layeredCircuit &circuit,
     const zkgpt::NativeFieldVector &public_output,
     const std::vector<NativeGkrMatmulShape> &matmuls,
     std::string *reason = nullptr,
     NativeGkrInputBinding *input_binding = nullptr);
+
+bool verify_masked_gkr_transcript(
+    const NativeProofSession &session, const layeredCircuit &circuit,
+    const zkgpt::NativeFieldView &public_output,
+    const std::vector<NativeGkrMatmulShape> &matmuls,
+    std::size_t start, std::size_t *end, std::string *reason,
+    NativeGkrInputBinding *input_binding = nullptr,
+    const NativeGkrInputSupport *input_support = nullptr);
 
 bool verify_masked_gkr_transcript(
     const NativeProofSession &session, const layeredCircuit &circuit,

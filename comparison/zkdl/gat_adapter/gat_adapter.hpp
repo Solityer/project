@@ -218,6 +218,7 @@ struct IntegerBoundFamily {
 struct IntegerBoundLedger {
     std::string schema = "zkDL_gat_integer_bound_ledger_v1";
     std::string ledger_id;
+    std::string degree_bound_id;
     std::string quant_cfg_id;
     std::string static_table_id;
     std::string field_modulus;

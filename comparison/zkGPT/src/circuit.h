@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <iostream>
 #include <string>
+#include <cstdint>
 #include "global_var.hpp"
 #include "hyrax.hpp"
 #include "../gat_adapter/native_storage.hpp"
@@ -14,12 +15,27 @@ using std::cerr;
 using std::endl;
 using std::vector;
 
+struct NativeCoefficientId {
+    u32 value;
+    explicit NativeCoefficientId(u32 raw) : value(raw) {}
+};
+
+struct NativeCoefficientHash {
+    std::size_t operator()(ll value) const noexcept {
+        const unsigned __int128 bits = static_cast<unsigned __int128>(value);
+        auto mix = [](std::uint64_t word) { word += 0x9e3779b97f4a7c15ULL; word = (word ^ (word >> 30)) * 0xbf58476d1ce4e5b9ULL; word = (word ^ (word >> 27)) * 0x94d049bb133111ebULL; return word ^ (word >> 31); };
+        const std::uint64_t low = static_cast<std::uint64_t>(bits), high = static_cast<std::uint64_t>(bits >> 64);
+        const std::uint64_t combined = low ^ (mix(high) + 0x9e3779b97f4a7c15ULL + (low << 6) + (low >> 2));
+        return static_cast<std::size_t>(mix(combined));
+    }
+};
+
 struct uniGate {
     u64 g, u;
     u8 lu;
-    ll sc;
-    uniGate(u64 _g, u64 _u, u8 _lu, ll _sc) :
-        g(_g), u(_u), lu(_lu), sc(_sc) {
+    NativeCoefficientId coefficient_id;
+    uniGate(u64 _g, u64 _u, u8 _lu, NativeCoefficientId _coefficient_id) :
+        g(_g), u(_u), lu(_lu), coefficient_id(_coefficient_id) {
     }
 };
 
@@ -27,14 +43,17 @@ struct binGate
 {
     u64 g, u, v;
     u8  l;
-    ll sc;
-    binGate(u64 _g, u64 _u, u64 _v, ll _sc, u8 _l):
-        g(_g), u(_u), v(_v), sc(_sc), l(_l) 
+    NativeCoefficientId coefficient_id;
+    binGate(u64 _g, u64 _u, u64 _v, NativeCoefficientId _coefficient_id, u8 _l):
+        g(_g), u(_u), v(_v), l(_l), coefficient_id(_coefficient_id)
         {
     }
     [[nodiscard]] u8 getLayerIdU(u8 layer_id) const { return !l ? 0 : layer_id - 1; }
     [[nodiscard]] u8 getLayerIdV(u8 layer_id) const { return !(l & 1) ? 0 : layer_id - 1; }
 };
+
+static_assert(sizeof(uniGate) == 24, "native unary gates must use a 32-bit coefficient ID");
+static_assert(sizeof(binGate) == 32, "native binary gates must use a 32-bit coefficient ID");
 
 enum class layerType {
     INPUT, FFT, IFFT, ADD_BIAS, RELU, Sqr, OPT_AVG_POOL, MAX_POOL, AVG_POOL, DOT_PROD, PADDING, FCONN,  LAYER_NORM_1, LAYER_NORM_2 ,LAYER_NORM_3,GELU_1,GELU_2,GELU_3,MHA_QK,SOFTMAX_1,SOFTMAX_2,SOFTMAX_3,PLACE_HOLDER
@@ -55,6 +74,7 @@ public:
 
     zkgpt::NativeVector<uniGate> uni_gates;
 	zkgpt::NativeVector<binGate> bin_gates;
+    zkgpt::NativeVector<ll> coefficient_pool;
 
     zkgpt::NativeVector<u64> ori_id_u, ori_id_v;
     i8 fft_bit_length;
@@ -86,6 +106,24 @@ public:
 
         max_bl_v = std::max(bit_length_v[0], bit_length_v[1]);
 	}
+
+    void reserve_gate_arrays(std::size_t unary_count, std::size_t binary_count);
+    void reserve_coefficients(std::size_t distinct_count);
+    void release_native_proof_backing() noexcept;
+    bool native_metadata_matches(const layer& other) const noexcept;
+    void restore_native_proof_backing(layer&& canonical_backing);
+    NativeCoefficientId intern_coefficient(ll value);
+    void add_unary(u64 g, u64 u, u8 lu, ll value);
+    void add_binary(u64 g, u64 u, u64 v, ll value, u8 l);
+    ll coefficient(NativeCoefficientId id) const;
+    ll coefficient(const uniGate& gate) const;
+    ll coefficient(const binGate& gate) const;
+    std::uint64_t coefficient_storage_bytes() const;
+    static std::uint64_t coefficient_storage_bytes_for(std::size_t distinct_count);
+
+private:
+    using CoefficientLookup = std::unordered_map<ll, NativeCoefficientId, NativeCoefficientHash>;
+    CoefficientLookup coefficient_lookup_;
 };
 
 class layeredCircuit {

@@ -25,6 +25,7 @@ bool decode_challenge_round(const std::string& label, std::string& stream, std::
     is_round = axis == "r" || axis == "r_u" || axis == "r_v" || axis == "c" || axis == "row-point" || axis == "sig_u" || axis == "sig_v" || axis == "r_minus" || axis == "weight";
     const bool decimal = !suffix.empty() && suffix.find_first_not_of("0123456789") == std::string::npos;
     if (!decimal) return !is_round;
+    if (!is_round) return true;
     if (suffix.size() > 1 && suffix.front() == '0') return false;
     round = 0;
     for (char digit : suffix) {
@@ -32,7 +33,7 @@ bool decode_challenge_round(const std::string& label, std::string& stream, std::
         if (round > (std::numeric_limits<std::uint64_t>::max() - next) / 10) return false;
         round = round * 10 + next;
     }
-    if (is_round) stream = label.substr(0, slash);
+    stream = label.substr(0, slash);
     return true;
 }
 

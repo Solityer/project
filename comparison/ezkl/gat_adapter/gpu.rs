@@ -19,7 +19,7 @@ fn native_source_digest(directory: &Path) -> Result<String, EZKLError> {
     }
     let mut files = Vec::new(); collect(directory, &mut files)?; files.sort();
     let mut bytes = Vec::new();
-    for path in files { let relative = path.strip_prefix(directory)?.to_string_lossy().replace('\\', "/"); bytes.extend_from_slice(&(relative.len() as u64).to_be_bytes()); bytes.extend_from_slice(relative.as_bytes()); bytes.extend_from_slice(crate::execute::get_file_hash(&path)?.as_bytes()); }
+    for path in files { let relative = path.strip_prefix(directory).map_err(|error| EZKLError::from(error.to_string()))?.to_string_lossy().replace('\\', "/"); bytes.extend_from_slice(&(relative.len() as u64).to_be_bytes()); bytes.extend_from_slice(relative.as_bytes()); bytes.extend_from_slice(crate::execute::get_file_hash(&path)?.as_bytes()); }
     super::schema::sha256_digest(&bytes).map_err(EZKLError::from)
 }
 

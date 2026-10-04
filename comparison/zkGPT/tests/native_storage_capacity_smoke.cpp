@@ -13,7 +13,7 @@ int main() {
     const u64 high = (u64(1) << 32) + 7;
     assert(ceilPow2BitLength(0) == -1 && ceilPow2BitLength(u64(1) << 32) == 32 && ceilPow2BitLength((u64(1) << 32) + 1) == 33);
     assert(floorPow2BitLength(u64(1) << 32) == 32 && ceilPow2BitLength(~u64(0)) == 64);
-    const uniGate high_gate(high, high + 1, 0, 1);
+    const uniGate high_gate(high, high + 1, 0, NativeCoefficientId(0));
     assert(high_gate.g == high && high_gate.u == high + 1);
     layeredCircuit circuit;
     circuit.init(0, 2);
@@ -23,13 +23,16 @@ int main() {
     output.ty = layerType::ADD_BIAS;
     output.size = output.zero_start_id = 3;
     output.bit_length = 2;
-    output.uni_gates.emplace_back(0, high, 0, 1);
-    output.uni_gates.emplace_back(1, 3, 0, 1);
-    output.uni_gates.emplace_back(2, high, 0, 1);
-    output.bin_gates.emplace_back(0, high, high + 1, 1, 0);
+    output.reserve_gate_arrays(3, 1);
+    output.reserve_coefficients(1);
+    output.add_unary(0, high, 0, 1);
+    output.add_unary(1, 3, 0, 1);
+    output.add_unary(2, high, 0, 1);
+    output.add_binary(0, high, high + 1, 1, 0);
     circuit.initSubset();
-    assert(output.size_u[0] == 2 && output.ori_id_u[0] == high && output.ori_id_u[1] == 3 && output.ori_id_v[0] == high + 1);
-    assert(output.uni_gates[0].u == 0 && output.uni_gates[1].u == 1 && output.uni_gates[2].u == 0 && output.bin_gates[0].u == 0);
+    assert(output.size_u[0] == 2 && output.ori_id_u[0] == 3 && output.ori_id_u[1] == high && output.ori_id_v[0] == high + 1);
+    assert(output.uni_gates[0].u == 1 && output.uni_gates[1].u == 0 && output.uni_gates[2].u == 1 && output.bin_gates[0].u == 1);
+    assert(std::size_t(300000) * sizeof(F) > zkgpt::native_storage::heap_limit);
     const auto initial_mappings = zkgpt::native_storage::mappings.size();
     {
         zkgpt::NativeFieldVector fields(300000, F(0));

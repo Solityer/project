@@ -14,6 +14,7 @@ from formal_common import (
     CANONICAL_RELATION,
     DATASETS,
     FORMAL_BACKEND,
+    FORMAL_SESSION_ID,
     ROOT,
     ContractError,
     abort,
@@ -27,11 +28,12 @@ from formal_common import (
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--matrix", default="results/formal_matrix.json")
+    result.add_argument("--session-id", help="active formal session; required for hybrid final validation")
     return result
 
 
 def main(args: argparse.Namespace) -> int:
-    return validate_matrix(local_path(args.matrix, "formal matrix"))
+    return validate_matrix(local_path(args.matrix, "formal matrix"), session_id=args.session_id)
 
 
 def validate_matrix(
@@ -39,10 +41,16 @@ def validate_matrix(
     *,
     selected_datasets: tuple[str, ...] = DATASETS,
     selected_backends: tuple[str, ...] = (FORMAL_BACKEND,),
+    session_id: str | None = None,
 ) -> int:
     """Validate recorded artifacts; explicit native selections serve local tiny checks."""
     if FORMAL_BACKEND in selected_backends and (selected_backends != (FORMAL_BACKEND,) or selected_datasets != DATASETS):
         abort("formal validation requires exactly the five canonical hybrid results")
+    if FORMAL_BACKEND in selected_backends:
+        if not isinstance(session_id, str) or not FORMAL_SESSION_ID.fullmatch(session_id):
+            abort("formal validation requires the active --session-id")
+    elif session_id is not None:
+        abort("--session-id is only valid for formal hybrid validation")
     if not matrix_path.is_file() or matrix_path.is_symlink():
         abort(f"missing formal matrix: {matrix_path}")
     try:
@@ -66,8 +74,9 @@ def validate_matrix(
         "cells",
     }
     actual = set(matrix)
+    allowed = required | ({"formal_session_id"} if FORMAL_BACKEND in selected_backends else set())
     missing = required - actual
-    extra = actual - required
+    extra = actual - allowed
     if missing or extra:
         abort(f"formal matrix schema mismatch; missing={sorted(missing)}, extra={sorted(extra)}")
     if matrix["schema_version"] != 1 or matrix["baseline"] != "ezkl":
@@ -78,6 +87,10 @@ def validate_matrix(
         abort("formal matrix relation mismatch")
     if matrix["datasets"] != list(selected_datasets) or matrix["backends"] != list(selected_backends):
         abort("formal matrix dataset/backend axes are not canonical")
+    if FORMAL_BACKEND in selected_backends and matrix.get("formal_session_id") != session_id:
+        abort("formal matrix does not belong to the active session")
+    if FORMAL_BACKEND not in selected_backends and "formal_session_id" in matrix:
+        abort("native local matrix unexpectedly carries a formal session identity")
     cells = matrix["cells"]
     if not isinstance(cells, list) or len(cells) != len(selected_datasets) * len(selected_backends):
         abort("formal matrix does not contain the required result cells")
@@ -103,7 +116,10 @@ def validate_matrix(
             result_path.relative_to(ROOT.resolve())
         except ValueError:
             abort(f"formal matrix result path escapes baseline: {result_path}")
-        refreshed_cell = validate_cell(result_path)
+        refreshed_cell = validate_cell(
+            result_path,
+            expected_session_id=session_id if FORMAL_BACKEND in selected_backends else None,
+        )
         if set(cell) != set(refreshed_cell):
             abort(f"formal matrix cell fields are stale for {key}")
         for field in cell:

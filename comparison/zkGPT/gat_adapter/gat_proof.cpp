@@ -25,6 +25,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 mcl::bn::G1 perdersen_commit(mcl::bn::G1*, mcl::bn::Fr*, int);
@@ -53,8 +54,6 @@ const std::uint64_t kContextMaxLayers = 1ULL << 20;
 const std::uint64_t kContextMaxDescriptors = 1ULL << 20;
 const std::uint64_t kContextMaxRecipeBytes = 64ULL << 20;
 
-const std::size_t kMaxExplicitGateEntries = 1ULL << 25;
-const std::size_t kMaxMaterializedVectorEntries = 1ULL << 27;
 const std::uint64_t kContextMaxShapeProfile = 128;
 const std::uint64_t kContextMaxShapeDimensions = 16;
 const char kNativeArtifactDomain[] = "zkgpt-native-gat-fs-v6";
@@ -355,7 +354,13 @@ SparseGkrRelationKind sparse_relation_kind_for_id(const std::string& relation_id
     return SparseGkrRelationKind::Residual;
 }
 
-std::uint64_t as_u32(std::size_t value, const char* what) { (void)what; return static_cast<std::uint64_t>(value); }
+std::uint64_t as_u64(std::size_t value, const char* what) {
+    if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t)) {
+        if (value > std::numeric_limits<std::uint64_t>::max())
+            throw std::overflow_error(std::string(what) + " exceeds u64 coordinates");
+    }
+    return static_cast<std::uint64_t>(value);
+}
 
 char bit_length(std::size_t value) {
     std::size_t n = std::max<std::size_t>(1, value);
@@ -797,7 +802,7 @@ void populate_registration_metadata(ModelRegistration& registration, const Model
     registration.quant_digest = canonical_quant_digest(quant);
     std::string layout_encoded;
     append_layout_encoding(layout_encoded, layout);
-    registration.layout_digest = hash_hex(layout_encoded);
+    registration.layout_digest = canonical_digest64(layout_encoded);
     registration.selector = layout.selector;
     registration.n_raw = layout.n_raw;
     registration.n_in = layout.n_in;
@@ -841,10 +846,10 @@ bool registration_wire_valid(const ModelRegistration& registration) {
         return false;
     std::string layout_encoded;
     append_layout_encoding(layout_encoded, layout);
-    if (registration.layout_digest != hash_hex(layout_encoded)) return false;
-    if (registration.binding_digest != hash_hex(registration_binding_encoding(registration))) return false;
+    if (registration.layout_digest != canonical_digest64(layout_encoded)) return false;
+    if (registration.binding_digest != canonical_digest64(registration_binding_encoding(registration))) return false;
     return registration.registration_digest ==
-           hash_hex("zkgpt-gat-registration-v2/" + registration.binding_digest + "/" + commitment_encoding(registration.com_W));
+           canonical_digest64("zkgpt-gat-registration-v2/" + registration.binding_digest + "/" + commitment_encoding(registration.com_W));
 }
 
 std::size_t attention_aux_size(const AttentionTrace& trace) {
@@ -1274,7 +1279,7 @@ void append_unary_layer(GatCircuitPlan& plan, layerType type, std::size_t output
     if (plan.circuit.circuit.size() >= std::numeric_limits<u8>::max()) throw std::overflow_error("zkGPT circuit has too many layers");
     layer current;
     current.ty = type;
-    current.size = as_u32(std::max<std::size_t>(1, output_size), "layer size");
+    current.size = as_u64(std::max<std::size_t>(1, output_size), "layer size");
     current.zero_start_id = current.size;
     current.bit_length = bit_length(current.size);
     current.need_phase2 = false;
@@ -1284,9 +1289,11 @@ void append_unary_layer(GatCircuitPlan& plan, layerType type, std::size_t output
     else
         require_input_region(plan, input_offset, checked_add(checked_mul(output_size - 1, input_stride, "unary coordinate stride"), 1, "unary coordinate span"),
                              "unary layer");
+    current.reserve_gate_arrays(count, 0);
+    current.reserve_coefficients(1);
     for (std::size_t g = 0; g < count; ++g) {
         const std::size_t source = checked_add(input_offset, checked_mul(g, input_stride, "unary coordinate"), "unary coordinate");
-        current.uni_gates.emplace_back(as_u32(g, "unary gate output"), as_u32(source, "unary gate input"), 0, 1);
+        current.add_unary(as_u64(g, "unary gate output"), as_u64(source, "unary gate input"), 0, 1);
     }
     plan.circuit.circuit.push_back(std::move(current));
 }
@@ -1296,7 +1303,7 @@ void append_binary_layer(GatCircuitPlan& plan, layerType type, std::size_t outpu
     if (plan.circuit.circuit.size() >= std::numeric_limits<u8>::max()) throw std::overflow_error("zkGPT circuit has too many layers");
     layer current;
     current.ty = type;
-    current.size = as_u32(std::max<std::size_t>(1, output_size), "binary layer size");
+    current.size = as_u64(std::max<std::size_t>(1, output_size), "binary layer size");
     current.zero_start_id = current.size;
     current.bit_length = bit_length(current.size);
     current.need_phase2 = false;
@@ -1305,10 +1312,12 @@ void append_binary_layer(GatCircuitPlan& plan, layerType type, std::size_t outpu
     require_input_region(plan, lhs_offset, span, "binary lhs");
     const std::size_t rhs_span = output_size == 0 ? 1 : checked_add(checked_mul(output_size - 1, rhs_stride, "binary rhs stride"), 1, "binary rhs span");
     require_input_region(plan, rhs_offset, rhs_span, "binary rhs");
+    current.reserve_gate_arrays(0, count);
+    current.reserve_coefficients(1);
     for (std::size_t g = 0; g < count; ++g) {
         const std::size_t lhs = checked_add(lhs_offset, checked_mul(g, lhs_stride, "binary lhs coordinate"), "binary lhs coordinate");
         const std::size_t rhs = checked_add(rhs_offset, checked_mul(g, rhs_stride, "binary rhs coordinate"), "binary rhs coordinate");
-        current.bin_gates.emplace_back(as_u32(g, "binary gate output"), as_u32(lhs, "binary gate lhs"), as_u32(rhs, "binary gate rhs"), sc, static_cast<u8>(l));
+        current.add_binary(as_u64(g, "binary gate output"), as_u64(lhs, "binary gate lhs"), as_u64(rhs, "binary gate rhs"), sc, static_cast<u8>(l));
     }
     plan.circuit.circuit.push_back(std::move(current));
 }
@@ -1328,25 +1337,64 @@ struct ExplicitBinaryGate {
     ll sc = 1;
 };
 
+const char* explicit_layer_type_name(layerType type) {
+    switch (type) {
+        case layerType::INPUT: return "INPUT";
+        case layerType::FFT: return "FFT";
+        case layerType::IFFT: return "IFFT";
+        case layerType::ADD_BIAS: return "ADD_BIAS";
+        case layerType::RELU: return "RELU";
+        case layerType::Sqr: return "Sqr";
+        case layerType::OPT_AVG_POOL: return "OPT_AVG_POOL";
+        case layerType::MAX_POOL: return "MAX_POOL";
+        case layerType::AVG_POOL: return "AVG_POOL";
+        case layerType::DOT_PROD: return "DOT_PROD";
+        case layerType::PADDING: return "PADDING";
+        case layerType::FCONN: return "FCONN";
+        case layerType::LAYER_NORM_1: return "LAYER_NORM_1";
+        case layerType::LAYER_NORM_2: return "LAYER_NORM_2";
+        case layerType::LAYER_NORM_3: return "LAYER_NORM_3";
+        case layerType::GELU_1: return "GELU_1";
+        case layerType::GELU_2: return "GELU_2";
+        case layerType::GELU_3: return "GELU_3";
+        case layerType::MHA_QK: return "MHA_QK";
+        case layerType::SOFTMAX_1: return "SOFTMAX_1";
+        case layerType::SOFTMAX_2: return "SOFTMAX_2";
+        case layerType::SOFTMAX_3: return "SOFTMAX_3";
+        case layerType::PLACE_HOLDER: return "PLACE_HOLDER";
+    }
+    return "UNKNOWN";
+}
+
 void append_explicit_layer(GatCircuitPlan& plan, layerType type, std::size_t output_size, const zkgpt::NativeVector<ExplicitUnaryGate>& unary,
                            const zkgpt::NativeVector<ExplicitBinaryGate>& binary, bool need_phase2 = false) {
     if (plan.circuit.circuit.size() >= std::numeric_limits<u8>::max()) throw std::overflow_error("zkGPT circuit has too many layers");
     layer current;
     current.ty = type;
-    current.size = as_u32(std::max<std::size_t>(1, output_size), "explicit layer size");
+    current.size = as_u64(std::max<std::size_t>(1, output_size), "explicit layer size");
     current.zero_start_id = current.size;
     current.bit_length = bit_length(current.size);
     current.need_phase2 = need_phase2;
     const std::size_t input_size = plan.circuit.circuit.front().size;
+    current.reserve_gate_arrays(unary.size(), binary.size());
+    current.reserve_coefficients(2);
     for (const ExplicitUnaryGate& gate : unary) {
-        if (gate.g >= output_size || gate.u >= input_size) throw std::invalid_argument("explicit unary gate coordinate is out of bounds");
-        current.uni_gates.emplace_back(as_u32(gate.g, "explicit unary output"), as_u32(gate.u, "explicit unary input"), gate.lu, gate.sc);
+        if (gate.g >= output_size || gate.u >= input_size) {
+            std::ostringstream detail;
+            const std::size_t source_layer_size = gate.lu == 0 ? input_size : plan.circuit.circuit.back().size;
+            detail << "explicit unary gate coordinate is out of bounds: layer=" << plan.circuit.circuit.size()
+                   << " name=" << explicit_layer_type_name(type) << " output_size=" << output_size
+                   << " source_layer_size=" << source_layer_size << " gate=(g=" << gate.g << ",u=" << gate.u
+                   << ",lu=" << static_cast<unsigned>(gate.lu) << ')';
+            throw std::invalid_argument(detail.str());
+        }
+        current.add_unary(as_u64(gate.g, "explicit unary output"), as_u64(gate.u, "explicit unary input"), gate.lu, gate.sc);
     }
     for (const ExplicitBinaryGate& gate : binary) {
         if (gate.g >= output_size || gate.u >= input_size || gate.v >= input_size)
             throw std::invalid_argument("explicit binary gate coordinate is out of bounds");
-        current.bin_gates.emplace_back(as_u32(gate.g, "explicit binary output"), as_u32(gate.u, "explicit binary lhs"), as_u32(gate.v, "explicit binary rhs"),
-                                       gate.sc, gate.l);
+        current.add_binary(as_u64(gate.g, "explicit binary output"), as_u64(gate.u, "explicit binary lhs"), as_u64(gate.v, "explicit binary rhs"),
+                           gate.sc, gate.l);
     }
     if (current.uni_gates.empty() && current.bin_gates.empty()) throw std::invalid_argument("explicit layered relation has no gates");
     plan.circuit.circuit.push_back(std::move(current));
@@ -1355,7 +1403,7 @@ void append_explicit_layer(GatCircuitPlan& plan, layerType type, std::size_t out
 void append_projection_layer(GatCircuitPlan& plan, const MatMulDescriptor& descriptor) {
     layer current;
     current.ty = layerType::FCONN;
-    current.size = as_u32(std::max<std::size_t>(1, descriptor.output_coordinates), "projection layer size");
+    current.size = as_u64(std::max<std::size_t>(1, descriptor.output_coordinates), "projection layer size");
     current.zero_start_id = current.size;
     current.bit_length = bit_length(current.size);
     current.need_phase2 = true;
@@ -1369,9 +1417,9 @@ void append_projection_layer(GatCircuitPlan& plan, const MatMulDescriptor& descr
 
     current.native_relation_id = descriptor.relation_id;
     current.native_family_id = descriptor.family_id;
-    current.native_rows = as_u32(descriptor.rows, "projection rows");
-    current.native_inner = as_u32(descriptor.inner, "projection inner");
-    current.native_cols = as_u32(descriptor.cols, "projection cols");
+    current.native_rows = as_u64(descriptor.rows, "projection rows");
+    current.native_inner = as_u64(descriptor.inner, "projection inner");
+    current.native_cols = as_u64(descriptor.cols, "projection cols");
     current.native_lhs_offset = descriptor.lhs_offset;
     current.native_rhs_offset = descriptor.rhs_offset;
     current.native_output_offset = descriptor.output_offset;
@@ -1379,14 +1427,15 @@ void append_projection_layer(GatCircuitPlan& plan, const MatMulDescriptor& descr
 
     layer binding;
     binding.ty = layerType::ADD_BIAS;
-    binding.size = as_u32(std::max<std::size_t>(1, descriptor.output_coordinates), "FCONN binding layer size");
+    binding.size = as_u64(std::max<std::size_t>(1, descriptor.output_coordinates), "FCONN binding layer size");
     binding.zero_start_id = binding.size;
     binding.bit_length = bit_length(binding.size);
     binding.need_phase2 = false;
+    binding.reserve_gate_arrays(checked_mul(descriptor.output_coordinates, 2, "FCONN binding gate count"), 0);
+    binding.reserve_coefficients(2);
     for (std::size_t index = 0; index < descriptor.output_coordinates; ++index) {
-        binding.uni_gates.emplace_back(as_u32(index, "FCONN binding output"), as_u32(index, "FCONN binding previous output"), 1, 1);
-        binding.uni_gates.emplace_back(as_u32(index, "FCONN binding output"), as_u32(descriptor.output_offset + index, "FCONN binding input coordinate"), 0,
-                                       -1);
+        binding.add_unary(as_u64(index, "FCONN binding output"), as_u64(index, "FCONN binding previous output"), 1, 1);
+        binding.add_unary(as_u64(index, "FCONN binding output"), as_u64(descriptor.output_offset + index, "FCONN binding input coordinate"), 0, -1);
     }
     plan.circuit.circuit.push_back(std::move(binding));
 }
@@ -1401,21 +1450,103 @@ struct ProductTerm {
 
 struct RelationLayerBuilder {
     std::size_t next_output = 0;
+    std::size_t output_capacity = 0;
+    std::size_t target_capacity = 0;
+    std::size_t unary_capacity = 0;
+    std::size_t binary_capacity = 0;
+    std::size_t coefficient_capacity = 0;
     zkgpt::NativeVector<Int> targets;
-    zkgpt::NativeVector<ExplicitUnaryGate> unary;
-    zkgpt::NativeVector<ExplicitBinaryGate> binary;
+    layer relation;
+
+    void reserve(std::size_t output_count, std::size_t residual_count, std::size_t unary_count, std::size_t binary_count,
+                 std::size_t coefficient_count) {
+        output_capacity = output_count;
+        target_capacity = residual_count;
+        unary_capacity = unary_count;
+        binary_capacity = binary_count;
+        coefficient_capacity = coefficient_count;
+        targets.reserve(residual_count);
+        relation.reserve_gate_arrays(unary_count, binary_count);
+        relation.reserve_coefficients(coefficient_count);
+    }
+
+    std::size_t add_public_output(std::size_t input) {
+        if (next_output >= output_capacity || relation.uni_gates.size() >= unary_capacity)
+            throw std::length_error("canonical GAT relation exceeded its reserved public-output profile");
+        const std::size_t output = next_output++;
+        relation.add_unary(as_u64(output, "GAT public output residual"), as_u64(input, "GAT public output input"), 0, 1);
+        if (relation.coefficient_pool.size() > coefficient_capacity)
+            throw std::length_error("canonical GAT relation exceeded its reserved coefficient profile");
+        return output;
+    }
 
     std::size_t add_residual(const std::vector<LinearTerm>& linear, const std::vector<ProductTerm>& products, Int target = 0) {
+        if (next_output >= output_capacity || targets.size() >= target_capacity ||
+            relation.uni_gates.size() > unary_capacity || linear.size() > unary_capacity - relation.uni_gates.size() ||
+            relation.bin_gates.size() > binary_capacity || products.size() > binary_capacity - relation.bin_gates.size())
+            throw std::length_error("canonical GAT relation exceeded its reserved residual profile");
         const std::size_t output = next_output++;
         targets.push_back(target);
         if (linear.empty() && products.empty()) throw std::invalid_argument("empty GAT arithmetic residual");
-        for (const LinearTerm& term : linear) unary.push_back({output, term.first, 0, term.second});
-        for (const ProductTerm& term : products) binary.push_back({output, term.left, term.right, 0, term.coefficient});
+        for (const LinearTerm& term : linear)
+            relation.add_unary(as_u64(output, "GAT residual output"), as_u64(term.first, "GAT residual input"), 0, term.second);
+        for (const ProductTerm& term : products)
+            relation.add_binary(as_u64(output, "GAT residual output"), as_u64(term.left, "GAT residual lhs"), as_u64(term.right, "GAT residual rhs"), term.coefficient, 0);
+        if (relation.coefficient_pool.size() > coefficient_capacity)
+            throw std::length_error("canonical GAT relation exceeded its reserved coefficient profile");
         return output;
     }
 
     std::size_t add_unary(std::size_t input, ll coefficient = 1) { return add_residual({{input, coefficient}}, {}); }
 };
+
+std::size_t relation_coefficient_candidate_count(const QuantConfig& quant, const StaticTables& tables) {
+    std::set<ll> candidates{0, 1, -1, 2, -2};
+    for (unsigned bit = 0; bit < 63; ++bit) candidates.insert(static_cast<ll>(std::uint64_t(1) << bit));
+    const auto add_signed_pair = [&candidates](Int value) {
+        const ll coefficient = static_cast<ll>(value);
+        candidates.insert(coefficient);
+        if (coefficient != std::numeric_limits<ll>::min()) candidates.insert(-coefficient);
+    };
+    add_signed_pair(quant.s_input);
+    add_signed_pair(quant.s_delta);
+    add_signed_pair(quant.s_exp);
+    for (Int value : quant.s_h) add_signed_pair(value);
+    for (const auto& values : quant.s_w_hidden) for (Int value : values) add_signed_pair(value);
+    for (const auto& values : quant.s_hprime_hidden) for (Int value : values) add_signed_pair(value);
+    for (const auto& values : quant.s_a_src_hidden) for (Int value : values) add_signed_pair(value);
+    for (const auto& values : quant.s_a_dst_hidden) for (Int value : values) add_signed_pair(value);
+    for (Int value : quant.s_agg_pre) add_signed_pair(value);
+    for (Int value : quant.s_agg) add_signed_pair(value);
+    for (Int value : quant.s_cat) add_signed_pair(value);
+    add_signed_pair(quant.s_out_pre);
+    add_signed_pair(quant.s_out_head);
+    add_signed_pair(quant.s_out);
+    for (Int value : quant.s_w_output) add_signed_pair(value);
+    for (Int value : quant.s_yprime_output) add_signed_pair(value);
+    for (Int value : quant.s_a_src_output) add_signed_pair(value);
+    for (Int value : quant.s_a_dst_output) add_signed_pair(value);
+    for (Int value : quant.s_b_output) add_signed_pair(value);
+    add_signed_pair(quant.range_bits);
+    add_signed_pair(quant.static_lrelu_min);
+    add_signed_pair(quant.static_lrelu_max);
+    add_signed_pair(quant.static_exp_min);
+    add_signed_pair(quant.static_exp_max);
+    add_signed_pair(quant.static_elu_min);
+    add_signed_pair(quant.static_elu_max);
+    add_signed_pair(quant.lrelu_slope_num);
+    add_signed_pair(quant.lrelu_slope_den);
+    const auto add_lookup_base = [&add_signed_pair](const std::vector<TablePoint>& points) {
+        const Int by = lookup_rectangle(points).second;
+        const Wide base = 2 * static_cast<Wide>(by) + 1;
+        if (base > std::numeric_limits<Int>::max()) throw std::overflow_error("lookup coefficient base exceeds the integer coefficient domain");
+        add_signed_pair(static_cast<Int>(base));
+    };
+    add_lookup_base(tables.lrelu);
+    add_lookup_base(tables.exp);
+    add_lookup_base(tables.elu);
+    return candidates.size();
+}
 
 std::vector<std::pair<std::size_t, std::size_t>> incoming_ranges_for_plan(const Graph& graph) {
     std::vector<std::pair<std::size_t, std::size_t>> ranges(graph.num_nodes, {graph.edges(), graph.edges()});
@@ -1573,25 +1704,20 @@ void add_attention_recovery_residuals(RelationLayerBuilder& builder, const Graph
 
 void finish_relation_layer(GatCircuitPlan& plan, RelationLayerBuilder& builder, std::size_t public_output_coordinates) {
     if (builder.next_output < public_output_coordinates) throw std::logic_error("GAT relation layer output count underflow");
+    if (builder.targets.size() != builder.next_output - public_output_coordinates)
+        throw std::logic_error("GAT relation residual target count does not match the public-output prefix");
 
-    layer relation;
+    layer relation = std::move(builder.relation);
     relation.ty = layerType::RELU;
-    relation.size = as_u32(builder.next_output, "GAT relation layer size");
+    relation.size = as_u64(builder.next_output, "GAT relation layer size");
     relation.zero_start_id = relation.size;
     relation.bit_length = bit_length(relation.size);
     relation.need_phase2 = false;
-    relation.uni_gates.reserve(builder.unary.size());
-    relation.bin_gates.reserve(builder.binary.size());
-    for (const ExplicitUnaryGate& gate : builder.unary)
-        relation.uni_gates.emplace_back(as_u32(gate.g, "GAT residual output"), as_u32(gate.u, "GAT residual input"), gate.lu, gate.sc);
-    for (const ExplicitBinaryGate& gate : builder.binary)
-        relation.bin_gates.emplace_back(as_u32(gate.g, "GAT residual output"), as_u32(gate.u, "GAT residual lhs"), as_u32(gate.v, "GAT residual rhs"), gate.sc,
-                                        gate.l);
     plan.circuit.circuit.push_back(std::move(relation));
     plan.circuit.size = static_cast<u8>(plan.circuit.circuit.size());
     plan.public_output_coordinates = public_output_coordinates;
     plan.residual_coordinates = builder.next_output - public_output_coordinates;
-    plan.residual_targets.assign(builder.targets.begin() + public_output_coordinates, builder.targets.end());
+    plan.residual_targets = std::move(builder.targets);
     cybozu::Sha256 target_hasher;
     const std::string domain = "zkgpt-gat-public-residual-targets-v1";
     target_hasher.update(domain.data(), domain.size());
@@ -1605,6 +1731,8 @@ void finish_relation_layer(GatCircuitPlan& plan, RelationLayerBuilder& builder, 
 }
 
 std::string plan_encoding(const GatCircuitPlan& plan) {
+    if (!plan.native_proof_backing_is_resident())
+        throw std::logic_error("cannot encode a GAT plan while its native proof backing is released");
     std::string encoded;
     append_string(encoded, plan.recipe_schema);
     append_string(encoded, plan.relation_schema);
@@ -2348,10 +2476,13 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
         throw std::invalid_argument("cannot build proof plan from an invalid GAT trace");
 
     const GatCapacityReport capacity = inspect_gat_capacity(graph, model, quant);
-    const bool explicit_input_ok = capacity.max_materialized_vector <= kMaxMaterializedVectorEntries;
-    const bool explicit_coordinate_ok = capacity.input_layout.n_in <= std::numeric_limits<std::uint32_t>::max() / 4;
-    const bool explicit_path_ready = explicit_input_ok && capacity.max_materialized_gate <= kMaxExplicitGateEntries && explicit_coordinate_ok;
-    if (!explicit_path_ready) throw std::length_error("native layered GKR capacity is unavailable; virtual sparse relation has no canonical arithmetic/commitment closure");
+    const bool explicit_input_ok = capacity.flattened_input_domain_entries <= capacity.flattened_input_domain_limit_u64;
+    const bool explicit_coordinate_ok = capacity.input_layout.n_in <= capacity.coordinate_domain_limit_u64;
+    const bool explicit_storage_ok =
+        capacity.estimated_native_scratch_bytes <= std::numeric_limits<std::size_t>::max() &&
+        capacity.estimated_native_scratch_bytes <= static_cast<std::uint64_t>(std::numeric_limits<off_t>::max());
+    const bool explicit_path_ready = explicit_input_ok && explicit_coordinate_ok && explicit_storage_ok;
+    if (!explicit_path_ready) throw std::length_error("native layered GKR plan exceeds checked input-coordinate or addressable storage bounds");
     if (!capacity.ppi_node_ptr_boundary || !capacity.ppi_edge_ptr_boundary) throw std::length_error("canonical GAT graph batch boundaries are invalid");
 
     const InputLayout canonical_layout = canonical_input_layout_impl(graph, model, quant);
@@ -2384,7 +2515,7 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
 
     plan.circuit.init(0, 1);
     plan.circuit.circuit[0].ty = layerType::INPUT;
-    plan.circuit.circuit[0].size = as_u32(circuit_input_size, "input layer size");
+    plan.circuit.circuit[0].size = as_u64(circuit_input_size, "input layer size");
     plan.circuit.circuit[0].zero_start_id = plan.circuit.circuit[0].size;
     plan.circuit.circuit[0].bit_length = bit_length(circuit_input_size);
 
@@ -2619,7 +2750,9 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
                 round_unary.push_back({index, a.divisions + index * 9, 0, 1});
             }
             for (std::size_t index = 0; index < round_queries; ++index) round_unary.push_back({index, range_query_cursor + index, 0, 1});
-            append_explicit_layer(plan, layerType::RELU, std::max<std::size_t>(1, round_queries), round_unary, {}, true);
+            append_explicit_layer(plan, layerType::RELU,
+                                  std::max<std::size_t>(1, std::max(projection_coordinates, round_queries)),
+                                  round_unary, {}, true);
             range_query_cursor = checked_add(range_query_cursor, round_queries, "hidden range query cursor");
             append_checkpoint(plan, "rounding/hidden/" + family, "rounding", "Aux", checked_mul(projection_coordinates, 9, "hidden division coordinates"),
                               a.divisions, "Aux[row_major_exact[node,col,witness_component]]");
@@ -2824,7 +2957,9 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
         average_unary.push_back({index, coordinates.final_average_divisions + index * 9, 0, 1});
     }
     for (std::size_t index = 0; index < average_range_queries; ++index) average_unary.push_back({index, range_query_cursor + index, 0, 1});
-    append_explicit_layer(plan, layerType::RELU, std::max<std::size_t>(1, average_range_queries), average_unary, {}, true);
+    append_explicit_layer(plan, layerType::RELU,
+                          std::max<std::size_t>(1, std::max(output_coordinates, average_range_queries)),
+                          average_unary, {}, true);
     range_query_cursor = checked_add(range_query_cursor, average_range_queries, "average range query cursor");
     append_checkpoint(plan, "output/final_average", "rounding", "Aux", checked_mul(output_coordinates, 9, "average division coordinates"),
                       coordinates.final_average_divisions, "Aux[row_major_exact[node,class,witness_component]]");
@@ -2871,10 +3006,20 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
     }
 
     RelationLayerBuilder relation_builder;
+    if (capacity.relation_residual_entries > std::numeric_limits<std::size_t>::max() ||
+        capacity.relation_gate_output_entries > std::numeric_limits<std::size_t>::max() ||
+        capacity.relation_gate_unary_entries > std::numeric_limits<std::size_t>::max() ||
+        capacity.relation_gate_binary_entries > std::numeric_limits<std::size_t>::max())
+        throw std::length_error("canonical GAT relation buffers exceed native size_t");
+    relation_builder.reserve(static_cast<std::size_t>(capacity.relation_gate_output_entries),
+                             static_cast<std::size_t>(capacity.relation_residual_entries),
+                             static_cast<std::size_t>(capacity.relation_gate_unary_entries),
+                             static_cast<std::size_t>(capacity.relation_gate_binary_entries),
+                             relation_coefficient_candidate_count(quant, canonical_tables));
     std::size_t bound_profile_index = 0;
     std::size_t bound_lrelu_cursor = query_coordinates.lrelu, bound_exp_cursor = query_coordinates.exp, bound_elu_cursor = query_coordinates.elu, bound_range_cursor = query_coordinates.range;
     const std::size_t public_output_coordinates = checked_mul(graph.num_nodes, classes, "public output coordinates");
-    for (std::size_t index = 0; index < public_output_coordinates; ++index) relation_builder.add_unary(coordinates.final_logits + index);
+    for (std::size_t index = 0; index < public_output_coordinates; ++index) relation_builder.add_public_output(coordinates.final_logits + index);
 
     for (std::size_t index = 0; index < plan.input_layout.segments.front().logical_length; ++index) relation_builder.add_residual({{plan.input_layout.segments.at(2).offset + index, 1}, {index, -1}}, {});
     const auto incoming = incoming_ranges_for_plan(graph);
@@ -2940,6 +3085,16 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
         if (family.family_id != "range/all") { const std::vector<TablePoint>& points = family.family_id == "function/lrelu" ? canonical_tables.lrelu : family.family_id == "function/exp" ? canonical_tables.exp : canonical_tables.elu; Int bx = 0, by = 0; for (const TablePoint& point : points) { bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x))); by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y))); } padding = Fr((points.front().x + bx) * (2 * by + 1) + points.front().y + by); }
         Int pad = 0; if (!padding.isZero()) pad = std::stoll(padding.getStr());
         for (std::size_t index = family.real_queries; index < family.padded_queries; ++index) relation_builder.add_residual({{family.query_offset + index, 1}}, {}, pad);
+    }
+    if (relation_builder.next_output != capacity.relation_gate_output_entries ||
+        relation_builder.targets.size() != capacity.relation_residual_entries ||
+        relation_builder.relation.uni_gates.size() != capacity.relation_gate_unary_entries ||
+        relation_builder.relation.bin_gates.size() != capacity.relation_gate_binary_entries) {
+        throw std::logic_error("canonical GAT relation emission does not match its exact capacity profile (outputs=" +
+            std::to_string(relation_builder.next_output) + "/" + std::to_string(capacity.relation_gate_output_entries) +
+            ", targets=" + std::to_string(relation_builder.targets.size()) + "/" + std::to_string(capacity.relation_residual_entries) +
+            ", unary=" + std::to_string(relation_builder.relation.uni_gates.size()) + "/" + std::to_string(capacity.relation_gate_unary_entries) +
+            ", binary=" + std::to_string(relation_builder.relation.bin_gates.size()) + "/" + std::to_string(capacity.relation_gate_binary_entries) + ")");
     }
     finish_relation_layer(plan, relation_builder, public_output_coordinates);
 
@@ -3121,6 +3276,8 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan& plan, std::string* rea
         return false;
     };
     try {
+        if (!plan.native_proof_backing_is_resident())
+            return fail("native GAT proof backing is not resident");
         if (plan.virtual_sparse) {
             if (!plan.official_layered || plan.has_placeholder || plan.recipe_schema != "canonical_plan_recipe_v3" ||
                 plan.sparse_relation_schema != kSparseGkrRelationSchema || plan.sparse_relation_version != kSparseGkrRelationVersion ||
@@ -3210,8 +3367,8 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan& plan, std::string* rea
                 for (std::size_t index = 0; index < current.size; ++index) {
                     const uniGate& previous_gate = current.uni_gates[index * 2];
                     const uniGate& input_gate = current.uni_gates[index * 2 + 1];
-                    if (previous_gate.g != index || previous_gate.u != index || previous_gate.lu != 1 || previous_gate.sc != 1 || input_gate.g != index ||
-                        input_gate.lu != 0 || input_gate.sc != -1 || input_gate.u >= current.ori_id_u.size() ||
+                    if (previous_gate.g != index || previous_gate.u != index || previous_gate.lu != 1 || current.coefficient(previous_gate) != 1 || input_gate.g != index ||
+                        input_gate.lu != 0 || current.coefficient(input_gate) != -1 || input_gate.u >= current.ori_id_u.size() ||
                         current.ori_id_u[input_gate.u] != descriptor->output_offset + index)
                         return fail("FCONN output binding coordinate is not canonical");
                 }
@@ -4149,8 +4306,11 @@ LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan& plan, const ForwardR
                                                 padding_index, row);
             };
         }
-        if (!family.selected_table_rows.empty() || !family.selected_table_row_at)
-            throw std::invalid_argument("canonical Lasso formal selected-row provider is not lazy");
+        if (!family.selected_table_rows.empty() || !family.queries.empty() ||
+            !family.legacy_clear_matrix.empty() ||
+            !family.legacy_clear_matrix_generators.empty() ||
+            !family.selected_table_row_at)
+            throw std::invalid_argument("canonical Lasso formal selected-row provider retained a private backing copy or lacks its lazy callback");
         family.matrix_layout = native_lasso_balanced_matrix_layout(
             family.padded_queries, family.table.size());
         family.matrix_layout.trusted_generator_id =
@@ -4610,26 +4770,70 @@ std::shared_ptr<SegmentedInputOracle> canonical_input_oracle(
     return result;
 }
 
+zkgpt::NativeFieldView canonical_public_output_view(
+    const GatCircuitPlan& plan, const Tensor2D& public_logits,
+    const void* lifetime_token) {
+    if (!plan.native_proof_backing_is_resident())
+        throw std::logic_error("canonical public output view requires resident native proof backing");
+    if (plan.public_output_coordinates != public_logits.values.size() ||
+        plan.residual_targets.size() != plan.residual_coordinates)
+        throw std::invalid_argument("canonical public output view shape does not match the plan");
+    if (plan.public_output_coordinates >
+        std::numeric_limits<std::size_t>::max() - plan.residual_coordinates)
+        throw std::length_error("canonical public output view size overflows native size_t");
+    const std::size_t logical_size =
+        plan.public_output_coordinates + plan.residual_coordinates;
+    return zkgpt::NativeFieldView::borrowed(
+        logical_size, lifetime_token,
+        [&plan, &public_logits, logical_size](std::size_t index) {
+            if (index >= logical_size)
+                throw std::out_of_range("canonical public output coordinate is invalid");
+            if (index < plan.public_output_coordinates)
+                return Fr(public_logits.values.at(index));
+            return Fr(plan.residual_targets.at(index - plan.public_output_coordinates));
+        });
+}
+
 bool evaluate_layered_values(
     const GatCircuitPlan& plan, std::uint64_t input_size,
     const std::function<Fr(std::uint64_t)>& input_at,
-    std::vector<NativeFieldVector>& values, std::string* reason) {
+    std::vector<NativeFieldVector>& values, std::string* reason,
+    const std::vector<NativeFieldVector>* expected_values = nullptr,
+    const zkgpt::NativeFieldView* terminal_expected = nullptr) {
     const auto fail = [reason](const std::string& message) {
         if (reason != nullptr) *reason = message;
         return false;
     };
     try {
+        if (!plan.native_proof_backing_is_resident())
+            return fail("native GAT proof backing is not resident");
         if (plan.circuit.circuit.empty() || input_at == nullptr ||
             input_size != plan.circuit.circuit.front().size)
             return fail("layered witness input provider/domain is invalid");
+        if (expected_values != nullptr && (expected_values->size() != plan.circuit.circuit.size() || !expected_values->front().empty()))
+            return fail("GAT circuit witness layer count is invalid");
+        if (terminal_expected != nullptr && !terminal_expected->valid())
+            return fail("GAT terminal output view is not live");
         values.clear();
-        values.resize(plan.circuit.circuit.size());
-        values[0].clear();
+        if (expected_values == nullptr) { values.resize(plan.circuit.circuit.size()); values[0].clear(); }
         std::size_t next_matmul = 0;
         for (std::size_t layer_id = 1; layer_id < plan.circuit.circuit.size(); ++layer_id) {
             const layer& current = plan.circuit.circuit[layer_id];
-            const layer& previous = plan.circuit.circuit[layer_id - 1];
-            NativeFieldVector output(current.size, Fr(0));
+            const bool streamed_terminal = terminal_expected != nullptr &&
+                layer_id + 1 == plan.circuit.circuit.size();
+            if (streamed_terminal && terminal_expected->size() != current.size)
+                return fail("GAT terminal output view has the wrong logical size");
+            if (streamed_terminal && expected_values != nullptr &&
+                !expected_values->at(layer_id).empty())
+                return fail("GAT terminal layer is both retained and streamed");
+            // In validation mode every preceding retained witness layer has
+            // already passed this same full gate evaluation. Read that checked
+            // layer directly and keep only the current expected output buffer.
+            const NativeFieldVector& previous_values = expected_values == nullptr
+                ? values.at(layer_id - 1)
+                : expected_values->at(layer_id - 1);
+            NativeFieldVector output;
+            if (!streamed_terminal) output.assign(current.size, Fr(0));
             if (current.ty == layerType::FCONN) {
                 if (next_matmul >= plan.matmuls.size()) return fail("FCONN layer has no canonical MatMul descriptor");
                 const MatMulDescriptor& descriptor = plan.matmuls[next_matmul++];
@@ -4651,27 +4855,80 @@ bool evaluate_layered_values(
                             const std::size_t rhs = descriptor.rhs_offset + term * descriptor.cols + col;
                             value += input_at(lhs) * input_at(rhs);
                         }
-                        output[row * descriptor.cols + col] = value;
+                        const std::size_t output_index = row * descriptor.cols + col;
+                        if (streamed_terminal) {
+                            if (terminal_expected->at(output_index) != value)
+                                return fail("GAT terminal FCONN output mismatch at row " + std::to_string(output_index));
+                        } else {
+                            output[output_index] = value;
+                        }
                     }
                 }
-                values[layer_id] = std::move(output);
+                if (streamed_terminal) {
+                    if (expected_values == nullptr) values[layer_id].clear();
+                } else {
+                    if (expected_values != nullptr && output != expected_values->at(layer_id)) return fail("GAT circuit witness layer does not match official gate evaluation");
+                    if (expected_values == nullptr) values[layer_id] = std::move(output);
+                }
+                continue;
+            }
+            if (streamed_terminal) {
+                std::uint64_t previous_g = 0;
+                bool have_previous_g = false;
+                for (const uniGate& gate : current.uni_gates) {
+                    if (gate.g >= current.size || (have_previous_g && gate.g < previous_g))
+                        return fail("GAT terminal unary gates are out of bounds or not ordered by output row");
+                    previous_g = gate.g;
+                    have_previous_g = true;
+                }
+                previous_g = 0;
+                have_previous_g = false;
+                for (const binGate& gate : current.bin_gates) {
+                    if (gate.g >= current.size || (have_previous_g && gate.g < previous_g))
+                        return fail("GAT terminal binary gates are out of bounds or not ordered by output row");
+                    previous_g = gate.g;
+                    have_previous_g = true;
+                }
+                std::size_t unary_index = 0;
+                std::size_t binary_index = 0;
+                for (std::size_t row = 0; row < current.size; ++row) {
+                    Fr value = Fr(0);
+                    while (unary_index < current.uni_gates.size() && current.uni_gates[unary_index].g == row) {
+                        const uniGate& gate = current.uni_gates[unary_index++];
+                        const Fr source = gate.lu == 0 ? input_at(current.ori_id_u.at(gate.u)) : previous_values.at(gate.u);
+                        value += source * Fr(current.coefficient(gate));
+                    }
+                    while (binary_index < current.bin_gates.size() && current.bin_gates[binary_index].g == row) {
+                        const binGate& gate = current.bin_gates[binary_index++];
+                        const std::size_t lhs_layer = gate.getLayerIdU(static_cast<u8>(layer_id));
+                        const std::size_t rhs_layer = gate.getLayerIdV(static_cast<u8>(layer_id));
+                        const Fr lhs = lhs_layer == 0 ? input_at(current.ori_id_u.at(gate.u)) : previous_values.at(gate.u);
+                        const Fr rhs = rhs_layer == 0 ? input_at(current.ori_id_v.at(gate.v)) : previous_values.at(gate.v);
+                        value += lhs * rhs * Fr(current.coefficient(gate));
+                    }
+                    if (terminal_expected->at(row) != value)
+                        return fail("GAT terminal gate output mismatch at row " + std::to_string(row));
+                }
+                if (unary_index != current.uni_gates.size() || binary_index != current.bin_gates.size())
+                    return fail("GAT terminal gate stream did not consume every gate row");
+                if (expected_values == nullptr) values[layer_id].clear();
                 continue;
             }
             for (const uniGate& gate : current.uni_gates) {
                 if (gate.g >= output.size()) return fail("unary gate output is out of bounds");
-                const Fr source = gate.lu == 0 ? input_at(current.ori_id_u.at(gate.u)) : values.at(layer_id - 1).at(gate.u);
-                output[gate.g] += source * Fr(gate.sc);
+                const Fr source = gate.lu == 0 ? input_at(current.ori_id_u.at(gate.u)) : previous_values.at(gate.u);
+                output[gate.g] += source * Fr(current.coefficient(gate));
             }
             for (const binGate& gate : current.bin_gates) {
                 if (gate.g >= output.size()) return fail("binary gate output is out of bounds");
                 const std::size_t lhs_layer = gate.getLayerIdU(static_cast<u8>(layer_id));
                 const std::size_t rhs_layer = gate.getLayerIdV(static_cast<u8>(layer_id));
-                const Fr lhs = lhs_layer == 0 ? input_at(current.ori_id_u.at(gate.u)) : values.at(layer_id - 1).at(gate.u);
-                const Fr rhs = rhs_layer == 0 ? input_at(current.ori_id_v.at(gate.v)) : values.at(layer_id - 1).at(gate.v);
-                output[gate.g] += lhs * rhs * Fr(gate.sc);
+                const Fr lhs = lhs_layer == 0 ? input_at(current.ori_id_u.at(gate.u)) : previous_values.at(gate.u);
+                const Fr rhs = rhs_layer == 0 ? input_at(current.ori_id_v.at(gate.v)) : previous_values.at(gate.v);
+                output[gate.g] += lhs * rhs * Fr(current.coefficient(gate));
             }
-            values[layer_id] = std::move(output);
-            (void)previous;
+            if (expected_values != nullptr && output != expected_values->at(layer_id)) return fail("GAT circuit witness layer does not match official gate evaluation");
+            if (expected_values == nullptr) values[layer_id] = std::move(output);
         }
         if (next_matmul != plan.matmuls.size()) return fail("canonical MatMul descriptor has no FCONN layer");
         return true;
@@ -4681,7 +4938,9 @@ bool evaluate_layered_values(
 bool evaluate_layered_values(const GatCircuitPlan& plan,
                              const NativeFieldVector& input,
                              std::vector<NativeFieldVector>& values,
-                             std::string* reason) {
+                             std::string* reason,
+                             const std::vector<NativeFieldVector>* expected_values = nullptr,
+                             const zkgpt::NativeFieldView* terminal_expected = nullptr) {
     return evaluate_layered_values(
         plan, static_cast<std::uint64_t>(input.size()),
         [&input](std::uint64_t index) {
@@ -4689,7 +4948,7 @@ bool evaluate_layered_values(const GatCircuitPlan& plan,
                 throw std::out_of_range("layered witness input coordinate is invalid");
             return input[static_cast<std::size_t>(index)];
         },
-        values, reason);
+        values, reason, expected_values, terminal_expected);
 }
 
 std::string context_encoding(const VerifierContext& context) {
@@ -4707,7 +4966,7 @@ std::string context_encoding(const VerifierContext& context) {
     append_registration_encoding(encoded, context.registration);
     append_string(encoded, commitment_encoding(context.com_W));
 
-    append_string(encoded, plan_encoding(context.plan));
+    append_string(encoded, plan_encoding(context.plan_ref()));
     append_string(encoded, "public-graph-v3");
     append_u64(encoded, context.graph.num_nodes);
     append_u64(encoded, context.graph.num_features);
@@ -5772,7 +6031,7 @@ void append_context_plan(std::string &out, const GatCircuitPlan &plan) {
             append_u64(out, gate.g);
             append_u64(out, gate.u);
             append_u8_wire(out, gate.lu);
-            append_int(out, gate.sc);
+            append_int(out, current.coefficient(gate));
         }
         append_u64(out, static_cast<std::uint64_t>(current.bin_gates.size()));
         for (const binGate &gate : current.bin_gates) {
@@ -5780,7 +6039,7 @@ void append_context_plan(std::string &out, const GatCircuitPlan &plan) {
             append_u64(out, gate.u);
             append_u64(out, gate.v);
             append_u8_wire(out, gate.l);
-            append_int(out, gate.sc);
+            append_int(out, current.coefficient(gate));
         }
     }
 }
@@ -5925,26 +6184,24 @@ bool read_context_plan(ContextReader &reader, GatCircuitPlan &plan) {
         current.ori_id_v.resize(count);
         for (u64 &value : current.ori_id_v) if (!reader.read_u64(value)) return false;
         if (!reader.read_count(count, "unary gates", kContextMaxElements)) return false;
-        current.uni_gates.clear();
-        current.uni_gates.reserve(count);
+        current.reserve_gate_arrays(count, 0);
         for (std::size_t i = 0; i < count; ++i) {
             std::uint64_t g = 0, u = 0;
             std::uint8_t lu = 0;
             Int sc = 0;
             if (!reader.read_u64(g) || !reader.read_u64(u) || !reader.read_u8(lu) ||
                 !reader.read_int(sc)) return false;
-            current.uni_gates.emplace_back(g, u, lu, sc);
+            current.add_unary(g, u, lu, sc);
         }
         if (!reader.read_count(count, "binary gates", kContextMaxElements)) return false;
-        current.bin_gates.clear();
-        current.bin_gates.reserve(count);
+        current.reserve_gate_arrays(0, count);
         for (std::size_t i = 0; i < count; ++i) {
             std::uint64_t g = 0, u = 0, v = 0;
             std::uint8_t l = 0;
             Int sc = 0;
             if (!reader.read_u64(g) || !reader.read_u64(u) || !reader.read_u64(v) ||
                 !reader.read_u8(l) || !reader.read_int(sc)) return false;
-            current.bin_gates.emplace_back(g, u, v, sc, l);
+            current.add_binary(g, u, v, sc, l);
         }
     }
     return true;
@@ -6239,6 +6496,7 @@ bool context_layer_metadata_valid(const GatCircuitPlan& plan, std::string* reaso
         if (reason != nullptr) *reason = message;
         return false;
     };
+    if (!plan.native_proof_backing_is_resident()) return fail("native GAT proof backing is not resident");
     if (plan.virtual_sparse) {
         if (!validate_gat_circuit_plan_impl(plan, reason)) return false;
         return true;
@@ -6280,8 +6538,8 @@ bool context_layer_metadata_valid(const GatCircuitPlan& plan, std::string* reaso
             for (std::size_t index = 0; index < current.size; ++index) {
                 const uniGate& previous_gate = current.uni_gates[index * 2];
                 const uniGate& input_gate = current.uni_gates[index * 2 + 1];
-                if (previous_gate.g != index || previous_gate.u != index || previous_gate.lu != 1 || previous_gate.sc != 1 || input_gate.g != index ||
-                    input_gate.lu != 0 || input_gate.sc != -1 || input_gate.u >= current.ori_id_u.size() ||
+                if (previous_gate.g != index || previous_gate.u != index || previous_gate.lu != 1 || current.coefficient(previous_gate) != 1 || input_gate.g != index ||
+                    input_gate.lu != 0 || current.coefficient(input_gate) != -1 || input_gate.u >= current.ori_id_u.size() ||
                     current.ori_id_u[input_gate.u] != descriptor->output_offset + index)
                     return fail("FCONN binding metadata coordinate is not canonical");
             }
@@ -6322,9 +6580,9 @@ bool validate_verifier_context_object(const VerifierContext& context, std::strin
         const StaticTables canonical_tables = StaticTables::build(context.quant);
         if (!static_tables_equal(context.tables, canonical_tables) || !context.tables.authenticate())
             return fail("static tables do not match independently regenerated canonical tables");
-        if (!registry_equal(context.plan.registry, RelationRegistry::canonical())) return fail("relation registry is not the canonical zkGPT registry");
-        if (!validate_gat_circuit_plan(context.plan, reason)) return false;
-        if (!context_layer_metadata_valid(context.plan, reason)) return false;
+        if (!registry_equal(context.plan_ref().registry, RelationRegistry::canonical())) return fail("relation registry is not the canonical zkGPT registry");
+        if (!validate_gat_circuit_plan(context.plan_ref(), reason)) return false;
+        if (!context_layer_metadata_valid(context.plan_ref(), reason)) return false;
         if (context.public_features.rows != context.graph.num_nodes || context.public_features.cols != context.graph.num_features ||
             context.public_features.cols == 0 ||
             context.public_features.values.size() != checked_mul(context.public_features.rows, context.public_features.cols, "verifier context feature tensor"))
@@ -6341,12 +6599,12 @@ bool validate_verifier_context_object(const VerifierContext& context, std::strin
         if (context.relation_id != "R_GAT-zkGPT" || (context.backend != "cpu" && context.backend != "gpu") ||
             context.model_arch_id != context.registration.model_arch_id || context.quant_cfg_id != context.quant.quant_cfg_id ||
             context.static_tables_id != context.tables.table_id || context.privacy_extension_profile_id != "masked_full" ||
-            context.tables.quant_cfg_id != context.quant.quant_cfg_id || context.plan.model_arch_id != context.registration.model_arch_id ||
-            context.plan.graph_num_nodes != context.graph.num_nodes || context.plan.graph_num_features != context.graph.num_features ||
-            context.plan.graph_count != context.graph.graph_count || context.plan.graph_num_classes != context.graph.num_classes ||
-            context.plan.graph_edge_count != context.graph.edges() || context.plan.graph_topology_digest != canonical_graph_topology_digest(context.graph) ||
-            context.plan.quant_cfg_id != context.quant.quant_cfg_id || context.plan.quant_digest != canonical_quant_digest(context.quant) ||
-            context.plan.static_tables_id != context.tables.table_id)
+            context.tables.quant_cfg_id != context.quant.quant_cfg_id || context.plan_ref().model_arch_id != context.registration.model_arch_id ||
+            context.plan_ref().graph_num_nodes != context.graph.num_nodes || context.plan_ref().graph_num_features != context.graph.num_features ||
+            context.plan_ref().graph_count != context.graph.graph_count || context.plan_ref().graph_num_classes != context.graph.num_classes ||
+            context.plan_ref().graph_edge_count != context.graph.edges() || context.plan_ref().graph_topology_digest != canonical_graph_topology_digest(context.graph) ||
+            context.plan_ref().quant_cfg_id != context.quant.quant_cfg_id || context.plan_ref().quant_digest != canonical_quant_digest(context.quant) ||
+            context.plan_ref().static_tables_id != context.tables.table_id)
             return fail("verifier context identity is not canonical");
         return true;
     } catch (const std::exception& error) { return fail(error.what()); }
@@ -6401,8 +6659,9 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
     report.num_features = graph.num_features;
     report.num_classes = graph.num_classes;
     report.graph_count = graph.graph_count;
-    report.ppi_node_ptr_boundary = graph.node_ptr.size() == graph.graph_count + 1;
-    report.ppi_edge_ptr_boundary = graph.edge_ptr.size() == graph.graph_count + 1;
+    const bool graph_count_extent_valid = graph.graph_count < std::numeric_limits<std::size_t>::max();
+    report.ppi_node_ptr_boundary = graph_count_extent_valid && graph.node_ptr.size() == graph.graph_count + 1;
+    report.ppi_edge_ptr_boundary = graph_count_extent_valid && graph.edge_ptr.size() == graph.graph_count + 1;
     report.explicit_matmul_gate_expansion = false;
     try {
         graph.validate();
@@ -6419,37 +6678,45 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::size_t output_heads = model.manifest.output_heads;
         const auto mul = [](std::size_t a, std::size_t b, const char* what) { return checked_mul(a, b, what); };
         const auto add = [](std::size_t a, std::size_t b, const char* what) { return checked_add(a, b, what); };
-        const auto attention_relation = [&](std::size_t dim) {
-            std::size_t result = mul(14, edges, "capacity attention edge relations");
-            result = add(result, mul(3, nodes, "capacity attention node relations"), "capacity attention relations");
-            result = add(result, mul(edges, dim, "capacity attention edge products"), "capacity attention relations");
-            result =
-                add(result, mul(mul(26, nodes, "capacity attention recovery"), dim, "capacity attention coordinate relations"), "capacity attention relations");
+        const auto uadd = [](std::uint64_t a, std::uint64_t b, const char* what) {
+            if (b > std::numeric_limits<std::uint64_t>::max() - a) throw std::overflow_error(std::string("capacity u64 sum overflow: ") + what);
+            return a + b;
+        };
+        const auto umul = [](std::uint64_t a, std::uint64_t b, const char* what) {
+            if (a != 0 && b > std::numeric_limits<std::uint64_t>::max() / a) throw std::overflow_error(std::string("capacity u64 product overflow: ") + what);
+            return a * b;
+        };
+        const auto ubytes = [&umul](std::uint64_t count, std::size_t width, const char* what) {
+            return umul(count, static_cast<std::uint64_t>(width), what);
+        };
+        const auto pow2 = [](std::uint64_t value) {
+            if (value == 0) return std::uint64_t(1);
+            std::uint64_t result = 1;
+            while (result < value) {
+                if (result > (std::numeric_limits<std::uint64_t>::max() >> 1)) throw std::overflow_error("capacity power-of-two overflow");
+                result <<= 1;
+            }
             return result;
         };
-        const auto stage_gates = [&](std::size_t dim) {
-            std::size_t result = mul(8, edges, "capacity score/softmax stages");
-            result = add(result, mul(3, nodes, "capacity softmax stages"), "capacity stage gates");
-            result = add(result, mul(edges, dim, "capacity aggregation stages"), "capacity stage gates");
-            return add(result, mul(5, mul(nodes, dim, "capacity aggregation coordinates"), "capacity aggregation stages"), "capacity stage gates");
+        const auto bits_for = [&pow2](std::uint64_t value) {
+            const std::uint64_t domain = pow2(std::max<std::uint64_t>(1, value));
+            std::uint64_t bits = 0;
+            for (std::uint64_t cursor = domain; cursor > 1; cursor >>= 1) ++bits;
+            return bits;
         };
-        const auto concat_gates = [&](std::size_t dim) {
-            return mul(2, mul(nodes, mul(dim, hidden_heads, "capacity concat width"), "capacity concat coordinates"), "capacity concat gates");
+        const auto u64_from_size = [](std::size_t value, const char* what) {
+            if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t)) {
+                if (value > std::numeric_limits<std::uint64_t>::max()) throw std::overflow_error(std::string("capacity size exceeds u64: ") + what);
+            }
+            return static_cast<std::uint64_t>(value);
+        };
+        const auto tensor_shape = [&pow2, &bits_for](std::uint64_t logical) {
+            const std::uint64_t active = pow2(std::max<std::uint64_t>(1, logical));
+            const std::uint64_t columns = std::uint64_t(1) << (bits_for(active) / 2);
+            return std::array<std::uint64_t, 3>{{active, active / columns, columns}};
         };
         std::size_t explicit_gates = 0;
-        for (std::size_t dim : {h0, h1}) {
-            explicit_gates = add(explicit_gates, mul(hidden_heads, stage_gates(dim), "capacity hidden stages"), "capacity explicit gates");
-            explicit_gates = add(explicit_gates, mul(hidden_heads, attention_relation(dim), "capacity hidden sparse relations"), "capacity explicit gates");
-            explicit_gates = add(explicit_gates, concat_gates(dim), "capacity concat gates");
-        }
-        explicit_gates = add(explicit_gates, mul(output_heads, stage_gates(classes), "capacity output stages"), "capacity explicit gates");
-
         const std::size_t output_coordinates = mul(nodes, classes, "capacity output coordinates");
-        std::size_t output_head = attention_relation(classes);
-        output_head = add(output_head, mul(20, output_coordinates, "capacity output SignedRoundDiv"), "capacity output relations");
-        output_head = add(output_head, mul(25, output_coordinates, "capacity output equations"), "capacity output relations");
-        explicit_gates = add(explicit_gates, mul(output_heads, output_head, "capacity output relations"), "capacity explicit gates");
-        explicit_gates = add(explicit_gates, mul(24, output_coordinates, "capacity final output wiring"), "capacity explicit gates");
         const std::size_t fconn_output_coordinates =
             add(mul(hidden_heads, mul(nodes, add(h0, 2, "capacity hidden FCONN width"), "capacity hidden FCONN outputs"), "capacity hidden FCONN outputs"),
                 add(mul(hidden_heads, mul(nodes, add(h1, 2, "capacity hidden FCONN width"), "capacity hidden FCONN outputs"), "capacity FCONN outputs"),
@@ -6457,17 +6724,10 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                     "capacity FCONN outputs"),
                 "capacity FCONN outputs");
 
-        explicit_gates = add(explicit_gates, mul(2, fconn_output_coordinates, "capacity FCONN output bridges"), "capacity explicit gates");
-        report.max_materialized_gate = explicit_gates;
-        report.max_materialized_vector = mul(4, report.input_layout.n_in, "capacity four-segment input vector");
+        report.max_materialized_gate = 0;
         report.fconn_count = (2 * hidden_heads + output_heads) * 3;
         report.attention_relation_count = 2 * hidden_heads + output_heads;
-        report.division_relation_count = add(
-            mul(hidden_heads, mul(16, mul(nodes, h0, "capacity hidden division count"), "capacity hidden division count"), "capacity hidden division count"),
-            add(mul(hidden_heads, mul(16, mul(nodes, h1, "capacity hidden division count"), "capacity hidden division count"),
-                    "capacity hidden division count"),
-                mul(5 * (output_heads + 1), output_coordinates, "capacity output division count"), "capacity division count"),
-            "capacity division count");
+        report.division_relation_count = 0;
         report.context_recipe_bytes_bound = 4ULL << 20;
         report.context_payload_bytes_bound = add(mul(64, edges, "capacity context graph bytes"),
                                                  add(mul(16, mul(nodes, graph.num_features, "capacity context features"), "capacity context feature bytes"),
@@ -6494,46 +6754,1050 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const QueryCounts query_counts = canonical_query_counts(graph, model, quant);
         const std::array<std::size_t, 4> query_counts_ordered{{query_counts.lrelu, query_counts.exp, query_counts.elu, query_counts.range}};
         const std::array<std::size_t, 4> table_sizes{{native_tables.lrelu.size(), native_tables.exp.size(), native_tables.elu.size(), 2}};
-        report.maximum_masked_response_entries = report.input_layout.n_in + 4;
-        for (std::size_t family = 0; family < query_counts_ordered.size(); ++family) {
-            const std::uint64_t rows = next_power_of_two(query_counts_ordered[family]), columns = next_power_of_two(table_sizes[family]);
-            report.lasso_family_domains.push_back({{rows, columns}});
-            const std::size_t entries = checked_mul(rows, columns, "native masked Lasso matrix entries");
-            report.masked_lasso_matrix_entries = checked_add(report.masked_lasso_matrix_entries, entries, "native masked matrix sum");
-            report.maximum_masked_response_entries = std::max<std::uint64_t>(report.maximum_masked_response_entries, entries + 4);
-        }
-        report.masked_response_entries_lower_bound = checked_add(checked_mul(report.masked_lasso_matrix_entries, 4, "native matrix opening responses"), checked_mul(report.input_layout.n_in, 8, "native canonical opening responses"), "native masked response entries");
-        report.masked_proof_bytes_lower_bound = checked_mul(report.masked_response_entries_lower_bound, 9, "native response canonical minimum bytes");
-        const bool physical_input_ok = report.max_materialized_vector <= kMaxMaterializedVectorEntries;
-        const bool coordinate_domain_ok = report.input_layout.n_in <= std::numeric_limits<std::uint32_t>::max() / 4;
-        const bool explicit_ok = report.max_materialized_gate <= kMaxExplicitGateEntries;
-        const bool pointer_ok = report.ppi_node_ptr_boundary && report.ppi_edge_ptr_boundary;
-        report.sparse_ready = pointer_ok && report.sparse_domain_entries != 0 && report.sparse_working_set_bytes <= (512ULL << 20);
-        const bool layered_ready = physical_input_ok && explicit_ok && coordinate_domain_ok && pointer_ok;
+        const std::array<const char*, 4> family_ids{{"lrelu", "exp", "elu", "range"}};
+        constexpr std::uint64_t kRowChunkEntries = 4096;
+        constexpr std::uint64_t kG1HexChars = 64;
+        constexpr std::uint64_t kTranscriptLabelBytesUpper = 128;
+        constexpr std::uint64_t kSmallFamilyMessageBytes = 1024;
+        const std::uint64_t n_in = u64_from_size(report.input_layout.n_in, "input domain");
+        report.flattened_input_domain_entries = umul(4, n_in, "flattened input domain");
+        report.virtual_input_domain = report.flattened_input_domain_entries;
+        report.max_materialized_vector = 0;
+        report.lasso_logical_domain_entries = 0;
+        report.maximum_masked_response_entries = 0;
 
-        report.sparse_ready = false;
-        report.proof_path = "native_layered_gkr";
-        report.full_relation_bound = false;
+        std::uint64_t family_persistent_bytes = 0;
+        std::uint64_t family_column_generator_bytes = 0;
+        std::uint64_t family_row_commitment_bytes = 0;
+        std::uint64_t lasso_heap_transient_peak_bytes = 0;
+        std::uint64_t largest_family_transient_bytes = 0;
+        std::uint64_t family_wire_bytes_sum = 0;
+        std::uint64_t family_message_count_sum = 0;
+        std::uint64_t maximum_family_response_entries = 0;
+        std::uint64_t maximum_family_fr_buffer_bytes = 0;
+        std::uint64_t maximum_family_g1_buffer_bytes = 0;
+        std::uint64_t maximum_family_columns = 0;
+        std::uint64_t maximum_family_field_entries = 0;
+        const auto log2_pow2 = [&bits_for](std::uint64_t value) {
+            const std::uint64_t bits = bits_for(value);
+            if ((std::uint64_t(1) << bits) != value) throw std::invalid_argument("capacity logarithm input is not a power of two");
+            return bits;
+        };
+        for (std::size_t family = 0; family < query_counts_ordered.size(); ++family) {
+            const std::uint64_t padded_queries = pow2(u64_from_size(query_counts_ordered[family], "Lasso query count"));
+            const std::uint64_t table_domain = pow2(u64_from_size(table_sizes[family], "Lasso table size"));
+            const NativeLassoCapacityProfile workspace = native_lasso_capacity_profile(padded_queries, table_domain);
+            const std::uint64_t logical_entries = workspace.full_domain;
+            const std::uint64_t query_challenges = log2_pow2(padded_queries);
+            const std::uint64_t row_chunks = workspace.row_commitment_chunk_count;
+            const std::uint64_t matrix_bits = log2_pow2(workspace.columns);
+            const std::uint64_t l_query_bits = bits_for(report.input_layout.segments.at(3).logical_length);
+            std::uint64_t family_messages = 1;
+            family_messages = uadd(family_messages, row_chunks, "Lasso family messages");
+            family_messages = uadd(family_messages, workspace.booleanity_rounds, "Lasso family messages");
+            family_messages = uadd(family_messages, query_challenges, "Lasso family messages");
+            family_messages = uadd(family_messages, 4, "Lasso family messages");
+            family_messages = uadd(family_messages, uadd(114, umul(139, workspace.booleanity_rounds, "Lasso Booleanity messages"), "Lasso Booleanity messages"), "Lasso family messages");
+            family_messages = uadd(family_messages, uadd(72, umul(103, workspace.onehot_rounds, "Lasso onehot messages"), "Lasso onehot messages"), "Lasso family messages");
+            family_messages = uadd(family_messages, uadd(86, umul(121, workspace.lookup_rounds, "Lasso lookup messages"), "Lasso lookup messages"), "Lasso family messages");
+            family_messages = uadd(family_messages, umul(4, uadd(9, umul(2, matrix_bits, "Lasso matrix opening rounds"), "Lasso matrix opening messages"), "Lasso matrix opening messages"), "Lasso family messages");
+            family_messages = uadd(family_messages, uadd(10, umul(2, l_query_bits / 2, "Lasso L_qry tensor rounds"), "Lasso L_qry tensor messages"), "Lasso family messages");
+
+            const std::uint64_t row_payload_bytes = uadd(umul(8, row_chunks, "Lasso row chunk framing"), umul(workspace.rows, 8 + kG1HexChars, "Lasso row commitment points"), "Lasso row commitment wire bound");
+            const std::uint64_t max_family_vector_entries = std::max({workspace.booleanity_rounds, workspace.onehot_rounds, workspace.lookup_rounds,
+                                                                       query_challenges, matrix_bits, l_query_bits / 2, std::uint64_t(9)});
+            maximum_family_field_entries = std::max(maximum_family_field_entries, max_family_vector_entries);
+            const std::uint64_t field_vector_bytes = uadd(8, umul(max_family_vector_entries, 8 + 64, "Lasso field vector wire bound"), "Lasso field vector wire bound");
+            const std::uint64_t non_chunk_messages = family_messages >= row_chunks ? family_messages - row_chunks : 0;
+            const std::uint64_t row_message_frames = umul(row_chunks, 25 + kTranscriptLabelBytesUpper, "Lasso row-chunk message frames");
+            std::uint64_t family_wire = uadd(row_payload_bytes,
+                uadd(row_message_frames, umul(non_chunk_messages, kSmallFamilyMessageBytes, "Lasso small message wire bound"), "Lasso row and small-message frames"),
+                "Lasso family wire bound");
+            family_wire = uadd(family_wire, umul(4, field_vector_bytes, "Lasso field-vector wire bound"), "Lasso family wire bound");
+
+            GatLassoWorkspaceProfile entry;
+            entry.family_id = family_ids[family];
+            entry.workspace = workspace;
+            entry.logical_domain_entries = logical_entries;
+            entry.row_commitment_chunk_count = row_chunks;
+            entry.row_commitment_chunk_entries = kRowChunkEntries;
+            entry.booleanity_rounds = workspace.booleanity_rounds;
+            entry.a_query_challenges = query_challenges;
+            entry.onehot_rounds = workspace.onehot_rounds;
+            entry.lookup_rounds = workspace.lookup_rounds;
+            entry.hyrax_matrix_masked_openings = workspace.hyrax_matrix_masked_openings;
+            entry.hyrax_l_qry_tensor_openings = workspace.hyrax_l_qry_tensor_openings;
+            entry.row_commitment_wire_bytes_upper_bound = row_payload_bytes;
+            entry.family_message_count_upper_bound = family_messages;
+            entry.family_wire_bytes_upper_bound = family_wire;
+            report.lasso_workspace_profile.push_back(std::move(entry));
+            report.lasso_family_domains.push_back({{workspace.rows, workspace.columns}});
+            report.lasso_logical_domain_entries = uadd(report.lasso_logical_domain_entries, logical_entries, "Lasso logical domain entries");
+            family_persistent_bytes = uadd(family_persistent_bytes, workspace.row_ledger_retained_bytes, "Lasso retained workspace");
+            family_column_generator_bytes = uadd(family_column_generator_bytes, workspace.column_generator_bytes,
+                "Lasso retained column generators");
+            family_row_commitment_bytes = uadd(family_row_commitment_bytes, workspace.row_commitment_bytes,
+                "Lasso simultaneous row commitments");
+            const std::uint64_t family_row_fold_heap = uadd(workspace.row_fold_weights_bytes,
+                uadd(workspace.row_fold_values_bytes, workspace.onehot_query_bytes, "Lasso row-fold heap workspace"),
+                "Lasso row-fold heap workspace");
+            lasso_heap_transient_peak_bytes = std::max(lasso_heap_transient_peak_bytes,
+                std::max(family_row_fold_heap, workspace.onehot_heap_peak_bytes));
+            largest_family_transient_bytes = std::max(largest_family_transient_bytes,
+                workspace.family_peak_bytes > workspace.row_ledger_retained_bytes ? workspace.family_peak_bytes - workspace.row_ledger_retained_bytes : std::uint64_t(0));
+            family_wire_bytes_sum = uadd(family_wire_bytes_sum, family_wire, "Lasso family wire total");
+            family_message_count_sum = uadd(family_message_count_sum, family_messages, "Lasso family messages total");
+            maximum_family_response_entries = std::max(maximum_family_response_entries, workspace.columns);
+            maximum_family_columns = std::max(maximum_family_columns, workspace.columns);
+            maximum_family_fr_buffer_bytes = std::max({maximum_family_fr_buffer_bytes, workspace.private_witness_bytes,
+                workspace.row_blinding_bytes, workspace.row_fold_weights_bytes, workspace.row_fold_values_bytes,
+                workspace.onehot_query_bytes, workspace.t2_column_one_bytes, workspace.onehot_heap_peak_bytes,
+                workspace.masked_opening_coefficient_bytes, workspace.masked_opening_response_bytes});
+            maximum_family_g1_buffer_bytes = std::max({maximum_family_g1_buffer_bytes, workspace.row_commitment_bytes,
+                workspace.column_generator_bytes, workspace.masked_opening_generator_bytes});
+        }
+        report.lasso_private_selected_row_workspace_peak_bytes = uadd(family_persistent_bytes,
+            std::max(family_row_commitment_bytes, largest_family_transient_bytes), "Lasso private workspace peak");
+        report.lasso_heap_workspace_peak_bytes = uadd(family_persistent_bytes,
+            uadd(umul(2, family_column_generator_bytes, "Lasso public identity generator copies"),
+                std::max(family_row_commitment_bytes, lasso_heap_transient_peak_bytes),
+                "Lasso ordinary vector workspace peak"), "Lasso ordinary vector workspace peak");
+        report.hyrax_active_domain_workspace_entries = maximum_family_columns;
+        report.hyrax_active_domain_workspace_bytes = 0;
+        report.hyrax_folded_columns_workspace_bytes = 0;
+        for (const GatLassoWorkspaceProfile& family : report.lasso_workspace_profile) {
+            report.hyrax_active_domain_workspace_bytes = std::max(report.hyrax_active_domain_workspace_bytes,
+                uadd(family.workspace.masked_opening_generator_bytes,
+                     uadd(family.workspace.masked_opening_coefficient_bytes, family.workspace.masked_opening_response_bytes, "Hyrax masked opening workspace"),
+                     "Hyrax masked opening workspace"));
+            report.hyrax_folded_columns_workspace_bytes = std::max(report.hyrax_folded_columns_workspace_bytes,
+                uadd(family.workspace.row_fold_values_bytes, family.workspace.onehot_query_bytes, "Hyrax folded column workspace"));
+        }
+
+        const std::uint64_t aux_length = u64_from_size(report.input_layout.segments.at(2).logical_length, "Aux tensor length");
+        const std::uint64_t l_query_length = u64_from_size(report.input_layout.segments.at(3).logical_length, "L_qry tensor length");
+        const auto aux_tensor = tensor_shape(aux_length);
+        const auto l_query_tensor = tensor_shape(l_query_length);
+        report.aux_logical_entries_upper_bound = aux_length;
+        report.aux_active_domain_entries_upper_bound = aux_tensor[0];
+        report.hyrax_l_qry_tensor_columns = l_query_tensor[2];
+        const auto tensor_open_peak = [&umul, &uadd](const std::array<std::uint64_t, 3>& shape) {
+            const std::uint64_t row_retained_and_weights = umul(shape[1], sizeof(G1) + 2 * sizeof(Fr), "tensor row workspace");
+            const std::uint64_t column_workspace = umul(shape[2], 2 * sizeof(G1) + 3 * sizeof(Fr), "tensor column workspace");
+            return uadd(row_retained_and_weights, column_workspace, "tensor open workspace");
+        };
+        const auto tensor_retained = [&umul](const std::array<std::uint64_t, 3>& shape) {
+            return umul(shape[1], sizeof(G1) + sizeof(Fr), "tensor retained row state");
+        };
+        const auto tensor_transient = [&umul, &uadd](const std::array<std::uint64_t, 3>& shape) {
+            return uadd(umul(shape[1], sizeof(Fr), "tensor row weights"),
+                umul(shape[2], 2 * sizeof(G1) + 3 * sizeof(Fr), "tensor column transient"), "tensor transient workspace");
+        };
+        report.hyrax_aux_tensor_workspace_bytes = tensor_open_peak(aux_tensor);
+        report.hyrax_l_qry_tensor_workspace_bytes = tensor_open_peak(l_query_tensor);
+        report.hyrax_tensor_retained_workspace_bytes = uadd(tensor_retained(aux_tensor), tensor_retained(l_query_tensor), "tensor retained live set");
+        report.hyrax_tensor_opening_transient_peak_workspace_bytes = std::max(tensor_transient(aux_tensor), tensor_transient(l_query_tensor));
+        report.hyrax_tensor_combined_peak_workspace_bytes = uadd(report.hyrax_tensor_retained_workspace_bytes,
+            report.hyrax_tensor_opening_transient_peak_workspace_bytes, "tensor simultaneous opening peak");
+        const std::uint64_t w_active = pow2(u64_from_size(report.input_layout.segments.at(1).logical_length, "W MLE length"));
+        report.hyrax_w_mle_workspace_bytes = ubytes(w_active, sizeof(G1) + 2 * sizeof(Fr), "W masked MLE workspace");
+
+        const std::uint64_t graph_nodes = u64_from_size(nodes, "graph nodes");
+        const std::uint64_t graph_edges = u64_from_size(edges, "graph edges");
+        const std::uint64_t h0_u = u64_from_size(h0, "hidden width 0");
+        const std::uint64_t h1_u = u64_from_size(h1, "hidden width 1");
+        const std::uint64_t classes_u = u64_from_size(classes, "class count");
+        const std::uint64_t hidden_heads_u = u64_from_size(hidden_heads, "hidden head count");
+        const std::uint64_t output_heads_u = u64_from_size(output_heads, "output head count");
+        const std::uint64_t n0 = umul(graph_nodes, h0_u, "hidden layer 0 values");
+        const std::uint64_t n1 = umul(graph_nodes, h1_u, "hidden layer 1 values");
+        const std::uint64_t nc = umul(graph_nodes, classes_u, "output values");
+
+        struct RelationCapacityCounts {
+            std::uint64_t outputs = 0;
+            std::uint64_t unary = 0;
+            std::uint64_t binary = 0;
+        };
+        RelationCapacityCounts relation_counts;
+        const auto add_relation_counts = [&uadd](RelationCapacityCounts& destination, std::uint64_t outputs,
+                                                   std::uint64_t unary, std::uint64_t binary) {
+            destination.outputs = uadd(destination.outputs, outputs, "relation output count");
+            destination.unary = uadd(destination.unary, unary, "relation unary gate count");
+            destination.binary = uadd(destination.binary, binary, "relation binary gate count");
+        };
+        const auto add_relation_range = [&umul, &uadd, &add_relation_counts](RelationCapacityCounts& destination,
+                                                                            std::uint64_t count, std::uint64_t width) {
+            const std::uint64_t rows_per_range = uadd(width, 1, "range residual count");
+            const std::uint64_t unary_per_range = uadd(umul(2, width, "range unary gates"), 1, "range unary gates");
+            add_relation_counts(destination, umul(count, rows_per_range, "range residual count"),
+                umul(count, unary_per_range, "range unary gates"), umul(count, width, "range binary gates"));
+        };
+        const auto add_relation_lookup = [&umul, &uadd, &add_relation_counts](RelationCapacityCounts& destination,
+                                                                              std::uint64_t count, std::uint64_t x_width,
+                                                                              std::uint64_t y_width) {
+            const std::uint64_t rows_per_lookup = uadd(5, uadd(umul(2, x_width, "lookup range residuals"),
+                umul(2, y_width, "lookup range residuals"), "lookup range residuals"), "lookup residual count");
+            const std::uint64_t unary_per_lookup = uadd(7, uadd(umul(4, x_width, "lookup unary gates"),
+                umul(4, y_width, "lookup unary gates"), "lookup unary gates"), "lookup unary gates");
+            const std::uint64_t binary_per_lookup = uadd(umul(2, x_width, "lookup binary gates"),
+                umul(2, y_width, "lookup binary gates"), "lookup binary gates");
+            add_relation_counts(destination, umul(count, rows_per_lookup, "lookup residual count"),
+                umul(count, unary_per_lookup, "lookup unary gates"), umul(count, binary_per_lookup, "lookup binary gates"));
+        };
+        const auto add_relation_attention = [&umul, &uadd, &add_relation_counts, graph_nodes, graph_edges](
+                                                RelationCapacityCounts& destination, std::uint64_t dim) {
+            const std::uint64_t coordinates = umul(graph_nodes, dim, "attention relation coordinates");
+            const std::uint64_t outputs = uadd(uadd(umul(6, graph_edges, "attention edge residuals"),
+                umul(4, graph_nodes, "attention node residuals"), "attention residual count"),
+                umul(3, coordinates, "attention coordinate residuals"), "attention residual count");
+            const std::uint64_t unary = uadd(uadd(umul(10, graph_edges, "attention edge unary gates"),
+                umul(3, graph_nodes, "attention node unary gates"), "attention unary gates"),
+                umul(4, coordinates, "attention coordinate unary gates"), "attention unary gates");
+            const std::uint64_t binary = uadd(uadd(umul(6, graph_edges, "attention edge binary gates"), graph_nodes,
+                "attention binary gates"), uadd(umul(graph_edges, dim, "attention aggregation binary gates"), coordinates,
+                "attention binary gates"), "attention binary gates");
+            add_relation_counts(destination, outputs, unary, binary);
+        };
+        const auto add_relation_division = [&umul, &uadd, &add_relation_counts, &quant](
+                                               RelationCapacityCounts& destination, std::uint64_t count, bool has_denominator) {
+            const bool nearest = quant.rounding == "nearest_ties_away";
+            const std::uint64_t rows_per_division = has_denominator ? 12 : 11;
+            const std::uint64_t unary_nonempty = nearest ? 15 : 14;
+            const std::uint64_t unary_empty = nearest ? 13 : 12;
+            const std::uint64_t unary_per_division = has_denominator ? unary_nonempty : unary_empty;
+            add_relation_counts(destination, umul(count, rows_per_division, "division residual count"),
+                umul(count, unary_per_division, "division unary gate count"), umul(count, 10, "division binary gate count"));
+        };
+        const auto add_relation_division_ranges = [&umul, &uadd, &add_relation_counts](
+                                                        RelationCapacityCounts& destination, std::uint64_t count,
+                                                        const std::array<unsigned, 5>& profile) {
+            std::uint64_t width_sum = 0;
+            for (unsigned width : profile) width_sum = uadd(width_sum, width, "division range width sum");
+            add_relation_counts(destination, umul(count, uadd(5, width_sum, "division range residuals"), "division range residuals"),
+                umul(count, uadd(5, umul(2, width_sum, "division range unary gates"), "division range unary gates"),
+                     "division range unary gates"), umul(count, width_sum, "division range binary gates"));
+        };
+
+        const auto lrelu_bounds = lookup_rectangle(native_tables.lrelu);
+        const auto exp_bounds = lookup_rectangle(native_tables.exp);
+        const auto elu_bounds = lookup_rectangle(native_tables.elu);
+        const std::uint64_t lrelu_x_width = nonnegative_bit_width(2 * static_cast<Wide>(lrelu_bounds.first));
+        const std::uint64_t lrelu_y_width = nonnegative_bit_width(2 * static_cast<Wide>(lrelu_bounds.second));
+        const std::uint64_t exp_x_width = nonnegative_bit_width(2 * static_cast<Wide>(exp_bounds.first));
+        const std::uint64_t exp_y_width = nonnegative_bit_width(2 * static_cast<Wide>(exp_bounds.second));
+        const std::uint64_t elu_x_width = nonnegative_bit_width(2 * static_cast<Wide>(elu_bounds.first));
+        const std::uint64_t elu_y_width = nonnegative_bit_width(2 * static_cast<Wide>(elu_bounds.second));
+        const std::uint64_t delta_width = nonnegative_bit_width(2 * static_cast<Wide>(lrelu_bounds.second));
+        const auto division_profiles = canonical_division_range_bits(graph, model, quant);
+        std::size_t relation_profile_index = 0;
+        const auto add_attention_relation_group = [&](std::uint64_t dim, bool hidden,
+                                                      const std::array<unsigned, 5>& profile) {
+            const std::uint64_t coordinates = umul(graph_nodes, dim, "attention relation coordinates");
+            add_relation_attention(relation_counts, dim);
+            add_relation_lookup(relation_counts, graph_edges, lrelu_x_width, lrelu_y_width);
+            add_relation_lookup(relation_counts, graph_edges, exp_x_width, exp_y_width);
+            if (hidden) add_relation_lookup(relation_counts, coordinates, elu_x_width, elu_y_width);
+            else add_relation_counts(relation_counts, coordinates, umul(2, coordinates, "output activation identity gates"), 0);
+            add_relation_range(relation_counts, graph_edges, delta_width);
+            add_relation_division_ranges(relation_counts, coordinates, profile);
+            add_relation_division(relation_counts, coordinates, true);
+        };
+
+        add_relation_counts(relation_counts, nc, nc, 0); // public output bindings
+        const std::uint64_t public_feature_entries = u64_from_size(report.input_layout.segments.front().logical_length,
+            "public input binding entries");
+        add_relation_counts(relation_counts, public_feature_entries, umul(2, public_feature_entries, "public input binding gates"), 0);
+        for (std::uint64_t dim : {h0_u, h1_u}) {
+            for (std::uint64_t head = 0; head < hidden_heads_u; ++head) {
+                if (relation_profile_index >= division_profiles.size()) throw std::logic_error("hidden relation range profile is missing");
+                add_attention_relation_group(dim, true, division_profiles[relation_profile_index++]);
+            }
+            const std::uint64_t concat_coordinates = umul(graph_nodes, umul(dim, hidden_heads_u, "hidden concat relation width"),
+                "hidden concat relation coordinates");
+            add_relation_counts(relation_counts, concat_coordinates, umul(2, concat_coordinates, "hidden concat relation gates"), 0);
+        }
+        for (std::uint64_t head = 0; head < output_heads_u; ++head) {
+            if (relation_profile_index + 1 >= division_profiles.size()) throw std::logic_error("output relation range profile is missing");
+            add_attention_relation_group(classes_u, false, division_profiles[relation_profile_index++]);
+            add_relation_division_ranges(relation_counts, nc, division_profiles[relation_profile_index++]);
+            const std::uint64_t alignment_unary_per_coordinate = quant.rounding == "nearest_ties_away" ? 19 : 18;
+            add_relation_counts(relation_counts, umul(14, nc, "output binding residuals"),
+                umul(alignment_unary_per_coordinate, nc, "output binding unary gates"), umul(10, nc, "output binding binary gates"));
+        }
+        if (relation_profile_index >= division_profiles.size()) throw std::logic_error("final relation range profile is missing");
+        const std::uint64_t average_unary_per_coordinate = uadd(output_heads_u, quant.rounding == "nearest_ties_away" ? 15 : 14,
+            "final output average unary gates");
+        add_relation_counts(relation_counts, umul(13, nc, "final output average residuals"),
+            umul(average_unary_per_coordinate, nc, "final output average unary gates"), umul(10, nc, "final output average binary gates"));
+        add_relation_division_ranges(relation_counts, nc, division_profiles[relation_profile_index++]);
+        if (relation_profile_index != division_profiles.size()) throw std::logic_error("canonical relation range profile coverage is incomplete");
+        for (std::size_t family = 0; family < query_counts_ordered.size(); ++family) {
+            const std::uint64_t real = u64_from_size(query_counts_ordered[family], "Lasso real query count");
+            const std::uint64_t padded = pow2(real);
+            if (padded > real) add_relation_counts(relation_counts, padded - real, padded - real, 0);
+        }
+
+        std::uint64_t explicit_unary_count = umul(2, u64_from_size(fconn_output_coordinates, "FCONN binding outputs"),
+            "FCONN binding unary gates");
+        std::uint64_t explicit_binary_count = 0;
+        for (std::uint64_t dim : {h0_u, h1_u}) {
+            const std::uint64_t coordinates = umul(graph_nodes, dim, "hidden explicit coordinates");
+            explicit_unary_count = uadd(explicit_unary_count, umul(hidden_heads_u,
+                uadd(uadd(umul(6, graph_edges, "hidden score/softmax unary gates"), umul(3, graph_nodes, "hidden softmax node gates"),
+                    "hidden score/softmax unary gates"), umul(10, coordinates, "hidden aggregate/round/activation unary gates"),
+                    "hidden explicit unary gates"), "hidden head unary gates"), "explicit unary gates");
+            explicit_unary_count = uadd(explicit_unary_count, umul(graph_nodes,
+                umul(dim, hidden_heads_u, "hidden concat coordinates"), "hidden concat unary gates"), "explicit unary gates");
+            explicit_binary_count = uadd(explicit_binary_count, umul(hidden_heads_u,
+                uadd(umul(2, graph_edges, "hidden score/softmax binary gates"),
+                    uadd(umul(graph_edges, dim, "hidden aggregation binary gates"), 0, "hidden binary gates"), "hidden binary gates"),
+                "hidden head binary gates"), "explicit binary gates");
+        }
+        explicit_unary_count = uadd(explicit_unary_count, umul(output_heads_u,
+            uadd(uadd(umul(6, graph_edges, "output score/softmax unary gates"), umul(3, graph_nodes, "output softmax node gates"),
+                "output score/softmax unary gates"), umul(10, nc, "output aggregate/equation unary gates"), "output unary gates"),
+            "output head unary gates"), "explicit unary gates");
+        explicit_binary_count = uadd(explicit_binary_count, umul(output_heads_u,
+            uadd(umul(2, graph_edges, "output score/softmax binary gates"), uadd(umul(graph_edges, classes_u, "output aggregation binary gates"), nc,
+                "output binary gates"), "output binary gates"), "output head binary gates"), "explicit binary gates");
+        if (output_heads_u == 1) explicit_unary_count = uadd(explicit_unary_count, nc, "output head-sum unary gates");
+        else explicit_binary_count = uadd(explicit_binary_count, nc, "output head-sum binary gates");
+        explicit_unary_count = uadd(explicit_unary_count, umul(3, nc, "output averaging and final unary gates"), "explicit unary gates");
+        const std::uint64_t direct_unary_count = explicit_unary_count;
+        const std::uint64_t direct_binary_count = explicit_binary_count;
+        explicit_unary_count = uadd(explicit_unary_count, relation_counts.unary, "explicit unary gates");
+        explicit_binary_count = uadd(explicit_binary_count, relation_counts.binary, "explicit binary gates");
+        const std::uint64_t exact_explicit_gate_count = uadd(explicit_unary_count, explicit_binary_count, "explicit gate count");
+        if (exact_explicit_gate_count > std::numeric_limits<std::size_t>::max() || relation_counts.outputs > std::numeric_limits<std::size_t>::max())
+            throw std::length_error("exact relation or explicit gate count exceeds native size_t");
+        explicit_gates = static_cast<std::size_t>(exact_explicit_gate_count);
+        report.max_materialized_gate = explicit_gates;
+        report.explicit_gate_count = explicit_gates;
+        report.division_relation_count = static_cast<std::size_t>(relation_counts.outputs);
+        const std::uint64_t exact_relation_output_count = relation_counts.outputs;
+        const std::uint64_t relation_residual_entries = exact_relation_output_count - u64_from_size(output_coordinates, "public relation output coordinates");
+        report.relation_gate_unary_entries = relation_counts.unary;
+        report.relation_gate_binary_entries = relation_counts.binary;
+        report.relation_gate_output_entries = relation_counts.outputs;
+        report.retained_relation_witness_entries = 0;
+        report.retained_relation_witness_bytes_upper_bound = 0;
+        // The final relation outputs are a borrowed Y||residual-target view.
+        // They remain logical outputs for binding, but production stores no
+        // terminal NativeFieldVector or residual field-vector copy.
+        report.relation_public_output_entries = relation_counts.outputs;
+        report.relation_public_output_bytes_upper_bound = 0;
+        report.relation_residual_entries = relation_residual_entries;
+        report.relation_residual_bytes_upper_bound = 0;
+
+        std::uint64_t layer_value_entries = 0;
+        const std::uint64_t max_edge_node = std::max(graph_edges, graph_nodes);
+        for (std::uint64_t dim : {h0_u, h1_u}) {
+            const std::uint64_t nd = umul(graph_nodes, dim, "hidden layer output values");
+            const std::uint64_t per_head = uadd(uadd(umul(3, nd, "hidden projection/aggregate values"), umul(2, graph_nodes, "hidden score values"), "hidden values"),
+                uadd(graph_edges, uadd(max_edge_node, 1, "hidden softmax and round values"), "hidden values"), "hidden values");
+            layer_value_entries = uadd(layer_value_entries, umul(hidden_heads_u, per_head, "hidden head witness values"), "witness layer values");
+            layer_value_entries = uadd(layer_value_entries, umul(graph_nodes, umul(dim, hidden_heads_u, "hidden concat width"), "hidden concat values"), "witness layer values");
+        }
+        const std::uint64_t output_per_head = uadd(umul(3, nc, "output head value layers"),
+            uadd(umul(2, graph_nodes, "output score values"), uadd(graph_edges, max_edge_node, "output softmax values"), "output head values"), "output head values");
+        layer_value_entries = uadd(layer_value_entries, umul(output_heads_u, output_per_head, "output head witness values"), "witness layer values");
+        layer_value_entries = uadd(layer_value_entries, u64_from_size(fconn_output_coordinates, "FCONN layer output values"), "witness layer values");
+        layer_value_entries = uadd(layer_value_entries, uadd(umul(2, nc, "final output witness values"), 1, "final output witness values"), "witness layer values");
+        report.retained_layer_witness_entries_upper_bound = layer_value_entries;
+        report.retained_layer_witness_bytes_upper_bound = ubytes(layer_value_entries, sizeof(Fr), "retained GKR layer witnesses");
+        const std::uint64_t maximum_layer_values = std::max({n0, n1, nc, umul(graph_nodes, umul(std::max(h0_u, h1_u), hidden_heads_u, "maximum hidden concat width"), "maximum hidden concat size"), max_edge_node, std::uint64_t(1)});
+        report.evaluated_layer_witness_entries_upper_bound = maximum_layer_values;
+        report.evaluated_layer_witness_bytes_upper_bound = ubytes(maximum_layer_values, sizeof(Fr), "streamed GKR witness validation layer");
+        report.max_materialized_vector = static_cast<std::size_t>(std::min<std::uint64_t>(maximum_layer_values, std::numeric_limits<std::size_t>::max()));
+        report.max_materialized_vector_bytes = static_cast<std::size_t>(std::min<std::uint64_t>(ubytes(maximum_layer_values, sizeof(Fr), "maximum layer vector bytes"), std::numeric_limits<std::size_t>::max()));
+        report.materialized_fr = report.max_materialized_vector;
+        report.max_materialized_fr_bytes = std::max(ubytes(maximum_layer_values, sizeof(Fr), "maximum materialized field vector"), maximum_family_fr_buffer_bytes);
+        report.materialized_g1 = static_cast<std::size_t>(std::min<std::uint64_t>(maximum_family_columns, std::numeric_limits<std::size_t>::max()));
+        report.max_materialized_g1_bytes = maximum_family_g1_buffer_bytes;
+
+        const std::uint64_t n_h0 = ubytes(umul(graph_nodes, h0_u, "hidden aggregate count"), 5, "hidden aggregate unary gates");
+        const std::uint64_t n_h1 = ubytes(umul(graph_nodes, h1_u, "hidden aggregate count"), 5, "hidden aggregate unary gates");
+        const std::uint64_t gate_refs_score = umul(4, graph_edges, "score layer source coordinates");
+        const std::uint64_t gate_refs_softmax = uadd(umul(6, graph_edges, "softmax layer source coordinates"), umul(3, graph_nodes, "softmax node source coordinates"), "softmax source coordinates");
+        const std::uint64_t gate_refs_hidden_agg0 = uadd(umul(2, umul(graph_edges, h0_u, "hidden aggregation binary references"), "hidden aggregation binary references"), n_h0, "hidden aggregation source coordinates");
+        const std::uint64_t gate_refs_hidden_agg1 = uadd(umul(2, umul(graph_edges, h1_u, "hidden aggregation binary references"), "hidden aggregation binary references"), n_h1, "hidden aggregation source coordinates");
+        const std::uint64_t gate_refs_round0 = umul(3, n0, "hidden rounding source coordinates");
+        const std::uint64_t gate_refs_round1 = umul(3, n1, "hidden rounding source coordinates");
+        const std::uint64_t gate_refs_elu0 = umul(2, n0, "hidden ELU source coordinates");
+        const std::uint64_t gate_refs_elu1 = umul(2, n1, "hidden ELU source coordinates");
+        const std::uint64_t gate_refs_concat = umul(2, umul(graph_nodes, umul(std::max(h0_u, h1_u), hidden_heads_u, "concat source coordinates"), "concat source coordinates"), "concat source coordinates");
+        const std::uint64_t gate_refs_output_agg = uadd(umul(2, umul(graph_edges, classes_u, "output aggregation binary references"), "output aggregation binary references"), umul(4, nc, "output aggregation unary references"), "output aggregation source coordinates");
+        const std::uint64_t gate_refs_output = umul(8, nc, "output equation source coordinates");
+        const std::uint64_t gate_refs_final = umul(2, nc, "final layer source coordinates");
+        const std::uint64_t max_source_refs = std::max({gate_refs_score, gate_refs_softmax, gate_refs_hidden_agg0, gate_refs_hidden_agg1,
+            gate_refs_round0, gate_refs_round1, gate_refs_elu0, gate_refs_elu1, gate_refs_concat, gate_refs_output_agg, gate_refs_output, gate_refs_final});
+        const std::uint64_t unary_gate_entry_bytes = sizeof(uniGate);
+        const std::uint64_t binary_gate_entry_bytes = sizeof(binGate);
+        const std::uint64_t direct_gate_array_entries = max_source_refs;
+        const std::uint64_t maximum_unary_gate_array_entries = std::max(direct_gate_array_entries, relation_counts.unary);
+        const std::uint64_t maximum_binary_gate_array_entries = std::max(direct_gate_array_entries, relation_counts.binary);
+        const std::uint64_t maximum_single_gate_array_bytes = std::max(ubytes(maximum_unary_gate_array_entries, unary_gate_entry_bytes, "maximum unary gate array"),
+            ubytes(maximum_binary_gate_array_entries, binary_gate_entry_bytes, "maximum binary gate array"));
+        report.max_single_gate_array_bytes_upper_bound = maximum_single_gate_array_bytes;
+        report.max_materialized_gate_bytes = static_cast<std::size_t>(std::min<std::uint64_t>(maximum_single_gate_array_bytes, std::numeric_limits<std::size_t>::max()));
+        report.explicit_gate_count = explicit_gates;
+        const std::uint64_t max_layer_outputs = std::max({n0, n1, nc, umul(graph_nodes, umul(std::max(h0_u, h1_u), hidden_heads_u, "concat layer output"), "concat layer output"), max_edge_node, std::uint64_t(1)});
+        // The native prover keeps exactly eight prefix vectors in one sumcheck
+        // phase: two active and two folded vectors for each lane. Finalization
+        // releases all eight before the next phase, so U and V storage is
+        // sequential. Bound each phase by the sum of its two lane extents, then
+        // retain a 2x per-vector allocation-transition envelope.
+        const std::uint64_t max_u_prefix = std::max(max_source_refs, max_layer_outputs);
+        const std::uint64_t max_v_prefix = std::max(max_source_refs / 2 + max_source_refs % 2, max_layer_outputs);
+        const std::uint64_t u_active_source = std::max<std::uint64_t>(1, max_source_refs);
+        const std::uint64_t v_active_source = std::max<std::uint64_t>(1, max_source_refs / 2 + max_source_refs % 2);
+        const std::uint64_t active_output = std::max<std::uint64_t>(1, max_layer_outputs);
+        const std::uint64_t u_fold_source = std::max<std::uint64_t>(1, u_active_source / 2 + u_active_source % 2);
+        const std::uint64_t v_fold_source = std::max<std::uint64_t>(1, v_active_source / 2 + v_active_source % 2);
+        const std::uint64_t fold_output = std::max<std::uint64_t>(1, active_output / 2 + active_output % 2);
+        const std::uint64_t phase1_prefix_slots = umul(2,
+            uadd(uadd(u_active_source, active_output, "GKR phase1 active prefix storage"),
+                 uadd(u_fold_source, fold_output, "GKR phase1 folded prefix storage"), "GKR phase1 prefix storage"),
+            "GKR phase1 prefix vector pairs");
+        const std::uint64_t phase2_prefix_slots = umul(2,
+            uadd(uadd(v_active_source, active_output, "GKR phase2 active prefix storage"),
+                 uadd(v_fold_source, fold_output, "GKR phase2 folded prefix storage"), "GKR phase2 prefix storage"),
+            "GKR phase2 prefix vector pairs");
+        report.gkr_prefix_workspace_bytes_upper_bound = ubytes(
+            umul(2, std::max(phase1_prefix_slots, phase2_prefix_slots), "GKR per-phase vector capacity growth envelope"),
+            sizeof(linear_poly), "GKR valid-prefix workspace");
+
+        const std::uint64_t hidden_layer_count = umul(2, hidden_heads_u, "GKR hidden layer count");
+        const std::uint64_t gkr_layers = uadd(uadd(umul(16, hidden_heads_u, "GKR hidden circuit layers"), umul(7, output_heads_u, "GKR output circuit layers"), "GKR circuit layer count"), 6, "GKR circuit layer count");
+        const std::uint64_t fconn_layers = umul(3, uadd(hidden_layer_count, output_heads_u, "GKR FCONN family count"), "GKR FCONN layers");
+        const std::uint64_t nonfconn_layers = gkr_layers - 1 - fconn_layers;
+        const std::uint64_t phase2_nonfconn_layers = uadd(umul(3, hidden_layer_count, "GKR hidden phase2 layers"), uadd(umul(3, output_heads_u, "GKR output phase2 layers"), 2, "GKR final phase2 layers"), "GKR phase2 layers");
+        const std::uint64_t phase1_only_layers = nonfconn_layers - phase2_nonfconn_layers;
+        report.gkr_layer_count_upper_bound = gkr_layers;
+        report.gkr_fconn_layer_count_upper_bound = fconn_layers;
+        report.gkr_input_source_count_upper_bound = uadd(umul(2, nonfconn_layers, "GKR source count"), umul(3, fconn_layers, "GKR source count"), "GKR source count");
+        const std::uint64_t input_domain = report.flattened_input_domain_entries;
+        const std::uint64_t input_bits = bits_for(input_domain);
+        // Canonical-copy sources can only be the two concatenation copies and
+        // the final output copy. Their lane maps use logical relation entries,
+        // not the much larger padded four-segment input domain.
+        const std::uint64_t canonical_copy_entries = uadd(
+            uadd(umul(n0, hidden_heads_u, "GKR first concatenation copy lanes"),
+                 umul(n1, hidden_heads_u, "GKR second concatenation copy lanes"),
+                 "GKR concatenation copy lanes"),
+            nc, "GKR canonical copy lanes");
+        const std::uint64_t input_fold_heap_bytes = uadd(
+            native_masked_gkr_input_fold_storage_bytes(
+                canonical_copy_entries,
+                report.gkr_input_source_count_upper_bound,
+                input_bits),
+            ubytes(umul(4, canonical_copy_entries,
+                        "canonical-copy source/index transition envelope"),
+                   sizeof(std::uint64_t),
+                   "canonical-copy source/index transition heap envelope"),
+            "bounded input-fold source and metadata heap");
+        const std::uint64_t max_canonical_copy_layer_entries = std::max({
+            umul(n0, hidden_heads_u, "maximum first concatenation copy layer"),
+            umul(n1, hidden_heads_u, "maximum second concatenation copy layer"),
+            nc});
+        const std::uint64_t output_bits = bits_for(u64_from_size(output_coordinates, "GKR output coordinate count"));
+        std::uint64_t fconn_output_bit_sum = 0;
+        std::uint64_t fconn_inner_bit_sum = 0;
+        for (std::uint64_t dim : {h0_u, h1_u}) {
+            fconn_output_bit_sum = uadd(fconn_output_bit_sum,
+                umul(hidden_heads_u, uadd(bits_for(umul(graph_nodes, dim, "GKR hidden projection")), umul(2, bits_for(graph_nodes), "GKR hidden attention dots"), "GKR hidden FCONN output bits"), "GKR hidden output bit sum"), "GKR FCONN output bit sum");
+            const std::uint64_t input_dim = dim == h0_u ? u64_from_size(model.tensor(hidden_tensor_name(0, 0, "seq/kernel")).shape.dims.at(1), "GKR hidden input width") : umul(h0_u, hidden_heads_u, "GKR hidden input width");
+            fconn_inner_bit_sum = uadd(fconn_inner_bit_sum, umul(hidden_heads_u, uadd(bits_for(input_dim), umul(2, bits_for(dim), "GKR attention inner bits"), "GKR hidden inner bits"), "GKR hidden inner bit sum"), "GKR FCONN inner bit sum");
+        }
+        const std::uint64_t output_input_dim = umul(h1_u, hidden_heads_u, "GKR output projection input width");
+        fconn_output_bit_sum = uadd(fconn_output_bit_sum, umul(output_heads_u, uadd(bits_for(nc), umul(2, bits_for(graph_nodes), "GKR output attention dots"), "GKR output FCONN output bits"), "GKR output FCONN bit sum"), "GKR FCONN output bit sum");
+        fconn_inner_bit_sum = uadd(fconn_inner_bit_sum, umul(output_heads_u, uadd(bits_for(output_input_dim), umul(2, bits_for(classes_u), "GKR output attention inner bits"), "GKR output inner bits"), "GKR output inner bit sum"), "GKR FCONN inner bit sum");
+        std::uint64_t nonfconn_output_bit_sum = 0;
+        const std::uint64_t edge_bits = bits_for(graph_edges);
+        const std::uint64_t edge_node_bits = bits_for(max_edge_node);
+        for (std::uint64_t dim : {h0_u, h1_u}) {
+            const std::uint64_t aggregate_bits = bits_for(umul(graph_nodes, dim, "GKR hidden aggregate layer"));
+            nonfconn_output_bit_sum = uadd(nonfconn_output_bit_sum,
+                umul(hidden_heads_u, uadd(uadd(edge_bits, edge_node_bits, "GKR hidden score bits"), uadd(aggregate_bits, aggregate_bits, "GKR hidden aggregate bits"), "GKR hidden per-head bits"), "GKR hidden bit sum"), "GKR non-FCONN output bits");
+            nonfconn_output_bit_sum = uadd(nonfconn_output_bit_sum, bits_for(umul(graph_nodes, umul(dim, hidden_heads_u, "GKR concat size"), "GKR concat size")), "GKR concat output bits");
+        }
+        nonfconn_output_bit_sum = uadd(nonfconn_output_bit_sum,
+            umul(output_heads_u, uadd(uadd(edge_bits, edge_node_bits, "GKR output score bits"), umul(2, bits_for(nc), "GKR output aggregation bits"), "GKR output per-head bits"), "GKR output head bits"), "GKR output layer bits");
+        nonfconn_output_bit_sum = uadd(nonfconn_output_bit_sum, umul(2, bits_for(nc), "GKR final output layer bits"), "GKR final layer bits");
+        const std::uint64_t gkr_layer_messages = uadd(
+            uadd(umul(fconn_layers, 114, "GKR FCONN fixed messages"), umul(122, fconn_inner_bit_sum, "GKR FCONN inner-round messages"), "GKR FCONN messages"),
+            uadd(uadd(umul(phase1_only_layers, 211, "GKR phase1-only fixed messages"), umul(121, umul(phase1_only_layers, input_bits, "GKR phase1-only rounds"), "GKR phase1-only round messages"), "GKR phase1-only messages"),
+                 uadd(umul(phase2_nonfconn_layers, 336, "GKR phase2 fixed messages"), umul(121, umul(2, umul(phase2_nonfconn_layers, input_bits, "GKR phase2 rounds"), "GKR phase2 rounds"), "GKR phase2 round messages"), "GKR phase2 messages"), "GKR non-FCONN messages"), "GKR layer messages");
+        // The per-layer b_i sum is exact from the fixed plan shape; u_i/v_i are conservatively bounded by the four-segment input bit length.
+        const std::uint64_t gkr_b_sum = uadd(fconn_output_bit_sum, nonfconn_output_bit_sum, "GKR layer output-bit sum");
+        report.gkr_message_count_upper_bound = uadd(137,
+            uadd(output_bits, uadd(report.gkr_input_source_count_upper_bound,
+                uadd(umul(121, input_bits, "GKR input rounds"), uadd(gkr_layer_messages, gkr_b_sum, "GKR layer transcript"), "GKR transcript"), "GKR transcript"), "GKR transcript"), "GKR transcript");
+        const std::uint64_t gkr_max_fields = std::max({std::uint64_t(9), uadd(report.gkr_input_source_count_upper_bound, 1, "GKR field vector width"), input_bits});
+        const std::uint64_t gkr_aggregate_entries = uadd(report.gkr_input_source_count_upper_bound, 1, "GKR aggregate coefficient count");
+        const std::uint64_t gkr_aggregate_relation_meta_payload = uadd(
+            uadd(40 + (sizeof("zkgpt-native-pedersen-relation-v1") - 1) + 6 + 256 + 2 * 64, 8, "GKR relation metadata header"),
+            umul(uadd(gkr_aggregate_entries, 1, "GKR aggregate relation points"), 8 + 64, "GKR aggregate relation points"),
+            "GKR aggregate relation metadata");
+        const std::uint64_t gkr_aggregate_coefficients_payload = uadd(8,
+            umul(gkr_aggregate_entries, 8 + 64, "GKR aggregate coefficients"), "GKR aggregate coefficients");
+        const std::uint64_t gkr_input_point_payload = uadd(8,
+            umul(input_bits, 8 + 64, "GKR input point payload"), "GKR input point payload");
+
+        // A native masked Sumcheck round has a source-derived 121-message shape:
+        // 13 Pedersen openings, 11 hidden-linear relations, two three-field
+        // polynomial vectors, and one challenge. Bound those message classes by
+        // their actual fixed encodings. The only O(S) messages are two aggregate
+        // linear-relation metadata/coefficients pairs; the only O(I) vector is
+        // the final input point. The source ledger absorbs a fixed 64-byte digest.
+        constexpr std::uint64_t kGkrLabelBytesUpper = 128;
+        constexpr std::uint64_t kGkrMessageFrameBytes = 25 + kGkrLabelBytesUpper;
+        constexpr std::uint64_t kGkrSmallMessageWireBytes = 1536;
+        constexpr std::uint64_t kPedersenPointHexBytes = 64;
+        const std::uint64_t pedersen_header_bytes = 40 + (sizeof("zkgpt-native-pedersen-relation-v1") - 1) + 256 + 2 * kPedersenPointHexBytes;
+        const std::uint64_t opening_meta_payload = uadd(
+            uadd(pedersen_header_bytes, sizeof("opening") - 1, "GKR opening header"),
+            8 + kPedersenPointHexBytes, "GKR opening metadata");
+        const auto opening_wire = [&uadd, &umul, kGkrMessageFrameBytes, opening_meta_payload, kPedersenPointHexBytes](std::uint64_t count) {
+            const std::uint64_t one = uadd(umul(4, kGkrMessageFrameBytes, "GKR opening frame"),
+                uadd(opening_meta_payload,
+                    uadd(kPedersenPointHexBytes,
+                        uadd(64, 8 + 2 * (8 + 64), "GKR opening response payload"), "GKR opening point and response"),
+                    "GKR opening payload"), "GKR opening wire");
+            return umul(count, one, "GKR opening round wire");
+        };
+        const auto linear_wire = [&uadd, &umul, pedersen_header_bytes, kGkrMessageFrameBytes, kPedersenPointHexBytes](std::uint64_t operands) {
+            const std::uint64_t meta = uadd(
+                uadd(pedersen_header_bytes, sizeof("linear") - 1, "GKR linear header"),
+                uadd(8, umul(uadd(operands, 1, "GKR linear relation points"), 8 + kPedersenPointHexBytes, "GKR linear relation points"),
+                     "GKR linear relation metadata"), "GKR linear relation metadata");
+            const std::uint64_t coefficients = uadd(8, umul(operands, 8 + 64, "GKR linear coefficients"), "GKR linear coefficients");
+            const std::uint64_t payloads = uadd(meta,
+                uadd(coefficients,
+                    uadd(64, uadd(kPedersenPointHexBytes, uadd(64, 64, "GKR linear scalar payloads"), "GKR linear point and scalar payloads"),
+                         "GKR linear payloads"), "GKR linear payloads"), "GKR linear payloads");
+            return uadd(umul(6, kGkrMessageFrameBytes, "GKR linear message framing"), payloads, "GKR linear relation wire");
+        };
+        // Opening and linear helpers above already include their response and
+        // coefficient FieldVectors. The round has two further three-field
+        // vectors (q-values and q-transcript), plus the Sumcheck challenge.
+        const std::uint64_t round_tail_wire = uadd(
+            uadd(kGkrMessageFrameBytes, 64, "GKR Sumcheck challenge wire"),
+            umul(2, uadd(kGkrMessageFrameBytes, 8 + 3 * (8 + 64), "GKR q-vector wire"), "GKR q-vectors wire"),
+            "GKR round tail wire");
+        const std::uint64_t gkr_round_wire = uadd(opening_wire(13),
+            uadd(linear_wire(9),
+                uadd(umul(10, linear_wire(4), "GKR small linear relation round wire"),
+                    round_tail_wire,
+                    "GKR linear and field-vector round wire"), "GKR linear and opening round wire"), "GKR masked Sumcheck round wire");
+        const std::uint64_t gkr_sumcheck_rounds = uadd(
+            uadd(fconn_inner_bit_sum,
+                uadd(umul(phase1_only_layers, input_bits, "GKR phase1 Sumcheck rounds"),
+                    umul(2, umul(phase2_nonfconn_layers, input_bits, "GKR phase2 Sumcheck rounds"), "GKR phase2 Sumcheck rounds"),
+                    "GKR non-FCONN Sumcheck rounds"), "GKR layer Sumcheck rounds"), input_bits, "GKR input Sumcheck rounds");
+        const std::uint64_t gkr_round_messages = umul(gkr_sumcheck_rounds, 121, "GKR Sumcheck round messages");
+        if (gkr_round_messages > report.gkr_message_count_upper_bound)
+            throw std::logic_error("GKR per-round message formula exceeds its protocol message bound");
+        const std::uint64_t gkr_fixed_messages = report.gkr_message_count_upper_bound - gkr_round_messages;
+        std::uint64_t gkr_wire = uadd(umul(gkr_sumcheck_rounds, gkr_round_wire, "GKR source-derived round wire"),
+            umul(gkr_fixed_messages, kGkrSmallMessageWireBytes, "GKR fixed scalar/point message wire"), "GKR one-copy transcript wire");
+        const auto excess_over_small_message = [kGkrMessageFrameBytes, kGkrSmallMessageWireBytes](std::uint64_t payload) {
+            const std::uint64_t wire = kGkrMessageFrameBytes + payload;
+            return wire > kGkrSmallMessageWireBytes ? wire - kGkrSmallMessageWireBytes : std::uint64_t(0);
+        };
+        gkr_wire = uadd(gkr_wire, umul(2, excess_over_small_message(gkr_aggregate_relation_meta_payload), "GKR aggregate relation metadata excess"),
+            "GKR aggregate relation wire");
+        gkr_wire = uadd(gkr_wire, umul(2, excess_over_small_message(gkr_aggregate_coefficients_payload), "GKR aggregate coefficient excess"),
+            "GKR aggregate coefficient wire");
+        gkr_wire = uadd(gkr_wire, excess_over_small_message(gkr_input_point_payload), "GKR input point wire");
+        report.gkr_wire_bytes_upper_bound = gkr_wire;
+        const std::uint64_t gkr_small_payload_upper = kGkrSmallMessageWireBytes - kGkrMessageFrameBytes;
+        const std::uint64_t maximum_gkr_payload = std::max({gkr_small_payload_upper, gkr_aggregate_relation_meta_payload,
+            gkr_aggregate_coefficients_payload, gkr_input_point_payload, std::uint64_t(64)});
+
+        const auto tail_message_count = [&uadd, &umul, &bits_for](const std::array<std::uint64_t, 3>& shape) {
+            const std::uint64_t a = bits_for(shape[0]);
+            const std::uint64_t c = bits_for(shape[2]);
+            return uadd(83, uadd(umul(122, a, "tensor tail rounds"), umul(2, c, "tensor tail columns"), "tensor tail messages"), "tensor tail messages");
+        };
+        std::uint64_t zero_intervals = 0;
+        std::uint64_t query_support_cursor = 0;
+        for (const GatLassoWorkspaceProfile& family : report.lasso_workspace_profile) {
+            const std::uint64_t block = family.workspace.padded_queries;
+            const std::uint64_t remainder = query_support_cursor % block;
+            if (remainder != 0) {
+                ++zero_intervals;
+                query_support_cursor = uadd(query_support_cursor, block - remainder, "L_qry zero-interval alignment");
+            }
+            query_support_cursor = uadd(query_support_cursor, block, "L_qry zero-interval live support");
+        }
+        if (query_support_cursor > l_query_length)
+            throw std::logic_error("capacity L_qry zero-interval support exceeds its logical segment");
+        if (query_support_cursor < l_query_length) ++zero_intervals;
+        report.l_query_zero_interval_count_upper_bound = zero_intervals;
+        const std::uint64_t l_query_zero_messages_per_interval = uadd(82,
+            uadd(umul(122, bits_for(l_query_tensor[0]), "L_qry zero-interval rounds"),
+                umul(2, bits_for(l_query_tensor[2]), "L_qry zero-interval columns"), "L_qry zero-interval messages"),
+            "L_qry zero-interval messages");
+        const std::uint64_t l_query_zero_messages = uadd(1,
+            umul(zero_intervals, l_query_zero_messages_per_interval, "L_qry zero-interval messages"),
+            "L_qry zero-interval messages");
+        const std::uint64_t input_open_messages = uadd(uadd(9, umul(2, bits_for(w_active), "W MLE opening messages"), "W MLE opening messages"),
+            uadd(uadd(10, umul(2, bits_for(aux_tensor[2]), "Aux tensor opening messages"), "Aux tensor opening messages"),
+                 uadd(10, umul(2, bits_for(l_query_tensor[2]), "L_qry tensor opening messages"), "L_qry tensor opening messages"), "input tensor openings"), "input opening messages");
+        const std::uint64_t zero_tail_certificates = static_cast<std::uint64_t>(aux_length < aux_tensor[0]) +
+            static_cast<std::uint64_t>(l_query_length < l_query_tensor[0]);
+        report.zero_tail_certificate_count_upper_bound = zero_tail_certificates;
+        report.l_query_zero_interval_message_count_upper_bound = l_query_zero_messages;
+        const std::uint64_t tail_messages = uadd(
+            zero_tail_certificates == 0 ? 0 : (aux_length < aux_tensor[0] ? tail_message_count(aux_tensor) : 0) +
+                (l_query_length < l_query_tensor[0] ? tail_message_count(l_query_tensor) : 0),
+            l_query_zero_messages, "tensor tail messages");
+        const std::uint64_t fixed_protocol_messages = 256;
+        report.proof_message_count_upper_bound = uadd(family_message_count_sum,
+            uadd(report.gkr_message_count_upper_bound, uadd(tail_messages, uadd(input_open_messages, fixed_protocol_messages, "top-level transcript messages"), "protocol transcript messages"), "protocol transcript messages"), "proof transcript messages");
+        report.maximum_transcript_field_entries_upper_bound = std::max(gkr_max_fields, maximum_family_field_entries);
+        report.total_transcript_field_entries_upper_bound = umul(report.proof_message_count_upper_bound,
+            report.maximum_transcript_field_entries_upper_bound, "total transcript field entries");
+        report.maximum_masked_response_entries = maximum_family_response_entries;
+        std::uint64_t max_row_chunk_payload = 0;
+        for (const GatLassoWorkspaceProfile& family : report.lasso_workspace_profile) {
+            const std::uint64_t chunk_count = family.row_commitment_chunk_count;
+            const std::uint64_t rows = family.workspace.rows;
+            const std::uint64_t row_chunk_payload = rows == 0 ? 0 : uadd(8, umul(std::min<std::uint64_t>(rows, kRowChunkEntries), 8 + kG1HexChars, "maximum Lasso row chunk payload"), "maximum Lasso row chunk payload");
+            max_row_chunk_payload = std::max(max_row_chunk_payload, row_chunk_payload);
+            (void)chunk_count;
+        }
+        const std::uint64_t maximum_family_payload = uadd(8,
+            umul(maximum_family_field_entries, 8 + 64, "maximum Lasso field vector payload"), "maximum Lasso field vector payload");
+        report.maximum_message_string_bytes_upper_bound = std::max({max_row_chunk_payload, maximum_gkr_payload,
+            maximum_family_payload});
+        std::uint64_t small_wire_messages = report.proof_message_count_upper_bound - family_message_count_sum - report.gkr_message_count_upper_bound;
+        const std::uint64_t one_copy_transcript_wire = uadd(family_wire_bytes_sum,
+            uadd(report.gkr_wire_bytes_upper_bound, umul(small_wire_messages, 2048, "non-family protocol wire"), "one-copy transcript wire"),
+            "one-copy transcript wire");
+        report.transcript_wire_bytes_upper_bound = one_copy_transcript_wire;
+        const std::uint64_t transcript_framing_bytes = umul(report.proof_message_count_upper_bound, 25, "native transcript message framing");
+        report.transcript_content_bytes_upper_bound = one_copy_transcript_wire > transcript_framing_bytes
+            ? one_copy_transcript_wire - transcript_framing_bytes : one_copy_transcript_wire;
+        const std::uint64_t structured_tensor_rows = uadd(aux_tensor[1], l_query_tensor[1], "structured Aux/L_qry commitment rows");
+        const std::uint64_t structured_tensor_wire = umul(structured_tensor_rows, 8 + kG1HexChars,
+            "structured Aux/L_qry commitment wire");
+        report.proof_artifact_wire_bytes_upper_bound = uadd(umul(2, one_copy_transcript_wire, "proof sections and native transcript copies"),
+            uadd(structured_tensor_wire, 1ULL << 20, "proof artifact structured payload and framing"), "proof artifact wire bound");
+        report.artifact_disk_bytes_upper_bound = uadd(report.proof_artifact_wire_bytes_upper_bound,
+            uadd(report.context_recipe_bytes_bound, uadd(report.context_payload_bytes_bound, 1ULL << 20, "artifact disk framing"), "artifact disk context"), "artifact disk bound");
+
+        const std::uint64_t raw_tables = uadd(uadd(u64_from_size(native_tables.lrelu.size(), "lrelu table entries"),
+            u64_from_size(native_tables.exp.size(), "exp table entries"), "Lasso table entries"),
+            uadd(u64_from_size(native_tables.elu.size(), "elu table entries"), 2, "Lasso table entries"), "Lasso table entries");
+        const std::uint64_t padded_tables = uadd(uadd(pow2(u64_from_size(native_tables.lrelu.size(), "lrelu table size")),
+            pow2(u64_from_size(native_tables.exp.size(), "exp table size")), "padded Lasso table sizes"),
+            uadd(pow2(u64_from_size(native_tables.elu.size(), "elu table size")), 2, "padded Lasso table sizes"), "padded Lasso table sizes");
+        const std::uint64_t table_value_bytes = ubytes(padded_tables, sizeof(Fr), "Lasso table values");
+        const std::uint64_t table_map_bytes = ubytes(raw_tables, 256, "Lasso table map nodes");
+        const std::uint64_t query_block_count = uadd(umul(6, hidden_heads_u, "Lasso function query blocks"),
+            umul(2, output_heads_u, "Lasso function query blocks"), "Lasso function query blocks");
+        const std::uint64_t range_block_count = uadd(umul(10, hidden_heads_u, "Lasso range attention blocks"),
+            uadd(umul(6, output_heads_u, "Lasso range output blocks"), 1, "Lasso range output blocks"), "Lasso range callback blocks");
+        report.lasso_table_and_index_bytes_upper_bound = uadd(table_value_bytes,
+            uadd(table_map_bytes, ubytes(uadd(query_block_count, range_block_count, "Lasso block metadata count"), 256, "Lasso callback block metadata"), "Lasso index and metadata bytes"), "Lasso table and index bytes");
+
+        const std::uint64_t graph_bytes = uadd(umul(graph_edges, 32, "graph edge backing"),
+            uadd(umul(graph_nodes, uadd(128, umul(u64_from_size(graph.num_features, "feature width"), 64, "graph feature backing"), "graph node backing"), "graph backing"),
+                 ubytes(uadd(graph_nodes, uadd(u64_from_size(graph.graph_count, "graph count"), 1, "graph pointer count"), "graph pointer count"), sizeof(std::size_t), "graph pointer backing"), "graph backing"), "graph host bytes");
+        std::uint64_t model_elements = 0;
+        for (const auto& item : model.tensors) {
+            const Tensor& tensor = item.second;
+            std::uint64_t elements = 1;
+            for (std::size_t dimension : tensor.shape.dims) elements = umul(elements, u64_from_size(dimension, "model tensor dimension"), "model parameter count");
+            model_elements = uadd(model_elements, elements, "model parameter count");
+        }
+        const std::uint64_t model_bytes = ubytes(model_elements, 64, "model resident workspace");
+        const std::uint64_t aux_span_count = uadd(6,
+            uadd(umul(36, hidden_heads_u, "borrowed Aux hidden span count"), umul(23, output_heads_u, "borrowed Aux output span count"), "borrowed Aux span count"),
+            "borrowed Aux span count");
+        const std::uint64_t aux_chunk_count = aux_length / AuxValueProviderState::chunk_entries +
+            (aux_length % AuxValueProviderState::chunk_entries != 0);
+        const std::uint64_t borrowed_aux_backing = ubytes(aux_length, 64, "borrowed forward Aux backing");
+        const std::uint64_t borrowed_aux_metadata = uadd(
+            ubytes(aux_span_count, sizeof(AuxValueSpan), "borrowed Aux spans"),
+            ubytes(aux_chunk_count, sizeof(std::size_t), "borrowed Aux chunk map"), "borrowed Aux provider metadata");
+        const std::uint64_t duplicated_public_logits = ubytes(u64_from_size(output_coordinates, "forward logits count"), sizeof(Int), "duplicate forward logits");
+        report.borrowed_trace_bytes_upper_bound = uadd(borrowed_aux_backing,
+            uadd(borrowed_aux_metadata, duplicated_public_logits, "borrowed trace metadata and logits"), "borrowed trace backing and metadata");
+        const std::uint64_t heap_limit = static_cast<std::uint64_t>(zkgpt::native_storage::heap_limit);
+        const auto mapped_allocation = [heap_limit](std::uint64_t bytes) { return bytes > heap_limit ? bytes : std::uint64_t(0); };
+        const auto mapped_growth = [&mapped_allocation, &umul, &ubytes](std::uint64_t count, std::size_t width, const char* what) {
+            return mapped_allocation(umul(2, ubytes(count, width, what), what));
+        };
+        const auto mapped_collection = [&umul, heap_limit](std::uint64_t logical_bytes,
+                                                            std::uint64_t max_logical_allocation,
+                                                            std::uint64_t allocation_count,
+                                                            const char* what) {
+            if (logical_bytes == 0 || max_logical_allocation == 0 || allocation_count == 0) return std::uint64_t(0);
+            const std::uint64_t total_capacity = umul(2, logical_bytes, what);
+            const std::uint64_t max_capacity = umul(2, max_logical_allocation, what);
+            if (max_capacity <= heap_limit) return std::uint64_t(0);
+            const std::uint64_t mapped_count = std::min(allocation_count, total_capacity / (heap_limit + 1));
+            if (mapped_count == 0) return std::uint64_t(0);
+            return std::min(total_capacity, umul(mapped_count, max_capacity, what));
+        };
+        const auto mapped_reserved_collection = [&umul, heap_limit](std::uint64_t logical_bytes,
+                                                                    std::uint64_t max_allocation,
+                                                                    std::uint64_t allocation_count,
+                                                                    const char* what) {
+            if (logical_bytes == 0 || max_allocation == 0 || allocation_count == 0 || max_allocation <= heap_limit) return std::uint64_t(0);
+            const std::uint64_t mapped_count = std::min(allocation_count, logical_bytes / (heap_limit + 1));
+            if (mapped_count == 0) return std::uint64_t(0);
+            return std::min(logical_bytes, umul(mapped_count, max_allocation, what));
+        };
+
+        // The allocator sends each individual buffer <=8 MiB to aligned heap
+        // storage and each larger buffer to its private mmap-backed scratch file.
+        // Bound mapped bytes by buffer class, while host heap uses a conservative
+        // live NativeVector count times the per-allocation threshold.
+        const std::uint64_t layer_array_count = std::max<std::uint64_t>(1, gkr_layers);
+        const std::uint64_t direct_unary_gate_array_bytes = ubytes(direct_gate_array_entries, unary_gate_entry_bytes, "maximum direct unary gate array");
+        const std::uint64_t direct_binary_gate_array_bytes = ubytes(direct_gate_array_entries, binary_gate_entry_bytes, "maximum direct binary gate array");
+        const std::size_t coefficient_candidates = relation_coefficient_candidate_count(quant, native_tables);
+        if (coefficient_candidates > std::numeric_limits<std::size_t>::max() / 2)
+            throw std::length_error("native coefficient-pool capacity exceeds native size_t");
+        // Context decoding may grow its small per-layer pool incrementally;
+        // charge twice the finite coefficient-candidate set to cover vector
+        // growth, while direct plan builders reserve their known profile.
+        const std::uint64_t coefficient_pool_per_layer_bytes = layer::coefficient_storage_bytes_for(coefficient_candidates * 2);
+        const std::uint64_t coefficient_pools_heap_bytes = umul(layer_array_count, coefficient_pool_per_layer_bytes,
+            "per-layer native coefficient pools and lookup maps");
+        const std::uint64_t coefficient_pools_mapped_bytes = coefficient_pool_per_layer_bytes > heap_limit
+            ? mapped_allocation(coefficient_pools_heap_bytes)
+            : 0;
+        const std::uint64_t mapped_direct_gate_arrays = uadd(
+            mapped_collection(ubytes(direct_unary_count, unary_gate_entry_bytes, "direct unary gate arrays"), direct_unary_gate_array_bytes,
+                layer_array_count, "mapped direct unary gate arrays"),
+            mapped_collection(ubytes(direct_binary_count, binary_gate_entry_bytes, "direct binary gate arrays"), direct_binary_gate_array_bytes,
+                layer_array_count, "mapped direct binary gate arrays"), "mapped direct GKR gate arrays");
+        const std::uint64_t mapped_relation_gate_arrays = uadd(
+            mapped_allocation(ubytes(relation_counts.unary, unary_gate_entry_bytes, "reserved relation unary gates")),
+            mapped_allocation(ubytes(relation_counts.binary, binary_gate_entry_bytes, "reserved relation binary gates")),
+            "mapped reserved relation gate arrays");
+        const std::uint64_t mapped_gate_arrays = uadd(
+            uadd(mapped_direct_gate_arrays, mapped_relation_gate_arrays, "mapped GKR gate arrays"),
+            coefficient_pools_mapped_bytes, "mapped GKR coefficient pools and gates");
+        const std::uint64_t origin_map_logical_bytes = ubytes(umul(2, u64_from_size(explicit_gates, "explicit gate count"), "gate source-coordinate maps"),
+            sizeof(std::uint64_t), "raw-reserved gate source-coordinate maps");
+        const std::uint64_t max_layer_operand_refs = std::max(max_source_refs, uadd(relation_counts.unary, relation_counts.binary, "relation source-coordinate references"));
+        // initSubset sorts raw u64 source coordinates, uniques them in place,
+        // then moves that same vector into ori_id_u/v. Its physical capacity
+        // therefore remains the raw-reference reserve even when duplicates
+        // shrink the logical size. Count all map backing conservatively by raw
+        // references; do not cap it by source-domain or unique-coordinate size.
+        const std::uint64_t origin_map_max_bytes = ubytes(max_layer_operand_refs, sizeof(std::uint64_t), "maximum raw-reserved source-coordinate map");
+        const std::uint64_t origin_map_count = umul(2, layer_array_count, "gate source-coordinate map count");
+        const std::uint64_t mapped_origin_maps = mapped_reserved_collection(origin_map_logical_bytes, origin_map_max_bytes,
+            origin_map_count, "mapped raw-reserved source-coordinate maps");
+        const std::uint64_t builder_target_bytes = ubytes(relation_residual_entries, sizeof(Int), "reserved relation residual targets");
+        const std::uint64_t builder_unary_bytes = ubytes(relation_counts.unary, sizeof(uniGate), "reserved relation unary gates");
+        const std::uint64_t builder_binary_bytes = ubytes(relation_counts.binary, sizeof(binGate), "reserved relation binary gates");
+        const std::uint64_t builder_target_capacity_bytes = builder_target_bytes;
+        const std::uint64_t builder_unary_capacity_bytes = builder_unary_bytes;
+        const std::uint64_t builder_binary_capacity_bytes = builder_binary_bytes;
+        const std::uint64_t builder_max_bytes = std::max({builder_target_capacity_bytes, builder_unary_capacity_bytes, builder_binary_capacity_bytes});
+        report.max_single_relation_builder_array_bytes_upper_bound = builder_max_bytes;
+        const std::uint64_t mapped_gate_builder = uadd(
+            mapped_allocation(builder_target_capacity_bytes),
+            uadd(mapped_allocation(builder_unary_capacity_bytes), mapped_allocation(builder_binary_capacity_bytes),
+                 "mapped relation builder gate arrays"), "mapped relation builder reserved arrays");
+        const std::uint64_t mapped_residual_targets = mapped_allocation(builder_target_capacity_bytes);
+        const std::uint64_t subset_u_reference_entries = std::max(max_source_refs, uadd(relation_counts.unary, relation_counts.binary, "GKR U source references"));
+        const std::uint64_t subset_v_reference_entries = std::max(max_source_refs / 2 + max_source_refs % 2, relation_counts.binary);
+        // The sorted unique map takes ownership of the raw-coordinate vector,
+        // so persistent physical capacity is still the raw U/V reserve. There
+        // is no distinct pair-sort scratch allocation.
+        const std::uint64_t subset_u_bytes = ubytes(subset_u_reference_entries, sizeof(std::uint64_t), "GKR U raw-reserved source map capacity");
+        const std::uint64_t subset_v_bytes = ubytes(subset_v_reference_entries, sizeof(std::uint64_t), "GKR V raw-reserved source map capacity");
+        report.gkr_subset_source_map_bytes_upper_bound = std::max(subset_u_bytes, subset_v_bytes);
+        const std::uint64_t mapped_subset_scratch_peak = 0;
+        report.gkr_subset_sort_scratch_bytes_upper_bound = 0;
+        const std::uint64_t gate_builder_mapped_peak = uadd(
+            uadd(mapped_direct_gate_arrays, coefficient_pools_mapped_bytes, "gate-builder coefficient pools"),
+            mapped_gate_builder, "gate-builder mapped buffers before relation-array transfer");
+        const std::uint64_t gate_subset_mapped_peak = uadd(mapped_gate_arrays,
+            uadd(mapped_residual_targets, uadd(mapped_origin_maps, mapped_subset_scratch_peak, "gate-subset mapped buffers"),
+                 "gate-subset targets and maps"), "gate-subset mapped buffers");
+        const std::uint64_t gate_plan_mapped_peak = std::max(gate_builder_mapped_peak, gate_subset_mapped_peak);
+
+        const std::uint64_t layer_value_bytes = ubytes(layer_value_entries, sizeof(Fr), "layer witness values");
+        const std::uint64_t max_layer_value_bytes = ubytes(maximum_layer_values, sizeof(Fr), "maximum layer witness allocation");
+        // Each retained layer is constructed at its exact size and moved into
+        // its empty per-layer vector, so there is no geometric growth buffer.
+        // Bound mapped backing by the total logical bytes (which also safely
+        // covers any per-vector allocator rounding).
+        const std::uint64_t mapped_layer_values = mapped_allocation(layer_value_bytes);
+        const std::uint64_t mapped_stream_layer = mapped_allocation(max_layer_value_bytes);
+        const std::uint64_t mapped_stream_validation = mapped_stream_layer;
+        const std::uint64_t mapped_gkr_witness = uadd(mapped_layer_values, mapped_stream_validation,
+            "mapped retained and single-layer validated GKR witness");
+        report.native_gkr_witness_mapped_bytes_upper_bound = mapped_gkr_witness;
+        const std::uint64_t layer_heap_capacity_upper = std::min(layer_value_bytes, umul(layer_array_count, heap_limit, "GKR layer-vector heap capacity bound"));
+        const std::uint64_t stream_layer_heap_capacity = std::min(max_layer_value_bytes, heap_limit);
+        report.native_gkr_witness_heap_bytes_upper_bound = uadd(layer_heap_capacity_upper,
+            stream_layer_heap_capacity, "native GKR witness and one validation layer heap upper bound");
+        const std::uint64_t feature_segment_entries = u64_from_size(report.input_layout.segments.at(0).logical_length, "public feature segment entries");
+        const std::uint64_t model_segment_entries = model_elements;
+        const std::uint64_t mapped_input_segments = uadd(mapped_growth(feature_segment_entries, sizeof(Fr), "mapped public feature segment"),
+            mapped_growth(model_segment_entries, sizeof(Fr), "mapped model input segment"), "mapped canonical input segments");
+        // Canonical-copy source coordinates persist through the input fold;
+        // only one temporary output-seen vector is live while each source is
+        // constructed. Both use native backing and are counted separately from
+        // the heap-resident lane index/cursors in the bounded fold helper.
+        const std::uint64_t mapped_input_oracle_fold = uadd(
+            mapped_growth(canonical_copy_entries, sizeof(std::uint64_t),
+                          "mapped canonical-copy source-coordinate vectors"),
+            mapped_growth(max_canonical_copy_layer_entries,
+                          sizeof(unsigned char),
+                          "mapped canonical-copy construction seen vector"),
+            "mapped canonical-copy source workspace");
+        const std::uint64_t first_hidden_input = u64_from_size(model.tensor(hidden_tensor_name(0, 0, "seq/kernel")).shape.dims.at(1), "first hidden input width");
+        const std::uint64_t max_inner_domain = pow2(std::max({first_hidden_input, h0_u, umul(h0_u, hidden_heads_u, "hidden FCONN inner width"),
+            h1_u, umul(h1_u, hidden_heads_u, "output FCONN inner width"), classes_u}));
+        const std::uint64_t max_outer_domain = pow2(std::max({graph_nodes, graph_edges, h0_u, h1_u, classes_u}));
+        const std::uint64_t mapped_fconn_fold = umul(4, mapped_growth(max_inner_domain, sizeof(Fr), "mapped FCONN fold buffer"),
+            "mapped FCONN fold buffers");
+        const std::uint64_t mapped_fconn_source_weights = uadd(mapped_growth(max_inner_domain, sizeof(Fr), "mapped FCONN inner equality weights"),
+            mapped_growth(max_outer_domain, sizeof(Fr), "mapped FCONN outer equality weights"), "mapped FCONN source weights");
+        const std::uint64_t max_prefix_domain = std::max(max_u_prefix, max_v_prefix);
+        const std::uint64_t max_prefix_allocation = ubytes(umul(2, max_prefix_domain, "GKR prefix capacity growth"), sizeof(linear_poly), "GKR prefix allocation");
+        const std::uint64_t mapped_gkr_prefix = max_prefix_allocation > heap_limit ? report.gkr_prefix_workspace_bytes_upper_bound : 0;
+
+        std::uint64_t mapped_lasso_persistent = 0;
+        std::uint64_t mapped_lasso_transient_peak = 0;
+        for (const GatLassoWorkspaceProfile& family : report.lasso_workspace_profile) {
+            const NativeLassoCapacityProfile& workspace = family.workspace;
+            // The row ledger, row commitments and row-fold vectors are ordinary
+            // std::vector allocations. Only the sparse/T2 witness and prepared
+            // Hyrax opening buffers use NativeVector backing here.
+            const std::uint64_t booleanity_peak = workspace.t2_booleanity
+                ? mapped_growth(workspace.private_witness_bytes, 1, "mapped Lasso T2 private witness")
+                : mapped_allocation(workspace.private_witness_bytes);
+            const std::uint64_t opening_peak = uadd(mapped_growth(workspace.masked_opening_generator_bytes, 1, "mapped Lasso opening generators"),
+                uadd(mapped_growth(workspace.masked_opening_coefficient_bytes, 1, "mapped Lasso opening coefficients"),
+                    mapped_growth(workspace.masked_opening_response_bytes, 1, "mapped Lasso opening responses"), "mapped Lasso opening workspace"),
+                "mapped Lasso opening workspace");
+            mapped_lasso_transient_peak = std::max(mapped_lasso_transient_peak,
+                std::max(booleanity_peak, opening_peak));
+        }
+        const auto mapped_tensor_retained = [&mapped_growth, &uadd](const std::array<std::uint64_t, 3>& shape) {
+            return uadd(mapped_growth(shape[1], sizeof(G1), "mapped tensor retained generators"),
+                mapped_growth(shape[1], sizeof(Fr), "mapped tensor retained coefficients"), "mapped tensor retained rows");
+        };
+        const auto mapped_tensor_transient = [&mapped_growth, &uadd, &umul](const std::array<std::uint64_t, 3>& shape) {
+            return uadd(mapped_growth(shape[1], sizeof(Fr), "mapped tensor row weights"),
+                uadd(umul(2, mapped_growth(shape[2], sizeof(G1), "mapped tensor column generators"), "mapped tensor generator columns"),
+                    umul(3, mapped_growth(shape[2], sizeof(Fr), "mapped tensor column coefficients"), "mapped tensor coefficient columns"),
+                    "mapped tensor column workspace"), "mapped tensor transient workspace");
+        };
+        const std::uint64_t mapped_tensor_retained_bytes = uadd(mapped_tensor_retained(aux_tensor), mapped_tensor_retained(l_query_tensor),
+            "mapped Aux/L_qry retained rows");
+        const std::uint64_t mapped_tensor_opening_peak = std::max(mapped_tensor_transient(aux_tensor), mapped_tensor_transient(l_query_tensor));
+        const std::uint64_t mapped_w_active = umul(mapped_growth(w_active, sizeof(G1), "mapped W MLE generators"), 1,
+            "mapped W MLE generators");
+        const std::uint64_t mapped_w_mle_peak = uadd(mapped_w_active,
+            umul(2, mapped_growth(w_active, sizeof(Fr), "mapped W MLE coefficients"), "mapped W MLE field buffers"), "mapped W MLE workspace");
+
+        const std::uint64_t proof_persistent_mapped = uadd(mapped_gate_arrays,
+            uadd(mapped_origin_maps,
+                uadd(mapped_residual_targets,
+                    uadd(mapped_layer_values, mapped_input_segments, "mapped retained witness and input backing"), "mapped retained witness and input backing"),
+                "mapped proof plan backing"), "mapped proof plan backing");
+        const std::uint64_t lasso_phase_persistent_mapped = uadd(mapped_layer_values, mapped_input_segments,
+            "mapped retained witness/input backing during Lasso cache release");
+        const std::uint64_t plan_restore_mapped_peak = uadd(gate_plan_mapped_peak,
+            uadd(lasso_phase_persistent_mapped,
+                uadd(mapped_lasso_persistent, mapped_tensor_retained_bytes,
+                    "mapped retained Lasso/tensor backing during native plan restore"),
+                "mapped proof backing during native plan restore"),
+            "native plan restore live peak");
+        const std::uint64_t gkr_validation_mapped_peak = uadd(proof_persistent_mapped, mapped_stream_validation,
+            "mapped GKR witness-validation live peak");
+        const std::uint64_t gkr_proving_mapped_peak = uadd(proof_persistent_mapped,
+            uadd(mapped_input_oracle_fold,
+                uadd(mapped_fconn_fold,
+                    uadd(mapped_fconn_source_weights, mapped_gkr_prefix, "mapped GKR prefix and FCONN"), "mapped GKR workspaces"), "mapped input oracle and GKR workspaces"),
+            "mapped GKR live peak");
+        const std::uint64_t gkr_mapped_peak = std::max(gkr_validation_mapped_peak, gkr_proving_mapped_peak);
+        const std::uint64_t lasso_tensor_mapped_peak = uadd(lasso_phase_persistent_mapped,
+            uadd(mapped_lasso_persistent,
+                uadd(mapped_tensor_retained_bytes, std::max(mapped_lasso_transient_peak, mapped_tensor_opening_peak), "mapped Lasso/tensor transient peak"),
+                "mapped Lasso/tensor retained workspace"), "mapped Lasso proof live peak");
+        const std::uint64_t input_open_mapped_peak = uadd(proof_persistent_mapped,
+            uadd(mapped_lasso_persistent,
+                uadd(mapped_tensor_retained_bytes, std::max(mapped_tensor_opening_peak, mapped_w_mle_peak), "mapped input opening transient peak"),
+                "mapped input opening retained workspace"), "mapped input opening live peak");
+        const std::uint64_t gate_plan_scratch_peak = gate_plan_mapped_peak;
+        report.estimated_native_mapped_bytes_upper_bound = std::max({gate_plan_scratch_peak, plan_restore_mapped_peak,
+            gkr_mapped_peak, lasso_tensor_mapped_peak, input_open_mapped_peak});
+        report.estimated_native_scratch_bytes = report.estimated_native_mapped_bytes_upper_bound;
+
+        const std::uint64_t native_live_allocation_count = uadd(umul(6, layer_array_count, "live native vector allocation count"), 130,
+            "live native vector allocation count");
+        report.estimated_native_heap_bytes_upper_bound = uadd(
+            umul(native_live_allocation_count, heap_limit, "native heap allocation upper bound"),
+            uadd(coefficient_pools_heap_bytes, input_fold_heap_bytes,
+                 "native coefficient-pool and bounded input-fold heap"),
+            "native heap, coefficient-pool, and bounded input-fold upper bound");
+        const std::uint64_t source_ledger_temporary_host_bytes = uadd(320,
+            umul(report.gkr_input_source_count_upper_bound,
+                uadd(2048, umul(144, input_bits, "GKR source-ledger point serialization"), "GKR source-ledger per-source metadata"),
+                "GKR source-ledger construction temporary"),
+            "GKR source-ledger construction temporary");
+        const auto encoded_string_bytes = [&uadd](std::uint64_t length, const char* what) {
+            return uadd(8, length, what);
+        };
+        const std::uint64_t statement_prefix_bytes = uadd(encoded_string_bytes(sizeof("zkgpt-native-statement-v4") - 1, "native statement prefix"),
+            uadd(umul(10, encoded_string_bytes(64, "native statement digest fields"), "native statement digest fields"),
+                uadd(encoded_string_bytes(sizeof("bn254-fr-v1") - 1, "native statement field id"),
+                    uadd(8, uadd(encoded_string_bytes(sizeof("zkgpt-gat-relation-v1") - 1, "native statement relation schema"),
+                        uadd(encoded_string_bytes(64, "native statement relation digest"), 8, "native statement relation order"),
+                        "native statement relation metadata"), "native statement dimensions"), "native statement fixed fields"),
+                "native statement encoding"), "native statement encoding");
+        report.transcript_prefix_bytes_upper_bound = uadd(encoded_string_bytes(sizeof("zkgpt-native-fs-v4") - 1, "native transcript prefix"),
+            uadd(encoded_string_bytes(sizeof(kNativeArtifactDomain) - 1, "native transcript domain"),
+                uadd(statement_prefix_bytes, 8, "native transcript message count prefix"), "native transcript statement prefix"),
+            "native transcript prefix bytes");
+        report.maximum_challenge_suffix_bytes_upper_bound = kTranscriptLabelBytesUpper;
+        const std::uint64_t transcript_content_bytes = report.transcript_content_bytes_upper_bound;
+        const std::uint64_t transcript_wire_bytes = report.transcript_wire_bytes_upper_bound;
+        const std::uint64_t replay_encoded_bytes = uadd(report.transcript_prefix_bytes_upper_bound,
+            uadd(transcript_wire_bytes, report.maximum_challenge_suffix_bytes_upper_bound, "challenge replay encoding"),
+            "challenge replay encoding");
+        const std::uint64_t transcript_payload_heap = uadd(umul(5, transcript_content_bytes, "artifact and verifier message strings"),
+            uadd(umul(4, transcript_wire_bytes, "transcript body/replay cache capacity"),
+                uadd(umul(3, replay_encoded_bytes, "challenge replay string growth"), report.maximum_challenge_suffix_bytes_upper_bound,
+                    "challenge replay temporary strings"), "transcript cache and replay strings"), "native transcript string heap");
+        const std::uint64_t message_count = report.proof_message_count_upper_bound;
+        using LabelPositionsValue = std::pair<const std::string, std::vector<std::size_t>>;
+        using ChallengeRoundValue = std::pair<const std::string, std::uint64_t>;
+        const std::uint64_t hash_node_overhead = sizeof(void*) + sizeof(std::size_t) + alignof(std::max_align_t) + 32;
+        const std::uint64_t hash_node_bytes = uadd(sizeof(LabelPositionsValue),
+            uadd(umul(3, sizeof(ChallengeRoundValue), "native transcript challenge-map entries"),
+                uadd(umul(3, sizeof(std::string), "native transcript set entries"), umul(7, hash_node_overhead, "native transcript hash nodes"),
+                    "native transcript hash nodes"), "native transcript hash nodes"), "native transcript hash node storage");
+        const std::uint64_t hash_nodes = umul(message_count, hash_node_bytes, "native transcript map/set nodes");
+        const std::uint64_t hash_buckets = umul(umul(7, umul(4, message_count, "native transcript bucket growth"),
+            "native transcript bucket growth"), sizeof(void*), "native transcript bucket arrays");
+        const std::uint64_t label_key_capacity = umul(2,
+            umul(message_count, uadd(umul(7, report.maximum_challenge_suffix_bytes_upper_bound, "native transcript label keys"), 320,
+                "native transcript opening cache keys"), "native transcript key bytes"), "native transcript key growth");
+        const std::uint64_t label_position_indices = uadd(umul(3, umul(message_count, sizeof(std::size_t), "native transcript label positions"),
+            "native transcript label-position capacity growth"), umul(32, message_count, "native transcript label-position allocations"),
+            "native transcript label-position indices");
+        const std::uint64_t message_vector_metadata = uadd(
+            uadd(umul(3, umul(message_count, sizeof(NativeProofMessage), "native transcript message vectors"), "native transcript message vectors"),
+                umul(2, umul(message_count, sizeof(TranscriptMessage), "artifact section message vectors"), "artifact section message vectors"),
+                "artifact and verifier message vectors"),
+            uadd(umul(message_count, sizeof(const TranscriptMessage*), "artifact sequence index"),
+                uadd(5 * sizeof(ProofSection), sizeof(NativeProofSession) + sizeof(GatProofArtifact), "artifact/session metadata"),
+                "artifact/session and sequence metadata"), "native transcript vector metadata");
+        const std::uint64_t statement_string_bytes = umul(2,
+            uadd(umul(10, 64, "native statement digest strings"),
+                uadd(sizeof("bn254-fr-v1") - 1, sizeof("zkgpt-gat-relation-v1") - 1, "native statement identifiers"),
+                "native statement string contents"), "native statement copies");
+        const std::uint64_t field_decode_bytes = ubytes(report.maximum_transcript_field_entries_upper_bound, sizeof(Fr),
+            "native transcript field-vector decode workspace");
+        const std::uint64_t transcript_metadata_bytes = uadd(message_vector_metadata,
+            uadd(hash_nodes, uadd(hash_buckets, uadd(label_key_capacity,
+                uadd(label_position_indices, uadd(statement_string_bytes, field_decode_bytes, "transcript statement/decode storage"),
+                    "transcript keys/indexes/decode storage"), "transcript keys and indexes"), "transcript hash metadata"),
+                "transcript hash maps and buckets"), "native transcript metadata");
+        report.transcript_metadata_bytes_upper_bound = transcript_metadata_bytes;
+        report.native_transcript_heap_bytes_upper_bound = uadd(transcript_payload_heap,
+            uadd(transcript_metadata_bytes, source_ledger_temporary_host_bytes, "transcript metadata and source-ledger temporary"),
+            "native transcript peak heap");
+        const std::uint64_t transcript_host_bytes = report.native_transcript_heap_bytes_upper_bound;
+        const std::uint64_t plan_metadata_bytes = ubytes(layer_array_count, 4096, "GKR layer metadata");
+        report.estimated_peak_host_memory_bytes = uadd(graph_bytes,
+            uadd(model_bytes,
+                uadd(report.borrowed_trace_bytes_upper_bound,
+                    uadd(report.lasso_table_and_index_bytes_upper_bound,
+                        uadd(report.estimated_native_heap_bytes_upper_bound,
+                            uadd(report.lasso_heap_workspace_peak_bytes,
+                                uadd(plan_metadata_bytes, transcript_host_bytes, "plan and transcript host workspace"), "Lasso heap and proof session"),
+                            "native heap and proof session"),
+                        "tables and native heap"), "borrowed trace and proof state"), "model and proof state"), "graph and proof state");
+
+        const bool pointer_ok = report.ppi_node_ptr_boundary && report.ppi_edge_ptr_boundary;
+        report.sparse_ready = pointer_ok && report.sparse_domain_entries != 0;
+        report.proof_path = "formal_native_masked_lasso_hyrax+native_masked_layered_gkr";
+        report.full_relation_bound = true;
         report.ready = false;
-        if (report.maximum_masked_response_entries > (1ULL << 20))
-            report.reason = "unsupported_native_masked_lookup_capacity: native full-domain Schnorr response exceeds the authenticated message vector limit; no compatible compressed masked Hyrax/Lasso primitive is implemented";
-        else if (!pointer_ok)
-            report.reason = "graph batch node_ptr/edge_ptr boundary is not canonical";
-        else if (!layered_ready)
-            report.reason = "native layered capacity is exceeded; virtual sparse relation lacks GAT arithmetic and canonical W/Aux/L commitment binding";
-        else if (!physical_input_ok)
-            report.reason = "explicit layered four-segment materialization exceeds its bounded native domain";
-        else if (!explicit_ok)
-            report.reason = "explicit layered-gate cap exceeded";
-        else if (!coordinate_domain_ok)
-            report.reason = "explicit layered input exceeds the native u32 circuit coordinate domain";
-        else
-            report.reason = "native masked full-domain PCS/Lasso proof response capacity remains unresolved";
+        report.reason = pointer_ok ? "runtime resource headroom has not been finalized" : "graph batch node_ptr/edge_ptr boundary is not canonical";
     } catch (const std::exception& error) {
         report.ready = false;
         report.reason = error.what();
     }
     return report;
+}
+
+void finalize_gat_capacity_report(GatCapacityReport& report) {
+    report.ready = false;
+    const std::uint64_t trusted_base = 1ULL << 30;
+    const std::uint64_t trusted_hard_max = 4ULL << 30;
+    const std::uint64_t family_count = report.lasso_workspace_profile.size();
+    const auto add = [](std::uint64_t left, std::uint64_t right, const char* what) {
+        if (right > std::numeric_limits<std::uint64_t>::max() - left) throw std::overflow_error(std::string("capacity u64 sum overflow: ") + what);
+        return left + right;
+    };
+    const auto mul = [](std::uint64_t left, std::uint64_t right, const char* what) {
+        if (left != 0 && right > std::numeric_limits<std::uint64_t>::max() / left) throw std::overflow_error(std::string("capacity u64 product overflow: ") + what);
+        return left * right;
+    };
+    try {
+        std::uint64_t trusted_limit = trusted_base;
+        for (const GatLassoWorkspaceProfile& family : report.lasso_workspace_profile) {
+            trusted_limit = add(trusted_limit, mul(2, mul(family.workspace.rows, 284, "trusted row artifact overhead"), "trusted row artifact overhead"), "trusted artifact limit");
+            trusted_limit = add(trusted_limit, mul(2, mul(family.row_commitment_chunk_count, 2048, "trusted row chunk overhead"), "trusted row chunk overhead"), "trusted artifact limit");
+        }
+        trusted_limit = add(trusted_limit, mul(family_count, 64ULL << 10, "trusted family headers"), "trusted artifact limit");
+        report.proof_artifact_wire_limit_bytes = trusted_limit <= trusted_hard_max ? trusted_limit : 0;
+        report.disk_requirement_bytes_upper_bound = add(report.estimated_native_scratch_bytes, report.artifact_disk_bytes_upper_bound, "scratch plus artifact disk bound");
+        const bool pointer_ok = report.ppi_node_ptr_boundary && report.ppi_edge_ptr_boundary;
+        if (!pointer_ok) report.reason = "graph batch node_ptr/edge_ptr boundary is not canonical";
+        else if (report.flattened_input_domain_entries == 0 || report.flattened_input_domain_entries > report.flattened_input_domain_limit_u64 ||
+                 report.input_layout.n_in > report.coordinate_domain_limit_u64)
+            report.reason = "flattened input domain exceeds the checked u64 and MLE-coordinate limits";
+        else if (!report.full_relation_bound || report.proof_path != "formal_native_masked_lasso_hyrax+native_masked_layered_gkr")
+            report.reason = "formal masked Lasso/Hyrax/GKR relation path is not fully bound";
+        else if (report.lasso_workspace_profile.size() != 4 || report.lasso_logical_domain_entries == 0 || report.hyrax_active_domain_workspace_entries == 0)
+            report.reason = "formal Lasso family profile is incomplete";
+        else if (report.proof_message_count_upper_bound == 0 || report.proof_message_count_upper_bound > report.proof_message_count_limit)
+            report.reason = "proof message-count upper bound exceeds the authenticated message limit";
+        else if (report.maximum_message_string_bytes_upper_bound == 0 || report.maximum_message_string_bytes_upper_bound > report.maximum_message_string_bytes_limit)
+            report.reason = "proof message-string upper bound exceeds the authenticated string limit";
+        else if (report.proof_artifact_wire_limit_bytes == 0 || report.proof_artifact_wire_bytes_upper_bound > report.proof_artifact_wire_limit_bytes)
+            report.reason = "proof artifact upper bound exceeds the trusted dynamic wire limit";
+        else if (report.estimated_peak_host_memory_bytes == 0 || report.host_memory_limit_bytes == 0 || report.estimated_peak_host_memory_bytes > report.host_memory_limit_bytes)
+            report.reason = "estimated live host working set exceeds effective available memory headroom";
+        else if (report.estimated_native_scratch_bytes > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max()) ||
+                 report.estimated_native_scratch_bytes > report.native_scratch_available_bytes)
+            report.reason = "estimated native scratch working set exceeds file-offset or scratch-filesystem headroom";
+        else if (report.artifact_disk_bytes_upper_bound == 0 || report.artifact_disk_available_bytes == 0)
+            report.reason = "artifact output filesystem headroom is unavailable";
+        else if (report.scratch_artifact_same_filesystem && report.disk_requirement_bytes_upper_bound > report.shared_scratch_artifact_available_bytes)
+            report.reason = "combined native scratch and artifact output exceed shared filesystem headroom";
+        else if (!report.scratch_artifact_same_filesystem && report.artifact_disk_bytes_upper_bound > report.artifact_disk_available_bytes)
+            report.reason = "proof artifact and context exceed artifact output filesystem headroom";
+        else if (report.estimated_native_scratch_bytes > std::numeric_limits<std::size_t>::max() ||
+                 report.artifact_disk_bytes_upper_bound > std::numeric_limits<std::size_t>::max())
+            report.reason = "capacity upper bound exceeds host size_t allocation limits";
+        else {
+            report.ready = true;
+            report.reason.clear();
+        }
+    } catch (const std::exception& error) {
+        report.ready = false;
+        report.reason = error.what();
+    }
 }
 
 void initialize_gat_field() { ensure_field(); }
@@ -6581,6 +7845,54 @@ NativeFieldVector pack_native_gkr_matmul_rhs(
 
 bool validate_gat_circuit_plan(const GatCircuitPlan& plan, std::string* reason) { return validate_gat_circuit_plan_impl(plan, reason); }
 
+void GatCircuitPlan::release_native_proof_backing() const {
+    if (!native_proof_backing_resident)
+        throw std::logic_error("native GAT proof backing is already released");
+    if (virtual_sparse || circuit.circuit.empty() || circuit.size != circuit.circuit.size() ||
+        residual_targets.size() != residual_coordinates)
+        throw std::logic_error("native GAT proof backing is incomplete and cannot be released");
+    for (layer& current : circuit.circuit) current.release_native_proof_backing();
+    zkgpt::NativeVector<Int>().swap(residual_targets);
+    native_proof_backing_resident = false;
+}
+
+void GatCircuitPlan::restore_native_proof_backing(GatCircuitPlan&& canonical_rebuilt) const {
+    if (native_proof_backing_resident)
+        throw std::logic_error("native GAT proof backing is already resident");
+    if (!canonical_rebuilt.native_proof_backing_resident || canonical_rebuilt.virtual_sparse ||
+        canonical_rebuilt.plan_digest != plan_digest || canonical_rebuilt.circuit_id != circuit_id ||
+        canonical_rebuilt.residual_target_digest != residual_target_digest ||
+        canonical_rebuilt.public_output_coordinates != public_output_coordinates ||
+        canonical_rebuilt.residual_coordinates != residual_coordinates ||
+        canonical_rebuilt.input_layout.n_raw != input_layout.n_raw ||
+        canonical_rebuilt.input_layout.n_in != input_layout.n_in ||
+        canonical_rebuilt.input_layout.selector != input_layout.selector ||
+        canonical_rebuilt.input_layout.segments.size() != input_layout.segments.size())
+        throw std::invalid_argument("rebuilt native GAT proof backing does not match the released plan identity");
+    for (std::size_t index = 0; index < input_layout.segments.size(); ++index) {
+        const InputSegment& expected = input_layout.segments[index];
+        const InputSegment& actual = canonical_rebuilt.input_layout.segments[index];
+        if (actual.name != expected.name || actual.offset != expected.offset ||
+            actual.logical_length != expected.logical_length || actual.padded_length != expected.padded_length)
+            throw std::invalid_argument("rebuilt native GAT proof backing has a different canonical input layout");
+    }
+    std::string validation_reason;
+    if (!validate_gat_circuit_plan(canonical_rebuilt, &validation_reason) ||
+        !context_layer_metadata_valid(canonical_rebuilt, &validation_reason))
+        throw std::invalid_argument("rebuilt native GAT proof backing failed canonical validation: " + validation_reason);
+    if (canonical_rebuilt.residual_targets.size() != residual_coordinates ||
+        canonical_rebuilt.circuit.size != circuit.size ||
+        canonical_rebuilt.circuit.circuit.size() != circuit.circuit.size())
+        throw std::invalid_argument("rebuilt native GAT proof backing has a different relation shape");
+    for (std::size_t index = 0; index < circuit.circuit.size(); ++index)
+        if (!circuit.circuit[index].native_metadata_matches(canonical_rebuilt.circuit.circuit[index]))
+            throw std::invalid_argument("rebuilt native GAT proof backing changes retained layer metadata");
+    for (std::size_t index = 0; index < circuit.circuit.size(); ++index)
+        circuit.circuit[index].restore_native_proof_backing(std::move(canonical_rebuilt.circuit.circuit[index]));
+    residual_targets = std::move(canonical_rebuilt.residual_targets);
+    native_proof_backing_resident = true;
+}
+
 GatCircuitWitness build_gat_circuit_witness(const GatCircuitPlan& plan, const Graph& graph, const Tensor2D& public_features, const Model& model,
                                             const QuantConfig& quant, const ForwardResult& forward) {
     const std::vector<Fr> legacy_l_values =
@@ -6610,7 +7922,8 @@ GatCircuitWitness build_gat_circuit_witness_impl(
     const GatCircuitPlan& plan, const Graph& graph,
     const Tensor2D& public_features, const Model& model,
     const QuantConfig& quant, const ForwardResult& forward,
-    const hyrax::HyraxScalarProvider& l_query_values, bool borrow_aux) {
+    const hyrax::HyraxScalarProvider& l_query_values, bool borrow_aux,
+    bool copy_terminal_vectors) {
     std::string reason;
     if (!validate_gat_circuit_plan(plan, &reason)) throw std::invalid_argument("cannot build GAT circuit witness: " + reason);
     graph.validate();
@@ -6625,28 +7938,34 @@ GatCircuitWitness build_gat_circuit_witness_impl(
         plan, graph, public_features, model, quant, forward, l_query_values, borrow_aux);
     const std::shared_ptr<SegmentedInputOracle> input_oracle =
         witness.input_oracle;
+    const auto input_at = [input_oracle](std::uint64_t coordinate) {
+        return input_oracle->value_at(static_cast<std::size_t>(coordinate));
+    };
+    zkgpt::NativeFieldView terminal_expected;
+    if (!copy_terminal_vectors)
+        terminal_expected = canonical_public_output_view(plan, forward.logits, &witness);
     if (!evaluate_layered_values(
-            plan, witness.input_layer_size,
-            [input_oracle](std::uint64_t coordinate) {
-                return input_oracle->value_at(
-                    static_cast<std::size_t>(coordinate));
-            },
-            witness.values, &reason))
+            plan, witness.input_layer_size, input_at, witness.values, &reason,
+            nullptr, copy_terminal_vectors ? nullptr : &terminal_expected))
         throw std::invalid_argument("canonical GAT circuit evaluation failed: " + reason);
-    if (witness.values.empty() || witness.values.back().size() != plan.public_output_coordinates + plan.residual_coordinates)
+    const std::size_t expected_output_size =
+        plan.public_output_coordinates + plan.residual_coordinates;
+    if (witness.values.size() != plan.circuit.circuit.size() ||
+        witness.values.empty() ||
+        (copy_terminal_vectors && witness.values.back().size() != expected_output_size) ||
+        (!copy_terminal_vectors && !witness.values.back().empty()))
         throw std::invalid_argument("canonical GAT circuit output shape is invalid");
-    witness.public_output = witness.values.back();
-    const std::size_t y_size = plan.public_output_coordinates;
-    for (std::size_t index = 0; index < y_size; ++index) {
-        if (witness.public_output[index] != Fr(forward.logits.values.at(index))) throw std::invalid_argument("canonical GAT circuit public Y binding failed");
+    if (copy_terminal_vectors) {
+        const NativeFieldVector& terminal = witness.values.back();
+        witness.public_output = terminal;
+        witness.residuals.assign(terminal.begin() + plan.public_output_coordinates,
+                                 terminal.end());
+        const zkgpt::NativeFieldView expected =
+            canonical_public_output_view(plan, forward.logits, &witness);
+        for (std::size_t index = 0; index < expected_output_size; ++index)
+            if (terminal[index] != expected.at(index))
+                throw std::invalid_argument("canonical GAT circuit public output binding failed at " + std::to_string(index));
     }
-    witness.residuals.assign(witness.public_output.begin() + y_size, witness.public_output.end());
-    for (std::size_t index = 0; index < witness.residuals.size(); ++index)
-        if (witness.residuals[index] != Fr(plan.residual_targets.at(index))) {
-            std::ostringstream detail;
-            detail << "canonical GAT circuit has a non-zero residual at " << index;
-            throw std::invalid_argument(detail.str());
-        }
     witness.relation_ok = true;
     return witness;
 }
@@ -6656,15 +7975,15 @@ GatCircuitWitness build_gat_circuit_witness(
     const Tensor2D& public_features, const Model& model,
     const QuantConfig& quant, const ForwardResult& forward,
     const hyrax::HyraxScalarProvider& l_query_values) {
-    return build_gat_circuit_witness_impl(plan, graph, public_features, model, quant, forward, l_query_values, false);
+    return build_gat_circuit_witness_impl(plan, graph, public_features, model, quant, forward, l_query_values, false, true);
 }
 
 GatCircuitWitness build_gat_circuit_witness_borrowed_aux(
     const GatCircuitPlan& plan, const Graph& graph,
     const Tensor2D& public_features, const Model& model,
     const QuantConfig& quant, const ForwardResult& forward,
-    const hyrax::HyraxScalarProvider& l_query_values) {
-    return build_gat_circuit_witness_impl(plan, graph, public_features, model, quant, forward, l_query_values, true);
+    const hyrax::HyraxScalarProvider& l_query_values, bool copy_terminal_vectors = true) {
+    return build_gat_circuit_witness_impl(plan, graph, public_features, model, quant, forward, l_query_values, true, copy_terminal_vectors);
 }
 
 bool evaluate_signed_round_div_gate_assignment(Int dividend, Int denominator, const DivisionResult& result, RoundingMode mode, std::string* reason) {
@@ -6683,10 +8002,32 @@ bool evaluate_signed_round_div_gate_assignment(Int dividend, Int denominator, co
     initial.bit_length = bit_length(input.size());
     plan.circuit.circuit.push_back(std::move(initial));
     RelationLayerBuilder builder;
+    const std::size_t range_width_sum = std::accumulate(profile.begin(), profile.end(), std::size_t(0));
+    const std::size_t residual_count = 12 + 5 + range_width_sum;
+    const std::size_t division_unary_count = mode == RoundingMode::TOWARD_ZERO ? 14 : 15;
+    const std::size_t unary_count = division_unary_count + 5 + 2 * range_width_sum;
+    const std::size_t binary_count = 10 + range_width_sum;
+    constexpr std::size_t signed_round_coefficient_upper_bound = 70;
+    builder.reserve(residual_count, residual_count, unary_count, binary_count,
+                    std::min(signed_round_coefficient_upper_bound, unary_count + binary_count));
     add_division_residuals(builder, 3, 1, {{0, 1}}, {{2, 1}}, mode == RoundingMode::TOWARD_ZERO ? "toward_zero" : "nearest_ties_away");
     std::size_t cursor = 12;
     add_division_range_residuals(builder, 3, 1, cursor, profile);
-    append_explicit_layer(plan, layerType::ADD_BIAS, builder.next_output, builder.unary, builder.binary, true);
+    if (builder.targets.size() != builder.next_output) throw std::logic_error("SignedRoundDiv residual target count mismatch");
+    layer relation = std::move(builder.relation);
+    relation.ty = layerType::ADD_BIAS;
+    relation.size = as_u64(std::max<std::size_t>(1, builder.next_output), "SignedRoundDiv relation size");
+    relation.zero_start_id = relation.size;
+    relation.bit_length = bit_length(relation.size);
+    relation.need_phase2 = true;
+    const std::size_t input_size = plan.circuit.circuit.front().size;
+    for (const uniGate& gate : relation.uni_gates)
+        if (gate.g >= builder.next_output || gate.u >= input_size) throw std::invalid_argument("SignedRoundDiv unary gate coordinate is out of bounds");
+    for (const binGate& gate : relation.bin_gates)
+        if (gate.g >= builder.next_output || gate.u >= input_size || gate.v >= input_size)
+            throw std::invalid_argument("SignedRoundDiv binary gate coordinate is out of bounds");
+    if (relation.uni_gates.empty() && relation.bin_gates.empty()) throw std::invalid_argument("SignedRoundDiv relation has no gates");
+    plan.circuit.circuit.push_back(std::move(relation));
     plan.circuit.size = static_cast<u8>(plan.circuit.circuit.size());
     plan.circuit.initSubset();
     std::vector<NativeFieldVector> values;
@@ -6700,14 +8041,26 @@ bool evaluate_signed_round_div_gate_assignment(Int dividend, Int denominator, co
 
 bool evaluate_gat_circuit_assignment(const GatCircuitPlan& plan, const NativeFieldVector& input, const Tensor2D& public_logits, std::string* reason) {
     std::vector<NativeFieldVector> values;
-    if (!evaluate_layered_values(plan, input, values, reason)) return false;
-    if (values.empty() || public_logits.values.size() != plan.public_output_coordinates || plan.residual_targets.size() != plan.residual_coordinates || values.back().size() != plan.public_output_coordinates + plan.residual_coordinates) { set_reason(reason, "canonical native gate assignment shape mismatch"); return false; }
-    for (std::size_t index = 0; index < plan.public_output_coordinates; ++index) if (values.back()[index] != Fr(public_logits.values[index])) { set_reason(reason, "canonical native gate public logits mismatch"); return false; }
-    for (std::size_t index = 0; index < plan.residual_coordinates; ++index) if (values.back()[plan.public_output_coordinates + index] != Fr(plan.residual_targets[index])) { set_reason(reason, "canonical native gate residual mismatches public target at " + std::to_string(index)); return false; }
+    zkgpt::NativeFieldView terminal_expected;
+    try {
+        terminal_expected = canonical_public_output_view(plan, public_logits, &values);
+    } catch (const std::exception& error) {
+        set_reason(reason, error.what());
+        return false;
+    }
+    if (!evaluate_layered_values(plan, input, values, reason, nullptr,
+                                 &terminal_expected)) return false;
+    if (values.empty() || values.size() != plan.circuit.circuit.size() ||
+        !values.back().empty()) {
+        set_reason(reason, "canonical native gate assignment shape mismatch");
+        return false;
+    }
     return true;
 }
 
-bool evaluate_gat_circuit_witness(const GatCircuitPlan& plan, const GatCircuitWitness& witness, std::string* reason) {
+static bool evaluate_gat_circuit_witness_with_terminal(
+    const GatCircuitPlan& plan, const GatCircuitWitness& witness,
+    const zkgpt::NativeFieldView& terminal_expected, std::string* reason) {
     const auto fail = [reason](const std::string& message) {
         if (reason != nullptr) *reason = message;
         return false;
@@ -6718,6 +8071,13 @@ bool evaluate_gat_circuit_witness(const GatCircuitPlan& plan, const GatCircuitWi
         if (witness.input_oracle == nullptr ||
             witness.input_layer_size != plan.circuit.circuit.front().size)
             return fail("GAT circuit witness input provider has the wrong size");
+        const std::size_t terminal_size =
+            plan.public_output_coordinates + plan.residual_coordinates;
+        if (!terminal_expected.valid() || terminal_expected.size() != terminal_size ||
+            witness.values.size() != plan.circuit.circuit.size() ||
+            witness.values.empty() || !witness.values.front().empty())
+            return fail("GAT circuit witness terminal output view has the wrong shape");
+        const bool streamed_terminal = witness.values.back().empty();
 
         std::vector<NativeFieldVector> evaluated;
         const std::shared_ptr<SegmentedInputOracle> input_oracle =
@@ -6732,25 +8092,52 @@ bool evaluate_gat_circuit_witness(const GatCircuitPlan& plan, const GatCircuitWi
             }
             return input_oracle->value_at(static_cast<std::size_t>(coordinate));
         };
-        if (!evaluate_layered_values(plan, witness.input_layer_size, input_at,
-                                     evaluated, reason))
+        if (!evaluate_layered_values(
+                plan, witness.input_layer_size, input_at, evaluated, reason,
+                &witness.values,
+                streamed_terminal ? &terminal_expected : nullptr))
             return false;
-        if (witness.values.size() != evaluated.size()) return fail("GAT circuit witness layer count is invalid");
-        for (std::size_t layer = 0; layer < evaluated.size(); ++layer) {
-            if (witness.values[layer] != evaluated[layer]) return fail("GAT circuit witness layer does not match official gate evaluation");
-        }
-        if (witness.public_output != evaluated.back()) return fail("GAT circuit witness public output does not match final layer");
-        if (witness.public_output.size() != plan.public_output_coordinates + plan.residual_coordinates)
+        if (!streamed_terminal &&
+            witness.values.back().size() != terminal_size)
             return fail("GAT circuit witness public output shape is invalid");
-        if (witness.residuals.size() != plan.residual_coordinates) return fail("GAT circuit witness residual shape is invalid");
-        for (std::size_t index = 0; index < witness.residuals.size(); ++index) {
-            if (witness.residuals[index] != witness.public_output[plan.public_output_coordinates + index])
+        const zkgpt::NativeFieldView terminal_values = streamed_terminal
+            ? terminal_expected
+            : zkgpt::NativeFieldView::from_vector(witness.values.back());
+        if (!streamed_terminal) {
+            for (std::size_t index = 0; index < terminal_size; ++index)
+                if (terminal_values.at(index) != terminal_expected.at(index))
+                    return fail("GAT circuit witness public output does not match the canonical terminal view");
+        }
+        if (!witness.public_output.empty()) {
+            if (witness.public_output.size() != terminal_size)
+                return fail("GAT circuit witness public output has the wrong size");
+            for (std::size_t index = 0; index < terminal_size; ++index)
+                if (witness.public_output[index] != terminal_values.at(index))
+                    return fail("GAT circuit witness public output does not match final layer");
+        }
+        if (!witness.residuals.empty() && witness.residuals.size() != plan.residual_coordinates) return fail("GAT circuit witness residual shape is invalid");
+        for (std::size_t index = 0; index < plan.residual_coordinates; ++index) {
+            if (!witness.residuals.empty() && witness.residuals[index] != terminal_values.at(plan.public_output_coordinates + index))
                 return fail("GAT circuit witness residual is not output-bound");
-            if (witness.residuals[index] != Fr(plan.residual_targets.at(index))) return fail("GAT circuit relation residual does not match its public target");
+            if (terminal_values.at(plan.public_output_coordinates + index) != Fr(plan.residual_targets.at(index))) return fail("GAT circuit relation residual does not match its public target");
         }
         if (!witness.relation_ok) return fail("GAT circuit witness was not marked relation-valid");
         return true;
     } catch (const std::exception& error) { return fail(error.what()); }
+}
+
+bool evaluate_gat_circuit_witness(const GatCircuitPlan& plan,
+                                  const GatCircuitWitness& witness,
+                                  std::string* reason) {
+    if (witness.values.empty() || witness.values.back().empty()) {
+        if (reason != nullptr)
+            *reason = "streamed GAT circuit witness requires its canonical terminal output view";
+        return false;
+    }
+    const zkgpt::NativeFieldView terminal_values =
+        zkgpt::NativeFieldView::from_vector(witness.values.back());
+    return evaluate_gat_circuit_witness_with_terminal(
+        plan, witness, terminal_values, reason);
 }
 
 GatCircuitPlan build_gat_circuit_plan(const Graph& graph, const Model& model, const QuantConfig& quant, const ForwardResult& forward) {
@@ -6969,8 +8356,8 @@ ModelRegistration register_model(const Model& model, const QuantConfig& quant, c
     if (registration.com_W.logical_size != layout.segments.at(1).logical_length || registration.com_W.padded_size != layout.n_in) {
         throw std::invalid_argument("model commitment does not use the canonical W/N_in domain");
     }
-    registration.binding_digest = hash_hex(registration_binding_encoding(registration));
-    registration.registration_digest = hash_hex("zkgpt-gat-registration-v2/" + registration.binding_digest + "/" + commitment_encoding(registration.com_W));
+    registration.binding_digest = canonical_digest64(registration_binding_encoding(registration));
+    registration.registration_digest = canonical_digest64("zkgpt-gat-registration-v2/" + registration.binding_digest + "/" + commitment_encoding(registration.com_W));
     registration.status = "registered_long_lived_com_W";
     return registration;
 }
@@ -6989,10 +8376,10 @@ bool registration_matches_model(const Model& model, const QuantConfig& quant, co
         if (registration.com_W.scheme != "hyrax-pedersen-bn254" || registration.com_W.basis_id != fixed_digest(hash_hex(basis_label)) ||
             registration.com_W.logical_size != layout.segments.at(1).logical_length || registration.com_W.padded_size != layout.n_in)
             return false;
-        const std::string expected_binding = hash_hex(registration_binding_encoding(registration));
+        const std::string expected_binding = canonical_digest64(registration_binding_encoding(registration));
         if (registration.binding_digest != expected_binding) return false;
         const std::string expected_registration =
-            hash_hex("zkgpt-gat-registration-v2/" + registration.binding_digest + "/" + commitment_encoding(registration.com_W));
+            canonical_digest64("zkgpt-gat-registration-v2/" + registration.binding_digest + "/" + commitment_encoding(registration.com_W));
         return registration.registration_digest == expected_registration;
     } catch (const std::exception&) { return false; }
 }
@@ -7397,9 +8784,11 @@ VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public
     throw std::invalid_argument("verifier context requires a bound model registration artifact");
 }
 
-VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public_features, const QuantConfig& quant, const StaticTables& tables,
-                                      const Tensor2D& public_logits, const ModelRegistration& registration, const GatCircuitPlan& plan,
-                                      const std::string& privacy_profile) {
+static VerifierContext make_verifier_context_impl(const Graph& graph, const Tensor2D& public_features, const QuantConfig& quant,
+                                                  const StaticTables& tables, const Tensor2D& public_logits,
+                                                  const ModelRegistration& registration, const GatCircuitPlan& plan,
+                                                  std::shared_ptr<const GatCircuitPlan> shared_plan,
+                                                  const std::string& privacy_profile) {
     ensure_field();
     graph.validate();
     quant.validate();
@@ -7416,7 +8805,7 @@ VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public
     if (!registration_wire_valid(registration)) throw std::invalid_argument("invalid bound model registration artifact");
     if (!plan.official_layered || plan.has_placeholder || plan.circuit_id.empty() || plan.plan_digest.empty())
         throw std::invalid_argument("verifier context requires an official layered plan");
-    if (!canonical_layout_valid(plan.input_layout) || registration.layout_digest != hash_hex([&]() {
+    if (!canonical_layout_valid(plan.input_layout) || registration.layout_digest != canonical_digest64([&]() {
                                                           std::string encoded;
                                                           append_layout_encoding(encoded, plan.input_layout);
                                                           return encoded;
@@ -7443,7 +8832,13 @@ VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public
     context.public_logits = public_logits;
     context.com_W = registration.com_W;
     context.registration = registration;
-    context.plan = plan;
+    if (shared_plan) {
+        if (shared_plan.get() != &plan)
+            throw std::invalid_argument("shared verifier plan owner does not refer to the validated plan");
+        context.shared_plan = std::move(shared_plan);
+    } else {
+        context.plan = plan;
+    }
 
     context.backend = "cpu";
     context.model_arch_id = registration.model_arch_id;
@@ -7458,6 +8853,23 @@ VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public
     return context;
 }
 
+VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public_features, const QuantConfig& quant,
+                                      const StaticTables& tables, const Tensor2D& public_logits,
+                                      const ModelRegistration& registration, const GatCircuitPlan& plan,
+                                      const std::string& privacy_profile) {
+    return make_verifier_context_impl(graph, public_features, quant, tables, public_logits, registration, plan, {}, privacy_profile);
+}
+
+VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public_features, const QuantConfig& quant,
+                                      const StaticTables& tables, const Tensor2D& public_logits,
+                                      const ModelRegistration& registration,
+                                      std::shared_ptr<const GatCircuitPlan> plan,
+                                      const std::string& privacy_profile) {
+    if (!plan) throw std::invalid_argument("shared verifier plan owner is null");
+    return make_verifier_context_impl(graph, public_features, quant, tables, public_logits, registration, *plan,
+                                      std::move(plan), privacy_profile);
+}
+
 std::string verifier_context_digest(const VerifierContext& context) { return canonical_digest64(context_encoding(context)); }
 
 std::uint64_t gat_proof_artifact_wire_limit(const VerifierContext& context,
@@ -7465,7 +8877,7 @@ std::uint64_t gat_proof_artifact_wire_limit(const VerifierContext& context,
     try {
         unsigned __int128 rows = 0;
         unsigned __int128 chunks = 0;
-        for (const LassoFamilyDescriptor& family : context.plan.lasso) {
+        for (const LassoFamilyDescriptor& family : context.plan_ref().lasso) {
             const std::uint64_t padded_queries =
                 static_cast<std::uint64_t>(family.padded_queries);
             const std::uint64_t table_domain =
@@ -7487,7 +8899,7 @@ std::uint64_t gat_proof_artifact_wire_limit(const VerifierContext& context,
             static_cast<unsigned __int128>(kArtifactMaxWireBytes) +
             rows * kArtifactRowPointBytesPerCopy * 2 +
             chunks * kArtifactRowChunkBytesPerCopy * 2 +
-            static_cast<unsigned __int128>(context.plan.lasso.size()) *
+            static_cast<unsigned __int128>(context.plan_ref().lasso.size()) *
                 kArtifactRowHeaderBytesPerFamily;
         if (max_wire > kArtifactHardMaxWireBytes ||
             max_wire > std::numeric_limits<std::size_t>::max()) {
@@ -7524,7 +8936,7 @@ std::string serialize_verifier_context_payload(const VerifierContext& context) {
 
     append_context_registration(payload, context.registration);
     append_context_commitment(payload, context.com_W);
-    append_context_plan(payload, context.plan);
+    append_context_plan(payload, context.plan_ref());
     const std::string digest = verifier_context_digest(context);
     append_string(payload, digest);
 
@@ -7729,7 +9141,7 @@ static NativeProofStatement make_native_proof_statement_with_basis_digest(const 
                                                                            const CommitmentWire& com_L, std::size_t l_dimension,
                                                                            const std::string& basis_digest) {
     ensure_field();
-    if (l_dimension == 0 || !context.plan.official_layered || context.plan.has_placeholder || !registration_wire_valid(context.registration) ||
+    if (l_dimension == 0 || !context.plan_ref().official_layered || context.plan_ref().has_placeholder || !registration_wire_valid(context.registration) ||
         !context.com_W.valid() || !com_aux.valid() || !com_L.valid())
         throw std::invalid_argument("native statement factory received an unbound context");
 
@@ -7741,13 +9153,13 @@ static NativeProofStatement make_native_proof_statement_with_basis_digest(const 
     append_string(resource_material, context.tables.generator_id);
     append_string(resource_material, context.quant.quant_cfg_id);
     append_string(resource_material, context.static_tables_id);
-    append_string(resource_material, context.plan.plan_digest);
+    append_string(resource_material, context.plan_ref().plan_digest);
 
     NativeProofStatement statement;
     statement.verifier_context_digest = verifier_context_digest(context);
     statement.field_id = "bn254-fr-v1";
-    if (!is_lower_hex_digest(context.plan.plan_digest)) throw std::invalid_argument("native statement plan digest is not canonical");
-    statement.plan_digest = context.plan.plan_digest;
+    if (!is_lower_hex_digest(context.plan_ref().plan_digest)) throw std::invalid_argument("native statement plan digest is not canonical");
+    statement.plan_digest = context.plan_ref().plan_digest;
     statement.resources_digest = canonical_digest64(resource_material);
     statement.tables_digest = normalize_digest(context.tables.digest);
     statement.com_w_digest = fixed_digest(hash_hex(commitment_encoding(context.com_W)));
@@ -7793,7 +9205,9 @@ GkrOnlyArtifactResult prove_gkr_only_artifact(prover& native_prover, const Verif
                 throw std::invalid_argument("GKR diagnostic output is not bound to public Y");
             }
         }
-        if (native_prover.C.size < 2 || native_prover.C.circuit.empty() || native_prover.C.circuit.back().size != public_output.size()) {
+        const zkgpt::NativeFieldView public_output_view =
+            zkgpt::NativeFieldView::from_vector(public_output);
+        if (native_prover.C.size < 2 || native_prover.C.circuit.empty() || native_prover.C.circuit.back().size != public_output_view.size()) {
             throw std::invalid_argument("GKR diagnostic circuit output does not match public Y");
         }
         if (!com_aux.valid() || !com_L.valid()) { throw std::invalid_argument("GKR diagnostic commitment wire is invalid"); }
@@ -7807,19 +9221,19 @@ GkrOnlyArtifactResult prove_gkr_only_artifact(prover& native_prover, const Verif
         verifier native_verifier(&native_prover, native_prover.C);
         if (!native_verifier.prove_gkr_with_session(session)) { throw std::runtime_error("native GKR prover/verifier loop rejected the synthetic relation"); }
 
-        const auto public_output_digest = [&public_output]() {
+        const auto public_output_digest = [&public_output_view]() {
             std::string encoded;
             append_string(encoded, "zkgpt-native-public-output-v1");
-            append_u64(encoded, static_cast<std::uint64_t>(public_output.size()));
-            for (const F& value : public_output) append_string(encoded, field_hex(value));
+            append_u64(encoded, static_cast<std::uint64_t>(public_output_view.size()));
+            for (std::size_t index = 0; index < public_output_view.size(); ++index)
+                append_string(encoded, field_hex(public_output_view.at(index)));
             return fixed_digest(hash_hex(encoded));
         }();
         session.absorb("adapter/public_output", public_output_digest);
         session.absorb("adapter/com_L", statement.l_digest);
 
         std::string reason;
-        const NativeFieldVector native_public_output(public_output.begin(), public_output.end());
-        if (!verify_gkr_transcript(session, native_prover.C, native_public_output, matmuls, &reason)) {
+        if (!verify_gkr_transcript(session, native_prover.C, public_output_view, matmuls, &reason)) {
             throw std::runtime_error("independent native GKR transcript replay rejected: " + reason);
         }
 
@@ -7886,8 +9300,11 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
     return result;
 }
 
-ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tensor2D& public_features, const Model& model, const QuantConfig& quant,
-                      const ForwardResult& forward, const ModelRegistration& registration, const std::string& privacy_profile) {
+static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<const GatCircuitPlan> shared_plan,
+                                  const VerifierContext* provided_context, const Graph& graph,
+                                  const Tensor2D& public_features, const Model& model, const QuantConfig& quant,
+                                  const ForwardResult& forward, const ModelRegistration& registration,
+                                  const std::string& privacy_profile) {
     ProveResult result;
     try {
         const auto stage = [](const char* name) { std::cerr << "gat_adapter_prover_stage: " << name << '\n'; };
@@ -7895,6 +9312,44 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
         graph.validate();
         model.validate_schema();
         quant.validate();
+        if (provided_context != nullptr) {
+            if (!shared_plan || provided_context->shared_plan != shared_plan ||
+                &provided_context->plan_ref() != shared_plan.get())
+                throw std::invalid_argument("prover context does not share the supplied immutable plan owner");
+            std::string context_reason;
+            if (!validate_verifier_context_object(*provided_context, &context_reason))
+                throw std::invalid_argument("prover context is invalid: " + context_reason);
+            if (provided_context->registration.binding_digest != registration.binding_digest ||
+                provided_context->registration.registration_digest != registration.registration_digest ||
+                provided_context->graph.num_nodes != graph.num_nodes ||
+                provided_context->graph.num_features != graph.num_features ||
+                provided_context->graph.graph_count != graph.graph_count ||
+                provided_context->graph.num_classes != graph.num_classes ||
+                provided_context->graph.src != graph.src || provided_context->graph.dst != graph.dst ||
+                provided_context->graph.edge_gid != graph.edge_gid ||
+                provided_context->public_features.rows != public_features.rows ||
+                provided_context->public_features.cols != public_features.cols ||
+                provided_context->public_features.values != public_features.values ||
+                provided_context->public_logits.rows != forward.logits.rows ||
+                provided_context->public_logits.cols != forward.logits.cols ||
+                provided_context->public_logits.values != forward.logits.values ||
+                canonical_quant_digest(provided_context->quant) != canonical_quant_digest(quant) ||
+                provided_context->plan_ref().plan_digest != plan.plan_digest)
+                throw std::invalid_argument("prover context does not match the supplied public statement and plan");
+        }
+        std::unique_ptr<VerifierContext> owned_context;
+        const auto proof_context = [&](const StaticTables& tables) -> const VerifierContext& {
+            if (provided_context != nullptr) return *provided_context;
+            if (!owned_context) {
+                if (shared_plan)
+                    owned_context = std::make_unique<VerifierContext>(make_verifier_context(
+                        graph, public_features, quant, tables, forward.logits, registration, shared_plan, privacy_profile));
+                else
+                    owned_context = std::make_unique<VerifierContext>(make_verifier_context(
+                        graph, public_features, quant, tables, forward.logits, registration, plan, privacy_profile));
+            }
+            return *owned_context;
+        };
         if (!plan.official_layered || plan.has_placeholder) throw std::invalid_argument("official layered circuit plan is incomplete");
         if (!registration_matches_model(model, quant, plan.input_layout, registration))
             throw std::invalid_argument("private model does not match the bound model registration");
@@ -7908,7 +9363,7 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
             }
             const StaticTables tables = StaticTables::build(quant);
             if (!tables.authenticate()) throw std::invalid_argument("canonical static tables are not authenticated");
-            const VerifierContext context = make_verifier_context(graph, public_features, quant, tables, forward.logits, registration, plan, privacy_profile);
+            const VerifierContext& context = proof_context(tables);
             const SparseGkrPlan sparse_plan = sparse_plan_from_virtual_recipe(graph, plan);
             const std::string sparse_basis_label = "zkgpt/gat-sparse-proof/v1/" + verifier_context_digest(context);
             const zkgpt::native_pedersen::PedersenBasis wire_basis = zkgpt::native_pedersen::derive_basis(sparse_basis_label);
@@ -8028,7 +9483,7 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
 
         const StaticTables tables = StaticTables::build(quant);
         if (!tables.authenticate()) throw std::invalid_argument("canonical static tables are not authenticated");
-        const VerifierContext context = make_verifier_context(graph, public_features, quant, tables, forward.logits, registration, plan, privacy_profile);
+        const VerifierContext& context = proof_context(tables);
         const std::string basis_label = registration_basis_label(model, quant, plan.input_layout, registration.model_arch_id);
         const std::string basis_id = fixed_digest(hash_hex(basis_label));
         const std::size_t domain = plan.input_layout.n_in;
@@ -8036,16 +9491,19 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
         LassoAdapterBundle lasso = build_lasso_bundle(plan, forward, tables, basis_label);
         GatCircuitWitness circuit_witness = build_gat_circuit_witness_borrowed_aux(
             plan, graph, public_features, model, quant, forward,
-            lasso.query.value_provider);
+            lasso.query.value_provider, false);
         stage("witness");
         std::string witness_reason;
-        if (!evaluate_gat_circuit_witness(plan, circuit_witness, &witness_reason))
-            throw std::invalid_argument("canonical GAT witness validation failed: " + witness_reason);
+        {
+            const zkgpt::NativeFieldView validation_terminal_output =
+                canonical_public_output_view(plan, forward.logits, &circuit_witness);
+            if (!evaluate_gat_circuit_witness_with_terminal(
+                    plan, circuit_witness, validation_terminal_output, &witness_reason))
+                throw std::invalid_argument("canonical GAT witness validation failed: " + witness_reason);
+        }
 
         stage("generators");
         const G1 H = hyrax::derive_pedersen_blinding_generator(basis_id);
-        const std::string canonical_generator_id = NativeProofStatement::basis_descriptor_digest_for(
-            H, basis_label, basis_id, kCanonicalGeneratorDerivationId, domain);
         const InputSegment& aux_segment = plan.input_layout.segments.at(2);
         const hyrax::HyraxTensorMleView aux_commit_view =
             canonical_input_tensor_view(basis_label, basis_id, "canonical/Aux",
@@ -8149,18 +9607,51 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
                 return exact_position == proof_session.checkpoint();
             };
         NativeLassoBundleResult lasso_result;
+        zkgpt::NativeFieldView terminal_output;
         stage("lasso-prove");
-        if (!native_lasso_prove_bundle(session, *lasso.families, lasso.query,
-                                       &lasso_result, &reason,
-                                       tensor_tail_stage))
-            throw std::runtime_error("native masked Lasso proof failed: " + reason);
-        if (!lasso_result.has_final_l_commitment ||
-            !lasso_result.final_l_commitment.valid(zkgpt::native_pedersen::derive_basis("zkgpt/masked-sumcheck/v2/" + session.statement_digest()), &reason) ||
-            lasso_result.final_query_point.empty())
-            throw std::runtime_error("native masked Lasso did not return an authenticated final L_qry binding");
+        const auto restore_native_plan = [&]() {
+            if (plan.native_proof_backing_is_resident()) return;
+            stage("restore-native-plan");
+            GatCircuitPlan rebuilt = build_gat_circuit_plan(graph, model, quant, forward);
+            plan.restore_native_proof_backing(std::move(rebuilt));
+        };
+        plan.release_native_proof_backing();
+        try {
+            const bool lasso_ok = native_lasso_prove_bundle(
+                session, *lasso.families, lasso.query, &lasso_result, &reason,
+                tensor_tail_stage);
+            lasso.families.reset();
+            if (!lasso_ok)
+                throw std::runtime_error("native masked Lasso proof failed: " + reason);
+            if (!lasso_result.has_final_l_commitment ||
+                !lasso_result.final_l_commitment.valid(zkgpt::native_pedersen::derive_basis("zkgpt/masked-sumcheck/v2/" + session.statement_digest()), &reason) ||
+                lasso_result.final_query_point.empty())
+                throw std::runtime_error("native masked Lasso did not return an authenticated final L_qry binding");
+        } catch (const std::exception& prove_error) {
+            lasso.families.reset();
+            try {
+                restore_native_plan();
+            } catch (const std::exception& restore_error) {
+                throw std::runtime_error(std::string("native Lasso proof failed and canonical GAT plan restoration also failed; proof: ") +
+                                         prove_error.what() + "; restore: " + restore_error.what());
+            }
+            throw;
+        } catch (...) {
+            lasso.families.reset();
+            try {
+                restore_native_plan();
+            } catch (const std::exception& restore_error) {
+                throw std::runtime_error(std::string("native Lasso proof failed with an unknown error and canonical GAT plan restoration also failed: ") +
+                                         restore_error.what());
+            }
+            throw;
+        }
+        restore_native_plan();
+        terminal_output = canonical_public_output_view(plan, forward.logits, &circuit_witness);
 
         NativeLayeredGkrWitness gkr_witness;
         gkr_witness.layer_values_view = &circuit_witness.values;
+        gkr_witness.terminal_output = terminal_output;
         auto input_provider = std::make_shared<NativeGkrInputProvider>();
         input_provider->full_size = circuit_witness.input_layer_size;
         input_provider->segment_domain = plan.input_layout.n_in;
@@ -8214,7 +9705,7 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
         NativeGkrInputBinding gkr_binding;
         NativeGkrProverResult gkr_result;
         stage("gkr-prove");
-        if (!prove_masked_gkr_transcript(session, plan.circuit, gkr_witness, circuit_witness.public_output, &reason, &gkr_binding, &gkr_result))
+        if (!prove_masked_gkr_transcript(session, plan.circuit, gkr_witness, terminal_output, &reason, &gkr_binding, &gkr_result))
             throw std::runtime_error("native masked GKR proof failed: " + reason);
 
         if (gkr_binding.point.size() != core_log2(domain) + 2 || !gkr_binding.claim_commitment.valid(scalar_basis, &reason) ||
@@ -8249,7 +9740,6 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
         const Fr c_aux = selector_s1 * (Fr(1) - selector_s2);
         const Fr c_l = selector_s1 * selector_s2;
         const InputSegment &w_segment = plan.input_layout.segments.at(1);
-        const InputSegment &aux_segment = plan.input_layout.segments.at(2);
         const std::string canonical_generator_id =
             session.statement().basis_digest;
         const hyrax::HyraxMleBasisView w_view = canonical_input_opening_view(
@@ -8306,6 +9796,7 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
         artifact.native_messages = session.messages();
         artifact.transcript_digest = session.digest();
         core_copy_sections(session, artifact);
+        session = NativeProofSession{};
         std::string verify_reason;
         const auto self_verify_begin = std::chrono::steady_clock::now();
         const bool self_verified = verify_gat(context, artifact, &verify_reason);
@@ -8322,6 +9813,27 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
         result.has_artifact = false;
         return result;
     }
+}
+
+ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tensor2D& public_features,
+                      const Model& model, const QuantConfig& quant, const ForwardResult& forward,
+                      const ModelRegistration& registration, const std::string& privacy_profile) {
+    return prove_gat_impl(plan, {}, nullptr, graph, public_features, model, quant, forward, registration, privacy_profile);
+}
+
+ProveResult prove_gat(std::shared_ptr<const GatCircuitPlan> plan, const Graph& graph,
+                      const Tensor2D& public_features, const Model& model, const QuantConfig& quant,
+                      const ForwardResult& forward, const ModelRegistration& registration,
+                      const VerifierContext& context, const std::string& privacy_profile) {
+    if (!plan) {
+        ProveResult result;
+        result.status = ProveStatus::REJECTED;
+        result.diagnostic = "shared immutable plan owner is null";
+        return result;
+    }
+    const GatCircuitPlan& plan_ref = *plan;
+    return prove_gat_impl(plan_ref, std::move(plan), &context, graph, public_features, model, quant, forward,
+                          registration, privacy_profile);
 }
 
 struct SparseVerifierRuntime {
@@ -8372,7 +9884,7 @@ bool verify_virtual_sparse_artifact(const VerifierContext& context, const GatPro
     try {
         context.graph.validate();
         context.quant.validate();
-        if (!context.plan.virtual_sparse || !context.tables.authenticate()) {
+        if (!context.plan_ref().virtual_sparse || !context.tables.authenticate()) {
             set_reason(reason, "virtual sparse verifier context is not canonical");
             return false;
         }
@@ -8381,8 +9893,8 @@ bool verify_virtual_sparse_artifact(const VerifierContext& context, const GatPro
             set_reason(reason, "sparse GKR artifact statement digest mismatch");
             return false;
         }
-        const SparseGkrPlan sparse_plan = sparse_plan_from_virtual_recipe(context.graph, context.plan);
-        if (artifact.sparse_gkr.plan_digest != context.plan.sparse_plan_digest ||
+        const SparseGkrPlan sparse_plan = sparse_plan_from_virtual_recipe(context.graph, context.plan_ref());
+        if (artifact.sparse_gkr.plan_digest != context.plan_ref().sparse_plan_digest ||
             artifact.sparse_gkr.schedule_digest != canonical_digest64(sparse_plan.encoding())) {
             set_reason(reason, "sparse GKR artifact plan digest mismatch");
             return false;
@@ -8392,7 +9904,7 @@ bool verify_virtual_sparse_artifact(const VerifierContext& context, const GatPro
         NativeProofStatement expected =
             make_native_proof_statement(context, artifact.com_aux, artifact.com_L, wire_basis.G, std::vector<G1>{wire_basis.G}, std::vector<F>{F_ZERO}, 1);
         expected.relation_schema = kSparseGkrRelationSchema;
-        expected.relation_digest = context.plan.sparse_plan_digest;
+        expected.relation_digest = context.plan_ref().sparse_plan_digest;
         for (const SparseGkrRelationSpec& relation : sparse_plan.relations) expected.relation_order.push_back(relation.relation_id);
         const NativeProofStatement& actual = artifact.native_statement;
         if (actual.verifier_context_digest != expected.verifier_context_digest || actual.plan_digest != expected.plan_digest ||
@@ -8506,7 +10018,7 @@ bool verify_virtual_sparse_artifact(const VerifierContext& context, const GatPro
             set_reason(reason, "sparse GKR input/output verifier terminals are incomplete");
             return false;
         }
-        const std::size_t input_bits = core_log2(context.plan.input_layout.n_in);
+        const std::size_t input_bits = core_log2(context.plan_ref().input_layout.n_in);
         if (input_result->sumcheck.challenges.size() < input_bits + 2) {
             set_reason(reason, "sparse GKR input binding point has the wrong dimension");
             return false;
@@ -8517,11 +10029,11 @@ bool verify_virtual_sparse_artifact(const VerifierContext& context, const GatPro
         const std::array<F, 4> segment_coefficients = {(F_ONE - selector_s1) * (F_ONE - selector_s2), (F_ONE - selector_s1) * selector_s2,
                                                        selector_s1 * (F_ONE - selector_s2), selector_s1 * selector_s2};
         const std::uint64_t input_chunk_size =
-            context.plan.input_layout.n_in >= kChunkedMleEntries ? kChunkedMleEntries : std::max<std::uint64_t>(2, context.plan.input_layout.n_in);
+            context.plan_ref().input_layout.n_in >= kChunkedMleEntries ? kChunkedMleEntries : std::max<std::uint64_t>(2, context.plan_ref().input_layout.n_in);
         std::vector<zkgpt::native_pedersen::ScalarCommitment> input_commitments;
         input_commitments.reserve(4);
         for (std::size_t segment = 0; segment < 4; ++segment) {
-            const InputSegment& metadata = context.plan.input_layout.segments.at(segment);
+            const InputSegment& metadata = context.plan_ref().input_layout.segments.at(segment);
             const hyrax::ChunkedMleWire& opening = artifact.sparse_gkr.input_segment_openings[segment];
             if (!hyrax::verify_chunked_mle_opening(session, opening, "input/chunked/" + metadata.name, metadata.logical_length, metadata.padded_length,
                                                    input_chunk_size, input_point, runtime.basis, reason))
@@ -8566,7 +10078,7 @@ bool verify_virtual_sparse_artifact(const VerifierContext& context, const GatPro
                                                           reason))
             return false;
 
-        const std::vector<NativeLassoChunkFamilyPublic> lasso_families = build_lasso_chunk_public_families(context.plan, context.tables);
+        const std::vector<NativeLassoChunkFamilyPublic> lasso_families = build_lasso_chunk_public_families(context.plan_ref(), context.tables);
         if (!native_lasso_verify_chunked_bundle(session, lasso_families, artifact.sparse_gkr.lasso_chunks, runtime.basis, &input_point, reason)) return false;
         zkgpt::native_pedersen::ScalarCommitment lasso_commitment;
         if (!sparse_commitment_from_wire(artifact.sparse_gkr.lasso_chunks.final_commitment_hex, runtime.basis, lasso_commitment, reason)) return false;
@@ -8584,7 +10096,7 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
     try {
         context.graph.validate();
         context.quant.validate();
-        if (context.plan.virtual_sparse) { set_reason(reason, "virtual sparse proof is unsupported: canonical GAT arithmetic and registered W/Aux/L commitment binding are incomplete"); return false; }
+        if (context.plan_ref().virtual_sparse) { set_reason(reason, "virtual sparse proof is unsupported: canonical GAT arithmetic and registered W/Aux/L commitment binding are incomplete"); return false; }
         if (!context.tables.authenticate()) {
             set_reason(reason, "static tables are not authenticated");
             return false;
@@ -8609,18 +10121,18 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
             set_reason(reason, "verifier context com_W does not match the registration artifact");
             return false;
         }
-        if (!context.plan.official_layered || context.plan.has_placeholder) {
+        if (!context.plan_ref().official_layered || context.plan_ref().has_placeholder) {
             set_reason(reason, "verifier plan is not an official layered circuit");
             return false;
         }
-        if (!canonical_layout_valid(context.plan.input_layout) || context.registration.n_in != context.plan.input_layout.n_in ||
-            context.registration.input_segments.size() != context.plan.input_layout.segments.size()) {
+        if (!canonical_layout_valid(context.plan_ref().input_layout) || context.registration.n_in != context.plan_ref().input_layout.n_in ||
+            context.registration.input_segments.size() != context.plan_ref().input_layout.segments.size()) {
             set_reason(reason, "registration layout does not match the canonical four-segment plan");
             return false;
         }
-        for (std::size_t index = 0; index < context.plan.input_layout.segments.size(); ++index) {
+        for (std::size_t index = 0; index < context.plan_ref().input_layout.segments.size(); ++index) {
             const InputSegment& left = context.registration.input_segments[index];
-            const InputSegment& right = context.plan.input_layout.segments[index];
+            const InputSegment& right = context.plan_ref().input_layout.segments[index];
             if (left.name != right.name || left.offset != right.offset || left.logical_length != right.logical_length ||
                 left.padded_length != right.padded_length) {
                 set_reason(reason, "registration segment does not match the canonical plan");
@@ -8656,13 +10168,13 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
         const InputLayout verifier_layout = registration_layout(context.registration);
         const std::string basis_label = registration_basis_label_public(context.registration, verifier_layout);
         const std::string basis_id = fixed_digest(hash_hex(basis_label));
-        const std::size_t domain = context.plan.input_layout.n_in;
+        const std::size_t domain = context.plan_ref().input_layout.n_in;
         const InputSegment& trusted_w_segment =
-            context.plan.input_layout.segments.at(1);
+            context.plan_ref().input_layout.segments.at(1);
         const InputSegment& trusted_aux_segment =
-            context.plan.input_layout.segments.at(2);
+            context.plan_ref().input_layout.segments.at(2);
         const InputSegment& trusted_l_segment =
-            context.plan.input_layout.segments.at(3);
+            context.plan_ref().input_layout.segments.at(3);
         if (domain == 0 || !core_power_of_two(domain) || context.registration.com_W.basis_id != basis_id || artifact.com_aux.basis_id != basis_id ||
             artifact.com_L.basis_id != basis_id || artifact.com_aux.padded_size != domain || artifact.com_L.padded_size != domain ||
             !artifact.com_aux.has_tensor_commitment ||
@@ -8684,7 +10196,7 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
         const G1 H = hyrax::derive_pedersen_blinding_generator(basis_id);
         NativeProofStatement expected_native_statement =
             make_native_proof_statement(context, artifact.com_aux, artifact.com_L, H, basis_label, basis_id, domain);
-        const std::vector<NativeLassoFamilyPublic> expected_lasso_families = build_lasso_public_families(context.plan, context.tables, basis_label);
+        const std::vector<NativeLassoFamilyPublic> expected_lasso_families = build_lasso_public_families(context.plan_ref(), context.tables, basis_label);
         expected_native_statement.tables_digest = native_lasso_tables_digest(expected_lasso_families);
         expected_native_statement.resources_digest = native_lasso_resources_digest(expected_lasso_families);
         expected_native_statement.l_digest = commitment_statement_digest(artifact.com_L);
@@ -8729,13 +10241,13 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
         }
 
         const std::vector<NativeLassoFamilyPublic>& lasso_families = expected_lasso_families;
-        const NativeLassoQueryPublic lasso_query = build_lasso_public_query(context.plan, artifact.com_L, basis_label);
+        const NativeLassoQueryPublic lasso_query = build_lasso_public_query(context.plan_ref(), artifact.com_L, basis_label);
         const zkgpt::native_pedersen::PedersenBasis scalar_basis =
             zkgpt::native_pedersen::derive_basis(
                 "zkgpt/masked-sumcheck/v2/" + session.statement_digest());
         const NativeLassoTensorTailVerifyHook tensor_tail_stage =
             [&trusted_aux_tensor_view, &artifact, &scalar_basis,
-             l_query_zero_intervals = canonical_l_query_zero_intervals(context.plan)](
+             l_query_zero_intervals = canonical_l_query_zero_intervals(context.plan_ref())](
                 const NativeProofSession& proof_session,
                 const NativeLassoQueryPublic& query,
                 std::size_t& exact_position,
@@ -8784,27 +10296,24 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
             return false;
         }
 
-        NativeFieldVector public_output;
-        public_output.reserve(context.public_logits.values.size() + context.plan.residual_coordinates);
-        for (Int value : context.public_logits.values) public_output.push_back(Fr(value));
-        for (Int target : context.plan.residual_targets) public_output.push_back(Fr(target));
-        if (context.plan.public_output_coordinates != context.public_logits.values.size() ||
-            public_output.size() != context.plan.public_output_coordinates + context.plan.residual_coordinates || context.plan.circuit.circuit.empty() ||
-            context.plan.circuit.circuit.back().size != public_output.size()) {
+        const zkgpt::NativeFieldView public_output =
+            canonical_public_output_view(context.plan_ref(), context.public_logits, &context);
+        if (context.plan_ref().circuit.circuit.empty() ||
+            context.plan_ref().circuit.circuit.back().size != public_output.size()) {
             set_reason(reason, "masked GAT public output/residual shape is invalid");
             return false;
         }
 
         std::vector<NativeGkrMatmulShape> matmuls;
-        matmuls.reserve(context.plan.matmuls.size());
-        for (const MatMulDescriptor& descriptor : context.plan.matmuls)
-            matmuls.push_back(native_gkr_shape_from_descriptor(descriptor, context.plan.input_layout));
+        matmuls.reserve(context.plan_ref().matmuls.size());
+        for (const MatMulDescriptor& descriptor : context.plan_ref().matmuls)
+            matmuls.push_back(native_gkr_shape_from_descriptor(descriptor, context.plan_ref().input_layout));
 
         std::size_t gkr_start = session.messages().size();
         for (std::size_t index = 0; index < session.messages().size(); ++index) {
             const NativeProofMessage& message = session.messages()[index];
-            if (message.label == "gkr/public-output") {
-                if (message.kind != NativeProofMessageKind::FieldVector || gkr_start != session.messages().size()) {
+            if (message.label == "gkr/public-output-digest-v2") {
+                if (message.kind != NativeProofMessageKind::Data || gkr_start != session.messages().size()) {
                     set_reason(reason, "masked GAT GKR public-output boundary is malformed");
                     return false;
                 }
@@ -8828,8 +10337,8 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
         std::size_t gkr_end = session.messages().size();
         NativeGkrInputBinding verified_gkr_binding;
         const NativeGkrInputSupport trusted_gkr_input_support =
-            canonical_gkr_input_support(context.plan);
-        if (!verify_masked_gkr_transcript(session, context.plan.circuit, public_output, matmuls, gkr_start, &gkr_end, reason,
+            canonical_gkr_input_support(context.plan_ref());
+        if (!verify_masked_gkr_transcript(session, context.plan_ref().circuit, public_output, matmuls, gkr_start, &gkr_end, reason,
                                           &verified_gkr_binding, &trusted_gkr_input_support)) {
             if (reason != nullptr && reason->empty()) set_reason(reason, "native GKR verifier rejected without a diagnostic");
             return false;
@@ -8928,7 +10437,7 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
             set_reason(reason, "masked GAT combine public claim binding failed");
             return false;
         }
-        const std::vector<Fr> x_values = public_feature_segment(context.plan, context.graph, context.public_features);
+        const std::vector<Fr> x_values = public_feature_segment(context.plan_ref(), context.graph, context.public_features);
         const Fr x_eval = adapter_mle_eval(x_values, r_minus);
         if (encoded_x != x_eval) {
             set_reason(reason, "masked GAT public X terminal evaluation mismatch");
@@ -9310,7 +10819,10 @@ void core_copy_sections(const NativeProofSession& session, GatProofArtifact& art
     for (const NativeProofMessage& message : session.messages()) {
         ProofSection* section = nullptr;
         if (message.label == "lasso/reserved" || message.label.compare(0, sizeof("lasso/") - 1, "lasso/") == 0 ||
-            message.label.compare(0, sizeof("challenge/lasso/") - 1, "challenge/lasso/") == 0)
+            message.label.compare(0, sizeof("challenge/lasso/") - 1, "challenge/lasso/") == 0 ||
+            core_message_in_scope(message.label, "tensor/aux/tail") ||
+            core_message_in_scope(message.label, "tensor/L_qry/tail") ||
+            core_message_in_scope(message.label, "tensor/L_qry/zero-gap"))
             section = &artifact.Pi_Lasso;
         else if (message.label.compare(0, sizeof("matmul/") - 1, "matmul/") == 0 ||
                  message.label.compare(0, sizeof("challenge/matmul/") - 1, "challenge/matmul/") == 0 ||
@@ -9336,7 +10848,9 @@ void core_copy_sections(const NativeProofSession& session, GatProofArtifact& art
 bool core_expected_label(const std::string& label) {
     return label == "lasso/reserved" || label.compare(0, sizeof("lasso/") - 1, "lasso/") == 0 ||
            label.compare(0, sizeof("challenge/lasso/") - 1, "challenge/lasso/") == 0 || core_message_in_scope(label, "matmul") ||
-           core_message_in_scope(label, "gkr") || core_message_in_scope(label, "combine") || core_message_in_scope(label, "Open_W") ||
+           core_message_in_scope(label, "tensor/aux/tail") || core_message_in_scope(label, "tensor/L_qry/tail") ||
+           core_message_in_scope(label, "tensor/L_qry/zero-gap") || core_message_in_scope(label, "gkr") ||
+           core_message_in_scope(label, "combine") || core_message_in_scope(label, "Open_W") ||
            core_message_in_scope(label, "Open_Aux") || core_message_in_scope(label, "Open_L");
 }
 
@@ -9644,8 +11158,8 @@ NativePrimitiveEvidence exercise_official_primitives(const std::string& label) {
     native_prover.C.circuit[1].zero_start_id = 1;
     native_prover.C.circuit[1].bit_length = 0;
 
-    native_prover.C.circuit[1].bin_gates.emplace_back(0, 0, 1, 1, 0);
-    native_prover.C.circuit[1].bin_gates.emplace_back(0, 1, 0, 0, 0);
+    native_prover.C.circuit[1].add_binary(0, 0, 1, 1, 0);
+    native_prover.C.circuit[1].add_binary(0, 1, 0, 0, 0);
     native_prover.C.initSubset();
     native_prover.val.resize(2);
     native_prover.val[0] = {Field(3), Field(5)};

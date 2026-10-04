@@ -75,6 +75,8 @@ KERNEL void zkMatMul_phase1_step(GLOBAL Fr_t *a, GLOBAL Fr_t *b,
 namespace zkdl {
 
 struct MatMulShape {
+    static constexpr std::uint64_t kNativeDomainCap = std::uint64_t(1U) << 30U;
+
     std::uint32_t num = 0;
     std::uint32_t m = 0;
     std::uint32_t n = 0;
@@ -102,14 +104,30 @@ struct MatMulShape {
         return result;
     }
 
-    std::uint64_t a_size() const {
-        return static_cast<std::uint64_t>(num) * m * n;
+    static bool checked_product(std::uint32_t first, std::uint32_t second,
+                                std::uint32_t third, std::uint64_t& result) {
+        const std::uint64_t max = std::numeric_limits<std::uint64_t>::max();
+        if (first != 0U && static_cast<std::uint64_t>(second) > max / first) return false;
+        const std::uint64_t partial = static_cast<std::uint64_t>(first) * second;
+        if (partial != 0U && static_cast<std::uint64_t>(third) > max / partial) return false;
+        result = partial * third;
+        return true;
     }
-    std::uint64_t b_size() const {
-        return static_cast<std::uint64_t>(num) * n * k;
+    static std::uint64_t checked_product_or_max(std::uint32_t first,
+                                                std::uint32_t second,
+                                                std::uint32_t third) {
+        std::uint64_t result = 0U;
+        return checked_product(first, second, third, result)
+                   ? result : std::numeric_limits<std::uint64_t>::max();
     }
-    std::uint64_t c_size() const {
-        return static_cast<std::uint64_t>(num) * m * k;
+    std::uint64_t a_size() const { return checked_product_or_max(num, m, n); }
+    std::uint64_t b_size() const { return checked_product_or_max(num, n, k); }
+    std::uint64_t c_size() const { return checked_product_or_max(num, m, k); }
+
+    bool tensor_sizes(std::array<std::uint64_t, 3U>& sizes) const {
+        return checked_product(num, m, n, sizes[0U]) &&
+               checked_product(num, n, k, sizes[1U]) &&
+               checked_product(num, m, k, sizes[2U]);
     }
 
     bool valid(std::string* error = nullptr) const {
@@ -121,10 +139,10 @@ struct MatMulShape {
             if (error) *error = "zkMatMul opening dimensions n and k must be powers of two";
             return false;
         }
-        if (a_size() > std::numeric_limits<std::uint32_t>::max() ||
-            b_size() > std::numeric_limits<std::uint32_t>::max() ||
-            c_size() > std::numeric_limits<std::uint32_t>::max()) {
-            if (error) *error = "zkMatMul tensor shape exceeds native uint size";
+        std::array<std::uint64_t, 3U> sizes{};
+        if (!tensor_sizes(sizes) || sizes[0U] > kNativeDomainCap ||
+            sizes[1U] > kNativeDomainCap || sizes[2U] > kNativeDomainCap) {
+            if (error) *error = "zkMatMul tensor shape exceeds native domain cap";
             return false;
         }
         try {
@@ -140,6 +158,11 @@ struct MatMulShape {
         return true;
     }
 };
+
+inline std::uint32_t matmul_checked_size_u32(std::size_t value, const char* label) {
+    if (value > std::numeric_limits<std::uint32_t>::max()) throw std::overflow_error(std::string(label) + " exceeds uint32");
+    return static_cast<std::uint32_t>(value);
+}
 
 struct MatMulCpuCommitmentView {
     std::vector<CpuG1Point> generators;
@@ -370,6 +393,11 @@ struct MatMulProof {
             !matmul_read_shape(in, offset, parsed.shape) ||
             !read_u32(in, offset, parsed.c_binding_mode)) {
             if (error) *error = "invalid zkMatMul proof header";
+            return false;
+        }
+        std::string shape_error;
+        if (!parsed.shape.valid(&shape_error)) {
+            if (error) *error = "invalid zkMatMul proof shape: " + shape_error;
             return false;
         }
         parsed.version = parsed_version;
@@ -701,7 +729,7 @@ inline bool matmul_verify_cpu_opening(const MatMulCpuCommitmentView& view,
         }();
         const CpuIpaOpeningMetadata metadata = matmul_opening_metadata(
             statement_digest, opening.commitment_index, full_point,
-            static_cast<std::uint32_t>(opening.outer_point.size()));
+            matmul_checked_size_u32(opening.outer_point.size(), "zkMatMul opening point size"));
         return cpu_verify_opening(opening, expected, generators,
                                   ipa_blinding_generator, ipa_u_generator,
                                   metadata, error);
@@ -951,9 +979,10 @@ inline MatMulProof matmul_prove_internal(
     proof.transcript_digest = transcript.digest();
     if (proof_size_count != nullptr) {
         const std::vector<byte> encoded = proof.serialize();
-        if (encoded.size() > std::numeric_limits<std::uint32_t>::max())
-            throw std::overflow_error("zkMatMul proof size exceeds uint32");
-        *proof_size_count += static_cast<std::uint32_t>(encoded.size());
+        const std::uint32_t encoded_size = matmul_checked_size_u32(encoded.size(), "zkMatMul proof size");
+        if (*proof_size_count > std::numeric_limits<std::uint32_t>::max() - encoded_size)
+            throw std::overflow_error("zkMatMul accumulated proof size exceeds uint32");
+        *proof_size_count += encoded_size;
     }
     return proof;
 }

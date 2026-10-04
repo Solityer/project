@@ -6,11 +6,11 @@
 //! components, symlinks and paths escaping the declared resource root are
 //! rejected.
 
-use crate::gat_adapter::schema::{sha256_digest, CircuitRef};
+use crate::gat_adapter::schema::{sha256_digest, sha256_file_with_progress, CircuitRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 /// A source snapshot recorded by the packaging step.
@@ -304,18 +304,7 @@ fn ensure_no_symlink(path: &Path, root: &Path) -> Result<(), String> {
 }
 
 fn hash_file(path: &Path) -> Result<(u64, String), String> {
-    let mut file = File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
-    let mut size = 0_u64;
-    let mut chunk = [0_u8; 1024 * 1024];
-    loop {
-        let read = file.read(&mut chunk).map_err(|e| format!("read {}: {}", path.display(), e))?;
-        if read == 0 {
-            break;
-        }
-        size = size.checked_add(read as u64).ok_or_else(|| format!("size overflow while reading {}", path.display()))?;
-    }
-    let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
-    Ok((size, digest))
+    sha256_file_with_progress(path, "resource/artifact authentication")
 }
 
 impl ResourceManifest {
@@ -426,8 +415,8 @@ impl ResourceManifest {
         if metadata.len() != record.size {
             return Err(format!("size mismatch for {}", requested));
         }
-        let (_, digest) = hash_file(&resolved)?;
-        if digest != record.sha256 {
+        let (actual_size, digest) = hash_file(&resolved)?;
+        if actual_size != record.size || digest != record.sha256 {
             return Err(format!("digest mismatch for {}", requested));
         }
         Ok(AuthenticatedResource { record: record.clone(), path: resolved,}) } }

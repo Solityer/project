@@ -38,14 +38,54 @@ G = (GX, GY)
 
 
 MAX_NATIVE_DOMAIN = 1 << 30
+MAX_STATIC_TABLE_ROWS = 1 << 27
 NATIVE_BASIS_DOMAIN = 1 << 18
 SRS_FRAME_HEADER_BYTES = 8 + 4 + 4 + 8 + 8 + 8
 G1_POINT_BYTES = 48
 MAX_SRS_FRAME_BYTES = 1 << 32
+CANONICAL_SCALE_CHAIN = {
+    "schema": "gat_l3_scale_chain", "quant_cfg_id": "gat_l3_scale_chain", "s_input": "16", "s_delta": "256", "s_exp": "16",
+    "s_h": "16,16,16",
+    "s_w_hidden_0": "4,4,4,4,4,4,4,4", "s_w_hidden_1": "4,4,4,4,4,4,4,4",
+    "s_h_prime_hidden_0": "64,64,64,64,64,64,64,64", "s_h_prime_hidden_1": "64,64,64,64,64,64,64,64",
+    "s_a_src_hidden_0": "4,4,4,4,4,4,4,4", "s_a_src_hidden_1": "4,4,4,4,4,4,4,4",
+    "s_a_dst_hidden_0": "4,4,4,4,4,4,4,4", "s_a_dst_hidden_1": "4,4,4,4,4,4,4,4",
+    "s_agg_pre": "16,16", "s_agg": "16,16", "s_cat": "16,16",
+    "s_w_output": "4,4", "s_y_prime": "64,64", "s_a_src_output": "4,4", "s_a_dst_output": "4,4",
+    "s_b_output": "16,16", "s_out_pre": "16", "s_out_head": "16", "s_out": "16",
+    "round": "nearest_ties_away", "rescale": "none", "output_average": "signed_round_div",
+}
 
 
 def die(message: str) -> None:
     raise SystemExit(f"prepare-form-resources: BLOCKED: {message}")
+
+
+def decimal_u64(text: str, label: str) -> int:
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)", text):
+        die(f"{label} is not an unsigned decimal integer")
+    value = int(text, 10)
+    if value > (1 << 64) - 1:
+        die(f"{label} exceeds u64")
+    return value
+
+
+def validated_scale_chain(path: Path, quant_cfg_id: str) -> dict[str, str]:
+    if path.is_symlink() or not path.is_file():
+        die(f"quantization scale-chain file is missing or symlinked: {path}")
+    actual = parse_config(path)
+    expected = dict(CANONICAL_SCALE_CHAIN)
+    expected["quant_cfg_id"] = quant_cfg_id
+    if actual != expected:
+        die("quantization scale-chain differs from the native canonical fixed-point contract")
+    return actual
+
+
+def formal_input_scale_for(config_path: Path) -> int:
+    values = parse_config(config_path)
+    root = config_path.resolve().parent.parent
+    chain = validated_scale_chain(root / "configs" / "quantization_scale_chain.cfg", values.get("quant_cfg_id", ""))
+    return decimal_u64(chain["s_input"], "s_input")
 
 
 def srs_frame_bytes(count: int) -> int:
@@ -163,6 +203,22 @@ def next_pow2(value: int) -> int:
     if result > MAX_NATIVE_DOMAIN:
         die(f"relation domain {result} exceeds the native 2^30 coordinate safety boundary")
     return result
+
+
+def checked_shape_domain(shape: Iterable[int], label: str) -> int:
+    """Return the padded tensor product under the native u32-domain contract."""
+    product = 1
+    axes = list(shape)
+    if not axes:
+        die(f"empty relation shape: {label}")
+    for axis in axes:
+        if axis < 1:
+            die(f"non-positive relation shape axis in {label}: {axis}")
+        padded = next_pow2(axis)
+        if product > MAX_NATIVE_DOMAIN // padded:
+            die(f"relation shape product exceeds native coordinate boundary: {label}")
+        product *= padded
+    return product
 
 
 def round_away(value: float) -> int:
@@ -311,15 +367,7 @@ def _config_bool(values: dict[str, str] | None, key: str, default: bool) -> bool
     return raw == "true"
 
 
-def graph_degree(root: Path, dataset: str, values: dict[str, str] | None = None) -> tuple[int, int, int]:
-    """Reproduce the native load_graph edge canonicalization exactly.
-
-    The old preparation path trusted ``num_edges``/``max_in_degree`` from
-    metadata and counted raw destination columns.  Native ``load_graph``
-    first applies configured symmetrization and deduplication, then appends a
-    self-loop for every node and computes its incoming-edge layout.  SRS
-    relation domains must use that same post-canonicalization graph.
-    """
+def audit_graph(root: Path, dataset: str, values: dict[str, str] | None = None) -> dict[str, Any]:
     values = values or {}
     cache_raw = values.get("cache_root", "data/cache")
     cache_path = Path(cache_raw)
@@ -328,96 +376,139 @@ def graph_degree(root: Path, dataset: str, values: dict[str, str] | None = None)
     directory = root / cache_path / dataset
     meta: dict[str, str] = {}
     meta_path = directory / "meta.cfg"
-    if not meta_path.is_file():
-        die(f"native graph metadata is missing: {meta_path}")
-    for line in meta_path.read_text(encoding="utf-8").splitlines():
-        if "=" in line:
-            key, value = (item.strip() for item in line.split("=", 1))
-            meta[key] = value
+    if meta_path.is_symlink() or not meta_path.is_file():
+        die(f"native graph metadata is missing or symlinked: {meta_path}")
+    meta = parse_config(meta_path)
     if meta.get("name") != dataset:
         die(f"cache dataset name mismatch: {dataset}")
     try:
-        nodes = int(meta["num_nodes"])
+        nodes = decimal_u64(meta["num_nodes"], "num_nodes")
+        graph_count = decimal_u64(meta.get("graph_count", "1"), "graph_count")
     except (KeyError, ValueError) as exc:
-        die(f"cache num_nodes is invalid for {dataset}: {exc}")
-    if nodes < 1:
-        die(f"cache num_nodes must be positive for {dataset}")
-    graph_count = int(meta.get("graph_count", "1"))
-    if graph_count < 1:
-        die(f"cache graph_count must be positive for {dataset}")
+        die(f"cache graph dimensions are invalid for {dataset}: {exc}")
+    if nodes < 1 or nodes > MAX_NATIVE_DOMAIN or graph_count < 1 or graph_count > MAX_NATIVE_DOMAIN:
+        die(f"cache node/graph count exceeds native bounds for {dataset}")
     if dataset != "ppi" and graph_count != 1:
         die("non-PPI canonical graph must contain exactly one graph")
     node_ptr: list[int] = [0, nodes]
+    node_ptr_path: Path | None = None
     if dataset == "ppi":
-        ptr_path = directory / "node_ptr.txt"
-        if not ptr_path.is_file():
-            die(f"missing PPI node_ptr: {ptr_path}")
+        node_ptr_path = directory / "node_ptr.txt"
+        if node_ptr_path.is_symlink() or not node_ptr_path.is_file():
+            die(f"missing or symlinked PPI node_ptr: {node_ptr_path}")
         try:
-            node_ptr = [int(item) for item in ptr_path.read_text(encoding="utf-8").split()]
+            node_ptr = [decimal_u64(item, "PPI node_ptr") for item in node_ptr_path.read_text(encoding="utf-8").split()]
         except ValueError as exc:
             die(f"malformed PPI node_ptr: {exc}")
-        if (len(node_ptr) != graph_count + 1 or not node_ptr or node_ptr[0] != 0 or
-                node_ptr[-1] != nodes):
+        if len(node_ptr) != graph_count + 1 or node_ptr[0] != 0 or node_ptr[-1] != nodes:
             die("PPI node_ptr does not match native graph metadata")
         if any(left >= right or right > nodes for left, right in zip(node_ptr, node_ptr[1:])):
             die("PPI node_ptr must be strictly increasing and bounded")
-
     edges_path = directory / "edges.txt"
-    if not edges_path.is_file():
-        die(f"native edge file is missing: {edges_path}")
+    if edges_path.is_symlink() or not edges_path.is_file():
+        die(f"native edge file is missing or symlinked: {edges_path}")
     symmetrize = _config_bool(values, "symmetrize_edges", False)
     deduplicate = _config_bool(values, "deduplicate_edges", True)
     seen: set[tuple[int, int, int]] = set()
     incoming = [0] * nodes
+    edge_counts = [0] * graph_count
     edge_count = 0
+    duplicate_edges = 0
+    raw_edge_rows = 0
+    raw_self_loops = 0
+    symmetrized_edges = 0
 
     def graph_for_node(node: int) -> int:
         if dataset != "ppi":
             return 0
-
         import bisect
         return bisect.bisect_right(node_ptr, node) - 1
 
-    def add(gid: int, src: int, dst: int) -> None:
-        nonlocal edge_count
-        if src < 0 or src >= nodes or dst < 0 or dst >= nodes:
-            die("edge endpoint is outside the native graph bounds")
+    def add(gid: int, src: int, dst: int) -> bool:
+        nonlocal edge_count, duplicate_edges
+        if gid < 0 or gid >= graph_count or src < 0 or src >= nodes or dst < 0 or dst >= nodes:
+            die("edge graph id or endpoint is outside native bounds")
+        if not node_ptr[gid] <= src < node_ptr[gid + 1] or not node_ptr[gid] <= dst < node_ptr[gid + 1]:
+            die("edge endpoint graph ownership does not match node_ptr")
         key = (gid, src, dst)
         if deduplicate and key in seen:
-            return
+            duplicate_edges += 1
+            return False
         if deduplicate:
             seen.add(key)
+        if edge_count >= MAX_NATIVE_DOMAIN // 2:
+            die("normalized edge count exceeds native sparse-route domain bound")
         incoming[dst] += 1
+        edge_counts[gid] += 1
         edge_count += 1
+        return True
 
-    for number, raw in enumerate(edges_path.read_text(encoding="utf-8").splitlines(), 1):
-        parts = raw.split()
-        if not parts:
-            continue
-        expected = 3 if dataset == "ppi" else 2
-        if len(parts) != expected:
-            die(f"malformed edge row {number}: expected {expected} columns")
-        try:
-            parsed = [int(item) for item in parts]
-        except ValueError as exc:
-            die(f"malformed edge row {number}: {exc}")
-        gid = parsed[0] if dataset == "ppi" else 0
-        if dataset == "ppi":
+    with edges_path.open(encoding="utf-8") as stream:
+        for number, raw in enumerate(stream, 1):
+            parts = raw.split()
+            if not parts:
+                continue
+            raw_edge_rows += 1
+            expected = 3 if dataset == "ppi" else 2
+            if len(parts) != expected:
+                die(f"malformed edge row {number}: expected {expected} columns")
+            parsed = [decimal_u64(item, f"edge row {number}") for item in parts]
+            gid = parsed[0] if dataset == "ppi" else 0
             if gid < 0 or gid >= graph_count:
-                die(f"PPI edge graph id out of range at row {number}")
-            graph_nodes = node_ptr[gid + 1] - node_ptr[gid]
-            if parsed[1] < 0 or parsed[1] >= graph_nodes or parsed[2] < 0 or parsed[2] >= graph_nodes:
-                die(f"PPI local edge endpoint out of range at row {number}")
-            src = node_ptr[gid] + parsed[1]
-            dst = node_ptr[gid] + parsed[2]
-        else:
-            src, dst = parsed
-        add(gid, src, dst)
-        if symmetrize:
-            add(gid, dst, src)
+                die(f"edge graph id out of range at row {number}")
+            src, dst = (parsed[1], parsed[2]) if dataset == "ppi" else (parsed[0], parsed[1])
+            if dataset == "ppi" and (not node_ptr[gid] <= src < node_ptr[gid + 1] or not node_ptr[gid] <= dst < node_ptr[gid + 1]):
+                die(f"PPI global edge endpoint out of graph bounds at row {number}")
+            if src == dst:
+                raw_self_loops += 1
+            add(gid, src, dst)
+            if symmetrize and add(gid, dst, src):
+                symmetrized_edges += 1
+    for key in ("num_edges", "edge_count", "raw_edge_count", "num_raw_edges"):
+        if key in meta:
+            try:
+                declared_raw_edges = decimal_u64(meta[key], f"cache metadata {key}")
+            except SystemExit as exc:
+                die(f"cache metadata {key} is not an integer: {exc}")
+            if declared_raw_edges != raw_edge_rows:
+                die(f"cache metadata raw edge count mismatch: {key}={declared_raw_edges} rows={raw_edge_rows}")
+    added_self_loops = 0
     for node in range(nodes):
-        add(graph_for_node(node), node, node)
-    return nodes, edge_count, max(1, max(incoming, default=0))
+        if add(graph_for_node(node), node, node):
+            added_self_loops += 1
+    node_edge_ptr = [0]
+    for degree in incoming:
+        node_edge_ptr.append(node_edge_ptr[-1] + degree)
+    edge_ptr = [0]
+    for count in edge_counts:
+        if count == 0:
+            die("normalized graph edge_ptr contains an empty graph block")
+        edge_ptr.append(edge_ptr[-1] + count)
+    if node_edge_ptr[-1] != edge_count or edge_ptr[-1] != edge_count:
+        die("normalized edge/CSR prefix pointers do not cover the canonical edge list")
+    if any(left > right for left, right in zip(node_edge_ptr, node_edge_ptr[1:])) or any(left >= right for left, right in zip(edge_ptr, edge_ptr[1:])):
+        die("normalized edge/CSR prefix pointers are not monotone")
+    if any(degree == 0 for degree in incoming):
+        die("normalized CSR contains a destination without an incoming self-loop or edge")
+    def pointer_digest(pointer: list[int]) -> str:
+        return sha256_bytes(("\n".join(map(str, pointer)) + "\n").encode())
+    return {"dataset": dataset, "nodes": nodes, "graphs": graph_count, "node_id_space": "canonical_flat_equals_proof_flat",
+            "raw_edge_id_space": "gid_src_flat_dst_flat" if dataset == "ppi" else "src_flat_dst_flat", "raw_edge_rows": raw_edge_rows,
+            "raw_edge_ownership_checks": raw_edge_rows, "raw_self_loops": raw_self_loops, "symmetrized_edges_added": symmetrized_edges,
+            "duplicate_edges_removed": duplicate_edges, "self_loops_added": added_self_loops, "normalized_edges": edge_count,
+            "normalized_edge_counts_by_graph": edge_counts, "node_ptr_count": len(node_ptr), "node_ptr_prefix": node_ptr[:3],
+            "node_ptr_suffix": node_ptr[-3:], "node_ptr_sha256": pointer_digest(node_ptr), "edge_ptr_count": len(edge_ptr),
+            "edge_ptr_prefix": edge_ptr[:3], "edge_ptr_suffix": edge_ptr[-3:], "edge_ptr_sha256": pointer_digest(edge_ptr),
+            "csr_pointer_count": len(node_edge_ptr), "csr_pointer_sha256": pointer_digest(node_edge_ptr),
+            "csr_destinations_checked": nodes, "csr_min_in_degree": min(incoming, default=0),
+            "csr_max_in_degree": max(incoming, default=0), "destination_groups_checked": nodes,
+            "edge_blocks_checked": graph_count, "edge_file_sha256": sha256_file(edges_path),
+            "meta_sha256": sha256_file(meta_path),
+            "node_ptr_file_sha256": sha256_file(node_ptr_path) if node_ptr_path is not None else None}
+
+def graph_degree(root: Path, dataset: str, values: dict[str, str] | None = None) -> tuple[int, int, int]:
+    audit = audit_graph(root, dataset, values)
+    return int(audit["nodes"]), int(audit["normalized_edges"]), int(audit["csr_max_in_degree"])
 
 
 def graph_metadata(root: Path, dataset: str, config_values: dict[str, str] | None = None) -> dict[str, int]:
@@ -432,8 +523,8 @@ def graph_metadata(root: Path, dataset: str, config_values: dict[str, str] | Non
             if "=" not in raw:
                 continue
             key, value = (part.strip() for part in raw.split("=", 1))
-            if value.isdigit():
-                metadata[key] = int(value)
+            if re.fullmatch(r"(?:0|[1-9][0-9]*)", value):
+                metadata[key] = decimal_u64(value, f"cache metadata {key}")
     return metadata
 
 
@@ -447,7 +538,7 @@ def parse_profile(value: str) -> list[tuple[int, int]]:
         if "x" not in item:
             die(f"invalid hidden_profile item: {item}")
         heads, width = (part.strip() for part in item.split("x", 1))
-        result.append((int(heads), int(width)))
+        result.append((decimal_u64(heads, "hidden head count"), decimal_u64(width, "hidden head dimension")))
     if not result or any(heads < 1 or width < 1 for heads, width in result):
         die("hidden_profile has no positive layer/head dimensions")
     return result
@@ -457,7 +548,7 @@ def parse_list(value: str) -> list[int]:
     text = value.strip()
     if not (text.startswith("[") and text.endswith("]")):
         die(f"invalid list value: {value}")
-    result = [int(item.strip()) for item in text[1:-1].split(",") if item.strip()]
+    result = [decimal_u64(item.strip(), "shape axis") for item in text[1:-1].split(",") if item.strip()]
     if not result or any(item < 1 for item in result):
         die(f"list has no positive entries: {value}")
     return result
@@ -475,10 +566,10 @@ def relation_family_domains(values: dict[str, str], nodes: int, edges: int,
     """
     profile = parse_profile(values["hidden_profile"])
     input_dims = parse_list(values["d_in_profile"])
-    classes = int(values["num_classes"])
-    output_heads = int(values["K_out"])
-    range_bits = int(values["range_bits"])
-    graph_count = graph_count if graph_count is not None else max(1, int(values.get("batch_graphs", "1")))
+    classes = decimal_u64(values["num_classes"], "num_classes")
+    output_heads = decimal_u64(values["K_out"], "K_out")
+    range_bits = decimal_u64(values["range_bits"], "range_bits")
+    graph_count = graph_count if graph_count is not None else max(1, decimal_u64(values.get("batch_graphs", "1"), "batch_graphs"))
     if graph_count < 1:
         die("native graph_count must be positive")
     feature_dim = int(input_dims[0])
@@ -693,6 +784,119 @@ def load_tensors(path: Path) -> list[tuple[str, list[int], list[float]]]:
         result.append((name, shape, values))
         index = value_begin + count
     return result
+
+
+def _text_tokens(path: Path) -> Iterable[str]:
+    """Stream whitespace tokens without retaining the tensor export in memory."""
+    pending = ""
+    with path.open("r", encoding="utf-8") as stream:
+        while True:
+            block = stream.read(1 << 16)
+            if not block:
+                yield from pending.split()
+                return
+            combined = pending + block
+            tokens = combined.split()
+            if tokens and not combined[-1].isspace():
+                pending = tokens.pop()
+            else:
+                pending = ""
+            if len(pending) > 4096:
+                die(f"tensor export contains an oversized token: {path}")
+            yield from tokens
+
+
+def audit_tensor_export(path: Path, values: dict[str, str]) -> dict[str, Any]:
+    """Check model names/shapes and quantized bounds without retaining tensor values."""
+    profile = parse_profile(values["hidden_profile"])
+    input_dims = parse_list(values["d_in_profile"])
+    classes = decimal_u64(values["num_classes"], "num_classes")
+    output_heads = decimal_u64(values["K_out"], "K_out")
+    expected: dict[str, list[int]] = {}
+    current_input = input_dims[0]
+    for layer, (head_count, head_dim) in enumerate(profile):
+        for head in range(head_count):
+            prefix = f"hidden/layer{layer}/head{head}"
+            expected[prefix + "/seq/kernel"] = [1, current_input, head_dim]
+            expected[prefix + "/attn_src/kernel"] = [1, head_dim, 1]
+            expected[prefix + "/attn_dst/kernel"] = [1, head_dim, 1]
+        current_input = head_count * head_dim
+    for head in range(output_heads):
+        prefix = f"output/head{head}"
+        expected[prefix + "/seq/kernel"] = [1, current_input, classes]
+        expected[prefix + "/attn_src/kernel"] = [1, classes, 1]
+        expected[prefix + "/attn_dst/kernel"] = [1, classes, 1]
+        expected[prefix + "/output_bias"] = [classes]
+
+    tokens = iter(_text_tokens(path))
+
+    def take(label: str) -> str:
+        try:
+            return next(tokens)
+        except StopIteration:
+            die(f"truncated tensor export while reading {label}: {path}")
+
+    seen: set[str] = set()
+    domains: list[int] = []
+    model_max = 1
+    tensor_count = 0
+    try:
+        marker = next(tokens)
+    except StopIteration:
+        die(f"tensor export is empty: {path}")
+    while True:
+        if marker != "TENSOR":
+            die(f"malformed tensor export marker {marker!r}: {path}")
+        name = take("tensor name")
+        if name in seen:
+            die(f"duplicate model tensor in export: {name}")
+        seen.add(name)
+        try:
+            rank = decimal_u64(take("tensor rank"), "tensor rank")
+            if rank < 1 or rank > 8:
+                die(f"model tensor rank is outside native metadata bounds: {name}")
+            shape = [decimal_u64(take(f"{name} axis"), f"{name} axis") for _ in range(rank)]
+            count = decimal_u64(take(f"{name} value count"), f"{name} value count")
+        except ValueError as exc:
+            die(f"malformed tensor shape/count for {name}: {exc}")
+        if any(axis < 1 for axis in shape):
+            die(f"model tensor has a non-positive axis: {name}")
+        logical_count = 1
+        for axis in shape:
+            if logical_count > MAX_NATIVE_DOMAIN // axis:
+                die(f"model tensor logical count exceeds native domain: {name}")
+            logical_count *= axis
+        if logical_count != count:
+            die(f"tensor count mismatch: {name}")
+        if name not in expected or shape != expected[name]:
+            die(f"model tensor name/shape differs from the canonical architecture: {name}")
+        logical = shape[1:] if len(shape) == 3 and shape[0] == 1 else shape
+        domain = checked_shape_domain(logical, name)
+        domains.append(domain)
+        scale = 16 if name.endswith("output_bias") else 4
+        for _ in range(count):
+            raw = take(f"{name} value")
+            try:
+                value = float(raw)
+            except ValueError as exc:
+                die(f"malformed model scalar in {name}: {exc}")
+            if not math.isfinite(value):
+                die(f"non-finite model scalar in {name}")
+            quantized = round_away(value * scale)
+            if quantized < -(1 << 63) or quantized > (1 << 63) - 1:
+                die(f"quantized model scalar exceeds signed native range: {name}")
+            model_max = max(model_max, abs(quantized))
+        tensor_count += 1
+        try:
+            marker = next(tokens)
+        except StopIteration:
+            break
+    missing = sorted(set(expected) - seen)
+    if missing:
+        die(f"checkpoint tensor export is missing canonical model parameters: {missing[0]}")
+    return {"tensor_count": tensor_count, "model_padded_domains": domains,
+            "max_model_padded_domain": max(domains, default=1), "max_quantized_model_abs": model_max,
+            "tensor_export_sha256": sha256_file(path)}
 
 
 def registered_model_segment_blinders(tensor_id: str, total_blinder: int, domain: int, segment_size: int, segment_count: int, srs_manifest_digest: str) -> list[int]:
@@ -1003,8 +1207,8 @@ def load_srs_basis(root: Path, values: dict[str, str], required_domain: int) -> 
     return generators, h_points[0], u_points[0], generator_digest, selected_basis_digest
 
 
-def plan_srs_segments(family_domains: dict[str, int],
-                      basis_domain: int = NATIVE_BASIS_DOMAIN) -> dict[str, Any]:
+def plan_srs_segments(family_domains: dict[str, int], basis_domain: int = NATIVE_BASIS_DOMAIN,
+                      materialize_segments: bool = True) -> dict[str, Any]:
     """Plan bounded basis frames without materializing any curve points.
 
     ``logical_domain`` is the relation's padded coordinate domain.  It is
@@ -1023,6 +1227,8 @@ def plan_srs_segments(family_domains: dict[str, int],
                 logical_domain & (logical_domain - 1)):
             die(f"SRS family {family_id} has an invalid native logical power-of-two domain: {logical_domain}")
         segment_count = (logical_domain + basis_domain - 1) // basis_domain
+        if segment_count > 4096 or segment_count > (1 << 32) - 1:
+            die(f"SRS family {family_id} segment count exceeds native serialization bounds: {segment_count}")
         families[family_id] = {
             "logical_domain": logical_domain,
             "basis_domain": basis_domain,
@@ -1038,13 +1244,16 @@ def plan_srs_segments(family_domains: dict[str, int],
                     "basis_count": basis_domain,
                 }
                 for index in range(segment_count)
-            ],
+            ] if materialize_segments else [],
         }
     return {"basis_domain": basis_domain, "frame_bytes": frame_bytes, "families": families}
 
 
-def make_tables(values: dict[str, str], quant_digest: str) -> dict[str, Any]:
-    bound = 1 << int(values["range_bits"])
+def table_shape_plan(values: dict[str, str], quant_digest: str) -> dict[str, Any]:
+    range_bits = decimal_u64(values["range_bits"], "range_bits")
+    if range_bits < 1 or range_bits > 25:
+        die(f"range_bits cannot be represented by the native static-table rows: {range_bits}")
+    bound = 1 << range_bits
     scale_id = "scale_chain:s_delta=256,s_agg_pre=16,s_agg=16,s_exp=16"
     domain_id = f"range_bits:{values['range_bits']}"
     generator_id = "zkDL_baseline_local_static_table_generator_v1"
@@ -1057,6 +1266,8 @@ def make_tables(values: dict[str, str], quant_digest: str) -> dict[str, Any]:
     lrelu_padded_domain = next_pow2(lrelu_rows)
     elu_padded_domain = next_pow2(elu_rows)
     exp_padded_domain = next_pow2(exp_rows)
+    if max(lrelu_rows, elu_rows, exp_rows, lrelu_padded_domain, elu_padded_domain, exp_padded_domain) > MAX_STATIC_TABLE_ROWS:
+        die("static table row/padded domain exceeds native table safety bound")
     spec = "\n".join((values["static_table_id"], generator_id, version, scale_id, domain_id, row_order,
                       padding_rule, values["range_bits"], str(-bound), str(bound), str(bound),
                       str(lrelu_padded_domain), str(elu_padded_domain), str(exp_padded_domain))) + "\n"
@@ -1080,6 +1291,11 @@ def make_tables(values: dict[str, str], quant_digest: str) -> dict[str, Any]:
         "elu_max": bound,
         "exp_max": bound
     }
+    return table
+
+def make_tables(values: dict[str, str], quant_digest: str) -> dict[str, Any]:
+    table = table_shape_plan(values, quant_digest)
+    bound = 1 << decimal_u64(values["range_bits"], "range_bits")
     table["lrelu"] = [x if x >= 0 else round_away(x * 0.2) for x in range(-bound, bound + 1)]
     table["elu"] = [x if x >= 0 else round_away((math.exp(x / 16.0) - 1.0) * 16.0) for x in range(-bound, bound + 1)]
     table["exp"] = [max(1, round_away(math.exp(-x / 256.0) * 16.0)) for x in range(bound + 1)]
@@ -1096,6 +1312,128 @@ def sorted_lookup_path(static_table_path: Path) -> Path:
         name = static_table_path.stem + "_sorted_lookup.json"
     return static_table_path.with_name(name)
 
+
+def sorted_lookup_family_layout(table_ref: str, operation: str, logical_rows: int, input_min: int,
+                                input_max: int, output_min: int, output_max: int) -> dict[str, Any]:
+    if logical_rows < 1 or input_max < input_min or output_max < output_min:
+        die(f"sorted lookup table range is invalid: {table_ref}")
+    x_bits = max(1, (logical_rows - 1).bit_length())
+    y_bits = max(1, (output_max - output_min).bit_length())
+    if x_bits + y_bits > 127:
+        die(f"sorted lookup packed key exceeds u128 bound: {table_ref}")
+    key_max = ((logical_rows - 1) << y_bits) | (output_max - output_min)
+    return {"table_ref": table_ref, "operation": operation, "logical_rows": logical_rows,
+            "padded_domain": next_pow2(logical_rows), "sorted_unique": True, "input_min": input_min,
+            "input_max": input_max, "output_min": output_min, "output_max": output_max,
+            "x_bits": x_bits, "y_bits": y_bits, "key_encoding": "packed_pair_u128",
+            "key_max_u128": str(key_max), "padding_rule": "zero_after_logical_rows_v1"}
+
+def sorted_lookup_query_instances(values: dict[str, str], nodes: int,
+                                  profile: list[tuple[int, int]], edges: int) -> list[dict[str, Any]]:
+    """Mirror RelationPlan's active hidden-stage/head and output-head lookup calls."""
+    instances: list[dict[str, Any]] = []
+
+    def add(operation_id: str, operation: str, rows: int, shape: list[int]) -> None:
+        instances.append({"operation_id": operation_id, "operation": operation,
+                          "query_rows": rows, "query_shape": shape})
+
+    for layer, (head_count, width) in enumerate(profile):
+        for head in range(head_count):
+            stage = f"hidden/layer{layer}/head{head}"
+            add(f"{stage}/leaky_relu", "leaky_relu", edges, [edges])
+            add(f"{stage}/exp_map", "exp_map", edges, [edges])
+            add(f"{stage}/elu", "elu", nodes * width, [nodes, width])
+    output_heads = decimal_u64(values["K_out"], "K_out")
+    for head in range(output_heads):
+        stage = f"output/head{head}"
+        add(f"{stage}/leaky_relu", "leaky_relu", edges, [edges])
+        add(f"{stage}/exp_map", "exp_map", edges, [edges])
+    return instances
+
+def analytic_sorted_lookup_plan(values: dict[str, str], table: dict[str, Any], nodes: int,
+                                profile: list[tuple[int, int]], edges: int) -> dict[str, Any]:
+    bound = -int(table["lrelu_min"])
+    table_specs = (
+        ("static_lrelu", "leaky_relu", 2 * bound + 1, -bound, bound,
+         round_away(-bound * 0.2), bound),
+        ("static_elu", "elu", 2 * bound + 1, -bound, bound,
+         round_away((math.exp(-bound / 16.0) - 1.0) * 16.0), bound),
+        ("static_exp", "exp_map", bound + 1, 0, bound,
+         max(1, round_away(math.exp(-bound / 256.0) * 16.0)), 16),
+    )
+    families = [sorted_lookup_family_layout(*spec) for spec in table_specs]
+    query_instances = sorted_lookup_query_instances(values, nodes, profile, edges)
+    table_by_operation = {family["operation"]: family for family in families}
+    queries = []
+    scratch_bytes_total = 0
+    scratch_payload_total = 0
+    query_rows_total = 0
+    table_domain_total = 0
+    query_domain_total = 0
+    merge_domain_total = 0
+    role_map = ("table_key,query_x,query_y,query_key,query_prefix,merge_key,merge_delta,"
+                "merge_marker,merge_inverse,merge_prefix,merge_bits,merge_delta_bits,query_bits")
+    for instance in query_instances:
+        operation_id = str(instance["operation_id"])
+        operation = str(instance["operation"])
+        rows = int(instance["query_rows"])
+        shape = instance["query_shape"]
+        if rows < 1 or rows > MAX_NATIVE_DOMAIN:
+            die(f"sorted lookup query count exceeds native serialization bounds: {operation_id}")
+        table_family = table_by_operation[operation]
+        table_rows = int(table_family["logical_rows"])
+        if table_rows > MAX_NATIVE_DOMAIN or rows > MAX_NATIVE_DOMAIN - table_rows:
+            die(f"sorted lookup merge row count exceeds native domain: {operation_id}")
+        merge_rows = rows + table_rows
+        table_domain = next_pow2(table_rows)
+        query_domain = next_pow2(rows)
+        merge_domain = next_pow2(merge_rows)
+        segment_size = min(NATIVE_BASIS_DOMAIN, table_domain, query_domain, merge_domain)
+        if any(domain % segment_size != 0 for domain in (table_domain, query_domain, merge_domain)):
+            die(f"sorted lookup segment layout is not power-of-two aligned: {operation_id}")
+        scratch_domains = table_domain + query_domain + merge_domain
+        if scratch_domains > ((1 << 64) - 1) // 107:
+            die(f"sorted lookup scratch capacity overflows u64: {operation_id}")
+        record_payload_bytes = scratch_domains * 107
+        key_max_u128 = str(table_family["key_max_u128"])
+        header_bytes = (108 + len(operation_id.encode("utf-8")) + len(role_map.encode("utf-8")) +
+                        len(key_max_u128.encode("ascii")))
+        scratch_file_bytes = record_payload_bytes + header_bytes
+        if scratch_bytes_total > (1 << 64) - 1 - scratch_file_bytes:
+            die("aggregate sorted lookup scratch capacity overflows u64")
+        if scratch_payload_total > (1 << 64) - 1 - record_payload_bytes:
+            die("aggregate sorted lookup record payload overflows u64")
+        scratch_bytes_total += scratch_file_bytes
+        scratch_payload_total += record_payload_bytes
+        query_rows_total += rows
+        table_domain_total += table_domain
+        query_domain_total += query_domain
+        merge_domain_total += merge_domain
+        queries.append({"operation_id": operation_id, "operation": operation,
+                        "table_ref": table_family["table_ref"], "table_rows": table_rows,
+                        "query_rows": rows, "query_shape": shape,
+                        "table_domain": table_domain, "query_domain": query_domain,
+                        "merge_rows": merge_rows, "merge_domain": merge_domain,
+                        "segment_size": segment_size,
+                        "table_segment_count": table_domain // segment_size,
+                        "query_segment_count": query_domain // segment_size,
+                        "merge_segment_count": merge_domain // segment_size,
+                        "x_bits": table_family["x_bits"],
+                        "y_bits": table_family["y_bits"],
+                        "key_max_u128": key_max_u128,
+                        "scratch_header_bytes": header_bytes,
+                        "scratch_record_payload_bytes": record_payload_bytes,
+                        "scratch_bytes_upper_bound": scratch_file_bytes})
+    return {"segment_size": NATIVE_BASIS_DOMAIN, "table_families": families,
+            "query_families": queries, "query_count": len(queries),
+            "query_rows_total": query_rows_total,
+            "table_domain_total": table_domain_total,
+            "query_domain_total": query_domain_total,
+            "merge_domain_total": merge_domain_total,
+            "scratch_record_payload_bytes_total": scratch_payload_total,
+            "scratch_bytes_total": scratch_bytes_total,
+            "scratch_bytes_max_single_file": max(
+                (int(item["scratch_bytes_upper_bound"]) for item in queries), default=0)}
 
 def make_sorted_lookup_descriptor(values: dict[str, str], table: dict[str, Any],
                                   static_table_digest: str, nodes: int,
@@ -1117,30 +1455,8 @@ def make_sorted_lookup_descriptor(values: dict[str, str], table: dict[str, Any],
         if not outputs:
             die(f"sorted lookup table is empty: {table_ref}")
         input_max = input_min + len(outputs) - 1
-        output_min = min(int(value) for value in outputs)
-        output_max = max(int(value) for value in outputs)
-        x_bits = max(1, (len(outputs) - 1).bit_length())
-        y_bits = max(1, (output_max - output_min).bit_length())
-        if x_bits + y_bits > 127:
-            die(f"sorted lookup packed key exceeds u128 bound: {table_ref}")
-        key_max = ((len(outputs) - 1) << y_bits) | (output_max - output_min)
-        families.append({
-            "table_ref": table_ref,
-            "operation": operation,
-            "logical_rows": len(outputs),
-            "padded_domain": next_pow2(len(outputs)),
-            "sorted_unique": True,
-            "input_min": input_min,
-            "input_max": input_max,
-            "output_min": output_min,
-            "output_max": output_max,
-            "x_bits": x_bits,
-            "y_bits": y_bits,
-            "key_encoding": "packed_pair_u128",
-            "key_max_u128": str(key_max),
-            "padding_rule": "zero_after_logical_rows_v1",
-        })
-    max_width = max((width for _, width in profile), default=1)
+        families.append(sorted_lookup_family_layout(table_ref, operation, len(outputs), input_min, input_max,
+                                                    min(int(value) for value in outputs), max(int(value) for value in outputs)))
     descriptor: dict[str, Any] = {
         "schema": "zkDL_gat_sorted_lookup_descriptor_v1",
         "version": 1,
@@ -1153,21 +1469,14 @@ def make_sorted_lookup_descriptor(values: dict[str, str], table: dict[str, Any],
         "inverse_rule": "delta_inverse_or_zero_v1",
         "segment_size": segment_size,
         "table_families": families,
-        "query_families": [
-            {"operation": "leaky_relu", "query_rows": edges, "query_shape": [edges]},
-            {"operation": "exp_map", "query_rows": edges, "query_shape": [edges]},
-            {"operation": "elu", "query_rows": nodes * max_width, "query_shape": [nodes, max_width]},
-        ],
+        "query_families": sorted_lookup_query_instances(values, nodes, profile, edges),
         "source_root": "baseline-local",
     }
     descriptor["descriptor_digest"] = sha256_bytes(compact(descriptor))
     return descriptor
 
 
-def make_ledger(root: Path, values: dict[str, str], tables: dict[str, Any], table_file_digest: str, quant_digest: str) -> dict[str, Any]:
-    _, _, degree = graph_degree(root, values["dataset"], values)
-    tensors = load_tensors(root / values["checkpoint_bundle"] / "tensors.txt")
-    model_max = max((abs(round_away(value * (16 if name.endswith("output_bias") else 4))) for name, _, data in tensors for value in data), default=1)
+def ledger_bounds_plan(values: dict[str, str], degree: int, model_max: int) -> tuple[str, str, list[dict[str, Any]], dict[str, int]]:
     bound = max(1, model_max)
     ledger_id = f"zkdl_integer_ledger_v2_{values['dataset']}_degree_{degree}"
     degree_id = f"zkdl_degree_v2_{values['dataset']}_{degree}"
@@ -1203,14 +1512,25 @@ def make_ledger(root: Path, values: dict[str, str], tables: dict[str, Any], tabl
             "max_divisor": divisor,
             "max_field_product_abs": max(1, exp * input_bound * max(1, weight))
         })
-    current = max(1, 1 << min(int(values["range_bits"]), 20))
-    for layer in range(2):
-        for head in range(8):
+    current = max(1, 1 << min(decimal_u64(values["range_bits"], "range_bits"), 20))
+    for layer, (head_count, _head_dim) in enumerate(parse_profile(values["hidden_profile"])):
+        for head in range(head_count):
             family(f"hidden/layer{layer}/head{head}", layer, head, 0, current, bound, bound, 0)
-    for head in range(2):
+    for head in range(decimal_u64(values["K_out"], "K_out")):
         family(f"output/head{head}", 2, head, 1, current, bound, bound, bound)
     fields = ("max_score_abs", "max_table_output_abs", "max_delta", "max_exp", "max_sum", "max_aggregate_num", "max_dividend_abs", "max_aux_abs", "max_divisor")
     global_values = {key: max(int(item[key]) for item in families) for key in fields}
+    return ledger_id, degree_id, families, global_values
+
+
+def make_ledger(root: Path, values: dict[str, str], tables: dict[str, Any], table_file_digest: str,
+                quant_digest: str, degree: int | None = None, model_max: int | None = None) -> dict[str, Any]:
+    if degree is None:
+        _, _, degree = graph_degree(root, values["dataset"], values)
+    if model_max is None:
+        tensors = load_tensors(root / values["checkpoint_bundle"] / "tensors.txt")
+        model_max = max((abs(round_away(value * (16 if name.endswith("output_bias") else 4))) for name, _, data in tensors for value in data), default=1)
+    ledger_id, degree_id, families, global_values = ledger_bounds_plan(values, degree, model_max)
     ledger = {
         "schema": "zkDL_gat_integer_bound_ledger_v1",
         "ledger_id": ledger_id,
@@ -1225,6 +1545,142 @@ def make_ledger(root: Path, values: dict[str, str], tables: dict[str, Any], tabl
     }
     ledger["digest"] = ledger_digest(ledger)
     return ledger
+
+
+def audit_formal_prerequisites(cfg_path: Path) -> dict[str, Any]:
+    """Read-only, analytic audit for one canonical formal dataset configuration.
+
+    This intentionally shares graph normalization and all resource shape/domain
+    planners with generation, but does not create table rows, SRS points,
+    descriptors, registries, witnesses, or snapshots.
+    """
+    cfg_path = Path(cfg_path)
+    if cfg_path.is_symlink() or not cfg_path.is_file():
+        die(f"formal prerequisite config is missing or symlinked: {cfg_path}")
+    config_path = cfg_path.resolve()
+    root = config_path.parent.parent.resolve()
+    if config_path.parent.name != "configs" or root.name != "zkdl":
+        die("formal prerequisite config must be under comparison/zkdl/configs")
+    values = parse_config(config_path)
+    dataset = values.get("dataset")
+    if dataset not in DATASETS:
+        die(f"unsupported formal prerequisite dataset in {config_path}")
+    if values.get("auto_prepare_dataset") != "false" or values.get("dump_trace") != "false":
+        die(f"formal input/trace policy mismatch: {dataset}")
+    if values.get("batching_rule") != ("multi_graph_batch" if dataset == "ppi" else "whole_graph_single"):
+        die(f"formal batching contract mismatch: {dataset}")
+    if values.get("self_loop_rule") != "per_node" or values.get("edge_sort_rule") != "edge_gid_then_dst_stable":
+        die(f"formal self-loop/edge-order contract mismatch: {dataset}")
+
+    graph = audit_graph(root, dataset, values)
+    metadata = graph_metadata(root, dataset, values)
+    try:
+        features = metadata["num_features"]
+        classes = metadata["num_classes"]
+        configured_classes = decimal_u64(values["num_classes"], "num_classes")
+        configured_graphs = decimal_u64(values.get("batch_graphs", str(graph["graphs"])), "batch_graphs")
+        layers = decimal_u64(values["L"], "L")
+        output_heads = decimal_u64(values["K_out"], "K_out")
+    except (KeyError, ValueError) as exc:
+        die(f"formal graph/model dimensions are incomplete for {dataset}: {exc}")
+    profile = parse_profile(values["hidden_profile"])
+    input_dims = parse_list(values["d_in_profile"])
+    if (features < 1 or classes < 1 or configured_classes != classes or input_dims[0] != features or
+            len(input_dims) != len(profile) or layers != len(profile) + 1 or output_heads < 1 or
+            configured_graphs != int(graph["graphs"])):
+        die(f"formal graph/model shapes or graph batching count mismatch: {dataset}")
+    for layer in range(1, len(profile)):
+        if input_dims[layer] != profile[layer - 1][0] * profile[layer - 1][1]:
+            die(f"formal hidden-layer input width does not match previous concat shape: {dataset}/layer{layer}")
+
+    quant_path = root / "configs" / "quantization_scale_chain.cfg"
+    if quant_path.is_symlink() or not quant_path.is_file():
+        die(f"quantization scale-chain file is missing or symlinked: {quant_path}")
+    quant = validated_scale_chain(quant_path, values.get("quant_cfg_id", ""))
+    quant_digest = sha256_file(quant_path)
+
+    checkpoint_path = Path(values["checkpoint_bundle"])
+    if checkpoint_path.is_absolute() or ".." in checkpoint_path.parts:
+        die(f"checkpoint bundle must be baseline-local: {values['checkpoint_bundle']}")
+    tensor_export = root / checkpoint_path / "tensors.txt"
+    manifest_path = root / checkpoint_path / "manifest.json"
+    for path in (tensor_export, manifest_path):
+        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+            die(f"formal checkpoint prerequisite is missing, empty or symlinked: {path}")
+    tensor_plan = audit_tensor_export(tensor_export, values)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        die(f"formal checkpoint manifest is invalid: {exc}")
+    if (manifest.get("dataset") != dataset or manifest.get("L") != layers or manifest.get("K_out") != output_heads or
+            manifest.get("C") != classes or manifest.get("tensor_count") != tensor_plan["tensor_count"] or
+            manifest.get("d_in_profile") != input_dims):
+        die(f"formal checkpoint manifest shape/count mismatch: {dataset}")
+
+    table = table_shape_plan(values, quant_digest)
+    family_domains = relation_family_domains(
+        values, int(graph["nodes"]), int(graph["normalized_edges"]), table,
+        tensor_plan["model_padded_domains"], graph_count=int(graph["graphs"]),
+    )
+    lookup_plan = analytic_sorted_lookup_plan(
+        values, table, int(graph["nodes"]), profile, int(graph["normalized_edges"]),
+    )
+    srs_plan = plan_srs_segments(family_domains, materialize_segments=False)
+    max_domain = max(family_domains.values(), default=1)
+    max_families = sorted(name for name, domain in family_domains.items() if domain == max_domain)
+    max_segment_count = max((int(item["segment_count"]) for item in srs_plan["families"].values()), default=0)
+    srs_bytes = ((SRS_FRAME_HEADER_BYTES + G1_POINT_BYTES * int(srs_plan["basis_domain"])) +
+                 2 * (SRS_FRAME_HEADER_BYTES + G1_POINT_BYTES) + len(family_domains) * 4096)
+    try:
+        statvfs = os.statvfs(root)
+        free_bytes = statvfs.f_bavail * statvfs.f_frsize
+    except OSError as exc:
+        die(f"cannot inspect formal SRS filesystem capacity: {exc}")
+    if srs_bytes > free_bytes:
+        die(f"formal SRS plan needs {srs_bytes} bytes but only {free_bytes} are available")
+
+    ledger_id, degree_id, ledger_families, ledger_global = ledger_bounds_plan(
+        values, int(graph["csr_max_in_degree"]), int(tensor_plan["max_quantized_model_abs"]),
+    )
+    all_ledger_bounds = list(ledger_global.values()) + [
+        int(item[key]) for item in ledger_families
+        for key in ("max_input_abs", "max_weight_abs", "max_attention_abs", "max_bias_abs", "max_score_abs",
+                    "max_table_output_abs", "max_delta", "max_exp", "max_sum", "max_aggregate_num",
+                    "max_dividend_abs", "max_aux_abs", "max_divisor", "max_field_product_abs")
+    ]
+    if any(value < 0 or value > (1 << 63) - 1 or value >= R // 2 for value in all_ledger_bounds):
+        die(f"integer-bound ledger exceeds signed native/field range: {dataset}")
+
+    return {
+        "schema": "zkDL_gat_formal_prerequisites_v1",
+        "dataset": dataset,
+        "config_sha256": sha256_file(config_path),
+        "graph": graph,
+        "input_shape": {"nodes": int(graph["nodes"]), "features": features, "classes": classes,
+                        "graphs": int(graph["graphs"]), "hidden_profile": [list(item) for item in profile],
+                        "input_dims": input_dims, "output_heads": output_heads},
+        "checkpoint": tensor_plan | {"manifest_sha256": sha256_file(manifest_path)},
+        "table_plan": {key: table[key] for key in ("lrelu_padded_domain", "elu_padded_domain", "exp_padded_domain",
+                                                        "lrelu_min", "lrelu_max", "elu_min", "elu_max", "exp_max", "spec_hash")},
+        "sorted_lookup_plan": lookup_plan,
+        "family_domain_count": len(family_domains),
+        "family_domain_sha256": sha256_bytes(compact(dict(sorted(family_domains.items())))),
+        "family_domains": dict(sorted(family_domains.items())),
+        "max_family_domain": max_domain,
+        "max_family_domain_ids": max_families,
+        "srs_plan": {"basis_domain": srs_plan["basis_domain"], "frame_bytes": srs_plan["frame_bytes"],
+                     "families": {name: {"logical_domain": int(item["logical_domain"]),
+                                          "segment_size": int(item["segment_size"]),
+                                          "segment_count": int(item["segment_count"])}
+                                  for name, item in sorted(srs_plan["families"].items())},
+                     "max_segment_count": max_segment_count, "estimated_materialized_bytes": srs_bytes,
+                     "available_bytes": free_bytes},
+        "ledger_plan": {"ledger_id": ledger_id, "degree_bound_id": degree_id,
+                        "maxima": ledger_global,
+                        "max_family_aux_abs": max(int(item["max_aux_abs"]) for item in ledger_families),
+                        "max_field_product_abs": max(int(item["max_field_product_abs"]) for item in ledger_families)},
+        "quantization_scale_chain_sha256": quant_digest,
+    }
 
 
 def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]) -> tuple[str, str]:
@@ -1384,11 +1840,12 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool) ->
     dataset = values.get("dataset")
     if dataset not in DATASETS:
         die(f"unsupported dataset in {config_path}")
+    quant_path = root / "configs" / "quantization_scale_chain.cfg"
+    validated_scale_chain(quant_path, values.get("quant_cfg_id", ""))
     nodes, edges, degree = graph_degree(root, dataset, values)
     degree_id = f"zkdl_degree_v2_{dataset}_{degree}"
     if not full:
         die("formal setup requires --full-dataset")
-    quant_path = root / "configs" / "quantization_scale_chain.cfg"
     quant_digest = sha256_file(quant_path)
     values = parse_config(config_path)
     table = make_tables(values, quant_digest)
@@ -1406,7 +1863,7 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool) ->
     metadata = graph_metadata(root, dataset, values)
     family_domains = relation_family_domains(
         values, nodes, edges, table, model_domains,
-        graph_count=metadata.get("graph_count", max(1, int(values.get("batch_graphs", "1")))),
+        graph_count=metadata.get("graph_count", max(1, decimal_u64(values.get("batch_graphs", "1"), "batch_graphs"))),
     )
     update_config(config_path, {"degree_bound_id": degree_id})
     values = parse_config(config_path)

@@ -198,9 +198,13 @@ def graph_info(root: Path, dataset: str, meta: dict[str, str]) -> tuple[int, int
         for node in range(node_ptr[graph], node_ptr[graph + 1]):
             graph_for_node[node] = graph
     edges = root / "resources/canonical/cache" / dataset / "edges.txt"
+    print(f"[resource-preparation] {dataset}: reading graph edges from {edges} ({edges.stat().st_size:,} bytes)", flush=True)
     raw: list[tuple[int, int, int]] = []
     incoming: set[int] = set()
-    for line in edges.read_text().splitlines():
+    edge_lines = edges.read_text().splitlines()
+    for line_number, line in enumerate(edge_lines, 1):
+        if line_number % (1 << 20) == 0:
+            print(f"[resource-preparation] {dataset}: graph edges {line_number:,}/{len(edge_lines):,}", flush=True)
         if not line.strip():
             continue
         parts = [int(x) for x in line.split()]
@@ -325,7 +329,14 @@ def feature_bound(root: Path, dataset: str, meta: dict[str, str]) -> int:
     if dataset in {"ppi", "ogbn_arxiv"}:
         feature_path = path / "features.npy"
         contract = npy_contract(feature_path)
-        return max((abs(round_away(x * scale)) for x in iter_npy_values(feature_path, contract)), default=1)
+        maximum = 1
+        total = int(contract["length"])
+        print(f"[resource-preparation] {dataset}: scanning NPY feature bound ({total:,} values)", flush=True)
+        for index, value in enumerate(iter_npy_values(feature_path, contract), 1):
+            maximum = max(maximum, abs(round_away(value * scale)))
+            if index % (1 << 20) == 0:
+                print(f"[resource-preparation] {dataset}: NPY feature bound {index:,}/{total:,}", flush=True)
+        return maximum
     maximum = 0
     lines = (path / "features.txt").read_text().splitlines()
     preprocess = meta.get("input_preprocess_id", "")
@@ -773,13 +784,24 @@ def write_table_archive(path: Path, tables: dict[str, Any]) -> None:
             stream.write(registry_bytes)
             for key in TABLE_ORDER:
                 table = tables[key]
+                print(
+                    f"[resource-preparation] {path.parent.name}/{table['function_id']}: writing "
+                    f"{table['row_count']:,} exact rows",
+                    flush=True,
+                )
                 metadata = json.dumps(table_metadata(table), separators=(",", ":"), sort_keys=True).encode()
                 stream.write(struct.pack("<Q", len(metadata)))
                 stream.write(metadata)
                 stream.write(struct.pack("<Q", table["row_count"]))
-                for input_value, output_value in iter_table_rows(table):
+                for row_index, (input_value, output_value) in enumerate(iter_table_rows(table), 1):
                     stream.write(int(input_value).to_bytes(16, "little", signed=True))
                     stream.write(int(output_value).to_bytes(16, "little", signed=True))
+                    if row_index % (1 << 20) == 0:
+                        print(
+                            f"[resource-preparation] {path.parent.name}/{table['function_id']}: "
+                            f"rows {row_index:,}/{table['row_count']:,}",
+                            flush=True,
+                        )
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)

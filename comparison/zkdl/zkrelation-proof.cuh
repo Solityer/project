@@ -33,6 +33,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -57,6 +58,38 @@ constexpr std::size_t kMaxRelationOpenings = 4096U;
 // is deliberately separate from the much larger opening-count cap above.
 constexpr std::size_t kMaxRelationPointBits = 30U;
 constexpr std::uint32_t kMaxRelationSegments = 1U << 12U;
+
+template <typename T>
+inline bool checked_relation_u32(T value, std::uint32_t& output,
+                                 const char* label,
+                                 std::string* error = nullptr) {
+    static_assert(std::is_integral<T>::value && std::is_unsigned<T>::value,
+                  "checked_relation_u32 requires an unsigned integer");
+    static_assert(sizeof(T) <= sizeof(std::uint64_t),
+                  "checked_relation_u32 only supports integers up to uint64");
+    const std::uint64_t wide = static_cast<std::uint64_t>(value);
+    if (wide > std::numeric_limits<std::uint32_t>::max()) {
+        if (error) *error = std::string(label) + " exceeds uint32";
+        return false;
+    }
+    output = static_cast<std::uint32_t>(wide);
+    return true;
+}
+
+inline bool parse_relation_u32_suffix(const std::string& text,
+                                      std::uint32_t& output) {
+    if (text.empty()) return false;
+    std::uint64_t value = 0U;
+    for (const char digit : text) {
+        if (digit < '0' || digit > '9') return false;
+        const std::uint64_t numeric = static_cast<std::uint64_t>(digit - '0');
+        if (value > (std::numeric_limits<std::uint32_t>::max() - numeric) / 10U)
+            return false;
+        value = value * 10U + numeric;
+    }
+    output = static_cast<std::uint32_t>(value);
+    return true;
+}
 
 /*
  * A relation witness is logically a power-of-two MLE, but the authenticated
@@ -98,8 +131,11 @@ public:
             if (error) *error = "segmented tensor provider coverage is not canonical";
             return false;
         }
-        segment_size = static_cast<std::uint32_t>(bounded);
-        segment_count = static_cast<std::uint32_t>(logical_domain / bounded);
+        if (!checked_relation_u32(bounded, segment_size,
+                                  "segmented tensor segment size", error) ||
+            !checked_relation_u32(logical_domain / bounded, segment_count,
+                                  "segmented tensor segment count", error))
+            return false;
         return true;
     }
 
@@ -108,8 +144,12 @@ public:
                             std::string* error = nullptr) {
         std::uint32_t segment_size = 0U, segment_count = 0U;
         if (!shape(values.size(), basis_size, segment_size, segment_count, error)) return false;
+        std::uint32_t logical_domain = 0U;
+        if (!checked_relation_u32(values.size(), logical_domain,
+                                  "segmented tensor value count", error))
+            return false;
         provider = SegmentedTensorProvider(
-            static_cast<std::uint32_t>(values.size()), segment_size,
+            logical_domain, segment_size,
             [&values](std::uint64_t offset, std::uint32_t count,
                       std::vector<FrWire>& output, std::string* read_error) {
                 if (offset > values.size() || count > values.size() - offset) {
@@ -126,7 +166,9 @@ public:
 
     bool valid(std::string* error = nullptr) const {
         if (logical_domain_ == 0U || segment_size_ == 0U || segment_count_ == 0U ||
-            logical_domain_ != segment_size_ * segment_count_ || !reader_) {
+            static_cast<std::uint64_t>(logical_domain_) !=
+                static_cast<std::uint64_t>(segment_size_) * segment_count_ ||
+            !reader_) {
             if (error) *error = "invalid segmented tensor provider";
             return false;
         }
@@ -155,8 +197,11 @@ public:
             return false;
         }
         const std::uint64_t offset = static_cast<std::uint64_t>(segment) * segment_size_;
-        const std::uint32_t actual = static_cast<std::uint32_t>(
-            std::min<std::uint64_t>(segment_size_, logical_domain_ - offset));
+        std::uint32_t actual = 0U;
+        if (!checked_relation_u32(
+                std::min<std::uint64_t>(segment_size_, logical_domain_ - offset),
+                actual, "segmented tensor actual segment length", error))
+            return false;
         std::vector<FrWire> raw;
         if (!reader_(offset, actual, raw, error) || raw.size() != actual) {
             if (error && error->empty()) *error = "segmented tensor reader returned the wrong length";
@@ -200,12 +245,19 @@ inline bool sorted_lookup_read_range(const SegmentedTensorProvider& provider,
     std::uint64_t cursor = offset;
     std::uint32_t remaining = count;
     while (remaining != 0U) {
-        const std::uint32_t segment = static_cast<std::uint32_t>(cursor / provider.segment_size());
-        const std::uint32_t inside = static_cast<std::uint32_t>(cursor % provider.segment_size());
+        std::uint32_t segment = 0U, inside = 0U;
+        if (!checked_relation_u32(cursor / provider.segment_size(), segment,
+                                  "sorted-lookup segment index", error) ||
+            !checked_relation_u32(cursor % provider.segment_size(), inside,
+                                  "sorted-lookup segment offset", error))
+            return false;
         std::vector<FrWire> block;
         if (!provider.read_segment(segment, block, error) || inside >= block.size()) return false;
-        const std::uint32_t take = std::min<std::uint32_t>(
-            remaining, static_cast<std::uint32_t>(block.size() - inside));
+        std::uint32_t available = 0U;
+        if (!checked_relation_u32(block.size() - inside, available,
+                                  "sorted-lookup segment remainder", error))
+            return false;
+        const std::uint32_t take = std::min(remaining, available);
         output.insert(output.end(), block.begin() + inside, block.begin() + inside + take);
         cursor += take;
         remaining -= take;
@@ -1113,16 +1165,12 @@ struct PrimitiveDescriptor {
                 return false;
             }
         }
-        const std::uint64_t a = static_cast<std::uint64_t>(matmul_shape.num) *
-                                matmul_shape.m * matmul_shape.n;
-        const std::uint64_t b = static_cast<std::uint64_t>(matmul_shape.num) *
-                                matmul_shape.n * matmul_shape.k;
-        const std::uint64_t c = static_cast<std::uint64_t>(matmul_shape.num) *
-                                matmul_shape.m * matmul_shape.k;
-        if (a == 0U || b == 0U || c == 0U ||
-            a > std::numeric_limits<std::uint32_t>::max() ||
-            b > std::numeric_limits<std::uint32_t>::max() ||
-            c > std::numeric_limits<std::uint32_t>::max()) {
+        std::array<std::uint64_t, 3U> sizes{};
+        if (!matmul_shape.tensor_sizes(sizes) || sizes[0U] == 0U ||
+            sizes[1U] == 0U || sizes[2U] == 0U ||
+            sizes[0U] > (std::uint64_t(1U) << kMaxRelationPointBits) ||
+            sizes[1U] > (std::uint64_t(1U) << kMaxRelationPointBits) ||
+            sizes[2U] > (std::uint64_t(1U) << kMaxRelationPointBits)) {
             if (error) *error = "relation primitive matrix size is not canonical";
             return false;
         }
@@ -1519,7 +1567,9 @@ struct TensorDescriptor {
             }
             product *= padded_shape[i];
         }
-        if (product != domain_size || (domain_size & (domain_size - 1U)) != 0U) {
+        if (product != domain_size ||
+            domain_size > (std::uint64_t(1U) << kMaxRelationPointBits) ||
+            (domain_size & (domain_size - 1U)) != 0U) {
             if (error) *error = "relation tensor descriptor domain does not match padded shape";
             return false;
         }
@@ -2436,9 +2486,12 @@ inline bool segment_commitment_wire_shape_valid(
         const auto& segment = commitment.segment_commitments[index];
         const std::uint64_t expected_offset =
             static_cast<std::uint64_t>(index) * commitment.segment_size;
-        const std::uint32_t expected_actual = static_cast<std::uint32_t>(
-            std::min<std::uint64_t>(commitment.segment_size,
-                                    commitment.domain_size - expected_offset));
+        std::uint32_t expected_actual = 0U;
+        if (!checked_relation_u32(
+                std::min<std::uint64_t>(commitment.segment_size,
+                                        commitment.domain_size - expected_offset),
+                expected_actual, "segment commitment actual length", error))
+            return false;
         if (segment.segment_index != index || segment.logical_offset != expected_offset ||
             segment.padded_length != commitment.segment_size ||
             segment.actual_length != expected_actual ||
@@ -2742,8 +2795,12 @@ inline bool read_native_fr_vector(const std::vector<byte>& in, size_t& offset,
 
 inline void serialize_hidden_matmul_opening(const HiddenMatMulOpening& opening, std::vector<byte>& out) {
     if (opening.segments.empty() || opening.segments.size() > kMaxRelationSegments) throw std::invalid_argument("hidden segmented opening count exceeds cap");
+    std::uint32_t segment_count = 0U;
+    if (!checked_relation_u32(opening.segments.size(), segment_count,
+                              "hidden segmented opening count"))
+        throw std::invalid_argument("hidden segmented opening count exceeds uint32");
     zkdl::append_g1(out, opening.tau);
-    zkdl::append_u32(out, static_cast<std::uint32_t>(opening.segments.size()));
+    zkdl::append_u32(out, segment_count);
     for (const auto& segment : opening.segments) zkdl::serialize_hyrax_opening_v3(segment, out);
 }
 
@@ -3905,16 +3962,24 @@ inline bool verify_zk_sumcheck(
         }
         result = ZkSumcheckVerifierResult{};
         zksc_absorb_header(parent_transcript, proof);
+        if (proof.rounds.size() > kMaxRelationPointBits) {
+            if (error) *error = "ZkSumcheck proof round count exceeds native point cap";
+            return false;
+        }
         for (std::size_t round_index = 0U; round_index < proof.rounds.size(); ++round_index) {
+            std::uint32_t round_index_u32 = 0U;
+            if (!checked_relation_u32(round_index, round_index_u32,
+                                      "ZkSumcheck round index", error))
+                return false;
             const auto& round = proof.rounds[round_index];
             const auto endpoint_context = zksc_make_context(
                 zkdl::PedersenProofContext::kOperationVectorLinear, degree, degree + 1U,
-                zksc_round_commitment_index(static_cast<std::uint32_t>(round_index)),
-                zksc_endpoint_index(static_cast<std::uint32_t>(round_index)),
+                zksc_round_commitment_index(round_index_u32),
+                zksc_endpoint_index(round_index_u32),
                 proof.basis_digest,
                 zksc_vector_role_digest(descriptor, statement, operation_context,
-                                        "endpoint", static_cast<std::uint32_t>(round_index),
-                                        zksc_endpoint_index(static_cast<std::uint32_t>(round_index))),
+                                        "endpoint", round_index_u32,
+                                        zksc_endpoint_index(round_index_u32)),
                 statement);
             std::vector<FrWire> endpoint_weights(degree + 1U, zkdl::fr_from_u32(1U));
             endpoint_weights[0] = zkdl::fr_from_u32(2U);
@@ -3937,9 +4002,9 @@ inline bool verify_zk_sumcheck(
             } else {
                 const auto previous_context = zksc_make_scalar_context(
                     descriptor, statement, operation_context, "previous-evaluation",
-                    static_cast<std::uint32_t>(round_index),
-                    zksc_endpoint_index(static_cast<std::uint32_t>(round_index)),
-                    zksc_evaluation_index(static_cast<std::uint32_t>(round_index - 1U)),
+                    round_index_u32,
+                    zksc_endpoint_index(round_index_u32),
+                    zksc_evaluation_index(round_index_u32 - 1U),
                     zkdl::PedersenProofContext::kOperationScalarEquality,
                     blinding_generator, u_generator);
                 if (!zkdl::cpu_verify_pedersen_scalar_equality(
@@ -3961,8 +4026,8 @@ inline bool verify_zk_sumcheck(
                 query_weights[power] = zkdl::fr_mul(query_weights[power - 1U], challenge_wire);
             const auto query_context = zksc_make_vector_context(
                 descriptor, statement, operation_context, "evaluation",
-                static_cast<std::uint32_t>(round_index),
-                zksc_evaluation_index(static_cast<std::uint32_t>(round_index)),
+                round_index_u32,
+                zksc_evaluation_index(round_index_u32),
                 proof.basis_digest, degree);
             if (!zkdl::cpu_verify_pedersen_vector_linear(
                     round.evaluation_linear,
@@ -4023,15 +4088,21 @@ constexpr std::uint32_t kZkTerminalResidualIndex = 0xF0000000U;
 constexpr std::uint32_t kZkTerminalExternalIndex = 0xF0000001U;
 
 inline std::uint32_t zktr_terminal_evaluation_index(std::size_t tensor_index) {
-    if (tensor_index >= 0x40000000U)
+    std::uint32_t checked_index = 0U;
+    if (tensor_index >= 0x40000000U ||
+        !checked_relation_u32(tensor_index, checked_index,
+                              "terminal evaluation index"))
         throw std::invalid_argument("terminal evaluation commitment index overflow");
-    return kZkTerminalEvaluationIndexBase + static_cast<std::uint32_t>(tensor_index);
+    return kZkTerminalEvaluationIndexBase + checked_index;
 }
 
 inline std::uint32_t zktr_product_index(std::size_t node_index) {
-    if (node_index >= 0x70000000U)
+    std::uint32_t checked_index = 0U;
+    if (node_index >= 0x70000000U ||
+        !checked_relation_u32(node_index, checked_index,
+                              "terminal product index"))
         throw std::invalid_argument("terminal product commitment index overflow");
-    return kZkTerminalProductIndexBase + static_cast<std::uint32_t>(node_index);
+    return kZkTerminalProductIndexBase + checked_index;
 }
 
 inline bool zktr_all_statement_digests_valid(const RelationStatement& statement,
@@ -4071,10 +4142,15 @@ inline bool zktr_segment_layout(std::uint64_t logical_domain,
         if (error) *error = "segmented relation domain is not covered by a power-of-two basis";
         return false;
     }
-    layout.logical_domain = static_cast<std::uint32_t>(logical_domain);
-    layout.basis_domain = static_cast<std::uint32_t>(segment_size);
-    layout.segment_size = static_cast<std::uint32_t>(segment_size);
-    layout.segment_count = static_cast<std::uint32_t>(logical_domain / segment_size);
+    if (!checked_relation_u32(logical_domain, layout.logical_domain,
+                              "relation logical domain", error) ||
+        !checked_relation_u32(segment_size, layout.basis_domain,
+                              "relation basis domain", error) ||
+        !checked_relation_u32(segment_size, layout.segment_size,
+                              "relation segment size", error) ||
+        !checked_relation_u32(logical_domain / segment_size,
+                              layout.segment_count, "relation segment count", error))
+        return false;
     return true;
 }
 
@@ -4154,9 +4230,13 @@ inline bool zktr_build_segment_commitment_material(
         const auto frame_digest = zkdl::cpu_ipa_basis_digest(
             frame_generators, blinding_generator, u_generator,
             zkdl::cpu_ipa_padded_size(layout.segment_size));
+        std::uint32_t generator_count = 0U;
+        if (!checked_relation_u32(generators.size(), generator_count,
+                                  "segment commitment generator count", error))
+            return false;
         const auto basis_digest = zkdl::cpu_ipa_basis_digest(
             generators, blinding_generator, u_generator,
-            zkdl::cpu_ipa_padded_size(static_cast<std::uint32_t>(generators.size())));
+            zkdl::cpu_ipa_padded_size(generator_count));
         if (statement.srs_digest == std::array<byte, 32U>{} ||
             frame_digest == std::array<byte, 32U>{} ||
             basis_digest == std::array<byte, 32U>{}) {
@@ -4193,9 +4273,12 @@ inline bool zktr_build_segment_commitment_material(
             std::vector<FrWire> values;
             if (!provider.read_segment(segment, values, error)) return false;
             const std::uint64_t offset = static_cast<std::uint64_t>(segment) * layout.segment_size;
-            const std::uint32_t actual = static_cast<std::uint32_t>(
-                std::min<std::uint64_t>(layout.segment_size,
-                                        layout.logical_domain - offset));
+            std::uint32_t actual = 0U;
+            if (!checked_relation_u32(
+                    std::min<std::uint64_t>(layout.segment_size,
+                                            layout.logical_domain - offset),
+                    actual, "segment commitment actual length", error))
+                return false;
             const zkdl::CpuG1Point xi = zkdl::cpu_g1_add(
                 zkdl::cpu_g1_sum(frame_generators, values),
                 zkdl::cpu_g1_mul(blinding_generator, material.blinders[segment]));
@@ -4255,9 +4338,13 @@ inline bool zktr_commitment_wire_from_material(
         const auto frame_digest = zkdl::cpu_ipa_basis_digest(
             frame_generators, blinding_generator, u_generator,
             zkdl::cpu_ipa_padded_size(layout.segment_size));
+        std::uint32_t generator_count = 0U;
+        if (!checked_relation_u32(generators.size(), generator_count,
+                                  "segment commitment generator count", error))
+            return false;
         const auto basis_digest = zkdl::cpu_ipa_basis_digest(
             generators, blinding_generator, u_generator,
-            zkdl::cpu_ipa_padded_size(static_cast<std::uint32_t>(generators.size())));
+            zkdl::cpu_ipa_padded_size(generator_count));
         if (statement.srs_digest == std::array<byte, 32U>{} ||
             frame_digest == std::array<byte, 32U>{} ||
             basis_digest == std::array<byte, 32U>{}) {
@@ -4283,9 +4370,12 @@ inline bool zktr_commitment_wire_from_material(
             std::vector<FrWire> values;
             if (!provider.read_segment(segment, values, error)) return false;
             const std::uint64_t offset = static_cast<std::uint64_t>(segment) * layout.segment_size;
-            const std::uint32_t actual = static_cast<std::uint32_t>(
-                std::min<std::uint64_t>(layout.segment_size,
-                                        layout.logical_domain - offset));
+            std::uint32_t actual = 0U;
+            if (!checked_relation_u32(
+                    std::min<std::uint64_t>(layout.segment_size,
+                                            layout.logical_domain - offset),
+                    actual, "segment commitment actual length", error))
+                return false;
             const zkdl::CpuG1Point xi = zkdl::cpu_g1_add(
                 zkdl::cpu_g1_sum(frame_generators, values),
                 zkdl::cpu_g1_mul(blinding_generator, material.blinders[segment]));
@@ -4573,11 +4663,16 @@ inline bool zktr_build_product_plan(
                 if (error) *error = "terminal product DAG exceeds its bounded node cap";
                 return false;
             }
+            std::uint32_t monomial_index = 0U, factor_step = 0U;
+            if (!checked_relation_u32(monomial, monomial_index,
+                                      "terminal product monomial index", error) ||
+                !checked_relation_u32(factor, factor_step,
+                                      "terminal product factor index", error))
+                return false;
             const std::uint32_t right = zktr_terminal_evaluation_index(refs[factor]);
             const std::uint32_t output = zktr_product_index(node_index);
             plans.push_back(ZkTerminalProductPlan{
-                static_cast<std::uint32_t>(monomial), static_cast<std::uint32_t>(factor),
-                left, right, output});
+                monomial_index, factor_step, left, right, output});
             left = output;
         }
         monomial_commitment_indices.push_back(left);
@@ -4858,9 +4953,12 @@ inline bool prove_zk_terminal_relation_segmented(
             const std::uint32_t terminal_index = zktr_terminal_evaluation_index(tensor_index);
             for (std::uint32_t segment = 0U; segment < layout.segment_count; ++segment) {
                 const std::uint64_t offset = static_cast<std::uint64_t>(segment) * layout.segment_size;
-                const std::uint32_t actual = static_cast<std::uint32_t>(
-                    std::min<std::uint64_t>(layout.segment_size,
-                                            layout.logical_domain - offset));
+                std::uint32_t actual = 0U;
+                if (!checked_relation_u32(
+                        std::min<std::uint64_t>(layout.segment_size,
+                                                layout.logical_domain - offset),
+                        actual, "terminal segment actual length", error))
+                    return false;
                 std::vector<FrWire> segment_values;
                 if (!tensor_providers[tensor_index].read_segment(
                         segment, segment_values, error)) return false;
@@ -5198,11 +5296,17 @@ inline bool verify_zk_terminal_relation(
                     descriptor_digest, statement, evaluation_point,
                     commitment_indices[tensor_index], terminal_index);
                 metadata.logical_domain = layout.logical_domain;
-                metadata.segment_index = static_cast<std::uint32_t>(segment);
+                if (!checked_relation_u32(segment, metadata.segment_index,
+                                          "terminal opening segment index", error))
+                    return false;
                 metadata.logical_offset = static_cast<std::uint64_t>(segment) * layout.segment_size;
-                metadata.actual_length = static_cast<std::uint32_t>(
-                    std::min<std::uint64_t>(layout.segment_size,
-                                            layout.logical_domain - metadata.logical_offset));
+                if (!checked_relation_u32(
+                        std::min<std::uint64_t>(
+                            layout.segment_size,
+                            layout.logical_domain - metadata.logical_offset),
+                        metadata.actual_length,
+                        "terminal opening actual length", error))
+                    return false;
                 metadata.padded_length = layout.segment_size;
                 if (opening.commitment_index != commitment_indices[tensor_index] ||
                     opening.evaluation_commitment_index != terminal_index ||
@@ -5399,17 +5503,32 @@ inline void pointwise_absorb_provider_commitments(const std::string& context, st
         zkdl::append_string(encoded, tags[index]);
         zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(canonical[index]));
         zkdl::append_u64(encoded, segments[index].size());
-        for (std::size_t segment = 0U; segment < segments[index].size(); ++segment) { zkdl::append_u32(encoded, static_cast<std::uint32_t>(segment)); zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(segments[index][segment])); }
+        for (std::size_t segment = 0U; segment < segments[index].size(); ++segment) {
+            std::uint32_t segment_index = 0U;
+            if (!checked_relation_u32(segment, segment_index,
+                                      "pointwise commitment segment index") ||
+                segment >= kMaxRelationSegments)
+                throw std::invalid_argument("pointwise commitment segment count exceeds cap");
+            zkdl::append_u32(encoded, segment_index);
+            zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(segments[index][segment]));
+        }
     }
     transcript.absorb(context + ".pointwise-eqmask-v2.provider-commitments", encoded);
 }
 
 inline ConstraintDescriptor pointwise_sumcheck_descriptor(const ConstraintDescriptor& descriptor, std::size_t tensor_count) {
+    std::uint32_t first_aux_index = 0U, second_aux_index = 0U;
+    if (!checked_relation_u32(tensor_count, first_aux_index,
+                              "pointwise auxiliary tensor index") ||
+        tensor_count == std::numeric_limits<std::size_t>::max() ||
+        !checked_relation_u32(tensor_count + 1U, second_aux_index,
+                              "pointwise auxiliary tensor index"))
+        throw std::invalid_argument("pointwise tensor count exceeds uint32 index space");
     ConstraintDescriptor expanded = descriptor;
     expanded.degree += 2U;
     expanded.constant = FrWire{};
-    for (auto& term : expanded.terms) { term.refs.push_back(static_cast<std::uint32_t>(tensor_count)); term.refs.push_back(static_cast<std::uint32_t>(tensor_count + 1U)); }
-    if (descriptor.constant != FrWire{}) expanded.terms.push_back(Monomial{descriptor.constant, {static_cast<std::uint32_t>(tensor_count), static_cast<std::uint32_t>(tensor_count + 1U)}});
+    for (auto& term : expanded.terms) { term.refs.push_back(first_aux_index); term.refs.push_back(second_aux_index); }
+    if (descriptor.constant != FrWire{}) expanded.terms.push_back(Monomial{descriptor.constant, {first_aux_index, second_aux_index}});
     return expanded;
 }
 
@@ -5484,9 +5603,15 @@ inline bool verify_constraint(const ConstraintProof& proof,
         if (error) *error = "relation constraint descriptor mismatch";
         return false;
     }
-    std::vector<std::uint32_t> expected_indices(expected_tensor_refs.size());
+    std::uint32_t expected_count = 0U;
+    if (!checked_relation_u32(expected_tensor_refs.size(), expected_count,
+                              "relation expected tensor count", error))
+        return false;
+    std::vector<std::uint32_t> expected_indices(expected_count);
     for (std::size_t index = 0U; index < expected_indices.size(); ++index)
-        expected_indices[index] = static_cast<std::uint32_t>(index);
+        if (!checked_relation_u32(index, expected_indices[index],
+                                  "relation expected tensor index", error))
+            return false;
     if (expected_indices.empty() || proof.opening_tensor_indices != expected_indices ||
         proof.opening_commitment_indices.size() != expected_indices.size()) {
         if (error) *error = "relation constraint terminal tensor map is not canonical";
@@ -5633,8 +5758,12 @@ inline bool fill_constraint_openings(
         tensor_providers.push_back(std::move(provider));
         canonical_commitments.push_back(zkdl::cpu_g1_from_native(commitment->commitment));
         tensor_blinders.push_back(relation_blinding_scalar(tensor, blinders));
-        commitment_indices.push_back(static_cast<std::uint32_t>(
-            std::distance(commitments.begin(), commitment)));
+        std::uint32_t commitment_index = 0U;
+        if (!checked_relation_u32(
+                static_cast<std::size_t>(std::distance(commitments.begin(), commitment)),
+                commitment_index, "relation tensor commitment index", error))
+            return false;
+        commitment_indices.push_back(commitment_index);
     }
     try {
         if (domain == 0U || log2_exact(domain) == std::numeric_limits<std::uint32_t>::max() ||
@@ -5787,8 +5916,9 @@ inline bool fac_line8_commitment_index(
         if (error) *error = "FAC4DNN canonical commitment is missing or out of bounds: " + tensor_id;
         return false;
     }
-    index = static_cast<std::uint32_t>(std::distance(commitments.begin(), found));
-    return true;
+    return checked_relation_u32(
+        static_cast<std::size_t>(std::distance(commitments.begin(), found)),
+        index, "FAC4DNN commitment index", error);
 }
 
 inline bool fac_line8_absorb_header(
@@ -6187,7 +6317,7 @@ inline bool verify_tensor_contract(const VerifierContext& context,
             }
         }
         for (const auto& primitive : operation.primitives) {
-            const std::array<std::uint32_t, 3U> expected = {
+            const std::array<std::uint64_t, 3U> expected = {
                 primitive.matmul_shape.a_size(), primitive.matmul_shape.b_size(),
                 primitive.matmul_shape.c_size()};
             for (std::size_t i = 0U; i < primitive.tensor_refs.size(); ++i) {
@@ -6388,6 +6518,53 @@ inline bool hidden_matmul_shape_valid(const zkdl::MatMulShape& shape,
     return true;
 }
 
+inline bool checked_matmul_shape_domains_u32(
+    const zkdl::MatMulShape& shape, std::array<std::uint32_t, 3U>& domains,
+    std::string* error = nullptr) {
+    if (!shape.valid(error)) return false;
+    std::array<std::uint64_t, 3U> wide_domains{};
+    if (!shape.tensor_sizes(wide_domains)) {
+        if (error) *error = "zkMatMul tensor shape product overflows uint64";
+        return false;
+    }
+    for (std::size_t index = 0U; index < wide_domains.size(); ++index) {
+        if (wide_domains[index] == 0U ||
+            wide_domains[index] > (std::uint64_t(1U) << kMaxRelationPointBits) ||
+            !checked_relation_u32(wide_domains[index], domains[index],
+                                  "zkMatMul tensor domain", error)) {
+            if (error && error->empty())
+                *error = "zkMatMul tensor domain cannot be represented as uint32";
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool checked_hidden_matmul_primitive_index(
+    std::size_t primitive_index, std::uint32_t& primitive_index_u32,
+    std::string* error = nullptr) {
+    if (!checked_relation_u32(primitive_index, primitive_index_u32,
+                              "hidden matrix primitive index", error))
+        return false;
+    return true;
+}
+
+inline bool hidden_matmul_product_context_indices(
+    std::size_t primitive_index, std::array<std::uint32_t, 3U>& indices,
+    std::string* error = nullptr) {
+    std::uint32_t primitive_index_u32 = 0U;
+    if (!checked_hidden_matmul_primitive_index(primitive_index,
+                                              primitive_index_u32, error) ||
+        primitive_index_u32 > (0x0fffffffU - 2U) / 3U) {
+        if (error && error->empty())
+            *error = "hidden matrix product context index exceeds reserved range";
+        return false;
+    }
+    const std::uint32_t base = 0x20000000U + primitive_index_u32 * 3U;
+    indices = {{base, base + 1U, base + 2U}};
+    return true;
+}
+
 inline ConstraintDescriptor hidden_matmul_constraint_descriptor(
     const OperationDescriptor& operation, std::size_t primitive_index) {
     ConstraintDescriptor descriptor;
@@ -6402,9 +6579,13 @@ inline ConstraintDescriptor hidden_matmul_constraint_descriptor(
 inline std::array<byte, 32U> hidden_matmul_primitive_digest(
     const OperationDescriptor& operation, const PrimitiveDescriptor& primitive,
     std::size_t primitive_index) {
+    std::uint32_t primitive_index_u32 = 0U;
+    if (!checked_hidden_matmul_primitive_index(primitive_index,
+                                              primitive_index_u32))
+        throw std::invalid_argument("hidden matrix primitive index exceeds uint32");
     std::vector<byte> encoded;
     zkdl::append_string(encoded, operation.id);
-    zkdl::append_u32(encoded, static_cast<std::uint32_t>(primitive_index));
+    zkdl::append_u32(encoded, primitive_index_u32);
     append_primitive(encoded, primitive);
     return zkdl::sha256(encoded);
 }
@@ -6415,9 +6596,13 @@ inline bool hidden_matmul_derive_points(
     std::vector<Fr_t>& row_point, std::vector<Fr_t>& column_point,
     std::vector<Fr_t>& batch_point, std::string* error = nullptr) {
     try {
+        std::uint32_t primitive_index_u32 = 0U;
+        if (!checked_hidden_matmul_primitive_index(primitive_index,
+                                                  primitive_index_u32, error))
+            return false;
         const std::string prefix = "gat.relation." + operation.id +
                                    ".hidden-matmul." +
-                                   std::to_string(primitive_index);
+                                   std::to_string(primitive_index_u32);
         row_point.clear();
         column_point.clear();
         batch_point.clear();
@@ -6491,15 +6676,21 @@ inline zkdl::CpuIpaOpeningMetadata hidden_matmul_opening_metadata(
     std::size_t primitive_index, const std::string& role,
     std::uint32_t commitment_index, const std::vector<FrWire>& point,
     const RelationStatement& statement) {
+    std::uint32_t primitive_index_u32 = 0U;
+    if (!checked_hidden_matmul_primitive_index(primitive_index,
+                                              primitive_index_u32))
+        throw std::invalid_argument("hidden matrix primitive index exceeds uint32");
+    if (primitive_index_u32 > (0x0fffffffU / 4U))
+        throw std::invalid_argument("hidden matrix opening index exceeds reserved range");
     zkdl::CpuIpaOpeningMetadata metadata;
     metadata.commitment_index = commitment_index;
     metadata.evaluation_commitment_index =
-        0x60000000U + static_cast<std::uint32_t>(primitive_index * 4U);
+        0x60000000U + primitive_index_u32 * 4U;
     metadata.registry_digest = statement.registry_digest;
     metadata.srs_digest = statement.srs_digest;
     std::vector<byte> encoded;
     zkdl::append_string(encoded, operation.id);
-    zkdl::append_u32(encoded, static_cast<std::uint32_t>(primitive_index));
+    zkdl::append_u32(encoded, primitive_index_u32);
     append_primitive(encoded, primitive);
     zkdl::append_string(encoded, role);
     zkdl::append_u64(encoded, static_cast<std::uint64_t>(point.size()));
@@ -6520,8 +6711,9 @@ inline bool hidden_matmul_commitment_index(
         if (error) *error = "hidden matrix commitment/domain mismatch: " + tensor_id;
         return false;
     }
-    index = static_cast<std::uint32_t>(std::distance(commitments.begin(), found));
-    return true;
+    return checked_relation_u32(
+        static_cast<std::size_t>(std::distance(commitments.begin(), found)),
+        index, "hidden matrix commitment index", error);
 }
 
 inline FrWire hidden_matmul_nonzero_scalar() {
@@ -6604,9 +6796,18 @@ inline bool prove_hidden_matmul(
     const RelationStatement& statement, zkdl::Transcript& transcript,
     HiddenMatMulProof& result, std::string* error, const std::map<std::string, std::vector<FrWire>>& segment_blinding_scalars) {
     try {
+        std::uint32_t primitive_index_u32 = 0U;
+        std::array<std::uint32_t, 3U> product_indices{};
+        if (!checked_hidden_matmul_primitive_index(primitive_index,
+                                                  primitive_index_u32, error) ||
+            !hidden_matmul_product_context_indices(primitive_index,
+                                                   product_indices, error))
+            return false;
         if (primitive.kind != 2U ||
             !hidden_matmul_shape_valid(primitive.matmul_shape, error) ||
             primitive.tensor_refs.size() != 3U) return false;
+        std::array<std::uint32_t, 3U> shape_domains{};
+        if (!checked_matmul_shape_domains_u32(primitive.matmul_shape, shape_domains, error)) return false;
         const auto a = tensor_map.find(primitive.tensor_refs[0]);
         const auto b = tensor_map.find(primitive.tensor_refs[1]);
         const auto c = tensor_map.find(primitive.tensor_refs[2]);
@@ -6623,13 +6824,13 @@ inline bool prove_hidden_matmul(
         if (!a->second->segmented(generators.size(), a_provider, error) || !b->second->segmented(generators.size(), b_provider, error) || !c->second->segmented(generators.size(), c_provider, error)) return false;
         std::uint32_t a_index = 0U, b_index = 0U, c_index = 0U;
         if (!hidden_matmul_commitment_index(commitments, primitive.tensor_refs[0],
-                                            static_cast<std::uint32_t>(primitive.matmul_shape.a_size()),
+                                            shape_domains[0U],
                                             a_index, error) ||
             !hidden_matmul_commitment_index(commitments, primitive.tensor_refs[1],
-                                            static_cast<std::uint32_t>(primitive.matmul_shape.b_size()),
+                                            shape_domains[1U],
                                             b_index, error) ||
             !hidden_matmul_commitment_index(commitments, primitive.tensor_refs[2],
-                                            static_cast<std::uint32_t>(primitive.matmul_shape.c_size()),
+                                            shape_domains[2U],
                                             c_index, error)) return false;
 
         std::vector<Fr_t> row_point, column_point, batch_point;
@@ -6689,9 +6890,8 @@ inline bool prove_hidden_matmul(
             product_value, product_blinder, ipa_blinding_generator, ipa_u_generator);
         const auto product_context = zktr_make_product_context(
             statement, sumcheck.proof.descriptor_digest, ipa_blinding_generator,
-            ipa_u_generator, 0x20000000U + static_cast<std::uint32_t>(primitive_index * 3U),
-            0x20000001U + static_cast<std::uint32_t>(primitive_index * 3U),
-            0x20000002U + static_cast<std::uint32_t>(primitive_index * 3U));
+            ipa_u_generator, product_indices[0U], product_indices[1U],
+            product_indices[2U]);
         const zkdl::PedersenProductProverResult product = zkdl::cpu_open_pedersen_product(
             a_value, b_value, opening_a.tau_blinder, opening_b.tau_blinder,
             product_blinder, zkdl::cpu_g1_from_native(opening_a.proof.tau),
@@ -6752,6 +6952,13 @@ inline bool verify_hidden_matmul(
     const RelationStatement& statement, zkdl::Transcript& transcript,
     std::string* error = nullptr) {
     try {
+        std::uint32_t primitive_index_u32 = 0U;
+        std::array<std::uint32_t, 3U> product_indices{};
+        if (!checked_hidden_matmul_primitive_index(primitive_index,
+                                                  primitive_index_u32, error) ||
+            !hidden_matmul_product_context_indices(primitive_index,
+                                                   product_indices, error))
+            return false;
         if (primitive.kind != 2U || !hidden_matmul_shape_valid(primitive.matmul_shape, error) ||
             primitive.tensor_refs.size() != 3U || proof.version != HiddenMatMulProof::kVersion ||
             proof.shape != primitive.matmul_shape ||
@@ -6760,6 +6967,8 @@ inline bool verify_hidden_matmul(
             if (error && error->empty()) *error = "hidden matrix primitive statement mismatch";
             return false;
         }
+        std::array<std::uint32_t, 3U> shape_domains{};
+        if (!checked_matmul_shape_domains_u32(primitive.matmul_shape, shape_domains, error)) return false;
         std::vector<Fr_t> row_point, column_point, batch_point;
         if (!hidden_matmul_derive_points(operation, primitive_index, primitive.matmul_shape,
                                          transcript, row_point, column_point, batch_point,
@@ -6778,9 +6987,9 @@ inline bool verify_hidden_matmul(
             if (error) *error = "hidden matrix challenge point mismatch";
             return false;
         }
-        const std::uint32_t a_domain = static_cast<std::uint32_t>(primitive.matmul_shape.a_size());
-        const std::uint32_t b_domain = static_cast<std::uint32_t>(primitive.matmul_shape.b_size());
-        const std::uint32_t c_domain = static_cast<std::uint32_t>(primitive.matmul_shape.c_size());
+        const std::uint32_t a_domain = shape_domains[0U];
+        const std::uint32_t b_domain = shape_domains[1U];
+        const std::uint32_t c_domain = shape_domains[2U];
         if (generators.size() < primitive.matmul_shape.n) { if (error) *error = "hidden matrix verifier inner dimension exceeds authenticated basis"; return false; }
         if (proof.a_commitment_index >= commitments.size() ||
             proof.b_commitment_index >= commitments.size() ||
@@ -6834,9 +7043,8 @@ inline bool verify_hidden_matmul(
             eq0 = zkdl::fr_mul(eq0, zkdl::fr_sub(zkdl::fr_from_u32(1U), coordinate));
         const auto product_context = zktr_make_product_context(
             statement, proof.sumcheck.descriptor_digest, ipa_blinding_generator,
-            ipa_u_generator, 0x20000000U + static_cast<std::uint32_t>(primitive_index * 3U),
-            0x20000001U + static_cast<std::uint32_t>(primitive_index * 3U),
-            0x20000002U + static_cast<std::uint32_t>(primitive_index * 3U));
+            ipa_u_generator, product_indices[0U], product_indices[1U],
+            product_indices[2U]);
         const zkdl::CpuG1Point product_commitment = zkdl::cpu_g1_from_native(
             proof.terminal_product.commitment_c);
         if (!zkdl::cpu_verify_pedersen_product(
@@ -7020,8 +7228,9 @@ inline bool primitive_commitment_index(
         if (error) *error = "zkMatMul canonical commitment is missing: " + tensor_id;
         return false;
     }
-    index = static_cast<std::uint32_t>(std::distance(commitments.begin(), found));
-    return true;
+    return checked_relation_u32(
+        static_cast<std::size_t>(std::distance(commitments.begin(), found)),
+        index, "primitive commitment index", error);
 }
 
 inline std::vector<FrWire> primitive_opening_point(
@@ -7051,9 +7260,11 @@ inline bool prove_primitive_binding(
         if (error && error->empty()) *error = "zkMatMul primitive has no canonical C opening";
         return false;
     }
-    const std::uint32_t a_domain = descriptor.matmul_shape.a_size();
-    const std::uint32_t b_domain = descriptor.matmul_shape.b_size();
-    const std::uint32_t c_domain = descriptor.matmul_shape.c_size();
+    std::array<std::uint32_t, 3U> shape_domains{};
+    if (!checked_matmul_shape_domains_u32(descriptor.matmul_shape, shape_domains, error)) return false;
+    const std::uint32_t a_domain = shape_domains[0U];
+    const std::uint32_t b_domain = shape_domains[1U];
+    const std::uint32_t c_domain = shape_domains[2U];
     const auto a = tensor_map.find(descriptor.tensor_refs[0]);
     const auto b = tensor_map.find(descriptor.tensor_refs[1]);
     const auto c = tensor_map.find(descriptor.tensor_refs[2]);
@@ -7121,9 +7332,11 @@ inline bool verify_primitive_binding(
         if (error && error->empty()) *error = "zkMatMul primitive binding mode is not canonical";
         return false;
     }
+    std::array<std::uint32_t, 3U> shape_domains{};
+    if (!checked_matmul_shape_domains_u32(descriptor.matmul_shape, shape_domains, error)) return false;
     const std::array<std::uint32_t, 3U> indices = {
         binding.a_commitment_index, binding.b_commitment_index, binding.c_commitment_index};
-    const std::array<std::uint32_t, 3U> domains = {
+    const std::array<std::uint64_t, 3U> domains = {
         descriptor.matmul_shape.a_size(), descriptor.matmul_shape.b_size(), descriptor.matmul_shape.c_size()};
     const std::array<const zkdl::EvaluationOpeningProof*, 3U> openings = {
         &binding.opening_a, &binding.opening_b, &binding.opening_c};
@@ -7140,7 +7353,7 @@ inline bool verify_primitive_binding(
             commitments[indices[i]].tensor_id != descriptor.tensor_refs[i] ||
             commitments[indices[i]].domain_size != domains[i] ||
             openings[i]->commitment_index != indices[i] ||
-            openings[i]->generator_size != domains[i] || !openings[i]->outer_point.empty() ||
+            openings[i]->generator_size != shape_domains[i] || !openings[i]->outer_point.empty() ||
             openings[i]->inner_point.size() != primitive_openings[i]->inner_point.size() +
                                                primitive_openings[i]->outer_point.size()) {
             if (error) *error = "zkMatMul canonical commitment binding metadata mismatch";
@@ -7155,7 +7368,7 @@ inline bool verify_primitive_binding(
         if (!zkdl::cpu_verify_opening(*openings[i],
                                       zkdl::cpu_g1_from_native(commitments[indices[i]].commitment),
                                       std::vector<zkdl::CpuG1Point>(generators.begin(),
-                                                                    generators.begin() + domains[i]),
+                                                                    generators.begin() + shape_domains[i]),
                                       ipa_blinding_generator, ipa_u_generator,
                                       metadata_for(i), error) ||
             !same_wire(zkdl::fr_wire(openings[i]->value),
@@ -7286,8 +7499,9 @@ inline bool route_commitment_index(
         if (error) *error = "sparse route commitment is missing: " + tensor_id;
         return false;
     }
-    index = static_cast<std::uint32_t>(std::distance(commitments.begin(), found));
-    return true;
+    return checked_relation_u32(
+        static_cast<std::size_t>(std::distance(commitments.begin(), found)),
+        index, "sparse route commitment index", error);
 }
 
 #include "gat_adapter/gat_sparse_route.cuh"
@@ -7349,8 +7563,12 @@ inline bool qpad_selector_provider(
         std::vector<FrWire> values;
         if (!provider.read_segment(segment, values, error)) return false;
         const std::uint64_t offset = static_cast<std::uint64_t>(segment) * segment_size;
-        const std::uint32_t actual = static_cast<std::uint32_t>(
-            std::min<std::uint64_t>(segment_size, descriptor.domain_size - offset));
+        std::uint32_t actual = 0U;
+        if (!checked_relation_u32(
+                std::min<std::uint64_t>(segment_size,
+                                        descriptor.domain_size - offset),
+                actual, "Qpad selector segment length", error))
+            return false;
         for (std::uint32_t index = 0U; index < actual; ++index) {
             std::vector<byte> encoded;
             append_fr_wire(encoded, values[index]);
@@ -7370,9 +7588,12 @@ inline ConstraintDescriptor qpad_constraint_descriptor(const std::string& tensor
 }
 
 inline std::uint32_t qpad_selector_index(std::size_t record_index) {
-    if (record_index >= 0x0fffffffU)
+    std::uint32_t checked_index = 0U;
+    if (record_index >= 0x0fffffffU ||
+        !checked_relation_u32(record_index, checked_index,
+                              "Qpad selector record index"))
         throw std::invalid_argument("Qpad selector commitment index overflow");
-    return 0x30000000U + static_cast<std::uint32_t>(record_index);
+    return 0x30000000U + checked_index;
 }
 
 inline bool prove_padding_record(
@@ -7407,8 +7628,11 @@ inline bool prove_padding_record(
             if (error) *error = "Qpad tensor commitment is missing";
             return false;
         }
-        const std::uint32_t commitment_index = static_cast<std::uint32_t>(
-            std::distance(commitments.begin(), commitment));
+        std::uint32_t commitment_index = 0U;
+        if (!checked_relation_u32(
+                static_cast<std::size_t>(std::distance(commitments.begin(), commitment)),
+                commitment_index, "Qpad tensor commitment index", error))
+            return false;
         SegmentedTensorProvider tensor_provider;
         if (!tensor->second->segmented(generators.size(), tensor_provider, error)) return false;
         const zkdl::CpuG1Point selector_commitment = zktr_segmented_commitment(
@@ -7749,7 +7973,10 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             for (std::size_t role_index = 0U;
                  role_index < sorted_refs[lookup_index].size(); ++role_index) {
                 auto& ref = sorted_refs[lookup_index][role_index];
-                ref.commitment_index = static_cast<std::uint32_t>(proof.commitments.size());
+                if (!checked_relation_u32(proof.commitments.size(),
+                                          ref.commitment_index,
+                                          "sorted-lookup commitment index", error))
+                    return false;
                 if (!ref.valid(error) || !zkdl::cpu_pedersen_strict_g1(
                         sorted_outer[lookup_index][role_index], error) ||
                     !zkdl::fr_canonical(sorted_blinders[lookup_index][role_index]) ||
@@ -7912,8 +8139,12 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             context.statement.public_output != encode_public_field_vector(public_it->values)) {
             throw std::invalid_argument("public output witness is not the verifier-supplied canonical Y");
         }
-        proof.public_output_commitment = static_cast<std::uint32_t>(
-            std::distance(context.tensors.begin(), public_it));
+        if (!checked_relation_u32(
+                static_cast<std::size_t>(
+                    std::distance(context.tensors.begin(), public_it)),
+                proof.public_output_commitment,
+                "public output commitment index", error))
+            return false;
         const std::uint32_t output_domain = public_it->domain_size;
         const std::uint32_t output_bits = log2_exact(output_domain);
         std::vector<FrWire> output_point;
@@ -8275,9 +8506,12 @@ inline bool prove_authenticated_sorted_lookup(
             if (tag == "merge_inverse") return std::make_pair(static_cast<std::uint32_t>(zkdl::kSortedLookupCommitmentMergeInverse), 0U);
             if (tag == "merge_prefix") return std::make_pair(static_cast<std::uint32_t>(zkdl::kSortedLookupCommitmentMergePrefix), 0U);
             const std::string merge_bit = "merge_bit_";
-            if (tag.compare(0U, merge_bit.size(), merge_bit) == 0)
+            if (tag.compare(0U, merge_bit.size(), merge_bit) == 0) {
+                std::uint32_t bit = std::numeric_limits<std::uint32_t>::max();
+                (void)parse_relation_u32_suffix(tag.substr(merge_bit.size()), bit);
                 return std::make_pair(static_cast<std::uint32_t>(zkdl::kSortedLookupCommitmentMergeBit),
-                                      static_cast<std::uint32_t>(std::stoul(tag.substr(merge_bit.size()))));
+                                      bit);
+            }
             return std::make_pair(static_cast<std::uint32_t>(0U), 0U);
         };
         const auto provider_for_tag = [&](const std::string& tag,
@@ -8305,11 +8539,15 @@ inline bool prove_authenticated_sorted_lookup(
                 const std::string key = "merge_bit_";
                 const std::string delta = "merge_delta_bit_";
                 if (tag.compare(0U, key.size(), key) == 0) {
-                    const std::size_t bit = std::stoul(tag.substr(key.size()));
+                    std::uint32_t bit = 0U;
+                    if (!parse_relation_u32_suffix(tag.substr(key.size()), bit))
+                        return false;
                     if (bit >= providers.merge_bits.size()) return false;
                     provider = providers.merge_bits[bit];
                 } else if (tag.compare(0U, delta.size(), delta) == 0) {
-                    const std::size_t bit = std::stoul(tag.substr(delta.size()));
+                    std::uint32_t bit = 0U;
+                    if (!parse_relation_u32_suffix(tag.substr(delta.size()), bit))
+                        return false;
                     if (bit >= providers.merge_delta_bits.size()) return false;
                     provider = providers.merge_delta_bits[bit];
                 } else return false;
@@ -8528,7 +8766,11 @@ inline bool prove_authenticated_sorted_lookup(
                 if (!state_for(tags[index], relation_providers[index], state)) return false;
                 canonical.push_back(state.commitment);
                 blinders.push_back(state.blinder);
-                indices.push_back(static_cast<std::uint32_t>(index));
+                std::uint32_t relation_index = 0U;
+                if (!checked_relation_u32(index, relation_index,
+                                          "sorted-lookup relation commitment index", error))
+                    return false;
+                indices.push_back(relation_index);
                 outer_indices.push_back(state.outer_index);
                 terminal_materials.push_back(state.material);
             }
@@ -8591,8 +8833,13 @@ inline bool prove_authenticated_sorted_lookup(
 
         const auto index_map = [](const std::vector<std::string>& tags) {
             std::map<std::string, std::uint32_t> result;
-            for (std::size_t index = 0U; index < tags.size(); ++index)
-                result.emplace(tags[index], static_cast<std::uint32_t>(index));
+            for (std::size_t index = 0U; index < tags.size(); ++index) {
+                std::uint32_t tag_index = 0U;
+                if (!checked_relation_u32(index, tag_index,
+                                         "sorted-lookup tag index"))
+                    throw std::invalid_argument("sorted-lookup tag count exceeds uint32");
+                result.emplace(tags[index], tag_index);
+            }
             return result;
         };
         const auto monomial = [](const FrWire& coefficient,
@@ -8958,9 +9205,12 @@ inline bool verify_authenticated_sorted_lookup(
             if (tag == "merge_inverse") return std::make_pair(static_cast<std::uint32_t>(zkdl::kSortedLookupCommitmentMergeInverse), 0U);
             if (tag == "merge_prefix") return std::make_pair(static_cast<std::uint32_t>(zkdl::kSortedLookupCommitmentMergePrefix), 0U);
             const std::string key = "merge_bit_";
-            if (tag.compare(0U, key.size(), key) == 0)
+            if (tag.compare(0U, key.size(), key) == 0) {
+                std::uint32_t bit = std::numeric_limits<std::uint32_t>::max();
+                (void)parse_relation_u32_suffix(tag.substr(key.size()), bit);
                 return std::make_pair(static_cast<std::uint32_t>(zkdl::kSortedLookupCommitmentMergeBit),
-                                      static_cast<std::uint32_t>(std::stoul(tag.substr(key.size()))));
+                                      bit);
+            }
             return std::make_pair(static_cast<std::uint32_t>(0U), 0U);
         };
         const auto expected_outer = [&](const std::string& tag) -> std::uint32_t {
@@ -8973,8 +9223,13 @@ inline bool verify_authenticated_sorted_lookup(
         };
         const auto index_map = [](const std::vector<std::string>& tags) {
             std::map<std::string, std::uint32_t> result;
-            for (std::size_t index = 0U; index < tags.size(); ++index)
-                result.emplace(tags[index], static_cast<std::uint32_t>(index));
+            for (std::size_t index = 0U; index < tags.size(); ++index) {
+                std::uint32_t tag_index = 0U;
+                if (!checked_relation_u32(index, tag_index,
+                                         "sorted-lookup tag index"))
+                    throw std::invalid_argument("sorted-lookup tag count exceeds uint32");
+                result.emplace(tags[index], tag_index);
+            }
             return result;
         };
         const auto monomial = [](const FrWire& coefficient,
@@ -9127,7 +9382,11 @@ inline bool verify_authenticated_sorted_lookup(
                 }
                 provider_segments.push_back(std::move(fixed_segments));
                 canonical.push_back(commitment);
-                indices.push_back(static_cast<std::uint32_t>(index));
+                std::uint32_t relation_index = 0U;
+                if (!checked_relation_u32(index, relation_index,
+                                          "sorted-lookup relation commitment index", error))
+                    return false;
+                indices.push_back(relation_index);
             }
             const std::string context = "gat.sorted_lookup.relation." + std::to_string(kind);
             pointwise_absorb_provider_commitments(context, wire.logical_domain, tags, canonical, provider_segments, transcript);

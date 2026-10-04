@@ -13,13 +13,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 from formal_common import (
+    AuthenticatedFormalContext,
     BACKENDS,
     CANONICAL_OUTPUT_MODE,
     CANONICAL_PRIVACY,
@@ -28,6 +31,7 @@ from formal_common import (
     CANONICAL_STATEMENT_MODE,
     CONTRACT,
     FORMAL_BACKEND,
+    FORMAL_GPU_FEATURES,
     FORMAL_PHASE_BACKENDS,
     ROOT,
     ContractError,
@@ -42,6 +46,7 @@ from formal_common import (
     reject_reduced_srs,
     require_digest,
     require_formal_srs,
+    require_authenticated_formal_context,
     require_file,
     require_circuit_ref,
     public_output_values,
@@ -103,20 +108,51 @@ def baseline_relative(path: Path, label: str) -> str:
 
 
 def run_command(command: list[str], log_path: Path, *, phase: str, env: dict[str, str]) -> float:
+    print(f"[ezkl-formal] {phase}: {' '.join(command)}", flush=True)
     start = time.monotonic()
-    completed = subprocess.run(
+    process = subprocess.Popen(
         command,
         cwd=ROOT,
         env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        check=False,
+        bufsize=1,
+        start_new_session=(os.name == "posix"),
     )
+    if process.stdout is None:
+        abort(f"{phase} subprocess has no output stream")
+    output_queue: queue.Queue[str | None] = queue.Queue()
+
+    def read_output() -> None:
+        try:
+            for line in process.stdout:
+                output_queue.put(line)
+        finally:
+            output_queue.put(None)
+
+    reader = threading.Thread(target=read_output, name=f"ezkl-{phase}-output", daemon=True)
+    reader.start()
+    start = time.monotonic()
+    with log_path.open("w") as log:
+        while True:
+            try:
+                line = output_queue.get(timeout=20)
+            except queue.Empty:
+                elapsed_seconds = int(time.monotonic() - start)
+                print(f"[ezkl-formal] {phase} still running ({elapsed_seconds}s); live log: {log_path}", flush=True)
+                continue
+            if line is None:
+                break
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            log.write(line)
+            log.flush()
+    reader.join(timeout=2)
+    returncode = process.wait()
     elapsed = (time.monotonic() - start) * 1000.0
-    log_path.write_text(completed.stdout)
-    if completed.returncode != 0:
-        abort(f"{phase} failed with exit code {completed.returncode}; see {log_path}")
+    if returncode != 0:
+        abort(f"{phase} failed with exit code {returncode}; see {log_path}")
     return elapsed
 
 
@@ -222,7 +258,12 @@ def print_plan(args: argparse.Namespace, config: Path, output: Path) -> None:
     print("rerun with --execute-formal, --public-statement, --public-output and --producer-manifest; native SRS comes from the authenticated manifest")
 
 
-def main(args: argparse.Namespace) -> int:
+def main(
+    args: argparse.Namespace,
+    *,
+    authenticated_context: AuthenticatedFormalContext | None = None,
+    formal_session_id: str | None = None,
+) -> int:
     reject_reduced_srs(sys.argv[1:])
     config = ensure_relative_arg(args.config, "config", default_config(args.dataset))
     output = ensure_relative_arg(
@@ -253,19 +294,34 @@ def main(args: argparse.Namespace) -> int:
         dataset=args.dataset,
         public_output_sha256=sha256(public_output),
     )
-    validate_resources()
     contract = load_cli_contract()
     values = validate_config(config, args.dataset)
+    if authenticated_context is None:
+        validate_resources()
+    else:
+        if formal_session_id is None:
+            abort("shared resource authentication requires the active formal session id")
+        require_authenticated_formal_context(
+            authenticated_context,
+            session_id=formal_session_id,
+            dataset=args.dataset,
+            config=config,
+        )
     if args.backend == "gpu":
         gpu_probe = validate_gpu_environment()
     else:
         gpu_probe = None
 
-    validate_native_srs_manifest()
+    if authenticated_context is None:
+        validate_native_srs_manifest()
     srs = local_path(values["srs_path"], "config srs_path")
     require_formal_srs(srs)
     trusted_srs_sha = require_digest(values["trusted_srs_sha256"], "config trusted_srs_sha256")
-    if sha256(srs) != trusted_srs_sha:
+    if authenticated_context is not None and (
+        values["srs_path"] != authenticated_context.srs_path or trusted_srs_sha != authenticated_context.srs_sha256
+    ):
+        abort("single-dataset SRS config does not match the parent-authenticated formal session context")
+    if authenticated_context is None and sha256(srs) != trusted_srs_sha:
         abort("trusted SRS SHA-256 does not match the selected SRS")
     if values.get("trusted_srs_sha256") != trusted_srs_sha:
         abort("canonical secure config trusted_srs_sha256 does not match the selected SRS")
@@ -291,10 +347,29 @@ def main(args: argparse.Namespace) -> int:
     if receipt.get("adapter_contract_sha256") != sha256(CONTRACT):
         abort("build receipt adapter contract digest is stale")
     features = receipt.get("features", [])
+    if formal_session_id is not None and args.backend == "gpu" and features != list(FORMAL_GPU_FEATURES):
+        abort("formal GPU build receipt does not identify the exact formal feature set")
     if args.backend == "gpu" and any(receipt.get(key) != value for key, value in native_backend_identity().items()):
         abort("GPU build receipt native CUDA library/manifest identity is stale")
     if args.backend == "gpu" and "gpu-accelerated" not in features:
         abort("GPU build receipt lacks the gpu-accelerated feature")
+    selected_cuda_device = None
+    build_receipt_sha256 = None
+    build_environment_sha256 = None
+    if formal_session_id is not None and args.backend == "gpu":
+        selected_cuda_device = gpu_probe["selected_cuda_device"] if isinstance(gpu_probe, dict) else None
+        expected_receipt_sha256 = os.environ.get("EZKL_FORMAL_BUILD_RECEIPT_SHA256")
+        expected_environment_sha256 = os.environ.get("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
+        if not isinstance(selected_cuda_device, dict) or receipt.get("selected_cuda_device") != selected_cuda_device:
+            abort("formal GPU result device does not match its native GPU build receipt")
+        if receipt.get("build_environment", {}).get("selected_cuda_device") != selected_cuda_device:
+            abort("formal GPU build environment does not bind the selected physical device")
+        if not expected_receipt_sha256 or sha256(build_receipt) != expected_receipt_sha256:
+            abort("formal GPU build receipt does not match the current session identity")
+        if not expected_environment_sha256 or receipt.get("build_environment_sha256") != expected_environment_sha256:
+            abort("formal GPU build environment does not match the current session identity")
+        build_receipt_sha256 = expected_receipt_sha256
+        build_environment_sha256 = expected_environment_sha256
     if args.backend == "cpu" and "gpu-accelerated" in features:
         abort("CPU run cannot use a GPU-featured build receipt")
 
@@ -542,6 +617,17 @@ def main(args: argparse.Namespace) -> int:
 
     evidence_path = output / "gpu_evidence.json"
     evidence = validate_gpu_evidence(evidence_path, backend=args.backend)
+    gpu_prover_record_sha256 = None
+    independent_verifier_log_sha256 = sha256(logs / "verify.log")
+    if formal_session_id is not None and args.backend == "gpu":
+        gpu_record_path = output / "gpu_prover_record.json"
+        gpu_record = load_json(gpu_record_path, "native GPU prover record")
+        device_id = gpu_record.get("device_id")
+        if isinstance(device_id, bool) or not isinstance(device_id, int) or device_id != selected_cuda_device["logical_device_id"]:
+            abort("native proof device ordinal does not map to the selected physical CUDA device")
+        if gpu_record.get("proof_sha256") != sha256(proof):
+            abort("native GPU proof record does not bind the current proof artifact")
+        gpu_prover_record_sha256 = sha256(gpu_record_path)
     if core["native_verify_result"] is not True or core["native_public_instance_binding"] is not True:
         abort("native verify/public-instance binding attestation is not successful")
     status = "VERIFY_OK"
@@ -606,6 +692,14 @@ def main(args: argparse.Namespace) -> int:
         },
         "gpu_evidence": evidence,
     }
+    if formal_session_id is not None:
+        result["formal_session_id"] = formal_session_id
+        if args.backend == "gpu":
+            result["selected_cuda_device"] = selected_cuda_device
+            result["build_receipt_sha256"] = build_receipt_sha256
+            result["build_environment_sha256"] = build_environment_sha256
+            result["gpu_prover_record_sha256"] = gpu_prover_record_sha256
+            result["independent_verifier_log_sha256"] = independent_verifier_log_sha256
     (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
     return 0

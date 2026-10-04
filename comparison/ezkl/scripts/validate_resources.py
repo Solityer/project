@@ -16,17 +16,19 @@ import hashlib
 import json
 import os
 import struct
-import subprocess
 import sys
 import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any, NoReturn
 
+import numpy as np
+
 SCHEMA_VERSION = 1
 TABLE_MAGIC = b"EZKL-GAT-TABLES\x00"
 TABLE_FORMAT_VERSION = 1
 TABLE_METADATA_LIMIT = 16 * 1024 * 1024
+TABLE_CHUNK_ROWS = 1 << 20
 MANIFEST_REL = Path("resources/resource_manifest.json")
 CHECKPOINT_DATASETS = {
     "cora_gat": "cora",
@@ -36,6 +38,11 @@ CHECKPOINT_DATASETS = {
     "ogbn_arxiv_gat": "ogbn_arxiv",
 }
 REQUIRED_GENERATED_DATASETS = frozenset(CHECKPOINT_DATASETS.values())
+REQUIRED_GENERATED_PATHS = frozenset(
+    f"resources/canonical/{kind}/{dataset}/{name}"
+    for kind, name in (("tables", "gat_static_tables.bin"), ("ledgers", "gat_integer_ledger.json"))
+    for dataset in REQUIRED_GENERATED_DATASETS
+)
 REQUIRED_TOP_LEVEL = {
     "schema_version",
     "baseline",
@@ -208,7 +215,7 @@ def validate_checkpoint_archive(root: Path, manifest_path: Path, checkpoint: dic
              f"missing={sorted(expected_keys - actual)}, extra={sorted(actual - expected_keys)}")
 
 
-def _npy_contract(path: Path) -> dict[str, Any]:
+def _npy_contract(path: Path, content_sha256: str | None = None) -> dict[str, Any]:
     with path.open("rb") as stream:
         prefix = stream.read(10)
         if len(prefix) < 10 or prefix[:6] != b"\x93NUMPY":
@@ -256,7 +263,7 @@ def _npy_contract(path: Path) -> dict[str, Any]:
         "shape": list(shape),
         "order": "C",
         "length": length,
-        "sha256": digest(path),
+        "sha256": content_sha256 or digest(path),
     }
 
 
@@ -275,8 +282,8 @@ def _parse_cfg(path: Path) -> dict[str, str]:
     return values
 
 
-def validate_npy_contract(root: Path, feature_path: Path) -> None:
-    contract = _npy_contract(feature_path)
+def validate_npy_contract(root: Path, feature_path: Path, content_sha256: str | None = None) -> None:
+    contract = _npy_contract(feature_path, content_sha256)
     meta_path = feature_path.with_name("meta.cfg")
     if not meta_path.is_file() or meta_path.is_symlink():
         fail(f"NPY feature metadata is missing: {meta_path}")
@@ -340,9 +347,24 @@ def _table_canonical_length(metadata: dict[str, Any]) -> int:
         fail(f"invalid static-table metadata: {exc}")
 
 
-def validate_table_archive(path: Path) -> None:
-    """Validate the versioned binary registry without materializing its rows."""
-    with path.open("rb") as stream:
+class DigestReader:
+    def __init__(self, stream: Any) -> None:
+        self.stream = stream
+        self.hasher = hashlib.sha256()
+        self.bytes_read = 0
+
+    def read(self, length: int = -1) -> bytes:
+        data = self.stream.read(length)
+        self.hasher.update(data)
+        self.bytes_read += len(data)
+        return data
+
+
+def validate_table_archive(path: Path) -> str:
+    """Validate the table schema and raw file digest during the same bounded scan."""
+    print(f"[resource-validation] table schema/content scan: {path} ({path.stat().st_size:,} bytes)", flush=True)
+    with path.open("rb") as raw_stream:
+        stream = DigestReader(raw_stream)
         if _read_exact(stream, len(TABLE_MAGIC), "table archive magic", path) != TABLE_MAGIC:
             fail(f"invalid table archive magic: {path}")
         version = struct.unpack("<I", _read_exact(stream, 4, "table archive version", path))[0]
@@ -427,13 +449,32 @@ def validate_table_archive(path: Path) -> None:
             _hash_string(static_hasher, metadata["generator_id"])
             _hash_i128(static_hasher, input_min)
             _hash_i128(static_hasher, input_max)
-            for expected_input in range(input_min, input_max + 1):
-                row = _read_exact(stream, 32, "table row", path)
-                actual_input = int.from_bytes(row[:16], "little", signed=True)
-                if actual_input != expected_input:
-                    fail(f"table row input is not contiguous: {path}")
-                table_hasher.update(row)
-                static_hasher.update(row)
+            input_fits_i64 = -(1 << 63) <= input_min <= input_max <= (1 << 63) - 1
+            expected_input = input_min
+            row_dtype = np.dtype([("low", "<i8"), ("high", "<i8"), ("value", "V16")])
+            for row_offset in range(0, row_count, TABLE_CHUNK_ROWS):
+                chunk_rows = min(TABLE_CHUNK_ROWS, row_count - row_offset)
+                rows = _read_exact(stream, chunk_rows * 32, "table rows", path)
+                records = np.frombuffer(rows, dtype=row_dtype)
+                if input_fits_i64:
+                    # Avoid constructing an exclusive stop of INT64_MAX + 1
+                    # for a valid final key at the signed upper boundary.
+                    expected = np.int64(expected_input) + np.arange(chunk_rows, dtype=np.int64)
+                    if not np.array_equal(records["low"], expected):
+                        fail(f"table row input is not contiguous: {path}")
+                    negative = expected < 0
+                    if np.any(records["high"][negative] != -1) or np.any(records["high"][~negative] != 0):
+                        fail(f"table row input is not canonical signed i128: {path}")
+                else:
+                    for row_index in range(chunk_rows):
+                        start = row_index * 32
+                        actual_input = int.from_bytes(rows[start : start + 16], "little", signed=True)
+                        if actual_input != expected_input + row_index:
+                            fail(f"table row input is not contiguous: {path}")
+                table_hasher.update(rows)
+                static_hasher.update(rows)
+                expected_input += chunk_rows
+                print(f"[resource-validation] table rows {row_offset + chunk_rows:,}/{row_count:,} ({stream.bytes_read:,} archive bytes read)", flush=True)
             table_digest = table_hasher.hexdigest()
             if metadata["digest"] != table_digest:
                 fail(f"table row digest mismatch: {path}")
@@ -442,43 +483,31 @@ def validate_table_archive(path: Path) -> None:
             fail(f"static-table registry digest mismatch: {path}")
         if stream.read(1):
             fail(f"static-table archive has trailing bytes: {path}")
+        return stream.hasher.hexdigest()
 
 
-def source_snapshot(baseline_root: Path) -> dict[str, Any]:
-    snapshot: dict[str, Any] = {"root": str(baseline_root.resolve())}
-    try:
-        snapshot["git_commit"] = subprocess.check_output(
-            ["git", "-C", str(baseline_root), "rev-parse", "HEAD"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        snapshot["git_commit"] = "unknown"
-    try:
-        snapshot["git_tree"] = subprocess.check_output(
-            ["git", "-C", str(baseline_root), "rev-parse", "HEAD^{tree}"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        snapshot["git_tree"] = "unknown"
-    return snapshot
-
-
-def build_manifest(root: Path) -> dict[str, Any]:
+def build_manifest(root: Path, origin_snapshot: dict[str, str]) -> tuple[dict[str, Any], dict[str, str]]:
     entries: list[dict[str, Any]] = []
+    parsed_table_digests: dict[str, str] = {}
     for local in regular_files(root):
         local_rel = local.relative_to(root)
+        local_text = local_rel.as_posix()
         source, dataset, role = source_for(local_rel, root)
         if not source.is_file():
             fail(f"source file for {local_rel} is missing: {source}")
+        if local_text.endswith("/gat_static_tables.bin"):
+            local_digest = validate_table_archive(local)
+            parsed_table_digests[local_text] = local_digest
+        else:
+            local_digest = digest(local)
+        source_digest = local_digest if source.resolve() == local.resolve() else digest(source)
         entries.append(
             {
-                "path": local_rel.as_posix(),
+                "path": local_text,
                 "size": local.stat().st_size,
-                "sha256": digest(local),
+                "sha256": local_digest,
                 "source_path": str(source.resolve()),
-                "source_sha256": digest(source),
+                "source_sha256": source_digest,
                 "dataset": dataset,
                 "role": role,
             }
@@ -487,9 +516,23 @@ def build_manifest(root: Path) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "baseline": "ezkl",
         "resource_root": "resources/canonical",
-        "source_snapshot": source_snapshot(root),
+        "source_snapshot": origin_snapshot,
         "files": entries,
-    }
+    }, parsed_table_digests
+
+
+def preserved_source_snapshot(root: Path, old_manifest: dict[str, Any]) -> dict[str, str]:
+    """Carry forward the authenticated origin snapshot without invoking Git."""
+    snapshot = old_manifest.get("source_snapshot")
+    if not isinstance(snapshot, dict) or set(snapshot) != {"root", "git_commit", "git_tree"}:
+        fail("existing resource manifest has no complete origin source_snapshot")
+    if snapshot.get("root") != str(root.resolve()):
+        fail("existing resource manifest source_snapshot.root does not match this baseline")
+    for key in ("git_commit", "git_tree"):
+        value = snapshot.get(key)
+        if not isinstance(value, str) or len(value) not in (40, 64) or any(char not in "0123456789abcdef" for char in value):
+            fail(f"existing resource manifest source_snapshot.{key} is not a recorded hex identity")
+    return {key: snapshot[key] for key in ("root", "git_commit", "git_tree")}
 
 
 def safe_relative(root: Path, relative: str) -> Path:
@@ -504,7 +547,14 @@ def safe_relative(root: Path, relative: str) -> Path:
     return resolved
 
 
-def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool) -> None:
+def validate_manifest(
+    root: Path,
+    manifest: dict[str, Any],
+    verify_source: bool,
+    *,
+    inputs_only: bool = False,
+    parsed_table_digests: dict[str, str] | None = None,
+) -> None:
     if set(manifest) != REQUIRED_TOP_LEVEL:
         fail("manifest top-level schema is not exact")
     if manifest["schema_version"] != SCHEMA_VERSION or manifest["baseline"] != "ezkl":
@@ -513,9 +563,18 @@ def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool)
         fail("resource_root is not baseline-local")
     if not isinstance(manifest["source_snapshot"], dict):
         fail("source_snapshot must be an object")
-    snapshot_root = manifest["source_snapshot"].get("root")
+    snapshot = manifest["source_snapshot"]
+    if set(snapshot) != {"root", "git_commit", "git_tree"}:
+        fail("source_snapshot schema mismatch")
+    snapshot_root = snapshot.get("root")
     if not isinstance(snapshot_root, str):
         fail("source_snapshot.root must be a string")
+    if snapshot_root != str(root.resolve()):
+        fail("source_snapshot.root does not match this baseline")
+    for key in ("git_commit", "git_tree"):
+        value = snapshot.get(key)
+        if not isinstance(value, str) or len(value) not in (40, 64) or any(char not in "0123456789abcdef" for char in value):
+            fail(f"source_snapshot.{key} is not a recorded hex identity")
     try:
         Path(snapshot_root).resolve(strict=True).relative_to(root.resolve())
     except (OSError, ValueError) as exc:
@@ -523,7 +582,9 @@ def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool)
     files = manifest["files"]
     if not isinstance(files, list) or not files:
         fail("files must contain at least one canonical entry")
+    expected_paths = {path.relative_to(root).as_posix() for path in regular_files(root)}
     seen: set[str] = set()
+    validated_entries: list[tuple[dict[str, Any], Path, Path]] = []
     for entry in files:
         if not isinstance(entry, dict) or set(entry) != REQUIRED_FILE_KEYS:
             fail("file entry schema is not exact")
@@ -531,22 +592,29 @@ def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool)
         if not isinstance(path_text, str) or path_text in seen:
             fail(f"duplicate or malformed manifest path: {path_text!r}")
         seen.add(path_text)
-        local = safe_relative(root, path_text)
-        if not local.is_file() or local.is_symlink():
-            fail(f"manifest file is missing or symlink: {path_text}")
-        if not isinstance(entry["size"], int) or entry["size"] < 0:
+        relative = Path(path_text)
+        generated = relative.parts[:3] in {("resources", "canonical", "tables"), ("resources", "canonical", "ledgers")}
+        if generated:
+            valid_table = relative.parts[:3] == ("resources", "canonical", "tables") and len(relative.parts) == 5 and relative.name == "gat_static_tables.bin"
+            valid_ledger = relative.parts[:3] == ("resources", "canonical", "ledgers") and len(relative.parts) == 5 and relative.name == "gat_integer_ledger.json"
+            if not (valid_table or valid_ledger) or relative.parts[3] not in REQUIRED_GENERATED_DATASETS:
+                fail(f"unexpected generated resource path: {path_text}")
+        if not isinstance(entry["size"], int) or isinstance(entry["size"], bool) or entry["size"] < 0:
             fail(f"invalid size for {path_text}")
-        if local.stat().st_size != entry["size"]:
-            fail(f"size mismatch for {path_text}")
         for key in ("sha256", "source_sha256"):
             value = entry[key]
             if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
                 fail(f"invalid {key} for {path_text}")
-        if digest(local) != entry["sha256"]:
-            fail(f"local SHA-256 mismatch for {path_text}")
         if not isinstance(entry["source_path"], str) or not os.path.isabs(entry["source_path"]):
             fail(f"source_path is not absolute metadata for {path_text}")
         source = Path(entry["source_path"])
+        expected_source, expected_dataset, expected_role = source_for(relative, root)
+        if source.resolve() != expected_source.resolve() or entry["dataset"] != expected_dataset or entry["role"] != expected_role:
+            fail(f"manifest dataset/role/source provenance mismatch for {path_text}")
+        if not isinstance(entry["dataset"], str) or not entry["dataset"] or not isinstance(entry["role"], str) or not entry["role"]:
+            fail(f"manifest dataset/role metadata is missing for {path_text}")
+        if "qat_best_logits" in path_text:
+            fail("qat_best_logits is not a formal resource")
         try:
             source_resolved = source.resolve(strict=True)
             source_resolved.relative_to(root.resolve())
@@ -554,42 +622,55 @@ def validate_manifest(root: Path, manifest: dict[str, Any], verify_source: bool)
             fail(f"source_path escapes baseline or is missing for {path_text}: {source} ({exc})")
         if source.is_symlink() or not source.is_file():
             fail(f"source_path is not a baseline-local regular file for {path_text}: {source}")
-        expected_source, expected_dataset, expected_role = source_for(Path(path_text), root)
-        if source.resolve() != expected_source.resolve():
-            fail(f"source_path does not match baseline provenance for {path_text}")
-        if entry["dataset"] != expected_dataset or entry["role"] != expected_role:
-            fail(f"manifest dataset/role provenance mismatch for {path_text}")
-        if digest(source) != entry["source_sha256"]:
+        if inputs_only and generated:
+            continue
+        local = safe_relative(root, path_text)
+        if not local.is_file() or local.is_symlink():
+            fail(f"manifest file is missing or symlink: {path_text}")
+        if local.stat().st_size != entry["size"]:
+            fail(f"size mismatch for {path_text}")
+        validated_entries.append((entry, local, source))
+    ignored_generated = REQUIRED_GENERATED_PATHS if inputs_only else frozenset()
+    validated_seen = seen - ignored_generated
+    validated_expected = expected_paths - ignored_generated
+    if validated_seen != validated_expected:
+        missing = sorted(validated_expected - validated_seen)
+        extra = sorted(validated_seen - validated_expected)
+        fail(f"manifest file set mismatch; missing={missing}, extra={extra}")
+    for index, (entry, local, source) in enumerate(validated_entries, 1):
+        path_text = entry["path"]
+        print(f"[resource-validation] content {index}/{len(validated_entries)}: {path_text} ({entry['size']:,} bytes)", flush=True)
+        if path_text.endswith("/gat_static_tables.bin"):
+            # A manifest refresh just parsed this exact table and bound the
+            # complete raw SHA-256. Reuse that content-authenticated result in
+            # this same process; ordinary validation always parses and hashes
+            # in one pass below.
+            cached_digest = parsed_table_digests.get(path_text) if parsed_table_digests is not None else None
+            if cached_digest is not None:
+                file_digest = cached_digest
+            else:
+                file_digest = validate_table_archive(local)
+        else:
+            file_digest = digest(local)
+        if file_digest != entry["sha256"]:
+            fail(f"local SHA-256 mismatch for {path_text}")
+        source_digest = file_digest if source.resolve() == local.resolve() else digest(source)
+        if source_digest != entry["source_sha256"]:
             fail(f"source SHA-256 mismatch for {path_text}: {source}")
-        if not isinstance(entry["dataset"], str) or not entry["dataset"]:
-            fail(f"dataset metadata missing for {path_text}")
-        if not isinstance(entry["role"], str) or not entry["role"]:
-            fail(f"role metadata missing for {path_text}")
-        if "qat_best_logits" in path_text:
-            fail("qat_best_logits is not a formal resource")
+        if path_text.endswith("/features.npy"):
+            validate_npy_contract(root, local, file_digest)
         if path_text.endswith("/manifest.json"):
             try:
                 checkpoint_manifest = json.loads(local.read_text())
             except (OSError, json.JSONDecodeError) as exc:
                 fail(f"invalid checkpoint manifest {path_text}: {exc}")
-            prefix = checkpoint_manifest.get("checkpoint_prefix")
-            if prefix != "best_model.pt":
+            if checkpoint_manifest.get("checkpoint_prefix") != "best_model.pt":
                 fail(f"checkpoint_prefix is not bundle-local in {path_text}")
-            expected_dataset = CHECKPOINT_DATASETS.get(Path(path_text).parts[3])
-            if checkpoint_manifest.get("dataset") != expected_dataset:
+            if checkpoint_manifest.get("dataset") != CHECKPOINT_DATASETS.get(Path(path_text).parts[3]):
                 fail(f"checkpoint dataset identity mismatch in {path_text}")
             validate_checkpoint_archive(root, local, checkpoint_manifest)
-        if path_text.endswith("/features.npy"):
-            validate_npy_contract(root, local)
-        if path_text.endswith("/gat_static_tables.bin"):
-            validate_table_archive(local)
-        if verify_source:
-            pass
-    expected = {p.relative_to(root).as_posix() for p in regular_files(root)}
-    if seen != expected:
-        missing = sorted(expected - seen)
-        extra = sorted(seen - expected)
-        fail(f"manifest file set mismatch; missing={missing}, extra={extra}")
+        # ``verify_source`` remains accepted for compatibility. Baseline-local
+        # source files are always hashed above; no external source is read.
 
 
 def require_complete_resource_set(root: Path, manifest: dict[str, Any]) -> None:
@@ -636,6 +717,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write-manifest", action="store_true")
     parser.add_argument("--verify-source", action="store_true")
+    parser.add_argument("--validate-inputs-only", action="store_true", help="authenticate canonical cache/config/checkpoint inputs while allowing generated tables/ledgers to be absent")
     parser.add_argument(
         "--require-complete",
         action="store_true",
@@ -649,18 +731,61 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     manifest_path = root / MANIFEST_REL
+    authenticated_file_identities_before: tuple[tuple[str, tuple[int, int, int, int, int]], ...] | None = None
     if args.write_manifest:
-        manifest = build_manifest(root)
+        if not manifest_path.is_file():
+            fail(f"cannot refresh manifest without an authenticated origin snapshot: {manifest_path}")
+        try:
+            old_manifest = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            fail(f"cannot parse existing resource manifest before refresh: {exc}")
+        if not isinstance(old_manifest, dict):
+            fail("existing resource manifest must be a JSON object before refresh")
+        print("[resource-validation] authenticate existing non-generated inputs before manifest refresh", flush=True)
+        validate_manifest(root, old_manifest, args.verify_source, inputs_only=True)
+        origin_snapshot = preserved_source_snapshot(root, old_manifest)
+        from formal_common import resource_file_identities_for_paths
+
+        snapshot_paths: list[Path] = []
+        for local in regular_files(root):
+            source, _, _ = source_for(local.relative_to(root), root)
+            snapshot_paths.extend((local, source))
+        authenticated_file_identities_before = resource_file_identities_for_paths(snapshot_paths)
+        manifest, parsed_table_digests = build_manifest(root, origin_snapshot)
         atomic_manifest_write(manifest_path, manifest)
+    else:
+        parsed_table_digests = None
     if not manifest_path.is_file():
         fail(f"missing manifest: {manifest_path}")
     try:
         manifest = json.loads(manifest_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         fail(f"cannot parse manifest: {exc}")
-    validate_manifest(root, manifest, args.verify_source)
+    if not isinstance(manifest, dict):
+        fail("resource manifest must be a JSON object")
+    if args.validate_inputs_only and args.require_complete:
+        fail("--validate-inputs-only cannot be combined with --require-complete")
+    print(f"[resource-validation] schema=1 manifest={manifest_path} entries={len(manifest.get('files', []))} inputs_only={args.validate_inputs_only}", flush=True)
     if args.require_complete:
         require_complete_resource_set(root, manifest)
+        from formal_common import (
+            DATASETS,
+            FORMAL_SESSION_ID,
+            resource_file_identities,
+            resource_manifest_hash,
+            sha256,
+            source_tree_hash,
+        )
+
+        if authenticated_file_identities_before is None:
+            authenticated_file_identities_before = resource_file_identities()
+    validate_manifest(
+        root,
+        manifest,
+        args.verify_source,
+        inputs_only=args.validate_inputs_only,
+        parsed_table_digests=parsed_table_digests,
+    )
     if args.require_native_srs:
         try:
             from formal_common import validate_native_srs_manifest
@@ -669,6 +794,29 @@ def main() -> int:
         except Exception as exc:
             fail(f"native SRS provenance validation failed: {exc}")
     print(f"resource manifest valid: {len(manifest['files'])} files")
+    if args.require_complete:
+        authenticated_file_identities_after = resource_file_identities()
+        if authenticated_file_identities_before != authenticated_file_identities_after:
+            fail("manifest-listed resource files changed during complete authentication")
+        session_id = os.environ.get("EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID")
+        if session_id:
+            if not FORMAL_SESSION_ID.fullmatch(session_id):
+                fail("formal resource-authentication handoff has an invalid session identity")
+            config_sha256s = [
+                [dataset, sha256(root / "resources/canonical/configs" / f"{dataset}_secure.cfg")]
+                for dataset in DATASETS
+            ]
+            marker = {
+                "schema_version": 1,
+                "authenticated": "complete_resource_manifest",
+                "session_id": session_id,
+                "source_tree_sha256": source_tree_hash(),
+                "config_sha256s": config_sha256s,
+                "resource_manifest_sha256": resource_manifest_hash(),
+                "resource_file_identities_before": authenticated_file_identities_before,
+                "resource_file_identities_after": authenticated_file_identities_after,
+            }
+            print("EZKL_FORMAL_RESOURCE_AUTH_V1=" + json.dumps(marker, sort_keys=True, separators=(",", ":")), flush=True)
     return 0
 
 

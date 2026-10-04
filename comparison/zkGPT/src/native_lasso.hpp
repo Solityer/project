@@ -69,6 +69,12 @@ struct NativeLassoCapacityProfile {
     std::uint64_t full_domain = 0;
     std::uint64_t rows = 0;
     std::uint64_t columns = 0;
+    std::uint64_t row_commitment_chunk_count = 0;
+    std::uint64_t booleanity_rounds = 0;
+    std::uint64_t onehot_rounds = 0;
+    std::uint64_t lookup_rounds = 0;
+    std::uint64_t hyrax_matrix_masked_openings = 4;
+    std::uint64_t hyrax_l_qry_tensor_openings = 1;
     bool t2_booleanity = false;
     std::uint64_t private_witness_entries = 0;
     std::uint64_t private_witness_element_bytes = 0;
@@ -78,9 +84,19 @@ struct NativeLassoCapacityProfile {
     std::uint64_t column_generator_bytes = 0;
     std::uint64_t row_fold_weights_bytes = 0;
     std::uint64_t row_fold_values_bytes = 0;
+    // One retained std::vector over table_domain (selected_table_row_mle result).
+    std::uint64_t onehot_query_bytes = 0;
+    // T2-only NativeFieldVector over padded_queries, live during weighted Booleanity.
+    std::uint64_t t2_column_one_bytes = 0;
+    // Ordinary onehot fold's simultaneously live left/current/next std::vectors.
+    std::uint64_t onehot_heap_peak_bytes = 0;
+    std::uint64_t masked_opening_generator_bytes = 0;
+    std::uint64_t masked_opening_coefficient_bytes = 0;
+    std::uint64_t masked_opening_response_bytes = 0;
     std::uint64_t row_ledger_retained_bytes = 0;
     std::uint64_t commit_peak_bytes = 0;
     std::uint64_t booleanity_peak_bytes = 0;
+    std::uint64_t row_fold_peak_bytes = 0;
     std::uint64_t opening_peak_bytes = 0;
     std::uint64_t family_peak_bytes = 0;
 };

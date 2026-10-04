@@ -39,8 +39,26 @@ using i64 = std::int64_t;
 
 constexpr u64 kMaxStaticTableRows = 1ULL << 27;
 constexpr u64 kMaxLedgerFamilies = 4096;
+constexpr u64 kMaxNativeDomain = 1ULL << 30;
 
 [[noreturn]] void fail(const std::string &message) { throw std::runtime_error("zkdl-gat: " + message); }
+
+std::uint32_t checked_native_domain_u32(u64 value, const std::string &label, bool allow_zero = false) {
+    if ((!allow_zero && value == 0U) || value > kMaxNativeDomain || value > std::numeric_limits<std::uint32_t>::max())
+        fail("BLOCKED: " + label + " exceeds the native u32 domain bound");
+    return static_cast<std::uint32_t>(value);
+}
+
+u64 checked_shape_product(const std::vector<u64> &shape, const std::string &label) {
+    if (shape.empty()) fail("empty relation shape: " + label);
+    u64 product = 1U;
+    for (const u64 dimension : shape) {
+        if (dimension == 0U || product > kMaxNativeDomain / dimension)
+            fail("relation shape product exceeds native coordinate bound: " + label);
+        product *= dimension;
+    }
+    return product;
+}
 
 std::string trim(std::string value) {
     const auto first = value.find_first_not_of(" \t\r\n");
@@ -71,16 +89,29 @@ std::map<std::string, std::string> read_kv(const std::filesystem::path &path) {
     return result;
 }
 
+u64 parse_decimal_u64(const std::string &text, const std::string &what);
+
 u64 parse_u64(const std::string &text, const std::string &what) {
+    return parse_decimal_u64(text, what);
+}
+
+u64 parse_decimal_u64(const std::string &text, const std::string &what) {
     const std::string value_text = trim(text);
-    if (value_text.empty() || value_text.front() == '-') { fail("invalid unsigned integer for " + what + ": " + text); }
-    std::size_t used = 0;
-    unsigned long long value = 0;
-    try {
-        value = std::stoull(value_text, &used, 0);
-    } catch (...) { fail("invalid unsigned integer for " + what + ": " + text); }
-    if (used != value_text.size()) fail("invalid trailing characters for " + what + ": " + text);
-    return static_cast<u64>(value);
+    if (value_text.empty() || (value_text.size() > 1U && value_text.front() == '0'))
+        fail("invalid canonical decimal integer for " + what + ": " + text);
+    u64 value = 0U;
+    for (const char digit_char : value_text) {
+        if (digit_char < '0' || digit_char > '9') fail("invalid decimal integer for " + what + ": " + text);
+        const u64 digit = static_cast<u64>(digit_char - '0');
+        if (value > (std::numeric_limits<u64>::max() - digit) / 10U) fail("decimal integer overflow for " + what);
+        value = value * 10U + digit;
+    }
+    return value;
+}
+
+bool canonical_decimal_float(const std::string &text) {
+    static const std::regex decimal_float(R"([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)");
+    return std::regex_match(text, decimal_float);
 }
 
 i64 parse_i64(const std::string &text, const std::string &what) {
@@ -600,7 +631,8 @@ i64 rounded_float(double value, u64 scale, const std::string &what) {
     if (!std::isfinite(value)) fail("non-finite model value in " + what);
     const long double scaled = static_cast<long double>(value) * static_cast<long double>(scale);
     const long double rounded = scaled >= 0 ? std::floor(scaled + 0.5L) : std::ceil(scaled - 0.5L);
-    if (rounded < static_cast<long double>(std::numeric_limits<i64>::min()) || rounded > static_cast<long double>(std::numeric_limits<i64>::max())) {
+    const long double signed_i64_limit = std::ldexp(1.0L, 63);
+    if (rounded < -signed_i64_limit || rounded >= signed_i64_limit) {
         fail("quantization overflow in " + what);
     }
     return static_cast<i64>(rounded);
@@ -621,6 +653,7 @@ Matrix concat_columns(const std::vector<Matrix> &matrices) {
     u64 cols = 0;
     for (const auto &matrix : matrices) {
         if (matrix.rows != rows) fail("concat row mismatch");
+        if (matrix.cols > std::numeric_limits<u64>::max() - cols) fail("concat column count overflows native width");
         cols += matrix.cols;
     }
     Matrix output = make_matrix(rows, cols);
@@ -647,7 +680,9 @@ Matrix quantized_tensor_matrix(const ModelBundle &model, const std::string &name
     if (tensor.shape.size() < 2) fail("tensor is not matrix-shaped: " + name);
     const u64 rows = tensor.shape[tensor.shape.size() - 2];
     const u64 cols = tensor.shape.back();
-    if (tensor.values.size() != rows * cols) fail("tensor count mismatch: " + name);
+    if (rows != 0U && cols > std::numeric_limits<u64>::max() / rows) fail("tensor matrix product overflows native width: " + name);
+    const u64 tensor_count = rows * cols;
+    if (tensor.values.size() != tensor_count || tensor_count > kMaxNativeDomain) fail("tensor count mismatch or exceeds native domain: " + name);
     Matrix output = make_matrix(rows, cols);
     for (u64 row = 0; row < rows; ++row) {
         for (u64 col = 0; col < cols; ++col) { output.at(row, col) = rounded_float(tensor.values[static_cast<std::size_t>(row * cols + col)], scale, name); }
@@ -1271,21 +1306,38 @@ struct RawEdge {
 std::vector<float> load_npy_float32(const std::filesystem::path &path, u64 expected_rows, u64 expected_cols) {
     std::ifstream input(path, std::ios::binary);
     if (!input) fail("cannot open numpy feature file " + path.string());
-    std::array<unsigned char, 10> preamble{};
+    std::array<unsigned char, 8> preamble{};
     input.read(reinterpret_cast<char *>(preamble.data()), static_cast<std::streamsize>(preamble.size()));
     if (input.gcount() != static_cast<std::streamsize>(preamble.size()) || preamble[0] != 0x93 || preamble[1] != 'N' || preamble[2] != 'U' ||
         preamble[3] != 'M' || preamble[4] != 'P' || preamble[5] != 'Y') {
         fail("invalid numpy magic in " + path.string());
     }
     const unsigned version_major = preamble[6];
+    const unsigned version_minor = preamble[7];
+    if (version_minor != 0 || (version_major != 1 && version_major != 2)) {
+        fail("unsupported numpy format version in " + path.string());
+    }
     const std::size_t length_size = version_major == 1 ? 2 : 4;
+    std::array<unsigned char, 4> length_bytes{};
+    input.read(reinterpret_cast<char *>(length_bytes.data()), static_cast<std::streamsize>(length_size));
+    if (input.gcount() != static_cast<std::streamsize>(length_size)) fail("truncated numpy header length");
     std::uint32_t header_size = 0;
-    for (std::size_t i = 0; i < length_size; ++i) header_size |= static_cast<std::uint32_t>(preamble[8 + i]) << (8U * i);
+    for (std::size_t i = 0; i < length_size; ++i) header_size |= static_cast<std::uint32_t>(length_bytes[i]) << (8U * i);
+    if (header_size == 0 || header_size > 65536U) fail("numpy header size is outside the supported bound");
     std::string header(header_size, '\0');
     input.read(header.data(), static_cast<std::streamsize>(header.size()));
     if (input.gcount() != static_cast<std::streamsize>(header.size())) fail("truncated numpy header");
-    if (header.find("'descr': '<f4'") == std::string::npos && header.find("\"descr\": \"<f4\"") == std::string::npos &&
-        header.find("'descr': '|f4'") == std::string::npos)
+    const auto key_occurrences = [&header](const std::string &key) {
+        std::size_t count = 0U, position = 0U;
+        while ((position = header.find(key, position)) != std::string::npos) { ++count; position += key.size(); }
+        return count;
+    };
+    if (key_occurrences("'descr'") + key_occurrences("\"descr\"") != 1U ||
+        key_occurrences("'fortran_order'") + key_occurrences("\"fortran_order\"") != 1U ||
+        key_occurrences("'shape'") + key_occurrences("\"shape\"") != 1U) {
+        fail("numpy feature header contains duplicate/missing formal keys");
+    }
+    if (header.find("'descr': '<f4'") == std::string::npos && header.find("\"descr\": \"<f4\"") == std::string::npos)
         fail("numpy feature dtype is not little-endian float32");
     if (header.find("fortran_order': False") == std::string::npos && header.find("fortran_order\": False") == std::string::npos) {
         fail("numpy feature array must be C-contiguous");
@@ -1299,12 +1351,19 @@ std::vector<float> load_npy_float32(const std::filesystem::path &path, u64 expec
     std::stringstream shape_stream(shape);
     std::string row_text, col_text;
     if (!std::getline(shape_stream, row_text, ',') || !std::getline(shape_stream, col_text, ',')) fail("numpy rank is not two");
-    const u64 rows = parse_u64(trim(row_text), "numpy rows");
-    const u64 cols = parse_u64(trim(col_text), "numpy cols");
+    const u64 rows = parse_decimal_u64(trim(row_text), "numpy rows");
+    const u64 cols = parse_decimal_u64(trim(col_text), "numpy cols");
     if (rows != expected_rows || cols != expected_cols) fail("numpy feature shape mismatch");
-    std::vector<float> values(static_cast<std::size_t>(rows * cols));
+    if (rows != 0U && cols > static_cast<u64>(std::numeric_limits<std::size_t>::max()) / rows) fail("numpy feature element count overflows address space");
+    const u64 value_count = rows * cols;
+    if (value_count > static_cast<u64>(std::numeric_limits<std::size_t>::max() / sizeof(float)) ||
+        value_count > static_cast<u64>(std::numeric_limits<std::streamsize>::max() / static_cast<std::streamsize>(sizeof(float)))) {
+        fail("numpy feature payload exceeds native read bounds");
+    }
+    std::vector<float> values(static_cast<std::size_t>(value_count));
     input.read(reinterpret_cast<char *>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(float)));
     if (input.gcount() != static_cast<std::streamsize>(values.size() * sizeof(float))) fail("truncated numpy feature payload");
+    if (input.peek() != std::char_traits<char>::eof()) fail("numpy feature payload has trailing bytes");
     return values;
 }
 
@@ -1476,13 +1535,14 @@ IntegerBoundFamily parse_ledger_family(const std::string &object) {
 }
 
 void validate_ledger_identity(const Config &config, const StaticTables &tables, const IntegerBoundLedger &ledger) {
-    if (!ledger.authenticated || ledger.schema != "zkDL_gat_integer_bound_ledger_v1" || ledger.ledger_id.empty() ||
+    if (!ledger.authenticated || ledger.schema != "zkDL_gat_integer_bound_ledger_v1" ||
+        ledger.ledger_id.empty() || ledger.degree_bound_id.empty() ||
         ledger.quant_cfg_id != config.quant_cfg_id || ledger.static_table_id != config.static_table_id || ledger.field_modulus != scalar_modulus_decimal() ||
         ledger.scale_chain_digest != config.scale_chain_digest || ledger.static_table_descriptor_digest != tables.descriptor_digest) {
         fail("authenticated integer-bound ledger identity mismatch");
     }
-    if (config.degree_bound_id == "auto" || config.degree_bound_id != ledger.ledger_id) {
-        fail("BLOCKED: secure config does not bind the authenticated integer-bound ledger id");
+    if (config.degree_bound_id == "auto" || config.degree_bound_id != ledger.degree_bound_id) {
+        fail("BLOCKED: secure config does not bind the ledger's authenticated degree bound id");
     }
     for (const auto value : {ledger.max_score_abs, ledger.max_table_output_abs, ledger.max_delta, ledger.max_exp, ledger.max_sum, ledger.max_aggregate_num,
                              ledger.max_dividend_abs, ledger.max_aux_abs, ledger.max_divisor}) {
@@ -1533,6 +1593,7 @@ IntegerBoundLedger load_integer_bound_ledger(const Config &config, const StaticT
     if (json_scalar(text, "schema") != "zkDL_gat_integer_bound_ledger_v1") fail("integer-bound ledger schema mismatch");
     ledger.schema = json_scalar(text, "schema");
     ledger.ledger_id = json_scalar(text, "ledger_id");
+    ledger.degree_bound_id = json_scalar(text, "degree_bound_id");
     ledger.quant_cfg_id = json_scalar(text, "quant_cfg_id");
     ledger.static_table_id = json_scalar(text, "static_table_id");
     ledger.field_modulus = json_scalar(text, "field_modulus");
@@ -2216,10 +2277,10 @@ Graph load_graph(const Config &config) {
         return iterator->second;
     };
     if (metadata_value("name") != config.dataset) fail("cache dataset name mismatch");
-    const u64 nodes = parse_u64(metadata_value("num_nodes"), "num_nodes");
-    const u64 features = parse_u64(metadata_value("num_features"), "num_features");
+    const u64 nodes = parse_decimal_u64(metadata_value("num_nodes"), "num_nodes");
+    const u64 features = parse_decimal_u64(metadata_value("num_features"), "num_features");
     if (metadata_value("input_preprocess_id") != config.input_preprocess_id) fail("cache input_preprocess_id mismatch");
-    if (metadata.count("num_classes") && parse_u64(metadata.at("num_classes"), "num_classes") != config.architecture.classes) {
+    if (metadata.count("num_classes") && parse_decimal_u64(metadata.at("num_classes"), "num_classes") != config.architecture.classes) {
         fail("cache class count mismatch");
     }
     if (metadata.count("task_type") && metadata.at("task_type") != config.task_type) fail("cache task_type mismatch");
@@ -2229,8 +2290,17 @@ Graph load_graph(const Config &config) {
     graph.total_nodes = nodes;
     graph.nodes = nodes;
     graph.features = features;
-    graph.graphs = metadata.count("graph_count") ? parse_u64(metadata.at("graph_count"), "graph_count") : 1;
-    if (graph.graphs == 0) fail("graph_count must be positive");
+    graph.graphs = metadata.count("graph_count") ? parse_decimal_u64(metadata.at("graph_count"), "graph_count") : 1;
+    if (nodes == 0U || nodes > kMaxNativeDomain || features == 0U || features > kMaxNativeDomain || graph.graphs == 0U || graph.graphs > kMaxNativeDomain) fail("graph node/feature/count exceeds native domain bounds");
+    const auto padded_axis = [](u64 value, const std::string &label) {
+        if (value == 0U || value > kMaxNativeDomain) fail(label + " exceeds native domain bounds");
+        u64 result = 1U;
+        while (result < value) result <<= 1U;
+        return result;
+    };
+    const u64 input_domain_rows = padded_axis(nodes, "graph node count");
+    const u64 input_domain_features = padded_axis(features, "graph feature count");
+    if (input_domain_rows > kMaxNativeDomain / input_domain_features) fail("input feature relation domain exceeds native coordinate bound");
     if (config.dataset != "ppi" && graph.graphs != 1) { fail("non-PPI canonical graph must contain exactly one graph"); }
     graph.absolute_ids.resize(nodes);
     std::iota(graph.absolute_ids.begin(), graph.absolute_ids.end(), 0);
@@ -2239,8 +2309,8 @@ Graph load_graph(const Config &config) {
         graph.node_ptr.clear();
         std::ifstream ptr(directory / "node_ptr.txt");
         if (!ptr) fail("missing PPI node_ptr");
-        u64 value = 0;
-        while (ptr >> value) graph.node_ptr.push_back(value);
+        std::string token;
+        while (ptr >> token) graph.node_ptr.push_back(parse_decimal_u64(token, "PPI node_ptr"));
         if (graph.node_ptr.size() != graph.graphs + 1 || graph.node_ptr.empty() || graph.node_ptr.front() != 0 || graph.node_ptr.back() != nodes)
             fail("PPI node_ptr mismatch");
         for (std::size_t index = 1; index < graph.node_ptr.size(); ++index) {
@@ -2267,23 +2337,34 @@ Graph load_graph(const Config &config) {
     } else {
         std::ifstream input(directory / "features.txt");
         if (!input) fail("missing sparse feature file");
-        u64 rows = 0, cols = 0;
-        input >> rows >> cols;
+        std::string shape_line;
+        if (!std::getline(input, shape_line)) fail("missing sparse feature shape line");
+        std::stringstream shape_tokens(shape_line);
+        std::string rows_text, cols_text, trailing_shape_token;
+        if (!(shape_tokens >> rows_text >> cols_text) || (shape_tokens >> trailing_shape_token))
+            fail("sparse feature shape line must contain exactly two decimal axes");
+        const u64 rows = parse_decimal_u64(rows_text, "sparse feature rows");
+        const u64 cols = parse_decimal_u64(cols_text, "sparse feature columns");
         if (rows != nodes || cols != features) fail("sparse feature shape mismatch");
         std::string line;
-        std::getline(input, line);
         for (u64 row = 0; row < nodes; ++row) {
             if (!std::getline(input, line)) fail("truncated sparse feature file");
             std::stringstream tokens(line);
             std::string token;
             long double sum = 0;
             std::vector<std::pair<u64, double>> entries;
+            std::set<u64> columns;
             while (tokens >> token) {
                 const auto colon = token.find(':');
                 if (colon == std::string::npos) fail("malformed sparse feature token");
-                const u64 column = parse_u64(token.substr(0, colon), "sparse feature index");
+                const u64 column = parse_decimal_u64(token.substr(0, colon), "sparse feature index");
                 if (column >= features) fail("sparse feature index out of range");
-                const double value = std::stod(token.substr(colon + 1));
+                if (!columns.insert(column).second) fail("duplicate sparse feature column");
+                const std::string raw_value = token.substr(colon + 1);
+                if (!canonical_decimal_float(raw_value)) fail("sparse feature value is not a complete decimal float");
+                std::size_t consumed = 0U;
+                const double value = std::stod(raw_value, &consumed);
+                if (consumed != raw_value.size()) fail("sparse feature value has trailing characters");
                 if (!std::isfinite(value)) fail("non-finite sparse feature");
                 entries.emplace_back(column, value);
                 sum += value;
@@ -2302,35 +2383,40 @@ Graph load_graph(const Config &config) {
     std::set<std::tuple<u64, u64, u64>> seen;
     std::string line;
     u64 ordinal = 0;
+    const auto append_edge = [&](u64 gid, u64 src, u64 dst) {
+        if (config.deduplicate_edges && !seen.emplace(gid, src, dst).second) return false;
+        if (edges.size() >= static_cast<std::size_t>(kMaxNativeDomain / 2U)) fail("normalized edge count exceeds native sparse-route domain bound");
+        edges.push_back({gid, src, dst, ordinal++});
+        return true;
+    };
     while (std::getline(edges_file, line)) {
         line = trim(line);
         if (line.empty()) continue;
         std::stringstream stream(line);
         std::vector<u64> values;
-        u64 value = 0;
-        while (stream >> value) values.push_back(value);
+        std::string token;
+        while (stream >> token) values.push_back(parse_decimal_u64(token, "edge id/endpoint"));
         if ((config.dataset == "ppi" && values.size() != 3) || (config.dataset != "ppi" && values.size() != 2)) fail("malformed edge row");
         const u64 gid = config.dataset == "ppi" ? values[0] : 0;
         if (config.dataset == "ppi" && gid >= graph.graphs) fail("PPI edge graph id out of range");
         if (config.dataset == "ppi") {
-            const u64 graph_nodes = graph.node_ptr.at(gid + 1) - graph.node_ptr.at(gid);
-            if (values[1] >= graph_nodes || values[2] >= graph_nodes) fail("PPI edge local endpoint out of range");
+            const u64 graph_begin = graph.node_ptr.at(gid);
+            const u64 graph_end = graph.node_ptr.at(gid + 1U);
+            if (values[1] < graph_begin || values[1] >= graph_end || values[2] < graph_begin || values[2] >= graph_end)
+                fail("PPI global edge endpoint ownership mismatch");
         }
-        const u64 source = config.dataset == "ppi" ? graph.node_ptr.at(gid) + values[1] : values[0];
-        const u64 destination = config.dataset == "ppi" ? graph.node_ptr.at(gid) + values[2] : values[1];
+        const u64 source = config.dataset == "ppi" ? values[1] : values[0];
+        const u64 destination = config.dataset == "ppi" ? values[2] : values[1];
         if (source >= nodes || destination >= nodes) fail("edge endpoint out of range");
-        const auto add = [&](u64 src, u64 dst) {
-            if (config.deduplicate_edges && !seen.emplace(gid, src, dst).second) return;
-            edges.push_back({gid, src, dst, ordinal++});
-        };
-        add(source, destination);
-        if (config.symmetrize_edges) add(destination, source);
+        append_edge(gid, source, destination);
+        if (config.symmetrize_edges) append_edge(gid, destination, source);
     }
     for (u64 node = 0; node < nodes; ++node) {
         u64 gid = 0;
         if (config.dataset == "ppi") gid = static_cast<u64>(std::upper_bound(graph.node_ptr.begin(), graph.node_ptr.end(), node) - graph.node_ptr.begin() - 1);
-        if (!config.deduplicate_edges || seen.emplace(gid, node, node).second) edges.push_back({gid, node, node, ordinal++});
+        append_edge(gid, node, node);
     }
+    if (edges.size() > static_cast<std::size_t>(kMaxNativeDomain / 2U)) fail("normalized edge count exceeds native sparse-route domain bound");
     std::stable_sort(edges.begin(), edges.end(), [](const RawEdge &left, const RawEdge &right) {
         if (left.graph != right.graph) return left.graph < right.graph;
         if (left.dst != right.dst) return left.dst < right.dst;
@@ -2339,9 +2425,13 @@ Graph load_graph(const Config &config) {
     graph.src.reserve(edges.size());
     graph.dst.reserve(edges.size());
     graph.node_edge_ptr.assign(nodes + 1, 0);
+    const auto checked_node_index = [nodes](u64 index) {
+        if (index >= nodes || index >= kMaxNativeDomain) fail("canonical flat node index exceeds native wire bound");
+        return checked_native_domain_u32(index, "canonical flat node index", true);
+    };
     for (const auto &edge : edges) {
-        graph.src.push_back(static_cast<std::uint32_t>(edge.src));
-        graph.dst.push_back(static_cast<std::uint32_t>(edge.dst));
+        graph.src.push_back(checked_node_index(edge.src));
+        graph.dst.push_back(checked_node_index(edge.dst));
         ++graph.node_edge_ptr[edge.dst + 1];
     }
     for (u64 node = 1; node <= nodes; ++node) graph.node_edge_ptr[node] += graph.node_edge_ptr[node - 1];
@@ -2389,10 +2479,10 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
     plan.integer_bound_ledger_digest = plan.integer_bound_ledger.digest;
     plan.integer_bound_ledger_descriptor_digest = plan.integer_bound_ledger.descriptor_digest;
     const auto power_of_two = [](u64 value) {
-        if (value == 0) fail("relation plan contains a zero logical dimension");
+        if (value == 0U || value > kMaxNativeDomain) fail("relation plan logical dimension exceeds native domain bound");
         u64 padded = 1;
         while (padded < value) {
-            if (padded > std::numeric_limits<u64>::max() / 2) fail("relation plan padded dimension overflow");
+            if (padded > kMaxNativeDomain / 2U) fail("relation plan padded dimension exceeds native domain bound");
             padded <<= 1;
         }
         return padded;
@@ -2422,9 +2512,10 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         return width;
     };
     const auto shape_product = [](const std::vector<u64> &shape, const std::string &label) {
+        if (shape.empty()) fail("sorted lookup query shape is empty: " + label);
         u64 product = 1U;
         for (const auto dimension : shape) {
-            if (dimension == 0U || product > std::numeric_limits<u64>::max() / dimension) fail("sorted lookup query shape overflow: " + label);
+            if (dimension == 0U || product > kMaxNativeDomain / dimension) fail("sorted lookup query shape exceeds native coordinate bound: " + label);
             product *= dimension;
         }
         return product;
@@ -2438,7 +2529,8 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         const u64 y_range = static_cast<u64>(table_max - table_min);
         const std::uint32_t x_bits = bit_width(x_range);
         const std::uint32_t y_bits = bit_width(y_range);
-        if (x_bits + y_bits > 127U) fail("sorted lookup packed key exceeds u128 bound: " + operation);
+        if (x_bits == 0U || y_bits == 0U || x_bits > 127U || y_bits > 127U || x_bits > 127U - y_bits)
+            fail("sorted lookup packed key exceeds u128 bound: " + operation);
         const unsigned __int128 key_max = (static_cast<unsigned __int128>(x_range) << y_bits) | y_range;
         SortedLookupQueryPlan query;
         query.operation_id = operation;
@@ -2460,8 +2552,9 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         query.table_domain = power_of_two(query.table_logical_rows);
         query.query_logical_rows = query_rows;
         query.query_domain = power_of_two(query_rows);
+        if (query.table_logical_rows > kMaxNativeDomain || query.query_logical_rows > kMaxNativeDomain - query.table_logical_rows)
+            fail("sorted lookup merge logical domain exceeds native coordinate bound: " + operation);
         query.merge_logical_rows = query.table_logical_rows + query.query_logical_rows;
-        if (query.merge_logical_rows < query.table_logical_rows) fail("sorted lookup merge logical domain overflow: " + operation);
         query.merge_domain = power_of_two(query.merge_logical_rows);
         query.segment_size = std::min<u64>(1ULL << 18U, std::min({query.table_domain, query.query_domain, query.merge_domain}));
         if (query.segment_size == 0U || query.table_domain % query.segment_size != 0U || query.query_domain % query.segment_size != 0U ||
@@ -2503,6 +2596,8 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         family.logical_shape = std::move(logical);
         family.padded_shape.reserve(family.logical_shape.size());
         for (const auto dimension : family.logical_shape) family.padded_shape.push_back(power_of_two(dimension));
+        (void)shape_product(family.logical_shape, family.id + ".logical");
+        (void)shape_product(family.padded_shape, family.id + ".padded");
         family.instances = std::move(instances);
         family.instance_order = std::move(instance_order);
         family.mapping = std::move(mapping);
@@ -2972,6 +3067,24 @@ bool relation_plan_complete(const RelationPlan &relation, std::string *error) {
         if (error) *error = message;
         return false;
     };
+    const auto bounded_power_of_two = [](u64 value) -> u64 {
+        if (value == 0U || value > kMaxNativeDomain) return 0U;
+        u64 padded = 1U;
+        while (padded < value) {
+            if (padded > kMaxNativeDomain / 2U) return 0U;
+            padded <<= 1U;
+        }
+        return padded;
+    };
+    const auto bounded_shape_product = [](const std::vector<u64> &shape) -> u64 {
+        if (shape.empty()) return 0U;
+        u64 product = 1U;
+        for (const u64 axis : shape) {
+            if (axis == 0U || product > kMaxNativeDomain / axis) return 0U;
+            product *= axis;
+        }
+        return product;
+    };
     if (relation.schema_id != "zkDL_gat_inference_v1" || relation.proof_scope != "full_gat_forward" || relation.binding_rule != "fac4dnn_reindex_v1") {
         return reject("relation plan schema/proof/binding identity mismatch");
     }
@@ -2990,13 +3103,16 @@ bool relation_plan_complete(const RelationPlan &relation, std::string *error) {
     }
     for (const auto &query : relation.sorted_lookup.queries) {
         if (query.operation_id.empty() || query.table_ref.empty() || query.query_ref.empty() || query.merge_ref.empty() || query.commitment_role_map.empty() ||
-            query.table_logical_rows == 0U || query.query_logical_rows == 0U ||
-            query.merge_logical_rows != query.table_logical_rows + query.query_logical_rows || query.table_domain == 0U || query.query_domain == 0U ||
-            query.merge_domain == 0U || query.segment_size == 0U || query.segment_size > relation.sorted_lookup.segment_size ||
+        query.table_logical_rows == 0U || query.query_logical_rows == 0U || query.table_logical_rows > kMaxNativeDomain ||
+            query.query_logical_rows > kMaxNativeDomain - std::min(query.table_logical_rows, kMaxNativeDomain) ||
+            query.merge_logical_rows != query.table_logical_rows + query.query_logical_rows ||
+            query.merge_logical_rows > kMaxNativeDomain || query.table_domain != bounded_power_of_two(query.table_logical_rows) ||
+            query.query_domain != bounded_power_of_two(query.query_logical_rows) || query.merge_domain != bounded_power_of_two(query.merge_logical_rows) ||
+            query.segment_size == 0U || query.segment_size > relation.sorted_lookup.segment_size || bounded_power_of_two(query.segment_size) != query.segment_size ||
             query.table_domain % query.segment_size != 0U || query.query_domain % query.segment_size != 0U || query.merge_domain % query.segment_size != 0U ||
             query.table_segment_count != query.table_domain / query.segment_size || query.query_segment_count != query.query_domain / query.segment_size ||
             query.merge_segment_count != query.merge_domain / query.segment_size || query.x_bits == 0U || query.y_bits == 0U ||
-            query.x_bits + query.y_bits > 127U || query.key_max_u128.empty() || !is_digest(query.layout_digest)) {
+            query.x_bits > 127U || query.y_bits > 127U || query.x_bits > 127U - query.y_bits || query.key_max_u128.empty() || !is_digest(query.layout_digest)) {
             return reject("relation plan sorted-lookup query layout is invalid: " + query.operation_id);
         }
     }
@@ -3024,9 +3140,12 @@ bool relation_plan_complete(const RelationPlan &relation, std::string *error) {
         for (std::size_t index = 0; index < family.logical_shape.size(); ++index) {
             const u64 logical = family.logical_shape[index];
             const u64 padded = family.padded_shape[index];
-            if (logical == 0 || padded < logical || (padded & (padded - 1U)) != 0) {
+            if (logical == 0U || padded != bounded_power_of_two(logical)) {
                 return reject("relation tensor family has non-power-of-two padding: " + family.id);
             }
+        }
+        if (bounded_shape_product(family.logical_shape) == 0U || bounded_shape_product(family.padded_shape) == 0U) {
+            return reject("relation tensor family logical/padded product exceeds native coordinate boundary: " + family.id);
         }
         const std::string expected_selector = "selector:padding:" + family.id;
         if (family.selector_id != expected_selector || family.zero_selector.find("Qpad_v1(" + family.id + ")") != 0 ||
@@ -3187,19 +3306,13 @@ NativeFrWire native_wire(const FieldValue &value) {
 }
 
 u64 native_shape_product(const std::vector<u64> &shape, const std::string &label) {
-    if (shape.empty()) fail("empty canonical tensor shape: " + label);
-    u64 product = 1U;
-    for (const auto dimension : shape) {
-        if (dimension == 0U || product > std::numeric_limits<u64>::max() / dimension) fail("canonical tensor shape overflow: " + label);
-        product *= dimension;
-    }
-    return product;
+    return checked_shape_product(shape, label);
 }
 
 std::vector<NativeFrWire> native_embed_zero_padded(const TensorFamily &family, const std::vector<NativeFrWire> &logical) {
     const u64 logical_size = native_shape_product(family.logical_shape, family.id + ".logical");
     const u64 padded_size = native_shape_product(family.padded_shape, family.id + ".padded");
-    if (logical.size() != logical_size || padded_size > std::numeric_limits<std::uint32_t>::max())
+    if (logical.size() != logical_size || padded_size > kMaxNativeDomain)
         fail("canonical tensor value count/field domain mismatch: " + family.id);
     std::vector<NativeFrWire> result(static_cast<std::size_t>(padded_size));
     std::vector<u64> coordinate(family.logical_shape.size(), 0U);
@@ -3865,16 +3978,16 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         NativeTensorWitnessInput tensor;
         tensor.id = family.id;
         tensor.visibility = family.visibility == "public" ? 1U : (family.id.find("/model/") != std::string::npos ? 2U : 3U);
-        tensor.domain_size = static_cast<std::uint32_t>(native_shape_product(family.padded_shape, family.id + ".domain"));
+        tensor.domain_size = checked_native_domain_u32(native_shape_product(family.padded_shape, family.id + ".domain"), family.id + ".domain");
         if (family.id == "public_Y") {
             std::string storage_error;
-            for (std::uint64_t offset = 0U; offset < tensor.domain_size; offset += (1U << 18U)) { std::vector<NativeFrWire> block; const auto count = static_cast<std::uint32_t>(std::min<std::uint64_t>(1U << 18U, tensor.domain_size - offset)); if (!found->second->read_padded(family.logical_shape, family.padded_shape, offset, count, block, &storage_error)) fail(storage_error); tensor.values.insert(tensor.values.end(), block.begin(), block.end()); }
+            for (std::uint64_t offset = 0U; offset < tensor.domain_size; offset += (1U << 18U)) { std::vector<NativeFrWire> block; const auto count = checked_native_domain_u32(std::min<std::uint64_t>(1U << 18U, tensor.domain_size - offset), family.id + ".public_Y.block"); if (!found->second->read_padded(family.logical_shape, family.padded_shape, offset, count, block, &storage_error)) fail(storage_error); tensor.values.insert(tensor.values.end(), block.begin(), block.end()); }
         } else { tensor.storage = found->second; tensor.logical_shape = family.logical_shape; tensor.padded_shape = family.padded_shape; }
         result.tensors.push_back(std::move(tensor));
 
         NativeTensorShapeInput shape;
         shape.id = family.id;
-        shape.domain_size = static_cast<std::uint32_t>(native_shape_product(family.padded_shape, family.id + ".domain"));
+        shape.domain_size = checked_native_domain_u32(native_shape_product(family.padded_shape, family.id + ".domain"), family.id + ".domain");
         shape.visibility = result.tensors.back().visibility;
         shape.logical_shape = family.logical_shape;
         shape.padded_shape = family.padded_shape;
@@ -3899,7 +4012,7 @@ NativeRelationWitnessInput build_native_public_context(const Config &config, con
     for (const auto &family : plan.tensor_families) {
         NativeTensorShapeInput shape;
         shape.id = family.id;
-        shape.domain_size = static_cast<std::uint32_t>(native_shape_product(family.padded_shape, family.id + ".domain"));
+        shape.domain_size = checked_native_domain_u32(native_shape_product(family.padded_shape, family.id + ".domain"), family.id + ".domain");
         shape.visibility = family.visibility == "public" ? 1U : (family.id.find("/model/") != std::string::npos ? 2U : 3U);
         shape.logical_shape = family.logical_shape;
         shape.padded_shape = family.padded_shape;
@@ -3918,7 +4031,7 @@ NativeRelationWitnessInput build_native_public_context(const Config &config, con
     NativeTensorWitnessInput tensor;
     tensor.id = "public_Y";
     tensor.visibility = 1U;
-    tensor.domain_size = static_cast<std::uint32_t>(native_shape_product(public_family->padded_shape, "public_Y.domain"));
+    tensor.domain_size = checked_native_domain_u32(native_shape_product(public_family->padded_shape, "public_Y.domain"), "public_Y.domain");
     tensor.values = native_embed_zero_padded(*public_family, native_matrix_values(public_output));
     result.tensors.push_back(std::move(tensor));
     populate_authenticated_resource_wire(config, result, false);

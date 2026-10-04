@@ -1,10 +1,24 @@
 #include "prover.hpp"
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <utils.hpp>
 
 using namespace mcl::bn;
 using std::unique_ptr;
+
+namespace {
+
+void require_prefix_vector_bound(const zkgpt::NativeVector<linear_poly>& values,
+                                 std::size_t expected_size, const char* name) {
+    if (values.size() != expected_size)
+        throw std::logic_error(std::string("native GKR prefix vector has an unexpected size: ") + name);
+    if (expected_size > std::numeric_limits<std::size_t>::max() / 2 ||
+        values.capacity() > expected_size * 2)
+        throw std::logic_error(std::string("native GKR prefix vector exceeded its 2x allocation bound: ") + name);
+}
+
+} // namespace
 
 linear_poly interpolate(const F &zero_v, const F &one_v) 
 {
@@ -14,6 +28,8 @@ linear_poly interpolate(const F &zero_v, const F &one_v)
 F prover::getCirValue(u8 layer_id, const zkgpt::NativeVector<u64> &ori, u64 u) {
     if (native_values != nullptr) {
         if (!layer_id && native_input_value_at) return native_input_value_at(ori.at(u));
+        if (native_terminal_values != nullptr && static_cast<std::size_t>(layer_id) + 1 == native_values->size())
+            return native_terminal_values->at(static_cast<std::size_t>(u));
         return !layer_id ? native_values->at(0).at(ori.at(u)) : native_values->at(layer_id).at(u);
     }
     return !layer_id ? val[0][ori[u]] : val[layer_id][u];
@@ -96,7 +112,7 @@ void prover::sumcheckInit(const F &alpha_0, const F &beta_0)
 }
 static ThreadSafeQueue<int> workerq,endq;
 
-void sc_phase1_uni_worker(const zkgpt::NativeVector<uniGate> &beg, zkgpt::NativeVector<linear_poly> (&mult_array)[2],const zkgpt::native_gkr::CombinedEqualityWeightProvider& beta_g,u64*&L,u64*&R)
+void sc_phase1_uni_worker(const layer& current, const zkgpt::NativeVector<uniGate> &beg, zkgpt::NativeVector<linear_poly> (&mult_array)[2],const zkgpt::native_gkr::CombinedEqualityWeightProvider& beta_g,u64*&L,u64*&R)
 {
     int idx;
     while (true)
@@ -110,7 +126,7 @@ void sc_phase1_uni_worker(const zkgpt::NativeVector<uniGate> &beg, zkgpt::Native
         {
             auto &gate = beg[i];
             bool idx = gate.lu != 0;
-            mult_array[idx][gate.u] = mult_array[idx][gate.u] + beta_g.at(gate.g) * gate.sc;
+            mult_array[idx][gate.u] = mult_array[idx][gate.u] + beta_g.at(gate.g) * current.coefficient(gate);
         }
         endq.Push(idx);
     }
@@ -131,7 +147,7 @@ void sc_phase1_bin_worker(const layer& cur, const zkgpt::NativeVector<binGate> &
             auto &gate = beg[i];
             bool idx = gate.getLayerIdU(sumcheck_id) != 0;
             auto val_lv =  !gate.getLayerIdV(sumcheck_id) ? val[0][cur.ori_id_v[gate.v]] : val[gate.getLayerIdV(sumcheck_id)][gate.v];
-            mult_array[idx][gate.u] = mult_array[idx][gate.u] + val_lv * beta_g.at(gate.g) * gate.sc;  // Ahg for phase 1
+            mult_array[idx][gate.u] = mult_array[idx][gate.u] + val_lv * beta_g.at(gate.g) * cur.coefficient(gate);  // Ahg for phase 1
         }
         endq.Push(idx);
     }
@@ -157,6 +173,10 @@ void prover::sumcheckInitPhase1(const F &relu_rou_0)
         mult_array[lane].resize(std::max<std::size_t>(1, active_extent));
         tmp_V_mult[lane].resize(fold_extent);
         tmp_mult_array[lane].resize(fold_extent);
+        require_prefix_vector_bound(V_mult[lane], std::max<std::size_t>(1, active_extent), "phase1 values");
+        require_prefix_vector_bound(mult_array[lane], std::max<std::size_t>(1, active_extent), "phase1 multipliers");
+        require_prefix_vector_bound(tmp_V_mult[lane], fold_extent, "phase1 folded values");
+        require_prefix_vector_bound(tmp_mult_array[lane], fold_extent, "phase1 folded multipliers");
         if (active_extent == 0) { V_mult[lane][0].clear(); mult_array[lane][0].clear(); }
     }
     timer useless_t;
@@ -198,7 +218,7 @@ void prover::sumcheckInitPhase1(const F &relu_rou_0)
         }
         for(int i=0;i<thd;i++)
         {
-            workers.emplace_back(sc_phase1_uni_worker, std::ref(cur.uni_gates),std::ref(mult_array),std::cref(beta_g),std::ref(L),std::ref(R));
+            workers.emplace_back(sc_phase1_uni_worker, std::cref(cur),std::ref(cur.uni_gates),std::ref(mult_array),std::cref(beta_g),std::ref(L),std::ref(R));
         }
         while(!workerq.Empty())
             this_thread::sleep_for (std::chrono::microseconds(1));
@@ -210,7 +230,7 @@ void prover::sumcheckInitPhase1(const F &relu_rou_0)
     else for (auto &gate: cur.uni_gates) 
         {
             bool idx = gate.lu != 0;
-            mult_array[idx][gate.u] = mult_array[idx][gate.u] + beta_g.at(gate.g) * gate.sc;
+            mult_array[idx][gate.u] = mult_array[idx][gate.u] + beta_g.at(gate.g) * cur.coefficient(gate);
         }
     if(native_values == nullptr && cur.bin_interval.size()>=2)
     {
@@ -239,7 +259,7 @@ void prover::sumcheckInitPhase1(const F &relu_rou_0)
         {
             bool idx = gate.getLayerIdU(sumcheck_id) != 0;
             auto val_lv = getCirValue(gate.getLayerIdV(sumcheck_id), cur.ori_id_v, gate.v);
-            mult_array[idx][gate.u] = mult_array[idx][gate.u] + val_lv * beta_g.at(gate.g) * gate.sc;  // Ahg for phase 1
+            mult_array[idx][gate.u] = mult_array[idx][gate.u] + val_lv * beta_g.at(gate.g) * cur.coefficient(gate);  // Ahg for phase 1
         }
     round = 0;
     prove_timer.stop();
@@ -247,7 +267,7 @@ void prover::sumcheckInitPhase1(const F &relu_rou_0)
 }
 
 
-void sc_phase2_uni_worker( const zkgpt::NativeVector<uniGate> &beg, F& sum_value,F& V_u0,F&V_u1,const zkgpt::native_gkr::CombinedEqualityWeightProvider& beta_g,const zkgpt::native_gkr::EqualityWeightProvider& beta_u,u64*&L,u64*&R)
+void sc_phase2_uni_worker(const layer& current, const zkgpt::NativeVector<uniGate> &beg, F& sum_value,F& V_u0,F&V_u1,const zkgpt::native_gkr::CombinedEqualityWeightProvider& beta_g,const zkgpt::native_gkr::EqualityWeightProvider& beta_u,u64*&L,u64*&R)
 {
     int idx;
     while (true)
@@ -262,14 +282,14 @@ void sc_phase2_uni_worker( const zkgpt::NativeVector<uniGate> &beg, F& sum_value
         {
             auto &gate = beg[i];
             auto V_u = !gate.lu ? V_u0 : V_u1;                  //V_u0 is claim 0, V_u1 is claim 1
-            ss +=beta_g.at(gate.g) * beta_u.at(gate.u) * V_u * gate.sc;
+            ss +=beta_g.at(gate.g) * beta_u.at(gate.u) * V_u * current.coefficient(gate);
         }
         sum_value+=ss;
         endq.Push(idx);
     }
 }
 
-void sc_phase2_bin_worker( const zkgpt::NativeVector<binGate> &beg, zkgpt::NativeVector<linear_poly> (&mult_array)[2],F& V_u0,F&V_u1,const zkgpt::native_gkr::CombinedEqualityWeightProvider& beta_g,const zkgpt::native_gkr::EqualityWeightProvider& beta_u,u64*&L,u64*&R,u8 sumcheck_id)
+void sc_phase2_bin_worker(const layer& current, const zkgpt::NativeVector<binGate> &beg, zkgpt::NativeVector<linear_poly> (&mult_array)[2],F& V_u0,F&V_u1,const zkgpt::native_gkr::CombinedEqualityWeightProvider& beta_g,const zkgpt::native_gkr::EqualityWeightProvider& beta_u,u64*&L,u64*&R,u8 sumcheck_id)
 {
     int idx;
     while (true)
@@ -284,7 +304,7 @@ void sc_phase2_bin_worker( const zkgpt::NativeVector<binGate> &beg, zkgpt::Nativ
             auto &gate = beg[i];
             bool idx = gate.getLayerIdV(sumcheck_id);
             auto V_u = !gate.getLayerIdU(sumcheck_id) ? V_u0 : V_u1;
-            mult_array[idx][gate.v] =mult_array[idx][gate.v]+beta_g.at(gate.g) * beta_u.at(gate.u) * V_u * gate.sc;
+            mult_array[idx][gate.v] =mult_array[idx][gate.v]+beta_g.at(gate.g) * beta_u.at(gate.u) * V_u * current.coefficient(gate);
         }
         endq.Push(idx);
     }
@@ -313,6 +333,10 @@ void prover::sumcheckInitPhase2()
         mult_array[lane].resize(std::max<std::size_t>(1, active_extent));
         tmp_V_mult[lane].resize(fold_extent);
         tmp_mult_array[lane].resize(fold_extent);
+        require_prefix_vector_bound(V_mult[lane], std::max<std::size_t>(1, active_extent), "phase2 values");
+        require_prefix_vector_bound(mult_array[lane], std::max<std::size_t>(1, active_extent), "phase2 multipliers");
+        require_prefix_vector_bound(tmp_V_mult[lane], fold_extent, "phase2 folded values");
+        require_prefix_vector_bound(tmp_mult_array[lane], fold_extent, "phase2 folded multipliers");
         if (active_extent == 0) { V_mult[lane][0].clear(); mult_array[lane][0].clear(); }
     }
 
@@ -356,7 +380,7 @@ void prover::sumcheckInitPhase2()
             for(int i=0;i<thd;i++)
             {
                 sum[i].clear(); 
-                workers.emplace_back(sc_phase2_uni_worker, std::ref(cur.uni_gates),std::ref(sum[i]),std::ref(V_u0),std::ref(V_u1),std::cref(beta_g),std::cref(beta_u),std::ref(L),std::ref(R));
+                workers.emplace_back(sc_phase2_uni_worker,std::cref(cur),std::ref(cur.uni_gates),std::ref(sum[i]),std::ref(V_u0),std::ref(V_u1),std::cref(beta_g),std::cref(beta_u),std::ref(L),std::ref(R));
             }
             while(!workerq.Empty())
                 this_thread::sleep_for (std::chrono::microseconds(1));
@@ -370,7 +394,7 @@ void prover::sumcheckInitPhase2()
     else for (auto &gate: cur.uni_gates) 
     {
         auto V_u = !gate.lu ? V_u0 : V_u1;                  //V_u0 is claim 0, V_u1 is claim 1
-        add_term = add_term + beta_g.at(gate.g) * beta_u.at(gate.u) * V_u * gate.sc;
+        add_term = add_term + beta_g.at(gate.g) * beta_u.at(gate.u) * V_u * cur.coefficient(gate);
     }
     if(native_values == nullptr && cur.bin_interval.size()>=2)
     {
@@ -386,7 +410,7 @@ void prover::sumcheckInitPhase2()
         }
             for(int i=0;i<thd;i++)
             {
-                workers.emplace_back(sc_phase2_bin_worker, std::ref(cur.bin_gates),std::ref(mult_array),std::ref(V_u0),std::ref(V_u1),std::cref(beta_g),std::cref(beta_u),std::ref(L),std::ref(R),sumcheck_id);
+                workers.emplace_back(sc_phase2_bin_worker,std::cref(cur),std::ref(cur.bin_gates),std::ref(mult_array),std::ref(V_u0),std::ref(V_u1),std::cref(beta_g),std::cref(beta_u),std::ref(L),std::ref(R),sumcheck_id);
             }
             while(!workerq.Empty())
                 this_thread::sleep_for (std::chrono::microseconds(1));
@@ -399,7 +423,7 @@ void prover::sumcheckInitPhase2()
     {
         bool idx = gate.getLayerIdV(sumcheck_id);
         auto V_u = !gate.getLayerIdU(sumcheck_id) ? V_u0 : V_u1;
-        mult_array[idx][gate.v] = mult_array[idx][gate.v] + beta_g.at(gate.g) * beta_u.at(gate.u) * V_u * gate.sc;
+        mult_array[idx][gate.v] = mult_array[idx][gate.v] + beta_g.at(gate.g) * beta_u.at(gate.u) * V_u * cur.coefficient(gate);
     }
 
     round = 0;
@@ -619,10 +643,7 @@ void prover::sumcheckFinalize1(const F &previous_random, F &claim_0, F &claim_1)
     V_u1 = claim_1 = total[1] ? V_mult[1][0].eval(previous_random) : (~activeCircuit().circuit[sumcheck_id].bit_length_u[1]) ? V_mult[1][0].b : F_ZERO;
     prove_timer.stop();
 
-    mult_array[0].clear();
-    mult_array[1].clear();
-    V_mult[0].clear();
-    V_mult[1].clear();
+    release_sumcheck_storage();
     proof_size += F_BYTE_SIZE * 2;
 }
 
@@ -635,10 +656,7 @@ void prover::sumcheckFinalize2(const F &previous_random, F &claim_0, F &claim_1)
     claim_1 = total[1] ? (has_round ? V_mult[1][0].eval(previous_random) : V_mult[1][0].b) : (~activeCircuit().circuit[sumcheck_id].bit_length_v[1]) ? V_mult[1][0].b : F_ZERO;
     prove_timer.stop();
 
-    mult_array[0].clear();
-    mult_array[1].clear();
-    V_mult[0].clear();
-    V_mult[1].clear();
+    release_sumcheck_storage();
     proof_size += F_BYTE_SIZE * 2;
 }
 

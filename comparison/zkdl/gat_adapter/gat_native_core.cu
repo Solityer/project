@@ -4,6 +4,7 @@
 #include <fstream>
 #include <filesystem>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -22,6 +23,22 @@ using FrWire = zkdl::FrWire;
 
 constexpr const char *kBridgeApi = "zkdl_native_gat_bridge_v1";
 constexpr const char *kProofScope = "full_gat_forward";
+constexpr std::uint64_t kMaxNativeDomain = 1ULL << 30U;
+
+std::uint32_t checked_native_u32(std::uint64_t value, const std::string &label, std::string *error = nullptr, bool allow_zero = false) {
+    if ((!allow_zero && value == 0U) || value > kMaxNativeDomain || value > std::numeric_limits<std::uint32_t>::max()) {
+        const std::string message = "BLOCKED: " + label + " exceeds native u32 domain bounds";
+        if (error) *error = message;
+        throw std::runtime_error(message);
+    }
+    return static_cast<std::uint32_t>(value);
+}
+
+bool checked_mul_u64(std::uint64_t left, std::uint64_t right, std::uint64_t &product) {
+    if (right != 0U && left > std::numeric_limits<std::uint64_t>::max() / right) return false;
+    product = left * right;
+    return true;
+}
 
 bool native_power_of_two(std::uint64_t value) { return value != 0U && (value & (value - 1U)) == 0U; }
 
@@ -150,13 +167,19 @@ bool read_file(const std::filesystem::path &path, std::vector<zkdl::byte> &bytes
     }
     input.seekg(0, std::ios::end);
     const std::streamoff size = input.tellg();
-    if (size < 0 || static_cast<std::uint64_t>(size) > (1ULL << 32)) {
+    if (size < 0) {
+        if (error) *error = "authenticated resource has invalid size: " + path.string();
+        return false;
+    }
+    const std::uint64_t byte_count = static_cast<std::uint64_t>(size);
+    if (byte_count > (1ULL << 32) || byte_count > std::numeric_limits<std::size_t>::max() ||
+        byte_count > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
         if (error) *error = "authenticated resource has invalid size: " + path.string();
         return false;
     }
     input.seekg(0, std::ios::beg);
-    bytes.resize(static_cast<size_t>(size));
-    if (!bytes.empty()) input.read(reinterpret_cast<char *>(bytes.data()), size);
+    bytes.resize(static_cast<std::size_t>(byte_count));
+    if (!bytes.empty()) input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(byte_count));
     if (!input && !bytes.empty()) {
         if (error) *error = "cannot read authenticated resource: " + path.string();
         return false;
@@ -352,8 +375,15 @@ bool resource_admission(const Config &config, const NativeRelationWitness &witne
         return false;
     }
     std::set<std::string> supplied_ids;
+    std::uint32_t supplied_generator_count = 0U;
+    try {
+        supplied_generator_count = checked_native_u32(witness.ipa_generators.size(), "supplied IPA generator count");
+    } catch (const std::runtime_error &exception) {
+        if (error) *error = exception.what();
+        return false;
+    }
     const auto authenticated_basis_digest = zkdl::cpu_ipa_basis_digest(witness.ipa_generators, witness.ipa_blinding_generator, witness.ipa_u_generator,
-                                                                       zkdl::cpu_ipa_padded_size(static_cast<std::uint32_t>(witness.ipa_generators.size())));
+                                                                       zkdl::cpu_ipa_padded_size(supplied_generator_count));
     for (const auto &expected : registry.model_commitments) {
         const auto found = std::find_if(witness.registered_model_commitments.begin(), witness.registered_model_commitments.end(),
                                         [&](const relation::CommitmentWire &actual) { return actual.tensor_id == expected.tensor_id; });
@@ -392,8 +422,14 @@ bool resource_admission(const Config &config, const NativeRelationWitness &witne
         for (std::size_t segment_index = 0U; segment_index < expected.segment_commitments.size(); ++segment_index) {
             const auto &declared = expected.segment_commitments[segment_index];
             const std::uint64_t expected_offset = static_cast<std::uint64_t>(segment_index) * expected.segment_size;
-            const std::uint32_t expected_actual = static_cast<std::uint32_t>(
-                std::min<std::uint64_t>(expected.segment_size, expected.domain_size - expected_offset));
+            std::uint32_t expected_actual = 0U;
+            try {
+                expected_actual = checked_native_u32(std::min<std::uint64_t>(expected.segment_size, expected.domain_size - expected_offset),
+                                                     "expected model segment actual length");
+            } catch (const std::runtime_error &exception) {
+                if (error) *error = exception.what();
+                return false;
+            }
             if (declared.segment_index != segment_index || declared.logical_offset != expected_offset || declared.actual_length != expected_actual ||
                 declared.padded_length != expected.segment_size || declared.frame_digest != authenticated_frame_digest) {
                 if (error) *error = "BLOCKED: model registry segment metadata/frame is not SRS-bound";
@@ -479,7 +515,9 @@ void append_unique(std::vector<std::string> &refs, const std::string &value) {
 std::uint32_t local_ref(const relation::OperationDescriptor &operation, const std::string &ref) {
     const auto found = std::find(operation.tensor_refs.begin(), operation.tensor_refs.end(), ref);
     if (found == operation.tensor_refs.end()) throw std::invalid_argument("relation descriptor omits referenced tensor: " + ref);
-    return static_cast<std::uint32_t>(std::distance(operation.tensor_refs.begin(), found));
+    const auto distance = std::distance(operation.tensor_refs.begin(), found);
+    if (distance < 0) throw std::invalid_argument("relation tensor index is negative: " + ref);
+    return checked_native_u32(static_cast<std::uint64_t>(distance), "relation tensor index", nullptr, true);
 }
 
 relation::Monomial monomial(const FrWire &coefficient, std::initializer_list<std::uint32_t> refs) {
@@ -676,6 +714,7 @@ std::uint32_t ceil_log2(std::size_t value) {
     std::uint32_t bits = 0U;
     size_t domain = 1U;
     while (domain < value) {
+        if (domain > std::numeric_limits<size_t>::max() / 2U) throw std::overflow_error("native MLE domain overflows size_t");
         domain <<= 1U;
         ++bits;
     }
@@ -683,13 +722,17 @@ std::uint32_t ceil_log2(std::size_t value) {
 }
 
 std::uint32_t padded_domain(std::uint64_t value, std::string *error, const std::string &label) {
-    if (value == 0U || value > (1ULL << 30U)) {
+    if (value == 0U || value > kMaxNativeDomain) {
         if (error) *error = "BLOCKED: " + label + " has no bounded power-of-two domain";
         return 0U;
     }
     std::uint64_t domain = 1U;
     while (domain < value) domain <<= 1U;
-    return static_cast<std::uint32_t>(domain);
+    try {
+        return checked_native_u32(domain, label, error);
+    } catch (const std::runtime_error &) {
+        return 0U;
+    }
 }
 
 std::uint64_t flattened_feature_domain(const TensorFamily &family, std::string *error, const std::string &label) {
@@ -705,7 +748,7 @@ std::uint64_t flattened_feature_domain(const TensorFamily &family, std::string *
         }
         feature *= family.padded_shape[2];
     }
-    if (feature == 0U || (feature & (feature - 1U)) != 0U) {
+    if (feature == 0U || feature > kMaxNativeDomain || (feature & (feature - 1U)) != 0U) {
         if (error) *error = "BLOCKED: " + label + " feature domain is not a power of two";
         return 0U;
     }
@@ -804,8 +847,12 @@ bool fac_axes(const std::map<std::string, const TensorFamily *> &families, const
         return outer != 0U;
     }
     const std::uint64_t flattened = flattened_feature_domain(*family, error, ref);
-    if (outer == 0U || flattened == 0U || flattened > std::numeric_limits<std::uint32_t>::max()) return false;
-    feature = static_cast<std::uint32_t>(flattened);
+    if (outer == 0U || flattened == 0U) return false;
+    try {
+        feature = checked_native_u32(flattened, ref + "/feature", error);
+    } catch (const std::runtime_error &) {
+        return false;
+    }
     return true;
 }
 
@@ -853,7 +900,7 @@ bool add_fac_broadcast_from_graph(relation::OperationDescriptor &operation, cons
             if (error) *error = "BLOCKED: FAC4DNN graph route index is out of bounds";
             return false;
         }
-        outer_map[edge] = destination ? graph.dst[edge] : graph.src[edge];
+        outer_map[edge] = checked_native_u32(destination ? graph.dst[edge] : graph.src[edge], view_ref + "/graph-route", error, true);
         active[edge] = 1U;
     }
     std::vector<std::uint32_t> feature_map(view_feature, 0U);
@@ -909,9 +956,13 @@ bool add_fac_feature_block(relation::OperationDescriptor &operation, const std::
     std::uint32_t view_outer = 0U, view_feature = 0U;
     std::uint32_t canonical_outer = 0U, canonical_feature = 0U;
     if (!fac_axes(families, view_ref, view_outer, view_feature, error) || !fac_axes(families, canonical_ref, canonical_outer, canonical_feature, error) ||
-        view_outer != canonical_outer || view_feature == 0U || block > std::numeric_limits<std::uint32_t>::max() / view_feature ||
-        static_cast<std::uint64_t>(block) * view_feature + view_feature > canonical_feature) {
+        view_outer != canonical_outer || view_feature == 0U) {
         if (error) *error = "BLOCKED: FAC4DNN feature-block axes are not canonical: " + view_ref + " -> " + canonical_ref;
+        return false;
+    }
+    const std::uint64_t block_start = static_cast<std::uint64_t>(block) * view_feature;
+    if (block_start > canonical_feature || view_feature > static_cast<std::uint64_t>(canonical_feature) - block_start) {
+        if (error) *error = "BLOCKED: FAC4DNN feature-block extent exceeds canonical feature axis: " + view_ref + " -> " + canonical_ref;
         return false;
     }
     std::vector<std::uint32_t> outer_map(view_outer);
@@ -928,10 +979,23 @@ bool add_fac_feature_block(relation::OperationDescriptor &operation, const std::
             if (error) *error = "BLOCKED: rounddiv_auxiliary channel descriptor is malformed: " + canonical_ref;
             return false;
         }
-        const std::uint32_t channels = static_cast<std::uint32_t>(canonical_family->padded_shape.back());
-        for (std::uint32_t index = 0U; index < view_feature; ++index) feature_map[index] = index * channels + block;
+        std::uint32_t channels = 0U;
+        try {
+            channels = checked_native_u32(canonical_family->padded_shape.back(), canonical_ref + "/channels", error);
+        } catch (const std::runtime_error &) {
+            return false;
+        }
+        for (std::uint32_t index = 0U; index < view_feature; ++index) {
+            const std::uint64_t mapped = static_cast<std::uint64_t>(index) * channels + block;
+            if (mapped >= canonical_feature || mapped > std::numeric_limits<std::uint32_t>::max()) {
+                if (error) *error = "BLOCKED: FAC4DNN feature-block mapping exceeds canonical feature domain: " + canonical_ref;
+                return false;
+            }
+            feature_map[index] = checked_native_u32(mapped, canonical_ref + "/feature-map", nullptr, true);
+        }
     } else {
-        for (std::uint32_t index = 0U; index < view_feature; ++index) feature_map[index] = block * view_feature + index;
+        for (std::uint32_t index = 0U; index < view_feature; ++index)
+            feature_map[index] = checked_native_u32(block_start + index, canonical_ref + "/feature-map", error, true);
     }
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature, std::move(outer_map),
                                 std::move(feature_map), std::vector<std::uint8_t>(view_outer, 1U), error);
@@ -996,14 +1060,24 @@ bool add_fac_concat_binding(relation::OperationDescriptor &operation, const std:
         if (error) *error = "BLOCKED: FAC4DNN concat layout is not authenticated";
         return false;
     }
-    const std::uint32_t view_outer = padded_domain(view->padded_shape[0] * view->padded_shape[1], error, view_ref + "/outer");
+    std::uint64_t flattened_outer = 0U;
+    if (!checked_mul_u64(view->padded_shape[0], view->padded_shape[1], flattened_outer) || flattened_outer > kMaxNativeDomain) {
+        if (error) *error = "BLOCKED: FAC4DNN concat outer shape product exceeds native domain: " + view_ref;
+        return false;
+    }
+    const std::uint32_t view_outer = padded_domain(flattened_outer, error, view_ref + "/outer");
     const std::uint32_t canonical_outer = padded_domain(canonical->padded_shape.front(), error, canonical_ref + "/outer");
     const std::uint32_t view_feature = padded_domain(view->padded_shape[2], error, view_ref + "/feature");
     const std::uint32_t canonical_feature = padded_domain(canonical->padded_shape.back(), error, canonical_ref + "/feature");
     if (view_outer == 0U || canonical_outer == 0U || view_feature == 0U || canonical_feature == 0U || view_feature != canonical_feature) return false;
     std::vector<std::uint32_t> outer_map(view_outer, 0U);
     std::vector<std::uint8_t> active(view_outer, 0U);
-    const std::uint32_t head_domain = static_cast<std::uint32_t>(view->padded_shape[1]);
+    std::uint32_t head_domain = 0U;
+    try {
+        head_domain = checked_native_u32(view->padded_shape[1], view_ref + "/heads", error);
+    } catch (const std::runtime_error &) {
+        return false;
+    }
     for (std::uint32_t slot = 0U; slot < view_outer; ++slot) {
         const std::uint32_t slot_head = slot % head_domain;
         const std::uint32_t node = slot / head_domain;
@@ -1050,16 +1124,20 @@ bool padded_matrix_shape(const std::map<std::string, const TensorFamily *> &fami
     }
     const std::uint64_t input_inner = input->padded_shape.size() == 2U ? input->padded_shape[1] : input->padded_shape[1] * input->padded_shape[2];
     if (input_inner != kernel_inner || output_rows != input->padded_shape[0] || output_cols != kernel_output ||
-        input_inner > std::numeric_limits<std::uint32_t>::max()) {
+        input_inner > kMaxNativeDomain) {
         if (error) *error = "BLOCKED: canonical padded matrix inner dimension does not match kernel";
         return false;
     }
 
     primitive.kind = 2U;
     primitive.matmul_shape.num = 1U;
-    primitive.matmul_shape.m = static_cast<std::uint32_t>(input->padded_shape[0]);
-    primitive.matmul_shape.n = static_cast<std::uint32_t>(input_inner);
-    primitive.matmul_shape.k = static_cast<std::uint32_t>(output_cols);
+    try {
+        primitive.matmul_shape.m = checked_native_u32(input->padded_shape[0], input_id + "/rows", error);
+        primitive.matmul_shape.n = checked_native_u32(input_inner, input_id + "/inner", error);
+        primitive.matmul_shape.k = checked_native_u32(output_cols, output_id + "/columns", error);
+    } catch (const std::runtime_error &) {
+        return false;
+    }
     primitive.tensor_refs = {input_id, kernel_id, output_id};
     std::string shape_error;
     if (!primitive.matmul_shape.valid(&shape_error)) {
@@ -1234,7 +1312,12 @@ relation::OperationDescriptor max_range_operation(const Config &config, const Op
         if (ref.empty()) return relation::OperationDescriptor{};
         add_ref(operation, ref);
     }
-    std::uint32_t width = static_cast<std::uint32_t>(config.range_bits);
+    std::uint32_t width = 0U;
+    try {
+        width = checked_native_u32(config.range_bits, operation.id + "/range_bits", error);
+    } catch (const std::runtime_error &) {
+        return relation::OperationDescriptor{};
+    }
     if (width == 0U || width >= 31U) {
         if (error) *error = "BLOCKED: max/range relation has an unbounded range width";
         return relation::OperationDescriptor{};
@@ -1380,7 +1463,12 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
         if (error) *error = "BLOCKED: SignedRoundDiv range_bits is not a bounded native width";
         return relation::OperationDescriptor{};
     }
-    const std::uint32_t width = static_cast<std::uint32_t>(config.range_bits);
+    std::uint32_t width = 0U;
+    try {
+        width = checked_native_u32(config.range_bits, operation.id + "/range_bits", error);
+    } catch (const std::runtime_error &) {
+        return relation::OperationDescriptor{};
+    }
     const std::uint64_t estimated_constraints = 16U + 5U * static_cast<std::uint64_t>(width);
     if (width >= 31U || estimated_constraints > relation::kMaxRelationConstraints) {
         if (error) *error = "BLOCKED: SignedRoundDiv range_bits is not a bounded native width";
@@ -1512,7 +1600,7 @@ relation::OperationDescriptor sparse_route_operation(const Graph &graph, const O
     const std::uint64_t source_feature = flattened_feature_domain(*source_family, error, plan_operation.id + "/source");
     const std::uint64_t output_feature = flattened_feature_domain(*output_family, error, plan_operation.id + "/output");
     if (node_domain == 0U || edge_domain == 0U || source_feature == 0U || output_feature == 0U || (source_feature != output_feature && source_feature != 1U) ||
-        source_feature > std::numeric_limits<std::uint32_t>::max() || output_feature > std::numeric_limits<std::uint32_t>::max() || graph.nodes > node_domain ||
+        source_feature > kMaxNativeDomain || output_feature > kMaxNativeDomain || graph.nodes > node_domain ||
         graph.edges > edge_domain || domains.find(source_ref) == domains.end() || domains.find(output_ref) == domains.end() ||
         domains.at(source_ref) != static_cast<std::uint64_t>(node_domain) * source_feature ||
         domains.at(output_ref) != static_cast<std::uint64_t>(edge_domain) * output_feature) {
@@ -1533,8 +1621,12 @@ relation::OperationDescriptor sparse_route_operation(const Graph &graph, const O
     for (const auto &auxiliary : plan_operation.auxiliary) operation.selector_refs.push_back(auxiliary);
     operation.selector_edge_domain = edge_domain;
     operation.selector_node_domain = node_domain;
-    operation.selector_feature_domain = static_cast<std::uint32_t>(output_feature);
-    operation.selector_source_feature_domain = static_cast<std::uint32_t>(source_feature);
+    try {
+        operation.selector_feature_domain = checked_native_u32(output_feature, plan_operation.id + "/output-feature", error);
+        operation.selector_source_feature_domain = checked_native_u32(source_feature, plan_operation.id + "/source-feature", error);
+    } catch (const std::runtime_error &) {
+        return relation::OperationDescriptor{};
+    }
     operation.selector_src.assign(edge_domain, 0U);
     operation.selector_dst.assign(edge_domain, 0U);
     operation.selector_active.assign(edge_domain, 0U);
@@ -1619,7 +1711,11 @@ relation::OperationDescriptor canonical_operation(const Config &config, const St
                                                   const std::map<std::string, const TensorFamily *> &families, const Graph *graph, std::string *error) {
     relation::OperationDescriptor operation;
     operation.id = plan_operation.id;
-    operation.degree = static_cast<std::uint32_t>(plan_operation.degree);
+    try {
+        operation.degree = checked_native_u32(plan_operation.degree, plan_operation.id + "/degree", error);
+    } catch (const std::runtime_error &) {
+        return relation::OperationDescriptor{};
+    }
     operation.mapping = plan_operation.mapping;
     operation.terminal_claim = plan_operation.terminal_claim;
     operation.terminal_point = plan_operation.terminal_point;
@@ -1674,7 +1770,7 @@ relation::OperationDescriptor canonical_operation(const Config &config, const St
             for (std::size_t index = 0U; index < inputs.size(); ++index) {
                 if (operation.kind == relation::RelationKind::Concat) {
                     fac_ok = add_fac_concat_binding(operation, inputs[index], plan_operation.inputs[index], domains, families,
-                                                    static_cast<std::uint32_t>(index), error);
+                                                    checked_native_u32(index, operation.id + "/concat-input-index", error, true), error);
                 } else {
                     fac_ok = add_fac_binding(operation, inputs[index], plan_operation.inputs[index], domains, error);
                 }
@@ -1980,12 +2076,34 @@ bool graph_public_descriptor_id(const std::string &id) {
 bool public_logical_provider(const relation::TensorDescriptor &descriptor, std::size_t basis_size, std::function<FrWire(std::uint64_t)> reader, relation::SegmentedTensorProvider &provider, std::string *error) {
     std::uint32_t segment_size = 0U, segment_count = 0U;
     if (!descriptor.valid(error) || !relation::SegmentedTensorProvider::shape(descriptor.domain_size, basis_size, segment_size, segment_count, error)) return false;
-    provider = relation::SegmentedTensorProvider(descriptor.domain_size, segment_size, [logical = descriptor.logical_shape, padded = descriptor.padded_shape, reader](std::uint64_t offset, std::uint32_t count, std::vector<FrWire> &values, std::string *) { values.assign(count, FrWire{}); for (std::uint32_t index = 0U; index < count; ++index) { std::uint64_t remainder = offset + index, logical_index = 0U, stride = 1U; bool active = true; for (std::size_t axis = logical.size(); axis-- > 0U;) { const auto coordinate = remainder % padded[axis]; remainder /= padded[axis]; if (coordinate >= logical[axis]) { active = false; break; } logical_index += coordinate * stride; stride *= logical[axis]; } if (active) values[index] = reader(logical_index); } return true; });
+    provider = relation::SegmentedTensorProvider(descriptor.domain_size, segment_size, [logical = descriptor.logical_shape, padded = descriptor.padded_shape, reader, domain = descriptor.domain_size](std::uint64_t offset, std::uint32_t count, std::vector<FrWire> &values, std::string *read_error) {
+        if (offset > domain || count > domain - offset) { if (read_error) *read_error = "native tensor range exceeds authenticated domain"; return false; }
+        values.assign(count, FrWire{});
+        for (std::uint32_t index = 0U; index < count; ++index) {
+            std::uint64_t remainder = offset + index, logical_index = 0U, stride = 1U;
+            bool active = true;
+            for (std::size_t axis = logical.size(); axis-- > 0U;) {
+                const auto coordinate = remainder % padded[axis];
+                remainder /= padded[axis];
+                if (coordinate >= logical[axis]) { active = false; break; }
+                if (coordinate != 0U && stride > std::numeric_limits<std::uint64_t>::max() / coordinate) return false;
+                const std::uint64_t term = coordinate * stride;
+                if (logical_index > std::numeric_limits<std::uint64_t>::max() - term ||
+                    (logical[axis] != 0U && stride > std::numeric_limits<std::uint64_t>::max() / logical[axis])) return false;
+                logical_index += term;
+                stride *= logical[axis];
+            }
+            if (active) values[index] = reader(logical_index);
+        }
+        return true;
+    });
     return true;
 }
 
 bool graph_public_provider(const Graph &graph, const relation::TensorDescriptor &descriptor, std::size_t basis_size, relation::SegmentedTensorProvider &provider, std::string *error) {
-    const auto from_u64 = [](std::uint64_t value) { if (value > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error("public graph index exceeds field wire range"); return zkdl::fr_from_u32(static_cast<std::uint32_t>(value)); };
+    const auto from_u64 = [](std::uint64_t value) {
+        return zkdl::fr_from_u32(checked_native_u32(value, "public graph index", nullptr, true));
+    };
     if (descriptor.id == "input_features" || (descriptor.id.rfind("hidden/layer0/head", 0U) == 0U && descriptor.id.size() >= 12U && descriptor.id.compare(descriptor.id.size() - 12U, 12U, "/trace/input") == 0U)) {
         if (descriptor.logical_shape != std::vector<std::uint64_t>{graph.nodes, graph.features} || graph.feature_values.rows != graph.nodes || graph.feature_values.cols != graph.features) { if (error) *error = "public input_features shape differs from graph feature material"; return false; }
         return public_logical_provider(descriptor, basis_size, [&graph](std::uint64_t index) { return relation::fr_from_signed_i64(graph.feature_values.at(index / graph.features, index % graph.features)); }, provider, error);
@@ -1993,12 +2111,15 @@ bool graph_public_provider(const Graph &graph, const relation::TensorDescriptor 
     const auto suffix = [&](const std::string &value) { return descriptor.id.size() >= value.size() && descriptor.id.compare(descriptor.id.size() - value.size(), value.size(), value) == 0U; };
     const bool boundary_view = suffix("/view/group_new") || suffix("/view/group_end");
     if (descriptor.id == "sparse_route" || descriptor.id == "group_selectors" || boundary_view) {
-        if (descriptor.logical_shape.empty() || descriptor.logical_shape.front() != graph.edges || graph.src.size() != graph.edges || graph.dst.size() != graph.edges || graph.node_edge_ptr.size() != graph.nodes + 1U || graph.node_edge_ptr.front() != 0U || graph.node_edge_ptr.back() != graph.edges) { if (error) *error = "public route/CSR tensor shape is incompatible with graph"; return false; }
+        if (graph.nodes == std::numeric_limits<std::uint64_t>::max() || graph.nodes > kMaxNativeDomain || graph.edges > kMaxNativeDomain ||
+            descriptor.logical_shape.empty() || descriptor.logical_shape.front() != graph.edges || graph.src.size() != graph.edges || graph.dst.size() != graph.edges || graph.node_edge_ptr.size() != graph.nodes + 1U || graph.node_edge_ptr.front() != 0U || graph.node_edge_ptr.back() != graph.edges) { if (error) *error = "public route/CSR tensor shape is incompatible with graph"; return false; }
         if (!boundary_view && descriptor.logical_shape != std::vector<std::uint64_t>{graph.edges, 2U}) { if (error) *error = "public route tensor must have two logical columns"; return false; }
         for (std::size_t node = 0U; node + 1U < graph.node_edge_ptr.size(); ++node) if (graph.node_edge_ptr[node] > graph.node_edge_ptr[node + 1U] || graph.node_edge_ptr[node + 1U] > graph.edges) { if (error) *error = "public CSR pointers are not monotone and bounded"; return false; }
         for (std::size_t edge = 0U; edge < graph.dst.size(); ++edge) { const auto node = graph.dst[edge]; if (node >= graph.nodes || graph.src[edge] >= graph.nodes || edge < graph.node_edge_ptr[node] || edge >= graph.node_edge_ptr[node + 1U]) { if (error) *error = "public edge is outside its destination CSR segment"; return false; } }
         std::uint64_t width = 1U;
-        for (std::size_t axis = 1U; axis < descriptor.logical_shape.size(); ++axis) width *= descriptor.logical_shape[axis];
+        for (std::size_t axis = 1U; axis < descriptor.logical_shape.size(); ++axis) {
+            if (!checked_mul_u64(width, descriptor.logical_shape[axis], width)) { if (error) *error = "public graph route width overflows uint64"; return false; }
+        }
         const bool route = descriptor.id == "sparse_route", end = suffix("/view/group_end");
         return public_logical_provider(descriptor, basis_size, [&graph, width, route, end, boundary_view, from_u64](std::uint64_t index) { const auto edge = index / width, column = index % width; if (route) return from_u64((column == 0U ? graph.src : graph.dst).at(edge)); const auto node = graph.dst.at(edge); const bool want_end = boundary_view ? end : column == 1U; return zkdl::fr_from_u32((want_end ? edge + 1U == graph.node_edge_ptr.at(node + 1U) : edge == graph.node_edge_ptr.at(node)) ? 1U : 0U); }, provider, error);
     }
@@ -2087,7 +2208,8 @@ bool sorted_scratch_u32(std::ifstream &input, std::uint32_t &value) {
 
 bool sorted_scratch_string(std::ifstream &input, std::string &value) {
     std::uint64_t length = 0U;
-    if (!sorted_scratch_u64(input, length) || length > (1ULL << 20U)) return false;
+    if (!sorted_scratch_u64(input, length) || length > (1ULL << 20U) || length > std::numeric_limits<std::size_t>::max() ||
+        length > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) return false;
     value.assign(static_cast<std::size_t>(length), '\0');
     return length == 0U || static_cast<bool>(input.read(value.data(), static_cast<std::streamsize>(length)));
 }
@@ -2141,28 +2263,37 @@ bool sorted_scratch_layout(const Config &config, const NativeSortedLookupProvide
     }
     layout.roles = roles;
     layout.key_max_u128 = key_max;
-    const auto fits_u32 = [](std::uint64_t value) { return value != 0U && value <= std::numeric_limits<std::uint32_t>::max(); };
+    const auto fits_u32 = [](std::uint64_t value) { return value != 0U && value <= kMaxNativeDomain; };
     if (!fits_u32(table_domain) || !fits_u32(query_domain) || !fits_u32(merge_domain) || !fits_u32(segment_size) || !fits_u32(table_logical) ||
         !fits_u32(query_logical) || !fits_u32(merge_logical) || table_domain % segment_size != 0U || query_domain % segment_size != 0U ||
-        merge_domain % segment_size != 0U || operation != input.operation_id || roles.empty() || active_length != table_logical ||
+        merge_domain % segment_size != 0U || !native_power_of_two(table_domain) || !native_power_of_two(query_domain) ||
+        !native_power_of_two(merge_domain) || !native_power_of_two(segment_size) || operation != input.operation_id || roles.empty() ||
+        active_length != table_logical || table_logical > table_domain || query_logical > query_domain || merge_logical > merge_domain ||
+        table_logical > kMaxNativeDomain - query_logical || merge_logical != table_logical + query_logical ||
+        layout.x_bits == 0U || layout.y_bits == 0U || layout.x_bits > 127U || layout.y_bits > 127U || layout.x_bits > 127U - layout.y_bits ||
         input.table_domain != table_domain || input.query_domain != query_domain || input.merge_domain != merge_domain || input.segment_size != segment_size ||
         input.table_logical_rows != table_logical || input.query_logical_rows != query_logical || input.merge_logical_rows != merge_logical ||
         input.x_bits != layout.x_bits || input.y_bits != layout.y_bits) {
         if (error) *error = "BLOCKED: sorted-lookup scratch metadata does not match provider descriptor";
         return false;
     }
-    layout.table_domain = static_cast<std::uint32_t>(table_domain);
-    layout.query_domain = static_cast<std::uint32_t>(query_domain);
-    layout.merge_domain = static_cast<std::uint32_t>(merge_domain);
-    layout.segment_size = static_cast<std::uint32_t>(segment_size);
-    layout.table_logical = static_cast<std::uint32_t>(table_logical);
-    layout.query_logical = static_cast<std::uint32_t>(query_logical);
-    layout.merge_logical = static_cast<std::uint32_t>(merge_logical);
+    try {
+        layout.table_domain = checked_native_u32(table_domain, "sorted lookup table domain", error);
+        layout.query_domain = checked_native_u32(query_domain, "sorted lookup query domain", error);
+        layout.merge_domain = checked_native_u32(merge_domain, "sorted lookup merge domain", error);
+        layout.segment_size = checked_native_u32(segment_size, "sorted lookup segment size", error);
+        layout.table_logical = checked_native_u32(table_logical, "sorted lookup table row count", error);
+        layout.query_logical = checked_native_u32(query_logical, "sorted lookup query row count", error);
+        layout.merge_logical = checked_native_u32(merge_logical, "sorted lookup merge row count", error);
+    } catch (const std::runtime_error &) {
+        return false;
+    }
     const auto checked_section = [&](std::uint64_t count, std::uint64_t &offset) {
         const auto position = stream.tellg();
         if (position < 0 || count > std::numeric_limits<std::uint64_t>::max() / SortedLookupScratchLayout::kRecordBytes) return false;
         offset = static_cast<std::uint64_t>(position);
         const std::uint64_t bytes = count * SortedLookupScratchLayout::kRecordBytes;
+        if (bytes > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max())) return false;
         stream.seekg(static_cast<std::streamoff>(bytes), std::ios::cur);
         return static_cast<bool>(stream);
     };
@@ -2185,12 +2316,25 @@ bool sorted_scratch_provider(const SortedLookupScratchLayout &layout, std::uint6
                              relation::SegmentedTensorProvider &provider, std::string *error) {
     const auto path = layout.path;
     provider = relation::SegmentedTensorProvider(domain, layout.segment_size,
-                                                 [path, section_offset, field](std::uint64_t offset, std::uint32_t count, std::vector<FrWire> &output,
-                                                                               std::string *read_error) {
-                                                     if (offset > std::numeric_limits<std::uint64_t>::max() / SortedLookupScratchLayout::kRecordBytes ||
-                                                         count >
-                                                             (std::numeric_limits<std::uint64_t>::max() / SortedLookupScratchLayout::kRecordBytes) - offset) {
+                                                 [path, section_offset, domain, field](std::uint64_t offset, std::uint32_t count, std::vector<FrWire> &output,
+                                                                                       std::string *read_error) {
+                                                     constexpr std::uint64_t record_bytes = SortedLookupScratchLayout::kRecordBytes;
+                                                     if (offset > domain || count > domain - offset || offset > std::numeric_limits<std::uint64_t>::max() / record_bytes ||
+                                                         count > std::numeric_limits<std::uint64_t>::max() / record_bytes) {
                                                          if (read_error) *read_error = "sorted-lookup scratch range overflow";
+                                                         return false;
+                                                     }
+                                                     const std::uint64_t section_delta = offset * record_bytes;
+                                                     const std::uint64_t byte_count = static_cast<std::uint64_t>(count) * record_bytes;
+                                                     if (section_offset > std::numeric_limits<std::uint64_t>::max() - section_delta ||
+                                                         byte_count > std::numeric_limits<std::size_t>::max() ||
+                                                         byte_count > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
+                                                         if (read_error) *read_error = "sorted-lookup scratch byte range is not representable";
+                                                         return false;
+                                                     }
+                                                     const std::uint64_t byte_offset = section_offset + section_delta;
+                                                     if (byte_offset > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+                                                         if (read_error) *read_error = "sorted-lookup scratch offset exceeds stream range";
                                                          return false;
                                                      }
                                                      std::ifstream stream(path, std::ios::binary);
@@ -2198,9 +2342,6 @@ bool sorted_scratch_provider(const SortedLookupScratchLayout &layout, std::uint6
                                                          if (read_error) *read_error = "cannot open sorted-lookup scratch";
                                                          return false;
                                                      }
-                                                     const std::uint64_t byte_offset = section_offset + offset * SortedLookupScratchLayout::kRecordBytes;
-                                                     const std::uint64_t byte_count = static_cast<std::uint64_t>(count) *
-                                                                                      SortedLookupScratchLayout::kRecordBytes;
                                                      stream.seekg(static_cast<std::streamoff>(byte_offset), std::ios::beg);
                                                      std::vector<std::uint8_t> bytes(static_cast<std::size_t>(byte_count));
                                                      if (!bytes.empty() &&
@@ -2283,10 +2424,16 @@ bool sorted_lookup_descriptor_from_plan(const RelationPlan &relation, const Publ
         if (error) *error = "BLOCKED: sorted-lookup descriptor is not bound to RelationPlan/statement";
         return false;
     }
-    if (query.table_domain > std::numeric_limits<std::uint32_t>::max() || query.query_domain > std::numeric_limits<std::uint32_t>::max() ||
-        query.merge_domain > std::numeric_limits<std::uint32_t>::max() || query.table_logical_rows > std::numeric_limits<std::uint32_t>::max() ||
-        query.query_logical_rows > std::numeric_limits<std::uint32_t>::max() || query.merge_logical_rows > std::numeric_limits<std::uint32_t>::max() ||
-        query.segment_size > std::numeric_limits<std::uint32_t>::max() || query.x_bits + query.y_bits > 127U) {
+    if (query.table_domain == 0U || query.table_domain > kMaxNativeDomain || !native_power_of_two(query.table_domain) ||
+        query.query_domain == 0U || query.query_domain > kMaxNativeDomain || !native_power_of_two(query.query_domain) ||
+        query.merge_domain == 0U || query.merge_domain > kMaxNativeDomain || !native_power_of_two(query.merge_domain) ||
+        query.table_logical_rows == 0U || query.table_logical_rows > query.table_domain ||
+        query.query_logical_rows == 0U || query.query_logical_rows > query.query_domain ||
+        query.merge_logical_rows == 0U || query.merge_logical_rows > query.merge_domain ||
+        query.table_logical_rows > kMaxNativeDomain - query.query_logical_rows ||
+        query.merge_logical_rows != query.table_logical_rows + query.query_logical_rows ||
+        query.segment_size == 0U || query.segment_size > kMaxNativeDomain || !native_power_of_two(query.segment_size) ||
+        query.x_bits == 0U || query.y_bits == 0U || query.x_bits > 127U || query.y_bits > 127U || query.x_bits > 127U - query.y_bits) {
         if (error) *error = "BLOCKED: sorted-lookup descriptor exceeds native wire bounds";
         return false;
     }
@@ -2304,16 +2451,20 @@ bool sorted_lookup_descriptor_from_plan(const RelationPlan &relation, const Publ
     descriptor.merge_ref = query.merge_ref;
     descriptor.table_digest = table_digest;
     descriptor.descriptor_digest = descriptor_digest;
-    descriptor.table_domain = static_cast<std::uint32_t>(query.table_domain);
-    descriptor.query_domain = static_cast<std::uint32_t>(query.query_domain);
-    descriptor.merge_domain = static_cast<std::uint32_t>(query.merge_domain);
-    descriptor.table_active_length = static_cast<std::uint32_t>(query.table_logical_rows);
-    descriptor.query_active_length = static_cast<std::uint32_t>(query.query_logical_rows);
-    descriptor.merge_active_length = static_cast<std::uint32_t>(query.merge_logical_rows);
-    descriptor.segment_size = static_cast<std::uint32_t>(query.segment_size);
-    descriptor.table_segment_count = static_cast<std::uint32_t>(query.table_segment_count);
-    descriptor.query_segment_count = static_cast<std::uint32_t>(query.query_segment_count);
-    descriptor.merge_segment_count = static_cast<std::uint32_t>(query.merge_segment_count);
+    try {
+        descriptor.table_domain = checked_native_u32(query.table_domain, "sorted lookup table domain", error);
+        descriptor.query_domain = checked_native_u32(query.query_domain, "sorted lookup query domain", error);
+        descriptor.merge_domain = checked_native_u32(query.merge_domain, "sorted lookup merge domain", error);
+        descriptor.table_active_length = checked_native_u32(query.table_logical_rows, "sorted lookup table row count", error);
+        descriptor.query_active_length = checked_native_u32(query.query_logical_rows, "sorted lookup query row count", error);
+        descriptor.merge_active_length = checked_native_u32(query.merge_logical_rows, "sorted lookup merge row count", error);
+        descriptor.segment_size = checked_native_u32(query.segment_size, "sorted lookup segment size", error);
+        descriptor.table_segment_count = checked_native_u32(query.table_segment_count, "sorted lookup table segment count", error);
+        descriptor.query_segment_count = checked_native_u32(query.query_segment_count, "sorted lookup query segment count", error);
+        descriptor.merge_segment_count = checked_native_u32(query.merge_segment_count, "sorted lookup merge segment count", error);
+    } catch (const std::runtime_error &) {
+        return false;
+    }
     descriptor.x_bits = query.x_bits;
     descriptor.y_bits = query.y_bits;
     descriptor.key_max = relation::sorted_lookup_field_from_u128(key_max);
@@ -2366,8 +2517,15 @@ bool sorted_lookup_public_table_providers(const StaticTables &tables, const Oper
         }
         previous_key = key;
     }
+    std::uint32_t table_domain_u32 = 0U, segment_size_u32 = 0U;
+    try {
+        table_domain_u32 = checked_native_u32(query.table_domain, query.operation_id + "/table-domain", error);
+        segment_size_u32 = checked_native_u32(query.segment_size, query.operation_id + "/segment-size", error);
+    } catch (const std::runtime_error &) {
+        return false;
+    }
     const auto range_provider = [&](std::uint32_t field, relation::SegmentedTensorProvider &result) {
-        result = relation::SegmentedTensorProvider(static_cast<std::uint32_t>(query.table_domain), static_cast<std::uint32_t>(query.segment_size),
+        result = relation::SegmentedTensorProvider(table_domain_u32, segment_size_u32,
                                                    [source, key_at, field, table_domain = query.table_domain,
                                                     segment_size = query.segment_size](std::uint64_t offset, std::uint32_t count, std::vector<FrWire> &output,
                                                                                        std::string *range_error) {

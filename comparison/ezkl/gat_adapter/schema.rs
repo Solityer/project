@@ -35,6 +35,77 @@ pub fn sha256_digest(bytes: &[u8]) -> Result<String, String> {
     }
 }
 
+/// Stream a file through SHA-256 once while reporting byte-level progress.
+/// The returned size is the number of bytes actually hashed, not a second
+/// metadata or digest pass.
+pub fn sha256_file_with_progress(path: &std::path::Path, stage: &str) -> Result<(u64, String), String> {
+    #[cfg(feature = "ezkl")]
+    {
+        use sha2::{Digest, Sha256};
+        use std::fs::File;
+        use std::io::Read;
+        use std::time::{Duration, Instant};
+
+        let mut file = File::open(path).map_err(|error| format!("open {}: {}", path.display(), error))?;
+        let total = file
+            .metadata()
+            .map_err(|error| format!("stat {}: {}", path.display(), error))?
+            .len();
+        eprintln!("[sha256] {}: started {} (0/{} bytes)", stage, path.display(), total);
+
+        let started = Instant::now();
+        let mut last_report = started;
+        let mut last_report_bytes = 0_u64;
+        let mut processed = 0_u64;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 1024 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|error| format!("read {}: {}", path.display(), error))?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            processed = processed
+                .checked_add(read as u64)
+                .ok_or_else(|| format!("size overflow while reading {}", path.display()))?;
+
+            let now = Instant::now();
+            if processed.saturating_sub(last_report_bytes) >= 1024 * 1024 * 1024
+                || now.duration_since(last_report) >= Duration::from_secs(20)
+            {
+                eprintln!(
+                    "[sha256] {}: progress {} ({}/{}) bytes, {:.1}s",
+                    stage,
+                    path.display(),
+                    processed,
+                    total,
+                    started.elapsed().as_secs_f64()
+                );
+                last_report = now;
+                last_report_bytes = processed;
+            }
+        }
+
+        let digest = hex::encode(hasher.finalize());
+        eprintln!(
+            "[sha256] {}: complete {} ({}/{} bytes, {:.1}s)",
+            stage,
+            path.display(),
+            processed,
+            total,
+            started.elapsed().as_secs_f64()
+        );
+        Ok((processed, digest))
+    }
+    #[cfg(not(feature = "ezkl"))]
+    {
+        let _ = (path, stage);
+        Err("streaming file SHA-256 requires the official ezkl feature".into())
+    }
+}
+
 /// Encode one canonical logical tensor name using the checkpoint bundle's
 /// NPZ key rule.  Logical names remain the identity in the manifest and text
 /// dump; this encoding is only the deterministic archive key.  Callers must

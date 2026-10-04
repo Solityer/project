@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -13,6 +14,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -60,13 +62,25 @@ inline std::filesystem::path scratch_directory() {
     return path;
 }
 
+inline std::uint64_t available_bytes(const std::filesystem::path& directory) {
+    struct statvfs capacity{};
+    if (::statvfs(directory.c_str(), &capacity) != 0)
+        throw std::runtime_error("cannot inspect native storage capacity: " + directory.string());
+    const unsigned __int128 available = static_cast<unsigned __int128>(capacity.f_bavail) * capacity.f_frsize;
+    if (available > std::numeric_limits<std::uint64_t>::max())
+        throw std::overflow_error("native storage capacity exceeds u64");
+    return static_cast<std::uint64_t>(available);
+}
+
+inline std::uint64_t scratch_available_bytes() {
+    return available_bytes(scratch_directory());
+}
+
 inline void* allocate(std::size_t bytes, std::size_t alignment) {
     if (bytes <= heap_limit) return ::operator new(bytes, std::align_val_t(alignment));
     if (bytes > static_cast<std::size_t>(std::numeric_limits<off_t>::max())) throw std::length_error("native scratch allocation exceeds file offset capacity");
     const auto directory = scratch_directory();
-    struct statvfs capacity{};
-    if (::statvfs(directory.c_str(), &capacity) != 0) throw std::runtime_error("cannot inspect native scratch capacity");
-    const unsigned __int128 available = static_cast<unsigned __int128>(capacity.f_bavail) * capacity.f_frsize;
+    const std::uint64_t available = available_bytes(directory);
     if (available < bytes) throw std::runtime_error("insufficient zkGPT native scratch disk capacity: required " + std::to_string(bytes) + " bytes");
     std::string pattern = (directory / "oracle-XXXXXX").string();
     std::vector<char> filename(pattern.begin(), pattern.end());
@@ -115,6 +129,51 @@ public:
 template<class T> using NativeVector = std::vector<T, NativeScratchAllocator<T>>;
 using NativeFieldVector = NativeVector<F>;
 
+class NativeFieldView {
+public:
+    using Getter = std::function<F(std::size_t)>;
+
+    NativeFieldView() = default;
+
+    // The caller owns the referenced storage. Keep lifetime_token alive until
+    // every synchronous consumer has returned; getters must be thread-safe and read-only.
+    static NativeFieldView borrowed(std::size_t logical_size,
+                                    const void* lifetime_token,
+                                    Getter getter) {
+        if (lifetime_token == nullptr || !getter)
+            throw std::invalid_argument("native field view requires a live lifetime token and getter");
+        NativeFieldView view;
+        view.logical_size_ = logical_size;
+        view.lifetime_token_ = lifetime_token;
+        view.getter_ = std::move(getter);
+        return view;
+    }
+
+    template<class Vector> static NativeFieldView from_vector(const Vector& values) {
+        const Vector* borrowed_values = &values;
+        return borrowed(values.size(), borrowed_values,
+                        [borrowed_values](std::size_t index) { return borrowed_values->at(index); });
+    }
+
+    bool configured() const noexcept {
+        return logical_size_ != 0 || lifetime_token_ != nullptr || static_cast<bool>(getter_);
+    }
+    bool valid() const noexcept { return lifetime_token_ != nullptr && static_cast<bool>(getter_); }
+    std::size_t size() const noexcept { return logical_size_; }
+
+    F at(std::size_t index) const {
+        if (!valid()) throw std::logic_error("native field view is not live");
+        if (index >= logical_size_) throw std::out_of_range("native field view index exceeds logical size");
+        return getter_(index);
+    }
+    F operator[](std::size_t index) const { return at(index); }
+
+private:
+    std::size_t logical_size_ = 0;
+    const void* lifetime_token_ = nullptr;
+    Getter getter_;
+};
+
 class NativeStreamingDigest {
     cybozu::Sha256 hash_;
 public:
@@ -129,7 +188,8 @@ template<class Vector> std::string native_field_vector_digest(const Vector& valu
     NativeStreamingDigest digest(domain);
     digest.u64(2);
     digest.u64(values.size());
-    for (const F& value : values) digest.string(value.getStr(16));
+    for (std::size_t index = 0; index < values.size(); ++index)
+        digest.string(values[index].getStr(16));
     return digest.finish();
 }
 

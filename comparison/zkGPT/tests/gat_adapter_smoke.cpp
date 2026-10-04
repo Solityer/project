@@ -221,8 +221,8 @@ void write_standalone_fixture(const std::string& directory, const VerifierContex
             << "  \"dataset\": \"" << json_escape(context.registration.dataset) << "\",\n"
             << "  \"backend\": \"" << json_escape(context.backend) << "\",\n"
             << "  \"statement_digest\": \"" << json_escape(verifier_context_digest(context)) << "\",\n"
-            << "  \"plan_digest\": \"" << json_escape(context.plan.plan_digest) << "\",\n"
-            << "  \"circuit_id\": \"" << json_escape(context.plan.circuit_id) << "\",\n"
+            << "  \"plan_digest\": \"" << json_escape(context.plan_ref().plan_digest) << "\",\n"
+            << "  \"circuit_id\": \"" << json_escape(context.plan_ref().circuit_id) << "\",\n"
             << "  \"proof_digest\": \"" << json_escape(canonical_digest64(artifact.transcript_digest)) << "\",\n"
             << "  \"registration_digest\": \"" << json_escape(context.registration.registration_digest) << "\",\n"
             << "  \"registration_binding_digest\": \"" << json_escape(context.registration.binding_digest) << "\",\n"
@@ -331,7 +331,9 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     const ForwardResult formal_forward = run_forward(formal_graph, formal_features, formal_model, formal_quant);
     assert(formal_forward.trace.relation_ok);
     stage("plan");
-    const GatCircuitPlan formal_plan = build_gat_circuit_plan(formal_graph, formal_model, formal_quant, formal_forward);
+    const auto formal_plan_owner = std::make_shared<const GatCircuitPlan>(
+        build_gat_circuit_plan(formal_graph, formal_model, formal_quant, formal_forward));
+    const GatCircuitPlan& formal_plan = *formal_plan_owner;
     if (!proof_verify_only) {
         stage("native-gate-negative-checks");
         const GatCircuitWitness assignment = build_gat_circuit_witness(formal_plan, formal_graph, formal_features, formal_model, formal_quant, formal_forward);
@@ -363,15 +365,16 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     stage("registration");
     const ModelRegistration formal_registration = register_model(formal_model, formal_quant, formal_plan.input_layout, formal_model.manifest.model_arch_id);
     stage("context");
-    VerifierContext formal_context = make_verifier_context(formal_graph, formal_features, formal_quant, formal_forward.trace.tables, formal_forward.logits,
-                                                           formal_registration, formal_plan, "masked_full");
+    VerifierContext formal_context = make_verifier_context(formal_graph, formal_features, formal_quant,
+                                                           formal_forward.trace.tables, formal_forward.logits,
+                                                           formal_registration, formal_plan_owner, "masked_full");
     formal_context.backend = "cpu";
     formal_context.full_dataset_identity = "canonical:synthetic";
     formal_context.checkpoint_identity = "baseline-local/checkpoints/synthetic_gat/integrity.sha256";
     formal_context.cache_identity = "baseline-local/data/cache/synthetic/integrity.sha256";
     stage("masked-full-prove");
-    const ProveResult formal =
-        prove_gat(formal_plan, formal_graph, formal_features, formal_model, formal_quant, formal_forward, formal_registration, "masked_full");
+    const ProveResult formal = prove_gat(formal_plan_owner, formal_graph, formal_features, formal_model, formal_quant,
+                                         formal_forward, formal_registration, formal_context, "masked_full");
     if (formal.status != ProveStatus::GENERATED || !formal.has_artifact) {
         std::cerr << "masked_full formal smoke rejected: " << formal.diagnostic << "\n";
         return 1;
@@ -654,8 +657,8 @@ int main(int argc, char** argv) {
         context_roundtrip.full_dataset_identity != context.full_dataset_identity || context_roundtrip.checkpoint_identity != context.checkpoint_identity ||
         context_roundtrip.cache_identity != context.cache_identity ||
         context_roundtrip.registration.registration_digest != context.registration.registration_digest ||
-        context_roundtrip.plan.plan_digest != context.plan.plan_digest ||
-        context_roundtrip.plan.circuit.circuit.back().bin_gates.size() != context.plan.circuit.circuit.back().bin_gates.size()) {
+        context_roundtrip.plan_ref().plan_digest != context.plan_ref().plan_digest ||
+        context_roundtrip.plan_ref().circuit.circuit.back().bin_gates.size() != context.plan_ref().circuit.circuit.back().bin_gates.size()) {
         std::cerr << "context roundtrip mismatch\n";
         return 1;
     }
@@ -671,7 +674,7 @@ int main(int argc, char** argv) {
               << " v4_wire_bytes=" << context_stat.st_size << " recipe_cap=67108864 wire_cap=2147483648\n";
     for (std::size_t layer_id = 0; layer_id < proof_plan.circuit.circuit.size(); ++layer_id) {
         const layer& producer_layer = proof_plan.circuit.circuit[layer_id];
-        const layer& reconstructed_layer = context_roundtrip.plan.circuit.circuit.at(layer_id);
+        const layer& reconstructed_layer = context_roundtrip.plan_ref().circuit.circuit.at(layer_id);
         if (producer_layer.ty != reconstructed_layer.ty || producer_layer.size != reconstructed_layer.size ||
             producer_layer.uni_gates.size() != reconstructed_layer.uni_gates.size() ||
             producer_layer.bin_gates.size() != reconstructed_layer.bin_gates.size() ||
@@ -687,16 +690,16 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < producer_layer.uni_gates.size(); ++i) {
             const uniGate& a = producer_layer.uni_gates[i];
             const uniGate& b = reconstructed_layer.uni_gates[i];
-            if (a.g != b.g || a.u != b.u || a.lu != b.lu || a.sc != b.sc) return 1;
+            if (a.g != b.g || a.u != b.u || a.lu != b.lu || producer_layer.coefficient(a) != reconstructed_layer.coefficient(b)) return 1;
         }
         for (std::size_t i = 0; i < producer_layer.bin_gates.size(); ++i) {
             const binGate& a = producer_layer.bin_gates[i];
             const binGate& b = reconstructed_layer.bin_gates[i];
-            if (a.g != b.g || a.u != b.u || a.v != b.v || a.l != b.l || a.sc != b.sc) return 1;
+            if (a.g != b.g || a.u != b.u || a.v != b.v || a.l != b.l || producer_layer.coefficient(a) != reconstructed_layer.coefficient(b)) return 1;
         }
     }
     const auto expect_plan_reject = [&](const char* label, const std::function<void(GatCircuitPlan&)>& mutate) {
-        GatCircuitPlan tampered = context_roundtrip.plan;
+        GatCircuitPlan tampered = context_roundtrip.plan_ref();
         mutate(tampered);
         if (validate_gat_circuit_plan(tampered, &context_wire_reason)) {
             std::cerr << "compact plan tamper unexpectedly accepted: " << label << "\n";
@@ -739,7 +742,7 @@ int main(int argc, char** argv) {
     assert(expect_context_reject("registration", [](VerifierContext& tampered) {
         tampered.registration.registration_digest[0] = tampered.registration.registration_digest[0] == '0' ? '1' : '0';
     }));
-    GatCircuitPlan plan_gate_tampered = context_roundtrip.plan;
+    GatCircuitPlan plan_gate_tampered = context_roundtrip.plan_ref();
     if (plan_gate_tampered.matmuls.empty()) return 1;
     plan_gate_tampered.matmuls.front().rows += 1;
     if (validate_gat_circuit_plan(plan_gate_tampered, &context_wire_reason)) return 1;
@@ -808,7 +811,9 @@ int main(int argc, char** argv) {
     synthetic.C.circuit[1].size = static_cast<u32>(gkr_output.size());
     synthetic.C.circuit[1].zero_start_id = synthetic.C.circuit[1].size;
     synthetic.C.circuit[1].bit_length = 3;
-    for (u32 index = 0; index < gkr_output.size(); ++index) synthetic.C.circuit[1].uni_gates.emplace_back(index, index, 0, 1);
+    synthetic.C.circuit[1].reserve_gate_arrays(gkr_output.size(), 0);
+    synthetic.C.circuit[1].reserve_coefficients(1);
+    for (u32 index = 0; index < gkr_output.size(); ++index) synthetic.C.circuit[1].add_unary(index, index, 0, 1);
     synthetic.C.initSubset();
     synthetic.val.resize(2);
     synthetic.val[0].assign(gkr_output.begin(), gkr_output.end());

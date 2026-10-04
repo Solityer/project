@@ -3,7 +3,7 @@ use crate::circuit::CheckMode;
 use crate::commands::CalibrationTarget;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use crate::eth::deploy_contract_via_solidity;
-#[cfg(all(feature = "reusable-verifier", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "eth", feature = "reusable-verifier", not(target_arch = "wasm32")))]
 use crate::eth::register_vka_via_rv;
 #[allow(unused_imports)]
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
@@ -21,8 +21,10 @@ use crate::pfsys::{
 };
 use crate::pfsys::{create_proof_circuit, verify_proof_circuit, ProofSplitCommit};
 use crate::pfsys::{
-    canonical_fr_to_string, canonical_string_to_fr, encode_calldata, save_vk, srs::*,
+    canonical_fr_to_string, canonical_string_to_fr, save_vk, srs::*,
 };
+#[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
+use crate::pfsys::encode_calldata;
 use crate::tensor::TensorError;
 use crate::RunArgs;
 use crate::EZKL_BUF_CAPACITY;
@@ -57,12 +59,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
-#[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
+#[cfg(any(feature = "eth", feature = "reusable-verifier"))]
 use std::fs::File;
+#[cfg(any(feature = "eth", feature = "reusable-verifier"))]
+use std::io::Write;
 use std::io::BufWriter;
 use std::io::Cursor;
-#[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -266,11 +268,7 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             vka_path,
         )
         .map(|e| serde_json::to_string(&e).unwrap()),
-        #[cfg(all(
-            feature = "eth",
-            feature = "reusable-verifier",
-            not(target_arch = "wasm32")
-        ))]
+        #[cfg(all(feature = "reusable-verifier", not(target_arch = "wasm32")))]
         Commands::CreateEvmVka {
             vk_path,
             srs_path,
@@ -400,7 +398,7 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             )
             .await
         }
-        #[cfg(feature = "reusable-verifier")]
+        #[cfg(all(feature = "eth", feature = "reusable-verifier"))]
         Commands::RegisterVka {
             addr_verifier,
             vka_path,
@@ -527,21 +525,9 @@ async fn fetch_srs(uri: &str) -> Result<Vec<u8>, EZKLError> {
 }
 
 pub(crate) fn get_file_hash(path: &Path) -> Result<String, EZKLError> {
-    use std::io::Read;
-    let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::new(file);
-    let mut buffer = vec![];
-    let bytes_read = reader.read_to_end(&mut buffer)?;
-    info!(
-        "read {} bytes from file (vector of len = {})",
-        bytes_read,
-        buffer.len()
-    );
-
-    let hash = sha256::digest(buffer);
-    info!("file hash: {}", hash);
-
-    Ok(hash)
+    crate::gat_adapter::schema::sha256_file_with_progress(path, "native file identity")
+        .map(|(_, digest)| digest)
+        .map_err(EZKLError::from)
 }
 
 fn check_srs_hash(logrows: u32, srs_path: Option<PathBuf>) -> Result<String, EZKLError> {
@@ -1486,7 +1472,7 @@ pub(crate) async fn deploy_evm(
     Ok(String::new())
 }
 
-#[cfg(all(feature = "reusable-verifier", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "eth", feature = "reusable-verifier", not(target_arch = "wasm32")))]
 pub(crate) async fn register_vka(
     rpc_url: String,
     rv_addr: H160Flag,
@@ -1634,9 +1620,9 @@ fn require_authentic_srs(path: &Path) -> Result<String, EZKLError> {
             );
         }
     }
-    let bytes = std::fs::read(path)
-        .map_err(|e| format!("cannot read official SRS {}: {}", path.display(), e))?;
-    crate::gat_adapter::schema::sha256_digest(&bytes).map_err(EZKLError::from)
+    crate::gat_adapter::schema::sha256_file_with_progress(path, "official SRS authentication")
+        .map(|(_, digest)| digest)
+        .map_err(EZKLError::from)
 }
 
 fn fp_values(values: &[i128]) -> Vec<Fr> {

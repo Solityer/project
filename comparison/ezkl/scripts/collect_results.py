@@ -25,7 +25,9 @@ from formal_common import (
     CANONICAL_STATEMENT_MODE,
     DATASETS,
     FORMAL_BACKEND,
+    FORMAL_GPU_FEATURES,
     FORMAL_PHASE_BACKENDS,
+    FORMAL_SESSION_ID,
     NATIVE_FORMAL_BACKEND,
     ROOT,
     ContractError,
@@ -48,6 +50,7 @@ from formal_common import (
     validate_commitment_metrics,
     validate_gpu_evidence,
     validate_gpu_evidence_document,
+    validate_gpu_environment,
     validate_public_output,
     validate_public_statement,
 )
@@ -137,6 +140,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--runs-root", default="runs/formal")
     result.add_argument("--output", default="results/formal_matrix.json")
+    result.add_argument("--session-id", help="active formal session; required for hybrid result collection")
     result.add_argument(
         "--datasets",
         nargs="+",
@@ -198,9 +202,13 @@ def validate_proof_instances(result: dict[str, Any], proof: Path) -> dict[str, A
     return expected
 
 
-def validate_cell(path: Path) -> dict[str, Any]:
+def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict[str, Any]:
     result = load_json(path, f"result cell {path}")
-    unknown = set(result) - REQUIRED_RESULT_KEYS - {"execution_mode", "phase_backends", "native_backend"}
+    formal_gpu_identity_fields = {
+        "selected_cuda_device", "build_receipt_sha256", "build_environment_sha256",
+        "gpu_prover_record_sha256", "independent_verifier_log_sha256",
+    }
+    unknown = set(result) - REQUIRED_RESULT_KEYS - {"execution_mode", "phase_backends", "native_backend", "formal_session_id"} - formal_gpu_identity_fields
     if unknown:
         abort(f"{path} has unknown result fields: {sorted(unknown)}")
     missing = REQUIRED_RESULT_KEYS - set(result)
@@ -214,12 +222,58 @@ def validate_cell(path: Path) -> dict[str, Any]:
         abort(f"{path} has an unknown dataset/backend")
     native_backend = NATIVE_FORMAL_BACKEND if backend == FORMAL_BACKEND else backend
     if backend == FORMAL_BACKEND:
+        session_id = result.get("formal_session_id")
+        if not isinstance(session_id, str) or not FORMAL_SESSION_ID.fullmatch(session_id):
+            abort(f"{path} has no valid formal session identity")
+        if expected_session_id is not None and session_id != expected_session_id:
+            abort(f"{path} belongs to a different formal session")
         if result.get("native_backend") != native_backend or result.get("execution_mode") != FORMAL_BACKEND:
             abort(f"{path} does not identify the formal hybrid execution/native engine")
         if canonical_json_digest(result.get("phase_backends")) != canonical_json_digest(FORMAL_PHASE_BACKENDS):
             abort(f"{path} has an invalid hybrid phase device schedule")
         if path.parent.name != FORMAL_BACKEND or path.parent.parent.name != dataset:
             abort(f"{path} is outside its canonical dataset/hybrid result directory")
+        for field in formal_gpu_identity_fields:
+            if field not in result:
+                abort(f"{path} is missing current-session GPU identity field {field}")
+        selected_device = result["selected_cuda_device"]
+        device_keys = {"index", "uuid", "name", "driver_version", "compute_capability", "logical_device_id"}
+        if not isinstance(selected_device, dict) or set(selected_device) != device_keys:
+            abort(f"{path} selected CUDA device identity has missing or unknown fields")
+        if (
+            isinstance(selected_device["index"], bool) or not isinstance(selected_device["index"], int) or selected_device["index"] < 0
+            or isinstance(selected_device["logical_device_id"], bool) or selected_device["logical_device_id"] != 0
+            or any(not isinstance(selected_device[key], str) or not selected_device[key] for key in ("uuid", "name", "driver_version", "compute_capability"))
+        ):
+            abort(f"{path} selected CUDA device identity contains invalid values")
+        current_gpu = validate_gpu_environment()
+        if current_gpu["selected_cuda_device"] != selected_device:
+            abort(f"{path} selected CUDA device does not match the live formal execution device")
+        for field in ("build_receipt_sha256", "build_environment_sha256", "gpu_prover_record_sha256", "independent_verifier_log_sha256"):
+            require_digest(result[field], f"{path} {field}")
+        receipt_path = ROOT / "artifacts/build/gpu/build_receipt.json"
+        require_file(receipt_path, "current GPU build receipt")
+        if sha256(receipt_path) != result["build_receipt_sha256"]:
+            abort(f"{path} build receipt does not belong to the current formal session")
+        receipt = load_json(receipt_path, "current GPU build receipt")
+        environment = receipt.get("build_environment")
+        if (
+            receipt.get("selected_cuda_device") != selected_device
+            or receipt.get("features") != list(FORMAL_GPU_FEATURES)
+            or receipt.get("build_environment_sha256") != result["build_environment_sha256"]
+            or not isinstance(environment, dict)
+            or environment.get("selected_cuda_device") != selected_device
+            or environment.get("features") != list(FORMAL_GPU_FEATURES)
+            or environment.get("build_environment_sha256") != result["build_environment_sha256"]
+        ):
+            abort(f"{path} GPU result/build identity does not match")
+        environment_payload = dict(environment)
+        recorded_environment_digest = environment_payload.pop("build_environment_sha256", None)
+        if canonical_json_digest(environment_payload) != recorded_environment_digest:
+            abort(f"{path} GPU build environment digest is invalid")
+        verifier_log = require_file(path.parent / "logs/verify.log", "independent verifier log")
+        if sha256(verifier_log) != result["independent_verifier_log_sha256"]:
+            abort(f"{path} independent verifier log identity is stale")
     elif "execution_mode" in result or "phase_backends" in result:
         expected_mode = "mixed" if backend == "gpu" else "cpu"
         legacy_phases = {"prepare_compile": "cpu", "setup": expected_mode, "public_statement": "cpu", "witness_generation": "cpu", "model_commitment": "cpu", "prove": expected_mode, "verify": "cpu"}
@@ -365,6 +419,11 @@ def validate_cell(path: Path) -> dict[str, Any]:
         calls = record["msm_calls"] + record["ntt_calls"]
         if record["proof_sha256"] != result["proof_sha256"] or calls <= 0 or record["synchronized_calls"] != calls or record["evidence"] != result["gpu_evidence"] or result["gpu_evidence"]["gpu_kernel_invocation_count"] != calls:
             abort("native GPU prover record is not synchronized and bound to the verified proof")
+        if backend == FORMAL_BACKEND:
+            if record["device_id"] != result["selected_cuda_device"]["logical_device_id"]:
+                abort("native proof logical device ordinal does not match the selected physical CUDA UUID")
+            if sha256(proof.parent / "gpu_prover_record.json") != result["gpu_prover_record_sha256"]:
+                abort("native GPU prover record identity is stale")
 
     if result["source_tree_sha256"] != source_tree_hash() or result["resource_manifest_sha256"] != resource_manifest_hash():
         abort(f"{path} source/resource identity is stale")
@@ -397,6 +456,11 @@ def main(args: argparse.Namespace) -> int:
         abort("--backends must not contain duplicates")
     if FORMAL_BACKEND in selected_backends and (selected_backends != (FORMAL_BACKEND,) or selected_datasets != DATASETS):
         abort("formal collection requires exactly the five canonical hybrid results")
+    if FORMAL_BACKEND in selected_backends:
+        if not isinstance(args.session_id, str) or not FORMAL_SESSION_ID.fullmatch(args.session_id):
+            abort("formal collection requires the active --session-id")
+    elif args.session_id is not None:
+        abort("--session-id is only valid for formal hybrid collection")
     runs_root = local_path(args.runs_root, "runs-root")
     output = local_path(args.output, "collector output")
     reject_forbidden_path(output, "collector output")
@@ -407,7 +471,10 @@ def main(args: argparse.Namespace) -> int:
         for backend in selected_backends:
             result_path = runs_root / dataset / backend / "result.json"
             reject_forbidden_path(result_path, f"{dataset}/{backend} result")
-            cell = validate_cell(result_path)
+            cell = validate_cell(
+                result_path,
+                expected_session_id=args.session_id if FORMAL_BACKEND in selected_backends else None,
+            )
             if (cell["dataset"], cell["backend"]) != (dataset, backend):
                 abort(f"result identity does not match its collection path: {result_path}")
             cells.append(cell)
@@ -429,6 +496,8 @@ def main(args: argparse.Namespace) -> int:
         "collected_at_utc": datetime.now(timezone.utc).isoformat(),
         "cells": cells,
     }
+    if FORMAL_BACKEND in selected_backends:
+        document["formal_session_id"] = args.session_id
     output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
     print(
         f"collected {len(cells)} verified result cells ({', '.join(selected_backends)}) into "

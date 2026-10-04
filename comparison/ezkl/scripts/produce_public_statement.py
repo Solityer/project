@@ -23,7 +23,17 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from formal_common import DATASETS, ROOT, ContractError, abort, load_json, require_file, sha256
+from formal_common import (
+    DATASETS,
+    ROOT,
+    AuthenticatedFormalContext,
+    ContractError,
+    abort,
+    load_json,
+    require_authenticated_formal_context,
+    require_file,
+    sha256,
+)
 
 RELATION = "R_GAT-ezkl"
 PRODUCER_ID = "ezkl-gat-independent-python"
@@ -588,7 +598,12 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def main(args: argparse.Namespace) -> int:
+def main(
+    args: argparse.Namespace,
+    *,
+    authenticated_context: AuthenticatedFormalContext | None = None,
+    formal_session_id: str | None = None,
+) -> int:
     if args.tiny_fixture and os.environ.get("EZKL_ALLOW_TINY_FIXTURE") != "1":
         fail("tiny fixture mode requires EZKL_ALLOW_TINY_FIXTURE=1")
     manifest_path = local_path(args.resource_manifest, "resource manifest")
@@ -612,10 +627,20 @@ def main(args: argparse.Namespace) -> int:
     if statement_path.parent != output_dir or public_output_path.parent != output_dir or producer_manifest_path.parent != output_dir:
         fail("statement, public output and producer manifest must be in output-dir")
 
-    from validate_resources import validate_manifest
-
     resource_document = load_json(manifest_path, "resource manifest")
-    validate_manifest(ROOT, resource_document, False)
+    if authenticated_context is None:
+        from validate_resources import validate_manifest
+
+        validate_manifest(ROOT, resource_document, False)
+    else:
+        if formal_session_id is None:
+            fail("shared resource authentication requires the active formal session id")
+        require_authenticated_formal_context(
+            authenticated_context,
+            session_id=formal_session_id,
+            dataset=args.dataset,
+            config=config,
+        )
     resource_digest = sha256(manifest_path)
     context = load_json(setup_context_path, "setup producer context")
     expected_context = {
@@ -655,7 +680,10 @@ def main(args: argparse.Namespace) -> int:
     ):
         fail("authenticated config/checkpoint/metadata identity mismatch")
     preprocess_id = meta.get("input_preprocess_id", "")
-    if preprocess_id not in {"row_normalize", "none"}:
+    accepted_preprocess_ids = {"row_normalize", "none"}
+    if args.dataset == "ogbn_arxiv":
+        accepted_preprocess_ids.add("ogbn_arxiv_raw_float32")
+    if preprocess_id not in accepted_preprocess_ids:
         fail(f"unsupported authenticated input_preprocess_id: {preprocess_id}")
     if (scales_cfg.get("quant_cfg_id") != context["quant_cfg_id"] or secure.get("quant_cfg_id") != context["quant_cfg_id"]):
         fail("quantization config identity mismatch")

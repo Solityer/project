@@ -1146,7 +1146,7 @@ PreparedMaskedView prepare_masked_view(const HyraxMleBasisView &view) {
     const std::size_t active = static_cast<std::size_t>(view.active_domain);
     PreparedMaskedView prepared{zkgpt::NativeVector<G1>(active),
                                 zkgpt::NativeFieldVector(active), {}};
-    zkgpt::native_storage::native_for_each_equality_weight(view.point, active, [&prepared](std::size_t index, const Fr &coefficient) { prepared.coefficients[index] = coefficient; });
+    zkgpt::native_for_each_equality_weight(view.point, active, [&prepared](std::size_t index, const Fr &coefficient) { prepared.coefficients[index] = coefficient; });
     zkgpt::NativeStreamingDigest digest("zkgpt-hyrax-masked-canonical-generator-set-v2");
     digest.u64(view.full_domain);
     digest.u64(view.logical_length);
@@ -2141,7 +2141,7 @@ zkgpt::NativeFieldVector tensor_row_weights(const std::vector<Fr> &full_point, c
     Fr high_zero_factor(1);
     for (std::size_t bit = shape.active_bits; bit < full_point.size(); ++bit) high_zero_factor *= Fr(1) - full_point[bit];
     zkgpt::NativeFieldVector weights(static_cast<std::size_t>(rows));
-    zkgpt::native_storage::native_for_each_equality_weight(row_point, static_cast<std::size_t>(rows), [&weights, &high_zero_factor](std::size_t row, const Fr &weight) {
+    zkgpt::native_for_each_equality_weight(row_point, static_cast<std::size_t>(rows), [&weights, &high_zero_factor](std::size_t row, const Fr &weight) {
         weights[row] = high_zero_factor * weight;
     });
     return weights;
@@ -2303,6 +2303,13 @@ std::string tensor_tail_id(const HyraxTensorMleView &view) {
 
 std::string tensor_tail_label(const HyraxTensorMleView &view) { return "tensor/" + tensor_tail_id(view) + "/tail"; }
 
+bool tensor_tail_transcript_present(const NativeProofSession &session, const std::string &tail_label) {
+    const std::string prefix = tail_label + "/";
+    for (const NativeProofMessage &message : session.messages())
+        if (message.label == tail_label || message.label.compare(0, prefix.size(), prefix) == 0) return true;
+    return false;
+}
+
 std::string tensor_tail_public_payload(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment) {
     std::ostringstream payload;
     payload << "zkgpt-hyrax-tensor-zero-tail-product2public-v1" << '|' << view.method << '|' << view.schema << '|' << view.version << '|' << tensor_tail_id(view);
@@ -2356,14 +2363,14 @@ std::shared_ptr<const NativeMaskedPublicProvider> tensor_tail_public_provider(co
 Fr tensor_tail_block_mle(const HyraxScalarProvider &values, std::uint64_t start, std::uint64_t length, const std::vector<Fr> &point) {
     if (!values.at || length != (std::uint64_t(1) << point.size()) || start > values.size || length > values.size - start) throw std::invalid_argument("Hyrax tensor tail boundary chunk is invalid");
     Fr evaluation(0);
-    zkgpt::native_storage::native_for_each_equality_weight(point, static_cast<std::size_t>(length), [&](std::size_t index, const Fr &weight) { evaluation += values.at(start + index) * weight; });
+    zkgpt::native_for_each_equality_weight(point, static_cast<std::size_t>(length), [&](std::size_t index, const Fr &weight) { evaluation += values.at(start + index) * weight; });
     return evaluation;
 }
 
 Fr tensor_tail_full_mle(const HyraxScalarProvider &values, std::uint64_t logical_length, std::uint64_t active_domain, const std::vector<Fr> &point) {
     if (!values.at || values.size != logical_length || active_domain != (std::uint64_t(1) << point.size())) throw std::invalid_argument("Hyrax tensor tail terminal dimensions are invalid");
     Fr evaluation(0);
-    zkgpt::native_storage::native_for_each_equality_weight(point, static_cast<std::size_t>(active_domain), [&](std::size_t index, const Fr &weight) { if (static_cast<std::uint64_t>(index) < logical_length) evaluation += values.at(index) * weight; });
+    zkgpt::native_for_each_equality_weight(point, static_cast<std::size_t>(active_domain), [&](std::size_t index, const Fr &weight) { if (static_cast<std::uint64_t>(index) < logical_length) evaluation += values.at(index) * weight; });
     return evaluation;
 }
 
@@ -2449,7 +2456,7 @@ std::shared_ptr<const NativeMaskedPublicProvider> tensor_zero_interval_public_pr
 Fr tensor_zero_interval_block_mle(const HyraxScalarProvider &values, std::uint64_t logical_length, std::uint64_t start, std::uint64_t length, const std::vector<Fr> &point) {
     if (!values.at || values.size != logical_length || length != (std::uint64_t(1) << point.size())) throw std::invalid_argument("Hyrax tensor zero-interval boundary block is invalid");
     Fr evaluation(0);
-    zkgpt::native_storage::native_for_each_equality_weight(point, static_cast<std::size_t>(length), [&](std::size_t offset, const Fr &weight) { const std::uint64_t index = start + offset; if (index < logical_length) evaluation += values.at(index) * weight; });
+    zkgpt::native_for_each_equality_weight(point, static_cast<std::size_t>(length), [&](std::size_t offset, const Fr &weight) { const std::uint64_t index = start + offset; if (index < logical_length) evaluation += values.at(index) * weight; });
     return evaluation;
 }
 
@@ -2543,6 +2550,16 @@ bool prove_hyrax_tensor_zero_tail_certificate_with_session(const HyraxTensorMleV
         validate_tensor_commitment(view, commitment);
         const std::string tail_label = tensor_tail_label(view), sum_label = tail_label + "/sum";
         if (exact_position != checkpoint || !values.at || values.size != view.logical_length || !tensor_tail_scalar_domain_matches(session, scalar_basis, reason)) throw std::invalid_argument("Hyrax tensor tail prover position, values, or scalar basis is invalid");
+        if (view.logical_length == view.active_domain) {
+            if (tensor_tail_transcript_present(session, tail_label)) throw std::invalid_argument("Hyrax empty tensor tail unexpectedly has transcript messages");
+            beta.clear();
+            full_terminal_point.clear();
+            sumcheck_result = ::NativeMaskedSumcheckResult{};
+            terminal_opening = MaskedMleOpening{};
+            if (unmasked_round_trace != nullptr) unmasked_round_trace->clear();
+            exact_position = checkpoint;
+            return true;
+        }
         session.absorb(tail_label + "/public", tensor_tail_public_payload(view, commitment));
         beta.clear();
         if (unmasked_round_trace != nullptr) unmasked_round_trace->clear();
@@ -2616,7 +2633,18 @@ bool verify_hyrax_tensor_zero_tail_certificate_with_session(const HyraxTensorMle
         const HyraxTensorShape shape = validate_tensor_view(view);
         validate_tensor_commitment(view, commitment);
         const std::string tail_label = tensor_tail_label(view), sum_label = tail_label + "/sum";
-        if (!session.replay(reason) || !tensor_tail_scalar_domain_matches(session, scalar_basis, reason) || exact_position >= session.messages().size()) return false;
+        if (!session.replay(reason) || !tensor_tail_scalar_domain_matches(session, scalar_basis, reason) || exact_position > session.messages().size()) return false;
+        if (view.logical_length == view.active_domain) {
+            if (tensor_tail_transcript_present(session, tail_label)) {
+                set_open_reason(reason, "Hyrax empty tensor tail unexpectedly has transcript messages");
+                return false;
+            }
+            beta.clear();
+            full_terminal_point.clear();
+            sumcheck_result = ::NativeMaskedSumcheckResult{};
+            return true;
+        }
+        if (exact_position >= session.messages().size()) return false;
         const auto *header_positions = session.message_positions(tail_label + "/public");
         const NativeProofMessage &header = session.messages()[exact_position];
         if (header_positions == nullptr || header_positions->size() != 1 || header_positions->front() != exact_position || header.kind != NativeProofMessageKind::Data || header.label != tail_label + "/public" || header.payload != tensor_tail_public_payload(view, commitment)) {

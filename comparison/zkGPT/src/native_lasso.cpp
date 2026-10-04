@@ -1439,8 +1439,12 @@ SparseMatrixValues sparse_matrix_values(const NativeLassoFamilyProver& family, c
     if (beta.size() != log2_power(static_cast<std::size_t>(sparse.full_domain)))
         throw std::invalid_argument("native Lasso booleanity weight dimension mismatch");
     SparseMatrixValues values;
-    values.reserve(static_cast<std::size_t>(sparse.nonzero_count));
+    if (sparse.nonzero_count > std::numeric_limits<std::size_t>::max()) throw std::length_error("native Lasso sparse M_f support exceeds addressable memory");
+    const std::size_t expected_values = static_cast<std::size_t>(sparse.nonzero_count);
+    values.reserve(expected_values);
+    if (values.capacity() != expected_values) throw std::length_error("native Lasso sparse M_f reservation is not exact");
     sparse.for_each_nonzero([&](std::uint64_t index, const F& value) {
+        if (values.size() >= expected_values) throw std::length_error("native Lasso sparse M_f support exceeds its counted entries");
         SparseValue entry;
         entry.index = index;
         entry.value = value;
@@ -1453,6 +1457,7 @@ SparseMatrixValues sparse_matrix_values(const NativeLassoFamilyProver& family, c
         }
         values.push_back(entry);
     });
+    if (values.size() != expected_values) throw std::logic_error("native Lasso sparse M_f support count is inconsistent");
     std::sort(values.begin(), values.end(), [](const SparseValue& left, const SparseValue& right) { return left.index < right.index; });
     for (std::size_t index = 1; index < values.size(); ++index)
         if (values[index - 1].index == values[index].index) throw std::invalid_argument("native Lasso sparse M_f support is not unique");
@@ -2290,6 +2295,10 @@ NativeLassoCapacityProfile native_lasso_capacity_profile(std::uint64_t padded_qu
     profile.full_domain = layout.vector_size;
     profile.rows = layout.rows;
     profile.columns = layout.columns;
+    profile.row_commitment_chunk_count = static_cast<std::uint64_t>(row_commitment_chunk_count(layout.rows));
+    profile.booleanity_rounds = static_cast<std::uint64_t>(relation_rounds(static_cast<std::size_t>(layout.vector_size)));
+    profile.onehot_rounds = static_cast<std::uint64_t>(relation_rounds(static_cast<std::size_t>(table_domain)));
+    profile.lookup_rounds = profile.onehot_rounds;
     profile.t2_booleanity = table_domain == 2;
     profile.private_witness_entries = padded_queries;
     profile.private_witness_element_bytes = profile.t2_booleanity ? sizeof(F) : sizeof(SparseValue);
@@ -2299,15 +2308,37 @@ NativeLassoCapacityProfile native_lasso_capacity_profile(std::uint64_t padded_qu
     profile.column_generator_bytes = bytes(profile.columns, sizeof(G1));
     profile.row_fold_weights_bytes = bytes(profile.rows, sizeof(F));
     profile.row_fold_values_bytes = bytes(profile.columns, sizeof(F));
+    profile.onehot_query_bytes = bytes(table_domain, sizeof(F));
+    profile.t2_column_one_bytes = profile.t2_booleanity ? bytes(padded_queries, sizeof(F)) : 0;
+    const std::uint64_t onehot_entries = add(add(table_domain, table_domain), table_domain > 1 ? table_domain / 2 : 0);
+    profile.onehot_heap_peak_bytes = bytes(onehot_entries, sizeof(F));
+    profile.masked_opening_generator_bytes = bytes(profile.columns, sizeof(G1));
+    profile.masked_opening_coefficient_bytes = bytes(profile.columns, sizeof(F));
+    profile.masked_opening_response_bytes = bytes(profile.columns, sizeof(F));
     profile.row_ledger_retained_bytes = add(profile.row_blinding_bytes, profile.column_generator_bytes);
     profile.commit_peak_bytes = add(profile.row_ledger_retained_bytes, profile.row_commitment_bytes);
-    profile.booleanity_peak_bytes = add(profile.row_ledger_retained_bytes, profile.private_witness_bytes);
-    profile.opening_peak_bytes = add(profile.row_ledger_retained_bytes, add(profile.row_fold_weights_bytes, profile.row_fold_values_bytes));
-    profile.family_peak_bytes = std::max(profile.commit_peak_bytes, std::max(profile.booleanity_peak_bytes, profile.opening_peak_bytes));
+    // For T2, private_witness_bytes and t2_column_one_bytes describe the same
+    // NativeFieldVector allocation; take the maximum so consumers do not count it twice.
+    profile.booleanity_peak_bytes = add(profile.row_ledger_retained_bytes, std::max(profile.private_witness_bytes, profile.t2_column_one_bytes));
+    profile.row_fold_peak_bytes = add(profile.row_ledger_retained_bytes,
+                                      add(profile.row_fold_weights_bytes, add(profile.row_fold_values_bytes, profile.onehot_query_bytes)));
+    const std::uint64_t hyrax_opening_workspace = add(profile.masked_opening_generator_bytes,
+                                                      add(profile.masked_opening_coefficient_bytes, profile.masked_opening_response_bytes));
+    profile.opening_peak_bytes = std::max(profile.row_fold_peak_bytes,
+                                         add(profile.row_ledger_retained_bytes,
+                                             add(profile.row_fold_values_bytes, add(profile.onehot_query_bytes, hyrax_opening_workspace))));
+    const std::uint64_t ordinary_onehot_peak = add(profile.row_ledger_retained_bytes, profile.onehot_heap_peak_bytes);
+    profile.family_peak_bytes = std::max(profile.commit_peak_bytes,
+                                         std::max(profile.booleanity_peak_bytes,
+                                                  std::max(profile.opening_peak_bytes, ordinary_onehot_peak)));
     return profile;
 }
 
-bool native_lasso_sparse_booleanity_dense_reference_smoke() {
+bool native_lasso_sparse_booleanity_dense_reference_smoke(std::string* failure_reason) {
+    const auto fail = [failure_reason](const std::string& message) {
+        if (failure_reason != nullptr) *failure_reason = message;
+        return false;
+    };
     try {
         const std::vector<std::uint64_t> selected = {0, 1, 2, 3};
         const std::vector<F> beta = {F_ZERO, F_ONE, F(3), F_ONE};
@@ -2327,7 +2358,10 @@ bool native_lasso_sparse_booleanity_dense_reference_smoke() {
             for (std::size_t bit = 0; bit < beta.size(); ++bit) weight *= ((index >> bit) & 1U) != 0 ? beta[bit] : F_ONE - beta[bit];
             initial_claim += weight * dense[static_cast<std::size_t>(index)] * (dense[static_cast<std::size_t>(index)] - F_ONE);
         }
-        if (!saw_zero_factor || !initial_claim.isZero() || sparse_values.size() != selected.size()) return false;
+        if (!saw_zero_factor || !initial_claim.isZero() || sparse_values.size() != selected.size())
+            return fail("initial sparse support/zero-factor/claim mismatch: support=" + std::to_string(sparse_values.size()) +
+                        " expected=" + std::to_string(selected.size()) + " saw_zero_factor=" + std::to_string(saw_zero_factor) +
+                        " claim=" + initial_claim.getStr(16));
         const std::string zero_digest(64, '0');
         const NativeProofStatement statement{zero_digest, "mcl-bn254-fr-v1", zero_digest, zero_digest, zero_digest, zero_digest, zero_digest, zero_digest, zero_digest, 4, zero_digest};
         NativeProofSession session("native-lasso-sparse-booleanity-dense-v1", statement);
@@ -2363,7 +2397,8 @@ bool native_lasso_sparse_booleanity_dense_reference_smoke() {
         };
         F prefix_weight = F_ONE, running_claim = initial_claim;
         for (std::size_t round = 0; round < beta.size(); ++round) {
-            if (running_claim != dense_claim(dense, round, prefix_weight)) return false;
+            if (running_claim != dense_claim(dense, round, prefix_weight))
+                return fail("pre-round dense claim mismatch round=" + std::to_string(round));
             const F prefix_before = prefix_weight;
             std::vector<F> actual_polynomial;
             F challenge;
@@ -2382,31 +2417,50 @@ bool native_lasso_sparse_booleanity_dense_reference_smoke() {
                     reference_polynomial[evaluation] += prefix_before * suffix_weight * current_weight * matrix_value * (matrix_value - F_ONE);
                 }
             }
-            if (actual_polynomial != reference_polynomial || actual_polynomial[0] + actual_polynomial[1] != running_claim) return false;
+            if (actual_polynomial != reference_polynomial) {
+                for (std::size_t evaluation = 0; evaluation < actual_polynomial.size(); ++evaluation)
+                    if (actual_polynomial[evaluation] != reference_polynomial[evaluation])
+                        return fail("round polynomial mismatch round=" + std::to_string(round) + " x=" + std::to_string(evaluation) +
+                                    " sparse=" + actual_polynomial[evaluation].getStr(16) +
+                                    " dense=" + reference_polynomial[evaluation].getStr(16));
+            }
+            if (actual_polynomial[0] + actual_polynomial[1] != running_claim)
+                return fail("round initial claim mismatch round=" + std::to_string(round) +
+                            " p0+p1=" + (actual_polynomial[0] + actual_polynomial[1]).getStr(16) +
+                            " claim=" + running_claim.getStr(16));
             running_claim = interpolate(reference_polynomial, challenge);
             for (std::size_t pair = 0; pair < dense.size() / 2; ++pair)
-                dense[pair] += challenge * (dense[2 * pair + 1] - dense[2 * pair]);
+                dense[pair] = dense[2 * pair] + challenge * (dense[2 * pair + 1] - dense[2 * pair]);
             dense.resize(dense.size() / 2);
-            prefix_weight *= F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * challenge;
-            if (running_claim != dense_claim(dense, round + 1, prefix_weight)) return false;
-            if (round == 2 && sparse_values.size() >= previous_support) return false;
+            if (running_claim != dense_claim(dense, round + 1, prefix_weight))
+                return fail("post-round dense claim mismatch round=" + std::to_string(round));
+            if (round == 2 && sparse_values.size() >= previous_support)
+                return fail("sparse support did not shrink after final query fold");
         }
-        if (!saw_different_column_pair || dense.size() != 1 || sparse_values.size() > 1 || (!sparse_values.empty() && sparse_values.front().index != 0)) return false;
+        if (!saw_different_column_pair || dense.size() != 1 || sparse_values.size() > 1 || (!sparse_values.empty() && sparse_values.front().index != 0))
+            return fail("terminal support mismatch saw_different_pair=" + std::to_string(saw_different_column_pair) +
+                        " dense_size=" + std::to_string(dense.size()) + " sparse_size=" + std::to_string(sparse_values.size()) +
+                        " sparse_index=" + (sparse_values.empty() ? std::string("empty") : std::to_string(sparse_values.front().index)));
         const F matrix_value = sparse_values.empty() ? F_ZERO : sparse_values.front().value;
-        if (dense.front() != matrix_value || running_claim != prefix_weight * matrix_value * (matrix_value - F_ONE)) return false;
+        if (dense.front() != matrix_value || running_claim != prefix_weight * matrix_value * (matrix_value - F_ONE))
+            return fail("terminal value mismatch dense=" + dense.front().getStr(16) + " sparse=" + matrix_value.getStr(16));
         terminal_spec.unmasked_terminal_openings = {scalar_evaluation_opening(scalar_basis, matrix_value), scalar_evaluation_opening(scalar_basis, matrix_value - F_ONE)};
-        if (!sumcheck.set_terminal_spec(terminal_spec, nullptr)) return false;
+        if (!sumcheck.set_terminal_spec(terminal_spec, nullptr)) return fail("setting terminal spec failed");
         NativeMaskedSumcheckResult proved;
-        if (!sumcheck.finish({matrix_value, matrix_value - F_ONE}, &proved, nullptr) || proved.challenges.size() != beta.size() || proved.unmasked_claim_opening.value != running_claim) return false;
+        if (!sumcheck.finish({matrix_value, matrix_value - F_ONE}, &proved, nullptr) || proved.challenges.size() != beta.size() || proved.unmasked_claim_opening.value != running_claim)
+            return fail("sumcheck finish mismatch");
         NativeMaskedTerminalSpec verify_spec = terminal_spec;
         verify_spec.initial_opening = {};
         verify_spec.unmasked_terminal_openings.clear();
         verify_spec.terminal_commitments = proved.terminal_commitments;
         NativeMaskedSumcheckResult verified;
-        if (!native_masked_sumcheck_verify(session, "lasso/smoke/booleanity/sum", 3, beta.size(), initial_claim, verify_spec, &verified, nullptr) || verified.challenges != proved.challenges || verified.terminal_values != proved.terminal_values || !verified.external_binding_verified || !session.replay(nullptr)) return false;
+        if (!native_masked_sumcheck_verify(session, "lasso/smoke/booleanity/sum", 3, beta.size(), initial_claim, verify_spec, &verified, nullptr) || verified.challenges != proved.challenges || verified.terminal_values != proved.terminal_values || !verified.external_binding_verified || !session.replay(nullptr))
+            return fail("independent sumcheck verification mismatch");
         return true;
+    } catch (const std::exception& error) {
+        return fail(std::string("exception: ") + error.what());
     } catch (...) {
-        return false;
+        return fail("unknown exception");
     }
 }
 
@@ -2443,11 +2497,11 @@ bool native_lasso_t2_booleanity_dense_reference_smoke() {
             if (round + 1 < beta.size()) {
                 const std::size_t pair_count = column_one.size() / 2;
                 for (std::size_t pair = 0; pair < pair_count; ++pair)
-                    column_one[pair] += challenges[round] * (column_one[pair * 2 + 1] - column_one[pair * 2]);
+                    column_one[pair] = column_one[pair * 2] + challenges[round] * (column_one[pair * 2 + 1] - column_one[pair * 2]);
                 column_one.resize(pair_count);
             }
             for (std::size_t pair = 0; pair < dense.size() / 2; ++pair)
-                dense[pair] += challenges[round] * (dense[pair * 2 + 1] - dense[pair * 2]);
+                dense[pair] = dense[pair * 2] + challenges[round] * (dense[pair * 2 + 1] - dense[pair * 2]);
             dense.resize(dense.size() / 2);
             prefix_weight *= F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * challenges[round];
         }
@@ -2934,7 +2988,7 @@ bool native_lasso_verify_bundle(const NativeProofSession& session, const std::ve
         F encoded_final_claim;
         zkgpt::native_pedersen::ScalarCommitment final_raw_commitment;
         zkgpt::native_pedersen::ScalarCommitment final_masked_commitment;
-        if (!parse_masked_open_claim(session, NativeLassoTerminalOpeningLabels::l_qry(), final_mask_commitment, encoded_final_claim, reason, &scalar_basis,
+        if (!parse_masked_open_claim(session, std::string(NativeLassoTerminalOpeningLabels::l_qry()) + "/column", final_mask_commitment, encoded_final_claim, reason, &scalar_basis,
                                      &final_raw_commitment, &final_masked_commitment) ||
             encoded_final_claim != final_claim) {
             set_reason(reason, "native Lasso final scalar claim binding is malformed");

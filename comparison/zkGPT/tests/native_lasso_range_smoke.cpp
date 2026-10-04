@@ -1,4 +1,5 @@
 #include "native_lasso.hpp"
+#include "native_masked_sumcheck.hpp"
 #include "native_range.hpp"
 #include "hyrax.hpp"
 
@@ -16,7 +17,7 @@
 using namespace mcl::bn;
 
 bool native_lasso_t2_booleanity_dense_reference_smoke();
-bool native_lasso_sparse_booleanity_dense_reference_smoke();
+bool native_lasso_sparse_booleanity_dense_reference_smoke(std::string* failure_reason);
 std::size_t native_lasso_sparse_entry_bytes_for_smoke();
 
 namespace {
@@ -236,7 +237,7 @@ bool dense_weighted_booleanity_degree3_reference() {
         if (polynomial[0] + polynomial[1] != running) return false;
         running = interpolate_round_polynomial(polynomial, challenges[round]);
         for (std::size_t pair = 0; pair < half; ++pair)
-            values[pair] += challenges[round] * (values[2 * pair + 1] - values[2 * pair]);
+            values[pair] = values[2 * pair] + challenges[round] * (values[2 * pair + 1] - values[2 * pair]);
         values.resize(half);
     }
     F terminal_weight = F_ONE;
@@ -305,8 +306,9 @@ int main() {
         std::cerr << "native Lasso T2 specialization differs from full dense weighted Booleanity\n";
         return 10;
     }
-    if (!native_lasso_sparse_booleanity_dense_reference_smoke()) {
-        std::cerr << "native Lasso generic sparse weighted Booleanity differs from full dense reference\n";
+    std::string sparse_booleanity_reason;
+    if (!native_lasso_sparse_booleanity_dense_reference_smoke(&sparse_booleanity_reason)) {
+        std::cerr << "native Lasso generic sparse weighted Booleanity differs from full dense reference: " << sparse_booleanity_reason << '\n';
         return 10;
     }
     const NativeLassoSparseView sparse = native_lasso_sparse_view(families.front());
@@ -357,7 +359,7 @@ int main() {
     const NativeProofStatement statement = typed_statement_for(G, l_generators, public_families, l_tensor, aux_tensor, query.commitment, query.blinding_generator);
     const auto prove_tensor_tail_stage = [&aux_tensor](NativeProofSession& session, const NativeLassoQueryProver& typed_query, std::string* stage_reason) {
         const zkgpt::native_pedersen::PedersenBasis scalar_basis = zkgpt::native_pedersen::derive_basis("zkgpt/masked-sumcheck/v2/" + session.statement_digest());
-        std::size_t exact_position = session.checkpoint();
+        std::uint64_t exact_position = session.checkpoint();
         std::vector<F> beta, terminal_point;
         NativeMaskedSumcheckResult sumcheck;
         hyrax::MaskedMleOpening opening;
@@ -369,7 +371,7 @@ int main() {
     const hyrax::HyraxTensorMleView aux_public_view = aux_tensor.view;
     const hyrax::HyraxTensorMleCommitment aux_public_commitment = aux_tensor.commitment;
     const auto verify_tensor_tail_stage = [&aux_public_view, &aux_public_commitment](const NativeProofSession& session, const NativeLassoQueryPublic& typed_query,
-                                                                                     std::size_t& exact_position, std::string* stage_reason) {
+                                                                                     std::uint64_t& exact_position, std::string* stage_reason) {
         const zkgpt::native_pedersen::PedersenBasis scalar_basis = zkgpt::native_pedersen::derive_basis("zkgpt/masked-sumcheck/v2/" + session.statement_digest());
         std::vector<F> beta, terminal_point;
         NativeMaskedSumcheckResult sumcheck;
@@ -488,8 +490,20 @@ int main() {
         if (label == "tensor/L_qry/tail/public") l_tail_header = index;
         if (label == "challenge/lasso/a/booleanity/weight/0") first_booleanity_weight = index;
     }
-    if (aux_tail_header >= l_tail_header || l_tail_header >= first_booleanity_weight) {
-        std::cerr << "Aux/L_qry tensor tail certificates are missing or out of protocol order\n";
+    const bool l_tail_required = query.tensor_view.logical_length < query.tensor_view.active_domain;
+    bool unexpected_empty_l_tail_message = false;
+    if (!l_tail_required) {
+        for (const NativeProofMessage& message : produced.messages())
+            unexpected_empty_l_tail_message = unexpected_empty_l_tail_message ||
+                message.label.compare(0, sizeof("tensor/L_qry/tail/") - 1, "tensor/L_qry/tail/") == 0 ||
+                message.label.compare(0, sizeof("challenge/tensor/L_qry/tail/") - 1, "challenge/tensor/L_qry/tail/") == 0;
+    }
+    if (aux_tail_header >= first_booleanity_weight ||
+        (l_tail_required ? (l_tail_header >= first_booleanity_weight || aux_tail_header >= l_tail_header)
+                         : (l_tail_header != produced.messages().size() || unexpected_empty_l_tail_message))) {
+        std::cerr << "Aux/L_qry tensor tail path does not match typed empty-range order: aux=" << aux_tail_header
+                  << " l_qry=" << l_tail_header << " first_booleanity=" << first_booleanity_weight
+                  << " empty_l_range=" << !l_tail_required << " unexpected_l_messages=" << unexpected_empty_l_tail_message << '\n';
         return 7;
     }
 
@@ -553,6 +567,30 @@ int main() {
         std::remove(path.c_str());
         return 14;
     }
+
+    std::vector<NativeProofMessage> unexpected_tensor_messages = restored.messages();
+    NativeProofMessage unexpected_tensor_message;
+    unexpected_tensor_message.kind = NativeProofMessageKind::Data;
+    unexpected_tensor_message.label = "tensor/not-trusted/public";
+    unexpected_tensor_message.payload = "unexpected tensor scope";
+    unexpected_tensor_message.sequence = static_cast<std::uint64_t>(unexpected_tensor_messages.size());
+    unexpected_tensor_messages.push_back(std::move(unexpected_tensor_message));
+    NativeProofSession unexpected_tensor_session;
+    if (!NativeProofSession::from_messages(restored.domain(), restored.statement(), unexpected_tensor_messages,
+                                           unexpected_tensor_session, &reason)) {
+        std::cerr << "unexpected tensor negative-case session reconstruction failed: " << reason << '\n';
+        std::remove(path.c_str());
+        return 19;
+    }
+    reason.clear();
+    if (native_lasso_verify_bundle(unexpected_tensor_session, public_families, public_query, nullptr, &reason,
+                                   verify_tensor_tail_stage) ||
+        reason.find("trailing or inserted messages") == std::string::npos) {
+        std::cerr << "unexpected tensor scope was not rejected at the Lasso consumption boundary: " << reason << '\n';
+        std::remove(path.c_str());
+        return 19;
+    }
+    std::cout << "native_lasso_unexpected_tensor_scope: PASS session rebuilt; unconsumed tensor label rejected\n";
 
     std::vector<NativeLassoFamilyPublic> wrong_resources = public_families;
     wrong_resources[0].resource_id = "resource-a-v2";
@@ -669,7 +707,21 @@ int main() {
     std::remove("/tmp/zkgpt-native-lasso-range.bin");
     const NativeLassoCapacityProfile t2_profile = native_lasso_capacity_profile(std::uint64_t(1) << 34, 2);
     const NativeLassoCapacityProfile sparse_profile = native_lasso_capacity_profile(std::uint64_t(1) << 25, 4);
-    if (!t2_profile.t2_booleanity || t2_profile.private_witness_entries != (std::uint64_t(1) << 34) || t2_profile.private_witness_element_bytes != sizeof(F) || t2_profile.private_witness_bytes != (std::uint64_t(1) << 34) * sizeof(F) || sparse_profile.t2_booleanity || sparse_profile.private_witness_entries != (std::uint64_t(1) << 25) || sparse_profile.private_witness_element_bytes != native_lasso_sparse_entry_bytes_for_smoke() || sparse_profile.private_witness_bytes != (std::uint64_t(1) << 25) * native_lasso_sparse_entry_bytes_for_smoke()) {
+    const std::uint64_t t2_query_count = std::uint64_t(1) << 34;
+    const std::uint64_t sparse_query_count = std::uint64_t(1) << 25;
+    if (!t2_profile.t2_booleanity || t2_profile.private_witness_entries != t2_query_count ||
+        t2_profile.private_witness_element_bytes != sizeof(F) || t2_profile.private_witness_bytes != t2_query_count * sizeof(F) ||
+        t2_profile.t2_column_one_bytes != t2_query_count * sizeof(F) || t2_profile.onehot_query_bytes != 2 * sizeof(F) ||
+        t2_profile.onehot_heap_peak_bytes != 5 * sizeof(F) || t2_profile.row_commitment_chunk_count != 32 ||
+        t2_profile.booleanity_rounds != 35 || t2_profile.onehot_rounds != 1 || t2_profile.lookup_rounds != 1 ||
+        t2_profile.hyrax_matrix_masked_openings != 4 || t2_profile.hyrax_l_qry_tensor_openings != 1 ||
+        sparse_profile.t2_booleanity || sparse_profile.private_witness_entries != sparse_query_count ||
+        sparse_profile.private_witness_element_bytes != native_lasso_sparse_entry_bytes_for_smoke() ||
+        sparse_profile.private_witness_bytes != sparse_query_count * native_lasso_sparse_entry_bytes_for_smoke() ||
+        sparse_profile.t2_column_one_bytes != 0 || sparse_profile.onehot_query_bytes != 4 * sizeof(F) ||
+        sparse_profile.onehot_heap_peak_bytes != 10 * sizeof(F) || sparse_profile.row_commitment_chunk_count != 2 ||
+        sparse_profile.booleanity_rounds != 27 || sparse_profile.onehot_rounds != 2 || sparse_profile.lookup_rounds != 2 ||
+        sparse_profile.hyrax_matrix_masked_openings != 4 || sparse_profile.hyrax_l_qry_tensor_openings != 1) {
         std::cerr << "native Lasso capacity profile does not match its private witness layout\n";
         return 21;
     }

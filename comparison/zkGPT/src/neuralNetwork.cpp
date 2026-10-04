@@ -253,10 +253,10 @@ void neuralNetwork::merge_layer(prover &pr,i64 layer_id)
         for(auto g=pr.C.circuit[i].uni_gates.begin();g!=pr.C.circuit[i].uni_gates.end();g++)
         {
             if((int)g->lu==0)
-                pr.C.circuit[os].uni_gates.emplace_back(g->g+offset[os], g->u,0,g->sc);
+                pr.C.circuit[os].add_unary(g->g+offset[os], g->u,0,pr.C.circuit[i].coefficient(*g));
             else
             {
-                pr.C.circuit[os].uni_gates.emplace_back(g->g+offset[os], g->u+offset[os1],os1,g->sc);
+                pr.C.circuit[os].add_unary(g->g+offset[os], g->u+offset[os1],os1,pr.C.circuit[i].coefficient(*g));
                 assert(os==os1+1);
                 assert(g->u<pr.C.circuit[i-1].size);
                 assert(g->u+offset[os1]<pr.val[os1].size());
@@ -266,11 +266,11 @@ void neuralNetwork::merge_layer(prover &pr,i64 layer_id)
         for(auto g=pr.C.circuit[i].bin_gates.begin();g!=pr.C.circuit[i].bin_gates.end();g++)
         {
             if((int)g->l==0)
-                pr.C.circuit[os].bin_gates.emplace_back(g->g+offset[os],g->u,g->v,g->sc,g->l);
+                pr.C.circuit[os].add_binary(g->g+offset[os],g->u,g->v,pr.C.circuit[i].coefficient(*g),g->l);
             else if((int)g->l==1)
-                pr.C.circuit[os].bin_gates.emplace_back(g->g+offset[os],g->u+offset[os1],g->v+offset[os1],g->sc,g->l);
+                pr.C.circuit[os].add_binary(g->g+offset[os],g->u+offset[os1],g->v+offset[os1],pr.C.circuit[i].coefficient(*g),g->l);
             else if((int)g->l==2)
-                pr.C.circuit[os].bin_gates.emplace_back(g->g+offset[os],g->u+offset[os1],g->v,g->sc,g->l);
+                pr.C.circuit[os].add_binary(g->g+offset[os],g->u+offset[os1],g->v,pr.C.circuit[i].coefficient(*g),g->l);
             assert(g->g+offset[os]<pr.val[os].size());
         }
     }
@@ -388,7 +388,7 @@ void neuralNetwork::inputLayer(layer &circuit)
 {
     initLayer(circuit, total_in_size, layerType::INPUT);
     for (i64 i = 0; i < total_in_size; ++i) 
-        circuit.uni_gates.emplace_back(i, 0, 0, 1);
+        circuit.add_unary(i, 0, 0, 1);
 
     calcInputLayer(circuit);
 }
@@ -572,24 +572,24 @@ void neuralNetwork::ln_checker_layer1(layer &circuit, i64 &layer_id, int ln_id, 
             {
                 continue;
             }
-            circuit.uni_gates.emplace_back(g, q_offset+g, 0, real_cn_in); // verify a with x and sum 
-            circuit.uni_gates.emplace_back(g, sum_off, 0, -1);
+            circuit.add_unary(g, q_offset+g, 0, real_cn_in); // verify a with x and sum 
+            circuit.add_unary(g, sum_off, 0, -1);
             if(i==2)
             {
                 SUM+=val[0][q_offset+g];
             }
-            circuit.uni_gates.emplace_back(block_len+len*2+i, q_offset+g, 0, 1); //+xi
+            circuit.add_unary(block_len+len*2+i, q_offset+g, 0, 1); //+xi
         }
-        circuit.bin_gates.emplace_back(block_len+i, sig_off,sig_off, 1,0);//sigma^2
-        circuit.uni_gates.emplace_back(block_len+i, sig_off, 0, 1);  //sigma
-        circuit.uni_gates.emplace_back(block_len+i, orgsize, 0, 1); //+1
-        circuit.uni_gates.emplace_back(block_len+i, b_off, 0, -1); //-B
+        circuit.add_binary(block_len+i, sig_off,sig_off, 1,0);//sigma^2
+        circuit.add_unary(block_len+i, sig_off, 0, 1);  //sigma
+        circuit.add_unary(block_len+i, orgsize, 0, 1); //+1
+        circuit.add_unary(block_len+i, b_off, 0, -1); //-B
 
 
-        circuit.bin_gates.emplace_back(block_len+len+i, sig_off,sig_off, -1,0);//-sigma^2
-        circuit.uni_gates.emplace_back(block_len+len+i, sig_off, 0, 1);  //sigma
-        circuit.uni_gates.emplace_back(block_len+len+i, b_off, 0, 1); //+B
-        circuit.uni_gates.emplace_back(block_len+len*2+i, sum_off, 0, -1);  //-SUM
+        circuit.add_binary(block_len+len+i, sig_off,sig_off, -1,0);//-sigma^2
+        circuit.add_unary(block_len+len+i, sig_off, 0, 1);  //sigma
+        circuit.add_unary(block_len+len+i, b_off, 0, 1); //+B
+        circuit.add_unary(block_len+len*2+i, sum_off, 0, -1);  //-SUM
     }
     
     calcNormalLayer(circuit, layer_id);
@@ -640,19 +640,19 @@ void neuralNetwork::ln_checker_layer2(layer &circuit, i64 &layer_id, int ln_id, 
             {
                 continue;
             }
-            circuit.bin_gates.emplace_back(g, g, qw_off+co, -(1ll<<(e1+m))*c1 ,2 ); // -qw[co]*a[co]
-            circuit.bin_gates.emplace_back(g, sig_off, qb_off+co, -(1ll<<(e2+m))*c2 ,0); //-(1ll<<(e2+m))*c2*qb[co]*sigma;
-            circuit.bin_gates.emplace_back(g, sig_off,y_off ,1<<m ,0 );
-            circuit.uni_gates.emplace_back(g, orgsize,0 ,1 );
-            circuit.uni_gates.emplace_back(g, sig_off,0 ,(1<<(m-1)) );
+            circuit.add_binary(g, g, qw_off+co, -(1ll<<(e1+m))*c1 ,2 ); // -qw[co]*a[co]
+            circuit.add_binary(g, sig_off, qb_off+co, -(1ll<<(e2+m))*c2 ,0); //-(1ll<<(e2+m))*c2*qb[co]*sigma;
+            circuit.add_binary(g, sig_off,y_off ,1<<m ,0 );
+            circuit.add_unary(g, orgsize,0 ,1 );
+            circuit.add_unary(g, sig_off,0 ,(1<<(m-1)) );
 
-            circuit.bin_gates.emplace_back(g+block_len, g, qw_off+co, (1ll<<(e1+m))*c1 ,2 ); // qw[co]*a[co]
-            circuit.bin_gates.emplace_back(g+block_len, sig_off, qb_off+co, (1ll<<(e2+m))*c2 ,0); //(1ll<<(e2+m))*c2*qb[co]*sigma;
-            circuit.bin_gates.emplace_back(g+block_len, sig_off,y_off ,-(1<<m) ,0 );
-            circuit.uni_gates.emplace_back(g+block_len, orgsize,0 ,1 );
-            circuit.uni_gates.emplace_back(g+block_len, sig_off,0 ,(1<<(m-1)) );
+            circuit.add_binary(g+block_len, g, qw_off+co, (1ll<<(e1+m))*c1 ,2 ); // qw[co]*a[co]
+            circuit.add_binary(g+block_len, sig_off, qb_off+co, (1ll<<(e2+m))*c2 ,0); //(1ll<<(e2+m))*c2*qb[co]*sigma;
+            circuit.add_binary(g+block_len, sig_off,y_off ,-(1<<m) ,0 );
+            circuit.add_unary(g+block_len, orgsize,0 ,1 );
+            circuit.add_unary(g+block_len, sig_off,0 ,(1<<(m-1)) );
 
-            circuit.bin_gates.emplace_back(2*block_len+len+i, g, g ,1,1 );
+            circuit.add_binary(2*block_len+len+i, g, g ,1,1 );
             cir=convert(val[layer_id-1][g]);
             SUM+=cir*cir;
         }
@@ -661,11 +661,11 @@ void neuralNetwork::ln_checker_layer2(layer &circuit, i64 &layer_id, int ln_id, 
             continue;
         }
         ll P=convert(val[0][b_off]);
-        circuit.bin_gates.emplace_back(2*block_len+i, block_len+i,block_len+len+i, 1,1);
+        circuit.add_binary(2*block_len+i, block_len+i,block_len+len+i, 1,1);
         int d1_off=orgsize+10+block_len+len*3+i;
-        circuit.uni_gates.emplace_back(2*block_len+i, d1_off, 0, -1); 
-        circuit.uni_gates.emplace_back(2*block_len+len+i, orgsize, 0, 1); 
-        circuit.uni_gates.emplace_back(2*block_len+len+i, b_off, 0, -1);  //b=sigma^2+1
+        circuit.add_unary(2*block_len+i, d1_off, 0, -1); 
+        circuit.add_unary(2*block_len+len+i, orgsize, 0, 1); 
+        circuit.add_unary(2*block_len+len+i, b_off, 0, -1);  //b=sigma^2+1
         /*circuit.bin_gates.emplace_back(block_len+i, sig_off,sig_off, 1,0);//sigma^2
         circuit.uni_gates.emplace_back(block_len+i, sig_off, 0, 1);  //sigma
         circuit.uni_gates.emplace_back(block_len+i, orgsize, 0, 1); //+1
@@ -720,8 +720,8 @@ void neuralNetwork::ln_checker_layer3(layer &circuit, i64 &layer_id, int ln_id, 
             int p=matIdx(i, co, real_cn_in);
             int d2_off=orgsize+10+block_len+len*4+p;
             int c1=orgsize;
-            circuit.uni_gates.emplace_back(p, d2_off, 0, -1);  
-            circuit.bin_gates.emplace_back(p, g, g+block_len,1,1);
+            circuit.add_unary(p, d2_off, 0, -1);  
+            circuit.add_binary(p, g, g+block_len,1,1);
         }
         
     }
@@ -826,25 +826,25 @@ void neuralNetwork::gelu_checker_layer1(layer &circuit, i64 &layer_id, int real_
         int dt2_off=g+block_len*3;
         int t2_off=g+block_len*4;
         int abs_check_off=g+block_len*5;
-        circuit.bin_gates.emplace_back(abs_mult_t_off, abs_off, t_off, 1, 0);  // sc, layer
+        circuit.add_binary(abs_mult_t_off, abs_off, t_off, 1, 0);  // sc, layer
         
-        circuit.bin_gates.emplace_back(q_square_off, q_off, q_off, 1, 0);  // sc, layer
+        circuit.add_binary(q_square_off, q_off, q_off, 1, 0);  // sc, layer
 
-        circuit.uni_gates.emplace_back(dt1_off,abs_off,0,1);  //g,u,lu,sc
-        circuit.uni_gates.emplace_back(dt1_off,c1,0,1);  //g,u,lu,sc
-        circuit.uni_gates.emplace_back(dt1_off,d1_off,0,-1);  //g,u,lu,sc
+        circuit.add_unary(dt1_off,abs_off,0,1);  //g,u,lu,sc
+        circuit.add_unary(dt1_off,c1,0,1);  //g,u,lu,sc
+        circuit.add_unary(dt1_off,d1_off,0,-1);  //g,u,lu,sc
 
-        circuit.uni_gates.emplace_back(dt2_off,c1,0,-C6); 
-        circuit.uni_gates.emplace_back(dt2_off,t_off,0,2ll*C6+1); 
-        circuit.uni_gates.emplace_back(dt2_off,abs_off,0,C7); 
-        circuit.bin_gates.emplace_back(dt2_off, abs_off, t_off, -2ll*C7, 0);
-        circuit.uni_gates.emplace_back(dt2_off,d2_off,0,-1);  //g,u,lu,sc
+        circuit.add_unary(dt2_off,c1,0,-C6); 
+        circuit.add_unary(dt2_off,t_off,0,2ll*C6+1); 
+        circuit.add_unary(dt2_off,abs_off,0,C7); 
+        circuit.add_binary(dt2_off, abs_off, t_off, -2ll*C7, 0);
+        circuit.add_unary(dt2_off,d2_off,0,-1);  //g,u,lu,sc
 
-        circuit.bin_gates.emplace_back(t2_off, t_off, t_off, 1, 0);  // sc, layer
-        circuit.uni_gates.emplace_back(t2_off, t_off, 0,-1);  //g,u,lu,sc
+        circuit.add_binary(t2_off, t_off, t_off, 1, 0);  // sc, layer
+        circuit.add_unary(t2_off, t_off, 0,-1);  //g,u,lu,sc
 
-        circuit.bin_gates.emplace_back(abs_check_off, q_off, q_off, 1, 0);  // sc, layer
-        circuit.bin_gates.emplace_back(abs_check_off, abs_off, abs_off, -1, 0);  // sc, layer
+        circuit.add_binary(abs_check_off, q_off, q_off, 1, 0);  // sc, layer
+        circuit.add_binary(abs_check_off, abs_off, abs_off, -1, 0);  // sc, layer
     }
     calcNormalLayer(circuit, layer_id);
     
@@ -903,22 +903,22 @@ void neuralNetwork::gelu_checker_layer2(layer &circuit, i64 &layer_id, int real_
         int abs_mult_t_off=g;
         int q_square_off=g+block_len;
 
-        circuit.uni_gates.emplace_back(term1_off, c1, 0, C5+1);  // C5+1
-        circuit.uni_gates.emplace_back(term1_off, y_off, 0, C5*2);  // 2*C5*y
-        circuit.uni_gates.emplace_back(term1_off, abs_off, 0, -C1);  
-        circuit.uni_gates.emplace_back(term1_off, q_off, 0, -C1);  
-        circuit.uni_gates.emplace_back(term1_off, abs_mult_t_off, layer_id-1, C4);  
-        circuit.bin_gates.emplace_back(term1_off, abs_mult_t_off,q_square_off,C2,1);
-        circuit.bin_gates.emplace_back(term1_off, q_square_off, t_off,-C3,2);
+        circuit.add_unary(term1_off, c1, 0, C5+1);  // C5+1
+        circuit.add_unary(term1_off, y_off, 0, C5*2);  // 2*C5*y
+        circuit.add_unary(term1_off, abs_off, 0, -C1);  
+        circuit.add_unary(term1_off, q_off, 0, -C1);  
+        circuit.add_unary(term1_off, abs_mult_t_off, layer_id-1, C4);  
+        circuit.add_binary(term1_off, abs_mult_t_off,q_square_off,C2,1);
+        circuit.add_binary(term1_off, q_square_off, t_off,-C3,2);
 
 
-        circuit.uni_gates.emplace_back(term2_off, c1, 0, C5+1);  // C5+1
-        circuit.uni_gates.emplace_back(term2_off, y_off, 0, -C5*2);  // 2*C5*y
-        circuit.uni_gates.emplace_back(term2_off, abs_off, 0, C1);  
-        circuit.uni_gates.emplace_back(term2_off, q_off, 0, C1);  
-        circuit.uni_gates.emplace_back(term2_off, abs_mult_t_off, layer_id-1, -C4);  
-        circuit.bin_gates.emplace_back(term2_off, abs_mult_t_off,q_square_off,-C2,1);
-        circuit.bin_gates.emplace_back(term2_off, q_square_off, t_off,C3,2);
+        circuit.add_unary(term2_off, c1, 0, C5+1);  // C5+1
+        circuit.add_unary(term2_off, y_off, 0, -C5*2);  // 2*C5*y
+        circuit.add_unary(term2_off, abs_off, 0, C1);  
+        circuit.add_unary(term2_off, q_off, 0, C1);  
+        circuit.add_unary(term2_off, abs_mult_t_off, layer_id-1, -C4);  
+        circuit.add_binary(term2_off, abs_mult_t_off,q_square_off,-C2,1);
+        circuit.add_binary(term2_off, q_square_off, t_off,C3,2);
     }
     calcNormalLayer(circuit, layer_id);
     for(int g=0;g<block_len;g++)
@@ -955,8 +955,8 @@ void neuralNetwork::gelu_checker_layer3(layer &circuit, i64 &layer_id,int real_c
         int d3_off=orgsize+10+block_len*3+2*real_cn_out*len+gp;
         int c1=orgsize;
 
-        circuit.uni_gates.emplace_back(gp, d3_off, 0, -1);  
-        circuit.bin_gates.emplace_back(gp, g, g+block_len,1,1);
+        circuit.add_unary(gp, d3_off, 0, -1);  
+        circuit.add_binary(gp, g, g+block_len,1,1);
     }
     calcNormalLayer(circuit, layer_id);
     for(int g=0;g<output_size;g++)
@@ -1010,11 +1010,11 @@ void neuralNetwork::roundLayer(layer &circuit, i64 &layer_id, float scale,bool* 
             if(!sparsity_map[g])
                 continue;
         }
-        circuit.bin_gates.emplace_back(g, p, p, -(1ll<<(2*m+2*M+2))*c*c , 1); //  , 
-        circuit.bin_gates.emplace_back(g, p, q, (1ll<<(m+2*M+3))*c ,2);  //
-        circuit.bin_gates.emplace_back(g, q, q, -(1<<(2*M+2)) ,0);
-        circuit.uni_gates.emplace_back(g, c1, 0, (1ll<<(2*M)) );  // this public input is one
-        circuit.uni_gates.emplace_back(g, s, 0, -1);
+        circuit.add_binary(g, p, p, -(1ll<<(2*m+2*M+2))*c*c , 1); //  , 
+        circuit.add_binary(g, p, q, (1ll<<(m+2*M+3))*c ,2);  //
+        circuit.add_binary(g, q, q, -(1<<(2*M+2)) ,0);
+        circuit.add_unary(g, c1, 0, (1ll<<(2*M)) );  // this public input is one
+        circuit.add_unary(g, s, 0, -1);
     }   
     calcNormalLayer(circuit, layer_id);
     for(int i=0;i<block_len;i++)
@@ -1051,7 +1051,7 @@ void neuralNetwork::multi_head_matrix_QK(layer &circuit, i64 &layer_id)
                 int idj=j*channel_out+col_j;
                 int gate_i=q_offset+idi;
                 int gate_j=q_offset+idj;
-                circuit.bin_gates.emplace_back(targ_gate, gate_i,gate_j, 1,0 );
+                circuit.add_binary(targ_gate, gate_i,gate_j, 1,0 );
             }
             ++T;
         }
@@ -1146,7 +1146,7 @@ void neuralNetwork::softmax_layer_1(layer &circuit, i64 &layer_id,float SQ,float
                 {
                     int Vkj_offset=q_offset+channel_out*k+2*HEAD*HSIZE+head*HSIZE+j; //Vkj, offset   
                     int E_off=orgsize+10+HEAD*2*len+3*HEAD*len*(len+1)/2+head*len*(len+1)/2+(i*(i+1))/2+k;
-                    circuit.bin_gates.emplace_back(out_ij, Vkj_offset,E_off,1,0);
+                    circuit.add_binary(out_ij, Vkj_offset,E_off,1,0);
                 }
             }
         }
@@ -1160,27 +1160,27 @@ void neuralNetwork::softmax_layer_1(layer &circuit, i64 &layer_id,float SQ,float
                 int offset=head*len*(len+1)/2+(i*(i-1))/2+j; //global offset
                 int dt1_off=orgsize+10+HEAD*2*len+offset;
                 int check_seg1_offset=2*HEAD*len*(len+1)/2+HEAD*len*HSIZE+offset;
-                circuit.uni_gates.emplace_back(check_seg1_offset, dt1_off,0,-1); //-(pm-pi)
-                circuit.uni_gates.emplace_back(check_seg1_offset, offset,layer_id-1,-1); //-pi
-                circuit.uni_gates.emplace_back(check_seg1_offset, pmax_offset,0,1); //+pmax
+                circuit.add_unary(check_seg1_offset, dt1_off,0,-1); //-(pm-pi)
+                circuit.add_unary(check_seg1_offset, offset,layer_id-1,-1); //-pi
+                circuit.add_unary(check_seg1_offset, pmax_offset,0,1); //+pmax
                 int term1_offset=HEAD*len*HSIZE+offset;
                 int term2_offset=HEAD*len*(len+1)/2+HEAD*len*HSIZE+offset;
                 int t_off=orgsize+10+HEAD*2*len+2*HEAD*len*(len+1)/2+offset;
-                circuit.uni_gates.emplace_back(term1_offset, dt1_off,0,c1*(1<<(e1+1+eprime))); //c1*2^(e1+1+e')
-                circuit.uni_gates.emplace_back(term1_offset, orgsize,0,1<<eprime); //+2^e'
-                circuit.uni_gates.emplace_back(term1_offset, t_off,0,-(1<<(eprime+1))); //-2^(e'+1)*ti
+                circuit.add_unary(term1_offset, dt1_off,0,c1*(1<<(e1+1+eprime))); //c1*2^(e1+1+e')
+                circuit.add_unary(term1_offset, orgsize,0,1<<eprime); //+2^e'
+                circuit.add_unary(term1_offset, t_off,0,-(1<<(eprime+1))); //-2^(e'+1)*ti
 
-                circuit.uni_gates.emplace_back(term2_offset, dt1_off,0,-c1*(1<<(e1+1+eprime))); //c1*2^(e1+1+e')
-                circuit.uni_gates.emplace_back(term2_offset, orgsize,0,1<<eprime); //+2^e'
-                circuit.uni_gates.emplace_back(term2_offset, t_off,0,(1<<(eprime+1))); //-2^(e'+1)*ti
+                circuit.add_unary(term2_offset, dt1_off,0,-c1*(1<<(e1+1+eprime))); //c1*2^(e1+1+e')
+                circuit.add_unary(term2_offset, orgsize,0,1<<eprime); //+2^e'
+                circuit.add_unary(term2_offset, t_off,0,(1<<(eprime+1))); //-2^(e'+1)*ti
             }
             int sum_e_check=3*HEAD*len*(len+1)/2+HEAD*len*HSIZE+head*len+i-1;
-            circuit.uni_gates.emplace_back(sum_e_check, sum_E_offset,0,-1); //-2^(e'+1)*ti
+            circuit.add_unary(sum_e_check, sum_E_offset,0,-1); //-2^(e'+1)*ti
             for(int j=0;j<i;j++) // i is length, j is id
             {
                 int offset=head*len*(len+1)/2+(i*(i-1))/2+j; //global offset
                 int E_off=orgsize+10+HEAD*2*len+3*HEAD*len*(len+1)/2+offset;
-                circuit.uni_gates.emplace_back(sum_e_check, E_off,0,1);
+                circuit.add_unary(sum_e_check, E_off,0,1);
             }
         }
     }
@@ -1234,13 +1234,13 @@ void neuralNetwork::softmax_layer_2(layer &circuit, i64 &layer_id,float SQ,float
                 ll d2=(sumE*(1<<(eprime-1))-Qij*c1*(1<<(eprime+e1))+S*sumE*(1<<eprime));
                 val[0][d3_off]=Fr(sumE*(1<<(eprime-1))+Qij*c1*(1<<(eprime+e1))-S*sumE*(1<<eprime))*Fr((sumE*(1<<(eprime-1))-Qij*c1*(1<<(eprime+e1))+S*sumE*(1<<eprime)));
                 f2=min(f2,S);
-                circuit.uni_gates.emplace_back(term1_off, out_ij,layer_id-1,c1*(1ll<<(e1+eprime)));
-                circuit.uni_gates.emplace_back(term1_off, sum_E_offset,0,1ll<<(eprime-1));
+                circuit.add_unary(term1_off, out_ij,layer_id-1,c1*(1ll<<(e1+eprime)));
+                circuit.add_unary(term1_off, sum_E_offset,0,1ll<<(eprime-1));
 
-                circuit.bin_gates.emplace_back(term1_off, s_ij, sum_E_offset,-(1<<eprime),0);
-                circuit.uni_gates.emplace_back(term2_off, out_ij,layer_id-1,-c1*(1ll<<(e1+eprime)));
-                circuit.uni_gates.emplace_back(term2_off, sum_E_offset,0,1ll<<(eprime-1));
-                circuit.bin_gates.emplace_back(term2_off, s_ij, sum_E_offset,(1<<eprime),0);
+                circuit.add_binary(term1_off, s_ij, sum_E_offset,-(1<<eprime),0);
+                circuit.add_unary(term2_off, out_ij,layer_id-1,-c1*(1ll<<(e1+eprime)));
+                circuit.add_unary(term2_off, sum_E_offset,0,1ll<<(eprime-1));
+                circuit.add_binary(term2_off, s_ij, sum_E_offset,(1<<eprime),0);
             }
         }
     }
@@ -1255,8 +1255,8 @@ void neuralNetwork::softmax_layer_2(layer &circuit, i64 &layer_id,float SQ,float
                 int term1_offset=HEAD*len*HSIZE+offset;
                 int term2_offset=HEAD*len*(len+1)/2+HEAD*len*HSIZE+offset;
                 int now_off=2*HEAD*len*HSIZE+offset;
-                circuit.bin_gates.emplace_back(now_off, term1_offset, term2_offset,1,1);
-                circuit.uni_gates.emplace_back(now_off,dt2_off,0,-1);
+                circuit.add_binary(now_off, term1_offset, term2_offset,1,1);
+                circuit.add_unary(now_off,dt2_off,0,-1);
             }
         }
     }
@@ -1299,8 +1299,8 @@ void neuralNetwork::softmax_layer_3(layer &circuit, i64 &layer_id,float SQ,float
                 int d3_off=orgsize+10+HEAD*2*len+4*HEAD*len*(len+1)/2+head*len*HSIZE+i*HSIZE+j;
                 
                 
-                circuit.bin_gates.emplace_back(now,term1_off, term2_off, 1,1);
-                circuit.uni_gates.emplace_back(now,d3_off ,0,-1);
+                circuit.add_binary(now,term1_off, term2_off, 1,1);
+                circuit.add_unary(now,d3_off ,0,-1);
             }
         }
     }
@@ -1472,14 +1472,14 @@ void neuralNetwork::calcNormalLayer(const layer &circuit, i64 layer_id,bool outp
         x.clear();
     for (auto &gate: circuit.uni_gates) 
     {
-        val[layer_id].at(gate.g) = val[layer_id].at(gate.g) + val[gate.lu].at(gate.u) * gate.sc;
+        val[layer_id].at(gate.g) = val[layer_id].at(gate.g) + val[gate.lu].at(gate.u) * circuit.coefficient(gate);
     }
 
     for (auto &gate: circuit.bin_gates) 
     {
         u8 bin_lu = gate.getLayerIdU(layer_id), bin_lv = gate.getLayerIdV(layer_id);
         
-        val[layer_id].at(gate.g) = val[layer_id].at(gate.g) + val[bin_lu].at(gate.u) * val[bin_lv][gate.v] * gate.sc;
+        val[layer_id].at(gate.g) = val[layer_id].at(gate.g) + val[bin_lu].at(gate.u) * val[bin_lv][gate.v] * circuit.coefficient(gate);
     }
 }
 
@@ -1495,13 +1495,13 @@ void neuralNetwork::checkNormalLayer(const layer &circuit, i64 layer_id,const ve
     {
         assert(gate.g>=0 && gate.g<valp.size());
         assert(gate.u>=0 && gate.u<val[gate.lu].size());
-        valp.at(gate.g) += val[gate.lu].at(gate.u) * gate.sc;
+        valp.at(gate.g) += val[gate.lu].at(gate.u) * circuit.coefficient(gate);
     }
     for (auto &gate: circuit.bin_gates) 
     {
         u8 bin_lu = gate.getLayerIdU(layer_id), bin_lv = gate.getLayerIdV(layer_id);
         assert(gate.g>=0 && gate.g<valp.size());
-        valp.at(gate.g)+=  val[bin_lu].at(gate.u) * val[bin_lv][gate.v] * gate.sc;
+        valp.at(gate.g)+=  val[bin_lu].at(gate.u) * val[bin_lv][gate.v] * circuit.coefficient(gate);
     }
     for(int i=0;i<circuit.size;i++)
         assert(valp[i]==val[layer_id][i]);

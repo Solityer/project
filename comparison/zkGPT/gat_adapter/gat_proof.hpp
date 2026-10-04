@@ -208,8 +208,25 @@ struct CanonicalModelShape {
     std::vector<CanonicalTensorShape> tensors;
 };
 
+struct GatLassoWorkspaceProfile {
+    std::string family_id;
+    NativeLassoCapacityProfile workspace;
+    std::uint64_t logical_domain_entries = 0;
+    std::uint64_t row_commitment_chunk_count = 0;
+    std::uint64_t row_commitment_chunk_entries = 0;
+    std::uint64_t booleanity_rounds = 0;
+    std::uint64_t a_query_challenges = 0;
+    std::uint64_t onehot_rounds = 0;
+    std::uint64_t lookup_rounds = 0;
+    std::uint64_t hyrax_matrix_masked_openings = 0;
+    std::uint64_t hyrax_l_qry_tensor_openings = 0;
+    std::uint64_t row_commitment_wire_bytes_upper_bound = 0;
+    std::uint64_t family_message_count_upper_bound = 0;
+    std::uint64_t family_wire_bytes_upper_bound = 0;
+};
+
 struct GatCapacityReport {
-    std::string schema = "zkgpt-gat-capacity-v1";
+    std::string schema = "zkgpt-gat-capacity-v3";
     std::size_t num_nodes = 0;
     std::size_t num_edges = 0;
     std::size_t num_features = 0;
@@ -230,6 +247,10 @@ struct GatCapacityReport {
     std::size_t materialized_g1 = 0;
     std::size_t explicit_gate_count = 0;
     std::uint64_t estimated_peak_host_memory_bytes = 0;
+    std::uint64_t estimated_native_heap_bytes_upper_bound = 0;
+    std::uint64_t estimated_native_mapped_bytes_upper_bound = 0;
+    std::uint64_t lasso_heap_workspace_peak_bytes = 0;
+    std::uint64_t estimated_native_scratch_bytes = 0;
     std::size_t native_sparse_relation_count = 0;
     std::size_t scratch_chunk_entries = 0;
     std::uint64_t sparse_domain_entries = 0;
@@ -237,6 +258,76 @@ struct GatCapacityReport {
     std::uint64_t sparse_working_set_bytes = 0;
     std::size_t max_materialized_gate_bytes = 0;
     std::size_t max_materialized_vector_bytes = 0;
+    std::uint64_t max_materialized_fr_bytes = 0;
+    std::uint64_t max_materialized_g1_bytes = 0;
+    std::uint64_t lasso_logical_domain_entries = 0;
+    std::uint64_t lasso_private_selected_row_workspace_peak_bytes = 0;
+    std::uint64_t hyrax_active_domain_workspace_entries = 0;
+    std::uint64_t hyrax_active_domain_workspace_bytes = 0;
+    std::uint64_t hyrax_folded_columns_workspace_bytes = 0;
+    std::uint64_t hyrax_w_mle_workspace_bytes = 0;
+    std::uint64_t hyrax_aux_tensor_workspace_bytes = 0;
+    std::uint64_t hyrax_l_qry_tensor_workspace_bytes = 0;
+    std::uint64_t hyrax_tensor_retained_workspace_bytes = 0;
+    std::uint64_t hyrax_tensor_opening_transient_peak_workspace_bytes = 0;
+    std::uint64_t hyrax_tensor_combined_peak_workspace_bytes = 0;
+    std::uint64_t hyrax_l_qry_tensor_columns = 0;
+    std::uint64_t borrowed_trace_bytes_upper_bound = 0;
+    std::uint64_t retained_relation_witness_entries = 0;
+    std::uint64_t retained_relation_witness_bytes_upper_bound = 0;
+    std::uint64_t relation_public_output_entries = 0;
+    std::uint64_t relation_public_output_bytes_upper_bound = 0;
+    std::uint64_t relation_residual_entries = 0;
+    std::uint64_t relation_residual_bytes_upper_bound = 0;
+    std::uint64_t retained_layer_witness_entries_upper_bound = 0;
+    std::uint64_t retained_layer_witness_bytes_upper_bound = 0;
+    std::uint64_t evaluated_layer_witness_entries_upper_bound = 0;
+    std::uint64_t evaluated_layer_witness_bytes_upper_bound = 0;
+    std::uint64_t native_gkr_witness_heap_bytes_upper_bound = 0;
+    std::uint64_t native_gkr_witness_mapped_bytes_upper_bound = 0;
+    std::uint64_t relation_gate_unary_entries = 0;
+    std::uint64_t relation_gate_binary_entries = 0;
+    std::uint64_t relation_gate_output_entries = 0;
+    std::uint64_t max_single_gate_array_bytes_upper_bound = 0;
+    std::uint64_t max_single_relation_builder_array_bytes_upper_bound = 0;
+    std::uint64_t gkr_subset_source_map_bytes_upper_bound = 0;
+    std::uint64_t gkr_subset_sort_scratch_bytes_upper_bound = 0;
+    std::uint64_t native_transcript_heap_bytes_upper_bound = 0;
+    std::uint64_t transcript_content_bytes_upper_bound = 0;
+    std::uint64_t transcript_wire_bytes_upper_bound = 0;
+    std::uint64_t transcript_prefix_bytes_upper_bound = 0;
+    std::uint64_t maximum_challenge_suffix_bytes_upper_bound = 0;
+    std::uint64_t transcript_metadata_bytes_upper_bound = 0;
+    std::uint64_t zero_tail_certificate_count_upper_bound = 0;
+    std::uint64_t l_query_zero_interval_message_count_upper_bound = 0;
+    std::uint64_t aux_logical_entries_upper_bound = 0;
+    std::uint64_t aux_active_domain_entries_upper_bound = 0;
+    std::uint64_t lasso_table_and_index_bytes_upper_bound = 0;
+    std::uint64_t gkr_layer_count_upper_bound = 0;
+    std::uint64_t gkr_fconn_layer_count_upper_bound = 0;
+    std::uint64_t gkr_input_source_count_upper_bound = 0;
+    std::uint64_t gkr_message_count_upper_bound = 0;
+    std::uint64_t gkr_wire_bytes_upper_bound = 0;
+    std::uint64_t gkr_prefix_workspace_bytes_upper_bound = 0;
+    std::uint64_t l_query_zero_interval_count_upper_bound = 0;
+    std::uint64_t flattened_input_domain_entries = 0;
+    std::uint64_t flattened_input_domain_limit_u64 = (std::uint64_t(1) << 62);
+    std::uint64_t disk_requirement_bytes_upper_bound = 0;
+    bool scratch_artifact_same_filesystem = false;
+    std::uint64_t shared_scratch_artifact_available_bytes = 0;
+    std::uint64_t proof_message_count_upper_bound = 0;
+    std::uint64_t maximum_transcript_field_entries_upper_bound = 0;
+    std::uint64_t total_transcript_field_entries_upper_bound = 0;
+    std::uint64_t maximum_message_string_bytes_upper_bound = 0;
+    std::uint64_t proof_artifact_wire_bytes_upper_bound = 0;
+    std::uint64_t artifact_disk_bytes_upper_bound = 0;
+    std::uint64_t host_memory_limit_bytes = 0;
+    std::uint64_t native_scratch_available_bytes = 0;
+    std::uint64_t coordinate_domain_limit_u64 = (std::uint64_t(1) << 60);
+    std::uint64_t proof_message_count_limit = (std::uint64_t(1) << 20);
+    std::uint64_t maximum_message_string_bytes_limit = (std::uint64_t(1) << 26);
+    std::uint64_t proof_artifact_wire_limit_bytes = 0;
+    std::uint64_t artifact_disk_available_bytes = 0;
     bool ppi_node_ptr_boundary = false;
     bool ppi_edge_ptr_boundary = false;
     bool sparse_ready = false;
@@ -245,6 +336,7 @@ struct GatCapacityReport {
     std::uint64_t masked_proof_bytes_lower_bound = 0;
     std::uint64_t maximum_masked_response_entries = 0;
     std::vector<std::array<std::uint64_t, 2>> lasso_family_domains;
+    std::vector<GatLassoWorkspaceProfile> lasso_workspace_profile;
     std::string proof_path = "unsupported";
     bool full_relation_bound = false;
     bool ready = false;
@@ -252,6 +344,7 @@ struct GatCapacityReport {
 };
 
 GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, const QuantConfig& quant);
+void finalize_gat_capacity_report(GatCapacityReport& report);
 
 struct GatCircuitPlan {
     std::string recipe_schema = "canonical_plan_recipe_v3";
@@ -273,7 +366,12 @@ struct GatCircuitPlan {
     std::string quant_cfg_id;
     std::string quant_digest;
     std::string static_tables_id;
-    layeredCircuit circuit;
+    // Native gate/maps are an explicitly managed cache of the immutable
+    // canonical recipe. Proving may release and canonically rematerialize this
+    // backing during the Lasso-only phase while keeping the shared plan owner
+    // and all statement metadata stable.
+    mutable layeredCircuit circuit;
+    mutable bool native_proof_backing_resident = true;
     RelationRegistry registry;
     InputLayout input_layout;
     std::vector<MatMulDescriptor> matmuls;
@@ -290,11 +388,15 @@ struct GatCircuitPlan {
 
     std::size_t public_output_coordinates = 0;
     std::size_t residual_coordinates = 0;
-    zkgpt::NativeVector<Int> residual_targets;
+    mutable zkgpt::NativeVector<Int> residual_targets;
     std::string residual_target_digest;
     std::vector<std::array<unsigned, 5>> division_range_bits;
     bool official_layered = false;
     bool has_placeholder = false;
+
+    bool native_proof_backing_is_resident() const noexcept { return native_proof_backing_resident; }
+    void release_native_proof_backing() const;
+    void restore_native_proof_backing(GatCircuitPlan&& canonical_rebuilt) const;
 };
 
 GatCircuitPlan build_gat_circuit_plan(const Graph& graph, const Model& model, const QuantConfig& quant, const ForwardResult& forward);
@@ -498,7 +600,15 @@ struct VerifierContext {
     Tensor2D public_logits;
     CommitmentWire com_W;
     ModelRegistration registration;
+    // Production callers share one immutable materialized plan across the
+    // runner, verifier context, and prover.  `plan` remains the value-owned
+    // fallback for legacy callers and decoded context files.
+    std::shared_ptr<const GatCircuitPlan> shared_plan;
     GatCircuitPlan plan;
+
+    const GatCircuitPlan& plan_ref() const noexcept {
+        return shared_plan ? *shared_plan : plan;
+    }
 };
 
 VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public_features, const QuantConfig& quant, const StaticTables& tables,
@@ -507,6 +617,11 @@ VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public
 
 VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public_features, const QuantConfig& quant, const StaticTables& tables,
                                       const Tensor2D& public_logits, const ModelRegistration& registration, const GatCircuitPlan& plan,
+                                      const std::string& privacy_profile = "masked_full");
+
+VerifierContext make_verifier_context(const Graph& graph, const Tensor2D& public_features, const QuantConfig& quant, const StaticTables& tables,
+                                      const Tensor2D& public_logits, const ModelRegistration& registration,
+                                      std::shared_ptr<const GatCircuitPlan> plan,
                                       const std::string& privacy_profile = "masked_full");
 
 std::string verifier_context_digest(const VerifierContext& context);
@@ -553,6 +668,11 @@ ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tens
 
 ProveResult prove_gat(const GatCircuitPlan& plan, const Graph& graph, const Tensor2D& public_features, const Model& model, const QuantConfig& quant,
                       const ForwardResult& forward, const ModelRegistration& registration, const std::string& privacy_profile = "masked_full");
+
+ProveResult prove_gat(std::shared_ptr<const GatCircuitPlan> plan, const Graph& graph, const Tensor2D& public_features,
+                      const Model& model, const QuantConfig& quant, const ForwardResult& forward,
+                      const ModelRegistration& registration, const VerifierContext& context,
+                      const std::string& privacy_profile = "masked_full");
 
 bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact, std::string* reason = nullptr);
 

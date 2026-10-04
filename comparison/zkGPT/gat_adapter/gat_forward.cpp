@@ -332,7 +332,7 @@ AttentionTrace compute_attention(const Graph& graph, const Tensor2D& input, cons
     trace.activated.assign(trace.recovered.size(), 0);
     if (!output_head) {
         for (std::size_t i = 0; i < trace.recovered.size(); ++i) trace.activated[i] = tables.lookup_elu(trace.recovered[i]);
-    }
+    } else trace.activated = trace.recovered;
 
     trace.field_integer_consistent = true;
     for (std::size_t node = 0; node < graph.num_nodes; ++node) {
@@ -512,9 +512,10 @@ bool validate_attention(const Graph& graph, const AttentionTrace& trace, bool ou
         trace.group_sum.size() != graph.num_nodes || trace.group_inverse.size() != graph.num_nodes || trace.max_selector.size() != graph.edges() ||
         trace.alpha.size() != graph.edges() || trace.integer_numerator.size() != graph.num_nodes * trace.output_dim ||
         trace.field_numerator.size() != trace.integer_numerator.size() || trace.field_aggregate.size() != trace.integer_numerator.size() ||
-        trace.recovered.size() != trace.integer_numerator.size() || (!output_head && trace.activated.size() != trace.integer_numerator.size()) ||
+        trace.recovered.size() != trace.integer_numerator.size() || trace.activated.size() != trace.integer_numerator.size() ||
         trace.divisions.size() != trace.integer_numerator.size() || !trace.relation_ok)
         return false;
+    if (output_head && trace.activated != trace.recovered) return false;
     const std::vector<std::pair<std::size_t, std::size_t>> ranges = incoming_ranges(graph);
     bool ok = trace.field_integer_consistent;
     for (std::size_t node = 0; node < graph.num_nodes; ++node) {

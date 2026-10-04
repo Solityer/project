@@ -662,7 +662,7 @@ def paper_metrics(result: Mapping[str, Any], report: Mapping[str, Any], where: A
     size = result.get("proof_size_bytes")
     if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
         raise ChainError(f"{where} has invalid proof_size_bytes")
-    return {"commitment_time_ms": timing["commitment"], "prove_time_ms": timing["prove"], "verify_time_ms": finite_nonnegative(report.get("crypto_verify_ms"), "crypto_verify_ms", where), "proof_size_bytes": size, "timing_scope": "native_crypto; witness generation, serialization and reusable model registration recorded separately"}
+    return {"commitment_time_ms": timing["commitment"], "prove_time_ms": timing["prove"], "verify_time_ms": finite_nonnegative(report.get("crypto_verify_ms"), "crypto_verify_ms", where), "proof_size_bytes": size, "timing_scope": "prove_time_ms excludes commitment and prover self-verification but includes canonical circuit-witness construction and validation; artifact serialization and pre-proof forward/plan/registration are reported separately"}
 
 
 def parse_prover_secret_metadata(path: Path) -> Dict[str, Any]:

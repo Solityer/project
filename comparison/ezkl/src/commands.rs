@@ -742,11 +742,7 @@ pub enum Commands {
     },
     /// Creates an evm verifier artifact to be used by the reusable verifier
     #[command(name = "create-evm-vka")]
-    #[cfg(all(
-        feature = "eth",
-        feature = "reusable-verifier",
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(feature = "reusable-verifier", not(target_arch = "wasm32")))]
     CreateEvmVka {
         /// The path to SRS, if None will use ~/.ezkl/srs/kzg{logrows}.srs
         #[arg(long, value_hint = clap::ValueHint::FilePath)]
@@ -842,7 +838,7 @@ pub enum Commands {
     },
     /// Registers a VKA, returning the its digest used to identify it on-chain.
     #[command(name = "register-vka")]
-    #[cfg(feature = "reusable-verifier")]
+    #[cfg(all(feature = "eth", feature = "reusable-verifier"))]
     RegisterVka {
         /// RPC URL for an Ethereum node, if None will use Anvil but WON'T persist state
         #[arg(short = 'U', long, value_hint = clap::ValueHint::Url)]

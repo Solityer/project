@@ -1,18 +1,23 @@
 #include "gat_proof.hpp"
 #include "gat_types.hpp"
+#include "native_storage.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -90,6 +95,160 @@ struct Record {
     double verify_ms = 0.0;
     double serialize_ms = 0.0;
 };
+
+struct CapacityResourceSnapshot {
+    std::uint64_t host_headroom_bytes = 0;
+    std::uint64_t scratch_available_bytes = 0;
+    std::uint64_t artifact_available_bytes = 0;
+    std::uint64_t shared_available_bytes = 0;
+    bool same_filesystem = false;
+};
+
+std::uint64_t parse_u64_text(const std::string& text, const std::string& what) {
+    if (text.empty()) throw std::runtime_error("empty numeric resource value: " + what);
+    std::uint64_t value = 0;
+    for (const unsigned char ch : text) {
+        if (ch < '0' || ch > '9') throw std::runtime_error("invalid numeric resource value: " + what);
+        const std::uint64_t digit = static_cast<std::uint64_t>(ch - '0');
+        if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10)
+            throw std::overflow_error("resource value exceeds u64: " + what);
+        value = value * 10 + digit;
+    }
+    return value;
+}
+
+std::optional<std::uint64_t> read_u64_file(const std::filesystem::path& path, bool allow_max) {
+    std::ifstream input(path);
+    if (!input) return std::nullopt;
+    std::string value;
+    input >> value;
+    if (value == "max" && allow_max) return std::nullopt;
+    return parse_u64_text(value, path.string());
+}
+
+struct HostMemoryInfo {
+    std::uint64_t available_bytes = 0;
+    std::uint64_t total_bytes = 0;
+};
+
+HostMemoryInfo host_memory_info() {
+    HostMemoryInfo result;
+    std::ifstream meminfo("/proc/meminfo");
+    std::string key;
+    std::uint64_t available_kib = 0;
+    std::uint64_t total_kib = 0;
+    std::string unit;
+    while (meminfo >> key) {
+        std::uint64_t value = 0;
+        if (!(meminfo >> value >> unit)) break;
+        std::string rest;
+        std::getline(meminfo, rest);
+        if (unit != "kB") continue;
+        if (key == "MemAvailable:") available_kib = value;
+        if (key == "MemTotal:") total_kib = value;
+    }
+    const auto kib_to_bytes = [](std::uint64_t value, const char* what) {
+        if (value > std::numeric_limits<std::uint64_t>::max() / 1024)
+            throw std::overflow_error(std::string("host memory value exceeds u64: ") + what);
+        return value * 1024;
+    };
+    result.total_bytes = kib_to_bytes(total_kib, "MemTotal");
+    if (available_kib != 0) {
+        result.available_bytes = kib_to_bytes(available_kib, "MemAvailable");
+    } else {
+        const long pages = ::sysconf(_SC_AVPHYS_PAGES);
+        const long page_size = ::sysconf(_SC_PAGESIZE);
+        if (pages <= 0 || page_size <= 0 || static_cast<unsigned long long>(pages) > std::numeric_limits<std::uint64_t>::max() / static_cast<unsigned long long>(page_size))
+            throw std::runtime_error("cannot determine available physical memory");
+        result.available_bytes = static_cast<std::uint64_t>(pages) * static_cast<std::uint64_t>(page_size);
+    }
+    if (result.total_bytes == 0) {
+        const long pages = ::sysconf(_SC_PHYS_PAGES);
+        const long page_size = ::sysconf(_SC_PAGESIZE);
+        if (pages > 0 && page_size > 0 && static_cast<unsigned long long>(pages) <= std::numeric_limits<std::uint64_t>::max() / static_cast<unsigned long long>(page_size))
+            result.total_bytes = static_cast<std::uint64_t>(pages) * static_cast<std::uint64_t>(page_size);
+    }
+    if (result.total_bytes == 0 || result.available_bytes == 0)
+        throw std::runtime_error("cannot establish available host memory headroom");
+    return result;
+}
+
+std::optional<std::uint64_t> cgroup_memory_headroom(const std::uint64_t physical_total_bytes) {
+    std::ifstream cgroup("/proc/self/cgroup");
+    std::string line;
+    std::optional<std::filesystem::path> v2_path;
+    std::optional<std::filesystem::path> v1_memory_path;
+    while (std::getline(cgroup, line)) {
+        const std::size_t first = line.find(':');
+        const std::size_t second = first == std::string::npos ? std::string::npos : line.find(':', first + 1);
+        if (second == std::string::npos) continue;
+        const std::string controllers = line.substr(first + 1, second - first - 1);
+        std::string group_path = line.substr(second + 1);
+        if (group_path.find("..") != std::string::npos)
+            throw std::runtime_error("cgroup path contains parent traversal");
+        while (!group_path.empty() && group_path.front() == '/') group_path.erase(group_path.begin());
+        if (controllers.empty()) v2_path = std::filesystem::path("/sys/fs/cgroup") / group_path;
+        else if (controllers.find("memory") != std::string::npos) v1_memory_path = std::filesystem::path("/sys/fs/cgroup/memory") / group_path;
+    }
+    const auto measure = [physical_total_bytes](const std::filesystem::path& start, const std::filesystem::path& mount, bool v2) -> std::optional<std::uint64_t> {
+        std::optional<std::uint64_t> headroom;
+        std::filesystem::path current = start.lexically_normal();
+        const std::filesystem::path root = mount.lexically_normal();
+        for (;;) {
+            const auto current_usage = read_u64_file(current / (v2 ? "memory.current" : "memory.usage_in_bytes"), false);
+            const auto apply_limit = [&](const char* filename) {
+                const auto limit = read_u64_file(current / filename, v2);
+                if (!limit || !current_usage) return;
+                if (!v2 && *limit >= physical_total_bytes) return;
+                const std::uint64_t remaining = *limit > *current_usage ? *limit - *current_usage : 0;
+                headroom = headroom ? std::min(*headroom, remaining) : remaining;
+            };
+            apply_limit(v2 ? "memory.max" : "memory.limit_in_bytes");
+            if (v2) apply_limit("memory.high");
+            else apply_limit("memory.soft_limit_in_bytes");
+            if (current == root || current.empty()) break;
+            const auto parent = current.parent_path();
+            if (parent == current || parent.empty()) break;
+            current = parent;
+        }
+        return headroom;
+    };
+    if (v2_path) {
+        const auto headroom = measure(*v2_path, "/sys/fs/cgroup", true);
+        if (headroom) return headroom;
+    }
+    if (v1_memory_path) {
+        const auto headroom = measure(*v1_memory_path, "/sys/fs/cgroup/memory", false);
+        if (headroom) return headroom;
+    }
+    return std::nullopt;
+}
+
+std::uint64_t effective_host_headroom_bytes() {
+    const HostMemoryInfo memory = host_memory_info();
+    const auto cgroup_headroom = cgroup_memory_headroom(memory.total_bytes);
+    return cgroup_headroom ? std::min(memory.available_bytes, *cgroup_headroom) : memory.available_bytes;
+}
+
+CapacityResourceSnapshot capacity_resource_snapshot(const std::string& run_dir) {
+    CapacityResourceSnapshot snapshot;
+    snapshot.host_headroom_bytes = effective_host_headroom_bytes();
+    const auto scratch_dir = zkgpt::native_storage::scratch_directory();
+    snapshot.scratch_available_bytes = zkgpt::native_storage::scratch_available_bytes();
+    std::error_code space_error;
+    const std::filesystem::space_info artifact_space = std::filesystem::space(run_dir, space_error);
+    if (space_error || artifact_space.available > std::numeric_limits<std::uint64_t>::max())
+        throw std::runtime_error("cannot establish artifact filesystem headroom: " + run_dir);
+    snapshot.artifact_available_bytes = static_cast<std::uint64_t>(artifact_space.available);
+    struct stat scratch_stat{};
+    struct stat artifact_stat{};
+    if (::stat(scratch_dir.c_str(), &scratch_stat) != 0 || ::stat(run_dir.c_str(), &artifact_stat) != 0)
+        throw std::runtime_error("cannot determine scratch/artifact filesystem identity");
+    snapshot.same_filesystem = scratch_stat.st_dev == artifact_stat.st_dev;
+    if (snapshot.same_filesystem)
+        snapshot.shared_available_bytes = std::min(snapshot.scratch_available_bytes, snapshot.artifact_available_bytes);
+    return snapshot;
+}
 
 double elapsed_ms(const Clock::time_point& start, const Clock::time_point& end) {
     return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(end - start).count();
@@ -497,43 +656,164 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     json_string(out, "quant_cfg_id", quant_cfg_id);
     json_string(out, "cache_identity", cache_identity);
     json_string(out, "checkpoint_identity", checkpoint_identity);
-    out << "  \"num_nodes\": " << report.num_nodes << ",\n";
-    out << "  \"num_edges\": " << report.num_edges << ",\n";
-    out << "  \"num_features\": " << report.num_features << ",\n";
-    out << "  \"num_classes\": " << report.num_classes << ",\n";
-    out << "  \"graph_count\": " << report.graph_count << ",\n";
+    const auto number = [&out](const char* key, const auto value, bool comma = true) { out << "  \"" << key << "\": " << value << (comma ? ",\n" : "\n"); };
+    number("num_nodes", report.num_nodes);
+    number("num_edges", report.num_edges);
+    number("num_features", report.num_features);
+    number("num_classes", report.num_classes);
+    number("graph_count", report.graph_count);
     json_string(out, "model_arch_id", report.model_shape.model_arch_id);
-    out << "  \"model_layers\": " << report.model_shape.layers << ",\n";
-    out << "  \"model_output_heads\": " << report.model_shape.output_heads << ",\n";
-    out << "  \"model_classes\": " << report.model_shape.classes << ",\n";
-    out << "  \"model_input_dim\": " << report.model_shape.input_dim << ",\n";
-    out << "  \"model_hidden_dim\": " << report.model_shape.hidden_dim << ",\n";
-    out << "  \"n_raw\": " << report.input_layout.n_raw << ",\n";
-    out << "  \"n_in\": " << report.input_layout.n_in << ",\n";
-    out << "  \"fconn_count\": " << report.fconn_count << ",\n";
-    json_bool(out, "explicit_matmul_gate_expansion", report.explicit_matmul_gate_expansion);
-    out << "  \"max_materialized_gate\": " << report.max_materialized_gate << ",\n";
-    out << "  \"max_materialized_vector\": " << report.max_materialized_vector << ",\n";
-    out << "  \"attention_relation_count\": " << report.attention_relation_count << ",\n";
-    out << "  \"division_relation_count\": " << report.division_relation_count << ",\n";
-    out << "  \"context_recipe_bytes_bound\": " << report.context_recipe_bytes_bound << ",\n";
-    out << "  \"context_payload_bytes_bound\": " << report.context_payload_bytes_bound << ",\n";
+    number("model_layers", report.model_shape.layers);
+    number("model_output_heads", report.model_shape.output_heads);
+    number("model_classes", report.model_shape.classes);
+    number("model_input_dim", report.model_shape.input_dim);
+    number("model_hidden_dim", report.model_shape.hidden_dim);
+    number("n_raw", report.input_layout.n_raw);
+    number("n_in", report.input_layout.n_in);
+    number("explicit_gate_count", report.explicit_gate_count);
+    number("max_materialized_gate_bytes", report.max_materialized_gate_bytes);
+    number("max_materialized_vector_bytes", report.max_materialized_vector_bytes);
+    number("context_recipe_bytes_bound", report.context_recipe_bytes_bound);
+    number("context_payload_bytes_bound", report.context_payload_bytes_bound);
     json_bool(out, "ppi_node_ptr_boundary", report.ppi_node_ptr_boundary);
     json_bool(out, "ppi_edge_ptr_boundary", report.ppi_edge_ptr_boundary);
-    out << "  \"masked_lasso_matrix_entries\": " << report.masked_lasso_matrix_entries << ",\n";
-    out << "  \"masked_response_entries_lower_bound\": " << report.masked_response_entries_lower_bound << ",\n";
-    out << "  \"masked_proof_bytes_lower_bound\": " << report.masked_proof_bytes_lower_bound << ",\n";
-    out << "  \"maximum_masked_response_entries\": " << report.maximum_masked_response_entries << ",\n";
-    out << "  \"native_response_vector_limit\": " << (1ULL << 20) << ",\n";
-    out << "  \"lasso_family_domains\": [";
-    for (std::size_t index = 0; index < report.lasso_family_domains.size(); ++index) { if (index != 0) out << ','; out << '[' << report.lasso_family_domains[index][0] << ',' << report.lasso_family_domains[index][1] << ']'; }
+    number("lasso_logical_domain_entries", report.lasso_logical_domain_entries);
+    number("lasso_private_selected_row_workspace_peak_bytes", report.lasso_private_selected_row_workspace_peak_bytes);
+    number("lasso_heap_workspace_peak_bytes", report.lasso_heap_workspace_peak_bytes);
+    number("hyrax_active_domain_workspace_entries", report.hyrax_active_domain_workspace_entries);
+    number("hyrax_active_domain_workspace_bytes", report.hyrax_active_domain_workspace_bytes);
+    number("hyrax_l_qry_tensor_columns", report.hyrax_l_qry_tensor_columns);
+    number("hyrax_l_qry_tensor_workspace_bytes", report.hyrax_l_qry_tensor_workspace_bytes);
+    number("hyrax_aux_tensor_workspace_bytes", report.hyrax_aux_tensor_workspace_bytes);
+    number("hyrax_folded_columns_workspace_bytes", report.hyrax_folded_columns_workspace_bytes);
+    number("hyrax_tensor_retained_workspace_bytes", report.hyrax_tensor_retained_workspace_bytes);
+    number("hyrax_tensor_opening_transient_peak_workspace_bytes", report.hyrax_tensor_opening_transient_peak_workspace_bytes);
+    number("hyrax_tensor_combined_peak_workspace_bytes", report.hyrax_tensor_combined_peak_workspace_bytes);
+    number("hyrax_w_mle_workspace_bytes", report.hyrax_w_mle_workspace_bytes);
+    number("borrowed_trace_bytes_upper_bound", report.borrowed_trace_bytes_upper_bound);
+    number("retained_relation_witness_entries", report.retained_relation_witness_entries);
+    number("retained_relation_witness_bytes_upper_bound", report.retained_relation_witness_bytes_upper_bound);
+    number("relation_public_output_entries", report.relation_public_output_entries);
+    number("relation_public_output_bytes_upper_bound", report.relation_public_output_bytes_upper_bound);
+    number("relation_residual_entries", report.relation_residual_entries);
+    number("relation_residual_bytes_upper_bound", report.relation_residual_bytes_upper_bound);
+    number("retained_layer_witness_entries_upper_bound", report.retained_layer_witness_entries_upper_bound);
+    number("retained_layer_witness_bytes_upper_bound", report.retained_layer_witness_bytes_upper_bound);
+    number("evaluated_layer_witness_entries_upper_bound", report.evaluated_layer_witness_entries_upper_bound);
+    number("evaluated_layer_witness_bytes_upper_bound", report.evaluated_layer_witness_bytes_upper_bound);
+    number("native_gkr_witness_heap_bytes_upper_bound", report.native_gkr_witness_heap_bytes_upper_bound);
+    number("native_gkr_witness_mapped_bytes_upper_bound", report.native_gkr_witness_mapped_bytes_upper_bound);
+    number("relation_gate_unary_entries", report.relation_gate_unary_entries);
+    number("relation_gate_binary_entries", report.relation_gate_binary_entries);
+    number("relation_gate_output_entries", report.relation_gate_output_entries);
+    number("max_single_gate_array_bytes_upper_bound", report.max_single_gate_array_bytes_upper_bound);
+    number("max_single_relation_builder_array_bytes_upper_bound", report.max_single_relation_builder_array_bytes_upper_bound);
+    number("gkr_subset_source_map_bytes_upper_bound", report.gkr_subset_source_map_bytes_upper_bound);
+    number("gkr_subset_sort_scratch_bytes_upper_bound", report.gkr_subset_sort_scratch_bytes_upper_bound);
+    number("native_transcript_heap_bytes_upper_bound", report.native_transcript_heap_bytes_upper_bound);
+    number("transcript_content_bytes_upper_bound", report.transcript_content_bytes_upper_bound);
+    number("transcript_wire_bytes_upper_bound", report.transcript_wire_bytes_upper_bound);
+    number("transcript_prefix_bytes_upper_bound", report.transcript_prefix_bytes_upper_bound);
+    number("maximum_challenge_suffix_bytes_upper_bound", report.maximum_challenge_suffix_bytes_upper_bound);
+    number("transcript_metadata_bytes_upper_bound", report.transcript_metadata_bytes_upper_bound);
+    number("zero_tail_certificate_count_upper_bound", report.zero_tail_certificate_count_upper_bound);
+    number("l_query_zero_interval_message_count_upper_bound", report.l_query_zero_interval_message_count_upper_bound);
+    number("lasso_table_and_index_bytes_upper_bound", report.lasso_table_and_index_bytes_upper_bound);
+    number("gkr_layer_count_upper_bound", report.gkr_layer_count_upper_bound);
+    number("gkr_fconn_layer_count_upper_bound", report.gkr_fconn_layer_count_upper_bound);
+    number("gkr_input_source_count_upper_bound", report.gkr_input_source_count_upper_bound);
+    number("gkr_message_count_upper_bound", report.gkr_message_count_upper_bound);
+    number("gkr_wire_bytes_upper_bound", report.gkr_wire_bytes_upper_bound);
+    number("gkr_prefix_workspace_bytes_upper_bound", report.gkr_prefix_workspace_bytes_upper_bound);
+    number("l_query_zero_interval_count_upper_bound", report.l_query_zero_interval_count_upper_bound);
+    number("estimated_peak_host_memory_bytes", report.estimated_peak_host_memory_bytes);
+    number("estimated_native_scratch_bytes", report.estimated_native_scratch_bytes);
+    number("estimated_native_heap_bytes_upper_bound", report.estimated_native_heap_bytes_upper_bound);
+    number("estimated_native_mapped_bytes_upper_bound", report.estimated_native_mapped_bytes_upper_bound);
+    number("max_materialized_fr_bytes", report.max_materialized_fr_bytes);
+    number("max_materialized_g1_bytes", report.max_materialized_g1_bytes);
+    number("flattened_input_domain_entries", report.flattened_input_domain_entries);
+    number("flattened_input_domain_limit_u64", report.flattened_input_domain_limit_u64);
+    number("disk_requirement_bytes_upper_bound", report.disk_requirement_bytes_upper_bound);
+    number("proof_message_count_upper_bound", report.proof_message_count_upper_bound);
+    number("maximum_transcript_field_entries_upper_bound", report.maximum_transcript_field_entries_upper_bound);
+    number("total_transcript_field_entries_upper_bound", report.total_transcript_field_entries_upper_bound);
+    number("maximum_message_string_bytes_upper_bound", report.maximum_message_string_bytes_upper_bound);
+    number("proof_artifact_wire_bytes_upper_bound", report.proof_artifact_wire_bytes_upper_bound);
+    number("artifact_disk_bytes_upper_bound", report.artifact_disk_bytes_upper_bound);
+    number("host_memory_limit_bytes", report.host_memory_limit_bytes);
+    number("native_scratch_available_bytes", report.native_scratch_available_bytes);
+    number("coordinate_domain_limit_u64", report.coordinate_domain_limit_u64);
+    number("proof_message_count_limit", report.proof_message_count_limit);
+    number("maximum_message_string_bytes_limit", report.maximum_message_string_bytes_limit);
+    number("proof_artifact_wire_limit_bytes", report.proof_artifact_wire_limit_bytes);
+    number("artifact_disk_available_bytes", report.artifact_disk_available_bytes);
+    json_bool(out, "scratch_artifact_same_filesystem", report.scratch_artifact_same_filesystem);
+    number("shared_scratch_artifact_available_bytes", report.shared_scratch_artifact_available_bytes);
+    out << "  \"lasso_workspace_profile\": [";
+    for (std::size_t index = 0; index < report.lasso_workspace_profile.size(); ++index) {
+        const GatLassoWorkspaceProfile& family = report.lasso_workspace_profile[index];
+        const NativeLassoCapacityProfile& workspace = family.workspace;
+        if (index != 0) out << ',';
+        out << "{\"family_id\":\"" << json_escape(family.family_id) << "\",\"workspace\":{";
+        bool first = true;
+        const auto workspace_number = [&out, &first](const char* key, const std::uint64_t value) {
+            if (!first) out << ',';
+            first = false;
+            out << '\"' << key << "\":" << value;
+        };
+        workspace_number("padded_queries", workspace.padded_queries);
+        workspace_number("table_domain", workspace.table_domain);
+        workspace_number("full_domain", workspace.full_domain);
+        workspace_number("rows", workspace.rows);
+        workspace_number("columns", workspace.columns);
+        workspace_number("row_commitment_chunk_count", workspace.row_commitment_chunk_count);
+        workspace_number("booleanity_rounds", workspace.booleanity_rounds);
+        workspace_number("onehot_rounds", workspace.onehot_rounds);
+        workspace_number("lookup_rounds", workspace.lookup_rounds);
+        workspace_number("hyrax_matrix_masked_openings", workspace.hyrax_matrix_masked_openings);
+        workspace_number("hyrax_l_qry_tensor_openings", workspace.hyrax_l_qry_tensor_openings);
+        if (!first) out << ',';
+        first = false;
+        out << "\"t2_booleanity\":" << bool_json(workspace.t2_booleanity);
+        workspace_number("private_witness_entries", workspace.private_witness_entries);
+        workspace_number("private_witness_element_bytes", workspace.private_witness_element_bytes);
+        workspace_number("private_witness_bytes", workspace.private_witness_bytes);
+        workspace_number("row_blinding_bytes", workspace.row_blinding_bytes);
+        workspace_number("row_commitment_bytes", workspace.row_commitment_bytes);
+        workspace_number("column_generator_bytes", workspace.column_generator_bytes);
+        workspace_number("row_fold_weights_bytes", workspace.row_fold_weights_bytes);
+        workspace_number("row_fold_values_bytes", workspace.row_fold_values_bytes);
+        workspace_number("onehot_query_bytes", workspace.onehot_query_bytes);
+        workspace_number("t2_column_one_bytes", workspace.t2_column_one_bytes);
+        workspace_number("onehot_heap_peak_bytes", workspace.onehot_heap_peak_bytes);
+        workspace_number("masked_opening_generator_bytes", workspace.masked_opening_generator_bytes);
+        workspace_number("masked_opening_coefficient_bytes", workspace.masked_opening_coefficient_bytes);
+        workspace_number("masked_opening_response_bytes", workspace.masked_opening_response_bytes);
+        workspace_number("row_ledger_retained_bytes", workspace.row_ledger_retained_bytes);
+        workspace_number("commit_peak_bytes", workspace.commit_peak_bytes);
+        workspace_number("booleanity_peak_bytes", workspace.booleanity_peak_bytes);
+        workspace_number("row_fold_peak_bytes", workspace.row_fold_peak_bytes);
+        workspace_number("opening_peak_bytes", workspace.opening_peak_bytes);
+        workspace_number("family_peak_bytes", workspace.family_peak_bytes);
+        out << "},\"logical_domain_entries\":" << family.logical_domain_entries
+            << ",\"row_commitment_chunk_count\":" << family.row_commitment_chunk_count
+            << ",\"row_commitment_chunk_entries\":" << family.row_commitment_chunk_entries
+            << ",\"booleanity_rounds\":" << family.booleanity_rounds
+            << ",\"a_query_challenges\":" << family.a_query_challenges
+            << ",\"onehot_rounds\":" << family.onehot_rounds
+            << ",\"lookup_rounds\":" << family.lookup_rounds
+            << ",\"hyrax_matrix_masked_openings\":" << family.hyrax_matrix_masked_openings
+            << ",\"hyrax_l_qry_tensor_openings\":" << family.hyrax_l_qry_tensor_openings
+            << ",\"row_commitment_wire_bytes_upper_bound\":" << family.row_commitment_wire_bytes_upper_bound
+            << ",\"family_message_count_upper_bound\":" << family.family_message_count_upper_bound
+            << ",\"family_wire_bytes_upper_bound\":" << family.family_wire_bytes_upper_bound << '}';
+    }
     out << "],\n";
     json_string(out, "proof_path", report.proof_path);
     json_bool(out, "full_relation_bound", report.full_relation_bound);
     json_bool(out, "ready", report.ready);
     json_string(out, "status", report.ready ? "READY" : "BLOCKED");
-    out << "  \"native_message_string_limit_bytes\": " << (1ULL << 26) << ",\n";
-    out << "  \"native_artifact_wire_limit_bytes\": " << (1ULL << 30) << ",\n";
     json_string(out, "reason", report.reason, false);
     out << "}\n";
     std::cout << out.str();
@@ -702,10 +982,17 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
+            const CapacityResourceSnapshot resource_snapshot = capacity_resource_snapshot(run_dir);
             const Graph graph = load_graph(cache_dir, config);
             const Model shape_model = Model::load_shape_only(bundle_dir);
             shape_model.validate_identity(config);
-            const GatCapacityReport report = inspect_gat_capacity(graph, shape_model, quant);
+            GatCapacityReport report = inspect_gat_capacity(graph, shape_model, quant);
+            report.host_memory_limit_bytes = resource_snapshot.host_headroom_bytes;
+            report.native_scratch_available_bytes = resource_snapshot.scratch_available_bytes;
+            report.artifact_disk_available_bytes = resource_snapshot.artifact_available_bytes;
+            report.scratch_artifact_same_filesystem = resource_snapshot.same_filesystem;
+            report.shared_scratch_artifact_available_bytes = resource_snapshot.shared_available_bytes;
+            finalize_gat_capacity_report(report);
             write_capacity_report(report, options.dataset, options.backend, quant.quant_cfg_id, rel_display(root, cache_dir + "/integrity.sha256"),
                                   rel_display(root, bundle_dir + "/integrity.sha256"));
             return report.ready ? 0 : 1;
@@ -785,7 +1072,8 @@ int main(int argc, char** argv) {
         const auto witness_begin = Clock::now();
         const ForwardResult forward = run_forward(graph, features, model, quant);
         if (!validate_relation(graph, features, model, quant, forward)) throw std::runtime_error("canonical GAT relation validation failed");
-        const GatCircuitPlan plan = build_gat_circuit_plan(graph, model, quant, forward);
+        const auto plan_owner = std::make_shared<const GatCircuitPlan>(build_gat_circuit_plan(graph, model, quant, forward));
+        const GatCircuitPlan& plan = *plan_owner;
         if (!plan.official_layered || plan.has_placeholder) throw std::runtime_error("official layered GAT circuit plan is unavailable");
         record.witness_ms = elapsed_ms(witness_begin, Clock::now());
 
@@ -807,7 +1095,8 @@ int main(int argc, char** argv) {
         record.registration_path = run_rel + "/model_registration.json";
         record.prover_secret_path = run_rel + "/com_W.prover.secret";
 
-        VerifierContext context = make_verifier_context(graph, features, quant, tables, forward.logits, registration, plan, record.privacy_profile);
+        VerifierContext context = make_verifier_context(graph, features, quant, tables, forward.logits, registration, plan_owner,
+                                                        record.privacy_profile);
         std::string artifact_limit_reason;
         const std::uint64_t artifact_wire_limit =
             gat_proof_artifact_wire_limit(context, &artifact_limit_reason);
@@ -829,7 +1118,8 @@ int main(int argc, char** argv) {
         write_verifier_context(run_dir + "/verifier_context.bin", context);
 
         const auto prove_begin = Clock::now();
-        const ProveResult proved = prove_gat(plan, graph, features, model, quant, forward, registration, record.privacy_profile);
+        ProveResult proved = prove_gat(plan_owner, graph, features, model, quant, forward, registration, context,
+                                      record.privacy_profile);
         record.prove_total_ms = elapsed_ms(prove_begin, Clock::now());
         record.commitment_ms = proved.commitment_ms;
         record.self_verify_ms = proved.self_verify_ms;
@@ -849,6 +1139,7 @@ int main(int argc, char** argv) {
         if (!proved.artifact.write(artifact_file, artifact_wire_limit,
                                    &artifact_reason))
             throw std::runtime_error("proof artifact serialization failed: " + artifact_reason);
+        proved.artifact = GatProofArtifact{};
         GatProofArtifact artifact;
         if (!GatProofArtifact::read(artifact_file, artifact, artifact_wire_limit,
                                     &artifact_reason))

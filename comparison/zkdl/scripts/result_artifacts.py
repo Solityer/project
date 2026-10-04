@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -588,6 +589,20 @@ def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
         raise ArtifactError("proof size is not an integer") from exc
     if proof_size <= 0 or proof_size != proof_path.stat().st_size or record_size != proof_size:
         raise ArtifactError("proof artifact size is not consistently bound")
+    for field in ("commitment_time_seconds", "prove_time_seconds", "verify_time_seconds"):
+        metric_values: list[float] = []
+        for source_name, source in (("record", record), ("envelope", envelope)):
+            if field not in source:
+                raise ArtifactError(f"{source_name} is missing {field}")
+            try:
+                value = float(source[field])
+            except (TypeError, ValueError) as exc:
+                raise ArtifactError(f"{source_name} has invalid {field}") from exc
+            if not math.isfinite(value) or value < 0.0:
+                raise ArtifactError(f"{source_name} has non-finite or negative {field}")
+            metric_values.append(value)
+        if metric_values[0] != metric_values[1]:
+            raise ArtifactError(f"record/envelope mismatch for {field}")
     if record.get("proof_scope") != envelope.get("proof_scope"):
         raise ArtifactError("record/envelope proof scope mismatch")
     for field in ("verifier_reads_witness", "silent_fallback"):

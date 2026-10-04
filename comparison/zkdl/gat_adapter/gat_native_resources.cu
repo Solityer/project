@@ -43,6 +43,16 @@ void set_error(std::string *error, const std::string &message) {
     if (error) *error = message;
 }
 
+bool checked_resource_u32(std::uint64_t value, std::uint32_t &converted, const std::string &label, std::string *error,
+                          bool allow_zero = false) {
+    if ((!allow_zero && value == 0U) || value > kMaxNativeLogicalDomain || value > std::numeric_limits<std::uint32_t>::max()) {
+        set_error(error, "BLOCKED: " + label + " exceeds authenticated native u32 bounds");
+        return false;
+    }
+    converted = static_cast<std::uint32_t>(value);
+    return true;
+}
+
 bool read_bytes(const std::filesystem::path &path, std::vector<Byte> &bytes, std::string *error, std::uint64_t max_bytes = kMaxJsonResourceBytes) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -51,13 +61,19 @@ bool read_bytes(const std::filesystem::path &path, std::vector<Byte> &bytes, std
     }
     input.seekg(0, std::ios::end);
     const std::streamoff size = input.tellg();
-    if (size < 0 || static_cast<std::uint64_t>(size) > max_bytes) {
+    if (size < 0) {
+        set_error(error, "BLOCKED: authenticated resource has invalid size: " + path.string());
+        return false;
+    }
+    const std::uint64_t byte_count = static_cast<std::uint64_t>(size);
+    if (byte_count > max_bytes || byte_count > std::numeric_limits<std::size_t>::max() ||
+        byte_count > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
         set_error(error, "BLOCKED: authenticated resource has invalid size: " + path.string());
         return false;
     }
     input.seekg(0, std::ios::beg);
-    bytes.resize(static_cast<std::size_t>(size));
-    if (!bytes.empty()) input.read(reinterpret_cast<char *>(bytes.data()), size);
+    bytes.resize(static_cast<std::size_t>(byte_count));
+    if (!bytes.empty()) input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(byte_count));
     if (!input && !bytes.empty()) {
         set_error(error, "BLOCKED: cannot read authenticated resource: " + path.string());
         return false;
@@ -655,7 +671,7 @@ bool parse_srs_chunk(const std::string &object, const std::string &family_id, st
         !json_u64_field(object, "degree", chunk.degree) || !json_u64_field(object, "point_size", point_size) || chunk.point_count == 0U || chunk.domain == 0U ||
         logical_domain == 0U || basis_domain == 0U || segment_size == 0U || segment_count == 0U || chunk.point_count != chunk.domain ||
         chunk.domain != basis_domain || segment_size != basis_domain || point_size != kG1Size || !power_of_two(chunk.domain) || !power_of_two(logical_domain) ||
-        logical_domain > kMaxNativeLogicalDomain || chunk.domain > kMaxSrsFramePoints ||
+        logical_domain > kMaxNativeLogicalDomain || chunk.domain > kMaxSrsFramePoints || segment_count > std::numeric_limits<std::size_t>::max() ||
         segment_count != (logical_domain + segment_size - 1U) / segment_size || chunk.degree < (chunk.domain == 1U ? 0U : chunk.domain - 1U) ||
         chunk.point_offset > std::numeric_limits<std::uint64_t>::max() - chunk.point_count) {
         set_error(error, "BLOCKED: SRS chunk logical/basis segment metadata is invalid");
@@ -665,7 +681,7 @@ bool parse_srs_chunk(const std::string &object, const std::string &family_id, st
     chunk.basis_domain = basis_domain;
     chunk.segment_size = segment_size;
     chunk.segment_count = segment_count;
-    chunk.point_size = static_cast<std::uint32_t>(point_size);
+    if (!checked_resource_u32(point_size, chunk.point_size, "SRS point size", error)) return false;
 
     if (chunk.point_offset != 0U) {
         set_error(error, "BLOCKED: native zkDL SRS chunk point_offset must be zero for prefix basis");
@@ -724,7 +740,7 @@ bool parse_srs_chunk(const std::string &object, const std::string &family_id, st
             !json_u64_field(segment_object, "basis_count", segment.basis_count) || segment.segment_index != index ||
             segment.logical_offset != expected_offset || segment.actual_length == 0U || segment.actual_length > segment_size ||
             segment.padded_length != segment_size || segment.basis_offset != 0U || segment.basis_count != basis_domain ||
-            expected_offset > logical_domain - segment.actual_length) {
+            segment.actual_length > logical_domain || expected_offset > logical_domain - segment.actual_length) {
             set_error(error, "BLOCKED: SRS chunk segment offset/length/basis coverage is invalid");
             return false;
         }
@@ -1168,11 +1184,11 @@ bool load_authenticated_model_registry(const Config &config, const Authenticated
         std::uint64_t segment_count = 0U;
         std::vector<std::uint64_t> logical_shape, padded_shape;
         if (!required_registry_string(object, "tensor_id", commitment.tensor_id, error) || !ids.insert(commitment.tensor_id).second ||
-            !json_u64_field(object, "domain_size", domain) || domain == 0U || domain > std::numeric_limits<std::uint32_t>::max() || !power_of_two(domain) ||
+            !json_u64_field(object, "domain_size", domain) || domain == 0U || domain > kMaxNativeLogicalDomain || !power_of_two(domain) ||
             !json_u64_field(object, "segment_binding_version", segment_binding_version) || segment_binding_version != 1U ||
             !json_u64_field(object, "segment_size", segment_size) || !json_u64_field(object, "segment_count", segment_count) || segment_size == 0U ||
-            segment_size > std::numeric_limits<std::uint32_t>::max() || !power_of_two(segment_size) || segment_count == 0U ||
-            segment_count > std::numeric_limits<std::uint32_t>::max() || segment_size > srs.basis_domain ||
+            segment_size > kMaxNativeLogicalDomain || !power_of_two(segment_size) || segment_count == 0U ||
+            segment_count > kMaxNativeLogicalDomain || segment_count > 4096U || segment_size > srs.basis_domain ||
             segment_size != std::min<std::uint64_t>(domain, srs.basis_domain) || segment_count != (domain + segment_size - 1U) / segment_size ||
             !json_string_field(object, "srs_manifest_digest", srs_manifest_text) || !json_string_field(object, "basis_digest", basis_text) ||
             !json_string_field(object, "segment_commitment_digest", vector_digest_text) || !canonical_digest_text(srs_manifest_text) ||
@@ -1194,15 +1210,16 @@ bool load_authenticated_model_registry(const Config &config, const Authenticated
             return false;
         }
         std::vector<std::string> segment_objects;
-        if (!json_object_array(object, "segment_commitments", segment_objects) || segment_objects.size() != static_cast<std::size_t>(segment_count)) {
+        if (segment_count > std::numeric_limits<std::size_t>::max() ||
+            !json_object_array(object, "segment_commitments", segment_objects) || segment_objects.size() != static_cast<std::size_t>(segment_count)) {
             set_error(error, "BLOCKED: model registry tensor lacks the complete ordered segment vector: " + commitment.tensor_id);
             return false;
         }
-        commitment.segment_binding_version = static_cast<std::uint32_t>(segment_binding_version);
-        commitment.segment_size = static_cast<std::uint32_t>(segment_size);
-        commitment.segment_count = static_cast<std::uint32_t>(segment_count);
+        if (!checked_resource_u32(segment_binding_version, commitment.segment_binding_version, "model segment binding version", error) ||
+            !checked_resource_u32(segment_size, commitment.segment_size, "model segment size", error) ||
+            !checked_resource_u32(segment_count, commitment.segment_count, "model segment count", error)) return false;
         commitment.visibility = 2U;
-        commitment.domain_size = static_cast<std::uint32_t>(domain);
+        if (!checked_resource_u32(domain, commitment.domain_size, "model commitment domain", error)) return false;
         commitment.srs_manifest_digest = srs.manifest_digest;
         if (!resource_parse_digest(basis_text, commitment.basis_digest) || !resource_parse_digest(vector_digest_text, commitment.segment_commitment_digest)) {
             set_error(error, "BLOCKED: model registry tensor segment digest is not canonical: " + commitment.tensor_id);
@@ -1228,8 +1245,8 @@ bool load_authenticated_model_registry(const Config &config, const Authenticated
                   resource_field_string(segment_object, "commitment", "hex", segment_commitment_text)) ||
                 !parse_hex_bytes(segment_commitment_text, kG1Size, segment.commitment) || !model_commitment_valid(segment.commitment) ||
                 segment_index != index || logical_offset != index * segment_size || actual_length == 0U || actual_length > segment_size ||
-                padded_length != segment_size || padding_length != segment_size - actual_length || actual_length > std::numeric_limits<std::uint32_t>::max() ||
-                padded_length > std::numeric_limits<std::uint32_t>::max() || padding_length > std::numeric_limits<std::uint32_t>::max() ||
+                padded_length != segment_size || padding_length != segment_size - actual_length || actual_length > kMaxNativeLogicalDomain ||
+                padded_length > kMaxNativeLogicalDomain || padding_length > kMaxNativeLogicalDomain || segment_index > 4095U ||
                 logical_offset > std::numeric_limits<std::uint64_t>::max() - actual_length || segment_commitment_text.size() != kG1Size * 2U ||
                 !std::all_of(segment_commitment_text.begin(), segment_commitment_text.end(),
                              [](char c) { return std::isdigit(static_cast<unsigned char>(c)) || (c >= 'a' && c <= 'f'); })) {
@@ -1237,11 +1254,11 @@ bool load_authenticated_model_registry(const Config &config, const Authenticated
                 return false;
             }
             std::copy(frame_digest.begin(), frame_digest.end(), segment.frame_digest.begin());
-            segment.segment_index = static_cast<std::uint32_t>(segment_index);
+            if (!checked_resource_u32(segment_index, segment.segment_index, "model segment index", error, true) ||
+                !checked_resource_u32(actual_length, segment.actual_length, "model segment actual length", error) ||
+                !checked_resource_u32(padded_length, segment.padded_length, "model segment padded length", error) ||
+                !checked_resource_u32(padding_length, segment.padding_length, "model segment padding length", error, true)) return false;
             segment.logical_offset = logical_offset;
-            segment.actual_length = static_cast<std::uint32_t>(actual_length);
-            segment.padded_length = static_cast<std::uint32_t>(padded_length);
-            segment.padding_length = static_cast<std::uint32_t>(padding_length);
             commitment.segment_commitments.push_back(std::move(segment));
         }
         Digest expected_vector_digest{};

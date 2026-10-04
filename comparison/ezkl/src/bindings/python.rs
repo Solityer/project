@@ -1350,7 +1350,7 @@ fn deploy_evm(
     })
 }
 
-#[cfg(feature = "reusable-verifier")]
+#[cfg(all(feature = "eth", feature = "reusable-verifier"))]
 /// Registers a VKA on the EZKL reusable verifier contract
 ///
 /// Arguments
@@ -1507,7 +1507,7 @@ fn ezkl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(deploy_evm, m)?)?;
     m.add_function(wrap_pyfunction!(verify_evm, m)?)?;
     m.add_function(wrap_pyfunction!(encode_evm_calldata, m)?)?;
-    #[cfg(feature = "reusable-verifier")]
+    #[cfg(all(feature = "eth", feature = "reusable-verifier"))]
     m.add_function(wrap_pyfunction!(register_vka, m)?)?;
     Ok(())
 }

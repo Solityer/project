@@ -18,7 +18,8 @@ from common import ChainError, REPORT_SCHEMA, assert_fresh_files, baseline_root,
 def smoke_binary(root: Path, backend: str = "cpu") -> Path:
     if backend != "cpu":
         raise ChainError("only the CPU formal smoke is supported")
-    candidate = root / "build" / "cpu-tests" / "tests" / "gat_adapter_smoke"
+    override = os.environ.get("ZKGPT_PREFLIGHT_SMOKE_BINARY")
+    candidate = local_path(root, override, "CPU formal smoke executable") if override else root / "build" / "cpu-tests" / "tests" / "gat_adapter_smoke"
     if candidate.exists():
         require_regular(candidate, "CPU formal smoke executable")
         if not os.access(candidate, os.X_OK):
@@ -123,7 +124,7 @@ def _run_streaming(command: Sequence[str], cwd: Path, label: str,
     return result
 
 
-def run_tiny_formal(root: Path, backend: str) -> Dict[str, Any]:
+def run_tiny_formal(root: Path, backend: str, retain_dir: str = "") -> Dict[str, Any]:
     if backend != "cpu":
         raise ChainError("tiny formal preflight is CPU-only")
     smoke = smoke_binary(root, backend)
@@ -138,7 +139,13 @@ def run_tiny_formal(root: Path, backend: str) -> Dict[str, Any]:
         raise ChainError("ZKGPT_PREFLIGHT_TINY_TIMEOUT_SECONDS must be numeric") from exc
     if timeout <= 0:
         raise ChainError("ZKGPT_PREFLIGHT_TINY_TIMEOUT_SECONDS must be positive")
-    fresh = Path(tempfile.mkdtemp(prefix=".formal-preflight-", dir=str(results_dir)))
+    if retain_dir:
+        fresh = local_path(root, retain_dir, "tiny formal evidence directory")
+        if not fresh.parent.is_dir():
+            raise ChainError(f"tiny formal evidence parent directory does not exist: {fresh.parent}")
+        fresh.mkdir()
+    else:
+        fresh = Path(tempfile.mkdtemp(prefix=".formal-preflight-", dir=str(results_dir)))
     started_ns = time.time_ns()
     keep_fresh = False
     stage = "smoke"
@@ -224,6 +231,7 @@ def run_tiny_formal(root: Path, backend: str) -> Dict[str, Any]:
             "identity": identity, "files": files,
             "smoke_binary": {"path": relative_path(root, smoke, "smoke executable"), **smoke_fp},
             "verifier_binary": {"path": relative_path(root, verifier, "verifier executable"), **verifier_fp},
+            "retained_evidence_directory": relative_path(root, fresh, "tiny formal evidence directory") if retain_dir else "",
         }
     except Exception:
         keep_fresh = True
@@ -231,21 +239,23 @@ def run_tiny_formal(root: Path, backend: str) -> Dict[str, Any]:
     finally:
         if keep_fresh:
             print(f"PREFLIGHT_PARTIAL_DIAGNOSTICS stage={stage} directory={fresh}", file=sys.stderr)
-        else:
-
+        elif not retain_dir:
             shutil.rmtree(fresh, ignore_errors=False)
 
 
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("cpu",), default="cpu")
+    parser.add_argument("--retain-dir", default="", help="preserve successful proof, fixture, logs, and verifier report in this new baseline-relative directory")
     args = parser.parse_args(list(argv))
     try:
-        result = run_tiny_formal(baseline_root(), args.backend)
+        result = run_tiny_formal(baseline_root(), args.backend, args.retain_dir)
     except (ChainError, OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"DEVELOPMENT_E2E_FAILED: {exc}", file=sys.stderr)
         return 2
     print(f"DEVELOPMENT_E2E_OK backend={result['backend']} independent_verifier=true")
+    if result["retained_evidence_directory"]:
+        print(f"PREFLIGHT_RETAINED_EVIDENCE directory={result['retained_evidence_directory']}")
     return 0
 
 if __name__ == "__main__":

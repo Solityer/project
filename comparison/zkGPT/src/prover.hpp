@@ -68,6 +68,7 @@ public:
     const layeredCircuit& activeCircuit() const { return native_circuit != nullptr ? *native_circuit : C; }
     vector<vector<F>> val;        // the output of each gate
     const std::vector<zkgpt::NativeFieldVector>* native_values = nullptr;
+    const zkgpt::NativeFieldView* native_terminal_values = nullptr;
     std::function<F(u64)> native_input_value_at;
     F getCirValue(u8 layer_id, const zkgpt::NativeVector<u64> &ori, u64 u);
     u64 proof_size;
