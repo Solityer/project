@@ -175,6 +175,7 @@ payload = {
     "build_environment_sha256": environment_digest,
     **native,
 }
+receipt.parent.mkdir(parents=True, exist_ok=True)
 receipt.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 print(f"[ezkl-formal] wrote current GPU build receipt {receipt}")
 PY
@@ -206,6 +207,7 @@ payload = {
     "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
     "cargo": subprocess.check_output(["cargo", "--version"], text=True).strip(),
 }
+receipt.parent.mkdir(parents=True, exist_ok=True)
 receipt.write_text(json.dumps(payload, indent=2) + "\n")
 print(f"wrote {receipt}")
 PY

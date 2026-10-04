@@ -85,8 +85,12 @@ def files_under(paths: Iterable[Path], root: Path) -> list[dict[str, object]]:
         if directory.is_symlink() or not directory.is_dir():
             fail(f"asset directory is missing: {directory}")
         for path in sorted(directory.rglob("*")):
-            if path.is_symlink() or not path.is_file():
-                fail(f"asset tree contains a symlink/non-file: {path}")
+            if path.is_symlink():
+                fail(f"asset tree contains a symlink: {path}")
+            if path.is_dir():
+                continue
+            if not path.is_file():
+                fail(f"asset tree contains a non-file: {path}")
             entries.append({
                 "path": path.relative_to(root).as_posix(),
                 "bytes": path.stat().st_size,

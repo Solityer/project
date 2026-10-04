@@ -18,6 +18,7 @@ from common import (
     BACKENDS,
     FORMAL_BACKENDS,
     DATASETS,
+    CAPACITY_PROOF_PATH,
     PREFLIGHT_SCHEMA,
     ChainError,
     atomic_write_json,
@@ -537,7 +538,7 @@ def run_capacity(root: Path, dataset: str, backend: str) -> Dict[str, Any]:
     if type(payload.get("full_relation_bound")) is not bool or not isinstance(payload.get("proof_path"), str) or not isinstance(payload.get("reason"), str):
         raise ChainError(f"capacity has invalid path or relation metadata for {dataset}/{backend}")
     validate_capacity_numbers(payload, dataset, require_fits=payload["ready"])
-    if payload.get("status") == "READY" and (payload.get("proof_path") != "formal_native_masked_lasso_hyrax+native_masked_layered_gkr" or payload.get("full_relation_bound") is not True):
+    if payload.get("status") == "READY" and (payload.get("proof_path") != CAPACITY_PROOF_PATH or payload.get("full_relation_bound") is not True):
         raise ChainError(f"capacity selected an unsupported or incomplete full-GAT proof path for {dataset}/{backend}")
     if payload.get("status") == "READY" and payload.get("reason", "") != "":
         raise ChainError(f"capacity READY report carries a blocker reason for {dataset}/{backend}")

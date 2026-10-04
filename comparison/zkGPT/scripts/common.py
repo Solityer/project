@@ -31,6 +31,7 @@ REPORT_SCHEMA = "zkgpt-gat-independent-verifier-v3"
 EXECUTION_SCHEMA = "zkgpt-gat-execution-v2"
 RESOURCE_MANIFEST_SCHEMA = "zkgpt-gat-resource-manifest-v1"
 PREFLIGHT_SCHEMA = "zkgpt-gat-formal-preflight-v2"
+CAPACITY_PROOF_PATH = "formal_native_masked_lasso_hyrax+native_masked_layered_gkr"
 COLLECTED_SCHEMA = "zkgpt-gat-collected-results-v2"
 FINAL_SCHEMA = "zkgpt-gat-final-validation-v2"
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")

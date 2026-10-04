@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 from common import (
     DATASETS,
+    CAPACITY_PROOF_PATH,
     FORMAL_BACKENDS,
     PREFLIGHT_SCHEMA,
     RESOURCE_MANIFEST_SCHEMA,
@@ -49,7 +50,7 @@ def _validate_preflight(root: Path, backend: str, preflight: Dict[str, Any], res
     if not isinstance(capacities, dict) or set(capacities) != set(DATASETS):
         raise ChainError("formal preflight capacity matrix is incomplete")
     for dataset in DATASETS:
-        if not isinstance(capacities[dataset], dict) or (capacities[dataset].get("status") != "READY" or capacities[dataset].get("proof_path") != "native_layered_gkr" or capacities[dataset].get("full_relation_bound") is not True):
+        if not isinstance(capacities[dataset], dict) or (capacities[dataset].get("status") != "READY" or capacities[dataset].get("proof_path") != CAPACITY_PROOF_PATH or capacities[dataset].get("full_relation_bound") is not True):
             raise ChainError(f"formal preflight capacity is not READY for {dataset}")
     entry = preflight.get("backends", {}).get(backend)
     if not isinstance(entry, dict) or entry.get("ready") is not True:

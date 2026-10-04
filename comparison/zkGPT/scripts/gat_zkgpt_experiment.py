@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 from common import (
     BACKENDS,
     DATASETS,
+    CAPACITY_PROOF_PATH,
     EXECUTION_SCHEMA,
     PREFLIGHT_SCHEMA,
     REPORT_SCHEMA,
@@ -343,7 +344,7 @@ def validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resourc
     if entry.get("prover_fingerprint", {}).get("sha256") != sha256_file(prover) or entry.get("verifier_fingerprint", {}).get("sha256") != sha256_file(verifier):
         raise ChainError("formal preflight binary fingerprint is stale")
     capacities = preflight.get("capacity", {})
-    if set(capacities) != set(DATASETS) or any(not isinstance(capacities[d], dict) or (capacities[d].get("status") != "READY" or capacities[d].get("proof_path") != "native_layered_gkr" or capacities[d].get("full_relation_bound") is not True) for d in DATASETS):
+    if set(capacities) != set(DATASETS) or any(not isinstance(capacities[d], dict) or (capacities[d].get("status") != "READY" or capacities[d].get("proof_path") != CAPACITY_PROOF_PATH or capacities[d].get("full_relation_bound") is not True) for d in DATASETS):
         raise ChainError("formal preflight capacity matrix is incomplete")
 
 

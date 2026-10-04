@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from common import (
     DATASETS,
+    CAPACITY_PROOF_PATH,
     FORMAL_BACKENDS,
     PREFLIGHT_SCHEMA,
     RESOURCE_MANIFEST_SCHEMA,
@@ -112,7 +113,7 @@ def _validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resour
     capacities = preflight.get("capacity")
     if not isinstance(capacities, dict) or set(capacities) != set(DATASETS):
         raise ChainError("formal preflight capacity matrix is incomplete")
-    if any(not isinstance(capacities[d], dict) or (capacities[d].get("status") != "READY" or capacities[d].get("proof_path") != "native_layered_gkr" or capacities[d].get("full_relation_bound") is not True) for d in DATASETS):
+    if any(not isinstance(capacities[d], dict) or (capacities[d].get("status") != "READY" or capacities[d].get("proof_path") != CAPACITY_PROOF_PATH or capacities[d].get("full_relation_bound") is not True) for d in DATASETS):
         raise ChainError("formal preflight capacity is not READY for every dataset")
     for backend in backends:
         entry = preflight.get("backends", {}).get(backend)
