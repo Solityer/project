@@ -648,6 +648,10 @@ struct ProveResult {
     ProveStatus status = ProveStatus::REJECTED;
     std::string diagnostic;
     bool has_artifact = false;
+    double preparation_ms = 0.0;
+    double aux_commitment_ms = 0.0;
+    double lasso_query_commitment_ms = 0.0;
+    double lasso_family_commitment_ms = 0.0;
     double commitment_ms = 0.0;
     double self_verify_ms = 0.0;
     GatProofArtifact artifact;

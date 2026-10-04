@@ -15,7 +15,7 @@ def session_updates(dataset: str, session: str) -> dict[str, str]:
     if dataset not in DATASETS or not re.fullmatch(r'runs/[A-Za-z0-9_]+', session):
         raise ValueError('formal session/dataset identity is invalid')
     resources = session + '/resources'
-    return {'data_root': resources + '/data', 'cache_root': resources + '/cache', 'checkpoint_bundle': resources + '/checkpoints/' + dataset + '_gat', 'export_dir': session + '/' + dataset + '_cpu', 'static_table_descriptor': resources + '/canonical/tables/' + dataset + '_gat_static_tables.json', 'sorted_lookup_descriptor': resources + '/canonical/tables/' + dataset + '_gat_sorted_lookup.json', 'integer_bound_ledger': resources + '/canonical/ledgers/' + dataset + '_gat_integer_ledger.json', 'srs_id': Path(session).name + '_' + dataset + '_formal_srs', 'srs_path': resources + '/srs/' + dataset, 'srs_manifest_digest': 'CEREMONY_REQUIRED', 'model_registry_path': resources + '/verifier_registry/' + dataset + '.json', 'verifier_registry_digest': 'CEREMONY_REQUIRED', 'model_blinder_sidecar_path': resources + '/model_blinders/' + dataset + '.json', 'model_blinder_sidecar_digest': 'CEREMONY_REQUIRED', 'auto_prepare_dataset': 'false', 'dump_trace': 'false'}
+    return {'data_root': resources + '/data', 'cache_root': resources + '/cache', 'checkpoint_bundle': resources + '/checkpoints/' + dataset + '_gat', 'export_dir': session + '/' + dataset, 'static_table_descriptor': resources + '/canonical/tables/' + dataset + '_gat_static_tables.json', 'sorted_lookup_descriptor': resources + '/canonical/tables/' + dataset + '_gat_sorted_lookup.json', 'integer_bound_ledger': resources + '/canonical/ledgers/' + dataset + '_gat_integer_ledger.json', 'srs_id': Path(session).name + '_' + dataset + '_formal_srs', 'srs_path': resources + '/srs/' + dataset, 'srs_manifest_digest': 'CEREMONY_REQUIRED', 'model_registry_path': resources + '/verifier_registry/' + dataset + '.json', 'verifier_registry_digest': 'CEREMONY_REQUIRED', 'model_blinder_sidecar_path': resources + '/model_blinders/' + dataset + '.json', 'model_blinder_sidecar_digest': 'CEREMONY_REQUIRED', 'auto_prepare_dataset': 'false', 'dump_trace': 'false'}
 
 def snapshot(root: Path, session: Path, dataset: str, source_config: Path | None = None,
              expected_input_identity: dict[str, object] | None = None) -> Path:
@@ -78,7 +78,7 @@ def main() -> int:
             raise SystemExit('formal-session: noncanonical dataset')
         config_path = snapshot(root, session, dataset, source_config)
         (session / 'formal_config.path').write_text(config_path.relative_to(root).as_posix() + '\n')
-        (session / 'formal_run.path').write_text(relative + '/' + dataset + '_cpu\n')
+        (session / 'formal_run.path').write_text(relative + '/' + dataset + '\n')
     else:
         report_path = session / 'dataset_prerequisites.json'
         if report_path.is_symlink() or not report_path.is_file():

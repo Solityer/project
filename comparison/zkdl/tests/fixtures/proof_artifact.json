@@ -1,5 +1,5 @@
 {
-  "schema": "zkDL_gat_proof_envelope_v1",
+  "schema": "zkDL_gat_proof_envelope_v2",
   "statement_id": "0000000000000000000000000000000000000000000000000000000000000000",
   "proof_id": "fixture-proof-cora-cpu",
   "backend": "cpu",
@@ -13,6 +13,7 @@
   "integer_bound_ledger_descriptor_digest": "UNAVAILABLE",
   "proof_size_bytes": 128,
   "commitment_size_bytes": 256,
+  "commitment_time_semantics": "native_tensor_commitments",
   "commitment_time_seconds": 0.01,
   "prove_time_seconds": 0.02,
   "verify_time_seconds": 0.01,

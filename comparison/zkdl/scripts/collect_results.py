@@ -14,7 +14,7 @@ import csv
 import json
 from pathlib import Path
 
-from result_artifacts import ArtifactError, audit_run, require_exact_matrix, require_selected_backend
+from result_artifacts import ArtifactError, audit_run, require_formal_five
 
 
 def main() -> int:
@@ -28,16 +28,6 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("results/collected.json"))
     parser.add_argument("--fixture-mode", action="store_true",
                         help="audit explicitly-marked tiny CPU fixture artifacts, never formal results")
-    parser.add_argument(
-        "--require-matrix",
-        action="store_true",
-        help="require exactly the five canonical datasets on both CPU and GPU",
-    )
-    parser.add_argument(
-        "--require-selected-backend",
-        choices=("cpu", "gpu"),
-        help="require exactly one fully audited cell for each canonical dataset on this backend",
-    )
     args = parser.parse_args()
     if args.runs is not None and args.runs_dir is not None:
         raise SystemExit("collect-results: --runs and --runs-dir are mutually exclusive")
@@ -53,6 +43,8 @@ def main() -> int:
         raise SystemExit("collect-results: runs directory must be baseline-local")
     if not runs.is_dir():
         raise SystemExit(f"collect-results: runs directory is missing: {runs}")
+    if not args.fixture_mode and (runs.parent != root / "runs" or not runs.name.startswith("formal_")):
+        raise SystemExit("collect-results: formal collection requires one fresh runs/formal_<session> directory")
     records = sorted(runs.rglob("run.record"))
     if not records:
         raise SystemExit("collect-results: no production run records")
@@ -65,32 +57,31 @@ def main() -> int:
             failures.append(str(exc))
     if failures:
         raise SystemExit("collect-results: " + "; ".join(failures))
-    if args.require_matrix and args.require_selected_backend:
-        raise SystemExit("collect-results: --require-matrix and --require-selected-backend are mutually exclusive")
-    if args.require_matrix:
-        try:
-            require_exact_matrix(rows)
-        except ArtifactError as exc:
-            raise SystemExit(f"collect-results: {exc}") from exc
-    elif args.require_selected_backend:
-        try:
-            require_selected_backend(rows, args.require_selected_backend)
-        except ArtifactError as exc:
-            raise SystemExit(f"collect-results: {exc}") from exc
+    try:
+        require_formal_five(rows)
+    except ArtifactError as exc:
+        raise SystemExit(f"collect-results: {exc}") from exc
     order = {"cora": 0, "citeseer": 1, "pubmed": 2, "ppi": 3, "ogbn_arxiv": 4}
-    backend_order = {"cpu": 0, "gpu": 1}
-    rows.sort(key=lambda row: (order[row["dataset"]], backend_order[row["backend"]]))
+    rows.sort(key=lambda row: order[row["dataset"]])
     output = (root / args.output).resolve()
     try:
         output.relative_to(root.resolve())
     except ValueError:
         raise SystemExit("collect-results: output escapes baseline root")
+    runs_relative = runs.relative_to(root.resolve()).as_posix()
+    output_relative = output.relative_to(root.resolve()).as_posix()
+    if not args.fixture_mode:
+        expected_output = f"results/{runs.name}/collected.json"
+        if output_relative != expected_output:
+            raise SystemExit(f"collect-results: formal summary must be written to {expected_output}")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps({
-            "schema": "zkDL_gat_result_collection_v2",
-            "mode": "matrix" if args.require_matrix else "selected_backend" if args.require_selected_backend else "unconstrained",
-            "selected_backend": args.require_selected_backend,
+            "schema": "zkDL_gat_result_collection_v3",
+            "mode": "fixture" if args.fixture_mode else "formal_single_path",
+            "session_id": runs.name,
+            "runs_path": runs_relative,
+            "collection_path": output_relative,
             **({"fixture_mode": True} if args.fixture_mode else {}),
             "rows": rows,
         }, indent=2, sort_keys=True) + "\n",

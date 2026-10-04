@@ -1853,9 +1853,13 @@ struct ProverContext {
     std::set<std::string> graph_public_tensor_ids;
     std::map<std::string, std::vector<FrWire>> public_tensor_values;
     std::map<std::string, SegmentedTensorProvider> public_tensor_providers;
-    // Optional native-core timing sink for the relation's commitment/opening
-    // stage.  It is instrumentation only and never affects proof equations.
+    // Optional native-core timing sink for the actual per-inference tensor
+    // commitment operations. It is instrumentation only and never affects
+    // proof equations.
     double* commitment_open_time_seconds = nullptr;
+    // Portion of commitment_open_time_seconds spent in relation::prove;
+    // native-core subtracts this interval from Prove Time exactly once.
+    double* relation_commitment_time_seconds = nullptr;
     // Native core sets this for a requested CUDA proof.  The relation layer
     // currently fails closed until the complete GAT relation (not only a
     // primitive) is implemented on native CUDA cryptographic kernels.
@@ -7920,17 +7924,24 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         }
         proof.statement.public_output_digest = expected_public_digest;
         proof.hiding_commitment_records.clear();
-        const auto commitment_open_start = std::chrono::steady_clock::now();
         for (const auto& tensor : context.tensors) {
             SegmentedTensorProvider provider;
             if (!tensor.segmented(context.ipa_generators.size(), provider, error)) return false;
             CommitmentWire commitment;
             SegmentCommitmentMaterial material;
             const FrWire randomness = relation_blinding_scalar(tensor, context.blinding_scalars);
-            if (!zktr_build_segment_commitment_material(
+            const auto commitment_start = std::chrono::steady_clock::now();
+            const bool commitment_built = zktr_build_segment_commitment_material(
                     tensor.id, tensor.visibility, provider, context.ipa_generators,
                     context.ipa_blinding_generator, context.ipa_u_generator, randomness,
-                    proof.statement, commitment, material, error)) return false;
+                    proof.statement, commitment, material, error);
+            const double commitment_seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - commitment_start).count();
+            if (context.commitment_open_time_seconds != nullptr)
+                *context.commitment_open_time_seconds += commitment_seconds;
+            if (context.relation_commitment_time_seconds != nullptr)
+                *context.relation_commitment_time_seconds += commitment_seconds;
+            if (!commitment_built) return false;
             segment_blinding_scalars[tensor.id] = material.blinders;
             proof.commitments.push_back(commitment);
         }
@@ -8163,9 +8174,6 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         serialize_hidden_matmul_opening(proof.public_output_opening, public_bytes);
         zkdl::serialize_pedersen_scalar_value(proof.public_output_binding, public_bytes);
         transcript.absorb("gat.public_output.opening", public_bytes);
-        if (context.commitment_open_time_seconds != nullptr)
-            *context.commitment_open_time_seconds = std::chrono::duration<double>(
-                std::chrono::steady_clock::now() - commitment_open_start).count();
         proof.transcript_digest = transcript.digest();
         return true;
     } catch (const std::exception& exception) {

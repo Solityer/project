@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "zkDL_gat_proof_artifact_v1",
+  "$id": "zkDL_gat_proof_artifact_v2",
   "title": "zkDL GAT proof artifact metadata",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "statement_id", "proof_id", "backend", "proof_scope", "native_core_api", "status", "static_table_descriptor_digest", "scale_chain_digest", "integer_bound_ledger_id", "integer_bound_ledger_digest", "integer_bound_ledger_descriptor_digest", "proof_size_bytes", "commitment_size_bytes", "commitment_time_seconds", "prove_time_seconds", "verify_time_seconds", "verifier_reads_witness", "gpu_kernel_executed", "silent_fallback", "output_bound", "error"],
+  "required": ["schema", "statement_id", "proof_id", "backend", "proof_scope", "native_core_api", "status", "static_table_descriptor_digest", "scale_chain_digest", "integer_bound_ledger_id", "integer_bound_ledger_digest", "integer_bound_ledger_descriptor_digest", "proof_size_bytes", "commitment_size_bytes", "commitment_time_semantics", "commitment_time_seconds", "prove_time_seconds", "verify_time_seconds", "verifier_reads_witness", "gpu_kernel_executed", "silent_fallback", "output_bound", "error"],
   "properties": {
-    "schema": {"const": "zkDL_gat_proof_envelope_v1"},
+    "schema": {"const": "zkDL_gat_proof_envelope_v2"},
     "statement_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "proof_id": {"type": "string", "minLength": 1},
     "backend": {"type": "string", "enum": ["cpu", "gpu"]},
@@ -20,6 +20,7 @@
     "integer_bound_ledger_descriptor_digest": {"type": "string", "pattern": "^(?:[0-9a-f]{64}|UNAVAILABLE)$"},
     "proof_size_bytes": {"type": "integer", "minimum": 0},
     "commitment_size_bytes": {"type": "integer", "minimum": 0},
+    "commitment_time_semantics": {"const": "native_tensor_commitments"},
     "commitment_time_seconds": {"type": "number", "minimum": 0},
     "prove_time_seconds": {"type": "number", "minimum": 0},
     "verify_time_seconds": {"type": "number", "minimum": 0},

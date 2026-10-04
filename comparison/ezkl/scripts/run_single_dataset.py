@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Internal per-dataset native runner for the hybrid formal chain and local CPU checks.
+"""Internal per-dataset native runner for the formal chain and local checks.
 
 Without ``--execute-formal`` this command is a non-executing plan.  A formal
 cell runs native setup first, then consumes an externally produced public
@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -70,7 +71,7 @@ DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", choices=DATASETS, required=True)
-    p.add_argument("--backend", choices=BACKENDS, required=True, help="native engine selection; GPU execution records a hybrid result")
+    p.add_argument("--backend", choices=BACKENDS, required=True, help="internal native engine selection")
     p.add_argument("--execute-formal", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
@@ -107,49 +108,100 @@ def baseline_relative(path: Path, label: str) -> str:
         abort(f"{label} is outside baseline root: {path}")
 
 
-def run_command(command: list[str], log_path: Path, *, phase: str, env: dict[str, str]) -> float:
-    print(f"[ezkl-formal] {phase}: {' '.join(command)}", flush=True)
-    start = time.monotonic()
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        bufsize=1,
-        start_new_session=(os.name == "posix"),
-    )
-    if process.stdout is None:
-        abort(f"{phase} subprocess has no output stream")
-    output_queue: queue.Queue[str | None] = queue.Queue()
+def _raise_on_sigterm(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt(f"received signal {signum}")
 
-    def read_output() -> None:
+
+def _terminate_native_process_group(process: subprocess.Popen[object]) -> None:
+    if os.name == "posix":
         try:
-            for line in process.stdout:
-                output_queue.put(line)
-        finally:
-            output_queue.put(None)
-
-    reader = threading.Thread(target=read_output, name=f"ezkl-{phase}-output", daemon=True)
-    reader.start()
-    start = time.monotonic()
-    with log_path.open("w") as log:
+            os.killpg(process.pid, 15)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        deadline = time.monotonic() + 5
         while True:
             try:
-                line = output_queue.get(timeout=20)
-            except queue.Empty:
-                elapsed_seconds = int(time.monotonic() - start)
-                print(f"[ezkl-formal] {phase} still running ({elapsed_seconds}s); live log: {log_path}", flush=True)
-                continue
-            if line is None:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
                 break
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            log.write(line)
-            log.flush()
-    reader.join(timeout=2)
-    returncode = process.wait()
+            if time.monotonic() >= deadline:
+                try:
+                    os.killpg(process.pid, 9)
+                except ProcessLookupError:
+                    pass
+                break
+            time.sleep(0.1)
+    elif process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    if process.poll() is None:
+        process.wait()
+
+
+def run_command(command: list[str], log_path: Path, *, phase: str, env: dict[str, str]) -> float:
+    print(f"[ezkl-formal] {phase}: {' '.join(command)}", flush=True)
+    previous_sigterm = signal.signal(signal.SIGTERM, _raise_on_sigterm)
+    start = time.monotonic()
+    process: subprocess.Popen[object] | None = None
+    reader: threading.Thread | None = None
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+            start_new_session=(os.name == "posix"),
+        )
+        if process.stdout is None:
+            abort(f"{phase} subprocess has no output stream")
+        output_queue: queue.Queue[str | None] = queue.Queue()
+
+        def read_output() -> None:
+            try:
+                for line in process.stdout:
+                    output_queue.put(line)
+            finally:
+                output_queue.put(None)
+
+        reader = threading.Thread(target=read_output, name=f"ezkl-{phase}-output", daemon=True)
+        reader.start()
+        with log_path.open("w") as log:
+            while True:
+                try:
+                    line = output_queue.get(timeout=20)
+                except queue.Empty:
+                    elapsed_seconds = int(time.monotonic() - start)
+                    print(f"[ezkl-formal] {phase} still running ({elapsed_seconds}s); live log: {log_path}", flush=True)
+                    continue
+                if line is None:
+                    break
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                log.write(line)
+                log.flush()
+        reader.join(timeout=2)
+        if reader.is_alive():
+            abort(f"{phase} output stream did not close after its leader exited")
+        returncode = process.wait()
+    except BaseException:
+        if process is not None:
+            print(f"[ezkl-formal] stopping {phase} process group after interruption or runner failure", file=sys.stderr, flush=True)
+            _terminate_native_process_group(process)
+        if reader is not None:
+            reader.join(timeout=5)
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
     elapsed = (time.monotonic() - start) * 1000.0
     if returncode != 0:
         abort(f"{phase} failed with exit code {returncode}; see {log_path}")
@@ -251,7 +303,7 @@ def validate_core_manifest(
 
 def print_plan(args: argparse.Namespace, config: Path, output: Path) -> None:
     print("formal execution not requested; no setup, statement wait, final, prove, verify or full dataset work was run")
-    print(f"dataset={args.dataset} native_backend={args.backend} result_backend={FORMAL_BACKEND if args.backend == 'gpu' else args.backend}")
+    print(f"dataset={args.dataset} native_backend={args.backend}")
     print(f"config={baseline_relative(config, 'config')}")
     print(f"output_dir={baseline_relative(output, 'output-dir')}")
     print("execution order: gat-prepare --phase setup -> independent public-statement producer -> gat-prepare --phase final -> gat-witness -> prove -> verify")
@@ -269,7 +321,7 @@ def main(
     output = ensure_relative_arg(
         args.output_dir,
         "output-dir",
-        ROOT / "runs" / "formal" / args.dataset / (FORMAL_BACKEND if args.backend == "gpu" else args.backend),
+        ROOT / "runs" / "formal" / args.dataset if formal_session_id is not None else ROOT / "runs" / "formal" / args.dataset / args.backend,
     )
     if not args.execute_formal:
         print_plan(args, config, output)
@@ -635,10 +687,7 @@ def main(
         "schema_version": 1,
         "status": status,
         "dataset": args.dataset,
-        "backend": FORMAL_BACKEND if args.backend == "gpu" else args.backend,
         "native_backend": args.backend,
-        "execution_mode": FORMAL_BACKEND if args.backend == "gpu" else "cpu",
-        "phase_backends": FORMAL_PHASE_BACKENDS if args.backend == "gpu" else {phase: {"cpu": True, "gpu": False} for phase in FORMAL_PHASE_BACKENDS},
         "proof_scope": "full_gat",
         "privacy_policy": "model_and_trace_hidden",
         "public_statement_mode": "external",
@@ -700,6 +749,10 @@ def main(
             result["build_environment_sha256"] = build_environment_sha256
             result["gpu_prover_record_sha256"] = gpu_prover_record_sha256
             result["independent_verifier_log_sha256"] = independent_verifier_log_sha256
+    else:
+        result["backend"] = args.backend
+        result["execution_mode"] = FORMAL_BACKEND if args.backend == "gpu" else "cpu"
+        result["phase_backends"] = FORMAL_PHASE_BACKENDS if args.backend == "gpu" else {phase: {"cpu": True, "gpu": False} for phase in FORMAL_PHASE_BACKENDS}
     (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
     return 0

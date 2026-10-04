@@ -478,7 +478,7 @@ struct PublicStatement {
 };
 
 struct ProofEnvelope {
-    std::string schema_id = "zkDL_gat_proof_envelope_v1";
+    std::string schema_id = "zkDL_gat_proof_envelope_v2";
     std::string statement_id;
     std::string proof_id;
     std::string backend;
@@ -492,6 +492,7 @@ struct ProofEnvelope {
     std::string integer_bound_ledger_descriptor_digest;
     std::uint64_t proof_size_bytes = 0;
     std::uint64_t commitment_size_bytes = 0;
+    std::string commitment_time_semantics = "native_tensor_commitments";
     double commitment_time_seconds = 0.0;
     double prove_time_seconds = 0.0;
     double verify_time_seconds = 0.0;
@@ -516,6 +517,7 @@ struct RunRecord {
     std::string integer_bound_ledger_descriptor_digest;
     std::uint64_t proof_size_bytes = 0;
     std::uint64_t commitment_size_bytes = 0;
+    std::string commitment_time_semantics = "native_tensor_commitments";
     double commitment_time_seconds = 0.0;
     double prove_time_seconds = 0.0;
     double verify_time_seconds = 0.0;

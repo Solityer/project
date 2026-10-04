@@ -17,11 +17,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from common import (
-    BACKENDS,
     DATASETS,
     CAPACITY_PROOF_PATH,
     EXECUTION_SCHEMA,
     PREFLIGHT_SCHEMA,
+    PAPER_TIMING_SEMANTICS,
     REPORT_SCHEMA,
     ChainError,
     artifact_fields,
@@ -41,8 +41,12 @@ from common import (
     paper_metrics,
     invalidate_results,
     run_logged,
+    run_captured,
     local_path,
-    new_run_nonce,
+    derive_run_nonce,
+    formal_preflight_path,
+    require_formal_session,
+    runtime_source_sha256,
     relative_path,
     require_bool,
     require_circuit_id,
@@ -59,15 +63,6 @@ from common import (
     verifier_binary,
     verify_build_provenance,
 )
-
-
-def selection(raw: str, allowed: Sequence[str], label: str) -> Tuple[str, ...]:
-    if raw == "all":
-        return tuple(allowed)
-    values = tuple(item.strip() for item in raw.split(",") if item.strip())
-    if not values or len(set(values)) != len(values) or any(item not in allowed for item in values):
-        raise ChainError(f"{label} must be all or a comma-separated list of supported values")
-    return values
 
 
 def require_run_file(root: Path, run_path: Path, relative: Any, description: str) -> Tuple[str, Path]:
@@ -158,6 +153,8 @@ def ensure_registration(
     run_relative: str,
     run_path: Path,
     config: Mapping[str, str],
+    session_id: str,
+    session_manifest_sha256: str,
 ) -> Tuple[str, str, Dict[str, Any]]:
     """Reuse or create one identity-checked long-lived model registration."""
 
@@ -169,9 +166,8 @@ def ensure_registration(
         raise ChainError(f"incomplete model registration pair for {dataset}/{backend}")
     if not registration_exists or load_json(registration_path).get("schema") != "zkgpt-gat-model-registration-v2":
         command = [sys.executable, str(root / "scripts" / "register_model.py"),
-                   "--dataset", dataset, "--backend", backend]
-        registered = subprocess.run(command, cwd=str(root), text=True,
-                                    capture_output=True, check=False)
+                   "--dataset", dataset]
+        registered = run_captured(command, root)
         atomic_write_text(run_path / "runner-registration.stdout.log", registered.stdout, root)
         atomic_write_text(run_path / "runner-registration.stderr.log", registered.stderr, root)
         if registered.returncode != 0:
@@ -198,12 +194,18 @@ def _enrich_result(
     run_nonce: str,
     run_started_ns: int,
     resource_manifest_digest: str,
+    session_id: str,
+    session_manifest_sha256: str,
 ) -> Dict[str, Any]:
     artifact_fp = file_fingerprint(artifact, "proof artifact")
     result["artifact_sha256"] = artifact_fp["sha256"]
     result["artifact_size_bytes"] = artifact_fp["size_bytes"]
     result["artifact_mtime_ns"] = artifact_fp["mtime_ns"]
-    result["run_nonce"] = run_nonce
+    if (result.get("session_id") != session_id or result.get("run_nonce") != run_nonce or
+            result.get("session_manifest_sha256") != session_manifest_sha256):
+        raise ChainError("native result did not preserve the current formal session binding")
+    if result.get("paper_timing_semantics") != PAPER_TIMING_SEMANTICS:
+        raise ChainError("native result uses stale paper timing semantics")
     result["run_started_unix_ns"] = run_started_ns
     result["resource_manifest_sha256"] = resource_manifest_digest
     for key in ("config_sha256", "quantization_sha256", "cache_manifest_sha256",
@@ -218,7 +220,9 @@ def _enrich_result(
     return result
 
 
-def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any], resource_manifest_digest: str) -> None:
+def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any], resource_manifest_digest: str,
+             session_id: str, session: Mapping[str, Any], session_manifest_sha256: str,
+             preflight_path: Path) -> None:
     capability = formal_backend_capability(backend)
     if not capability["supported"] or backend not in FORMAL_BACKENDS:
         raise ChainError(capability["reason"])
@@ -226,21 +230,30 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     if config.get("privacy_policy") != "model_and_trace_hidden" or config.get("privacy_profile", "masked_full") not in ("masked_full", ""):
         raise ChainError(f"{dataset} config does not declare the strict privacy boundary")
     resource = resource_identity(root, dataset)
-    run_relative, run_path = run_directory(root, dataset, backend, config)
+    run_relative, run_path = run_directory(root, dataset, session_id, config)
     cleanup_run_outputs(root, run_path)
     run_started_ns = time.time_ns()
-    run_nonce = new_run_nonce()
+    run_nonce = derive_run_nonce(session_id, dataset)
     prover = build_binary(root, backend)
     verifier = verifier_binary(root, backend)
     prover_fp = binary_fingerprint(prover, "prover executable")
     verifier_fp = binary_fingerprint(verifier, "verifier executable")
     config_relative = relative_path(root, config_path, "dataset config")
     registration_relative, secret_relative, registration = ensure_registration(
-        root, dataset, backend, run_relative, run_path, config
+        root, dataset, backend, run_relative, run_path, config, session_id,
+        session_manifest_sha256
     )
     process_telemetry: Dict[str, Any] = {"prover": {}, "verifier": {}}
     prover_start = time.perf_counter()
-    completed_returncode = run_logged([str(prover), "--dataset", dataset, "--backend", backend, "--baseline-root", str(root), "--config", config_relative, "--registration", registration_relative, "--com-w-secret", secret_relative], root, run_path / "prover.stdout.log", run_path / "prover.stderr.log", f"{dataset}/{backend}/prover", process_telemetry["prover"])
+    completed_returncode = run_logged([
+        str(prover), "--dataset", dataset, "--backend", backend,
+        "--baseline-root", str(root), "--config", config_relative,
+        "--registration", registration_relative, "--com-w-secret", secret_relative,
+        "--formal-session-id", session_id, "--run-nonce", run_nonce,
+        "--session-manifest-sha256", session_manifest_sha256,
+        "--formal-run-directory", run_relative,
+    ], root, run_path / "prover.stdout.log", run_path / "prover.stderr.log",
+       f"{dataset}/prover", process_telemetry["prover"])
     prover_wall_ms = (time.perf_counter() - prover_start) * 1000.0
     result_path = run_path / "result.json"
     if completed_returncode != 0:
@@ -248,6 +261,9 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     result = require_result_shape(load_json(result_path, "native result"), result_path)
     if result.get("dataset") != dataset or result.get("backend") != backend or result.get("status") != "VERIFY_OK" or result.get("verification_status") != "VERIFY_OK":
         raise ChainError(f"native result is not a matching VERIFY_OK cell: {result_path}")
+    if (result.get("session_id") != session_id or result.get("run_nonce") != run_nonce or
+            result.get("session_manifest_sha256") != session_manifest_sha256):
+        raise ChainError(f"native result does not belong to the current session: {result_path}")
     require_bool(result, "proof_generated", True, result_path)
     require_bool(result, "verifier_called", True, result_path)
     require_bool(result, "verifier_ok", True, result_path)
@@ -282,11 +298,14 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
                         run_path / "prover.stderr.log", run_path / "verifier.stdout.log",
                         run_path / "verifier.stderr.log"), run_started_ns)
     result = _enrich_result(root, result, result_path, resource, registration,
-                            artifact, run_nonce, run_started_ns, resource_manifest_digest)
+                            artifact, run_nonce, run_started_ns, resource_manifest_digest,
+                            session_id, session_manifest_sha256)
     atomic_write_json(result_path, result, root)
     execution = {
         "schema": EXECUTION_SCHEMA, "dataset": dataset, "backend": backend,
-        "preflight_sha256": sha256_file(root / "results" / "formal_preflight.json"),
+        "session_id": session_id, "session_manifest_sha256": session_manifest_sha256,
+        "paper_timing_semantics": PAPER_TIMING_SEMANTICS,
+        "preflight_sha256": sha256_file(preflight_path),
         "paper_metrics": paper_metrics(result, report, report_path), "process_telemetry": process_telemetry,
         "status": "VERIFY_OK", "no_fallback": True, "native_backend": result["native_backend"],
         "run_nonce": run_nonce, "run_started_unix_ns": run_started_ns,
@@ -329,11 +348,19 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     print(f"VERIFY_OK dataset={dataset} backend={backend} result={run_relative}/result.json")
 
 
-def validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resource_manifest_digest: str, backend: str) -> None:
+def validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resource_manifest_digest: str,
+                               backend: str, session_id: str, session: Mapping[str, Any],
+                               session_manifest_sha256: str) -> None:
     if preflight.get("schema") != PREFLIGHT_SCHEMA or preflight.get("status") != "READY" or preflight.get("formal_experiment_eligible") is not True:
         raise ChainError("formal preflight is not eligible; no proving was started")
     if preflight.get("resource_manifest_sha256") != resource_manifest_digest:
         raise ChainError("formal preflight resource manifest is stale")
+    if (preflight.get("session_id") != session_id or
+            preflight.get("session_manifest_sha256") != session_manifest_sha256 or
+            preflight.get("runtime_source_sha256") != session.get("runtime_source_sha256") or
+            preflight.get("runtime_source_sha256") != runtime_source_sha256(root) or
+            preflight.get("native_source_sha256") != session.get("native_source_sha256")):
+        raise ChainError("formal preflight is not bound to the current session/runtime/native source")
     entry = preflight.get("backends", {}).get(backend)
     if not isinstance(entry, dict) or entry.get("ready") is not True:
         raise ChainError(f"formal preflight has no ready {backend} backend")
@@ -350,37 +377,32 @@ def validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resourc
 
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--datasets", default="all")
-    parser.add_argument("--backends", default="all")
-    parser.add_argument("--continue-on-failure", action="store_true")
-    args = parser.parse_args(list(argv))
+    parser.parse_args(list(argv))
     root = baseline_root()
     try:
         invalidate_results(root)
-        datasets = selection(args.datasets, DATASETS, "datasets")
-        backends = selection(args.backends, FORMAL_BACKENDS, "backends")
+        session_id, session, session_manifest_sha256 = require_formal_session(root)
+        backend_tuple = FORMAL_BACKENDS
         require_manifest(root, "resource_manifest.json", "zkgpt-gat-resource-manifest-v1")
         resource_manifest_digest = sha256_file(root / "results" / "resource_manifest.json")
-        preflight = require_manifest(root, "formal_preflight.json", PREFLIGHT_SCHEMA)
-        for backend in backends:
-            validate_preflight_binding(root, preflight, resource_manifest_digest, backend)
+        preflight_path = formal_preflight_path(root, session_id)
+        preflight = load_json(preflight_path, "formal preflight")
+        if not isinstance(preflight, dict) or preflight.get("schema") != PREFLIGHT_SCHEMA:
+            raise ChainError("formal preflight schema is missing or unsupported")
+        for backend in backend_tuple:
+            validate_preflight_binding(root, preflight, resource_manifest_digest, backend,
+                                       session_id, session, session_manifest_sha256)
     except (ChainError, OSError, ValueError) as exc:
         print(f"EXPERIMENT_BLOCKED: {exc}", file=sys.stderr)
         return 2
-    failures: List[str] = []
-    for dataset in datasets:
-        for backend in backends:
+    for dataset in DATASETS:
+        for backend in backend_tuple:
             try:
-                run_cell(root, dataset, backend, preflight, resource_manifest_digest)
+                run_cell(root, dataset, backend, preflight, resource_manifest_digest,
+                         session_id, session, session_manifest_sha256, preflight_path)
             except (ChainError, OSError, ValueError) as exc:
-                message = f"{dataset}/{backend}: {exc}"
-                failures.append(message)
-                print(f"CELL_FAILED: {message}", file=sys.stderr)
-                if not args.continue_on_failure:
-                    return 2
-    if failures:
-        print("EXPERIMENT_FAILED", file=sys.stderr)
-        return 2
+                print(f"CELL_FAILED: {dataset}: {exc}", file=sys.stderr)
+                return 2
     return 0
 
 

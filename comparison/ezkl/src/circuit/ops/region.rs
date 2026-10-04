@@ -348,6 +348,26 @@ impl<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash> RegionCtx<'a
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_with_settings(region: Region<'a, F>, row: usize, num_inner_cols: usize, settings: RegionSettings) -> RegionCtx<'a, F> {
+        let region = Some(RefCell::new(region));
+        let linear_coord = row * num_inner_cols;
+        RegionCtx {
+            region,
+            num_inner_cols,
+            row,
+            linear_coord,
+            dynamic_lookup_index: DynamicLookupIndex::default(),
+            shuffle_index: ShuffleIndex::default(),
+            einsum_index: EinsumIndex::default(),
+            statistics: RegionStatistics::default(),
+            settings,
+            assigned_constants: HashMap::new(),
+            challenges: vec![],
+            max_dynamic_input_len: 0,
+        }
+    }
+
     /// Create a new region context
     pub fn new_with_constants(
         region: Region<'a, F>,

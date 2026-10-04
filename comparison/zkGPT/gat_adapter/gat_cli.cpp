@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <filesystem>
@@ -32,13 +33,18 @@ struct Options {
     std::string config;
     std::string registration;
     std::string com_w_secret;
+    std::string formal_session_id;
+    std::string run_nonce;
+    std::string session_manifest_sha256;
+    std::string formal_run_directory;
     bool help = false;
     bool register_only = false;
     bool capacity_only = false;
 };
 
 struct Record {
-    std::string schema = "zkgpt-gat-result-v1";
+    std::string schema = "zkgpt-gat-result-v2";
+    std::string paper_timing_semantics = "zkgpt-gat-paper-timing-v2-native-tensor-commitments";
     std::string dataset;
     std::string backend;
     std::string capability_status = "FORMAL_CPU_MASKED_FULL";
@@ -55,6 +61,9 @@ struct Record {
     std::string circuit_id;
     std::string plan_digest;
     std::string run_dir;
+    std::string session_id;
+    std::string run_nonce;
+    std::string session_manifest_sha256;
     std::string statement_path;
     std::string public_logits_path;
     std::string verifier_context_path;
@@ -88,12 +97,19 @@ struct Record {
     double load_ms = 0.0;
     double registration_ms = 0.0;
     double witness_ms = 0.0;
+    double preparation_ms = 0.0;
+    double preparation_net_ms = 0.0;
+    double aux_commitment_ms = 0.0;
+    double lasso_query_commitment_ms = 0.0;
+    double lasso_family_commitment_ms = 0.0;
     double commitment_ms = 0.0;
     double prove_total_ms = 0.0;
     double self_verify_ms = 0.0;
     double prove_ms = 0.0;
     double verify_ms = 0.0;
     double serialize_ms = 0.0;
+    double artifact_write_ms = 0.0;
+    double artifact_readback_ms = 0.0;
 };
 
 struct CapacityResourceSnapshot {
@@ -516,13 +532,15 @@ void json_bool(std::ostringstream& out, const char* key, bool value, bool comma 
 }
 
 void json_number(std::ostringstream& out, const char* key, double value, bool comma = true) {
-    out << "  \"" << key << "\": " << std::fixed << std::setprecision(3) << value << (comma ? ",\n" : "\n");
+    out << "  \"" << key << "\": " << std::setprecision(std::numeric_limits<double>::max_digits10)
+        << value << (comma ? ",\n" : "\n");
 }
 
 void write_result(const std::string& path, const Record& record) {
     std::ostringstream out;
     out << "{\n";
     json_string(out, "schema", record.schema);
+    json_string(out, "paper_timing_semantics", record.paper_timing_semantics);
     json_string(out, "dataset", record.dataset);
     json_string(out, "backend", record.backend);
     json_string(out, "capability_status", record.capability_status);
@@ -543,6 +561,9 @@ void write_result(const std::string& path, const Record& record) {
     json_string(out, "checkpoint_identity", record.checkpoint_identity);
     json_string(out, "cache_identity", record.cache_identity);
     json_string(out, "run_dir", record.run_dir);
+    json_string(out, "session_id", record.session_id);
+    json_string(out, "run_nonce", record.run_nonce);
+    json_string(out, "session_manifest_sha256", record.session_manifest_sha256);
     json_string(out, "statement_path", record.statement_path);
     json_string(out, "public_logits_path", record.public_logits_path);
     json_string(out, "verifier_context_path", record.verifier_context_path);
@@ -570,15 +591,22 @@ void write_result(const std::string& path, const Record& record) {
     out << "  \"proof_size_bytes\": " << record.proof_size_bytes << ",\n";
     out << "  \"artifact_size_bytes\": " << record.artifact_size_bytes << ",\n";
     out << "  \"timing_ms\": {\n";
-    out << "    \"load\": " << std::fixed << std::setprecision(3) << record.load_ms << ",\n";
+    out << "    \"load\": " << std::setprecision(17) << record.load_ms << ",\n";
     out << "    \"registration\": " << record.registration_ms << ",\n";
     out << "    \"witness\": " << record.witness_ms << ",\n";
+    out << "    \"preparation\": " << record.preparation_ms << ",\n";
+    out << "    \"preparation_net\": " << record.preparation_net_ms << ",\n";
+    out << "    \"aux_commitment\": " << record.aux_commitment_ms << ",\n";
+    out << "    \"lasso_query_commitment\": " << record.lasso_query_commitment_ms << ",\n";
+    out << "    \"lasso_family_commitments\": " << record.lasso_family_commitment_ms << ",\n";
     out << "    \"commitment\": " << record.commitment_ms << ",\n";
     out << "    \"prove_total\": " << record.prove_total_ms << ",\n";
     out << "    \"self_verify\": " << record.self_verify_ms << ",\n";
     out << "    \"prove\": " << record.prove_ms << ",\n";
     out << "    \"verify\": " << record.verify_ms << ",\n";
-    out << "    \"serialize\": " << record.serialize_ms << "\n";
+    out << "    \"serialize\": " << record.serialize_ms << ",\n";
+    out << "    \"artifact_write\": " << record.artifact_write_ms << ",\n";
+    out << "    \"artifact_readback\": " << record.artifact_readback_ms << "\n";
     out << "  }\n";
     out << "}\n";
     write_text(path, out.str());
@@ -877,6 +905,14 @@ Options parse_options(int argc, char** argv) {
             options.registration = argv[++i];
         } else if (arg == "--com-w-secret" && i + 1 < argc) {
             options.com_w_secret = argv[++i];
+        } else if (arg == "--formal-session-id" && i + 1 < argc) {
+            options.formal_session_id = argv[++i];
+        } else if (arg == "--run-nonce" && i + 1 < argc) {
+            options.run_nonce = argv[++i];
+        } else if (arg == "--session-manifest-sha256" && i + 1 < argc) {
+            options.session_manifest_sha256 = argv[++i];
+        } else if (arg == "--formal-run-directory" && i + 1 < argc) {
+            options.formal_run_directory = argv[++i];
         } else if (arg == "--register-only") {
             options.register_only = true;
         } else if (arg == "--capacity-only") {
@@ -893,6 +929,24 @@ Options parse_options(int argc, char** argv) {
     if (!known_dataset) throw std::runtime_error("--dataset must be one of cora,citeseer,pubmed,ppi,ogbn_arxiv");
     if (options.backend != "cpu" && options.backend != "gpu") throw std::runtime_error("--backend must be cpu or gpu");
     if (options.baseline_root.empty()) throw std::runtime_error("--baseline-root is empty");
+    const bool any_session_binding = !options.formal_session_id.empty() || !options.run_nonce.empty() ||
+        !options.session_manifest_sha256.empty() || !options.formal_run_directory.empty();
+    if (options.capacity_only && any_session_binding)
+        throw std::runtime_error("capacity-only mode does not accept formal session outputs");
+    if (!options.capacity_only && !any_session_binding)
+        throw std::runtime_error("formal proof/registration requires an explicit session binding");
+    if (any_session_binding) {
+        const auto is_hex = [](const std::string& value, std::size_t expected) {
+            return value.size() == expected && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+            });
+        };
+        if (!is_hex(options.formal_session_id, 32) || !is_hex(options.run_nonce, 32) ||
+            !is_hex(options.session_manifest_sha256, 64) ||
+            options.formal_run_directory != "baseline-local/runs/formal/" + options.formal_session_id + "/" + options.dataset) {
+            throw std::runtime_error("formal session binding is incomplete or noncanonical");
+        }
+    }
     if (options.config.empty()) options.config = "baseline-local/configs/" + options.dataset + "_secure.cfg";
     return options;
 }
@@ -920,6 +974,9 @@ int main(int argc, char** argv) {
         }
         record.dataset = options.dataset;
         record.backend = options.backend;
+        record.session_id = options.formal_session_id;
+        record.run_nonce = options.run_nonce;
+        record.session_manifest_sha256 = options.session_manifest_sha256;
         record.native_backend = options.backend == "gpu" ? "cuda_formal_masked_full" : "cpu_native_zkgpt";
         if (options.backend == "gpu") {
             record.capability_status = "UNSUPPORTED_FORMAL_MASKED_FULL_GPU";
@@ -929,8 +986,10 @@ int main(int argc, char** argv) {
 #endif
         }
         const std::string root = without_trailing_slash(options.baseline_root);
+        const bool session_bound_run = !options.formal_session_id.empty();
         const std::string fallback_run_rel = "baseline-local/runs/" + options.dataset + "_secure/" + options.backend;
         std::string run_rel = fallback_run_rel;
+        if (session_bound_run) run_rel = options.formal_run_directory;
         std::string run_dir = local_path(root, run_rel, "run directory");
         make_directory(run_dir);
         const auto load_begin = Clock::now();
@@ -943,7 +1002,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("config does not declare the strict full-GAT privacy/proof boundary");
         }
         const std::string configured_run = config.get("export_dir");
-        if (!configured_run.empty()) {
+        if (!session_bound_run && !configured_run.empty()) {
             run_rel = configured_run + "/" + options.backend;
             run_dir = local_path(root, run_rel, "run directory");
             make_directory(run_dir);
@@ -1121,9 +1180,31 @@ int main(int argc, char** argv) {
         ProveResult proved = prove_gat(plan_owner, graph, features, model, quant, forward, registration, context,
                                       record.privacy_profile);
         record.prove_total_ms = elapsed_ms(prove_begin, Clock::now());
+        record.preparation_ms = proved.preparation_ms;
+        record.aux_commitment_ms = proved.aux_commitment_ms;
+        record.lasso_query_commitment_ms = proved.lasso_query_commitment_ms;
+        record.lasso_family_commitment_ms = proved.lasso_family_commitment_ms;
         record.commitment_ms = proved.commitment_ms;
         record.self_verify_ms = proved.self_verify_ms;
-        record.prove_ms = std::max(0.0, record.prove_total_ms - record.commitment_ms - record.self_verify_ms);
+        const double timing_components[] = {record.prove_total_ms, record.preparation_ms,
+            record.aux_commitment_ms, record.lasso_query_commitment_ms,
+            record.lasso_family_commitment_ms, record.commitment_ms, record.self_verify_ms};
+        for (double component : timing_components) {
+            if (!std::isfinite(component) || component < 0.0)
+                throw std::runtime_error("native prover returned a non-finite or negative timing component");
+        }
+        if (record.preparation_ms < record.lasso_query_commitment_ms)
+            throw std::runtime_error("native preparation timing is shorter than its L_qry commitment substage");
+        record.preparation_net_ms = record.preparation_ms - record.lasso_query_commitment_ms;
+        const double expected_commitment = record.aux_commitment_ms +
+            record.lasso_query_commitment_ms + record.lasso_family_commitment_ms;
+        if (!std::isfinite(expected_commitment) || expected_commitment != record.commitment_ms)
+            throw std::runtime_error("native commitment timing does not equal its measured commitment substages");
+        const double paper_prove_without_artifact_write = record.prove_total_ms -
+            record.preparation_net_ms - record.commitment_ms - record.self_verify_ms;
+        if (!std::isfinite(paper_prove_without_artifact_write) || paper_prove_without_artifact_write < 0.0)
+            throw std::runtime_error("native prove timing decomposition is invalid");
+        record.prove_ms = paper_prove_without_artifact_write;
         if (proved.status != ProveStatus::GENERATED || !proved.has_artifact) {
             record.status = proved.status == ProveStatus::UNSUPPORTED_PRIVACY_PROFILE ? "UNSUPPORTED" : "FAILED";
             record.verification_status = record.status;
@@ -1134,17 +1215,24 @@ int main(int argc, char** argv) {
         }
 
         const std::string artifact_file = run_dir + "/proof.artifact";
-        const auto serialize_begin = Clock::now();
         std::string artifact_reason;
+        const auto artifact_write_begin = Clock::now();
         if (!proved.artifact.write(artifact_file, artifact_wire_limit,
                                    &artifact_reason))
             throw std::runtime_error("proof artifact serialization failed: " + artifact_reason);
+        record.artifact_write_ms = elapsed_ms(artifact_write_begin, Clock::now());
         proved.artifact = GatProofArtifact{};
         GatProofArtifact artifact;
+        const auto artifact_readback_begin = Clock::now();
         if (!GatProofArtifact::read(artifact_file, artifact, artifact_wire_limit,
                                     &artifact_reason))
             throw std::runtime_error("serialized proof artifact cannot be read: " + artifact_reason);
-        record.serialize_ms = elapsed_ms(serialize_begin, Clock::now());
+        record.artifact_readback_ms = elapsed_ms(artifact_readback_begin, Clock::now());
+        record.serialize_ms = record.artifact_write_ms + record.artifact_readback_ms;
+        record.prove_ms += record.artifact_write_ms;
+        if (!std::isfinite(record.prove_ms) || !std::isfinite(record.serialize_ms) ||
+            record.artifact_write_ms < 0.0 || record.artifact_readback_ms < 0.0)
+            throw std::runtime_error("artifact timing decomposition is invalid");
         record.artifact_path = run_rel + "/proof.artifact";
         record.proof_generated = true;
         record.proof_digest = canonical_digest64(artifact.transcript_digest);

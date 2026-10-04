@@ -16,6 +16,7 @@ import importlib
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -27,7 +28,6 @@ from pathlib import Path
 from formal_common import (
     CONTRACT,
     DATASETS,
-    FORMAL_BACKEND,
     FORMAL_GPU_FEATURES,
     FORMAL_SESSION_ID,
     NATIVE_FORMAL_BACKEND,
@@ -106,19 +106,27 @@ def run(command: list[str], label: str, *, gpu: bool = False) -> float:
     reader = threading.Thread(target=read_output, name="ezkl-formal-command-output", daemon=True)
     reader.start()
     started = time.monotonic()
-    while True:
-        try:
-            line = output_queue.get(timeout=20)
-        except queue.Empty:
-            elapsed_seconds = int(time.monotonic() - started)
-            print(f"[ezkl-formal] {label} still running ({elapsed_seconds}s)", flush=True)
-            continue
-        if line is None:
-            break
-        sys.stdout.write(line)
-        sys.stdout.flush()
-    reader.join(timeout=2)
-    returncode = process.wait()
+    try:
+        while True:
+            try:
+                line = output_queue.get(timeout=20)
+            except queue.Empty:
+                elapsed_seconds = int(time.monotonic() - started)
+                print(f"[ezkl-formal] {label} still running ({elapsed_seconds}s)", flush=True)
+                continue
+            if line is None:
+                break
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        reader.join(timeout=2)
+        if reader.is_alive():
+            abort(f"{label} output stream did not close after its leader exited")
+        returncode = process.wait()
+    except BaseException:
+        print(f"[ezkl-formal] stopping {label} process group after interruption or runner failure", file=sys.stderr, flush=True)
+        _terminate_process_group(process)
+        reader.join(timeout=5)
+        raise
     if returncode != 0:
         abort(f"{label} failed with exit code {returncode}")
     return (time.monotonic() - started) * 1000.0
@@ -134,6 +142,10 @@ def run_prerequisite(command: list[str], label: str, *, timeout_seconds: int) ->
         abort(f"prerequisite {label} timed out after {timeout_seconds}s; process group was terminated")
     except KeyboardInterrupt:
         print(f"[ezkl-formal] interrupted during prerequisite {label}; terminating process group", file=sys.stderr, flush=True)
+        _terminate_process_group(process)
+        raise
+    except BaseException:
+        print(f"[ezkl-formal] prerequisite {label} failed; terminating process group", file=sys.stderr, flush=True)
         _terminate_process_group(process)
         raise
     if returncode != 0:
@@ -182,40 +194,39 @@ def run_resource_prepare_with_auth_handoff(
     started = time.monotonic()
     deadline = started + timeout_seconds
     marker: dict[str, object] | None = None
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            _terminate_process_group(process)
-            abort(f"official resource preparation/authentication timed out after {timeout_seconds}s")
-        try:
-            line = output_queue.get(timeout=min(20, remaining))
-        except queue.Empty:
-            elapsed_seconds = int(time.monotonic() - started)
-            print(f"[ezkl-formal] official resource preparation/authentication still running ({elapsed_seconds}s)", flush=True)
-            continue
-        if line is None:
-            break
-        sys.stdout.write(line)
-        sys.stdout.flush()
-        if line.startswith(marker_prefix):
-            if marker is not None:
-                _terminate_process_group(process)
-                abort("official resource preparation emitted multiple authentication handoffs")
-            try:
-                parsed = json.loads(line[len(marker_prefix):])
-            except json.JSONDecodeError as exc:
-                _terminate_process_group(process)
-                abort(f"official resource preparation emitted an invalid authentication handoff: {exc}")
-            if not isinstance(parsed, dict):
-                _terminate_process_group(process)
-                abort("official resource preparation emitted a malformed authentication handoff")
-            marker = parsed
-    reader.join(timeout=2)
     try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_process_group(process)
+                abort(f"official resource preparation/authentication timed out after {timeout_seconds}s")
+            try:
+                line = output_queue.get(timeout=min(20, remaining))
+            except queue.Empty:
+                elapsed_seconds = int(time.monotonic() - started)
+                print(f"[ezkl-formal] official resource preparation/authentication still running ({elapsed_seconds}s)", flush=True)
+                continue
+            if line is None:
+                break
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            if line.startswith(marker_prefix):
+                if marker is not None:
+                    abort("official resource preparation emitted multiple authentication handoffs")
+                try:
+                    parsed = json.loads(line[len(marker_prefix):])
+                except json.JSONDecodeError as exc:
+                    abort(f"official resource preparation emitted an invalid authentication handoff: {exc}")
+                if not isinstance(parsed, dict):
+                    abort("official resource preparation emitted a malformed authentication handoff")
+                marker = parsed
+        reader.join(timeout=2)
         returncode = process.wait(timeout=max(0.1, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired:
+    except BaseException:
+        print("[ezkl-formal] stopping official resource preparation process group after interruption or runner failure", file=sys.stderr, flush=True)
         _terminate_process_group(process)
-        abort(f"official resource preparation/authentication timed out after {timeout_seconds}s")
+        reader.join(timeout=5)
+        raise
     if returncode != 0:
         abort(f"official resource preparation/authentication failed with exit code {returncode}")
     if marker is None:
@@ -314,25 +325,35 @@ def _prepare_and_authenticate_resources(
 
 
 def _terminate_process_group(process: subprocess.Popen[object]) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(process.pid, 15)
-        else:
-            process.terminate()
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
+    if os.name == "posix":
         try:
-            if os.name == "posix":
-                os.killpg(process.pid, 9)
-            else:
-                process.kill()
+            os.killpg(process.pid, 15)
         except ProcessLookupError:
             pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() >= deadline:
+                try:
+                    os.killpg(process.pid, 9)
+                except ProcessLookupError:
+                    pass
+                break
+            time.sleep(0.1)
+    elif process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    if process.poll() is None:
         process.wait()
 
 
@@ -380,7 +401,7 @@ def reusable_build(
     )
 
 
-def check_output_paths(output_root: Path, matrix: Path, backend: str) -> None:
+def check_output_paths(output_root: Path, matrix: Path) -> None:
     for path, label in ((output_root, "output-root"), (matrix.parent, "matrix parent")):
         for parent in (path, *path.parents):
             if parent == ROOT.parent:
@@ -390,8 +411,7 @@ def check_output_paths(output_root: Path, matrix: Path, backend: str) -> None:
     if matrix.exists() and not matrix.is_file():
         abort(f"matrix is not a regular file: {matrix}")
     for dataset in DATASETS:
-        output = output_root / dataset / backend
-        for path in (output_root / dataset, output, output_root / ".incomplete", output_root / ".incomplete" / dataset):
+        for path in (output_root / dataset, output_root / ".incomplete", output_root / ".incomplete" / dataset):
             if path.is_symlink() or (path.exists() and not path.is_dir()):
                 abort(f"formal output path is not a regular directory: {path}")
 
@@ -424,11 +444,11 @@ def begin_formal_session(output_root: Path, matrix: Path) -> tuple[str, Path, in
         archived: list[str] = []
         archive_root.mkdir(parents=True, exist_ok=False)
         for dataset in DATASETS:
-            old_output = output_root / dataset / FORMAL_BACKEND
+            old_output = output_root / dataset
             if old_output.exists() or old_output.is_symlink():
                 if old_output.is_symlink() or not old_output.is_dir():
                     abort(f"prior formal output is not a regular directory: {old_output}")
-                destination = archive_root / "datasets" / dataset / FORMAL_BACKEND
+                destination = archive_root / "datasets" / dataset
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 old_output.rename(destination)
                 archived.append(str(destination.relative_to(ROOT)))
@@ -497,8 +517,8 @@ def invoke_python_entrypoint(module_name: str, argv: list[str], label: str, *, c
         abort(f"{label} failed with return code {result}")
 
 
-def prepare_output_dir(output_root: Path, dataset: str, backend: str) -> Path:
-    output = output_root / dataset / backend
+def prepare_output_dir(output_root: Path, dataset: str) -> Path:
+    output = output_root / dataset
     if output.exists() or output.is_symlink():
         abort(f"fresh formal session output path already exists: {output}")
     output.mkdir(parents=True)
@@ -603,7 +623,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         if not path.is_file():
             abort(f"missing formal runner component: {path}")
 
-    check_output_paths(output_root, matrix, FORMAL_BACKEND)
+    check_output_paths(output_root, matrix)
     _set_stage(session_file, "runtime_identity")
     runtime_identity = validate_formal_python_environment()
     selected_device = select_formal_cuda_device(runtime_identity["nvidia_smi_path"])
@@ -753,7 +773,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
 
     for dataset in DATASETS:
         _set_stage(session_file, f"{dataset}_setup_prove_verify")
-        output = prepare_output_dir(output_root, dataset, FORMAL_BACKEND)
+        output = prepare_output_dir(output_root, dataset)
         setup = [
             local_cli(binary, "binary"),
             "gat-prepare",
@@ -833,12 +853,24 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         ],
         "validate five-dataset result matrix",
     )
-    print(f"validated {FORMAL_BACKEND} formal results: {matrix.relative_to(ROOT)}")
+    print(f"validated five formal results: {matrix.relative_to(ROOT)}")
     print(f"view: {python} -m json.tool {matrix.relative_to(ROOT)}")
     return 0
 
 
+def _raise_on_sigterm(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt(f"received signal {signum}")
+
+
 def main(args: argparse.Namespace) -> int:
+    previous_sigterm = signal.signal(signal.SIGTERM, _raise_on_sigterm)
+    try:
+        return _main(args)
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+
+
+def _main(args: argparse.Namespace) -> int:
     binary = local_path(args.binary or f"target/{NATIVE_FORMAL_BACKEND}/release/ezkl", "binary")
     output_root = local_path(args.output_root, "output-root")
     matrix = local_path(args.matrix, "matrix")
@@ -848,7 +880,7 @@ def main(args: argparse.Namespace) -> int:
         abort(f"output-root must not be a symlink: {output_root}")
     if matrix.exists() and matrix.is_symlink():
         abort(f"matrix must not be a symlink: {matrix}")
-    check_output_paths(output_root, matrix, FORMAL_BACKEND)
+    check_output_paths(output_root, matrix)
 
     session_id, session_file, lock_fd, _archived = begin_formal_session(output_root, matrix)
     try:

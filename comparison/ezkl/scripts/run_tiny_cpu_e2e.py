@@ -1147,7 +1147,7 @@ def negative_collector_cell(root: Path, output: Path, mutation: str, timeout: fl
                 "results/tiny_matrix.json",
                 "--datasets",
                 TINY_DATASET,
-                "--backends",
+                "--local-backends",
                 "cpu",
             ],
             root=root,
@@ -1180,7 +1180,7 @@ def print_plan() -> None:
     print("tiny fixture: mktemp baseline root; two nodes, four edges, nonzero checkpoint tensors")
     print("official chain: get-srs(k<=18) -> gat-prepare setup -> external producer -> gat-prepare final -> gat-witness -> prove -> verify")
     print("post-chain: statement/Y/producer-manifest tamper rejection -> CPU collector/final -> GPU/fallback/stale/missing rejection")
-    print("local CPU collector: --datasets cora --backends cpu; tiny validation uses the internal artifact validator; formal CLI requires five hybrid results")
+    print("local CPU collector: --datasets cora --local-backends cpu; tiny validation uses the internal artifact validator; formal entry collects five dataset results")
 
 
 def main(args: argparse.Namespace) -> int:
@@ -1421,7 +1421,7 @@ def main(args: argparse.Namespace) -> int:
                 "results/tiny_matrix.json",
                 "--datasets",
                 TINY_DATASET,
-                "--backends",
+                "--local-backends",
                 "cpu",
             ],
             root=temp_root,

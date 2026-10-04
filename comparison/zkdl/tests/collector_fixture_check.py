@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -72,7 +73,7 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
         proof_digest = artifact_digest
         statement_id = fixture_statement_id(dataset, proof_digest, evidence_digest)
         record = {
-            "schema": "zkDL_gat_run_record_v1",
+            "schema": "zkDL_gat_run_record_v2",
             "fixture_mode": 1,
             "dataset": dataset,
             "backend": "cpu",
@@ -82,6 +83,7 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
             "proof_scope": FIXTURE_PROOF_SCOPE,
             "proof_size_bytes": len(artifact_bytes),
             "commitment_size_bytes": 0,
+            "commitment_time_semantics": "native_tensor_commitments",
             "commitment_time_seconds": "0",
             "prove_time_seconds": "0",
             "verify_time_seconds": "0",
@@ -92,7 +94,7 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
             "fixture_evidence_digest": evidence_digest,
         }
         envelope = {
-            "schema_id": "zkDL_gat_proof_envelope_v1",
+            "schema_id": "zkDL_gat_proof_envelope_v2",
             "fixture_mode": 1,
             "status": "PROVED",
             "native_core_api": "zkdl_native_gat_bridge_v1",
@@ -101,6 +103,11 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
             "statement_id": statement_id,
             "proof_id": proof_digest,
             "proof_size_bytes": len(artifact_bytes),
+            "commitment_size_bytes": 0,
+            "commitment_time_semantics": "native_tensor_commitments",
+            "commitment_time_seconds": "0",
+            "prove_time_seconds": "0",
+            "verify_time_seconds": "0",
             "verifier_reads_witness": 0,
             "gpu_kernel_executed": 0,
             "silent_fallback": 0,
@@ -160,14 +167,14 @@ def main() -> int:
         common = ["--root", str(root), "--runs-dir", "runs"]
         collect = [sys.executable, str(SCRIPTS / "collect_results.py"),
                    *common, "--output", "results/collected.json",
-                   "--fixture-mode", "--require-selected-backend", "cpu"]
+                   "--fixture-mode"]
         final = [sys.executable, str(SCRIPTS / "final_validate.py"),
-                 *common, "--fixture-mode", "--backend", "cpu"]
+                 *common, "--fixture-mode", "--collection", "results/collected.json"]
         collected = invoke(collect, 0)
         validated = invoke(final, 0)
         formal_reject = invoke([
             sys.executable, str(SCRIPTS / "final_validate.py"),
-            *common, "--backend", "cpu"], 1)
+            *common, "--collection", "results/collected.json"], 1)
 
         first = root / "runs" / "cora-fixture"
         checks: list[tuple[str, callable]] = []
@@ -187,8 +194,14 @@ def main() -> int:
         def mutate_missing() -> None:
             (first / "verification.result").unlink()
 
+        def mutate_metric() -> None:
+            path = first / "run.record"
+            path.write_text(path.read_text(encoding="utf-8").replace(
+                "commitment_time_seconds=0\n", "commitment_time_seconds=0.25\n"), encoding="utf-8")
+
         for label, mutate in (("gpu", mutate_gpu), ("fallback", mutate_fallback),
-                              ("stale", mutate_stale), ("missing", mutate_missing)):
+                              ("stale", mutate_stale), ("missing", mutate_missing),
+                              ("metric", mutate_metric)):
             snapshot = {path: path.read_bytes() for path in first.iterdir() if path.is_file()}
             mutate()
             rejected = invoke(collect, 1)
@@ -199,12 +212,22 @@ def main() -> int:
                 path.write_bytes(contents)
             checks.append((label, rejected))
 
+        summary_path = root / "results" / "collected.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["rows"][0]["prove_time_seconds"] = "0.5"
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+        summary_mismatch = invoke(final, 1)
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["rows"] = summary["rows"][1:]
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+        summary_missing = invoke(final, 1)
+        invoke(collect, 0)
         final_after = invoke(final, 0)
         print(
             f"collector_fixture PASS artifact_sha256={artifact_digest} "
             f"{collected.stdout.strip()} {validated.stdout.strip()} "
             f"formal_reject={formal_reject.returncode} "
-            f"negative_checks={','.join(label for label, _ in checks)} "
+            f"negative_checks={','.join(label for label, _ in checks)},summary_mismatch,summary_missing "
             f"{final_after.stdout.strip()}"
         )
     return 0

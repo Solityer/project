@@ -19,7 +19,8 @@ SCHEMAS = ROOT / "schemas"
 FIXTURES = ROOT / "tests" / "fixtures"
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-from result_artifacts import ArtifactError, require_exact_matrix
+from final_validate import validate_collection
+from result_artifacts import ArtifactError, DATASETS, require_formal_five
 
 
 class ToolingTests(unittest.TestCase):
@@ -61,12 +62,76 @@ class ToolingTests(unittest.TestCase):
 
             self.run_cmd("python3", str(SCRIPTS / "collect_results.py"), "--runs", "tests/fixtures/verified_run", "--output", str(output), expected=1)
         self.run_cmd("python3", str(SCRIPTS / "collect_results.py"), "--runs", "tests/fixtures/blocked_run", expected=1)
-        self.run_cmd("python3", str(SCRIPTS / "final_validate.py"), "--runs", "tests/fixtures/verified_run", expected=1)
-        self.run_cmd("python3", str(SCRIPTS / "final_validate.py"), "--runs", "tests/fixtures/blocked_run", expected=1)
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as directory:
+            collection = str(Path(directory) / "collected.json")
+            self.run_cmd("python3", str(SCRIPTS / "final_validate.py"), "--runs", "tests/fixtures/verified_run",
+                         "--collection", collection, expected=1)
+            self.run_cmd("python3", str(SCRIPTS / "final_validate.py"), "--runs", "tests/fixtures/blocked_run",
+                         "--collection", collection, expected=1)
 
-    def test_exact_matrix_gate(self) -> None:
+    def test_formal_five_gate(self) -> None:
+        rows = [{
+            "dataset": dataset,
+            "independent_verification": "1",
+            "silent_fallback": "0",
+            "commitment_time_semantics": "native_tensor_commitments",
+            "commitment_time_seconds": "0.1",
+            "prove_time_seconds": "0.2",
+            "verify_time_seconds": "0.3",
+            "proof_size_bytes": "128",
+        } for dataset in DATASETS]
+        require_formal_five(rows)
         with self.assertRaises(ArtifactError):
-            require_exact_matrix([{"dataset": "cora", "backend": "cpu"}])
+            require_formal_five(rows[:-1])
+        with self.assertRaises(ArtifactError):
+            require_formal_five(rows[:-1] + [dict(rows[0])])
+        for field, value in (("proof_size_bytes", "0"), ("commitment_time_seconds", "nan")):
+            malformed = [dict(row) for row in rows]
+            malformed[0][field] = value
+            with self.assertRaises(ArtifactError):
+                require_formal_five(malformed)
+
+    def test_collection_binding(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as directory:
+            temporary_root = Path(directory)
+            runs = temporary_root / "runs" / "formal_contract_session"
+            runs.mkdir(parents=True)
+            collection = temporary_root / "results" / runs.name / "collected.json"
+            collection.parent.mkdir(parents=True)
+            rows = [{
+                "dataset": dataset,
+                "independent_verification": "1",
+                "silent_fallback": "0",
+                "commitment_time_semantics": "native_tensor_commitments",
+                "commitment_time_seconds": "0.1",
+                "prove_time_seconds": "0.2",
+                "verify_time_seconds": "0.3",
+                "proof_size_bytes": "128",
+            } for dataset in DATASETS]
+            summary = {
+                "schema": "zkDL_gat_result_collection_v3",
+                "mode": "formal_single_path",
+                "session_id": runs.name,
+                "runs_path": "runs/" + runs.name,
+                "collection_path": "results/" + runs.name + "/collected.json",
+                "rows": rows,
+            }
+
+            def validate(candidate: dict[str, object]) -> None:
+                collection.write_text(json.dumps(candidate), encoding="utf-8")
+                validate_collection(temporary_root, runs, collection, rows, fixture_mode=False)
+
+            validate(summary)
+            for invalid_rows in (rows[:-1], rows[:-1] + [dict(rows[0])]):
+                malformed = dict(summary, rows=invalid_rows)
+                with self.assertRaises(ArtifactError):
+                    validate(malformed)
+            changed_metric = [dict(row) for row in rows]
+            changed_metric[0]["prove_time_seconds"] = "0.25"
+            with self.assertRaises(ArtifactError):
+                validate(dict(summary, rows=changed_metric))
+            with self.assertRaises(ArtifactError):
+                validate(dict(summary, session_id="stale_session"))
 
     def test_manifest_synthetic_and_negative_paths(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / "tests") as directory:

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Collect baseline-local ezkl result cells fail-closed.
+"""Collect the five formal EZKL/Halo2 results or explicitly local-only checks.
 
-Formal collection requires the five canonical hybrid CPU+GPU results.
-Missing artifacts, unverified native instances, or stale identities fail closed.
-Explicit native CPU/GPU selections remain available for local component checks.
+Formal collection has one result per canonical dataset and no backend axis.
+Explicit local-backend collection exists only for the tiny harness.
 """
 
 from __future__ import annotations
@@ -24,7 +23,6 @@ from formal_common import (
     CANONICAL_RELATION,
     CANONICAL_STATEMENT_MODE,
     DATASETS,
-    FORMAL_BACKEND,
     FORMAL_GPU_FEATURES,
     FORMAL_PHASE_BACKENDS,
     FORMAL_SESSION_ID,
@@ -59,7 +57,6 @@ REQUIRED_RESULT_KEYS = {
     "schema_version",
     "status",
     "dataset",
-    "backend",
     "proof_scope",
     "privacy_policy",
     "public_statement_mode",
@@ -140,7 +137,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--runs-root", default="runs/formal")
     result.add_argument("--output", default="results/formal_matrix.json")
-    result.add_argument("--session-id", help="active formal session; required for hybrid result collection")
+    result.add_argument("--session-id", help="active formal session; required for five-dataset formal collection")
     result.add_argument(
         "--datasets",
         nargs="+",
@@ -148,13 +145,7 @@ def parser() -> argparse.ArgumentParser:
         default=list(DATASETS),
         help="dataset axis to collect; default requires the strict five-dataset matrix",
     )
-    result.add_argument(
-        "--backends",
-        nargs="+",
-        choices=(*BACKENDS, FORMAL_BACKEND),
-        default=[FORMAL_BACKEND],
-        help="formal default: five hybrid results; explicit cpu/gpu selections are local checks",
-    )
+    result.add_argument("--local-backends", nargs="+", choices=BACKENDS, help="tiny/local-only results; cannot produce a formal result matrix")
     return result
 
 
@@ -208,7 +199,7 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         "selected_cuda_device", "build_receipt_sha256", "build_environment_sha256",
         "gpu_prover_record_sha256", "independent_verifier_log_sha256",
     }
-    unknown = set(result) - REQUIRED_RESULT_KEYS - {"execution_mode", "phase_backends", "native_backend", "formal_session_id"} - formal_gpu_identity_fields
+    unknown = set(result) - REQUIRED_RESULT_KEYS - {"backend", "execution_mode", "phase_backends", "native_backend", "formal_session_id"} - formal_gpu_identity_fields
     if unknown:
         abort(f"{path} has unknown result fields: {sorted(unknown)}")
     missing = REQUIRED_RESULT_KEYS - set(result)
@@ -217,22 +208,25 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
     if result["schema_version"] != 1 or result["status"] != "VERIFY_OK":
         abort(f"{path} is not a verified native result")
     dataset = result["dataset"]
-    backend = result["backend"]
-    if dataset not in DATASETS or backend not in (*BACKENDS, FORMAL_BACKEND):
-        abort(f"{path} has an unknown dataset/backend")
-    native_backend = NATIVE_FORMAL_BACKEND if backend == FORMAL_BACKEND else backend
-    if backend == FORMAL_BACKEND:
+    formal = "formal_session_id" in result
+    backend = result.get("backend")
+    if dataset not in DATASETS:
+        abort(f"{path} has an unknown dataset")
+    if formal:
+        if backend is not None or "execution_mode" in result or "phase_backends" in result:
+            abort(f"{path} exposes a backend execution axis in the formal result")
+        native_backend = result.get("native_backend")
+        if native_backend != NATIVE_FORMAL_BACKEND:
+            abort(f"{path} does not identify the authenticated native formal engine")
         session_id = result.get("formal_session_id")
         if not isinstance(session_id, str) or not FORMAL_SESSION_ID.fullmatch(session_id):
             abort(f"{path} has no valid formal session identity")
+        if expected_session_id is None:
+            abort(f"{path} is a formal result but no active session was supplied")
         if expected_session_id is not None and session_id != expected_session_id:
             abort(f"{path} belongs to a different formal session")
-        if result.get("native_backend") != native_backend or result.get("execution_mode") != FORMAL_BACKEND:
-            abort(f"{path} does not identify the formal hybrid execution/native engine")
-        if canonical_json_digest(result.get("phase_backends")) != canonical_json_digest(FORMAL_PHASE_BACKENDS):
-            abort(f"{path} has an invalid hybrid phase device schedule")
-        if path.parent.name != FORMAL_BACKEND or path.parent.parent.name != dataset:
-            abort(f"{path} is outside its canonical dataset/hybrid result directory")
+        if path.parent.name != dataset:
+            abort(f"{path} is outside its canonical dataset result directory")
         for field in formal_gpu_identity_fields:
             if field not in result:
                 abort(f"{path} is missing current-session GPU identity field {field}")
@@ -274,7 +268,13 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         verifier_log = require_file(path.parent / "logs/verify.log", "independent verifier log")
         if sha256(verifier_log) != result["independent_verifier_log_sha256"]:
             abort(f"{path} independent verifier log identity is stale")
-    elif "execution_mode" in result or "phase_backends" in result:
+    else:
+        if expected_session_id is not None:
+            abort(f"{path} is not bound to the active formal session")
+        if backend not in BACKENDS:
+            abort(f"{path} is not an explicitly local native result")
+        native_backend = backend
+    if not formal and ("execution_mode" in result or "phase_backends" in result):
         expected_mode = "mixed" if backend == "gpu" else "cpu"
         legacy_phases = {"prepare_compile": "cpu", "setup": expected_mode, "public_statement": "cpu", "witness_generation": "cpu", "model_commitment": "cpu", "prove": expected_mode, "verify": "cpu"}
         cpu_phases = {phase: {"cpu": True, "gpu": False} for phase in FORMAL_PHASE_BACKENDS}
@@ -419,7 +419,7 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         calls = record["msm_calls"] + record["ntt_calls"]
         if record["proof_sha256"] != result["proof_sha256"] or calls <= 0 or record["synchronized_calls"] != calls or record["evidence"] != result["gpu_evidence"] or result["gpu_evidence"]["gpu_kernel_invocation_count"] != calls:
             abort("native GPU prover record is not synchronized and bound to the verified proof")
-        if backend == FORMAL_BACKEND:
+        if formal:
             if record["device_id"] != result["selected_cuda_device"]["logical_device_id"]:
                 abort("native proof logical device ordinal does not match the selected physical CUDA UUID")
             if sha256(proof.parent / "gpu_prover_record.json") != result["gpu_prover_record_sha256"]:
@@ -432,11 +432,11 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
 
 
 def validate_gpu_evidence_from_result(result: dict[str, Any]) -> None:
-    validate_gpu_evidence_document(result["gpu_evidence"], backend=NATIVE_FORMAL_BACKEND if result["backend"] == FORMAL_BACKEND else result["backend"])
+    validate_gpu_evidence_document(result["gpu_evidence"], backend=result.get("native_backend", result.get("backend")))
 
 
 def check_pair_consistency(cells: list[dict[str, Any]]) -> None:
-    if {cell["backend"] for cell in cells} != set(BACKENDS):
+    if not cells or any("backend" not in cell for cell in cells) or {cell["backend"] for cell in cells} != set(BACKENDS):
         return
     by_dataset = {(cell["dataset"], cell["backend"]): cell for cell in cells}
     for dataset in DATASETS:
@@ -451,35 +451,39 @@ def main(args: argparse.Namespace) -> int:
     selected_datasets = tuple(args.datasets)
     if len(set(selected_datasets)) != len(selected_datasets):
         abort("--datasets must not contain duplicates")
-    selected_backends = tuple(args.backends)
-    if len(set(selected_backends)) != len(selected_backends):
-        abort("--backends must not contain duplicates")
-    if FORMAL_BACKEND in selected_backends and (selected_backends != (FORMAL_BACKEND,) or selected_datasets != DATASETS):
-        abort("formal collection requires exactly the five canonical hybrid results")
-    if FORMAL_BACKEND in selected_backends:
+    selected_backends = tuple(args.local_backends or ())
+    formal = not selected_backends
+    if formal and selected_datasets != DATASETS:
+        abort("formal collection requires exactly the five canonical datasets")
+    if formal:
         if not isinstance(args.session_id, str) or not FORMAL_SESSION_ID.fullmatch(args.session_id):
             abort("formal collection requires the active --session-id")
     elif args.session_id is not None:
-        abort("--session-id is only valid for formal hybrid collection")
+        abort("--session-id cannot be combined with local-only collection")
+    elif len(selected_datasets) != 1 or len(selected_backends) != 1:
+        abort("local-only collection is restricted to one tiny dataset and one backend")
     runs_root = local_path(args.runs_root, "runs-root")
     output = local_path(args.output, "collector output")
     reject_forbidden_path(output, "collector output")
+    if not formal and output == ROOT / "results/formal_matrix.json":
+        abort("local-only collection cannot write the formal result matrix path")
     if output.is_symlink():
         abort(f"collector output must not be a symlink: {output}")
     cells: list[dict[str, Any]] = []
     for dataset in selected_datasets:
-        for backend in selected_backends:
-            result_path = runs_root / dataset / backend / "result.json"
+        for backend in selected_backends if not formal else (None,):
+            result_path = runs_root / dataset / "result.json" if formal else runs_root / dataset / str(backend) / "result.json"
             reject_forbidden_path(result_path, f"{dataset}/{backend} result")
             cell = validate_cell(
                 result_path,
-                expected_session_id=args.session_id if FORMAL_BACKEND in selected_backends else None,
+                expected_session_id=args.session_id if formal else None,
             )
-            if (cell["dataset"], cell["backend"]) != (dataset, backend):
+            if cell["dataset"] != dataset or (not formal and cell["backend"] != backend):
                 abort(f"result identity does not match its collection path: {result_path}")
             cells.append(cell)
-    if len(cells) != len(selected_datasets) * len(selected_backends):
-        abort("collector did not obtain the requested dataset/backend cells")
+    expected_count = len(selected_datasets) if formal else len(selected_datasets) * len(selected_backends)
+    if len(cells) != expected_count:
+        abort("collector did not obtain the requested result cells")
     check_pair_consistency(cells)
     output.parent.mkdir(parents=True, exist_ok=True)
     document = {
@@ -488,21 +492,20 @@ def main(args: argparse.Namespace) -> int:
         "collection_status": "COLLECTED_PENDING_FINAL_VALIDATION",
         "relation_id": CANONICAL_RELATION,
         "datasets": list(selected_datasets),
-        "backends": list(selected_backends),
         "cell_count": len(cells),
         "source_tree_sha256": source_tree_hash(),
         "resource_manifest_sha256": resource_manifest_hash(),
-        "pair_consistency_checked": set(selected_backends) == set(BACKENDS),
         "collected_at_utc": datetime.now(timezone.utc).isoformat(),
         "cells": cells,
     }
-    if FORMAL_BACKEND in selected_backends:
+    if formal:
         document["formal_session_id"] = args.session_id
+    else:
+        document["backends"] = list(selected_backends)
+        document["pair_consistency_checked"] = set(selected_backends) == set(BACKENDS)
     output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
-    print(
-        f"collected {len(cells)} verified result cells ({', '.join(selected_backends)}) into "
-        f"{output.relative_to(ROOT)}; final validation remains required"
-    )
+    mode = "formal dataset results" if formal else "local-only results"
+    print(f"collected {len(cells)} verified {mode} into {output.relative_to(ROOT)}; final validation remains required")
     return 0
 
 

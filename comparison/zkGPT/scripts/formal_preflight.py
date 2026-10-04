@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from common import (
-    BACKENDS,
     FORMAL_BACKENDS,
     DATASETS,
     CAPACITY_PROOF_PATH,
@@ -38,6 +37,9 @@ from common import (
     verifier_binary,
     verify_build_provenance,
     verify_local_resources,
+    formal_preflight_path,
+    require_formal_session,
+    runtime_source_sha256,
 )
 
 CAPACITY_SCHEMA = "zkgpt-gat-capacity-v3"
@@ -552,11 +554,18 @@ def run_capacity(root: Path, dataset: str, backend: str) -> Dict[str, Any]:
 
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=("all",) + BACKENDS, default="cpu")
-    args = parser.parse_args(list(argv))
+    parser.parse_args(list(argv))
     root = baseline_root()
     invalidate_results(root, ("formal_preflight.json", "collected_results.json", "final_validation.json"))
-    selected = FORMAL_BACKENDS if args.backend == "all" else (args.backend,)
+    try:
+        session_id, session, session_manifest_sha256 = require_formal_session(root)
+        selected = FORMAL_BACKENDS
+        preflight_path = formal_preflight_path(root, session_id)
+        if preflight_path.exists():
+            preflight_path.unlink()
+    except (ChainError, OSError, ValueError) as exc:
+        print(f"FORMAL_PREFLIGHT_BLOCKED: {exc}", file=sys.stderr)
+        return 2
     blockers: List[str] = []
     source_errors = check_source(root)
     blockers.extend(source_errors)
@@ -612,6 +621,10 @@ def main(argv: Sequence[str]) -> int:
                 capacity[dataset] = {"schema": CAPACITY_SCHEMA, "status": "BLOCKED", "dataset": dataset, "backend": "cpu", "reason": str(exc)}
     payload = {
         "schema": PREFLIGHT_SCHEMA,
+        "session_id": session_id,
+        "session_manifest_sha256": session_manifest_sha256,
+        "runtime_source_sha256": runtime_source_sha256(root),
+        "native_source_sha256": session.get("native_source_sha256"),
         "status": "READY" if not blockers else "BLOCKED",
         "formal_experiment_eligible": not blockers,
         "source_ready": not source_errors,
@@ -632,7 +645,7 @@ def main(argv: Sequence[str]) -> int:
         "verifier_reads_witness": False,
     }
     try:
-        atomic_write_json(root / "results" / "formal_preflight.json", payload)
+        atomic_write_json(preflight_path, payload)
     except ChainError as exc:
         print(f"PREFLIGHT_OUTPUT_FAILED: {exc}", file=sys.stderr)
         return 2

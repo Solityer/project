@@ -220,7 +220,9 @@ std::string native_lasso_matrix_layout_digest(const NativeLassoFamilyPublic::Mat
 bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLassoFamilyProver>& families, NativeLassoQueryProver& query,
                                NativeLassoBundleResult* result = nullptr, std::string* reason = nullptr,
                                // Required by the formal typed-tensor path; runs Aux then L_qry after all M_f row chunks and before M_f β challenges.
-                               const NativeLassoTensorTailProveHook& tensor_tail_stage = {});
+                               const NativeLassoTensorTailProveHook& tensor_tail_stage = {},
+                               // Optional sink for the time spent generating the four M_f row-commitment families.
+                               double* family_row_commitment_ms = nullptr);
 
 bool native_lasso_verify_bundle(const NativeProofSession& session, const std::vector<NativeLassoFamilyPublic>& families, const NativeLassoQueryPublic& query,
                                 NativeLassoBundleResult* result = nullptr, std::string* reason = nullptr,

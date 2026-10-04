@@ -5,6 +5,7 @@
 #include "native_masked_sumcheck.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -2513,7 +2514,8 @@ bool native_lasso_t2_booleanity_dense_reference_smoke() {
 }
 
 bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLassoFamilyProver>& families, NativeLassoQueryProver& query,
-                               NativeLassoBundleResult* result, std::string* reason, const NativeLassoTensorTailProveHook& tensor_tail_stage) {
+                               NativeLassoBundleResult* result, std::string* reason, const NativeLassoTensorTailProveHook& tensor_tail_stage,
+                               double* family_row_commitment_ms) {
     SessionCheckpointGuard checkpoint_guard(session);
     try {
         if (families.empty() || query.tensor_view.full_domain == 0 || !tensor_tail_stage || !validate_query(query, reason)) {
@@ -2545,7 +2547,12 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
             const NativeLassoFamilyProver& family = families[index];
             MaskedFamilyState state;
             state.basis_id = family_basis_id(session, family);
+            const auto row_commitment_begin = std::chrono::steady_clock::now();
             commit_family_rows(family, state);
+            if (family_row_commitment_ms != nullptr) {
+                *family_row_commitment_ms += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - row_commitment_begin).count();
+            }
             const std::string commitment_label = family_prefix(family) + "/commitment";
             session.absorb(commitment_label, masked_family_payload(family, state.row_commitments, state.basis_id));
             const std::size_t chunk_count = row_commitment_chunk_count(family.matrix_layout.rows);

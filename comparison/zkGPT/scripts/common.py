@@ -9,16 +9,20 @@ never infers a proof from a digest or manufactures a verifier result.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import math
 import os
 import re
 import secrets
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -26,15 +30,22 @@ DATASETS: Tuple[str, ...] = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 BACKENDS: Tuple[str, ...] = ("cpu", "gpu")
 FORMAL_BACKENDS: Tuple[str, ...] = ("cpu",)
 
-RESULT_SCHEMA = "zkgpt-gat-result-v1"
+RESULT_SCHEMA = "zkgpt-gat-result-v2"
 REPORT_SCHEMA = "zkgpt-gat-independent-verifier-v3"
-EXECUTION_SCHEMA = "zkgpt-gat-execution-v2"
+EXECUTION_SCHEMA = "zkgpt-gat-execution-v3"
 RESOURCE_MANIFEST_SCHEMA = "zkgpt-gat-resource-manifest-v1"
-PREFLIGHT_SCHEMA = "zkgpt-gat-formal-preflight-v2"
+PREFLIGHT_SCHEMA = "zkgpt-gat-formal-preflight-v3"
 CAPACITY_PROOF_PATH = "formal_native_masked_lasso_hyrax+native_masked_layered_gkr"
-COLLECTED_SCHEMA = "zkgpt-gat-collected-results-v2"
-FINAL_SCHEMA = "zkgpt-gat-final-validation-v2"
+COLLECTED_SCHEMA = "zkgpt-gat-collected-results-v3"
+FINAL_SCHEMA = "zkgpt-gat-final-validation-v3"
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
+PAPER_TIMING_SEMANTICS = "zkgpt-gat-paper-timing-v2-native-tensor-commitments"
+FORMAL_SESSION_SCHEMA = "zkgpt-gat-formal-session-v1"
+
+_ACTIVE_OWNED_PROCESSES: Dict[int, subprocess.Popen] = {}
+_ACTIVE_PROCESS_LOCK = threading.Lock()
+_PROCESS_SIGNAL_HANDLERS_INSTALLED = False
 
 VOLATILE_RUN_FILES = frozenset({
     "result.json", "verifier_context.bin", "public_statement.json",
@@ -75,6 +86,116 @@ def formal_backend_capability(backend: str) -> Dict[str, Any]:
 
 def baseline_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def formal_results_directory(root: Path, session_id: str) -> Path:
+    if not HEX32_RE.fullmatch(session_id):
+        raise ChainError("formal session id must be 32 lowercase hexadecimal characters")
+    path = local_path(root, f"results/formal/{session_id}", "formal session result directory")
+    ensure_directory(path, "formal session result directory", root)
+    return path
+
+
+def formal_preflight_path(root: Path, session_id: str) -> Path:
+    return formal_results_directory(root, session_id) / "formal_preflight.json"
+
+
+def formal_collection_path(root: Path, session_id: str) -> Path:
+    return formal_results_directory(root, session_id) / "collected.json"
+
+
+def formal_final_path(root: Path, session_id: str) -> Path:
+    return formal_results_directory(root, session_id) / "final_validation.json"
+
+
+def formal_session_path(root: Path, session_id: str) -> Path:
+    return formal_results_directory(root, session_id) / "session.json"
+
+
+def formal_session_status_path(root: Path, session_id: str) -> Path:
+    return formal_results_directory(root, session_id) / "session_status.json"
+
+
+def derive_run_nonce(session_id: str, dataset: str) -> str:
+    if not HEX32_RE.fullmatch(session_id) or dataset not in DATASETS:
+        raise ChainError("cannot derive formal nonce from invalid session or dataset")
+    return hashlib.sha256(f"zkgpt-formal-run-nonce-v1:{session_id}:{dataset}".encode("ascii")).hexdigest()[:32]
+
+
+def runtime_source_sha256(root: Path) -> str:
+    """Fingerprint formal runtime helpers so session-bound outputs reject stale code."""
+    paths = [path for path in (root / "scripts").glob("*.py") if path.is_file()]
+    paths.extend(root / name for name in ("run_zkgpt_formal.sh", "run_zkgpt_cpu_formal.sh", "build.sh") if (root / name).is_file())
+    digest = hashlib.sha256()
+    for path in sorted(set(paths), key=lambda value: value.relative_to(root).as_posix()):
+        require_regular(path, "formal runtime source")
+        digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0" + sha256_file(path).encode("ascii") + b"\n")
+    return digest.hexdigest()
+
+
+def create_formal_session(root: Path) -> Tuple[str, Dict[str, Any], str]:
+    """Create one immutable manifest binding all five formal cells to current code."""
+    session_id = secrets.token_hex(16)
+    output_dir = formal_results_directory(root, session_id)
+    manifest = {
+        "schema": FORMAL_SESSION_SCHEMA,
+        "session_id": session_id,
+        "datasets": list(DATASETS),
+        "run_nonces": {dataset: derive_run_nonce(session_id, dataset) for dataset in DATASETS},
+        "started_unix_ns": time.time_ns(),
+        "runtime_source_sha256": runtime_source_sha256(root),
+        "native_source_sha256": source_tree_sha256(root),
+    }
+    path = output_dir / "session.json"
+    atomic_write_json(path, manifest, root)
+    manifest_sha256 = sha256_file(path)
+    atomic_write_json(formal_session_status_path(root, session_id), {
+        "schema": FORMAL_SESSION_SCHEMA, "session_id": session_id,
+        "status": "RUNNING", "active_stage": "session-created", "completed_stages": [],
+        "started_unix_ns": manifest["started_unix_ns"],
+    }, root)
+    return session_id, manifest, manifest_sha256
+
+
+@contextmanager
+def formal_run_lock(root: Path):
+    lock_path = local_path(root, "baseline-local/formal-run.lock", "formal run lock")
+    ensure_directory(lock_path.parent, "formal lock directory", root)
+    stream = lock_path.open("a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            stream.seek(0)
+            owner = stream.read().strip() or "another official session"
+            raise ChainError(f"formal run is already active ({owner}); refusing concurrent execution") from exc
+        stream.seek(0)
+        stream.truncate()
+        stream.write(f"pid={os.getpid()} started_unix_ns={time.time_ns()}\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+        yield
+    finally:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        finally:
+            stream.close()
+
+
+def require_formal_session(root: Path) -> Tuple[str, Dict[str, Any], str]:
+    session_id = os.environ.get("ZKGPT_FORMAL_SESSION_ID", "")
+    if not HEX32_RE.fullmatch(session_id):
+        raise ChainError("formal helper requires the session created by run_zkgpt_formal.sh")
+    path = formal_session_path(root, session_id)
+    manifest = load_json(path, "formal session manifest")
+    if not isinstance(manifest, dict) or manifest.get("schema") != FORMAL_SESSION_SCHEMA:
+        raise ChainError("formal session manifest schema is invalid")
+    expected_nonces = {dataset: derive_run_nonce(session_id, dataset) for dataset in DATASETS}
+    if manifest.get("session_id") != session_id or manifest.get("datasets") != list(DATASETS) or manifest.get("run_nonces") != expected_nonces:
+        raise ChainError("formal session manifest does not bind exactly the five canonical datasets")
+    if manifest.get("runtime_source_sha256") != runtime_source_sha256(root) or manifest.get("native_source_sha256") != source_tree_sha256(root):
+        raise ChainError("formal session source fingerprint is stale")
+    return session_id, manifest, sha256_file(path)
 
 
 def _reject_path_alias(path: Path, description: str) -> None:
@@ -199,13 +320,125 @@ def invalidate_results(root: Path, names: Sequence[str] = ("collected_results.js
             require_regular(path, "aggregate output").unlink()
 
 
-def run_logged(command: Sequence[str], root: Path, stdout_path: Path, stderr_path: Path, label: str, telemetry: Optional[Dict[str, Any]] = None) -> int:
-    """Stream native output to disk and terminal without retaining it in RAM."""
+def _stop_child(process: subprocess.Popen, owned_pgid: Optional[int], grace_seconds: float = 8.0) -> None:
+    _signal_child_termination(process, owned_pgid)
+    deadline = time.monotonic() + grace_seconds
+    if process.poll() is None:
+        try:
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+    if owned_pgid is not None:
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(owned_pgid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        try:
+            os.killpg(owned_pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    elif process.poll() is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    if process.poll() is None:
+        process.wait()
+
+
+def _signal_child_termination(process: subprocess.Popen, owned_pgid: Optional[int]) -> None:
+    try:
+        if owned_pgid is not None:
+            os.killpg(owned_pgid, signal.SIGTERM)
+        else:
+            process.terminate()
+    except ProcessLookupError:
+        pass
+
+
+def _join_output_pumps(
+    threads: Sequence[threading.Thread], process: subprocess.Popen,
+    owned_pgid: Optional[int], context: str, drain_seconds: float = 8.0,
+) -> None:
+    """Drain output after the leader exits, without waiting forever on orphaned pipes.
+
+    A formal child may run for as long as needed; the bounded wait starts only
+    after its direct process has exited.  Inherited process groups belong to
+    the outer stage, so this helper reports the leak and lets that owner reap
+    the whole group rather than killing the parent's group itself.
+    """
+    deadline = time.monotonic() + drain_seconds
+    for thread in threads:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    alive = [thread for thread in threads if thread.is_alive()]
+    if not alive:
+        return
+    if owned_pgid is not None:
+        _stop_child(process, owned_pgid)
+        for thread in alive:
+            thread.join(2.0)
+        alive = [thread for thread in threads if thread.is_alive()]
+    if alive:
+        raise ChainError(
+            f"{context} output pipes remained open after the leader exited; "
+            "an owned descendant may still be running"
+        )
+    raise ChainError(
+        f"{context} left descendants holding output pipes after the leader exited; "
+        "the owned process group was terminated"
+    )
+
+
+def _terminate_registered_processes() -> None:
+    with _ACTIVE_PROCESS_LOCK:
+        active = list(_ACTIVE_OWNED_PROCESSES.items())
+    for pgid, process in active:
+        _stop_child(process, pgid)
+
+
+def _process_signal_handler(signum: int, _frame: Any) -> None:
+    _terminate_registered_processes()
+    raise KeyboardInterrupt(f"formal runner interrupted by signal {signum}")
+
+
+def install_process_signal_cleanup() -> None:
+    global _PROCESS_SIGNAL_HANDLERS_INSTALLED
+    if _PROCESS_SIGNAL_HANDLERS_INSTALLED or threading.current_thread() is not threading.main_thread():
+        return
+    signal.signal(signal.SIGINT, _process_signal_handler)
+    signal.signal(signal.SIGTERM, _process_signal_handler)
+    _PROCESS_SIGNAL_HANDLERS_INSTALLED = True
+
+
+def run_logged(
+    command: Sequence[str], root: Path, stdout_path: Path, stderr_path: Path,
+    label: str, telemetry: Optional[Dict[str, Any]] = None,
+    *, extra_env: Optional[Mapping[str, str]] = None,
+    isolate_process_group: bool = False,
+) -> int:
+    """Stream output and own/reap the command's process group when standalone."""
+    install_process_signal_cleanup()
     ensure_directory(stdout_path.parent, "native log directory", root)
     for path in (stdout_path, stderr_path):
         local_path(root, relative_path(root, path, "native log"), "native log")
+    child_env = os.environ.copy()
+    if extra_env:
+        child_env.update({str(key): str(value) for key, value in extra_env.items()})
+    inherited_owned_group = child_env.get("ZKGPT_OWNED_PROCESS_GROUP") == "1"
+    owns_group = isolate_process_group or not inherited_owned_group
+    if owns_group:
+        child_env["ZKGPT_OWNED_PROCESS_GROUP"] = "1"
     with stdout_path.open("w", encoding="utf-8") as stdout_log, stderr_path.open("w", encoding="utf-8") as stderr_log:
-        process = subprocess.Popen(list(command), cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        process = subprocess.Popen(
+            list(command), cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1, env=child_env, start_new_session=owns_group,
+        )
+        owned_pgid = process.pid if owns_group else None
+        if owned_pgid is not None:
+            with _ACTIVE_PROCESS_LOCK:
+                _ACTIVE_OWNED_PROCESSES[owned_pgid] = process
         failures: List[BaseException] = []
         def pump(stream: Any, output: Any, terminal: Any) -> None:
             try:
@@ -215,10 +448,10 @@ def run_logged(command: Sequence[str], root: Path, stdout_path: Path, stderr_pat
                     print(f"[{label}] {line}", end="", file=terminal, flush=True)
             except BaseException as exc:
                 failures.append(exc)
-                process.terminate()
+                _signal_child_termination(process, owned_pgid)
             finally:
                 stream.close()
-        threads = [threading.Thread(target=pump, args=(process.stdout, stdout_log, sys.stdout)), threading.Thread(target=pump, args=(process.stderr, stderr_log, sys.stderr))]
+        threads = [threading.Thread(target=pump, args=(process.stdout, stdout_log, sys.stdout), daemon=True), threading.Thread(target=pump, args=(process.stderr, stderr_log, sys.stderr), daemon=True)]
         for thread in threads:
             thread.start()
         try:
@@ -232,16 +465,89 @@ def run_logged(command: Sequence[str], root: Path, stdout_path: Path, stderr_pat
                 if telemetry is not None:
                     raise ChainError("native per-process resource accounting requires wait4")
         except BaseException:
-            if process.returncode is None:
-                process.terminate()
-                process.wait()
+            _stop_child(process, owned_pgid)
             raise
         finally:
-            for thread in threads:
-                thread.join()
+            try:
+                _join_output_pumps(threads, process, owned_pgid, label)
+                if owned_pgid is not None:
+                    _stop_child(process, owned_pgid, grace_seconds=0.5)
+            finally:
+                if owned_pgid is not None:
+                    with _ACTIVE_PROCESS_LOCK:
+                        _ACTIVE_OWNED_PROCESSES.pop(owned_pgid, None)
         if failures:
             raise ChainError(f"native output logging failed: {failures[0]}")
         return returncode
+
+
+def run_captured(
+    command: Sequence[str], root: Path, timeout_seconds: Optional[float] = None,
+    *, extra_env: Optional[Mapping[str, str]] = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a small helper command with the same owned-group cleanup as run_logged."""
+    install_process_signal_cleanup()
+    child_env = os.environ.copy()
+    if extra_env:
+        child_env.update({str(key): str(value) for key, value in extra_env.items()})
+    inherited_owned_group = child_env.get("ZKGPT_OWNED_PROCESS_GROUP") == "1"
+    owns_group = not inherited_owned_group
+    if owns_group:
+        child_env["ZKGPT_OWNED_PROCESS_GROUP"] = "1"
+    process = subprocess.Popen(
+        list(command), cwd=str(root), text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=child_env, start_new_session=owns_group,
+    )
+    owned_pgid = process.pid if owns_group else None
+    if owned_pgid is not None:
+        with _ACTIVE_PROCESS_LOCK:
+            _ACTIVE_OWNED_PROCESSES[owned_pgid] = process
+    stdout_parts: List[str] = []
+    stderr_parts: List[str] = []
+    pump_failures: List[BaseException] = []
+
+    def capture(stream: Any, parts: List[str]) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                parts.append(line)
+        except BaseException as exc:
+            pump_failures.append(exc)
+            _signal_child_termination(process, owned_pgid)
+        finally:
+            stream.close()
+
+    threads = [
+        threading.Thread(target=capture, args=(process.stdout, stdout_parts), daemon=True),
+        threading.Thread(target=capture, args=(process.stderr, stderr_parts), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            _stop_child(process, owned_pgid)
+            try:
+                _join_output_pumps(threads, process, owned_pgid, "captured helper")
+            except ChainError:
+                raise
+            stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
+            raise subprocess.TimeoutExpired(command, timeout_seconds, stdout, stderr) from exc
+        _join_output_pumps(threads, process, owned_pgid, "captured helper")
+        if owned_pgid is not None:
+            _stop_child(process, owned_pgid, grace_seconds=0.5)
+        if pump_failures:
+            raise ChainError(f"captured helper output collection failed: {pump_failures[0]}")
+        return subprocess.CompletedProcess(
+            command, process.returncode, "".join(stdout_parts), "".join(stderr_parts)
+        )
+    except BaseException:
+        _stop_child(process, owned_pgid)
+        raise
+    finally:
+        if owned_pgid is not None:
+            with _ACTIVE_PROCESS_LOCK:
+                _ACTIVE_OWNED_PROCESSES.pop(owned_pgid, None)
 
 
 def new_run_nonce() -> str:
@@ -493,9 +799,11 @@ def binary_fingerprint(path: Path, description: str) -> Dict[str, Any]:
     return file_fingerprint(path, description)
 
 
-def run_directory(root: Path, dataset: str, backend: str, config: Mapping[str, str]) -> Tuple[str, Path]:
-    export = config.get("export_dir") or f"baseline-local/runs/{dataset}_secure"
-    run_relative = f"{export}/{backend}"
+def run_directory(root: Path, dataset: str, session_id: str, config: Optional[Mapping[str, str]] = None) -> Tuple[str, Path]:
+    del config
+    if dataset not in DATASETS or not HEX32_RE.fullmatch(session_id):
+        raise ChainError("formal run path requires a canonical dataset and session id")
+    run_relative = f"baseline-local/runs/formal/{session_id}/{dataset}"
     run_path = local_path(root, run_relative, "formal run directory")
     ensure_directory(run_path, "formal run directory", root)
     return run_relative, run_path
@@ -554,6 +862,10 @@ def launch_native(
     registration_path_value: Optional[str] = None,
     com_w_secret_path_value: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
+    formal_session_id: Optional[str] = None,
+    run_nonce: Optional[str] = None,
+    session_manifest_sha256: Optional[str] = None,
+    run_directory_relative: Optional[str] = None,
 ) -> subprocess.CompletedProcess[str]:
     if operation not in ("prove", "register", "capacity"):
         raise ChainError(f"unsupported native operation: {operation}")
@@ -570,9 +882,22 @@ def launch_native(
         args.append("--register-only")
     elif operation == "capacity":
         args.append("--capacity-only")
+    binding_values = (formal_session_id, run_nonce, session_manifest_sha256, run_directory_relative)
+    if operation != "capacity" and not all(binding_values):
+        raise ChainError(f"native {operation} requires a complete formal session binding")
+    if any(value is not None for value in binding_values):
+        if not all(binding_values):
+            raise ChainError("native formal session binding is incomplete")
+        current_id, _manifest, current_sha256 = require_formal_session(root)
+        if (formal_session_id != current_id or session_manifest_sha256 != current_sha256 or
+                run_nonce != derive_run_nonce(current_id, dataset) or
+                run_directory_relative != f"baseline-local/runs/formal/{current_id}/{dataset}"):
+            raise ChainError("native formal session binding does not match this run")
+        args.extend(["--formal-session-id", str(formal_session_id), "--run-nonce", str(run_nonce),
+                     "--session-manifest-sha256", str(session_manifest_sha256),
+                     "--formal-run-directory", str(run_directory_relative)])
     try:
-        return subprocess.run(args, cwd=str(root), text=True, capture_output=True,
-                              check=False, env=os.environ.copy(), timeout=timeout_seconds)
+        return run_captured(args, root, timeout_seconds)
     except subprocess.TimeoutExpired as exc:
         raise ChainError(f"native {operation} timed out for {dataset}/{backend}") from exc
 
@@ -580,7 +905,8 @@ def launch_native(
 def require_result_shape(value: Any, path: Path) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ChainError(f"result is not a JSON object: {path}")
-    required = ("schema", "dataset", "backend", "status", "verification_status",
+    required = ("schema", "paper_timing_semantics", "session_id", "run_nonce", "session_manifest_sha256",
+                "dataset", "backend", "status", "verification_status",
                 "proof_scope", "privacy_policy", "privacy_profile", "output_mode",
                 "capability_status", "formal_backend_supported")
     for key in required:
@@ -588,6 +914,11 @@ def require_result_shape(value: Any, path: Path) -> Dict[str, Any]:
             raise ChainError(f"result missing {key}: {path}")
     if value["schema"] != RESULT_SCHEMA:
         raise ChainError(f"unsupported result schema in {path}")
+    if value.get("paper_timing_semantics") != PAPER_TIMING_SEMANTICS:
+        raise ChainError(f"result uses stale or unsupported paper timing semantics: {path}")
+    require_fixed_digest(value.get("session_manifest_sha256"), "session_manifest_sha256", path)
+    if not HEX32_RE.fullmatch(str(value.get("session_id", ""))) or not HEX32_RE.fullmatch(str(value.get("run_nonce", ""))):
+        raise ChainError(f"result has invalid formal session identity: {path}")
     if (value["proof_scope"] != "full_gat" or
             value["privacy_policy"] != "model_and_trace_hidden" or
             value["privacy_profile"] != "masked_full" or
@@ -649,12 +980,33 @@ def require_timing(result: Mapping[str, Any], path: Any) -> Dict[str, float]:
     if not isinstance(timing, dict):
         raise ChainError(f"{path} is missing timing_ms")
     normalized: Dict[str, float] = {}
-    for key in ("load", "registration", "witness", "commitment", "prove", "verify", "serialize"):
+    if result.get("paper_timing_semantics") != PAPER_TIMING_SEMANTICS:
+        raise ChainError(f"{path} uses stale or unsupported paper timing semantics")
+    required = (
+        "load", "registration", "witness", "preparation", "preparation_net",
+        "aux_commitment", "lasso_query_commitment", "lasso_family_commitments",
+        "commitment", "prove_total", "self_verify", "prove", "verify",
+        "serialize", "artifact_write", "artifact_readback",
+    )
+    for key in required:
         normalized[key] = finite_nonnegative(timing.get(key), f"timing_ms.{key}", path)
     for key, value in timing.items():
         if not isinstance(key, str):
             raise ChainError(f"{path} has invalid timing field")
         normalized[key] = finite_nonnegative(value, f"timing_ms.{key}", path)
+    def timing_equal(left: float, right: float) -> bool:
+        return math.isclose(left, right, rel_tol=1e-12, abs_tol=1e-9)
+
+    expected = normalized["aux_commitment"] + normalized["lasso_query_commitment"] + normalized["lasso_family_commitments"]
+    if not timing_equal(expected, normalized["commitment"]):
+        raise ChainError(f"{path} commitment total does not equal its measured native substages")
+    if not timing_equal(normalized["preparation"] - normalized["lasso_query_commitment"], normalized["preparation_net"]):
+        raise ChainError(f"{path} preparation net does not subtract the overlapping L_qry commitment")
+    if not timing_equal(normalized["artifact_write"] + normalized["artifact_readback"], normalized["serialize"]):
+        raise ChainError(f"{path} serialization total does not equal write plus readback")
+    paper_prove = normalized["prove_total"] - normalized["preparation_net"] - normalized["commitment"] - normalized["self_verify"] + normalized["artifact_write"]
+    if paper_prove < 0 or not timing_equal(paper_prove, normalized["prove"]):
+        raise ChainError(f"{path} Prove Time decomposition is invalid")
     return normalized
 
 
@@ -663,7 +1015,14 @@ def paper_metrics(result: Mapping[str, Any], report: Mapping[str, Any], where: A
     size = result.get("proof_size_bytes")
     if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
         raise ChainError(f"{where} has invalid proof_size_bytes")
-    return {"commitment_time_ms": timing["commitment"], "prove_time_ms": timing["prove"], "verify_time_ms": finite_nonnegative(report.get("crypto_verify_ms"), "crypto_verify_ms", where), "proof_size_bytes": size, "timing_scope": "prove_time_ms excludes commitment and prover self-verification but includes canonical circuit-witness construction and validation; artifact serialization and pre-proof forward/plan/registration are reported separately"}
+    return {
+        "commitment_time_ms": timing["commitment"],
+        "prove_time_ms": timing["prove"],
+        "verify_time_ms": finite_nonnegative(report.get("crypto_verify_ms"), "crypto_verify_ms", where),
+        "proof_size_bytes": size,
+        "paper_timing_semantics": PAPER_TIMING_SEMANTICS,
+        "timing_scope": "Commitment Time measures Aux, L_qry, and native Lasso family tensor commitments; Prove Time excludes preparation, those commitments, and prover self-verification, and includes artifact write but excludes local artifact readback.",
+    }
 
 
 def parse_prover_secret_metadata(path: Path) -> Dict[str, Any]:
@@ -828,6 +1187,10 @@ def validate_formal_cell(
     backend: str,
     preflight: Mapping[str, Any],
     resource_manifest_digest: str,
+    session_id: str,
+    session_manifest_sha256: str,
+    native_source_sha256: str,
+    preflight_path: Path,
     seen_artifact_paths: Optional[set] = None,
     seen_artifact_digests: Optional[set] = None,
 ) -> Dict[str, Any]:
@@ -839,9 +1202,14 @@ def validate_formal_cell(
     entry = preflight.get("backends", {}).get(backend)
     if not isinstance(entry, dict) or entry.get("ready") is not True or entry.get("source_tree_sha256") != verify_build_provenance(root, backend):
         raise ChainError("formal cell source/preflight binding is stale")
+    if (preflight.get("session_id") != session_id or
+            preflight.get("session_manifest_sha256") != session_manifest_sha256 or
+            preflight.get("runtime_source_sha256") != runtime_source_sha256(root) or
+            preflight.get("native_source_sha256") != native_source_sha256):
+        raise ChainError("formal cell session/preflight binding is stale")
     resource = resource_identity(root, dataset)
     config = resource["config"]
-    run_relative = f"{config.get('export_dir') or f'baseline-local/runs/{dataset}_secure'}/{backend}"
+    run_relative = f"baseline-local/runs/formal/{session_id}/{dataset}"
     run_path = local_path(root, run_relative, "formal run directory")
     require_directory(run_path, "formal run directory")
     result_path = run_path / "result.json"
@@ -849,6 +1217,10 @@ def validate_formal_cell(
     if (result.get("dataset") != dataset or result.get("backend") != backend or
             result.get("run_dir") != run_relative):
         raise ChainError(f"native result identity mismatch: {result_path}")
+    expected_nonce = derive_run_nonce(session_id, dataset)
+    if (result.get("session_id") != session_id or result.get("run_nonce") != expected_nonce or
+            result.get("session_manifest_sha256") != session_manifest_sha256):
+        raise ChainError(f"native result does not belong to the current formal session: {result_path}")
     if result.get("status") != "VERIFY_OK" or result.get("verification_status") != "VERIFY_OK":
         raise ChainError(f"native result is not VERIFY_OK: {result_path}")
     for key in ("proof_generated", "verifier_called", "verifier_ok"):
@@ -950,12 +1322,15 @@ def validate_formal_cell(
     require_bool(execution, "no_fallback", True, execution_path)
     require_bool(execution, "verifier_reads_witness", False, execution_path)
     require_bool(execution, "verifier_reads_checkpoint", False, execution_path)
-    if not isinstance(execution.get("run_nonce"), str) or not re.fullmatch(r"[0-9a-f]{32}", execution["run_nonce"]):
-        raise ChainError(f"execution run nonce is not canonical: {execution_path}")
+    if (execution.get("session_id") != session_id or execution.get("run_nonce") != expected_nonce or
+            execution.get("session_manifest_sha256") != session_manifest_sha256):
+        raise ChainError(f"execution record does not belong to the current formal session: {execution_path}")
     started_ns = execution.get("run_started_unix_ns")
     if isinstance(started_ns, bool) or not isinstance(started_ns, int) or started_ns <= 0:
         raise ChainError(f"execution run start is invalid: {execution_path}")
     expected_execution = {
+        "session_id": session_id, "session_manifest_sha256": session_manifest_sha256,
+        "preflight_sha256": sha256_file(preflight_path),
         "result_path": str(result_path.relative_to(root)), "verifier_report_path": str(report_path.relative_to(root)),
         "statement_path": statement_rel, "verifier_context_path": context_rel,
         "public_logits_path": logits_rel, "artifact_path": artifact_rel,
@@ -976,6 +1351,9 @@ def validate_formal_cell(
     for key, expected in expected_execution.items():
         if execution.get(key) != expected:
             raise ChainError(f"execution identity mismatch for {key}: {execution_path}")
+    if (execution.get("paper_timing_semantics") != PAPER_TIMING_SEMANTICS or
+            result.get("paper_timing_semantics") != PAPER_TIMING_SEMANTICS):
+        raise ChainError("execution/result use stale paper timing semantics")
     if execution.get("timing_ms") != result.get("timing_ms"):
         raise ChainError(f"execution timing does not match native result: {execution_path}")
     execution_resource_digests = {
@@ -1012,7 +1390,7 @@ def validate_formal_cell(
     assert_fresh_files((result_path, statement_path, context_path, logits_path, artifact_path, report_path, execution_path), started_ns, "formal cell output")
     wall = {key: finite_nonnegative(execution.get(key), key, execution_path) for key in ("prover_wall_ms", "verifier_wall_ms")}
     metrics = paper_metrics(result, report, report_path)
-    if execution.get("paper_metrics") != metrics or execution.get("preflight_sha256") != sha256_file(root / "results" / "formal_preflight.json"):
+    if execution.get("paper_metrics") != metrics or execution.get("preflight_sha256") != sha256_file(preflight_path):
         raise ChainError("execution metrics/preflight binding is stale")
     stages = execution.get("process_telemetry")
     if not isinstance(stages, dict) or set(stages) != {"prover", "verifier"}:
@@ -1041,5 +1419,7 @@ def validate_formal_cell(
         "checkpoint_manifest_sha256": resource["checkpoint_manifest_sha256"],
         "timing_ms": require_timing(result, result_path), "wall_ms": wall,
         "native_backend": result["native_backend"], "no_fallback": True, "witness_isolated": True,
+        "session_id": session_id, "session_manifest_sha256": session_manifest_sha256,
         "run_nonce": execution["run_nonce"], "resource_manifest_sha256": resource_manifest_digest,
+        "paper_timing_semantics": PAPER_TIMING_SEMANTICS,
     }

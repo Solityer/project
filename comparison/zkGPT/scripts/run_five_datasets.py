@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
-"""唯一的五数据集正式入口; execution remains in gat_zkgpt_experiment.py."""
+"""Run the fixed five-dataset formal path inside an active official session."""
 
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
-from pathlib import Path
 from typing import List
 
-from common import FORMAL_BACKENDS, baseline_root
+from common import ChainError, baseline_root, require_formal_session
+from gat_zkgpt_experiment import main as run_formal_cells
 
 
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--backend", choices=("all",) + FORMAL_BACKENDS, default="cpu",
-        help="formal backend (default: cpu; gpu is fail-closed unsupported)",
-    )
-    args = parser.parse_args(argv)
-    root = baseline_root()
-    command = [sys.executable, str(root / "scripts" / "gat_zkgpt_experiment.py"),
-               "--datasets", "all", "--backends", ",".join(FORMAL_BACKENDS) if args.backend == "all" else args.backend]
-    completed = subprocess.run(command, cwd=str(root), check=False)
-    return completed.returncode
+    parser.parse_args(argv)
+    try:
+        require_formal_session(baseline_root())
+    except ChainError as exc:
+        print(f"EXPERIMENT_BLOCKED: {exc}", file=sys.stderr)
+        return 2
+    return run_formal_cells([])
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use halo2_proofs::circuit::Value;
 use halo2curves::bn256::Fr as Fp;
-use halo2curves::ff::Field;
+use halo2curves::ff::{Field, PrimeField};
 
 use crate::circuit::ops::region::RegionCtx;
 use crate::circuit::ops::{base::BaseOp, layouts, Op};
@@ -136,6 +136,76 @@ impl GatOp {
     fn unknown_tensor(dims: &[usize]) -> Result<ValTensor<Fp>, CircuitError> {
         let vals = vec![ValType::Value(Value::unknown()); dims.iter().product()];
         Ok(Tensor::new(Some(&vals), dims)?.into())
+    }
+
+    fn checked_signed_field(value: Fp) -> Option<i128> {
+        let negative = value > Fp::from_u128(i128::MAX as u128);
+        let magnitude = if negative { -value } else { value };
+        let repr = magnitude.to_repr();
+        let bytes = repr.as_ref();
+        if bytes.len() < 16 || bytes[16..].iter().any(|byte| *byte != 0) {
+            return None;
+        }
+        let magnitude = u128::from_le_bytes(bytes[..16].try_into().ok()?);
+        if !negative {
+            return i128::try_from(magnitude).ok();
+        }
+        if magnitude == (1_u128 << 127) {
+            return Some(i128::MIN);
+        }
+        i128::try_from(magnitude).ok()?.checked_neg()
+    }
+
+    fn range_check_bounded(config: &BaseConfig<Fp>, region: &mut RegionCtx<Fp>, values: &[&ValTensor<Fp>; 1], range: &crate::circuit::table::Range) -> Result<(), CircuitError> {
+        let value = values[0];
+        if range.0 > range.1 {
+            return Err(CircuitError::InvalidMinMaxRange(range.0, range.1));
+        }
+        let span = range.1.checked_sub(range.0).ok_or(CircuitError::UnsupportedOp)?;
+        if span <= 1023 {
+            layouts::range_check(config, region, &[value], range)?;
+            return Ok(());
+        }
+        let significant_bits = 128 - (span as u128).leading_zeros() as usize;
+        let limbs = significant_bits.checked_add(7).ok_or(CircuitError::UnsupportedOp)? / 8;
+        if limbs > 15 {
+            return Err(CircuitError::UnsupportedOp);
+        }
+        let no_wrap_bits = limbs.checked_mul(8).and_then(|bits| bits.checked_add(1)).ok_or(CircuitError::UnsupportedOp)?;
+        // The BN254 scalar modulus is greater than 2^253; the two limb sums are below 2^no_wrap_bits.
+        if no_wrap_bits > 253 {
+            return Err(CircuitError::UnsupportedOp);
+        }
+        let maximum_difference = 1_i128.checked_shl((limbs * 8) as u32).and_then(|value| value.checked_sub(1)).ok_or(CircuitError::UnsupportedOp)?;
+        let lower_constant = Self::constant_i128(&vec![range.0; value.len()], value.dims())?;
+        let upper_constant = Self::constant_i128(&vec![range.1; value.len()], value.dims())?;
+        let lower_diff = layouts::pairwise(config, region, &[value, &lower_constant], BaseOp::Sub)?;
+        let upper_diff = layouts::pairwise(config, region, &[&upper_constant, value], BaseOp::Sub)?;
+        for difference in [&lower_diff, &upper_diff] {
+            if !difference.any_unknowns()? {
+                for item in difference.get_inner_tensor()?.iter() {
+                    let integer = Self::checked_signed_field(item.get_felt_eval().ok_or(CircuitError::UnsupportedOp)?).ok_or(CircuitError::UnsupportedOp)?;
+                    if integer.checked_abs().map_or(true, |magnitude| magnitude > maximum_difference) {
+                        return Err(CircuitError::UnsupportedOp);
+                    }
+                }
+            }
+        }
+        let base = 256;
+        let (lower_parts, lower_value) = layouts::decompose(config, region, &[&lower_diff], &base, &limbs, true)?;
+        let (upper_parts, upper_value) = layouts::decompose(config, region, &[&upper_diff], &base, &limbs, true)?;
+        let mut lower_sign = lower_parts.clone();
+        lower_sign.get_every_n(limbs + 1)?;
+        lower_sign.reshape(value.dims())?;
+        layouts::range_check(config, region, &[&lower_sign], &(0, 1))?;
+        let mut upper_sign = upper_parts;
+        upper_sign.get_every_n(limbs + 1)?;
+        upper_sign.reshape(value.dims())?;
+        layouts::range_check(config, region, &[&upper_sign], &(0, 1))?;
+        let difference_sum = layouts::pairwise(config, region, &[&lower_value, &upper_value], BaseOp::Add)?;
+        let span_constant = Self::constant_i128(&vec![span; value.len()], value.dims())?;
+        layouts::enforce_equality(config, region, &[&difference_sum, &span_constant])?;
+        Ok(())
     }
 
     fn table(table: &ExactTable) -> Result<(ValTensor<Fp>, ValTensor<Fp>), CircuitError> {
@@ -531,10 +601,10 @@ impl GatOp {
         let max_divisor = bounds.map(|family| family.max_divisor).unwrap_or(self.spec.ledger.max_divisor);
         let max_aux_abs = bounds.map(|family| family.max_aux_abs).unwrap_or(self.spec.ledger.max_aux_abs);
         let max_dividend_abs = bounds.map(|family| family.max_dividend_abs).unwrap_or(self.spec.ledger.max_dividend_abs);
-        layouts::range_check(config, region, &[&q_abs], &(0, max_dividend_abs))?;
-        layouts::range_check(config, region, &[&q], &(-max_dividend_abs, max_dividend_abs),)?;
-        layouts::range_check(config, region, &[&sign_factor], &(-1, 1))?;
-        layouts::range_check(config, region, &[divisor], &(1, max_divisor))?;
+        Self::range_check_bounded(config, region, &[&q_abs], &(0, max_dividend_abs))?;
+        Self::range_check_bounded(config, region, &[&q], &(-max_dividend_abs, max_dividend_abs),)?;
+        Self::range_check_bounded(config, region, &[&sign_factor], &(-1, 1))?;
+        Self::range_check_bounded(config, region, &[divisor], &(1, max_divisor))?;
         let d_inv_scalar = self.inverse_exact(config, region, divisor)?;
         let d_inv = Self::repeated_scalar(&d_inv_scalar, dividend.dims())?;
         let d_product = layouts::pairwise(config, region, &[&d_repeated, &d_inv], BaseOp::Mult)?;
@@ -615,14 +685,14 @@ impl GatOp {
                 let low_selected = layouts::pairwise(config, region, &[&one_minus_round, &low], BaseOp::Mult)?;
                 let high_selected = layouts::pairwise(config, region, &[&rounded_up, &high], BaseOp::Mult)?;
                 let selected = layouts::pairwise(config, region, &[&low_selected, &high_selected], BaseOp::Add,)?;
-                layouts::range_check(config, region, &[&floor_rem], &(0, max_aux_abs))?;
-                layouts::range_check(config, region, &[&selected], &(0, max_aux_abs))?;
+                Self::range_check_bounded(config, region, &[&floor_rem], &(0, max_aux_abs))?;
+                Self::range_check_bounded(config, region, &[&selected], &(0, max_aux_abs))?;
             }
         }
 
-        layouts::range_check(config, region, &[&rem], &(0, max_aux_abs))?;
-        layouts::range_check(config, region, &[&delta_vals], &(0, max_aux_abs))?;
-        layouts::range_check(config, region, &[&q_floor], &(0, max_dividend_abs))?;
+        Self::range_check_bounded(config, region, &[&rem], &(0, max_aux_abs))?;
+        Self::range_check_bounded(config, region, &[&delta_vals], &(0, max_aux_abs))?;
+        Self::range_check_bounded(config, region, &[&q_floor], &(0, max_dividend_abs))?;
         match rounding {
             RoundingMode::TowardZero => {
                 let zero_round = Self::constant_i128(&vec![0; dividend.len()], dividend.dims())?;
@@ -630,8 +700,8 @@ impl GatOp {
             }
             RoundingMode::NearestTiesAway => {}
         }
-        layouts::range_check(config, region, &[&abs], &(0, max_dividend_abs))?;
-        layouts::range_check(config, region, &[&rem], &(0, max_aux_abs))?;
+        Self::range_check_bounded(config, region, &[&abs], &(0, max_dividend_abs))?;
+        Self::range_check_bounded(config, region, &[&rem], &(0, max_aux_abs))?;
         Ok(q)
     }
 
@@ -656,7 +726,7 @@ impl GatOp {
             let max = values.int_evals()?.into_iter().max().ok_or(CircuitError::UnsupportedOp)?;
             Self::value_i128(&[max], &[1])?
         };
-        layouts::range_check(config, region, &[&claimed], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
+        Self::range_check_bounded(config, region, &[&claimed], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
         let claimed_repeated = Self::repeated_scalar(&claimed, values.dims())?;
         let one = Self::constant_i128(&vec![1; values.len()], values.dims())?;
         let max_minus_one = layouts::pairwise(config, region, &[&claimed_repeated, &one], BaseOp::Sub)?;
@@ -710,10 +780,10 @@ impl GatOp {
         dst_score.set_scale(self.spec.scales.s_delta);
         let mut score = layouts::pairwise(config, region, &[&src_score, &dst_score], BaseOp::Add)?;
         score.set_scale(self.spec.scales.s_delta);
-        layouts::range_check(config, region, &[&score], &(-bounds.max_score_abs, bounds.max_score_abs),)?;
+        Self::range_check_bounded(config, region, &[&score], &(-bounds.max_score_abs, bounds.max_score_abs),)?;
         let mut score = self.exact_lookup(config, region, &score, &self.spec.tables.lrelu, assigned_tables)?;
         score.set_scale(self.spec.scales.s_delta);
-        layouts::range_check(config, region, &[&score], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
+        Self::range_check_bounded(config, region, &[&score], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
         let mut node_values = vec![None; graph.n * channels];
         for (node, start, end) in graph.destination_groups().map_err(|_| CircuitError::UnsupportedOp)? {
             let group_score = Self::flatten_slice(&score, start, end, &[end - start])?;
@@ -722,13 +792,13 @@ impl GatOp {
             let score_group = Self::flatten_slice(&score, start, end, &[end - start])?;
             let mut delta = layouts::pairwise(config, region, &[&max_repeated, &score_group], BaseOp::Sub)?;
             delta.set_scale(self.spec.scales.s_delta);
-            layouts::range_check(config, region, &[&delta], &(0, bounds.max_delta))?;
+            Self::range_check_bounded(config, region, &[&delta], &(0, bounds.max_delta))?;
             let mut exp = self.exact_lookup(config, region, &delta, &self.spec.tables.exp, assigned_tables)?;
             exp.set_scale(self.spec.scales.s_exp);
-            layouts::range_check(config, region, &[&exp], &(1, bounds.max_exp))?;
+            Self::range_check_bounded(config, region, &[&exp], &(1, bounds.max_exp))?;
             let mut denominator = layouts::sum(config, region, &[&exp])?;
             denominator.set_scale(self.spec.scales.s_exp);
-            layouts::range_check(config, region, &[&denominator], &(1, bounds.max_sum))?;
+            Self::range_check_bounded(config, region, &[&denominator], &(1, bounds.max_sum))?;
             let inverse = self.inverse_exact(config, region, &denominator)?;
             let alpha = layouts::pairwise(config, region, &[&exp, &Self::repeated_scalar(&inverse, exp.dims())?], BaseOp::Mult,)?;
             let src_group = Self::flatten_slice(&src_values, start * channels, end * channels, &[end - start, channels],)?;
@@ -754,7 +824,7 @@ impl GatOp {
                 numerator.set_scale(self.spec.scales.s_exp.checked_add(projected_scale).ok_or(CircuitError::UnsupportedOp)?,);
                 let field_from_numerator = layouts::pairwise(config, region, &[&numerator, &inverse], BaseOp::Mult)?;
                 layouts::enforce_equality(config, region, &[&field_sum, &field_from_numerator])?;
-                layouts::range_check(config, region, &[&numerator], &(-bounds.max_aggregation_num, bounds.max_aggregation_num),)?;
+                Self::range_check_bounded(config, region, &[&numerator], &(-bounds.max_aggregation_num, bounds.max_aggregation_num),)?;
                 let recovery_multiplier = scale_exponent_to_multiplier(recovery_scale)
                     .map_err(|_| CircuitError::UnsupportedOp)
                     .and_then(|value| { i128::try_from(value).map_err(|_| CircuitError::UnsupportedOp) })?;
@@ -944,3 +1014,7 @@ impl Op<Fp> for GatOp {
         self
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/bounded_range_tests.rs"]
+mod bounded_range_tests;

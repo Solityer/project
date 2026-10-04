@@ -8680,12 +8680,20 @@ bool GatProofArtifact::write(const std::string& path,
     }
     write_string(out, transcript_digest);
     write_sparse_proof_wire(out, sparse_gkr);
+    out.flush();
     if (!out.good()) {
+        out.close();
+        std::remove(path.c_str());
         set_reason(reason, "proof artifact write failed");
         return false;
     }
     const std::ofstream::pos_type end = out.tellp();
     out.close();
+    if (out.fail()) {
+        std::remove(path.c_str());
+        set_reason(reason, "proof artifact close failed");
+        return false;
+    }
     if (end == std::ofstream::pos_type(-1) ||
         static_cast<std::uint64_t>(end) > max_wire_bytes) {
         std::remove(path.c_str());
@@ -9306,6 +9314,7 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
                                   const ForwardResult& forward, const ModelRegistration& registration,
                                   const std::string& privacy_profile) {
     ProveResult result;
+    const auto preparation_begin = std::chrono::steady_clock::now();
     try {
         const auto stage = [](const char* name) { std::cerr << "gat_adapter_prover_stage: " << name << '\n'; };
         stage("begin");
@@ -9502,6 +9511,9 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
                 throw std::invalid_argument("canonical GAT witness validation failed: " + witness_reason);
         }
 
+        result.preparation_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - preparation_begin).count();
+
         stage("generators");
         const G1 H = hyrax::derive_pedersen_blinding_generator(basis_id);
         const InputSegment& aux_segment = plan.input_layout.segments.at(2);
@@ -9520,7 +9532,7 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
                 aux_tensor_state, &aux_commitment_reason))
             throw std::runtime_error("canonical Aux tensor commitment failed: " +
                                      aux_commitment_reason);
-        result.commitment_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aux_commitment_begin).count();
+        result.aux_commitment_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aux_commitment_begin).count();
         CommitmentWire com_aux;
         com_aux.scheme = hyrax::kHyraxTensorMleSchema;
         com_aux.basis_id = basis_id;
@@ -9529,7 +9541,8 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         com_aux.has_tensor_commitment = true;
         com_aux.tensor_commitment = aux_tensor_commitment;
 
-        result.commitment_ms += lasso.commitment_ms;
+        result.lasso_query_commitment_ms = lasso.commitment_ms;
+        result.commitment_ms = result.aux_commitment_ms + result.lasso_query_commitment_ms;
         const std::vector<NativeLassoFamilyPublic> lasso_public = build_lasso_public_families(plan, tables, basis_label, lasso.families.get());
         NativeLassoQueryPublic lasso_query_public = build_lasso_public_query(plan, lasso.com_L, basis_label, &lasso.query);
         const std::string lasso_tables_digest = native_lasso_tables_digest(lasso_public);
@@ -9619,7 +9632,9 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         try {
             const bool lasso_ok = native_lasso_prove_bundle(
                 session, *lasso.families, lasso.query, &lasso_result, &reason,
-                tensor_tail_stage);
+                tensor_tail_stage, &result.lasso_family_commitment_ms);
+            result.commitment_ms = result.aux_commitment_ms + result.lasso_query_commitment_ms +
+                                   result.lasso_family_commitment_ms;
             lasso.families.reset();
             if (!lasso_ok)
                 throw std::runtime_error("native masked Lasso proof failed: " + reason);

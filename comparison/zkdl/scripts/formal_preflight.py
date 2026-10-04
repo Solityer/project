@@ -432,7 +432,7 @@ def main() -> int:
         if required_bytes > available_bytes:
             raise SystemExit(f'formal_input_preflight=BLOCKED combined snapshots/SRS/report need {required_bytes} bytes but only {available_bytes} are available')
         report_path.write_text(json.dumps(document, sort_keys=True, indent=2) + '\n')
-    print('formal_input_preflight=PASS datasets=5 backend=cpu')
+    print('formal_input_preflight=PASS datasets=5')
     return 0
 
 if __name__ == '__main__':

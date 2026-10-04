@@ -1,4 +1,4 @@
-schema=zkDL_gat_run_record_v1
+schema=zkDL_gat_run_record_v2
 dataset=cora
 backend=cpu
 statement_id=0000000000000000000000000000000000000000000000000000000000000000
@@ -12,6 +12,7 @@ integer_bound_ledger_digest=UNAVAILABLE
 integer_bound_ledger_descriptor_digest=UNAVAILABLE
 proof_size_bytes=128
 commitment_size_bytes=256
+commitment_time_semantics=native_tensor_commitments
 commitment_time_seconds=0.01
 prove_time_seconds=0.02
 verify_time_seconds=0.01

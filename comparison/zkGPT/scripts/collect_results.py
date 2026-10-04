@@ -6,46 +6,45 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence
 
 from common import (
     DATASETS,
     CAPACITY_PROOF_PATH,
-    FORMAL_BACKENDS,
     PREFLIGHT_SCHEMA,
     RESOURCE_MANIFEST_SCHEMA,
     ChainError,
     atomic_write_json,
     baseline_root,
-    binary_fingerprint,
     build_binary,
-    formal_backend_capability,
     load_json,
     invalidate_results,
-    require_fixed_digest,
     require_manifest,
-    resource_identity,
     sha256_file,
     validate_formal_cell,
     verifier_binary,
     verify_build_provenance,
+    formal_preflight_path,
+    formal_collection_path,
+    require_formal_session,
+    runtime_source_sha256,
+    PAPER_TIMING_SEMANTICS,
+    COLLECTED_SCHEMA,
 )
 
 
-def selection(raw: str, allowed: Sequence[str], label: str) -> Tuple[str, ...]:
-    if raw == "all":
-        return tuple(allowed)
-    values = tuple(item.strip() for item in raw.split(",") if item.strip())
-    if not values or len(set(values)) != len(values) or any(item not in allowed for item in values):
-        raise ChainError(f"{label} must be all or a comma-separated list of supported values")
-    return values
-
-
-def _validate_preflight(root: Path, backend: str, preflight: Dict[str, Any], resource_digest: str) -> None:
+def _validate_preflight(root: Path, backend: str, preflight: Dict[str, Any], resource_digest: str,
+                        session_id: str, session_manifest_sha256: str,
+                        native_source_sha256: str) -> None:
     if preflight.get("schema") != PREFLIGHT_SCHEMA or preflight.get("status") != "READY" or preflight.get("formal_experiment_eligible") is not True:
         raise ChainError("formal preflight is not an eligible schema-v2 READY record")
     if preflight.get("resource_manifest_sha256") != resource_digest:
         raise ChainError("formal preflight resource manifest is stale")
+    if (preflight.get("session_id") != session_id or
+            preflight.get("session_manifest_sha256") != session_manifest_sha256 or
+            preflight.get("runtime_source_sha256") != runtime_source_sha256(root) or
+            preflight.get("native_source_sha256") != native_source_sha256):
+        raise ChainError("formal preflight session/runtime/native source binding is stale")
     capacities = preflight.get("capacity")
     if not isinstance(capacities, dict) or set(capacities) != set(DATASETS):
         raise ChainError("formal preflight capacity matrix is incomplete")
@@ -67,22 +66,25 @@ def _validate_preflight(root: Path, backend: str, preflight: Dict[str, Any], res
 
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backends", default="cpu")
-    args = parser.parse_args(list(argv))
+    parser.parse_args(list(argv))
     root = baseline_root()
     try:
         invalidate_results(root)
-        backends = selection(args.backends, FORMAL_BACKENDS, "backends")
+        session_id, session, session_manifest_sha256 = require_formal_session(root)
+        backend = "cpu"
         resource_manifest = require_manifest(root, "resource_manifest.json", RESOURCE_MANIFEST_SCHEMA)
         del resource_manifest
         resource_manifest_path = root / "results" / "resource_manifest.json"
         resource_digest = sha256_file(resource_manifest_path)
-        preflight_path = root / "results" / "formal_preflight.json"
+        preflight_path = formal_preflight_path(root, session_id)
         preflight = load_json(preflight_path, "formal preflight")
         if not isinstance(preflight, dict):
             raise ChainError("formal preflight is not an object")
-        for backend in backends:
-            _validate_preflight(root, backend, preflight, resource_digest)
+        _validate_preflight(root, backend, preflight, resource_digest,
+                            session_id, session_manifest_sha256,
+                            session["native_source_sha256"])
+        if session.get("runtime_source_sha256") != runtime_source_sha256(root):
+            raise ChainError("formal session runtime source fingerprint is stale")
     except (ChainError, OSError, ValueError) as exc:
         print(f"COLLECT_FAILED: {exc}", file=sys.stderr)
         return 2
@@ -91,25 +93,34 @@ def main(argv: Sequence[str]) -> int:
     seen_digests: set = set()
     try:
         for dataset in DATASETS:
-            for backend in backends:
-                cells.append(validate_formal_cell(root, dataset, backend, preflight,
-                                                  resource_digest, seen_paths, seen_digests))
+            cells.append(validate_formal_cell(
+                root, dataset, backend, preflight, resource_digest,
+                session_id, session_manifest_sha256,
+                session["native_source_sha256"], preflight_path,
+                seen_paths, seen_digests,
+            ))
     except (ChainError, OSError, ValueError) as exc:
         print(f"COLLECT_FAILED: {exc}", file=sys.stderr)
         return 2
     payload = {
-        "schema": "zkgpt-gat-collected-results-v2", "status": "COLLECTED", "baseline": "zkGPT",
-        "matrix": {"datasets": list(DATASETS), "backends": list(backends), "cell_count": len(cells)},
+        "schema": COLLECTED_SCHEMA, "status": "COLLECTED", "baseline": "zkGPT",
+        "session_id": session_id, "session_manifest_sha256": session_manifest_sha256,
+        "paper_timing_semantics": PAPER_TIMING_SEMANTICS,
+        "matrix": {"datasets": list(DATASETS), "cell_count": len(cells)},
         "cells": cells, "resource_manifest": "results/resource_manifest.json",
-        "preflight": "results/formal_preflight.json", "resource_manifest_sha256": resource_digest,
-        "preflight_sha256": sha256_file(root / "results" / "formal_preflight.json"),
+        "preflight": str(preflight_path.relative_to(root)), "resource_manifest_sha256": resource_digest,
+        "preflight_sha256": sha256_file(preflight_path),
+        "runtime_source_sha256": session["runtime_source_sha256"],
     }
     try:
-        atomic_write_json(root / "results" / "collected_results.json", payload)
+        collection_path = formal_collection_path(root, session_id)
+        if collection_path.exists():
+            raise ChainError("current formal session already has a collection; refusing to reuse or overwrite it")
+        atomic_write_json(collection_path, payload, root)
     except ChainError as exc:
         print(f"COLLECT_OUTPUT_FAILED: {exc}", file=sys.stderr)
         return 2
-    print(f"COLLECTED {len(cells)} strict cells")
+    print(f"COLLECTED {len(cells)} strict cells session={session_id} path=results/formal/{session_id}/collected.json")
     return 0
 
 

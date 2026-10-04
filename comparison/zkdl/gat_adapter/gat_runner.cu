@@ -1,6 +1,7 @@
 
 #include "gat_native_bridge.hpp"
 #include "gat_native_resources.hpp"
+#include "output_stream.hpp"
 
 #include <cuda_runtime.h>
 
@@ -42,6 +43,14 @@ constexpr u64 kMaxLedgerFamilies = 4096;
 constexpr u64 kMaxNativeDomain = 1ULL << 30;
 
 [[noreturn]] void fail(const std::string &message) { throw std::runtime_error("zkdl-gat: " + message); }
+
+void finish_output(std::ofstream &output, const std::filesystem::path &path, const std::string &label) {
+    try {
+        finish_output_stream(output, path, label);
+    } catch (const std::exception &exception) {
+        fail(exception.what());
+    }
+}
 
 std::uint32_t checked_native_domain_u32(u64 value, const std::string &label, bool allow_zero = false) {
     if ((!allow_zero && value == 0U) || value > kMaxNativeDomain || value > std::numeric_limits<std::uint32_t>::max())
@@ -3647,6 +3656,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             stream.flush();
             if (!stream) fail("sorted lookup scratch write failed: " + operation);
             stream.close();
+            if (!stream) fail("sorted lookup scratch close failed: " + operation);
             BN_CTX_free(context);
             context = nullptr;
             std::error_code remove_error;
@@ -4218,6 +4228,7 @@ void write_statement(const std::filesystem::path &path, const PublicStatement &s
            << "hidden_layer_count=" << statement.hidden_layer_count << "\nhidden_head_count=" << statement.hidden_head_count << "\n"
            << "output_head_count=" << statement.output_head_count << "\n"
            << "privacy_policy=" << statement.privacy_policy << "\nverifier_reads_witness=" << (statement.verifier_reads_witness ? 1 : 0) << "\n";
+    finish_output(output, path, "statement");
 }
 
 bool read_statement(const std::filesystem::path &path, PublicStatement *statement, std::string *error) {
@@ -4293,18 +4304,20 @@ void write_run_record(const std::filesystem::path &path, const RunRecord &record
     std::filesystem::create_directories(path.parent_path());
     std::ofstream output(path);
     if (!output) fail("cannot write run record " + path.string());
-    output << "schema=zkDL_gat_run_record_v1\ndataset=" << record.dataset << "\nbackend=" << record.backend << "\n"
+    output << "schema=zkDL_gat_run_record_v2\ndataset=" << record.dataset << "\nbackend=" << record.backend << "\n"
            << "statement_id=" << record.statement_id << "\nproof_id=" << record.proof_id << "\nverification_status=" << record.verification_status << "\n"
            << "proof_scope=" << record.proof_scope << "\nstatic_table_descriptor_digest=" << record.static_table_descriptor_digest << "\n"
            << "scale_chain_digest=" << record.scale_chain_digest << "\ninteger_bound_ledger_id=" << record.integer_bound_ledger_id << "\n"
            << "integer_bound_ledger_digest=" << record.integer_bound_ledger_digest << "\n"
            << "integer_bound_ledger_descriptor_digest=" << record.integer_bound_ledger_descriptor_digest << "\n"
            << "proof_size_bytes=" << record.proof_size_bytes << "\ncommitment_size_bytes=" << record.commitment_size_bytes << "\n"
+           << "commitment_time_semantics=" << record.commitment_time_semantics << "\n"
            << "commitment_time_seconds=" << std::setprecision(17) << record.commitment_time_seconds << "\nprove_time_seconds=" << record.prove_time_seconds
            << "\n"
            << "verify_time_seconds=" << record.verify_time_seconds << "\nverifier_reads_witness=" << (record.verifier_reads_witness ? 1 : 0) << "\n"
            << "gpu_kernel_executed=" << (record.gpu_kernel_executed ? 1 : 0) << "\nsilent_fallback=" << (record.silent_fallback ? 1 : 0) << "\n"
            << "output_bound=" << (record.output_bound ? 1 : 0) << "\nerror=" << record.error << "\n";
+    finish_output(output, path, "run record");
 }
 
 namespace {
@@ -4400,6 +4413,7 @@ void write_matrix_text(const std::filesystem::path &path, const Matrix &matrix) 
         }
         output << '\n';
     }
+    finish_output(output, path, "matrix");
 }
 
 Matrix read_public_output(const std::filesystem::path &path, std::uint64_t expected_rows, std::uint64_t expected_cols) {
@@ -4495,6 +4509,7 @@ void write_plan(const std::filesystem::path &path, const RelationPlan &plan, con
         }
         output << '|' << operation.selector_id << '|' << operation.terminal_point << '|' << operation.terminal_value << '|' << operation.terminal_claim << '\n';
     }
+    finish_output(output, path, "relation plan");
 }
 
 void write_bytes(const std::filesystem::path &path, const std::vector<std::uint8_t> &bytes) {
@@ -4502,6 +4517,7 @@ void write_bytes(const std::filesystem::path &path, const std::vector<std::uint8
     std::ofstream output(path, std::ios::binary);
     if (!output) fail("cannot write proof bytes " + path.string());
     if (!bytes.empty()) output.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    finish_output(output, path, "proof bytes");
 }
 
 std::vector<std::uint8_t> read_bytes(const std::filesystem::path &path) {
@@ -4528,11 +4544,13 @@ void write_envelope(const std::filesystem::path &path, const ProofEnvelope &enve
            << "integer_bound_ledger_digest=" << envelope.integer_bound_ledger_digest << "\n"
            << "integer_bound_ledger_descriptor_digest=" << envelope.integer_bound_ledger_descriptor_digest << "\n"
            << "proof_size_bytes=" << envelope.proof_size_bytes << "\ncommitment_size_bytes=" << envelope.commitment_size_bytes << "\n"
+           << "commitment_time_semantics=" << envelope.commitment_time_semantics << "\n"
            << "commitment_time_seconds=" << std::setprecision(17) << envelope.commitment_time_seconds << "\nprove_time_seconds=" << envelope.prove_time_seconds
            << "\n"
            << "verify_time_seconds=" << envelope.verify_time_seconds << "\nverifier_reads_witness=" << (envelope.verifier_reads_witness ? 1 : 0) << "\n"
            << "gpu_kernel_executed=" << (envelope.gpu_kernel_executed ? 1 : 0) << "\nsilent_fallback=" << (envelope.silent_fallback ? 1 : 0) << "\n"
            << "output_bound=" << (envelope.output_bound ? 1 : 0) << "\nerror=" << envelope.error << "\n";
+    finish_output(output, path, "proof envelope");
 }
 
 ProofEnvelope read_envelope(const std::filesystem::path &path) {
@@ -4557,6 +4575,7 @@ ProofEnvelope read_envelope(const std::filesystem::path &path) {
     envelope.integer_bound_ledger_digest = get("integer_bound_ledger_digest");
     envelope.integer_bound_ledger_descriptor_digest = get("integer_bound_ledger_descriptor_digest");
     envelope.commitment_size_bytes = parse_u64(get("commitment_size_bytes"), "commitment_size_bytes");
+    envelope.commitment_time_semantics = get("commitment_time_semantics");
     envelope.commitment_time_seconds = parse_double(get("commitment_time_seconds"), "commitment_time_seconds");
     envelope.prove_time_seconds = parse_double(get("prove_time_seconds"), "prove_time_seconds");
     envelope.verify_time_seconds = parse_double(get("verify_time_seconds"), "verify_time_seconds");
@@ -4618,6 +4637,7 @@ RunRecord record_from_envelope(const Config &config, const PublicStatement &stat
     record.integer_bound_ledger_descriptor_digest = statement.integer_bound_ledger_descriptor_digest;
     record.proof_size_bytes = envelope.proof_size_bytes;
     record.commitment_size_bytes = envelope.commitment_size_bytes;
+    record.commitment_time_semantics = envelope.commitment_time_semantics;
     record.commitment_time_seconds = envelope.commitment_time_seconds;
     record.prove_time_seconds = envelope.prove_time_seconds;
     record.verify_time_seconds = envelope.verify_time_seconds;
@@ -4703,6 +4723,7 @@ int produce(const Config &config, const CliOptions &options) {
         }
         bind_envelope_identity(&result.envelope, statement);
         if (result.envelope.status != "PROVED" || result.envelope.proof_id.empty() || result.proof_bytes.empty() ||
+            result.envelope.commitment_time_semantics != "native_tensor_commitments" ||
             result.envelope.native_core_api != "zkdl_native_gat_bridge_v1") {
             const std::string message = "native proof envelope is not a complete proved proof artifact";
             write_envelope(envelope_path, result.envelope);
@@ -4745,6 +4766,7 @@ int prepare(const Config &config, const CliOptions &options) {
              << "integer_bound_ledger_digest=" << plan.integer_bound_ledger.digest << "\n"
              << "integer_bound_ledger_descriptor_digest=" << plan.integer_bound_ledger.descriptor_digest << "\n"
              << "proof_scope=" << plan.proof_scope << "\n";
+    finish_output(identity, directory / "identity.cfg", "prepare identity");
     std::cout << "prepared dataset=" << config.dataset << " nodes=" << graph.nodes << " edges=" << graph.edges
               << " relation_operations=" << plan.operation_families.size() << "\n";
     return 0;
@@ -4799,7 +4821,9 @@ int verify_only(const Config &config, const CliOptions &options) {
         statement_loaded = true;
         envelope = read_envelope(envelope_path);
         envelope_loaded = true;
-        if (envelope.schema_id != "zkDL_gat_proof_envelope_v1" || envelope.status != "PROVED" || envelope.native_core_api != "zkdl_native_gat_bridge_v1" ||
+        if (envelope.schema_id != "zkDL_gat_proof_envelope_v2" ||
+            envelope.commitment_time_semantics != "native_tensor_commitments" || envelope.status != "PROVED" ||
+            envelope.native_core_api != "zkdl_native_gat_bridge_v1" ||
             envelope.proof_id.empty() || envelope.statement_id != statement.statement_id || envelope.proof_scope != statement.proof_scope ||
             envelope.verifier_reads_witness || envelope.silent_fallback || !envelope.output_bound || envelope.proof_size_bytes == 0) {
             fail("BLOCKED: proof envelope is not a complete independent-verification artifact");
@@ -4846,6 +4870,7 @@ int verify_only(const Config &config, const CliOptions &options) {
         std::ofstream result(directory / "verification.result");
         if (!result) fail("cannot write verification.result");
         result << "status=VERIFIED\nstatement_id=" << statement.statement_id << "\nproof_id=" << envelope.proof_id << "\n";
+        finish_output(result, directory / "verification.result", "verification result");
         write_run_record(directory / "run.record", record_from_envelope(run_config, statement, envelope, "VERIFIED"));
         std::cout << "verification=VERIFIED statement_id=" << statement.statement_id << "\n";
         return 0;
@@ -4859,6 +4884,7 @@ int verify_only(const Config &config, const CliOptions &options) {
             if (result) {
                 result << "status=BLOCKED\nstatement_id=" << (statement_loaded ? statement.statement_id : "UNAVAILABLE")
                        << "\nproof_id=" << (envelope_loaded ? envelope.proof_id : "UNAVAILABLE") << "\nerror=" << message << "\n";
+                finish_output(result, directory / "verification.result", "blocked verification result");
             }
         } catch (...) {}
         std::cerr << "verification=BLOCKED " << message << '\n';

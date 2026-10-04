@@ -437,10 +437,14 @@ def _audit_fixture_run(root: Path, run_dir: Path, *, expected_dataset: str | Non
     if any(values.get("fixture_mode") != "1"
            for values in (record, envelope, statement, verification)):
         raise ArtifactError(f"fixture mode marker is missing: {run_dir}")
-    if record.get("schema") != "zkDL_gat_run_record_v1" or record.get("verification_status") != "VERIFIED":
+    if record.get("schema") != "zkDL_gat_run_record_v2" or record.get("verification_status") != "VERIFIED":
         raise ArtifactError(f"fixture run record is not VERIFIED: {record_path}")
-    if envelope.get("schema_id") != "zkDL_gat_proof_envelope_v1" or envelope.get("status") != "PROVED":
+    if envelope.get("schema_id") != "zkDL_gat_proof_envelope_v2" or envelope.get("status") != "PROVED":
         raise ArtifactError(f"fixture proof envelope is not PROVED: {envelope_path}")
+    if (record.get("commitment_time_semantics") != "native_tensor_commitments" or
+            envelope.get("commitment_time_semantics") != "native_tensor_commitments" or
+            record.get("commitment_time_semantics") != envelope.get("commitment_time_semantics")):
+        raise ArtifactError("fixture commitment time does not identify native tensor commitments")
     if envelope.get("backend") != "cpu" or envelope.get("proof_scope") != FIXTURE_PROOF_SCOPE:
         raise ArtifactError(f"fixture proof envelope backend/scope mismatch: {envelope_path}")
     if verification.get("status") != "VERIFIED" or verification.get("backend") != "cpu":
@@ -481,6 +485,14 @@ def _audit_fixture_run(root: Path, run_dir: Path, *, expected_dataset: str | Non
         raise ArtifactError("fixture proof size is not an integer") from exc
     if declared_size != len(proof_bytes) or envelope_size != len(proof_bytes):
         raise ArtifactError("fixture proof size is stale")
+    for field in ("commitment_time_seconds", "prove_time_seconds", "verify_time_seconds"):
+        try:
+            record_value = float(record[field])
+            envelope_value = float(envelope[field])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArtifactError(f"fixture metric is missing or invalid: {field}") from exc
+        if not math.isfinite(record_value) or record_value < 0.0 or record_value != envelope_value:
+            raise ArtifactError(f"fixture record/envelope metric mismatch: {field}")
     if record.get("proof_scope") != FIXTURE_PROOF_SCOPE or envelope.get("proof_scope") != FIXTURE_PROOF_SCOPE:
         raise ArtifactError("fixture record/envelope proof scope mismatch")
     if record.get("verifier_reads_witness") != "0" or record.get("output_bound") != "1":
@@ -536,12 +548,16 @@ def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
     if expected_backend is not None and backend != expected_backend:
         raise ArtifactError(f"backend mismatch in {record_path}")
 
-    if record.get("schema") != "zkDL_gat_run_record_v1":
+    if record.get("schema") != "zkDL_gat_run_record_v2":
         raise ArtifactError(f"run record schema mismatch: {record_path}")
     if record.get("verification_status") != "VERIFIED":
         raise ArtifactError(f"run is not VERIFIED: {record_path}")
-    if envelope.get("schema_id") != "zkDL_gat_proof_envelope_v1" or envelope.get("status") != "PROVED":
+    if envelope.get("schema_id") != "zkDL_gat_proof_envelope_v2" or envelope.get("status") != "PROVED":
         raise ArtifactError(f"proof envelope is not PROVED: {envelope_path}")
+    if (record.get("commitment_time_semantics") != "native_tensor_commitments" or
+            envelope.get("commitment_time_semantics") != "native_tensor_commitments" or
+            record.get("commitment_time_semantics") != envelope.get("commitment_time_semantics")):
+        raise ArtifactError("record/envelope commitment time semantics mismatch")
     if envelope.get("native_core_api") != "zkdl_native_gat_bridge_v1":
         raise ArtifactError(f"proof envelope lacks the native zkDL bridge identity: {envelope_path}")
     if envelope.get("backend") != backend or envelope.get("proof_scope") != "full_gat_forward":
@@ -657,58 +673,34 @@ def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
     }
 
 
-def expected_cells() -> set[tuple[str, str]]:
-    return {(dataset, backend) for dataset in DATASETS for backend in BACKENDS}
-
-
-def require_exact_matrix(rows: list[dict[str, str]]) -> None:
-    seen: set[tuple[str, str]] = set()
-    for row in rows:
-        cell = (row.get("dataset", ""), row.get("backend", ""))
-        if cell in seen:
-            raise ArtifactError(f"duplicate formal result cell: {cell[0]}/{cell[1]}")
-        seen.add(cell)
-    expected = expected_cells()
-    if seen != expected:
-        missing = sorted(expected - seen)
-        extra = sorted(seen - expected)
-        raise ArtifactError(f"exact formal matrix required; missing={missing} extra={extra}")
-    for dataset in DATASETS:
-        cpu = next(row for row in rows if row["dataset"] == dataset and row["backend"] == "cpu")
-        gpu = next(row for row in rows if row["dataset"] == dataset and row["backend"] == "gpu")
-        for field in ("statement_id", "scale_chain_digest", "static_table_descriptor_digest",
-                      "integer_bound_ledger_id", "integer_bound_ledger_digest",
-                      "integer_bound_ledger_descriptor_digest"):
-            if cpu.get(field) != gpu.get(field):
-                raise ArtifactError(f"CPU/GPU public identity mismatch for {dataset}: {field}")
-
-
-def require_selected_backend(rows: list[dict[str, str]], backend: str = "cpu") -> None:
-    """Require exactly one fully audited result for each canonical dataset."""
-    if backend not in BACKENDS:
-        raise ArtifactError(f"unsupported selected backend: {backend}")
+def require_formal_five(rows: list[dict[str, str]]) -> None:
+    """Require one independently verified, fully audited result per dataset."""
     if len(rows) != len(DATASETS):
-        raise ArtifactError(
-            f"selected backend {backend} requires exactly {len(DATASETS)} result cells; got {len(rows)}"
-        )
+        raise ArtifactError(f"formal result requires exactly {len(DATASETS)} datasets; got {len(rows)}")
     seen: set[str] = set()
     for row in rows:
         dataset = row.get("dataset", "")
         if dataset not in DATASETS:
-            raise ArtifactError(f"selected backend result has non-canonical dataset: {dataset}")
-        if row.get("backend") != backend:
-            raise ArtifactError(
-                f"selected backend {backend} found unexpected cell: {dataset}/{row.get('backend', '')}"
-            )
+            raise ArtifactError(f"formal result has non-canonical dataset: {dataset}")
         if dataset in seen:
-            raise ArtifactError(f"duplicate selected backend result cell: {dataset}/{backend}")
+            raise ArtifactError(f"duplicate formal result dataset: {dataset}")
         seen.add(dataset)
         if row.get("independent_verification") != "1":
-            raise ArtifactError(f"selected backend result lacks independent verification: {dataset}")
+            raise ArtifactError(f"formal result lacks independent verification: {dataset}")
         if row.get("silent_fallback") != "0":
-            raise ArtifactError(f"selected backend result claims silent fallback: {dataset}")
-        if row.get("gpu_kernel_executed") != "0":
-            raise ArtifactError(f"selected CPU result claims GPU kernel execution: {dataset}")
+            raise ArtifactError(f"formal result claims silent fallback: {dataset}")
+        if row.get("commitment_time_semantics") != "native_tensor_commitments":
+            raise ArtifactError(f"formal result has unsupported Commitment Time semantics: {dataset}")
+        try:
+            proof_size = int(row.get("proof_size_bytes", "0"))
+            for field in ("commitment_time_seconds", "prove_time_seconds", "verify_time_seconds"):
+                value = float(row[field])
+                if not math.isfinite(value) or value < 0.0:
+                    raise ValueError(field)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArtifactError(f"formal result has invalid metric fields: {dataset}") from exc
+        if proof_size <= 0:
+            raise ArtifactError(f"formal result has invalid proof size: {dataset}")
     if seen != set(DATASETS):
         missing = sorted(set(DATASETS) - seen)
-        raise ArtifactError(f"selected backend result set is incomplete; missing={missing}")
+        raise ArtifactError(f"formal result set is incomplete; missing={missing}")

@@ -2684,9 +2684,14 @@ bool sorted_lookup_build_prover_context(const Config &config, const StaticTables
             relation::CommitmentWire wire;
             relation::SegmentCommitmentMaterial material;
             const std::string tensor_id = "sorted_lookup/" + query.operation_id + "/" + name;
-            if (!relation::zktr_build_segment_commitment_material(tensor_id, 3U, provider, context.ipa_generators, context.ipa_blinding_generator,
-                                                                  context.ipa_u_generator, blinder, relation_statement, wire, material, error))
-                return false;
+            const auto commitment_start = std::chrono::steady_clock::now();
+            const bool commitment_built = relation::zktr_build_segment_commitment_material(
+                tensor_id, 3U, provider, context.ipa_generators, context.ipa_blinding_generator,
+                context.ipa_u_generator, blinder, relation_statement, wire, material, error);
+            if (context.commitment_open_time_seconds != nullptr)
+                *context.commitment_open_time_seconds += std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - commitment_start).count();
+            if (!commitment_built) return false;
             const zkdl::CpuG1Point commitment = zkdl::cpu_g1_from_native(wire.commitment);
             if (commitment.is_zero()) return false;
             zkdl::AuthenticatedSortedLookupCommitmentRef ref;
@@ -3174,22 +3179,32 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
         if (error) *error = "native prove result pointer is null";
         return false;
     }
-    const auto prove_start = std::chrono::steady_clock::now();
     relation::ProverContext context;
+    double commitment_open_seconds = 0.0;
+    double relation_commitment_seconds = 0.0;
+    context.commitment_open_time_seconds = &commitment_open_seconds;
+    context.relation_commitment_time_seconds = &relation_commitment_seconds;
     if (!context_from_request(request, context, error))
         return reject(result, error, error ? *error : "native relation context rejected", request.config, request.statement, request.backend);
     context.gpu_backend = request.backend == Backend::Gpu;
     const std::uint64_t gpu_kernel_before = zkdl::gpu_crypto_kernel_invocations();
-    double commitment_open_seconds = 0.0;
-    context.commitment_open_time_seconds = &commitment_open_seconds;
+    const auto prove_start = std::chrono::steady_clock::now();
     relation::Proof proof;
     if (!relation::prove(context, proof, error))
         return reject(result, error, error ? *error : "native relation prover rejected witness", request.config, request.statement, request.backend);
+    const double relation_prove_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - prove_start).count();
     const std::uint64_t gpu_kernel_after = zkdl::gpu_crypto_kernel_invocations();
     if (context.gpu_backend && gpu_kernel_after <= gpu_kernel_before)
         return reject(result, error, "BLOCKED: formal GPU prover completed without a native cryptographic kernel", request.config, request.statement,
                       request.backend);
+    const auto serialization_start = std::chrono::steady_clock::now();
     result->proof_bytes = proof.serialize();
+    const double serialization_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - serialization_start).count();
+    if (relation_commitment_seconds > relation_prove_seconds)
+        return reject(result, error, "native proof metric accounting exceeded relation prove interval",
+                      request.config, request.statement, request.backend);
     result->envelope.native_core_api = kBridgeApi;
     result->envelope.statement_id = request.statement->statement_id;
     result->envelope.proof_id = digest_hex(zkdl::sha256(result->proof_bytes));
@@ -3204,7 +3219,7 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
     result->envelope.proof_size_bytes = result->proof_bytes.size();
     result->envelope.commitment_size_bytes = serialized_commitment_section_size(proof);
     result->envelope.commitment_time_seconds = commitment_open_seconds;
-    result->envelope.prove_time_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - prove_start).count();
+    result->envelope.prove_time_seconds = relation_prove_seconds - relation_commitment_seconds + serialization_seconds;
     result->envelope.verify_time_seconds = 0.0;
     result->envelope.verifier_reads_witness = false;
     result->envelope.gpu_kernel_executed = context.gpu_backend;

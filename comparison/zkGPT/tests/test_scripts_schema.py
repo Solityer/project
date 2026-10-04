@@ -17,47 +17,51 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from common import (  # noqa: E402
     ChainError,
+    PAPER_TIMING_SEMANTICS,
     cleanup_run_outputs,
     require_fixed_digest,
     require_result_shape,
     verifier_binary,
 )
-from validate_final_results import validate_cell  # noqa: E402
+from validate_final_results import require_formal_cells  # noqa: E402
+
+
+def valid_result_shape() -> dict:
+    return {
+        "schema": "zkgpt-gat-result-v2",
+        "paper_timing_semantics": PAPER_TIMING_SEMANTICS,
+        "session_id": "1" * 32,
+        "run_nonce": "2" * 32,
+        "session_manifest_sha256": "3" * 64,
+        "dataset": "cora",
+        "backend": "cpu",
+        "status": "VERIFY_OK",
+        "verification_status": "VERIFY_OK",
+        "proof_scope": "full_gat",
+        "privacy_policy": "model_and_trace_hidden",
+        "privacy_profile": "masked_full",
+        "output_mode": "public_logits",
+        "capability_status": "FORMAL_CPU_MASKED_FULL",
+        "formal_backend_supported": True,
+    }
 
 
 class ProductionContractTests(unittest.TestCase):
     def test_result_schema_rejects_missing_privacy_field(self) -> None:
-        value = {
-            "schema": "zkgpt-gat-result-v1",
-            "dataset": "cora",
-            "backend": "cpu",
-            "status": "VERIFY_OK",
-            "verification_status": "VERIFY_OK",
-            "proof_scope": "full_gat",
-            "privacy_policy": "model_and_trace_hidden",
-            "output_mode": "public_logits",
-        }
+        value = valid_result_shape()
+        del value["privacy_profile"]
         with self.assertRaises(ChainError):
             require_result_shape(value, ROOT / "missing-result.json")
 
     def test_result_schema_rejects_unsupported_schema(self) -> None:
-        value = {
-            "schema": "unsupported-result-v0",
-            "dataset": "cora",
-            "backend": "cpu",
-            "status": "VERIFY_OK",
-            "verification_status": "VERIFY_OK",
-            "proof_scope": "full_gat",
-            "privacy_policy": "model_and_trace_hidden",
-            "privacy_profile": "masked_full",
-            "output_mode": "public_logits",
-        }
+        value = valid_result_shape()
+        value["schema"] = "unsupported-result-v0"
         with self.assertRaises(ChainError):
             require_result_shape(value, ROOT / "unsupported-result.json")
 
-    def test_final_validator_rejects_unsupported_cell_without_io(self) -> None:
+    def test_final_validator_rejects_noncanonical_cell_without_io(self) -> None:
         with self.assertRaises(ChainError):
-            validate_cell(ROOT, {"dataset": "not-a-dataset", "backend": "cpu"})
+            require_formal_cells([{"dataset": "not-a-dataset", "backend": "cpu"}] * 5)
 
     def test_verifier_rejects_malformed_artifact(self) -> None:
         executable = verifier_binary(ROOT, "cpu")

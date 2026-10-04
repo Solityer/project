@@ -43,7 +43,7 @@ if [[ -n "$run_dir" ]]; then
 fi
 
 if [[ -z "${ZKDL_BUILD_MANIFEST:-}" ]]; then
-    echo "prepare-local: a matched formal build is required; use scripts/run_five.sh cpu or scripts/run_single.sh" >&2
+    echo "prepare-local: a matched formal build is required; use scripts/run_five.sh (the sole formal entry)" >&2
     exit 2
 fi
 python3 "$script_dir/formal_provenance.py" --check "$ZKDL_BUILD_MANIFEST"
