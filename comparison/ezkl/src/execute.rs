@@ -44,6 +44,7 @@ use halo2_proofs::poly::kzg::{
 };
 use halo2_proofs::poly::VerificationStrategy;
 use halo2_proofs::transcript::{EncodedChallenge, TranscriptReadBuffer};
+use halo2_proofs::SerdeFormat;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use halo2_solidity_verifier;
 use halo2curves::bn256::{Bn256, Fr, G1Affine};
@@ -59,10 +60,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
-#[cfg(any(feature = "eth", feature = "reusable-verifier"))]
 use std::fs::File;
 #[cfg(any(feature = "eth", feature = "reusable-verifier"))]
 use std::io::Write;
+use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Cursor;
 use std::path::Path;
@@ -193,6 +194,7 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             phase,
             resource_manifest,
             output_dir,
+            admission_dir,
             srs_path,
             public_statement,
             public_output,
@@ -203,6 +205,7 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             phase,
             resource_manifest,
             output_dir,
+            admission_dir,
             srs_path,
             public_statement,
             public_output,
@@ -1620,9 +1623,50 @@ fn require_authentic_srs(path: &Path) -> Result<String, EZKLError> {
             );
         }
     }
-    crate::gat_adapter::schema::sha256_file_with_progress(path, "official SRS authentication")
-        .map(|(_, digest)| digest)
-        .map_err(EZKLError::from)
+    let (_, digest) = crate::gat_adapter::schema::sha256_file_with_progress(
+        path,
+        "official SRS authentication",
+    )
+    .map_err(EZKLError::from)?;
+    let expected = crate::srs_sha::PUBLIC_SRS_SHA256_HASHES
+        .get(&crate::graph::MAX_PUBLIC_SRS)
+        .ok_or_else(|| {
+            format!(
+                "native trusted SRS hash is unavailable for maximum domain k={}",
+                crate::graph::MAX_PUBLIC_SRS
+            )
+        })?;
+    if digest != *expected {
+        return Err(format!(
+            "official SRS digest {} does not match the native trusted maximum-domain digest {}",
+            digest, expected
+        )
+        .into());
+    }
+    Ok(digest)
+}
+
+fn load_formal_kzg_params(
+    path: &Path,
+    target_k: u32,
+    authenticated_sha256: &str,
+) -> Result<ParamsKZG<Bn256>, EZKLError> {
+    let source_k = crate::graph::MAX_PUBLIC_SRS;
+    let trusted_sha256 = crate::srs_sha::PUBLIC_SRS_SHA256_HASHES
+        .get(&source_k)
+        .ok_or_else(|| format!("native trusted SRS hash is unavailable for k={}", source_k))?;
+    if authenticated_sha256 != *trusted_sha256 {
+        return Err("formal SRS digest is not the native trusted maximum-domain SRS".into());
+    }
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let params = ParamsKZG::<Bn256>::read_custom_for_k(
+        &mut reader,
+        SerdeFormat::RawBytes,
+        target_k,
+        source_k,
+    )?;
+    Ok(params)
 }
 
 fn fp_values(values: &[i128]) -> Vec<Fr> {
@@ -2042,6 +2086,7 @@ fn gat_prepare(
     phase: GatPreparePhase,
     resource_manifest: PathBuf,
     output_dir: PathBuf,
+    admission_dir: Option<PathBuf>,
     srs_path: PathBuf,
     public_statement_path: Option<PathBuf>,
     public_output_path: Option<PathBuf>,
@@ -2052,6 +2097,12 @@ fn gat_prepare(
     require_formal_local_path(&resource_manifest, "resource manifest")?;
     require_formal_local_path(&output_dir, "output directory")?;
     require_formal_local_path(&srs_path, "SRS")?;
+    if let Some(path) = admission_dir.as_ref() {
+        if !matches!(phase, GatPreparePhase::Setup) {
+            return Err("--admission-dir is accepted only during native GAT setup".into());
+        }
+        require_formal_local_path(path, "native admission directory")?;
+    }
     if let Some(path) = public_statement_path.as_ref() {
         require_formal_local_path(path, "public statement")?;
     }
@@ -2096,7 +2147,10 @@ fn gat_prepare(
     let srs_sha256 = require_authentic_srs(&srs_path)?;
     let backend = gat_backend(gpu)?;
     match phase {
-        GatPreparePhase::Setup => gat_prepare_setup(loaded, output_dir, srs_path, gpu),
+        GatPreparePhase::Admission => gat_prepare_admission(loaded, output_dir),
+        GatPreparePhase::Setup => {
+            gat_prepare_setup(loaded, output_dir, srs_path, srs_sha256, gpu, admission_dir)
+        }
         GatPreparePhase::Final => gat_prepare_final(
             loaded,
             output_dir,
@@ -2124,38 +2178,23 @@ fn gat_backend(gpu: bool) -> Result<String, EZKLError> {
     Ok(backend)
 }
 
-fn gat_prepare_setup(
-    loaded: crate::gat_adapter::LoadedGat,
-    output_dir: PathBuf,
-    srs_path: PathBuf,
-    gpu: bool,
-) -> Result<String, EZKLError> {
-    let _ = gpu;
-    std::fs::create_dir_all(&output_dir)?;
-    for name in [
-        "settings.json",
-        "compiled.circuit",
-        "pk.key",
-        "vk.key",
-        "gat_static_tables.json",
-        "gat_integer_ledger.json",
-        "circuit_ref.json",
-        "producer_context.json",
-        "producer_manifest.json",
-        "artifact_manifest.json",
-        "statement.json",
-        "public_output.json",
-        "srs.kzg",
-    ] {
-        let path = output_dir.join(name);
-        if std::fs::symlink_metadata(&path).is_ok() {
-            return Err(format!(
-                "native GAT setup refuses to reuse an existing output: {}",
-                path.display()
-            )
-            .into());
-        }
-    }
+fn build_canonical_gat_circuit(
+    loaded: &crate::gat_adapter::LoadedGat,
+) -> Result<GraphCircuit, EZKLError> {
+    println!(
+        "EZKL_NATIVE_PHASE START stage=model_build dataset={} n_total={} n={} e={} graphs={} feature_dim={} classes={} layers={} hidden_heads={} output_heads={}",
+        loaded.dataset,
+        loaded.spec.graph.n_total,
+        loaded.spec.graph.n,
+        loaded.spec.graph.e,
+        loaded.spec.graph.g_batch,
+        loaded.spec.feature_dim,
+        loaded.spec.model.classes,
+        loaded.spec.model.hidden_layers.len(),
+        loaded.spec.model.hidden_layers.iter().map(|layer| layer.heads.len()).sum::<usize>(),
+        loaded.spec.model.output_heads.len(),
+    );
+    let model_build_started = Instant::now();
     let mut run_args = RunArgs::default();
     run_args.input_visibility = Visibility::Public;
     run_args.output_visibility = Visibility::Public;
@@ -2177,6 +2216,12 @@ fn gat_prepare_setup(
         &run_args,
     )
     .map_err(EZKLError::from)?;
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=model_build dataset={} elapsed_ms={:.3}",
+        loaded.dataset,
+        model_build_started.elapsed().as_secs_f64() * 1000.0,
+    );
+    let shape_started = Instant::now();
     let required_logrows = GraphSettings::required_logrows_for_model(&model, &run_args)?;
     run_args.logrows = run_args.logrows.max(required_logrows);
     run_args.validate().map_err(EZKLError::from)?;
@@ -2222,17 +2267,334 @@ fn gat_prepare_setup(
         run_args.param_scale,
     )
     .map_err(EZKLError::from)?;
-    info!("canonical GAT setup logrows: {}", run_args.logrows);
+    info!("canonical GAT relation logrows: {}", run_args.logrows);
+    println!(
+        "EZKL_NATIVE_PHASE START stage=gen_params_dummy_layout dataset={} k={} domain={} public_input_tensors={} public_feature_values={} public_edge_values={}",
+        loaded.dataset,
+        run_args.logrows,
+        1u64 << run_args.logrows,
+        input_shapes.len(),
+        loaded.spec.graph.n_total * loaded.spec.feature_dim,
+        loaded.spec.graph.e * 2,
+    );
     let circuit = GraphCircuit::new(model, &run_args)?;
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=gen_params_dummy_layout dataset={} elapsed_ms={:.3} num_rows={} total_assignments={} dynamic_lookup_coord={} max_dynamic_input_len={} dynamic_lookups={}",
+        loaded.dataset,
+        shape_started.elapsed().as_secs_f64() * 1000.0,
+        circuit.settings().num_rows,
+        circuit.settings().total_assignments,
+        circuit.settings().dynamic_lookup_params.total_dynamic_col_size,
+        circuit.settings().dynamic_lookup_params.max_dynamic_input_len,
+        circuit.settings().dynamic_lookup_params.num_dynamic_lookups,
+    );
+    Ok(circuit)
+}
+
+fn configure_canonical_constraint_system(circuit: &GraphCircuit) -> plonk::ConstraintSystem<Fr> {
+    let mut cs = plonk::ConstraintSystem::<Fr>::default();
+    let _config = GraphCircuit::configure_with_params(&mut cs, circuit.params());
+    #[cfg(feature = "mv-lookup")]
+    let cs = cs.chunk_lookups();
+    cs
+}
+
+#[cfg(feature = "gpu-accelerated")]
+fn gat_prepare_admission(
+    loaded: crate::gat_adapter::LoadedGat,
+    output_dir: PathBuf,
+) -> Result<String, EZKLError> {
+    let output_path = output_dir.join("admission.json");
     let settings_path = output_dir.join("settings.json");
     let compiled_path = output_dir.join("compiled.circuit");
+    for path in [&output_path, &settings_path, &compiled_path] {
+        if std::fs::symlink_metadata(path).is_ok() {
+            return Err(format!("native GAT admission refuses to reuse output: {}", path.display()).into());
+        }
+    }
+    std::fs::create_dir_all(&output_dir)?;
+    let circuit = build_canonical_gat_circuit(&loaded)?;
+    let settings = circuit.settings();
+    let configure_started = Instant::now();
+    println!(
+        "EZKL_NATIVE_PHASE START stage=configure_constraint_system dataset={} k={} domain={}",
+        loaded.dataset,
+        settings.run_args.logrows,
+        1u64 << settings.run_args.logrows,
+    );
+    let cs = configure_canonical_constraint_system(&circuit);
+    let logrows = settings.run_args.logrows;
+    let domain_size = 1u64
+        .checked_shl(logrows)
+        .ok_or_else(|| format!("invalid native GAT logrows for admission: {}", logrows))?;
+    let scalar_columns = cs.num_fixed_columns() + cs.num_advice_columns() + cs.num_instance_columns();
+    let scalar_domain_bytes = u128::from(domain_size)
+        * scalar_columns as u128
+        * std::mem::size_of::<Fr>() as u128;
+    let degree = cs.degree();
+    let quotient_degree = degree
+        .checked_sub(1)
+        .ok_or_else(|| "native GAT constraint degree is below two".to_string())?;
+    let quotient_extent = domain_size
+        .checked_mul(u64::try_from(quotient_degree)?)
+        .ok_or_else(|| "native GAT extended proof domain overflow".to_string())?;
+    let proof_domain_size = quotient_extent
+        .checked_next_power_of_two()
+        .ok_or_else(|| "native GAT extended proof domain is not representable".to_string())?;
+    let proof_logrows = proof_domain_size.trailing_zeros();
+    let device_capacity = halo2_proofs::icicle::device_capacity_identity()
+        .map_err(|error| format!("native GAT CUDA memory identity failed: {}", error))?;
+    let memory_model = serde_json::json!({
+        "schema": "ezkl-halo2-memory-model-v1",
+        "proof_logrows": proof_logrows,
+        "proof_domain_size": proof_domain_size,
+        "advice_column_phase_ids": cs.advice_column_phase(),
+        "size_of_fr_bytes": std::mem::size_of::<Fr>(),
+        "size_of_assigned_fr_bytes": std::mem::size_of::<plonk::Assigned<Fr>>(),
+        "size_of_option_fr_bytes": std::mem::size_of::<Option<Fr>>(),
+        "size_of_usize_bytes": std::mem::size_of::<usize>(),
+        "size_of_usize_pair_bytes": std::mem::size_of::<(usize, usize)>(),
+        "size_of_g1_affine_bytes": std::mem::size_of::<G1Affine>(),
+        "cuda_uuid": device_capacity.0,
+        "cuda_free_bytes_at_admission": device_capacity.1,
+        "cuda_total_memory_bytes": device_capacity.2,
+    });
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=configure_constraint_system dataset={} elapsed_ms={:.3} advice={} fixed={} instance={} selectors={} lookups={} shuffles={} permutation_columns={} blinding_factors={}",
+        loaded.dataset,
+        configure_started.elapsed().as_secs_f64() * 1000.0,
+        cs.num_advice_columns(),
+        cs.num_fixed_columns(),
+        cs.num_instance_columns(),
+        cs.num_selectors(),
+        cs.lookups().len(),
+        cs.shuffles().len(),
+        cs.num_permutation_columns(),
+        cs.blinding_factors(),
+    );
+    settings.save(&settings_path)?;
+    circuit.save(compiled_path.clone())?;
+    let settings_sha256 = get_file_hash(&settings_path)?;
+    let compiled_circuit_sha256 = get_file_hash(&compiled_path)?;
+    let relation_identity = native_admission_relation_identity(&loaded)?;
+    let admission = serde_json::json!({
+        "schema_version": 2,
+        "relation_id": "R_GAT-ezkl",
+        "dataset": loaded.dataset,
+        "model_arch_id": loaded.spec.model.model_arch_id,
+        "quant_cfg_id": loaded.spec.quant_cfg_id,
+        "resource_manifest_sha256": loaded.resource_manifest_sha256,
+        "relation_identity": relation_identity,
+        "settings_sha256": settings_sha256,
+        "compiled_circuit_sha256": compiled_circuit_sha256,
+        "logrows": logrows,
+        "domain_size": domain_size,
+        "max_public_srs_logrows": crate::graph::MAX_PUBLIC_SRS,
+        "num_rows": settings.num_rows,
+        "total_assignments": settings.total_assignments,
+        "total_const_size": settings.total_const_size,
+        "total_dynamic_col_size": settings.dynamic_lookup_params.total_dynamic_col_size,
+        "max_dynamic_input_len": settings.dynamic_lookup_params.max_dynamic_input_len,
+        "num_dynamic_lookups": settings.dynamic_lookup_params.num_dynamic_lookups,
+        "num_shuffles": settings.shuffle_params.num_shuffles,
+        "module_sizes": settings.module_sizes,
+        "constraint_system": {
+            "degree": degree,
+            "num_fixed_columns": cs.num_fixed_columns(),
+            "num_advice_columns": cs.num_advice_columns(),
+            "num_instance_columns": cs.num_instance_columns(),
+            "num_selectors": cs.num_selectors(),
+            "num_lookup_arguments": cs.lookups().len(),
+            "num_shuffle_arguments": cs.shuffles().len(),
+            "num_permutation_columns": cs.num_permutation_columns(),
+            "num_blinding_factors": cs.blinding_factors(),
+        },
+        "scalar_domain_vector_bytes": scalar_domain_bytes,
+        "native_memory_model": memory_model,
+    });
+    info!("native GAT admission: {}", admission);
+    std::fs::write(&output_path, serde_json::to_vec_pretty(&admission)?)?;
+    Ok(output_path.display().to_string())
+}
+
+#[cfg(not(feature = "gpu-accelerated"))]
+fn gat_prepare_admission(
+    _loaded: crate::gat_adapter::LoadedGat,
+    _output_dir: PathBuf,
+) -> Result<String, EZKLError> {
+    Err("native formal GAT admission requires the authenticated GPU build".into())
+}
+
+fn native_admission_relation_identity(loaded: &crate::gat_adapter::LoadedGat) -> Result<JsonValue, EZKLError> {
+    let graph = &loaded.spec.graph;
+    let canonical_graph_digest = graph
+        .comparison_canonical_digest()
+        .map_err(EZKLError::from)?;
+    Ok(serde_json::json!({
+        "schema_version": loaded.spec.schema_version,
+        "dataset": loaded.dataset,
+        "resource_manifest_sha256": loaded.resource_manifest_sha256,
+        "model_arch_id": loaded.spec.model.model_arch_id,
+        "quant_cfg_id": loaded.spec.quant_cfg_id,
+        "input_preprocess_id": loaded.input_preprocess_id,
+        "batching_rule": loaded.batching_rule,
+        "graph": {
+            "n_total": graph.n_total,
+            "n": graph.n,
+            "e": graph.e,
+            "g_batch": graph.g_batch,
+            "topology_id": graph.topology_id,
+            "topology_digest": graph.topology_digest,
+            "canonical_graph_digest": canonical_graph_digest,
+            "node_ptr": graph.node_ptr,
+            "edge_ptr": graph.edge_ptr,
+        },
+        "model_binding": loaded.spec.model_binding,
+        "topology": loaded.spec.topology,
+        "quantization": loaded.spec.quantization,
+        "quant_cfg_id": loaded.spec.quant_cfg_id,
+        "tables": {
+            "static_tables_id": loaded.spec.tables.static_tables_id,
+            "static_tables_digest": loaded.spec.tables.static_tables_digest,
+            "backend_aux_tables_id": loaded.spec.tables.backend_aux_tables_id,
+        },
+        "ledger_identity": loaded.spec.ledger_identity,
+        "ezkl_security_profile_id": loaded.spec.ezkl_security_profile_id,
+    }))
+}
+
+fn load_native_admission_circuit(
+    loaded: &crate::gat_adapter::LoadedGat,
+    admission_dir: &Path,
+) -> Result<GraphCircuit, EZKLError> {
+    let admission_path = admission_dir.join("admission.json");
+    let settings_path = admission_dir.join("settings.json");
+    let compiled_path = admission_dir.join("compiled.circuit");
+    for (path, label) in [
+        (&admission_path, "native admission receipt"),
+        (&settings_path, "admitted settings"),
+        (&compiled_path, "admitted compiled circuit"),
+    ] {
+        require_formal_regular_file(path, label)?;
+    }
+    let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
+    let expected_relation_identity = native_admission_relation_identity(loaded)?;
+    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(2)
+        || admission.get("relation_id").and_then(JsonValue::as_str) != Some("R_GAT-ezkl")
+        || admission.get("dataset").and_then(JsonValue::as_str) != Some(loaded.dataset.as_str())
+        || admission.get("resource_manifest_sha256").and_then(JsonValue::as_str)
+            != Some(loaded.resource_manifest_sha256.as_str())
+        || admission.get("relation_identity") != Some(&expected_relation_identity)
+    {
+        return Err("native admission relation/resource identity does not match the current canonical dataset".into());
+    }
+    if admission.get("settings_sha256").and_then(JsonValue::as_str)
+        != Some(get_file_hash(&settings_path)?.as_str())
+        || admission.get("compiled_circuit_sha256").and_then(JsonValue::as_str)
+            != Some(get_file_hash(&compiled_path)?.as_str())
+    {
+        return Err("native admission settings or compiled-circuit digest mismatch".into());
+    }
+
+    let settings = GraphSettings::load(&settings_path)?;
+    let circuit = GraphCircuit::load(compiled_path)?;
+    if circuit.settings() != &settings {
+        return Err("native admission settings disagree with the compiled circuit".into());
+    }
+    assert_native_gat_identity(&circuit, &loaded.spec)?;
+    let run_args = &settings.run_args;
+    if !run_args.input_visibility.is_public()
+        || !run_args.output_visibility.is_public()
+        || !run_args.param_visibility.is_hashed_public()
+        || run_args.input_scale != loaded.spec.scales.s_input
+        || run_args.param_scale != loaded.spec.scales.s_w_hidden[0][0]
+        || run_args.lookup_range
+            != (loaded.spec.tables.lrelu.input_min, loaded.spec.tables.lrelu.input_max)
+        || run_args.check_mode != CheckMode::UNSAFE
+        || run_args.logrows == 0
+        || run_args.logrows > crate::graph::MAX_PUBLIC_SRS
+    {
+        return Err("native admission circuit does not retain the formal GAT settings".into());
+    }
+    for (key, expected) in [
+        ("logrows", JsonValue::from(settings.run_args.logrows)),
+        ("num_rows", JsonValue::from(settings.num_rows as u64)),
+        ("total_assignments", JsonValue::from(settings.total_assignments as u64)),
+        ("total_const_size", JsonValue::from(settings.total_const_size as u64)),
+        (
+            "total_dynamic_col_size",
+            JsonValue::from(settings.dynamic_lookup_params.total_dynamic_col_size as u64),
+        ),
+        (
+            "max_dynamic_input_len",
+            JsonValue::from(settings.dynamic_lookup_params.max_dynamic_input_len as u64),
+        ),
+        (
+            "num_dynamic_lookups",
+            JsonValue::from(settings.dynamic_lookup_params.num_dynamic_lookups as u64),
+        ),
+        ("num_shuffles", JsonValue::from(settings.shuffle_params.num_shuffles as u64)),
+    ] {
+        if admission.get(key) != Some(&expected) {
+            return Err(format!("native admission {} disagrees with its authenticated settings", key).into());
+        }
+    }
+    Ok(circuit)
+}
+
+fn gat_prepare_setup(
+    loaded: crate::gat_adapter::LoadedGat,
+    output_dir: PathBuf,
+    srs_path: PathBuf,
+    srs_sha256: String,
+    gpu: bool,
+    admission_dir: Option<PathBuf>,
+) -> Result<String, EZKLError> {
+    let _ = gpu;
+    std::fs::create_dir_all(&output_dir)?;
+    for name in [
+        "settings.json",
+        "compiled.circuit",
+        "pk.key",
+        "vk.key",
+        "gat_static_tables.json",
+        "gat_integer_ledger.json",
+        "circuit_ref.json",
+        "producer_context.json",
+        "producer_manifest.json",
+        "artifact_manifest.json",
+        "statement.json",
+        "public_output.json",
+        "srs.kzg",
+    ] {
+        let path = output_dir.join(name);
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return Err(format!(
+                "native GAT setup refuses to reuse an existing output: {}",
+                path.display()
+            )
+            .into());
+        }
+    }
+    let settings_path = output_dir.join("settings.json");
+    let compiled_path = output_dir.join("compiled.circuit");
+    let circuit = if let Some(admission_dir) = admission_dir.as_deref() {
+        let circuit = load_native_admission_circuit(&loaded, admission_dir)?;
+        std::fs::copy(admission_dir.join("settings.json"), &settings_path)?;
+        std::fs::copy(admission_dir.join("compiled.circuit"), &compiled_path)?;
+        circuit
+    } else {
+        let circuit = build_canonical_gat_circuit(&loaded)?;
+        circuit.settings().save(&settings_path)?;
+        circuit.save(compiled_path.clone())?;
+        circuit
+    };
     let pk_path = output_dir.join("pk.key");
     let vk_path = output_dir.join("vk.key");
-    circuit.settings().save(&settings_path)?;
-    circuit.save(compiled_path.clone())?;
-    let params = load_params_prover::<KZGCommitmentScheme<Bn256>>(
-        Some(srs_path.clone()),
+    let params = load_formal_kzg_params(
+        &srs_path,
         circuit.settings().run_args.logrows,
+        &srs_sha256,
     )?;
     let pk = create_keys::<KZGCommitmentScheme<Bn256>, GraphCircuit>(&circuit, &params, false)?;
     save_vk::<G1Affine>(&vk_path, pk.get_vk())?;
@@ -3072,21 +3434,6 @@ fn gat_witness(
         );
     }
     witness.save(output.clone())?;
-    let commitment_duration = witness
-        .processed_params
-        .as_ref()
-        .and_then(|x| x.poseidon_hash_duration)
-        .filter(|duration| !duration.is_zero())
-        .ok_or_else(|| "native parameter Poseidon execution timing is missing".to_string())?;
-    let commitment_metrics = serde_json::json!({
-        "schema_version": 1,
-        "dataset": dataset,
-        "operation": "native_poseidon_model_hash",
-        "included_in": "witness_generation",
-        "model_hash": native_hash,
-        "duration_ms": commitment_duration.as_secs_f64() * 1000.0,
-    });
-    std::fs::write(output.with_file_name("commitment_metrics.json"), serde_json::to_vec_pretty(&commitment_metrics)?)?;
     Ok(output.display().to_string())
 }
 
@@ -3130,9 +3477,15 @@ pub(crate) fn prove(
     srs_path: Option<PathBuf>,
     check_mode: CheckMode,
 ) -> Result<Snark<Fr, G1Affine>, EZKLError> {
-    if let Ok(run_dir) = std::env::var("EZKL_GAT_RUN_DIR") {
+    let formal_srs_sha256 = if let Ok(run_dir) = std::env::var("EZKL_GAT_RUN_DIR") {
         validate_formal_producer_run(Path::new(&run_dir))?;
-    }
+        let path = srs_path
+            .as_deref()
+            .ok_or("formal GAT proving requires an explicit authenticated SRS path")?;
+        Some(require_authentic_srs(path)?)
+    } else {
+        None
+    };
     let data = GraphWitness::from_path(data_path)?;
     let mut circuit = GraphCircuit::load(compiled_circuit_path)?;
 
@@ -3150,7 +3503,11 @@ pub(crate) fn prove(
 
     let pk = load_pk::<KZGCommitmentScheme<Bn256>, GraphCircuit>(pk_path, circuit.params())?;
 
-    let params = load_params_prover::<KZGCommitmentScheme<Bn256>>(srs_path, logrows)?;
+    let params = match (formal_srs_sha256.as_deref(), srs_path.as_deref()) {
+        (Some(digest), Some(path)) => load_formal_kzg_params(path, logrows, digest)?,
+        (None, _) => load_params_prover::<KZGCommitmentScheme<Bn256>>(srs_path, logrows)?,
+        _ => return Err("formal GAT proving lost its authenticated SRS path".into()),
+    };
     let mut snark = create_proof_circuit::<
         KZGCommitmentScheme<Bn256>,
         _,
@@ -3174,6 +3531,25 @@ pub(crate) fn prove(
 
     if let Some(proof_path) = proof_path {
         snark.save(&proof_path)?;
+        if let Some(timing) = snark.proof_timing.as_ref() {
+            let proof_sha256 = get_file_hash(&proof_path)?;
+            let metrics = serde_json::json!({
+                "schema_version": 2,
+                "operation": "native_halo2_initial_instance_and_phase0_advice_commitments",
+                "included_in": "native_create_proof",
+                "measurement_scope": "pre_challenge_public_instance_and_phase0_advice_kzg_commitments_plus_affine_normalization",
+                "commitment_time_ms": timing.commitment_ms,
+                "instance_commitment_count": timing.instance_commitment_count,
+                "phase0_advice_commitment_count": timing.phase0_advice_commitment_count,
+                "affine_normalization_batch_count": timing.affine_normalization_batch_count,
+                "prove_time_ms": timing.prove_ms,
+                "proof_sha256": proof_sha256,
+            });
+            std::fs::write(
+                proof_path.with_file_name("native_proof_metrics.json"),
+                serde_json::to_vec_pretty(&metrics)?,
+            )?;
+        }
         #[cfg(feature = "gpu-accelerated")]
         if std::env::var("EZKL_GAT_BACKEND").as_deref() == Ok("gpu") {
             let directory = std::env::var("EZKL_GAT_RUN_DIR").map(PathBuf::from).map_err(|_| "GPU formal proof requires EZKL_GAT_RUN_DIR")?;
@@ -3456,13 +3832,15 @@ pub(crate) fn verify_with_formal_inputs(
         String,
         PathBuf,
     )> = None;
+    let mut formal_srs_sha256: Option<String> = None;
     if formal_inputs {
         require_formal_regular_file(&proof_path, "proof")?;
         require_formal_regular_file(&settings_path, "settings")?;
         require_formal_regular_file(&vk_path, "verification key")?;
-        if let Some(path) = srs_path.as_ref() {
-            require_authentic_srs(path)?;
-        }
+        let authenticated_srs_path = srs_path
+            .as_deref()
+            .ok_or("formal verify requires an explicit authenticated SRS path")?;
+        formal_srs_sha256 = Some(require_authentic_srs(authenticated_srs_path)?);
         let statement_path = statement_path.ok_or_else(|| {
             "formal verify requires --statement, --public-output and --artifact-manifest"
                 .to_string()
@@ -3624,14 +4002,25 @@ pub(crate) fn verify_with_formal_inputs(
 
     let logrows = circuit_settings.run_args.logrows;
 
-    let params: ParamsKZG<Bn256> = if reduced_srs {
+    let parameter_k = if reduced_srs {
         // only need G_0 for the verification with shplonk
-        load_params_verifier::<KZGCommitmentScheme<Bn256>>(srs_path, 1)?
+        1
     } else {
-        load_params_verifier::<KZGCommitmentScheme<Bn256>>(srs_path, logrows)?
+        logrows
+    };
+    let params: ParamsKZG<Bn256> = if formal_inputs {
+        let path = srs_path
+            .as_deref()
+            .ok_or("formal verify lost its authenticated SRS path")?;
+        let digest = formal_srs_sha256
+            .as_deref()
+            .ok_or("formal verify lost its authenticated SRS digest")?;
+        load_formal_kzg_params(path, parameter_k, digest)?
+    } else {
+        load_params_verifier::<KZGCommitmentScheme<Bn256>>(srs_path, parameter_k)?
     };
 
-    let verified = verify_commitment::<
+    let (verified, verify_time_ms) = verify_commitment::<
         KZGCommitmentScheme<Bn256>,
         VerifierSHPLONK<'_, Bn256>,
         _,
@@ -3656,6 +4045,17 @@ pub(crate) fn verify_with_formal_inputs(
             })?;
         std::fs::create_dir_all(&run_dir)?;
         let backend = std::env::var("EZKL_GAT_BACKEND").unwrap_or_else(|_| "cpu".into());
+        let metrics = serde_json::json!({
+            "schema_version": 1,
+            "operation": "native_halo2_independent_verifier",
+            "included_in": "native_verify_proof",
+            "verify_time_ms": verify_time_ms,
+            "proof_sha256": get_file_hash(&proof_path)?,
+        });
+        std::fs::write(
+            run_dir.join("native_verify_metrics.json"),
+            serde_json::to_vec_pretty(&metrics)?,
+        )?;
         if backend == "gpu" {
             enforce_gat_gpu(true)?;
         }
@@ -3716,7 +4116,7 @@ fn verify_commitment<
     vk_path: PathBuf,
     params: &'a Scheme::ParamsVerifier,
     logrows: u32,
-) -> Result<bool, EZKLError>
+) -> Result<(bool, f64), EZKLError>
 where
     Scheme::Scalar: FromUniformBytes<64>
         + SerdeObject
@@ -3726,12 +4126,14 @@ where
     Scheme::Curve: SerdeObject + Serialize + DeserializeOwned,
     Scheme::ParamsVerifier: 'a,
 {
-    let proof = Snark::load::<Scheme>(&proof_path)?;
+    let proof_bytes = std::fs::read(&proof_path)
+        .map_err(|e| crate::pfsys::PfsysError::LoadProof(format!("{}", e)))?;
 
     let strategy = Strategy::new(params);
     let vk = load_vk::<Scheme, C>(vk_path, settings)?;
     let now = Instant::now();
 
+    let proof = Snark::<Scheme::Scalar, Scheme::Curve>::decode_json_bytes(&proof_bytes)?;
     let result =
         verify_proof_circuit::<V, _, _, _, TR>(&proof, params, &vk, strategy, 1 << logrows);
 
@@ -3742,7 +4144,9 @@ where
         elapsed.subsec_millis()
     );
     info!("verified: {}", result.is_ok());
-    result.map_err(|e: plonk::Error| e.into()).map(|_| true)
+    result
+        .map_err(|e: plonk::Error| e.into())
+        .map(|_| (true, elapsed.as_secs_f64() * 1000.0))
 }
 
 /// helper function for load_params
@@ -3771,4 +4175,100 @@ pub(crate) fn load_params_prover<Scheme: CommitmentScheme>(
         params.downsize(logrows);
     }
     Ok(params)
+}
+
+#[cfg(test)]
+mod native_geometry_diagnostics {
+    use super::*;
+
+    /// Explicitly invoked diagnostic for current-source geometry. This does
+    /// not create a formal session, keys, proof, or READY marker.
+    #[test]
+    #[ignore = "runs the full canonical Cora model layout for source-bound geometry evidence"]
+    fn full_canonical_cora_constraint_system_shape() {
+        let baseline_root = std::env::current_dir().expect("baseline root");
+        let manifest_path = PathBuf::from("resources/resource_manifest.json");
+        let srs_path = PathBuf::from("resources/native_srs/kzg26.srs");
+        let srs_sha256 = require_authentic_srs(&srs_path).expect("authenticate official full-size SRS");
+        let loaded = load_dataset_with_manifest(&baseline_root, &manifest_path, "cora")
+            .expect("load full canonical Cora resources");
+        let circuit = build_canonical_gat_circuit(&loaded).expect("build canonical Cora circuit");
+        let settings = circuit.settings();
+        let configure_started = Instant::now();
+        println!(
+            "EZKL_NATIVE_PHASE START stage=configure_constraint_system dataset=cora k={} domain={}",
+            settings.run_args.logrows,
+            1u64 << settings.run_args.logrows,
+        );
+        let cs = configure_canonical_constraint_system(&circuit);
+        let configure_elapsed_ms = configure_started.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "EZKL_NATIVE_PHASE DONE stage=configure_constraint_system dataset=cora elapsed_ms={:.3} advice={} fixed={} instance={} selectors={} lookups={} shuffles={} permutation_columns={} blinding_factors={}",
+            configure_elapsed_ms,
+            cs.num_advice_columns(),
+            cs.num_fixed_columns(),
+            cs.num_instance_columns(),
+            cs.num_selectors(),
+            cs.lookups().len(),
+            cs.shuffles().len(),
+            cs.num_permutation_columns(),
+            cs.blinding_factors(),
+        );
+
+        let k = settings.run_args.logrows;
+        let domain_size = 1u64.checked_shl(k).expect("Cora domain size");
+        let degree = cs.degree();
+        let quotient_extent = domain_size
+            .checked_mul(u64::try_from(degree.checked_sub(1).expect("degree >= 2")).unwrap())
+            .expect("Cora quotient extent");
+        let proof_domain_size = quotient_extent
+            .checked_next_power_of_two()
+            .expect("Cora proof domain");
+        let report = serde_json::json!({
+            "schema": "ezkl-native-geometry-diagnostic-v1",
+            "diagnostic_only": true,
+            "formal_gpu_admission": false,
+            "dataset": "cora",
+            "resource_manifest_sha256": loaded.resource_manifest_sha256,
+            "srs_sha256": srs_sha256,
+            "relation_identity": native_admission_relation_identity(&loaded).expect("Cora relation identity"),
+            "k": k,
+            "domain_size": domain_size,
+            "settings": {
+                "num_rows": settings.num_rows,
+                "total_assignments": settings.total_assignments,
+                "total_const_size": settings.total_const_size,
+                "total_dynamic_col_size": settings.dynamic_lookup_params.total_dynamic_col_size,
+                "max_dynamic_input_len": settings.dynamic_lookup_params.max_dynamic_input_len,
+                "num_dynamic_lookups": settings.dynamic_lookup_params.num_dynamic_lookups,
+                "num_shuffles": settings.shuffle_params.num_shuffles,
+            },
+            "constraint_system": {
+                "degree": degree,
+                "num_fixed_columns": cs.num_fixed_columns(),
+                "num_advice_columns": cs.num_advice_columns(),
+                "num_instance_columns": cs.num_instance_columns(),
+                "num_selectors": cs.num_selectors(),
+                "num_lookup_arguments": cs.lookups().len(),
+                "num_shuffle_arguments": cs.shuffles().len(),
+                "num_permutation_columns": cs.num_permutation_columns(),
+                "num_blinding_factors": cs.blinding_factors(),
+                "advice_column_phase_ids": cs.advice_column_phase(),
+            },
+            "proof_domain_size": proof_domain_size,
+            "proof_logrows": proof_domain_size.trailing_zeros(),
+            "rust_type_bytes": {
+                "fr": std::mem::size_of::<Fr>(),
+                "assigned_fr": std::mem::size_of::<plonk::Assigned<Fr>>(),
+                "option_fr": std::mem::size_of::<Option<Fr>>(),
+                "usize": std::mem::size_of::<usize>(),
+                "usize_pair": std::mem::size_of::<(usize, usize)>(),
+                "g1_affine": std::mem::size_of::<G1Affine>(),
+            },
+            "configure_elapsed_ms": configure_elapsed_ms,
+            "proof_executed": false,
+            "keys_generated": false,
+        });
+        println!("EZKL_NATIVE_CORA_GEOMETRY_JSON={}", report);
+    }
 }

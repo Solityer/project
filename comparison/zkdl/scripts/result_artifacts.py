@@ -119,6 +119,72 @@ def _required(values: dict[str, str], key: str, path: Path) -> str:
     return value
 
 
+def _validate_prove_timing_diagnostics(timing: dict[str, str], envelope: dict[str, str], path: Path) -> None:
+    expected_scope = (
+        "signed_round_aux_witness_and_relation_views;steady_clock_wall;"
+        "exclude_family_storage_write_hash_and_explicit_file_io"
+    )
+    expected_fields = {
+        "schema_id", "status", "statement_id", "proof_id", "commitment_time_seconds", "prove_time_seconds",
+        "proof_auxiliary_construction_seconds", "proof_auxiliary_construction_scope",
+        "sorted_lookup_protocol_construction_seconds", "relation_context_prove_seconds", "relation_prove_wall_seconds",
+        "relation_commitment_time_seconds", "prove_provider_file_io_excluded_seconds", "proof_serialization_seconds",
+    }
+    if set(timing) != expected_fields or timing.get("schema_id") != "zkDL_gat_proof_timing_v1" or timing.get("status") != "PROVED":
+        raise ArtifactError(f"proof timing sidecar schema/status mismatch: {path}")
+    if timing.get("proof_auxiliary_construction_scope") != expected_scope:
+        raise ArtifactError(f"proof timing diagnostic scope mismatch: {path}")
+    if timing.get("statement_id") != envelope.get("statement_id") or timing.get("proof_id") != envelope.get("proof_id"):
+        raise ArtifactError(f"proof timing sidecar is not bound to the proof envelope: {path}")
+    fields = (
+        "proof_auxiliary_construction_seconds",
+        "sorted_lookup_protocol_construction_seconds",
+        "relation_context_prove_seconds",
+        "relation_prove_wall_seconds",
+        "relation_commitment_time_seconds",
+        "prove_provider_file_io_excluded_seconds",
+        "proof_serialization_seconds",
+    )
+    metrics: dict[str, float] = {}
+    for field in fields:
+        try:
+            value = float(timing[field])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArtifactError(f"proof timing diagnostic is missing or invalid: {field}") from exc
+        if not math.isfinite(value) or value < 0.0:
+            raise ArtifactError(f"proof timing diagnostic is negative or non-finite: {field}")
+        metrics[field] = value
+    if metrics["relation_commitment_time_seconds"] > metrics["relation_prove_wall_seconds"]:
+        raise ArtifactError(f"relation commitment interval exceeds relation prover wall time: {path}")
+    if metrics["prove_provider_file_io_excluded_seconds"] > (
+        metrics["relation_prove_wall_seconds"] - metrics["relation_commitment_time_seconds"]
+    ):
+        raise ArtifactError(f"excluded provider I/O exceeds non-commit prover wall time: {path}")
+    computed = (
+        metrics["proof_auxiliary_construction_seconds"]
+        + metrics["sorted_lookup_protocol_construction_seconds"]
+        + metrics["relation_context_prove_seconds"]
+        + metrics["relation_prove_wall_seconds"]
+        - metrics["relation_commitment_time_seconds"]
+        - metrics["prove_provider_file_io_excluded_seconds"]
+        + metrics["proof_serialization_seconds"]
+    )
+    try:
+        reported = float(timing["prove_time_seconds"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ArtifactError(f"proof envelope is missing valid prove_time_seconds: {path}") from exc
+    try:
+        sidecar_commitment = float(timing["commitment_time_seconds"])
+        envelope_commitment = float(envelope["commitment_time_seconds"])
+        envelope_prove = float(envelope["prove_time_seconds"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ArtifactError(f"proof timing sidecar paper metrics are invalid: {path}") from exc
+    if (not math.isfinite(reported) or not math.isfinite(sidecar_commitment) or
+            sidecar_commitment < 0.0 or sidecar_commitment != envelope_commitment or
+            reported != envelope_prove or not math.isclose(computed, reported, rel_tol=2e-12, abs_tol=2e-12)):
+        raise ArtifactError(f"raw proof timing components do not sum to Prove Time: {path}")
+
+
 def _digest(value: str, field: str, *, unavailable: bool = False) -> None:
     if unavailable and value == "UNAVAILABLE":
         return
@@ -416,12 +482,14 @@ def _audit_fixture_run(root: Path, run_dir: Path, *, expected_dataset: str | Non
     record_path = _regular(run_dir / "run.record", "fixture run record")
     proof_path = _regular(run_dir / "proof.bin", "fixture proof artifact")
     envelope_path = _regular(run_dir / "proof.meta", "fixture proof envelope")
+    timing_path = _regular(run_dir / "proof.timing", "fixture proof timing diagnostics")
     statement_path = _regular(run_dir / "statement.txt", "fixture public statement")
     verification_path = _regular(run_dir / "verification.result", "fixture verification result")
     evidence_path = _regular(run_dir / "independent_verify.evidence", "fixture verifier evidence")
     public_output = _regular(run_dir / "public_Y.txt", "fixture public output")
     record = read_kv(record_path)
     envelope = read_kv(envelope_path)
+    timing = read_kv(timing_path)
     statement = read_kv(statement_path)
     verification = read_kv(verification_path)
     dataset = _required(record, "dataset", record_path)
@@ -439,8 +507,9 @@ def _audit_fixture_run(root: Path, run_dir: Path, *, expected_dataset: str | Non
         raise ArtifactError(f"fixture mode marker is missing: {run_dir}")
     if record.get("schema") != "zkDL_gat_run_record_v2" or record.get("verification_status") != "VERIFIED":
         raise ArtifactError(f"fixture run record is not VERIFIED: {record_path}")
-    if envelope.get("schema_id") != "zkDL_gat_proof_envelope_v2" or envelope.get("status") != "PROVED":
+    if envelope.get("schema_id") != "zkDL_gat_proof_envelope_v1" or envelope.get("status") != "PROVED":
         raise ArtifactError(f"fixture proof envelope is not PROVED: {envelope_path}")
+    _validate_prove_timing_diagnostics(timing, envelope, timing_path)
     if (record.get("commitment_time_semantics") != "native_tensor_commitments" or
             envelope.get("commitment_time_semantics") != "native_tensor_commitments" or
             record.get("commitment_time_semantics") != envelope.get("commitment_time_semantics")):
@@ -530,10 +599,12 @@ def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
     record_path = _regular(run_dir / "run.record", "run record")
     proof_path = _regular(run_dir / "proof.bin", "proof artifact")
     envelope_path = _regular(run_dir / "proof.meta", "proof envelope")
+    timing_path = _regular(run_dir / "proof.timing", "proof timing diagnostics")
     statement_path = _regular(run_dir / "statement.txt", "public statement")
     verification_path = _regular(run_dir / "verification.result", "independent verification result")
     record = read_kv(record_path)
     envelope = read_kv(envelope_path)
+    timing = read_kv(timing_path)
     statement = read_kv(statement_path)
     verification = read_kv(verification_path)
 
@@ -552,8 +623,9 @@ def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
         raise ArtifactError(f"run record schema mismatch: {record_path}")
     if record.get("verification_status") != "VERIFIED":
         raise ArtifactError(f"run is not VERIFIED: {record_path}")
-    if envelope.get("schema_id") != "zkDL_gat_proof_envelope_v2" or envelope.get("status") != "PROVED":
+    if envelope.get("schema_id") != "zkDL_gat_proof_envelope_v1" or envelope.get("status") != "PROVED":
         raise ArtifactError(f"proof envelope is not PROVED: {envelope_path}")
+    _validate_prove_timing_diagnostics(timing, envelope, timing_path)
     if (record.get("commitment_time_semantics") != "native_tensor_commitments" or
             envelope.get("commitment_time_semantics") != "native_tensor_commitments" or
             record.get("commitment_time_semantics") != envelope.get("commitment_time_semantics")):

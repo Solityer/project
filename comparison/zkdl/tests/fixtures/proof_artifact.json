@@ -1,5 +1,5 @@
 {
-  "schema": "zkDL_gat_proof_envelope_v2",
+  "schema": "zkDL_gat_proof_envelope_v1",
   "statement_id": "0000000000000000000000000000000000000000000000000000000000000000",
   "proof_id": "fixture-proof-cora-cpu",
   "backend": "cpu",

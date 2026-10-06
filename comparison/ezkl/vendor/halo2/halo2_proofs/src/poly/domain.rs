@@ -849,6 +849,56 @@ fn test_coeff_to_extended_part() {
 }
 
 #[test]
+fn test_extended_parts_preserve_stride_rotations_and_quotient() {
+    use halo2curves::pasta::pallas::Scalar;
+    use rand_core::OsRng;
+
+    // j=5 makes the extended domain four times the base domain. Each
+    // coeff_to_extended_part result is one strided lane of the full vector.
+    let domain = EvaluationDomain::<Scalar>::new(5, 4);
+    let mut poly = domain.empty_coeff();
+    for value in poly.iter_mut() {
+        *value = Scalar::random(OsRng);
+    }
+
+    let full = domain.coeff_to_extended(&poly);
+    let parts = domain.coeff_to_extended_parts(&poly);
+    let stride = domain.extended_len() / poly.len();
+    assert_eq!(parts.len(), stride);
+
+    let mut reconstructed = domain.empty_extended();
+    for (part_idx, part) in parts.into_iter().enumerate() {
+        for (row, value) in part.iter().enumerate() {
+            reconstructed[row * stride + part_idx] = *value;
+        }
+    }
+    assert_eq!(full.values, reconstructed.values);
+
+    for rotation in [-9, -1, 1, 9] {
+        let rotated = domain.rotate_extended(&full, Rotation(rotation));
+        let shift = ((rotation.unsigned_abs() as usize * stride) % domain.extended_len())
+            * usize::from(rotation >= 0);
+        let right_shift = if rotation < 0 {
+            domain.extended_len() - shift
+        } else {
+            shift
+        };
+        for index in 0..domain.extended_len() {
+            let source = (index + right_shift) % domain.extended_len();
+            assert_eq!(rotated[index], reconstructed[source]);
+        }
+    }
+
+    let full_quotient = domain.divide_by_vanishing_poly(full.clone());
+    let parts_quotient = domain.divide_by_vanishing_poly(reconstructed.clone());
+    assert_eq!(full_quotient.values, parts_quotient.values);
+    assert_eq!(
+        domain.extended_to_coeff(full_quotient),
+        domain.extended_to_coeff(parts_quotient),
+    );
+}
+
+#[test]
 fn bench_coeff_to_extended_parts() {
     use halo2curves::pasta::pallas::Scalar;
     use instant::Instant;

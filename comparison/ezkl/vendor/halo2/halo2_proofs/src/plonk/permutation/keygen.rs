@@ -11,7 +11,13 @@ use crate::{
     },
 };
 
-use maybe_rayon::prelude::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+
+#[cfg(feature = "thread-safe-region")]
+use maybe_rayon::prelude::{IntoParallelIterator, IntoParallelRefMutIterator};
+
+#[cfg(not(feature = "thread-safe-region"))]
+use maybe_rayon::prelude::IntoParallelIterator;
 
 #[cfg(feature = "thread-safe-region")]
 use std::collections::BTreeSet;
@@ -25,33 +31,66 @@ use rustc_hash::FxHashMap as HashMap;
 pub struct Assembly {
     /// Columns that participate on the copy permutation argument.
     columns: Vec<Column<Any>>,
-    /// Mapping of the actual copies done.
-    mapping: Vec<Vec<(usize, usize)>>,
-    /// Some aux data used to swap positions directly when sorting.
-    aux: Vec<Vec<(usize, usize)>>,
-    /// More aux data
-    sizes: Vec<Vec<usize>>,
+    /// Non-identity successor edges; every omitted cell maps to itself.
+    mapping: std::collections::HashMap<usize, usize>,
+    /// Non-default cycle representatives; every omitted cell represents itself.
+    aux: std::collections::HashMap<usize, usize>,
+    /// Non-singleton cycle sizes; every omitted representative has size one.
+    sizes: std::collections::HashMap<usize, usize>,
+    col_len: usize,
 }
 
 #[cfg(not(feature = "thread-safe-region"))]
 impl Assembly {
     pub(crate) fn new(n: usize, p: &Argument) -> Self {
-        // Initialize the copy vector to keep track of copy constraints in all
-        // the permutation arguments.
-        let mut columns = vec![];
-        for i in 0..p.columns.len() {
-            // Computes [(i, 0), (i, 1), ..., (i, n - 1)]
-            columns.push((0..n).map(|j| (i, j)).collect());
-        }
-
-        // Before any equality constraints are applied, every cell in the permutation is
-        // in a 1-cycle; therefore mapping and aux are identical, because every cell is
-        // its own distinguished element.
         Assembly {
             columns: p.columns.clone(),
-            mapping: columns.clone(),
-            aux: columns,
-            sizes: vec![vec![1usize; n]; p.columns.len()],
+            mapping: std::collections::HashMap::new(),
+            aux: std::collections::HashMap::new(),
+            sizes: std::collections::HashMap::new(),
+            col_len: n,
+        }
+    }
+
+    fn cell_id(&self, column: usize, row: usize) -> usize {
+        assert!(column < self.columns.len() && row < self.col_len, "permutation cell is outside its declared shape");
+        column.checked_mul(self.col_len).and_then(|base| base.checked_add(row))
+            .expect("permutation cell identifier overflow")
+    }
+
+    fn cell_at(&self, cell: usize) -> (usize, usize) {
+        (cell / self.col_len, cell % self.col_len)
+    }
+
+    fn mapping_at(&self, cell: usize) -> usize {
+        self.mapping.get(&cell).copied().unwrap_or(cell)
+    }
+
+    fn mapping_at_idx(&self, column: usize, row: usize) -> (usize, usize) {
+        self.cell_at(self.mapping_at(self.cell_id(column, row)))
+    }
+
+    fn set_mapping(&mut self, cell: usize, successor: usize) {
+        if cell == successor {
+            self.mapping.remove(&cell);
+        } else {
+            self.mapping.insert(cell, successor);
+        }
+    }
+
+    fn representative(&self, cell: usize) -> usize {
+        self.aux.get(&cell).copied().unwrap_or(cell)
+    }
+
+    fn cycle_size(&self, representative: usize) -> usize {
+        self.sizes.get(&representative).copied().unwrap_or(1)
+    }
+
+    fn set_representative(&mut self, cell: usize, representative: usize) {
+        if cell == representative {
+            self.aux.remove(&cell);
+        } else {
+            self.aux.insert(cell, representative);
         }
     }
 
@@ -73,41 +112,44 @@ impl Assembly {
             .position(|c| c == &right_column)
             .ok_or(Error::ColumnNotInPermutation(right_column))?;
 
-        // Check bounds
-        if left_row >= self.mapping[left_column].len()
-            || right_row >= self.mapping[right_column].len()
-        {
+        if left_row >= self.col_len || right_row >= self.col_len {
             return Err(Error::BoundsFailure);
         }
 
         // See book/src/design/permutation.md for a description of this algorithm.
 
-        let mut left_cycle = self.aux[left_column][left_row];
-        let mut right_cycle = self.aux[right_column][right_row];
+        let left_cell = self.cell_id(left_column, left_row);
+        let right_cell = self.cell_id(right_column, right_row);
+        let mut left_cycle = self.representative(left_cell);
+        let mut right_cycle = self.representative(right_cell);
 
         // If left and right are in the same cycle, do nothing.
         if left_cycle == right_cycle {
             return Ok(());
         }
 
-        if self.sizes[left_cycle.0][left_cycle.1] < self.sizes[right_cycle.0][right_cycle.1] {
+        let mut left_size = self.cycle_size(left_cycle);
+        let mut right_size = self.cycle_size(right_cycle);
+        if left_size < right_size {
             std::mem::swap(&mut left_cycle, &mut right_cycle);
+            std::mem::swap(&mut left_size, &mut right_size);
         }
 
-        // Merge the right cycle into the left one.
-        self.sizes[left_cycle.0][left_cycle.1] += self.sizes[right_cycle.0][right_cycle.1];
+        self.sizes.insert(left_cycle, left_size.checked_add(right_size).expect("permutation cycle size overflow"));
+        self.sizes.remove(&right_cycle);
         let mut i = right_cycle;
         loop {
-            self.aux[i.0][i.1] = left_cycle;
-            i = self.mapping[i.0][i.1];
+            self.set_representative(i, left_cycle);
+            i = self.mapping_at(i);
             if i == right_cycle {
                 break;
             }
         }
 
-        let tmp = self.mapping[left_column][left_row];
-        self.mapping[left_column][left_row] = self.mapping[right_column][right_row];
-        self.mapping[right_column][right_row] = tmp;
+        let left_successor = self.mapping_at(left_cell);
+        let right_successor = self.mapping_at(right_cell);
+        self.set_mapping(left_cell, right_successor);
+        self.set_mapping(right_cell, left_successor);
 
         Ok(())
     }
@@ -118,7 +160,7 @@ impl Assembly {
         domain: &EvaluationDomain<C::Scalar>,
         p: &Argument,
     ) -> VerifyingKey<C> {
-        build_vk(params, domain, p, |i, j| self.mapping[i][j])
+        build_vk(params, domain, p, move |i, j| self.mapping_at_idx(i, j))
     }
 
     pub(crate) fn build_pk<'params, C: CurveAffine, P: Params<'params, C>>(
@@ -127,7 +169,13 @@ impl Assembly {
         domain: &EvaluationDomain<C::Scalar>,
         p: &Argument,
     ) -> ProvingKey<C> {
-        build_pk(params, domain, p, |i, j| self.mapping[i][j])
+        let Assembly { mapping, col_len, .. } = self;
+        build_pk(params, domain, p, move |i, j| {
+            let cell = i.checked_mul(col_len).and_then(|base| base.checked_add(j))
+                .expect("permutation cell identifier overflow");
+            let successor = mapping.get(&cell).copied().unwrap_or(cell);
+            (successor / col_len, successor % col_len)
+        })
     }
 
     /// Returns columns that participate in the permutation argument.
@@ -139,7 +187,9 @@ impl Assembly {
     pub fn mapping(
         &self,
     ) -> impl Iterator<Item = impl IndexedParallelIterator<Item = (usize, usize)> + '_> {
-        self.mapping.iter().map(|c| c.par_iter().copied())
+        (0..self.columns.len()).map(move |column| {
+            (0..self.col_len).into_par_iter().map(move |row| self.mapping_at_idx(column, row))
+        })
     }
 }
 
@@ -168,7 +218,7 @@ impl Assembly {
             columns: p.columns.clone(),
             cycles: Vec::with_capacity(n),
             ordered_cycles: Vec::with_capacity(n),
-            aux: HashMap::new(),
+            aux: HashMap::default(),
             col_len: n,
             num_cols: p.columns.len(),
         }
@@ -241,8 +291,6 @@ impl Assembly {
     /// Builds the ordered mapping of the cycles.
     /// This will only get executed once.
     pub fn build_ordered_mapping(&mut self) {
-        use crate::multicore::IntoParallelRefMutIterator;
-
         // will only get called once
         if self.ordered_cycles.is_empty() && !self.cycles.is_empty() {
             self.ordered_cycles = self
@@ -294,13 +342,13 @@ impl Assembly {
     }
 
     pub(crate) fn build_pk<'params, C: CurveAffine, P: Params<'params, C>>(
-        &mut self,
+        mut self,
         params: &P,
         domain: &EvaluationDomain<C::Scalar>,
         p: &Argument,
     ) -> ProvingKey<C> {
         self.build_ordered_mapping();
-        build_pk(params, domain, p, |i, j| self.mapping_at_idx(i, j))
+        build_pk(params, domain, p, move |i, j| self.mapping_at_idx(i, j))
     }
 
     /// Returns columns that participate in the permutation argument.
@@ -367,6 +415,13 @@ pub(crate) fn build_pk<'params, C: CurveAffine, P: Params<'params, C>>(
         });
     }
 
+    // The permutation polynomials no longer need the copy mapping or the
+    // delta-scaled roots. Releasing these full-domain temporaries before the
+    // coefficient and extended-domain vectors are allocated lowers the
+    // key-generation peak without changing any polynomial values.
+    drop(mapping);
+    drop(deltaomega);
+
     let mut polys = vec![domain.empty_coeff(); p.columns.len()];
     {
         parallelize(&mut polys, |o, start| {
@@ -415,45 +470,116 @@ pub(crate) fn build_vk<'params, C: CurveAffine, P: Params<'params, C>>(
         })
     }
 
-    // Compute [omega_powers * \delta^0, omega_powers * \delta^1, ..., omega_powers * \delta^m]
-    let mut deltaomega = vec![omega_powers; p.columns.len()];
-    {
-        parallelize(&mut deltaomega, |o, start| {
-            let mut cur = C::Scalar::DELTA.pow_vartime([start as u64]);
-            for omega_powers in o.iter_mut() {
-                for v in omega_powers {
-                    *v *= &cur;
-                }
-                cur *= &<C::Scalar as PrimeField>::DELTA;
-            }
-        });
+    let mut delta_powers = vec![C::Scalar::ONE; p.columns.len()];
+    for index in 1..delta_powers.len() {
+        delta_powers[index] = delta_powers[index - 1] * C::Scalar::DELTA;
     }
 
-    // Computes the permutation polynomial based on the permutation
-    // description in the assembly.
-    let mut permutations = vec![domain.empty_lagrange(); p.columns.len()];
-    {
-        parallelize(&mut permutations, |o, start| {
-            for (x, permutation_poly) in o.iter_mut().enumerate() {
-                let i = start + x;
-                for (j, p) in permutation_poly.iter_mut().enumerate() {
-                    let (permuted_i, permuted_j) = mapping(i, j);
-                    *p = deltaomega[permuted_i][permuted_j];
-                }
-            }
-        });
-    }
-
-    // Pre-compute commitments for the URS.
+    // The verification key retains only sigma commitments, so construct and
+    // commit one dense sigma column at a time.
     let mut commitments = Vec::with_capacity(p.columns.len());
-    for permutation in &permutations {
-        // Compute commitment to permutation polynomial
+    for column in 0..p.columns.len() {
+        let mut permutation = domain.empty_lagrange();
+        parallelize(&mut permutation, |values, start| {
+            for (offset, value) in values.iter_mut().enumerate() {
+                let (permuted_column, permuted_row) = mapping(column, start + offset);
+                *value = delta_powers[permuted_column] * omega_powers[permuted_row];
+            }
+        });
         commitments.push(
             params
-                .commit_lagrange(permutation, Blind::default())
+                .commit_lagrange(&permutation, Blind::default())
                 .to_affine(),
         );
     }
 
     VerifyingKey { commitments }
+}
+
+#[cfg(all(test, not(feature = "thread-safe-region")))]
+mod sparse_assembly_tests {
+    use super::{build_vk, Assembly};
+    use crate::{
+        halo2curves::bn256::{Bn256, Fr},
+        plonk::{permutation::Argument, Any, Column},
+        poly::{
+            kzg::commitment::ParamsKZG,
+            EvaluationDomain,
+        },
+    };
+    use ff::{Field, PrimeField};
+    use rand_core::OsRng;
+
+    #[test]
+    fn touched_sparse_successors_match_dense_assembly_and_vk_commitments() {
+        let n = 8usize;
+        let columns = (0..3).map(|i| Column::new(i, Any::advice())).collect::<Vec<_>>();
+        let mut argument = Argument::new();
+        for column in &columns { argument.add_column(*column); }
+
+        let mut sparse = Assembly::new(n, &argument);
+        let mut dense_mapping = (0..columns.len())
+            .map(|column| (0..n).map(|row| (column, row)).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let mut dense_aux = dense_mapping.clone();
+        let mut dense_sizes = vec![vec![1usize; n]; columns.len()];
+        let operations = [
+            (0, 0, 1, 4), // join two untouched singleton cycles
+            (2, 6, 0, 0), // size-balanced swap: the right cycle is larger
+            (1, 4, 2, 6), // duplicate relation inside an existing cycle
+            (0, 1, 1, 4),
+            (2, 2, 0, 1), // cross-column cycle extension
+            (2, 2, 2, 2), // self-copy is a no-op
+            (1, 0, 2, 6),
+            (0, 5, 0, 1),
+            (1, 1, 2, 5),
+            (1, 1, 1, 1),
+        ];
+
+        for (left_col, left_row, right_col, right_row) in operations {
+            sparse.copy(columns[left_col], left_row, columns[right_col], right_row).unwrap();
+
+            let mut left_cycle = dense_aux[left_col][left_row];
+            let mut right_cycle = dense_aux[right_col][right_row];
+            if left_cycle != right_cycle {
+                if dense_sizes[left_cycle.0][left_cycle.1] < dense_sizes[right_cycle.0][right_cycle.1] {
+                    std::mem::swap(&mut left_cycle, &mut right_cycle);
+                }
+                dense_sizes[left_cycle.0][left_cycle.1] += dense_sizes[right_cycle.0][right_cycle.1];
+                let mut cell = right_cycle;
+                loop {
+                    dense_aux[cell.0][cell.1] = left_cycle;
+                    cell = dense_mapping[cell.0][cell.1];
+                    if cell == right_cycle { break; }
+                }
+                let next = dense_mapping[left_col][left_row];
+                dense_mapping[left_col][left_row] = dense_mapping[right_col][right_row];
+                dense_mapping[right_col][right_row] = next;
+            }
+
+            let delta = Fr::DELTA;
+            let omega = Fr::ROOT_OF_UNITY.pow_vartime([1u64 << (Fr::S - 3)]);
+            for column in 0..columns.len() {
+                for row in 0..n {
+                    let sparse_target = sparse.mapping_at_idx(column, row);
+                    assert_eq!(sparse_target, dense_mapping[column][row], "successor mismatch after copy operation");
+                    let sparse_cell = sparse.cell_id(column, row);
+                    let sparse_root = sparse.representative(sparse_cell);
+                    let dense_root = dense_aux[column][row];
+                    assert_eq!(sparse.cell_at(sparse_root), dense_root, "cycle representative mismatch after copy operation");
+                    assert_eq!(sparse.cycle_size(sparse_root), dense_sizes[dense_root.0][dense_root.1], "cycle size mismatch after copy operation");
+                    let sparse_sigma = delta.pow_vartime([sparse_target.0 as u64]) * omega.pow_vartime([sparse_target.1 as u64]);
+                    let dense_target = dense_mapping[column][row];
+                    let dense_sigma = delta.pow_vartime([dense_target.0 as u64]) * omega.pow_vartime([dense_target.1 as u64]);
+                    assert_eq!(sparse_sigma, dense_sigma, "sigma value mismatch after copy operation");
+                }
+            }
+        }
+
+        let params = ParamsKZG::<Bn256>::setup(3, OsRng);
+        let domain = EvaluationDomain::<Fr>::new(3, 3);
+        let sparse_vk = sparse.build_vk(&params, &domain, &argument);
+        let dense_vk = build_vk(&params, &domain, &argument, move |column, row| dense_mapping[column][row]);
+        assert_eq!(sparse_vk.commitments(), dense_vk.commitments(), "verification-key sigma commitments differ");
+    }
 }

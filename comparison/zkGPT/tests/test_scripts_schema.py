@@ -22,6 +22,7 @@ from common import (  # noqa: E402
     require_fixed_digest,
     require_result_shape,
     verifier_binary,
+    verifier_timing,
 )
 from validate_final_results import require_formal_cells  # noqa: E402
 
@@ -47,6 +48,22 @@ def valid_result_shape() -> dict:
 
 
 class ProductionContractTests(unittest.TestCase):
+    def test_verifier_timing_requires_exact_stage_sum(self) -> None:
+        self.assertEqual(
+            verifier_timing({
+                "decode_crypto_ms": 1.25,
+                "verify_crypto_ms": 2.5,
+                "crypto_verify_ms": 3.75,
+            }, "synthetic"),
+            {"decode_crypto_ms": 1.25, "verify_crypto_ms": 2.5, "crypto_verify_ms": 3.75},
+        )
+        with self.assertRaises(ChainError):
+            verifier_timing({
+                "decode_crypto_ms": 1.25,
+                "verify_crypto_ms": 2.5,
+                "crypto_verify_ms": 3.749,
+            }, "synthetic")
+
     def test_result_schema_rejects_missing_privacy_field(self) -> None:
         value = valid_result_shape()
         del value["privacy_profile"]

@@ -34,11 +34,10 @@ where
 /// Best MSM
 pub fn best_multiexp<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve {
     #[cfg(feature = "icicle_gpu")]
-    if env::var("ENABLE_ICICLE_GPU").is_ok()
-        && !icicle::should_use_cpu_msm(coeffs.len())
-        && icicle::is_gpu_supported_field(&coeffs[0])
-    {
-        return best_multiexp_gpu(coeffs, bases);
+    if env::var("ENABLE_ICICLE_GPU").is_ok() && !icicle::should_use_cpu_msm(coeffs.len()) {
+        #[cfg(feature = "formal-gpu-msm")]
+        assert!(icicle::is_gpu_supported_field(&coeffs[0]), "formal ICICLE MSM received an unsupported scalar field");
+        if icicle::is_gpu_supported_field(&coeffs[0]) { return best_multiexp_gpu(coeffs, bases); }
     }
 
     #[cfg(feature = "metal")]
@@ -92,6 +91,8 @@ pub fn best_fft_cpu<Scalar: Field, G: FftGroup<Scalar>>(
     inverse: bool,
 ) {
     fft::fft(a, omega, log_n, data, inverse);
+    #[cfg(all(feature = "icicle_gpu", feature = "formal-gpu-msm"))]
+    icicle::record_cpu_fft();
 }
 
 /// Best FFT
@@ -102,7 +103,10 @@ pub fn best_fft<Scalar: Field + ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeF
     data: &FFTData<Scalar>,
     inverse: bool,
 ) {
-    #[cfg(feature = "icicle_gpu")]
+    #[cfg(all(feature = "icicle_gpu", feature = "formal-gpu-msm"))]
+    best_fft_cpu(scalars, omega, log_n, data, inverse);
+
+    #[cfg(all(feature = "icicle_gpu", not(feature = "formal-gpu-msm")))]
     if env::var("ENABLE_ICICLE_GPU").is_ok()
         && !icicle::should_use_cpu_fft(scalars.len())
         && icicle::is_gpu_supported_field(&omega)

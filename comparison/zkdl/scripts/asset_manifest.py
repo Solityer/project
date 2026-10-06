@@ -103,6 +103,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--admission-only", action="store_true",
+                        help="bind checkpoint and relation resources before the formal SRS/registry are generated")
     args = parser.parse_args()
 
     config_path = args.config.resolve()
@@ -173,18 +175,22 @@ def main() -> int:
     model_blinder_path_raw = values.get("model_blinder_sidecar_path", "UNAVAILABLE")
     model_blinder_digest = values.get("model_blinder_sidecar_digest", "UNAVAILABLE")
     if values["dataset"] in {"cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"}:
-        values["_config_path"] = config_path.relative_to(root).as_posix()
-        srs_path, srs_manifest, generator_digest = validate_srs(root, values)
-        model_registry_path, registry, _registry_digest = validate_registry(
-            root, values, srs_path, srs_manifest, generator_digest)
-        validate_blinders(root, values, registry, _registry_digest)
-        asset_entries.extend(files_under((srs_path,), root))
-        for resource_path in (model_registry_path,):
-            asset_entries.append({
-                "path": resource_path.relative_to(root).as_posix(),
-                "bytes": resource_path.stat().st_size,
-                "sha256": sha256(resource_path),
-            })
+        if args.admission_only:
+            if srs_manifest_digest != "UNAVAILABLE" or model_registry_digest != "UNAVAILABLE" or model_blinder_digest != "UNAVAILABLE":
+                fail("admission-only asset binding requires explicit unavailable SRS/registry/sidecar identities")
+        else:
+            values["_config_path"] = config_path.relative_to(root).as_posix()
+            srs_path, srs_manifest, generator_digest = validate_srs(root, values)
+            model_registry_path, registry, _registry_digest = validate_registry(
+                root, values, srs_path, srs_manifest, generator_digest)
+            validate_blinders(root, values, registry, _registry_digest)
+            asset_entries.extend(files_under((srs_path,), root))
+            for resource_path in (model_registry_path,):
+                asset_entries.append({
+                    "path": resource_path.relative_to(root).as_posix(),
+                    "bytes": resource_path.stat().st_size,
+                    "sha256": sha256(resource_path),
+                })
     elif srs_path_raw != "UNAVAILABLE" and srs_manifest_digest != "UNAVAILABLE":
 
         srs_path = local_path(root, srs_path_raw, "srs_path")
@@ -253,8 +259,9 @@ def main() -> int:
     except ValueError:
         fail("output escapes baseline root")
     output.parent.mkdir(parents=True, exist_ok=True)
-    sidecar = local_path(root, model_blinder_path_raw, "model_blinder_sidecar_path")
-    private_entries.append({"path": sidecar.relative_to(root).as_posix(), "bytes": sidecar.stat().st_size, "sha256": sha256(sidecar)})
+    if not args.admission_only:
+        sidecar = local_path(root, model_blinder_path_raw, "model_blinder_sidecar_path")
+        private_entries.append({"path": sidecar.relative_to(root).as_posix(), "bytes": sidecar.stat().st_size, "sha256": sha256(sidecar)})
     private_payload = {"schema": "zkDL_gat_private_asset_manifest_v1", "dataset": values["dataset"], "registry_digest": model_registry_digest, "files": sorted(private_entries, key=lambda entry: str(entry["path"]))}
     private_path = output.parent / "private_asset_manifest.json"
     fd = os.open(private_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

@@ -67,7 +67,8 @@ Model make_model() {
     return model;
 }
 
-Model make_formal_model() {
+Model make_formal_model(bool full_heads) {
+    if (full_heads) return make_model();
     Model model;
     model.manifest.dataset = "synthetic";
     model.manifest.model_arch_id = "gat_family_L3_hid1x1-1x1_kout1_c1";
@@ -85,23 +86,19 @@ Model make_formal_model() {
     model.manifest.label_format = "single_label";
     model.manifest.output_average_rule = "per_head_bias_then_arithmetic_mean";
     model.manifest.quantization_scale_chain = "gat_l3_scale_chain";
-    for (std::size_t layer = 0; layer < 2; ++layer)
-        for (std::size_t head = 0; head < 1; ++head) {
-            std::ostringstream prefix;
-            prefix << "hidden/layer" << layer << "/head" << head << "/";
-            const std::size_t input_dim = 1;
-            model.tensors.emplace(prefix.str() + "seq/kernel", make_tensor(prefix.str() + "seq/kernel", {1, input_dim, 1}, 0.25));
-            model.tensors.emplace(prefix.str() + "attn_src/kernel", make_tensor(prefix.str() + "attn_src/kernel", {1, 1, 1}, 0.25));
-            model.tensors.emplace(prefix.str() + "attn_dst/kernel", make_tensor(prefix.str() + "attn_dst/kernel", {1, 1, 1}, 0.25));
-        }
-    for (std::size_t head = 0; head < 1; ++head) {
+    for (std::size_t layer = 0; layer < 2; ++layer) {
         std::ostringstream prefix;
-        prefix << "output/head" << head << "/";
-        model.tensors.emplace(prefix.str() + "seq/kernel", make_tensor(prefix.str() + "seq/kernel", {1, 1, 1}, 0.25));
+        prefix << "hidden/layer" << layer << "/head0/";
+        const std::size_t input_dim = 1;
+        model.tensors.emplace(prefix.str() + "seq/kernel", make_tensor(prefix.str() + "seq/kernel", {1, input_dim, 1}, 0.25));
         model.tensors.emplace(prefix.str() + "attn_src/kernel", make_tensor(prefix.str() + "attn_src/kernel", {1, 1, 1}, 0.25));
         model.tensors.emplace(prefix.str() + "attn_dst/kernel", make_tensor(prefix.str() + "attn_dst/kernel", {1, 1, 1}, 0.25));
-        model.tensors.emplace(prefix.str() + "output_bias", make_tensor(prefix.str() + "output_bias", {1}, 0.25));
     }
+    const std::string prefix = "output/head0/";
+    model.tensors.emplace(prefix + "seq/kernel", make_tensor(prefix + "seq/kernel", {1, 1, 1}, 0.25));
+    model.tensors.emplace(prefix + "attn_src/kernel", make_tensor(prefix + "attn_src/kernel", {1, 1, 1}, 0.25));
+    model.tensors.emplace(prefix + "attn_dst/kernel", make_tensor(prefix + "attn_dst/kernel", {1, 1, 1}, 0.25));
+    model.tensors.emplace(prefix + "output_bias", make_tensor(prefix + "output_bias", {1}, 0.25));
     model.validate_schema();
     return model;
 }
@@ -261,7 +258,7 @@ void run_signed_round_div_gate_boundary_checks() {
     std::cout << "native_division_boundary_checks: PASS both modes positive/negative/zero/exact/ties\n";
 }
 
-int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only) {
+int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only, bool full_head_fixture) {
     const auto stage = [](const char* name) { std::cerr << "gat_adapter_formal_stage: " << name << '\n'; };
     if (proof_verify_only && standalone_dir.empty()) {
         std::cerr << "formal proof/verify fixture requires a fresh standalone directory\n";
@@ -274,12 +271,14 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
             return 1;
         }
     }
+    stage("model");
+    const Model formal_model = make_formal_model(full_head_fixture);
     stage("graph");
     Graph formal_graph;
     formal_graph.num_nodes = 1;
-    formal_graph.num_features = 1;
+    formal_graph.num_features = formal_model.input_dim();
     formal_graph.graph_count = 1;
-    formal_graph.num_classes = 1;
+    formal_graph.num_classes = formal_model.classes();
     formal_graph.node_ptr = {0, 1};
     formal_graph.src = {0};
     formal_graph.dst = {0};
@@ -287,9 +286,9 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     formal_graph.edge_ptr = {0, 1};
     formal_graph.validate();
     stage("probe-forward");
-    Tensor2D formal_features(1, 1);
-    formal_features.values = {1};
-    const Model formal_model = make_formal_model();
+    Tensor2D formal_features(1, formal_model.input_dim());
+    formal_features.values.assign(formal_model.input_dim(), 1);
+    if (full_head_fixture && formal_features.values.size() > 1) formal_features.values[1] = 2;
     const QuantConfig formal_base_quant = make_quant();
     const ForwardResult formal_probe = run_forward(formal_graph, formal_features, formal_model, formal_base_quant);
     QuantConfig formal_quant = formal_base_quant;
@@ -329,7 +328,10 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     formal_quant.validate();
     stage("formal-forward");
     const ForwardResult formal_forward = run_forward(formal_graph, formal_features, formal_model, formal_quant);
-    assert(formal_forward.trace.relation_ok);
+    if (!formal_forward.trace.relation_ok) {
+        std::cerr << "18-head formal fixture forward relation is invalid\n";
+        return 1;
+    }
     stage("plan");
     const auto formal_plan_owner = std::make_shared<const GatCircuitPlan>(
         build_gat_circuit_plan(formal_graph, formal_model, formal_quant, formal_forward));
@@ -340,7 +342,7 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
         std::string assignment_reason;
         if (!evaluate_gat_circuit_assignment(formal_plan, assignment.input_layer, formal_forward.logits, &assignment_reason)) throw std::runtime_error("honest native gate assignment rejected: " + assignment_reason);
         const auto checkpoint = [&](const std::string& suffix) { for (const CheckpointDescriptor& item : formal_plan.checkpoints) if (item.id == suffix) return item.coordinate_offset; throw std::runtime_error("missing native negative-check checkpoint: " + suffix); };
-        const auto corrupt_coordinate = [&](const std::string& name, std::size_t coordinate, const Fr& increment = Fr(1)) { zkgpt::NativeFieldVector corrupted = assignment.input_layer; corrupted.at(coordinate) += increment; std::string reason; if (evaluate_gat_circuit_assignment(formal_plan, corrupted, formal_forward.logits, &reason) || reason.find("residual mismatches public target") == std::string::npos) throw std::runtime_error("native constraint corruption was not rejected: " + name + ": " + reason); };
+        const auto corrupt_coordinate = [&](const std::string& name, std::size_t coordinate, const Fr& increment = Fr(1)) { zkgpt::NativeFieldVector corrupted = assignment.input_layer; corrupted.at(coordinate) += increment; std::string reason; if (evaluate_gat_circuit_assignment(formal_plan, corrupted, formal_forward.logits, &reason) || reason.empty()) throw std::runtime_error("native constraint corruption was not rejected: " + name + ": " + reason); };
         const std::size_t division = checkpoint("rounding/hidden/hidden/layer0/head0");
         corrupt_coordinate("public feature Aux copy", formal_plan.input_layout.segments.at(2).offset);
         corrupt_coordinate("hidden concat", checkpoint("concat/hidden/layer0"));
@@ -379,20 +381,26 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
         std::cerr << "masked_full formal smoke rejected: " << formal.diagnostic << "\n";
         return 1;
     }
-    assert(!formal.artifact.has_private_payload());
+    if (formal.artifact.has_private_payload()) {
+        std::cerr << "masked_full fixture serialized private witness payload\n";
+        return 1;
+    }
     const std::string formal_path = standalone_dir.empty() ? "/tmp/zkgpt-masked-full-formal-smoke.artifact" : standalone_dir + "/proof.artifact";
     std::string formal_reason;
     stage("artifact-write");
-    if (standalone_dir.empty()) assert(formal.artifact.write(formal_path, &formal_reason));
     if (!standalone_dir.empty()) {
         try {
             write_standalone_fixture(standalone_dir, formal_context, formal.artifact);
-            std::cout << "gat_adapter_formal_fixture: GENERATED for independent verification\n";
-            return 0;
+            std::cout << "gat_adapter_formal_fixture: GENERATED for independent verification and mutants\n";
+            if (proof_verify_only) return 0;
         } catch (const std::exception& error) {
             std::cerr << "standalone fixture generation failed: " << error.what() << "\n";
             return 1;
         }
+    }
+    if (standalone_dir.empty() && !formal.artifact.write(formal_path, &formal_reason)) {
+        std::cerr << "masked_full artifact write failed: " << formal_reason << '\n';
+        return 1;
     }
     GatProofArtifact parsed_formal;
     stage("independent-verify");
@@ -406,8 +414,11 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
             return 1;
         }
     } else {
-        assert(GatProofArtifact::read(formal_path, parsed_formal, &formal_reason));
-        assert(verify_gat(formal_context, parsed_formal, &formal_reason));
+        if (!GatProofArtifact::read(formal_path, parsed_formal, &formal_reason) ||
+            !verify_gat(formal_context, parsed_formal, &formal_reason)) {
+            std::cerr << "masked_full fixture verification failed: " << formal_reason << '\n';
+            return 1;
+        }
     }
 
     if (proof_verify_only) {
@@ -418,23 +429,57 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
 
     VerifierContext y_tampered = formal_context;
     y_tampered.public_logits.values.at(0) += 1;
-    assert(!verify_gat(y_tampered, parsed_formal, &formal_reason));
+    formal_reason.clear();
+    if (verify_gat(y_tampered, parsed_formal, &formal_reason) || formal_reason.empty()) {
+        std::cerr << "masked_full verifier accepted a public output mutation\n";
+        return 1;
+    }
     VerifierContext registration_tampered = formal_context;
     registration_tampered.registration.registration_digest[0] = registration_tampered.registration.registration_digest[0] == '0' ? '1' : '0';
-    assert(!verify_gat(registration_tampered, parsed_formal, &formal_reason));
+    formal_reason.clear();
+    if (verify_gat(registration_tampered, parsed_formal, &formal_reason) || formal_reason.empty()) {
+        std::cerr << "masked_full verifier accepted a W registration binding mutation\n";
+        return 1;
+    }
     VerifierContext table_tampered = formal_context;
     table_tampered.tables.table_id += "-tampered";
-    assert(!verify_gat(table_tampered, parsed_formal, &formal_reason));
+    formal_reason.clear();
+    if (verify_gat(table_tampered, parsed_formal, &formal_reason) || formal_reason.empty()) {
+        std::cerr << "masked_full verifier accepted a static table mutation\n";
+        return 1;
+    }
     VerifierContext resource_tampered = formal_context;
     resource_tampered.tables.digest[0] = resource_tampered.tables.digest[0] == '0' ? '1' : '0';
-    assert(!verify_gat(resource_tampered, parsed_formal, &formal_reason));
+    formal_reason.clear();
+    if (verify_gat(resource_tampered, parsed_formal, &formal_reason) || formal_reason.empty()) {
+        std::cerr << "masked_full verifier accepted a static resource digest mutation\n";
+        return 1;
+    }
 
     GatProofArtifact aux_tampered = parsed_formal;
-    aux_tampered.com_aux.point_hex[0] = aux_tampered.com_aux.point_hex[0] == '0' ? '1' : '0';
-    assert(!verify_gat(formal_context, aux_tampered, &formal_reason));
+    std::string& aux_root_digest = aux_tampered.com_aux.tensor_commitment.root_digest;
+    if (aux_root_digest.empty()) {
+        std::cerr << "masked_full artifact has no bound Aux tensor root to tamper\n";
+        return 1;
+    }
+    aux_root_digest[0] = aux_root_digest[0] == '0' ? '1' : '0';
+    formal_reason.clear();
+    if (verify_gat(formal_context, aux_tampered, &formal_reason) || formal_reason.empty()) {
+        std::cerr << "masked_full verifier did not reject the bound Aux tensor-root mutation with a reason\n";
+        return 1;
+    }
     GatProofArtifact l_tampered = parsed_formal;
-    l_tampered.com_L.point_hex[0] = l_tampered.com_L.point_hex[0] == '0' ? '1' : '0';
-    assert(!verify_gat(formal_context, l_tampered, &formal_reason));
+    std::string& l_root_digest = l_tampered.com_L.tensor_commitment.root_digest;
+    if (l_root_digest.empty()) {
+        std::cerr << "masked_full artifact has no bound L_qry tensor root to tamper\n";
+        return 1;
+    }
+    l_root_digest[0] = l_root_digest[0] == '0' ? '1' : '0';
+    formal_reason.clear();
+    if (verify_gat(formal_context, l_tampered, &formal_reason) || formal_reason.empty()) {
+        std::cerr << "masked_full verifier did not reject the bound L_qry tensor-root mutation with a reason\n";
+        return 1;
+    }
     GatProofArtifact linear_tampered = parsed_formal;
     bool linear_message_found = false;
     for (NativeProofMessage& message : linear_tampered.native_messages) {
@@ -444,15 +489,183 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
             break;
         }
     }
-    assert(linear_message_found);
-    assert(!verify_gat(formal_context, linear_tampered, &formal_reason));
+    if (!linear_message_found) {
+        std::cerr << "masked_full proof has no input linear binding response to mutate\n";
+        return 1;
+    }
+    formal_reason.clear();
+    if (verify_gat(formal_context, linear_tampered, &formal_reason) || formal_reason.empty()) {
+        std::cerr << "masked_full verifier accepted an input linear binding mutation\n";
+        return 1;
+    }
     GatProofArtifact transcript_tampered = parsed_formal;
-    assert(!transcript_tampered.native_messages.empty());
+    if (transcript_tampered.native_messages.empty()) {
+        std::cerr << "masked_full proof has no transcript messages to mutate\n";
+        return 1;
+    }
     transcript_tampered.native_messages.front().payload += "tampered";
-    assert(!verify_gat(formal_context, transcript_tampered, &formal_reason));
+    formal_reason.clear();
+    if (verify_gat(formal_context, transcript_tampered, &formal_reason) || formal_reason.empty()) {
+        std::cerr << "masked_full verifier accepted a transcript mutation\n";
+        return 1;
+    }
 
-    std::remove(formal_path.c_str());
-    std::cout << "gat_adapter_formal_smoke: PASS masked_full serialize/verify/tamper\n";
+    if (standalone_dir.empty()) std::remove(formal_path.c_str());
+    std::cout << "gat_adapter_formal_smoke: PASS masked_full heads=" << formal_model.hidden_heads() * 2 + formal_model.manifest.output_heads
+              << " serialize/verify/tamper\n";
+    return 0;
+}
+
+int run_existing_artifact_mutants(const std::string& standalone_dir) {
+    const std::string context_path = standalone_dir + "/verifier_context.bin";
+    const std::string artifact_path = standalone_dir + "/proof.artifact";
+    initialize_gat_field();
+    std::cerr << "existing-proof-mutants: read-context\n";
+    VerifierContext context;
+    std::string reason;
+    if (!read_verifier_context(context_path, context, &reason)) { std::cerr << "cannot read existing verifier context: " << reason << '\n'; return 1; }
+    std::cerr << "existing-proof-mutants: read-artifact\n";
+    GatProofArtifact artifact;
+    if (!GatProofArtifact::read(artifact_path, artifact, &reason)) { std::cerr << "cannot read existing proof artifact: " << reason << '\n'; return 1; }
+    std::cerr << "existing-proof-mutants: loaded\n";
+    const CanonicalModelShape& shape = context.plan_ref().model_shape;
+    if (artifact.privacy_profile != "masked_full" || shape.layers != 3 || shape.tensor_count != 56 || shape.output_heads != 2 ||
+        context.plan_ref().fconn_claim_links.empty() || artifact.native_messages.empty() || artifact.has_private_payload() ||
+        !artifact.com_aux.has_tensor_commitment || artifact.com_aux.tensor_commitment.root_digest.empty() ||
+        !artifact.com_L.has_tensor_commitment || artifact.com_L.tensor_commitment.root_digest.empty()) {
+        std::cerr << "existing artifact is not the canonical full-head masked fixture required for mutation checks\n";
+        return 1;
+    }
+    const ModelRegistration alternate_registration = register_model(make_model(), context.quant, context.plan_ref().input_layout, context.model_arch_id);
+    if (!alternate_registration.com_W.valid() || alternate_registration.com_W.point_hex == context.registration.com_W.point_hex) {
+        std::cerr << "cannot construct a distinct canonical W commitment for mutation checks\n";
+        return 1;
+    }
+    const auto expect_context_rejection = [&](const char* name, const std::function<void(VerifierContext&)>& mutate) {
+        std::cerr << "existing-proof-mutants: start " << name << '\n';
+        VerifierContext changed = context;
+        if (changed.shared_plan) { changed.plan = changed.plan_ref(); changed.shared_plan.reset(); }
+        mutate(changed);
+        std::string rejection;
+        if (verify_gat(changed, artifact, &rejection) || rejection.empty()) { std::cerr << "existing proof accepted " << name << " mutation\n"; return false; }
+        std::cout << "existing-proof-mutant: REJECTED " << name << ": " << rejection << '\n';
+        return true;
+    };
+    const auto expect_response_rejection = [&](const char* name, const std::function<void(GatProofArtifact&)>& mutate) {
+        std::cerr << "existing-proof-mutants: start " << name << '\n';
+        GatProofArtifact changed = artifact;
+        mutate(changed);
+        std::string session_reason;
+        NativeProofSession authenticated_session;
+        if (!changed.native_session(authenticated_session, &session_reason)) {
+            std::cerr << "response mutation did not preserve canonical Fiat-Shamir replay: " << session_reason << '\n';
+            return false;
+        }
+        changed.transcript_digest = authenticated_session.digest();
+        std::string rejection;
+        if (verify_gat(context, changed, &rejection) || rejection.empty()) {
+            std::cerr << "existing proof accepted " << name << " mutation\n";
+            return false;
+        }
+        if (rejection.find("hidden-linear Schnorr equation failed") == std::string::npos) {
+            std::cerr << "response mutation was rejected before the native Schnorr equation: " << rejection << '\n';
+            return false;
+        }
+        std::cout << "existing-proof-mutant: REJECTED " << name << " by native hidden-linear equation: " << rejection << '\n';
+        return true;
+    };
+    const auto mutate_response = [](GatProofArtifact& value) {
+        for (NativeProofMessage& message : value.native_messages) {
+            if (message.label != "combine/input-linear/response") continue;
+            if (message.kind != NativeProofMessageKind::Field) throw std::runtime_error("hidden-linear response is not a canonical scalar message");
+            Fr response;
+            response.setStr(message.payload, 16);
+            response += 1;
+            const std::string changed_payload = response.getStr(16);
+            if (changed_payload == message.payload) throw std::runtime_error("hidden-linear response mutation was a no-op");
+            message.payload = changed_payload;
+            std::size_t matched_summaries = 0;
+            for (ProofSection* section : {&value.Pi_Lasso, &value.Pi_MatMul, &value.Pi_GKR, &value.Pi_combine, &value.Pi_open})
+                for (TranscriptMessage& summary : section->messages)
+                    if (summary.sequence == message.sequence && summary.label == message.label) { summary.payload = changed_payload; ++matched_summaries; }
+            if (matched_summaries != 1) throw std::runtime_error("hidden-linear response does not map to exactly one proof-section summary");
+            return;
+        }
+        throw std::runtime_error("existing proof has no hidden-linear response to mutate");
+    };
+    const auto expect_artifact_rejection = [&](const char* name, const std::function<void(GatProofArtifact&)>& mutate) {
+        std::cerr << "existing-proof-mutants: start " << name << '\n';
+        GatProofArtifact changed = artifact;
+        mutate(changed);
+        std::string rejection;
+        if (verify_gat(context, changed, &rejection) || rejection.empty()) { std::cerr << "existing proof accepted " << name << " mutation\n"; return false; }
+        std::cout << "existing-proof-mutant: REJECTED " << name << ": " << rejection << '\n';
+        return true;
+    };
+    const auto mutate_tensor_root = [](CommitmentWire& commitment) {
+        if (!commitment.has_tensor_commitment) throw std::runtime_error("tensor commitment mutation target is absent");
+        std::string& digest = commitment.tensor_commitment.root_digest;
+        if (digest.empty()) throw std::runtime_error("tensor commitment mutation target is empty");
+        const char original = digest[0];
+        digest[0] = original == '0' ? '1' : '0';
+        if (digest[0] == original) throw std::runtime_error("tensor commitment root mutation was a no-op");
+    };
+    const auto mutate_challenge = [](GatProofArtifact& value) {
+        for (NativeProofMessage& message : value.native_messages) {
+            if (message.kind != NativeProofMessageKind::Challenge) continue;
+            if (message.payload.empty()) throw std::runtime_error("challenge mutation target is empty");
+            Fr challenge;
+            challenge.setStr(message.payload, 16);
+            challenge += 1;
+            const std::string changed_payload = challenge.getStr(16);
+            if (changed_payload == message.payload) throw std::runtime_error("canonical challenge mutation was a no-op");
+            message.payload = changed_payload;
+            std::size_t matched_summaries = 0;
+            for (ProofSection* section : {&value.Pi_Lasso, &value.Pi_MatMul, &value.Pi_GKR, &value.Pi_combine, &value.Pi_open})
+                for (TranscriptMessage& summary : section->messages)
+                    if (summary.sequence == message.sequence && summary.label == message.label) { summary.payload = changed_payload; ++matched_summaries; }
+            if (matched_summaries != 1) throw std::runtime_error("challenge does not map to exactly one proof-section summary");
+            return;
+        }
+        throw std::runtime_error("existing proof has no challenge message to mutate");
+    };
+    const auto expect_fs_rejection = [&]() {
+        std::cerr << "existing-proof-mutants: start canonical-challenge-round\n";
+        GatProofArtifact changed = artifact;
+        mutate_challenge(changed);
+        std::string rejection;
+        if (verify_gat(context, changed, &rejection) || rejection.find("Fiat-Shamir challenge mismatch") == std::string::npos) {
+            std::cerr << "canonical challenge mutation did not fail native Fiat-Shamir replay: " << rejection << '\n';
+            return false;
+        }
+        std::cout << "existing-proof-mutant: REJECTED canonical-challenge-round by native Fiat-Shamir replay: " << rejection << '\n';
+        return true;
+    };
+    const auto expect_w_commitment_rejection = [&]() {
+        std::cerr << "existing-proof-mutants: start registered-W-commitment\n";
+        VerifierContext changed = context;
+        if (changed.shared_plan) { changed.plan = changed.plan_ref(); changed.shared_plan.reset(); }
+        changed.registration = alternate_registration;
+        changed.com_W = alternate_registration.com_W;
+        std::string rejection;
+        if (verify_gat(changed, artifact, &rejection) || rejection.empty()) {
+            std::cerr << "existing proof accepted registered-W commitment mutation\n";
+            return false;
+        }
+        std::cout << "existing-proof-mutant: REJECTED registered-W-commitment: " << rejection << '\n';
+        return true;
+    };
+    if (!expect_context_rejection("metadata", [](VerifierContext& value) { value.model_arch_id += "/tampered"; }) ||
+        !expect_context_rejection("registered-W-binding", [](VerifierContext& value) { value.registration.model_digest[0] = value.registration.model_digest[0] == '0' ? '1' : '0'; }) ||
+        !expect_w_commitment_rejection() ||
+        !expect_context_rejection("public-input", [](VerifierContext& value) { value.public_features.values.at(0) += 1; }) ||
+        !expect_context_rejection("public-output", [](VerifierContext& value) { value.public_logits.values.at(0) += 1; }) ||
+        !expect_context_rejection("FCONN-copy-link", [](VerifierContext& value) { ++value.plan.fconn_claim_links.back().output_offset; }) ||
+        !expect_artifact_rejection("Aux-commitment", [&](GatProofArtifact& value) { mutate_tensor_root(value.com_aux); }) ||
+        !expect_artifact_rejection("L_qry-commitment", [&](GatProofArtifact& value) { mutate_tensor_root(value.com_L); }) ||
+        !expect_fs_rejection()) return 1;
+    if (!expect_response_rejection("canonical-hidden-linear-response", mutate_response)) return 1;
+    std::cout << "existing-artifact-mutants: PASS full-head shape=3x(8,8)+2 output, no reproving\n";
     return 0;
 }
 
@@ -461,7 +674,9 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
 int main(int argc, char** argv) {
     bool formal = false;
     bool proof_verify_only = false;
+    bool full_head_fixture = false;
     bool division_boundary_only = false;
+    std::string artifact_mutants_dir;
     std::string standalone_dir;
     for (int index = 1; index < argc; ++index) {
         const std::string argument(argv[index]);
@@ -470,8 +685,13 @@ int main(int argc, char** argv) {
         } else if (argument == "--formal-proof-verify") {
             formal = true;
             proof_verify_only = true;
+        } else if (argument == "--formal-full-heads") {
+            formal = true;
+            full_head_fixture = true;
         } else if (argument == "--division-boundary-only") {
             division_boundary_only = true;
+        } else if (argument == "--artifact-mutants" && index + 1 < argc) {
+            artifact_mutants_dir = argv[++index];
         } else if (argument == "--standalone-dir" && index + 1 < argc) {
             standalone_dir = argv[++index];
         } else {
@@ -483,13 +703,21 @@ int main(int argc, char** argv) {
         run_signed_round_div_gate_boundary_checks();
         return 0;
     }
-    if (formal) return run_formal_fixture(standalone_dir, proof_verify_only);
+    if (!artifact_mutants_dir.empty()) return run_existing_artifact_mutants(artifact_mutants_dir);
+    if (formal) {
+        if (full_head_fixture && (proof_verify_only || standalone_dir.empty())) {
+            std::cerr << "full-head formal fixture requires --standalone-dir and in-process mutant checks\n";
+            return 2;
+        }
+        return run_formal_fixture(standalone_dir, proof_verify_only, full_head_fixture);
+    }
     const DivisionResult tie = signed_round_div(-5, 2);
     assert(tie.value == -3 && tie.witness.valid(RoundingMode::NEAREST_TIES_AWAY));
     const DivisionResult exact = signed_round_div(4, 2);
     assert(exact.value == 2 && exact.witness.valid(RoundingMode::NEAREST_TIES_AWAY));
 
     const Graph graph = make_graph();
+    assert(comparison_canonical_graph_digest(graph) == "89d6b57fe8c36ef4e2d55273a1dbba7be3062617ca6ab1fab904d187f980dd11");
     Tensor2D features(4, 2);
     features.values = {16, 0, 0, 16, 16, 16, 0, 0};
     const Model model = make_model();
@@ -582,6 +810,21 @@ int main(int argc, char** argv) {
     const ModelRegistration registration = register_model(model, quant, proof_plan.input_layout, model.manifest.model_arch_id);
     assert(registration.status == "registered_long_lived_com_W");
     assert(registration.com_W.valid());
+    const std::string* registration_digests[] = {
+        &registration.manifest_digest, &registration.model_digest,
+        &registration.bounds_digest, &registration.quant_digest,
+        &registration.layout_digest, &registration.binding_digest,
+        &registration.registration_digest,
+    };
+    for (const std::string* digest : registration_digests) {
+        if (digest->size() != 64 ||
+            !std::all_of(digest->begin(), digest->end(), [](char value) {
+                return (value >= '0' && value <= '9') ||
+                       (value >= 'a' && value <= 'f');
+            })) {
+            throw std::runtime_error("model registration digest is not lowercase fixed-64 hexadecimal");
+        }
+    }
     assert(registration.com_W.padded_size == proof_plan.input_layout.n_in);
     assert(registration.n_in == proof_plan.input_layout.n_in);
     assert(registration.input_segments.size() == 4);

@@ -1,0 +1,679 @@
+
+running 1 test
+[sha256] official SRS authentication: started resources/native_srs/kzg26.srs (0/8589934852 bytes)
+[sha256] official SRS authentication: progress resources/native_srs/kzg26.srs (1073741824/8589934852) bytes, 1.9s
+[sha256] official SRS authentication: progress resources/native_srs/kzg26.srs (2147483648/8589934852) bytes, 3.8s
+[sha256] official SRS authentication: progress resources/native_srs/kzg26.srs (3221225472/8589934852) bytes, 5.7s
+[sha256] official SRS authentication: progress resources/native_srs/kzg26.srs (4294967296/8589934852) bytes, 7.6s
+[sha256] official SRS authentication: progress resources/native_srs/kzg26.srs (5368709120/8589934852) bytes, 9.5s
+[sha256] official SRS authentication: progress resources/native_srs/kzg26.srs (6442450944/8589934852) bytes, 11.4s
+[sha256] official SRS authentication: progress resources/native_srs/kzg26.srs (7516192768/8589934852) bytes, 13.3s
+[sha256] official SRS authentication: progress resources/native_srs/kzg26.srs (8589934592/8589934852) bytes, 15.2s
+[sha256] official SRS authentication: complete resources/native_srs/kzg26.srs (8589934852/8589934852 bytes, 15.2s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/edges.txt (0/88206 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/edges.txt (88206/88206 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/edges.txt (0/88206 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/edges.txt (88206/88206 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/features.txt (0/700967 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/features.txt (700967/700967 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/features.txt (0/700967 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/features.txt (700967/700967 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/labels.txt (0/6654 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/labels.txt (6654/6654 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/labels.txt (0/6654 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/labels.txt (6654/6654 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/meta.cfg (0/123 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/meta.cfg (123/123 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/meta.cfg (0/123 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/meta.cfg (123/123 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/test.index (0/5000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/test.index (5000/5000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/test.index (0/5000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/test.index (5000/5000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/edges.txt (0/99636 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/edges.txt (99636/99636 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/edges.txt (0/99636 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/edges.txt (99636/99636 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/features.txt (0/310956 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/features.txt (310956/310956 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/features.txt (0/310956 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/features.txt (310956/310956 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/labels.txt (0/5416 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/labels.txt (5416/5416 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/labels.txt (0/5416 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/labels.txt (5416/5416 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/meta.cfg (0/119 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/meta.cfg (119/119 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/meta.cfg (0/119 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/meta.cfg (119/119 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/test.index (0/5000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/test.index (5000/5000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/test.index (0/5000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/test.index (5000/5000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/edges.txt (0/14773350 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/edges.txt (14773350/14773350 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/edges.txt (0/14773350 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/edges.txt (14773350/14773350 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/features.npy (0/86703744 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/features.npy (86703744/86703744 bytes, 0.2s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/features.npy (0/86703744 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/features.npy (86703744/86703744 bytes, 0.2s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/labels.txt (0/477779 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/labels.txt (477779/477779 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/labels.txt (0/477779 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/labels.txt (477779/477779 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/meta.cfg (0/396 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/meta.cfg (396/396 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/meta.cfg (0/396 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/meta.cfg (396/396 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/edges.txt (0/12551171 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/edges.txt (12551171/12551171 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/edges.txt (0/12551171 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/edges.txt (12551171/12551171 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/features.npy (0/11388928 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/features.npy (11388928/11388928 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/features.npy (0/11388928 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/features.npy (11388928/11388928 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.npy (0/27561024 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.npy (27561024/27561024 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.npy (0/27561024 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.npy (27561024/27561024 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.txt (0/13780458 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.txt (13780458/13780458 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.txt (0/13780458 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.txt (13780458/13780458 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/meta.cfg (0/439 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/meta.cfg (439/439 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/meta.cfg (0/439 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/meta.cfg (439/439 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/node_ptr.txt (0/1720 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/node_ptr.txt (1720/1720 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/node_ptr.txt (0/1720 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/node_ptr.txt (1720/1720 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/test_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/test_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/test_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/test_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/train_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/train_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/train_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/train_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/val_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/val_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/val_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/val_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/edges.txt (0/963182 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/edges.txt (963182/963182 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/edges.txt (0/963182 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/edges.txt (963182/963182 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/features.txt (0/19289548 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/features.txt (19289548/19289548 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/features.txt (0/19289548 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/features.txt (19289548/19289548 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/labels.txt (0/39434 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/labels.txt (39434/39434 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/labels.txt (0/39434 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/labels.txt (39434/39434 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/meta.cfg (0/121 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/meta.cfg (121/121 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/meta.cfg (0/121 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/meta.cfg (121/121 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/test.index (0/6000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/test.index (6000/6000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/test.index (0/6000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/test.index (6000/6000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/best_model.pt (0/987317 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/best_model.pt (987317/987317 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/best_model.pt (0/987317 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/best_model.pt (987317/987317 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/manifest.json (0/17443 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/manifest.json (17443/17443 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/manifest.json (0/17443 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/manifest.json (17443/17443 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.npz (0/909182 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.npz (909182/909182 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.npz (0/909182 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.npz (909182/909182 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.txt (0/5551692 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.txt (5551692/5551692 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.txt (0/5551692 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.txt (5551692/5551692 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/training_summary.json (0/4780 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/training_summary.json (4780/4780 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/training_summary.json (0/4780 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/training_summary.json (4780/4780 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/best_model.pt (0/406645 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/best_model.pt (406645/406645 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/best_model.pt (0/406645 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/best_model.pt (406645/406645 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/manifest.json (0/17427 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/manifest.json (17427/17427 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/manifest.json (0/17427 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/manifest.json (17427/17427 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.npz (0/375421 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.npz (375421/375421 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.npz (0/375421 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.npz (375421/375421 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.txt (0/2268024 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.txt (2268024/2268024 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.txt (0/2268024 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.txt (2268024/2268024 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/training_summary.json (0/4790 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/training_summary.json (4790/4790 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/training_summary.json (0/4790 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/training_summary.json (4790/4790 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/best_model.pt (0/90485 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/best_model.pt (90485/90485 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/best_model.pt (0/90485 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/best_model.pt (90485/90485 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json (0/17451 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json (17451/17451 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json (0/17451 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json (17451/17451 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.npz (0/81685 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.npz (81685/81685 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.npz (0/81685 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.npz (81685/81685 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.txt (0/421362 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.txt (421362/421362 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.txt (0/421362 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.txt (421362/421362 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/training_summary.json (0/4831 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/training_summary.json (4831/4831 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/training_summary.json (0/4831 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/training_summary.json (4831/4831 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/best_model.pt (0/113909 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/best_model.pt (113909/113909 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/best_model.pt (0/113909 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/best_model.pt (113909/113909 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/manifest.json (0/17425 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/manifest.json (17425/17425 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/manifest.json (0/17425 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/manifest.json (17425/17425 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.npz (0/101461 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.npz (101461/101461 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.npz (0/101461 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.npz (101461/101461 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.txt (0/508006 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.txt (508006/508006 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.txt (0/508006 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.txt (508006/508006 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/training_summary.json (0/3792 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/training_summary.json (3792/3792 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/training_summary.json (0/3792 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/training_summary.json (3792/3792 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/best_model.pt (0/166005 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/best_model.pt (166005/166005 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/best_model.pt (0/166005 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/best_model.pt (166005/166005 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/manifest.json (0/17425 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/manifest.json (17425/17425 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/manifest.json (0/17425 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/manifest.json (17425/17425 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.npz (0/150992 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.npz (150992/150992 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.npz (0/150992 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.npz (150992/150992 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.txt (0/828582 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.txt (828582/828582 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.txt (0/828582 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.txt (828582/828582 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/training_summary.json (0/4829 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/training_summary.json (4829/4829 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/training_summary.json (0/4829 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/training_summary.json (4829/4829 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/citeseer_secure.cfg (0/1437 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/citeseer_secure.cfg (1437/1437 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/citeseer_secure.cfg (0/1437 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/citeseer_secure.cfg (1437/1437 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/cora_secure.cfg (0/1413 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/cora_secure.cfg (1413/1413 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/cora_secure.cfg (0/1413 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/cora_secure.cfg (1413/1413 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/ogbn_arxiv_secure.cfg (0/1474 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/ogbn_arxiv_secure.cfg (1474/1474 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/ogbn_arxiv_secure.cfg (0/1474 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/ogbn_arxiv_secure.cfg (1474/1474 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/ppi_secure.cfg (0/1431 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/ppi_secure.cfg (1431/1431 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/ppi_secure.cfg (0/1431 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/ppi_secure.cfg (1431/1431 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/pubmed_secure.cfg (0/1424 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/pubmed_secure.cfg (1424/1424 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/pubmed_secure.cfg (0/1424 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/pubmed_secure.cfg (1424/1424 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/quantization_scale_chain.cfg (0/817 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/quantization_scale_chain.cfg (817/817 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/quantization_scale_chain.cfg (0/817 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/quantization_scale_chain.cfg (817/817 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/35314 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (35314/35314 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/citeseer/gat_integer_ledger.json (0/8264 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/citeseer/gat_integer_ledger.json (8264/8264 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/35314 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (35314/35314 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/cora/gat_integer_ledger.json (0/8279 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/cora/gat_integer_ledger.json (8279/8279 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/35314 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (35314/35314 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/ogbn_arxiv/gat_integer_ledger.json (0/8739 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/ogbn_arxiv/gat_integer_ledger.json (8739/8739 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/35314 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (35314/35314 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/ppi/gat_integer_ledger.json (0/8346 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/ppi/gat_integer_ledger.json (8346/8346 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/35314 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (35314/35314 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/pubmed/gat_integer_ledger.json (0/8265 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/pubmed/gat_integer_ledger.json (8265/8265 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/35314 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (35314/35314 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/tables/citeseer/gat_static_tables.bin (0/1312709 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/tables/citeseer/gat_static_tables.bin (1312709/1312709 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/35314 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (35314/35314 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/tables/cora/gat_static_tables.bin (0/1312669 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/tables/cora/gat_static_tables.bin (1312669/1312669 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/35314 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (35314/35314 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/tables/ogbn_arxiv/gat_static_tables.bin (0/1795163492 bytes)
+[sha256] resource/artifact authentication: progress /home/pzh/project/comparison/ezkl/resources/canonical/tables/ogbn_arxiv/gat_static_tables.bin (1073741824/1795163492) bytes, 1.9s
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/tables/ogbn_arxiv/gat_static_tables.bin (1795163492/1795163492 bytes, 3.2s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/35314 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (35314/35314 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/tables/ppi/gat_static_tables.bin (0/5244833 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/tables/ppi/gat_static_tables.bin (5244833/5244833 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/35314 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (35314/35314 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/tables/pubmed/gat_static_tables.bin (0/1312689 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/tables/pubmed/gat_static_tables.bin (1312689/1312689 bytes, 0.0s)
+EZKL_NATIVE_PHASE START stage=model_build dataset=cora n_total=2708 n=2708 e=13264 graphs=1 feature_dim=1433 classes=7 layers=2 hidden_heads=16 output_heads=2
+EZKL_NATIVE_PHASE DONE stage=model_build dataset=cora elapsed_ms=71.712
+EZKL_NATIVE_PHASE START stage=gen_params_dummy_layout dataset=cora k=22 domain=4194304 public_input_tensors=6 public_feature_values=3880564 public_edge_values=26528
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=3880564 tensor_dims=[2708, 1433]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=3880564 unique_constants=0 elapsed_ms=5.099
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=0 elapsed_ms=0.475
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=0 elapsed_ms=0.482
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=97002 tensor_dims=[97002]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=97002 unique_constants=0 elapsed_ms=0.375
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=3880564 tensor_dims=[2708, 1433]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=3880564 unique_constants=0 elapsed_ms=6.452
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=2708 elapsed_ms=0.139
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=2708 elapsed_ms=0.500
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=2708 elapsed_ms=1.819
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=2708 elapsed_ms=0.195
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=2708 elapsed_ms=0.068
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=2708 elapsed_ms=1.121
+EZKL_NATIVE_PHASE START stage=graph_gather direction=feature model_arch_id=gat_family_L3_hid8x8-8x8_kout2_c7 nodes=2708 feature_rows=2708 feature_dim=1433 input_values=3880564
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=3880564 tensor_dims=[3880564]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=3880564 unique_constants=3880564 elapsed_ms=667.559
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=3880564 tensor_dims=[3880564]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=3880564 unique_constants=3880564 elapsed_ms=5.006
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=3880564 tensor_dims=[3880564]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=3880564 unique_constants=3880564 elapsed_ms=943.335
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=3880564 tensor_dims=[3880564]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=3880564 unique_constants=3880564 elapsed_ms=2.925
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=3880564 tensor_dims=[3880564]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=3880564 unique_constants=3880564 elapsed_ms=5.255
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=3880564 tensor_dims=[3880564]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=3880564 unique_constants=3880564 elapsed_ms=85.727
+EZKL_NATIVE_PHASE DONE stage=graph_gather direction=feature model_arch_id=gat_family_L3_hid8x8-8x8_kout2_c7 output_values=3880564 elapsed_ms=11980.427
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=11464 tensor_dims=[1433, 8]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=11464 unique_constants=3880564 elapsed_ms=0.810
+EZKL_NATIVE_PHASE START stage=graph_gather direction=source nodes=2708 edges=13264 channels=8 input_values=21664
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=21664 tensor_dims=[21664]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=21664 unique_constants=3880564 elapsed_ms=5.313
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=21664 tensor_dims=[21664]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=21664 unique_constants=3880564 elapsed_ms=0.467
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=21664 tensor_dims=[21664]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=21664 unique_constants=3880564 elapsed_ms=0.834
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=106112 tensor_dims=[106112]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=106112 unique_constants=3880564 elapsed_ms=1.803
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=106112 tensor_dims=[106112]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=106112 unique_constants=3880564 elapsed_ms=1.646
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=106112 tensor_dims=[106112]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=106112 unique_constants=3880564 elapsed_ms=3.046
+EZKL_NATIVE_PHASE DONE stage=graph_gather direction=source nodes=2708 edges=13264 channels=8 input_values=21664 output_values=106112 elapsed_ms=1177.222
+EZKL_NATIVE_PHASE START stage=graph_gather direction=destination nodes=2708 edges=13264 channels=8 input_values=21664
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=21664 tensor_dims=[21664]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=21664 unique_constants=3880564 elapsed_ms=5.822
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=21664 tensor_dims=[21664]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=21664 unique_constants=3880564 elapsed_ms=0.657
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=21664 tensor_dims=[21664]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=21664 unique_constants=3880564 elapsed_ms=1.854
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=106112 tensor_dims=[106112]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=106112 unique_constants=3880564 elapsed_ms=0.535
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=106112 tensor_dims=[106112]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=106112 unique_constants=3880564 elapsed_ms=0.322
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=106112 tensor_dims=[106112]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=106112 unique_constants=3880564 elapsed_ms=4.296
+EZKL_NATIVE_PHASE DONE stage=graph_gather direction=destination nodes=2708 edges=13264 channels=8 input_values=21664 output_values=106112 elapsed_ms=1184.646
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880564 elapsed_ms=0.890
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880564 elapsed_ms=0.195
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880564 elapsed_ms=0.796
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880564 elapsed_ms=0.198
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.592
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.286
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=1.921
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.686
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.113
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.273
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=53056 tensor_dims=[13264, 4]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=53056 unique_constants=3880565 elapsed_ms=0.703
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=1.538
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.156
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.354
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.241
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.158
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=1.437
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.357
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.514
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.111
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.136
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.583
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.188
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=1.982
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.153
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.260
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.143
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.126
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.807
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=39792 tensor_dims=[13264, 3]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=39792 unique_constants=3880565 elapsed_ms=0.415
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=39792 tensor_dims=[13264, 3]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=39792 unique_constants=3880565 elapsed_ms=0.538
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.496
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.925
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.091
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.083
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.458
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.863
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=53056 tensor_dims=[13264, 4]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=53056 unique_constants=3880565 elapsed_ms=0.279
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.168
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.118
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.085
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.519
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.730
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.845
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.622
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.352
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.749
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.123
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.264
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.630
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=2.354
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.624
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=1.373
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.704
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.342
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.584
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=39792 tensor_dims=[13264, 3]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=39792 unique_constants=3880565 elapsed_ms=1.252
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=39792 tensor_dims=[13264, 3]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=39792 unique_constants=3880565 elapsed_ms=0.614
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.371
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.682
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.912
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.306
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=1.415
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.453
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.256
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.138
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.124
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.112
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.260
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.104
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.242
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3880565 elapsed_ms=0.993
+EZKL_NATIVE_PHASE START stage=exact_table_assignment model_arch_id=gat_family_L3_hid8x8-8x8_kout2_c7 table_id=tables:gat:cora:v1:lrelu rows=8193
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=8193 tensor_dims=[8193]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=8193 unique_constants=3884661 elapsed_ms=3.053
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=8193 tensor_dims=[8193]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=8193 unique_constants=3884661 elapsed_ms=1.088
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=8193 tensor_dims=[8193]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=8193 unique_constants=3884661 elapsed_ms=0.447
+EZKL_NATIVE_PHASE DONE stage=exact_table_assignment model_arch_id=gat_family_L3_hid8x8-8x8_kout2_c7 table_id=tables:gat:cora:v1:lrelu rows=8193 elapsed_ms=5.692
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884661 elapsed_ms=0.098
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884661 elapsed_ms=0.089
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884661 elapsed_ms=1.685
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884661 elapsed_ms=0.394
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=1.602
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.116
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=2.165
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.568
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.355
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.870
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=39792 tensor_dims=[13264, 3]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=39792 unique_constants=3884662 elapsed_ms=0.327
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=1.046
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.181
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=1.343
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.396
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.133
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.780
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.106
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.124
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.068
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.074
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.405
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.425
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=1.035
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.344
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.094
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.114
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.083
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.709
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=26528 tensor_dims=[13264, 2]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=26528 unique_constants=3884662 elapsed_ms=0.105
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=26528 tensor_dims=[13264, 2]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=26528 unique_constants=3884662 elapsed_ms=1.174
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.241
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.440
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.374
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.092
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.327
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.290
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=39792 tensor_dims=[13264, 3]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=39792 unique_constants=3884662 elapsed_ms=0.989
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.577
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.081
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=1.490
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.312
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.128
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.715
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.386
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.181
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.606
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.071
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.116
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.343
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.646
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.110
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.070
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.252
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.358
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=1.258
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=26528 tensor_dims=[13264, 2]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=26528 unique_constants=3884662 elapsed_ms=2.004
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=26528 tensor_dims=[13264, 2]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=26528 unique_constants=3884662 elapsed_ms=0.237
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.273
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.359
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.415
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.632
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264, 1]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.311
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.304
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.082
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.368
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.120
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.108
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.850
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.384
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=0.125
+EZKL_NATIVE_PHASE START stage=constant_map_assignment elements=13264 tensor_dims=[13264]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements=13264 unique_constants=3884662 elapsed_ms=1.015
+EZKL_NATIVE_PHASE START stage=exact_table_assignment model_arch_id=gat_family_L3_hid8x8-8x8_kout2_c7 table_id=tables:gat:cora:v1:max_relu rows=16385
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=16385 tensor_dims=[16385]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=16385 unique_constants=3888757 elapsed_ms=4.033
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=16385 tensor_dims=[16385]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=16385 unique_constants=3888757 elapsed_ms=2.159
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=16385 tensor_dims=[16385]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=16385 unique_constants=3888757 elapsed_ms=1.021
+EZKL_NATIVE_PHASE DONE stage=exact_table_assignment model_arch_id=gat_family_L3_hid8x8-8x8_kout2_c7 table_id=tables:gat:cora:v1:max_relu rows=16385 elapsed_ms=9.564
+EZKL_NATIVE_PHASE START stage=exact_table_assignment model_arch_id=gat_family_L3_hid8x8-8x8_kout2_c7 table_id=tables:gat:cora:v1:exp rows=8193
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=8193 tensor_dims=[8193]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=8193 unique_constants=3888757 elapsed_ms=2.732
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=8193 tensor_dims=[8193]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=8193 unique_constants=3888757 elapsed_ms=0.499
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=8193 tensor_dims=[8193]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=8193 unique_constants=3888757 elapsed_ms=0.429
+EZKL_NATIVE_PHASE DONE stage=exact_table_assignment model_arch_id=gat_family_L3_hid8x8-8x8_kout2_c7 table_id=tables:gat:cora:v1:exp rows=8193 elapsed_ms=4.869
+test execute::native_geometry_diagnostics::full_canonical_cora_constraint_system_shape has been running for over 60 seconds
+EZKL_NATIVE_PHASE START stage=exact_table_assignment model_arch_id=gat_family_L3_hid8x8-8x8_kout2_c7 table_id=tables:gat:cora:v1:elu rows=8193
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=8193 tensor_dims=[8193]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=8193 unique_constants=3888765 elapsed_ms=3.184
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=8193 tensor_dims=[8193]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=8193 unique_constants=3888765 elapsed_ms=0.607
+EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements=8193 tensor_dims=[8193]
+EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements=8193 unique_constants=3888765 elapsed_ms=0.344
+EZKL_NATIVE_PHASE DONE stage=exact_table_assignment model_arch_id=gat_family_L3_hid8x8-8x8_kout2_c7 table_id=tables:gat:cora:v1:elu rows=8193 elapsed_ms=5.337

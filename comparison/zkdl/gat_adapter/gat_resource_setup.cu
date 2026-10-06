@@ -1,4 +1,5 @@
 #include "third_party/blst/bindings/blst.h"
+#include "gat_adapter/integer_bound_ledger.hpp"
 #include <openssl/bn.h>
 #include <openssl/crypto.h>
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -167,17 +169,30 @@ void export_prefix(const std::filesystem::path& frame, std::uint64_t count) {
     std::cout << "]}\n";
     if (!std::cout) throw std::runtime_error("SRS prefix output failed");
 }
+
+void verify_ledger(const std::filesystem::path& input) {
+    const auto path = local_path(input);
+    if (!std::filesystem::is_regular_file(path)) throw std::runtime_error("integer-bound ledger is not a regular file");
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) throw std::runtime_error("cannot read integer-bound ledger: " + path.string());
+    const std::string text{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    const auto ledger = zkdl_gat::integer_bound_ledger::parse(text);
+    const auto actual = zkdl_gat::integer_bound_ledger::digest(ledger);
+    if (actual != ledger.digest) throw std::runtime_error("authenticated integer-bound ledger digest mismatch");
+    std::cout << "native_integer_bound_ledger=PASS digest=" << actual << " path=" << path << '\n';
+}
 }
 
 int main(int argc, char** argv) {
     try {
         if (argc == 6 && std::string(argv[1]) == "generate-srs" && std::string(argv[2]) == "--output" && std::string(argv[4]) == "--baseline-root") { configure_root(argv[5]); generate_srs(argv[3]); }
+        else if (argc == 6 && std::string(argv[1]) == "verify-ledger" && std::string(argv[2]) == "--path" && std::string(argv[4]) == "--baseline-root") { configure_root(argv[5]); verify_ledger(argv[3]); }
         else if (argc == 8 && std::string(argv[1]) == "export-srs-prefix" && std::string(argv[2]) == "--frame" && std::string(argv[4]) == "--count" && std::string(argv[6]) == "--baseline-root") {
             configure_root(argv[7]);
             const std::string count_text(argv[5]);
             if (count_text.empty() || !std::all_of(count_text.begin(), count_text.end(), [](char value) { return value >= '0' && value <= '9'; })) throw std::runtime_error("SRS prefix count is not an unsigned integer");
             export_prefix(argv[3], std::stoull(count_text));
-        } else throw std::runtime_error("usage: gat_resource_setup generate-srs --output DIR --baseline-root ROOT | export-srs-prefix --frame PATH --count N --baseline-root ROOT");
+        } else throw std::runtime_error("usage: gat_resource_setup generate-srs --output DIR --baseline-root ROOT | verify-ledger --path FILE --baseline-root ROOT | export-srs-prefix --frame PATH --count N --baseline-root ROOT");
         return 0;
     } catch (const std::exception& error) { std::cerr << "BLOCKED: " << error.what() << '\n'; return 2; }
 }

@@ -1,0 +1,8 @@
+/home/pzh/project/comparison/ezkl/tests/native_gpu/target/debug/deps/log-4312756c55fd6a31.d: /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs
+
+/home/pzh/project/comparison/ezkl/tests/native_gpu/target/debug/deps/liblog-4312756c55fd6a31.rmeta: /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs
+
+/home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs:
+/home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs:
+/home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs:
+/home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs:

@@ -92,6 +92,14 @@ struct NativeGkrMatmulWitness {
     std::function<F(std::uint64_t)> right_value_at;
 };
 
+// Validates the source-derived point/domain shape of a canonical native GKR
+// circuit without reading witness values. The formal adapter uses this during
+// capacity admission and again on the materialized proof plan before Lasso.
+bool validate_native_gkr_point_domains(
+    const layeredCircuit &circuit,
+    const std::vector<NativeGkrMatmulShape> &matmuls,
+    std::size_t input_domain, std::string *reason = nullptr);
+
 struct NativeGkrInputSupportInterval {
     std::uint64_t begin = 0;
     std::uint64_t end = 0;

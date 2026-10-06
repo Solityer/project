@@ -55,7 +55,7 @@ layeredCircuit make_power_of_two_circuit() {
     circuit.circuit[2].size = 2;
     circuit.circuit[2].zero_start_id = 2;
     circuit.circuit[2].bit_length = 1;
-    for (u32 index = 0; index < 2; ++index) circuit.circuit[2].uni_gates.emplace_back(index, index, 1, 1);
+    for (u32 index = 0; index < 2; ++index) circuit.circuit[2].add_unary(index, index, 1, 1);
     circuit.initSubset();
     return circuit;
 }
@@ -66,14 +66,14 @@ int main() {
     initPairing(BN254);
 
     const MatMulDescriptor rectangular = descriptor(2, 3, 2, 1);
-    const std::vector<Fr> canonical_input{Fr(99), Fr(11), Fr(12), Fr(21), Fr(22), Fr(31), Fr(32), Fr(77)};
-    const std::vector<Fr> packed = pack_native_gkr_matmul_rhs(rectangular, canonical_input);
-    const std::vector<Fr> expected{Fr(11), Fr(21), Fr(31), Fr(0), Fr(12), Fr(22), Fr(32), Fr(0)};
+    const zkgpt::NativeFieldVector canonical_input{Fr(99), Fr(11), Fr(12), Fr(21), Fr(22), Fr(31), Fr(32), Fr(77)};
+    const zkgpt::NativeFieldVector packed = pack_native_gkr_matmul_rhs(rectangular, canonical_input);
+    const zkgpt::NativeFieldVector expected{Fr(11), Fr(21), Fr(31), Fr(0), Fr(12), Fr(22), Fr(32), Fr(0)};
     assert(packed == expected);
 
     bool rejected = false;
     try {
-        (void)pack_native_gkr_matmul_rhs(rectangular, std::vector<Fr>(canonical_input.begin(), canonical_input.end() - 2));
+        (void)pack_native_gkr_matmul_rhs(rectangular, zkgpt::NativeFieldVector(canonical_input.begin(), canonical_input.end() - 2));
     } catch (const std::invalid_argument&) { rejected = true; }
     assert(rejected);
 
@@ -85,11 +85,14 @@ int main() {
     } catch (const std::invalid_argument&) { rejected = true; }
     assert(rejected);
 
-    const MatMulDescriptor native_descriptor = descriptor(2, 3, 2, 8);
-    const std::vector<Fr> canonical_native_input{Fr(1),  Fr(2),  Fr(3),  Fr(4),  Fr(5),  Fr(6),  Fr(0), Fr(0),
-                                                 Fr(10), Fr(40), Fr(20), Fr(50), Fr(30), Fr(60), Fr(0), Fr(0)};
-    const std::vector<Fr> native_right = pack_native_gkr_matmul_rhs(native_descriptor, canonical_native_input);
-    assert((native_right == std::vector<Fr>{Fr(10), Fr(20), Fr(30), Fr(0), Fr(40), Fr(50), Fr(60), Fr(0)}));
+    MatMulDescriptor native_descriptor = descriptor(2, 3, 2, 8);
+    native_descriptor.output_offset = 16;
+    zkgpt::NativeFieldVector canonical_native_input(32, Fr(0));
+    for (std::size_t index = 0; index < 6; ++index) canonical_native_input[index] = Fr(index + 1);
+    const Fr native_rhs_values[] = {Fr(10), Fr(40), Fr(20), Fr(50), Fr(30), Fr(60)};
+    for (std::size_t index = 0; index < 6; ++index) canonical_native_input[8 + index] = native_rhs_values[index];
+    const zkgpt::NativeFieldVector native_right = pack_native_gkr_matmul_rhs(native_descriptor, canonical_native_input);
+    assert((native_right == zkgpt::NativeFieldVector{Fr(10), Fr(20), Fr(30), Fr(0), Fr(40), Fr(50), Fr(60), Fr(0)}));
 
     NativeLayeredGkrWitness witness;
     witness.layer_values = {canonical_native_input, {Fr(140), Fr(320), Fr(320), Fr(770)}, {Fr(140), Fr(320), Fr(320), Fr(770)}};
@@ -100,14 +103,19 @@ int main() {
     matmul.shape.lhs_offset = native_descriptor.lhs_offset;
     matmul.shape.rhs_offset = native_descriptor.rhs_offset;
     matmul.shape.output_offset = native_descriptor.output_offset;
+    matmul.shape.input_segment_domain = 8;
+    matmul.shape.lhs_segment = "X_pub";
+    matmul.shape.rhs_segment = "W";
+    matmul.shape.input_segment_logical_lengths = {6, 6, 4, 0};
+    matmul.shape.output_segment = "Aux";
     matmul.left = {Fr(1), Fr(2), Fr(3), Fr(4), Fr(5), Fr(6)};
     matmul.right = native_right;
     witness.matmuls.push_back(matmul);
 
     layeredCircuit circuit = make_power_of_two_circuit();
-    circuit.circuit[0].size = 16;
-    circuit.circuit[0].zero_start_id = 16;
-    circuit.circuit[0].bit_length = 4;
+    circuit.circuit[0].size = 32;
+    circuit.circuit[0].zero_start_id = 32;
+    circuit.circuit[0].bit_length = 5;
     circuit.circuit[1].size = 4;
     circuit.circuit[1].zero_start_id = 4;
     circuit.circuit[1].bit_length = 2;
@@ -115,7 +123,7 @@ int main() {
     circuit.circuit[2].zero_start_id = 4;
     circuit.circuit[2].bit_length = 2;
     circuit.circuit[2].uni_gates.clear();
-    for (u32 index = 0; index < 4; ++index) circuit.circuit[2].uni_gates.emplace_back(index, index, 1, 1);
+    for (u32 index = 0; index < 4; ++index) circuit.circuit[2].add_unary(index, index, 1, 1);
     circuit.circuit[1].native_relation_id = native_descriptor.relation_id;
     circuit.circuit[1].native_family_id = native_descriptor.family_id;
     circuit.circuit[1].native_rows = native_descriptor.rows;
@@ -125,7 +133,7 @@ int main() {
     circuit.circuit[1].native_rhs_offset = native_descriptor.rhs_offset;
     circuit.circuit[1].native_output_offset = native_descriptor.output_offset;
     circuit.initSubset();
-    const std::vector<Fr> output{Fr(140), Fr(320), Fr(320), Fr(770)};
+    const zkgpt::NativeFieldVector output{Fr(140), Fr(320), Fr(320), Fr(770)};
     std::string reason;
     NativeProofSession session("gat-matmul-layout-smoke-v1", statement_fixture());
     NativeGkrInputBinding binding;

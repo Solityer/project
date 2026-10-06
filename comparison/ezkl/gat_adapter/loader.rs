@@ -32,6 +32,10 @@ pub struct LoadedGat {
     pub baseline_root: PathBuf,
     /// Producer snapshot copied from the authenticated resource manifest.
     pub source_snapshot: ResourceSourceSnapshot,
+    /// Authenticated preprocessing identity used for the consumed feature table.
+    pub input_preprocess_id: String,
+    /// Authenticated batching identity declared by the checkpoint bundle.
+    pub batching_rule: String,
 }
 
 /// Authenticated public relation resources used by formal verification.
@@ -302,7 +306,15 @@ fn load_from_resources(
         private_params_redacted: false,
     };
     spec.validate_for_compile()?;
-    Ok(LoadedGat { spec, dataset: dataset.to_string(), resource_manifest_sha256, baseline_root: baseline_root.to_path_buf(), source_snapshot,}) }
+    Ok(LoadedGat {
+        spec,
+        dataset: dataset.to_string(),
+        resource_manifest_sha256,
+        baseline_root: baseline_root.to_path_buf(),
+        source_snapshot,
+        input_preprocess_id: meta.input_preprocess_id,
+        batching_rule: checkpoint.batching_rule,
+    }) }
 
 fn resource_path(resources: &[AuthenticatedResource], suffix: &str,) -> Result<AuthenticatedResource, String> {
     resources.iter().find(|r| r.record.path.ends_with(suffix)).cloned().ok_or_else(|| format!("authenticated canonical resource not found: {}", suffix))
@@ -459,6 +471,11 @@ fn validate_checkpoint(checkpoint: &CheckpointManifest, dataset: &str, meta: &Da
     if checkpoint.family_schema != "multi_layer_multi_head"
         || checkpoint.output_average_rule != "per_head_bias_then_arithmetic_mean"
         || checkpoint.input_preprocess_id != meta.input_preprocess_id
+        || checkpoint.self_loop_rule != "per_node"
+        || checkpoint.edge_sort_rule != "edge_gid_then_dst_stable"
+        || checkpoint.subgraph_rule != "whole_graph"
+        || checkpoint.batching_rule
+            != if dataset == "ppi" { "multi_graph_batch" } else { "whole_graph_single" }
     {
         return Err("checkpoint protocol identity mismatch".into());
     }
@@ -737,31 +754,7 @@ fn parse_graph(path: &Path, meta: &DatasetMeta, dataset: &str, resources: &[Auth
         }
         raw.push((g, src, dst));
     }
-    let mut incoming = HashSet::new();
-    for (_, _, dst) in &raw {
-        incoming.insert(*dst);
-    }
-    for node in 0..meta.num_nodes {
-        if !incoming.contains(&node) {
-            raw.push((graph_for_node[node], node, node));
-        }
-    }
-    raw.sort_by_key(|(g, _, dst)| (*g, *dst));
-    let mut src = Vec::with_capacity(raw.len());
-    let mut dst = Vec::with_capacity(raw.len());
-    let mut edge_ptr = vec![0];
-    let mut cursor = 0;
-    for g in 0..meta.graph_count {
-        while cursor < raw.len() && raw[cursor].0 == g {
-            src.push(raw[cursor].1);
-            dst.push(raw[cursor].2);
-            cursor += 1;
-        }
-        edge_ptr.push(src.len());
-    }
-    if cursor != raw.len() {
-        return Err("edge graph grouping failed".into());
-    }
+    let (src, dst, edge_ptr) = normalize_graph_edges(raw, &node_ptr)?;
     let mut graph = CanonicalGraph {
         n_total: meta.num_nodes,
         n: meta.num_nodes,
@@ -778,6 +771,81 @@ fn parse_graph(path: &Path, meta: &DatasetMeta, dataset: &str, resources: &[Auth
     graph.refresh_digest()?;
     graph.validate()?;
     Ok(graph)
+}
+
+/// Apply the shared comparison graph contract while preserving input order
+/// within each stable destination group: drop duplicate directed edges, add
+/// any missing per-node self-loop, then sort by (graph, destination).
+fn normalize_graph_edges(
+    mut raw: Vec<(usize, usize, usize)>,
+    node_ptr: &[usize],
+) -> Result<(Vec<usize>, Vec<usize>, Vec<usize>), String> {
+    if node_ptr.len() < 2 || node_ptr.first() != Some(&0) {
+        return Err("canonical graph node_ptr is malformed".into());
+    }
+    let graph_count = node_ptr.len() - 1;
+    if node_ptr.windows(2).any(|range| range[0] >= range[1]) {
+        return Err("canonical graph node_ptr must be strictly increasing".into());
+    }
+
+    // Stable sorting keeps each destination's original input order. Edges
+    // sharing (graph, destination) are then deduplicated by source in place,
+    // keeping the first occurrence and bounding scratch to one destination.
+    raw.sort_by_key(|(graph, _, destination)| (*graph, *destination));
+    let mut active_destination = None;
+    let mut sources = HashSet::new();
+    raw.retain(|(graph, source, destination)| {
+        let key = (*graph, *destination);
+        if active_destination != Some(key) {
+            active_destination = Some(key);
+            sources.clear();
+        }
+        sources.insert(*source)
+    });
+
+    let node_count = *node_ptr.last().ok_or("canonical graph node_ptr is empty")?;
+    let mut has_self_loop = vec![false; node_count];
+    for (graph, source, destination) in &raw {
+        if *graph >= graph_count
+            || *source < node_ptr[*graph]
+            || *source >= node_ptr[*graph + 1]
+            || *destination < node_ptr[*graph]
+            || *destination >= node_ptr[*graph + 1]
+        {
+            return Err("canonical edge crosses a graph boundary".into());
+        }
+        if source == destination {
+            has_self_loop[*source] = true;
+        }
+    }
+    for graph in 0..graph_count {
+        for node in node_ptr[graph]..node_ptr[graph + 1] {
+            if !has_self_loop[node] {
+                raw.push((graph, node, node));
+            }
+        }
+    }
+    // Added loops have later input ordinals, so stable sorting places them
+    // after any existing edge with the same destination.
+    raw.sort_by_key(|(graph, _, destination)| (*graph, *destination));
+
+    let mut src = Vec::with_capacity(raw.len());
+    let mut dst = Vec::with_capacity(raw.len());
+    let mut edge_ptr = Vec::with_capacity(graph_count + 1);
+    edge_ptr.push(0);
+    let mut cursor = 0;
+    for graph in 0..graph_count {
+        while cursor < raw.len() && raw[cursor].0 == graph {
+            src.push(raw[cursor].1);
+            dst.push(raw[cursor].2);
+            cursor += 1;
+        }
+        edge_ptr.push(src.len());
+    }
+    if cursor != raw.len() {
+        return Err("edge graph grouping failed".into());
+    }
+    Ok((src, dst, edge_ptr))
 }
 
 fn parse_tensor_archive(path: &Path, manifest: &CheckpointManifest,) -> Result<BTreeMap<String, ParsedTensor>, String> {
@@ -1181,4 +1249,29 @@ fn write_atomic_metadata(path: &Path, bytes: &[u8]) -> Result<(), String> {
     }
     result?;
     Ok(())
+}
+
+#[cfg(test)]
+mod canonical_graph_tests {
+    use super::normalize_graph_edges;
+
+    #[test]
+    fn normalizes_deduplicates_and_adds_each_missing_self_loop_stably() {
+        let raw = vec![
+            (0, 1, 0),
+            (0, 0, 1),
+            (0, 1, 0),
+            (0, 1, 1),
+            (1, 2, 3),
+        ];
+        let (src, dst, edge_ptr) = normalize_graph_edges(raw, &[0, 2, 4]).unwrap();
+        assert_eq!(edge_ptr, vec![0, 4, 7]);
+        assert_eq!(src, vec![1, 0, 0, 1, 2, 2, 3]);
+        assert_eq!(dst, vec![0, 0, 1, 1, 2, 3, 3]);
+    }
+
+    #[test]
+    fn rejects_edges_that_cross_graph_boundaries() {
+        assert!(normalize_graph_edges(vec![(0, 0, 2)], &[0, 2, 4]).is_err());
+    }
 }

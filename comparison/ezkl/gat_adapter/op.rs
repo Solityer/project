@@ -221,17 +221,41 @@ impl GatOp {
         table: &ExactTable,
         assigned_tables: &mut HashMap<String, layouts::AssignedDynamicLookupTable>,
     ) -> Result<ValTensor<Fp>, CircuitError> {
+        Self::require_scale(
+            input,
+            table.input_scale,
+            &format!("exact table {} input", table.table_id),
+        )?;
         let output = Self::unknown_or_map(input, input.dims(), |x| table.lookup(x))?;
         let identity = format!("{}:{}", table.table_id, table.digest);
         let token = if let Some(token) = assigned_tables.get(&identity) {
             *token
         } else {
+            let assignment_started = std::time::Instant::now();
+            println!(
+                "EZKL_NATIVE_PHASE START stage=exact_table_assignment model_arch_id={} table_id={} rows={}",
+                self.spec.model.model_arch_id,
+                table.table_id,
+                table.rows.len(),
+            );
             let (keys, values) = Self::table(table)?;
             let token = layouts::assign_dynamic_lookup_table(config, region, &[&keys, &values])?;
             assigned_tables.insert(identity, token);
+            println!(
+                "EZKL_NATIVE_PHASE DONE stage=exact_table_assignment model_arch_id={} table_id={} rows={} elapsed_ms={:.3}",
+                self.spec.model.model_arch_id,
+                table.table_id,
+                table.rows.len(),
+                assignment_started.elapsed().as_secs_f64() * 1000.0,
+            );
             token
         };
-        let (_, checked_output) = layouts::dynamic_lookup_from_table(config, region, &[input, &output], token)?;
+        let (_, mut checked_output) = layouts::dynamic_lookup_from_table(config, region, &[input, &output], token)?;
+        if checked_output.len() != input.len() {
+            return Err(CircuitError::DimMismatch("GAT exact lookup changed the canonical tensor length".into()));
+        }
+        checked_output.reshape(input.dims())?;
+        checked_output.set_scale(table.output_scale);
         Ok(checked_output)
     }
 
@@ -392,7 +416,6 @@ impl GatOp {
             }
             Ok(())
         };
-        let scalar = [1];
         let edge = [graph.e];
         let groups = graph.destination_groups()?;
         if groups.is_empty() {
@@ -402,36 +425,55 @@ impl GatOp {
         for (layer_idx, layer) in spec.model.hidden_layers.iter().enumerate() {
             shape("hidden input", &[graph.n, current_dim], &[graph.n, layer.d_in])?;
             for (head_idx, _) in layer.heads.iter().enumerate() {
+                let edge_channels = [graph.e, layer.d_head];
+                let node_channels = [graph.n, layer.d_head];
                 shape("hidden projection", &[layer.d_in, layer.d_head], &[layer.d_in, layer.d_head])?;
                 shape("hidden projected", &[graph.n, layer.d_head], &[graph.n, layer.d_head])?;
                 shape("hidden gathered", &edge, &[graph.e])?;
                 shape("hidden attention vectors", &[layer.d_head], &[layer.d_head])?;
                 shape("hidden scores", &edge, &[graph.e])?;
-                for (_, start, end) in &groups {
-                    let group = [end - start];
-                    shape("group score", &group, &[end - start])?;
-                    shape("group scalar repeat", &group, &[end - start])?;
-                    shape("group source values", &[end - start, layer.d_head], &[end - start, layer.d_head])?;
-                    shape("group tiled values", &[end - start, layer.d_head], &[end - start, layer.d_head])?;
-                    shape("group channel values", &group, &[end - start])?;
-                    shape("group numerator", &scalar, &[1])?;
-                }
+                shape("batched max claims", &[graph.n], &[graph.n])?;
+                shape("batched max edge repeat", &edge, &[graph.e])?;
+                shape("batched max indicators", &edge, &[graph.e])?;
+                shape("batched local max prefix", &edge, &[graph.e])?;
+                shape("batched exponentials", &edge, &[graph.e])?;
+                shape("batched denominator local prefix", &edge, &[graph.e])?;
+                shape("batched denominators", &[graph.n], &[graph.n])?;
+                shape("batched denominator inverses", &[graph.n], &[graph.n])?;
+                shape("batched alpha/source values", &edge_channels, &[graph.e, layer.d_head])?;
+                shape("batched exponential/source values", &edge_channels, &[graph.e, layer.d_head])?;
+                shape("batched field local prefixes", &edge_channels, &[graph.e, layer.d_head])?;
+                shape("batched numerator local prefixes", &edge_channels, &[graph.e, layer.d_head])?;
+                shape("batched aggregation numerators", &node_channels, &[graph.n, layer.d_head])?;
+                shape("batched signed dividend", &node_channels, &[graph.n, layer.d_head])?;
+                shape("batched row divisor", &[graph.n], &[graph.n])?;
                 let _ = (layer_idx, head_idx);
             }
             current_dim = layer.heads.len().checked_mul(layer.d_head).ok_or_else(|| "hidden concat shape overflow".to_string())?;
             shape("hidden head concat", &[graph.n, current_dim], &[graph.n, current_dim])?;
         }
         for (head_idx, _) in spec.model.output_heads.iter().enumerate() {
+            let edge_channels = [graph.e, spec.model.classes];
+            let node_channels = [graph.n, spec.model.classes];
             shape("output projection", &[current_dim, spec.model.classes], &[current_dim, spec.model.classes])?;
             shape("output projected", &[graph.n, spec.model.classes], &[graph.n, spec.model.classes])?;
             shape("output attention vectors", &[spec.model.classes], &[spec.model.classes])?;
             shape("output scores", &edge, &[graph.e])?;
-            for (_, start, end) in &groups {
-                let group = [end - start];
-                shape("output group scalar repeat", &group, &[end - start])?;
-                shape("output group source values", &[end - start, spec.model.classes], &[end - start, spec.model.classes])?;
-                shape("output group numerator", &scalar, &[1])?;
-            }
+            shape("output batched max claims", &[graph.n], &[graph.n])?;
+            shape("output batched max edge repeat", &edge, &[graph.e])?;
+            shape("output batched max indicators", &edge, &[graph.e])?;
+            shape("output batched local max prefix", &edge, &[graph.e])?;
+            shape("output batched exponentials", &edge, &[graph.e])?;
+            shape("output batched denominator local prefix", &edge, &[graph.e])?;
+            shape("output batched denominators", &[graph.n], &[graph.n])?;
+            shape("output batched denominator inverses", &[graph.n], &[graph.n])?;
+            shape("output batched alpha/source values", &edge_channels, &[graph.e, spec.model.classes])?;
+            shape("output batched exponential/source values", &edge_channels, &[graph.e, spec.model.classes])?;
+            shape("output batched field local prefixes", &edge_channels, &[graph.e, spec.model.classes])?;
+            shape("output batched numerator local prefixes", &edge_channels, &[graph.e, spec.model.classes])?;
+            shape("output batched aggregation numerators", &node_channels, &[graph.n, spec.model.classes])?;
+            shape("output batched signed dividend", &node_channels, &[graph.n, spec.model.classes])?;
+            shape("output batched row divisor", &[graph.n], &[graph.n])?;
             shape("output alignment dividend", &output_shape, &[graph.n, spec.model.classes])?;
             shape("output alignment scalar repeat", &output_shape, &[graph.n, spec.model.classes])?;
             shape("output head", &[graph.n, spec.model.classes], &[graph.n, spec.model.classes])?;
@@ -455,11 +497,33 @@ impl GatOp {
     }
 
     fn flatten_slice(value: &ValTensor<Fp>, start: usize, end: usize, dims: &[usize],) -> Result<ValTensor<Fp>, CircuitError> {
-        let mut flat = value.clone();
-        flat.flatten();
-        let mut slice = flat.get_slice(&[start..end])?;
-        slice.reshape(dims)?;
-        Ok(slice)
+        match value {
+            ValTensor::Value { .. } if !value.dims().is_empty() => {
+                let flat = value.get_inner_tensor()?.get_flat_slice(start..end)?;
+                let mut slice: ValTensor<Fp> = flat.into();
+                slice.set_scale(value.scale());
+                slice.reshape(dims)?;
+                Ok(slice)
+            }
+            // Preserve the established behavior for instance-backed or
+            // scalar-shaped tensors, which do not have a normal flat value
+            // buffer. GAT's gathered internal tensors use the range-copy
+            // path above.
+            ValTensor::Instance { .. } => {
+                let mut flat = value.clone();
+                flat.flatten();
+                let mut slice = flat.get_slice(&[start..end])?;
+                slice.reshape(dims)?;
+                Ok(slice)
+            }
+            ValTensor::Value { .. } => {
+                let mut flat = value.clone();
+                flat.flatten();
+                let mut slice = flat.get_slice(&[start..end])?;
+                slice.reshape(dims)?;
+                Ok(slice)
+            }
+        }
     }
 
     fn append_tensors(tensors: &[ValTensor<Fp>], dims: &[usize],) -> Result<ValTensor<Fp>, CircuitError> {
@@ -502,19 +566,263 @@ impl GatOp {
         Ok(Tensor::new(Some(&vals), &[rows, cols])?.into())
     }
 
+    fn canonicalize_edge_channels(
+        value: &mut ValTensor<Fp>,
+        edge_count: usize,
+        channels: usize,
+        label: &str,
+    ) -> Result<(), CircuitError> {
+        let expected_dims = if channels == 1 {
+            vec![edge_count]
+        } else {
+            vec![edge_count, channels]
+        };
+        if value.dims() == expected_dims {
+            return Ok(());
+        }
+        if channels == 1 && value.len() == edge_count && value.dims() == [edge_count, 1] {
+            value.reshape(&expected_dims)?;
+            return Ok(());
+        }
+        Err(CircuitError::DimMismatch(format!(
+            "{} shape {:?} with {} values is not canonical for {} edges and {} channels",
+            label,
+            value.dims(),
+            value.len(),
+            edge_count,
+            channels,
+        )))
+    }
+
+    fn canonicalize_destination_channels(
+        value: &mut ValTensor<Fp>,
+        node_count: usize,
+        channels: usize,
+        label: &str,
+    ) -> Result<(), CircuitError> {
+        let expected_dims = vec![node_count, channels];
+        if value.dims() == expected_dims {
+            return Ok(());
+        }
+        if channels == 1 && value.len() == node_count && value.dims() == [node_count] {
+            value.reshape(&expected_dims)?;
+            return Ok(());
+        }
+        Err(CircuitError::DimMismatch(format!(
+            "{} shape {:?} with {} values is not canonical for {} destinations and {} channels",
+            label,
+            value.dims(),
+            value.len(),
+            node_count,
+            channels,
+        )))
+    }
+
+    fn repeat_by_destination_groups(
+        value: &ValTensor<Fp>,
+        destination_groups: &[(usize, usize, usize)],
+        edge_count: usize,
+        channels: usize,
+    ) -> Result<ValTensor<Fp>, CircuitError> {
+        if value.dims() != [destination_groups.len()] || channels == 0 {
+            return Err(CircuitError::DimMismatch(
+                "GAT destination-group repeat shape is not canonical".into(),
+            ));
+        }
+        let mut cursor = 0usize;
+        let inner = value.get_inner_tensor()?;
+        let mut repeated = Vec::with_capacity(edge_count.checked_mul(channels).ok_or(CircuitError::UnsupportedOp)?);
+        for (expected_node, (node, start, end)) in destination_groups.iter().copied().enumerate() {
+            if node != expected_node || start != cursor || start >= end || end > edge_count {
+                return Err(CircuitError::DimMismatch(
+                    "GAT destination-group schedule is not a contiguous public partition".into(),
+                ));
+            }
+            let item = inner.get(&[node]).clone();
+            for _ in start..end {
+                repeated.extend(std::iter::repeat(item.clone()).take(channels));
+            }
+            cursor = end;
+        }
+        if cursor != edge_count {
+            return Err(CircuitError::DimMismatch(
+                "GAT destination-group schedule does not cover every edge".into(),
+            ));
+        }
+        let dims = if channels == 1 {
+            vec![edge_count]
+        } else {
+            vec![edge_count, channels]
+        };
+        let mut output: ValTensor<Fp> = Tensor::new(Some(&repeated), &dims)?.into();
+        output.set_scale(value.scale());
+        Ok(output)
+    }
+
+    fn destination_group_endpoints(
+        value: &ValTensor<Fp>,
+        destination_groups: &[(usize, usize, usize)],
+        edge_count: usize,
+        channels: usize,
+    ) -> Result<ValTensor<Fp>, CircuitError> {
+        let expected_dims = if channels == 1 {
+            vec![edge_count]
+        } else {
+            vec![edge_count, channels]
+        };
+        if value.dims() != expected_dims || channels == 0 {
+            return Err(CircuitError::DimMismatch(
+                "GAT segmented-prefix endpoint input shape is not canonical".into(),
+            ));
+        }
+        let inner = value.get_inner_tensor()?;
+        let mut endpoints = Vec::with_capacity(destination_groups.len().checked_mul(channels).ok_or(CircuitError::UnsupportedOp)?);
+        for (expected_node, (node, start, end)) in destination_groups.iter().copied().enumerate() {
+            if node != expected_node || start >= end || end > edge_count {
+                return Err(CircuitError::DimMismatch(
+                    "GAT destination-group endpoint is outside its public partition".into(),
+                ));
+            }
+            let last_edge = end - 1;
+            for channel in 0..channels {
+                endpoints.push(inner[last_edge * channels + channel].clone());
+            }
+        }
+        let dims = if channels == 1 {
+            vec![destination_groups.len()]
+        } else {
+            vec![destination_groups.len(), channels]
+        };
+        let mut output: ValTensor<Fp> = Tensor::new(Some(&endpoints), &dims)?.into();
+        output.set_scale(value.scale());
+        Ok(output)
+    }
+
+    /// Constrain one field prefix recurrence per edge/channel, resetting at
+    /// every public destination boundary. The public schedule only chooses
+    /// predecessor cells; every recurrence is enforced by `pairwise` and an
+    /// equality to the claimed prefix advice tensor.
+    fn segmented_prefix(
+        config: &BaseConfig<Fp>,
+        region: &mut RegionCtx<Fp>,
+        values: &ValTensor<Fp>,
+        destination_groups: &[(usize, usize, usize)],
+        edge_count: usize,
+        channels: usize,
+    ) -> Result<ValTensor<Fp>, CircuitError> {
+        let expected_dims = if channels == 1 {
+            vec![edge_count]
+        } else {
+            vec![edge_count, channels]
+        };
+        if channels == 0 || values.dims() != expected_dims {
+            return Err(CircuitError::DimMismatch(format!(
+                "GAT segmented-prefix tensor shape {:?} is not canonical; expected {:?}",
+                values.dims(),
+                expected_dims,
+            )));
+        }
+        let all_unknown = values.any_unknowns()?;
+        let input_inner = values.get_inner_tensor()?;
+        let mut prefix_witness = Vec::with_capacity(values.len());
+        let mut cursor = 0usize;
+        let mut accumulators = vec![Fp::ZERO; channels];
+        for (expected_node, (node, start, end)) in destination_groups.iter().copied().enumerate() {
+            if node != expected_node || start != cursor || start >= end || end > edge_count {
+                return Err(CircuitError::DimMismatch(
+                    "GAT segmented-prefix schedule is not a contiguous public partition".into(),
+                ));
+            }
+            accumulators.fill(Fp::ZERO);
+            for row in start..end {
+                for channel in 0..channels {
+                    let item = if all_unknown {
+                        ValType::Value(Value::unknown())
+                    } else {
+                        let current = input_inner[row * channels + channel]
+                            .get_felt_eval()
+                            .ok_or(CircuitError::UnsupportedOp)?;
+                        accumulators[channel] += current;
+                        ValType::Value(Value::known(accumulators[channel]))
+                    };
+                    prefix_witness.push(item);
+                }
+            }
+            cursor = end;
+        }
+        if cursor != edge_count {
+            return Err(CircuitError::DimMismatch(
+                "GAT segmented-prefix schedule does not cover every edge".into(),
+            ));
+        }
+        let mut claimed: ValTensor<Fp> = Tensor::new(Some(&prefix_witness), &expected_dims)?.into();
+        claimed.set_scale(values.scale());
+        let claimed = region.assign(&config.custom_gates.inputs[1], &claimed)?;
+        let claimed_inner = claimed.get_inner_tensor()?;
+
+        let mut previous_values = Vec::with_capacity(values.len());
+        for (_, start, end) in destination_groups.iter().copied() {
+            for row in start..end {
+                for channel in 0..channels {
+                    if row == start {
+                        previous_values.push(ValType::Constant(Fp::ZERO));
+                    } else {
+                        previous_values.push(claimed_inner[(row - 1) * channels + channel].clone());
+                    }
+                }
+            }
+        }
+        let mut previous: ValTensor<Fp> = Tensor::new(Some(&previous_values), &expected_dims)?.into();
+        previous.set_scale(values.scale());
+        let recurrence = layouts::pairwise(config, region, &[&previous, values], BaseOp::Add)?;
+        layouts::enforce_equality(config, region, &[&recurrence, &claimed])?;
+        Ok(claimed)
+    }
+
+    fn broadcast_destination_rows(
+        value: &ValTensor<Fp>,
+        dividend: &ValTensor<Fp>,
+        destination_count: usize,
+    ) -> Result<ValTensor<Fp>, CircuitError> {
+        if value.len() == 1 {
+            return Self::repeated_scalar(value, dividend.dims());
+        }
+        if dividend.dims().len() == 2
+            && dividend.dims()[0] == destination_count
+            && value.dims() == [destination_count]
+        {
+            return Self::tile_rows(value, destination_count, dividend.dims()[1]);
+        }
+        if value.dims() == dividend.dims() {
+            return Ok(value.clone());
+        }
+        Err(CircuitError::DimMismatch(
+            "GAT divisor must be scalar, one value per destination row, or match the dividend exactly".into(),
+        ))
+    }
+
     fn inverse_exact(&self, config: &BaseConfig<Fp>, region: &mut RegionCtx<Fp>, denominator: &ValTensor<Fp>,) -> Result<ValTensor<Fp>, CircuitError> {
         let inv = if denominator.any_unknowns()? {
             Self::unknown_tensor(denominator.dims())?
         } else {
-            let d = denominator.int_evals()?[0];
-            if d == 0 {
-                return Err(CircuitError::UnsupportedOp);
-            }
-            let value = ValType::Value(Value::known(Option::from(integer_rep_to_felt::<Fp>(d).invert()).ok_or(CircuitError::UnsupportedOp)?,));
-            Tensor::new(Some(&[value]), denominator.dims())?.into()
+            let inverse_values = denominator
+                .int_evals()?
+                .into_iter()
+                .map(|d| {
+                    if d <= 0 {
+                        return Err(CircuitError::UnsupportedOp);
+                    }
+                    Ok(ValType::Value(Value::known(
+                        Option::from(integer_rep_to_felt::<Fp>(d).invert())
+                            .ok_or(CircuitError::UnsupportedOp)?,
+                    )))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Tensor::new(Some(&inverse_values), denominator.dims())?.into()
         };
+        let inv = region.assign(&config.custom_gates.inputs[1], &inv)?;
         let product = layouts::pairwise(config, region, &[denominator, &inv], BaseOp::Mult)?;
-        let one = Self::constant_i128(&[1], denominator.dims())?;
+        let one = Self::constant_i128(&vec![1; denominator.len()], denominator.dims())?;
         layouts::enforce_equality(config, region, &[&product, &one])?;
         Ok(inv)
     }
@@ -539,8 +847,13 @@ impl GatOp {
         rounding: RoundingMode,
         bounds: Option<&BoundFamily>,
     ) -> Result<ValTensor<Fp>, CircuitError> {
-        if divisor.len() != 1 {
-            return Err(CircuitError::DimMismatch("GAT divisor must be scalar".into(),));
+        if dividend.dims().is_empty() || dividend.len() == 0 {
+            return Err(CircuitError::DimMismatch("GAT dividend must be a nonempty tensor".into()));
+        }
+        let destination_count = dividend.dims()[0];
+        let d_repeated = Self::broadcast_destination_rows(divisor, dividend, destination_count)?;
+        if d_repeated.len() != dividend.len() || d_repeated.dims() != dividend.dims() {
+            return Err(CircuitError::DimMismatch("GAT divisor broadcast did not exactly match the dividend shape".into()));
         }
         let (q, q_floor, rem, abs, sigma, zero, rounded_up) = if dividend.any_unknowns()? || divisor.any_unknowns()? {
             let dims = dividend.dims();
@@ -554,9 +867,9 @@ impl GatOp {
                 Self::unknown_tensor(dims)?,
             )
         } else {
-            let d = divisor.int_evals()?[0];
-            if d <= 0 {
-                return Err(CircuitError::UnsupportedOp);
+            let divisors = d_repeated.int_evals()?;
+            if divisors.len() != dividend.len() || divisors.iter().any(|d| *d <= 0) {
+                return Err(CircuitError::DimMismatch("GAT divisor rows must be positive and match the dividend".into()));
             }
             let mut qv = Vec::new();
             let mut q_floor_v = Vec::new();
@@ -565,7 +878,7 @@ impl GatOp {
             let mut sv = Vec::new();
             let mut zv = Vec::new();
             let mut rounded_up_v = Vec::new();
-            for x in dividend.int_evals()?.iter().copied() {
+            for (x, d) in dividend.int_evals()?.iter().copied().zip(divisors) {
                 let signed = super::relation::evaluate_signed_division(x, d, rounding).map_err(|_| CircuitError::UnsupportedOp)?;
                 qv.push(signed.quotient);
                 q_floor_v.push(signed.quotient_floor);
@@ -585,9 +898,16 @@ impl GatOp {
                 Self::value_i128(&rounded_up_v, dividend.dims())?,
             )
         };
-        layouts::boolean_identity(config, region, &[&sigma], true)?;
-        layouts::boolean_identity(config, region, &[&zero], true)?;
-        layouts::boolean_identity(config, region, &[&rounded_up], true)?;
+        let q = region.assign(&config.custom_gates.inputs[1], &q)?;
+        let q_floor = region.assign(&config.custom_gates.inputs[1], &q_floor)?;
+        let rem = region.assign(&config.custom_gates.inputs[1], &rem)?;
+        let abs = region.assign(&config.custom_gates.inputs[1], &abs)?;
+        let sigma = region.assign(&config.custom_gates.inputs[1], &sigma)?;
+        let zero = region.assign(&config.custom_gates.inputs[1], &zero)?;
+        let rounded_up = region.assign(&config.custom_gates.inputs[1], &rounded_up)?;
+        let sigma = layouts::boolean_identity(config, region, &[&sigma], true)?;
+        let zero = layouts::boolean_identity(config, region, &[&zero], true)?;
+        let rounded_up = layouts::boolean_identity(config, region, &[&rounded_up], true)?;
         let two = Self::constant_i128(&vec![2; dividend.len()], dividend.dims())?;
         let two_sigma = layouts::pairwise(config, region, &[&sigma, &two], BaseOp::Mult)?;
         let one = Self::constant_i128(&vec![1; dividend.len()], dividend.dims())?;
@@ -596,8 +916,7 @@ impl GatOp {
         layouts::enforce_equality(config, region, &[dividend, &signed_abs])?;
         let q_abs = layouts::pairwise(config, region, &[&q_floor, &rounded_up], BaseOp::Add)?;
         let signed_q = layouts::pairwise(config, region, &[&sign_factor, &q_abs], BaseOp::Mult)?;
-        layouts::enforce_equality(config, region, &[&q, &signed_q])?;
-        let d_repeated = Self::repeated_scalar(divisor, dividend.dims())?;
+        let q = layouts::enforce_equality(config, region, &[&q, &signed_q])?;
         let max_divisor = bounds.map(|family| family.max_divisor).unwrap_or(self.spec.ledger.max_divisor);
         let max_aux_abs = bounds.map(|family| family.max_aux_abs).unwrap_or(self.spec.ledger.max_aux_abs);
         let max_dividend_abs = bounds.map(|family| family.max_dividend_abs).unwrap_or(self.spec.ledger.max_dividend_abs);
@@ -606,7 +925,7 @@ impl GatOp {
         Self::range_check_bounded(config, region, &[&sign_factor], &(-1, 1))?;
         Self::range_check_bounded(config, region, &[divisor], &(1, max_divisor))?;
         let d_inv_scalar = self.inverse_exact(config, region, divisor)?;
-        let d_inv = Self::repeated_scalar(&d_inv_scalar, dividend.dims())?;
+        let d_inv = Self::broadcast_destination_rows(&d_inv_scalar, dividend, destination_count)?;
         let d_product = layouts::pairwise(config, region, &[&d_repeated, &d_inv], BaseOp::Mult)?;
         let d_one = Self::constant_i128(&vec![1; dividend.len()], dividend.dims())?;
         layouts::enforce_equality(config, region, &[&d_product, &d_one])?;
@@ -624,6 +943,7 @@ impl GatOp {
                 .collect::<Result<Vec<_>, _>>()?;
             Tensor::new(Some(&vals), abs.dims())?.into()
         };
+        let abs_inv = region.assign(&config.custom_gates.inputs[1], &abs_inv)?;
         let abs_product = layouts::pairwise(config, region, &[&abs, &abs_inv], BaseOp::Mult)?;
         let one_minus_zero = layouts::pairwise(config, region, &[&one, &zero], BaseOp::Sub)?;
         layouts::enforce_equality(config, region, &[&abs_product, &one_minus_zero])?;
@@ -642,11 +962,15 @@ impl GatOp {
         let delta_vals = if rem.any_unknowns()? {
             Self::unknown_tensor(rem.dims())?
         } else {
-            let d = divisor.int_evals()?[0];
+            let divisors = d_repeated.int_evals()?;
             let values = rem.int_evals()?;
+            if divisors.len() != values.len() {
+                return Err(CircuitError::DimMismatch("GAT divisor and remainder lengths differ".into()));
+            }
             let deltas = values
                 .iter()
-                .map(|r| match rounding {
+                .zip(divisors)
+                .map(|(r, d)| match rounding {
                     RoundingMode::TowardZero => d.checked_sub(1).and_then(|v| v.checked_sub(*r)),
                     RoundingMode::NearestTiesAway => d.checked_mul(2).and_then(|v| v.checked_sub(1)).and_then(|v| v.checked_sub(*r)),
                 })
@@ -654,6 +978,7 @@ impl GatOp {
                 .ok_or(CircuitError::UnsupportedOp)?;
             Self::value_i128(&deltas, rem.dims())?
         };
+        let delta_vals = region.assign(&config.custom_gates.inputs[1], &delta_vals)?;
 
         match rounding {
             RoundingMode::TowardZero => {
@@ -705,43 +1030,6 @@ impl GatOp {
         Ok(q)
     }
 
-    /// Prove a group maximum using ezkl's native arithmetic/lookup pieces.
-    ///
-    /// The claimed maximum is a witness value, `w=x-(m-1)` is looked up in
-    /// the backend-only exact ReLU table, the outputs are boolean, and a
-    /// second ReLU lookup proves that at least one entry reaches `m`.  This
-    /// keeps max sound under ties and avoids treating a host/native max as a
-    /// proof relation.
-    fn exact_group_max(
-        &self,
-        config: &BaseConfig<Fp>,
-        region: &mut RegionCtx<Fp>,
-        values: &ValTensor<Fp>,
-        bounds: &BoundFamily,
-        assigned_tables: &mut HashMap<String, layouts::AssignedDynamicLookupTable>,
-    ) -> Result<ValTensor<Fp>, CircuitError> {
-        let claimed = if values.any_unknowns()? {
-            Self::unknown_tensor(&[1])?
-        } else {
-            let max = values.int_evals()?.into_iter().max().ok_or(CircuitError::UnsupportedOp)?;
-            Self::value_i128(&[max], &[1])?
-        };
-        Self::range_check_bounded(config, region, &[&claimed], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
-        let claimed_repeated = Self::repeated_scalar(&claimed, values.dims())?;
-        let one = Self::constant_i128(&vec![1; values.len()], values.dims())?;
-        let max_minus_one = layouts::pairwise(config, region, &[&claimed_repeated, &one], BaseOp::Sub)?;
-        let w = layouts::pairwise(config, region, &[values, &max_minus_one], BaseOp::Sub)?;
-        let y = self.exact_lookup(config, region, &w, &self.spec.tables.max_relu, assigned_tables)?;
-        let y = layouts::boolean_identity(config, region, &[&y], true)?;
-        let y_sum = layouts::sum(config, region, &[&y])?;
-        let one_scalar = Self::constant_i128(&[1], &[1])?;
-        let deficit = layouts::pairwise(config, region, &[&one_scalar, &y_sum], BaseOp::Sub)?;
-        let zero_or_one = self.exact_lookup(config, region, &deficit, &self.spec.tables.max_relu, assigned_tables)?;
-        let zero = Self::constant_i128(&[0], &[1])?;
-        layouts::enforce_equality(config, region, &[&zero_or_one, &zero])?;
-        Ok(claimed)
-    }
-
     fn aggregate_head(
         &self,
         config: &BaseConfig<Fp>,
@@ -759,6 +1047,7 @@ impl GatOp {
         projected_scale: i32,
         attention_src_scale: i32,
         attention_dst_scale: i32,
+        destination_groups: &[(usize, usize, usize)],
         assigned_tables: &mut HashMap<String, layouts::AssignedDynamicLookupTable>,
     ) -> Result<ValTensor<Fp>, CircuitError> {
         let graph = &self.spec.graph;
@@ -770,8 +1059,42 @@ impl GatOp {
         Self::require_scale(projected, projected_scale, "projected tensor")?;
         Self::require_scale(attention_src, attention_src_scale, "source attention vector",)?;
         Self::require_scale(attention_dst, attention_dst_scale, "destination attention vector",)?;
+        println!(
+            "EZKL_NATIVE_PHASE START stage=graph_gather direction=source nodes={} edges={} channels={} input_values={}",
+            graph.n,
+            graph.e,
+            channels,
+            projected.len(),
+        );
+        let src_gather_started = std::time::Instant::now();
         let mut src_values = layouts::gather(config, region, &[projected, source], 0)?;
+        println!(
+            "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=source nodes={} edges={} channels={} input_values={} output_values={} elapsed_ms={:.3}",
+            graph.n,
+            graph.e,
+            channels,
+            projected.len(),
+            src_values.len(),
+            src_gather_started.elapsed().as_secs_f64() * 1000.0,
+        );
+        println!(
+            "EZKL_NATIVE_PHASE START stage=graph_gather direction=destination nodes={} edges={} channels={} input_values={}",
+            graph.n,
+            graph.e,
+            channels,
+            projected.len(),
+        );
+        let dst_gather_started = std::time::Instant::now();
         let mut dst_values = layouts::gather(config, region, &[projected, dst], 0)?;
+        println!(
+            "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=destination nodes={} edges={} channels={} input_values={} output_values={} elapsed_ms={:.3}",
+            graph.n,
+            graph.e,
+            channels,
+            projected.len(),
+            dst_values.len(),
+            dst_gather_started.elapsed().as_secs_f64() * 1000.0,
+        );
         src_values.set_scale(projected_scale);
         dst_values.set_scale(projected_scale);
         let mut src_score = layouts::einsum(config, region, &[&src_values, attention_src], "ij,j->i")?;
@@ -784,80 +1107,238 @@ impl GatOp {
         let mut score = self.exact_lookup(config, region, &score, &self.spec.tables.lrelu, assigned_tables)?;
         score.set_scale(self.spec.scales.s_delta);
         Self::range_check_bounded(config, region, &[&score], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
-        let mut node_values = vec![None; graph.n * channels];
-        for (node, start, end) in graph.destination_groups().map_err(|_| CircuitError::UnsupportedOp)? {
-            let group_score = Self::flatten_slice(&score, start, end, &[end - start])?;
-            let max = self.exact_group_max(config, region, &group_score, bounds, assigned_tables)?;
-            let max_repeated = Self::repeated_scalar(&max, group_score.dims())?;
-            let score_group = Self::flatten_slice(&score, start, end, &[end - start])?;
-            let mut delta = layouts::pairwise(config, region, &[&max_repeated, &score_group], BaseOp::Sub)?;
-            delta.set_scale(self.spec.scales.s_delta);
-            Self::range_check_bounded(config, region, &[&delta], &(0, bounds.max_delta))?;
-            let mut exp = self.exact_lookup(config, region, &delta, &self.spec.tables.exp, assigned_tables)?;
-            exp.set_scale(self.spec.scales.s_exp);
-            Self::range_check_bounded(config, region, &[&exp], &(1, bounds.max_exp))?;
-            let mut denominator = layouts::sum(config, region, &[&exp])?;
-            denominator.set_scale(self.spec.scales.s_exp);
-            Self::range_check_bounded(config, region, &[&denominator], &(1, bounds.max_sum))?;
-            let inverse = self.inverse_exact(config, region, &denominator)?;
-            let alpha = layouts::pairwise(config, region, &[&exp, &Self::repeated_scalar(&inverse, exp.dims())?], BaseOp::Mult,)?;
-            let src_group = Self::flatten_slice(&src_values, start * channels, end * channels, &[end - start, channels],)?;
-            let exp_group = Self::tile_rows(&exp, end - start, channels)?;
-            let alpha_group = Self::tile_rows(&alpha, end - start, channels)?;
-            let mut channel_outputs = Vec::new();
-            for channel in 0..channels {
-                let mut vals = Vec::new();
-                let mut alpha_vals = Vec::new();
-                let mut exp_vals = Vec::new();
-                for row in 0..(end - start) {
-                    vals.push(src_group.get_inner_tensor()?.get(&[row, channel]).clone());
-                    alpha_vals.push(alpha_group.get_inner_tensor()?.get(&[row, channel]).clone());
-                    exp_vals.push(exp_group.get_inner_tensor()?.get(&[row, channel]).clone());
+        if destination_groups.len() != graph.n || score.dims() != [graph.e] {
+            return Err(CircuitError::DimMismatch(
+                "GAT destination schedule or score shape is not canonical".into(),
+            ));
+        }
+        let mut max_claim = if score.any_unknowns()? {
+            Self::unknown_tensor(&[graph.n])?
+        } else {
+            let scores = score.int_evals()?;
+            let mut maxima = Vec::with_capacity(graph.n);
+            for (expected_node, (node, start, end)) in destination_groups.iter().copied().enumerate() {
+                if node != expected_node || start >= end || end > graph.e {
+                    return Err(CircuitError::DimMismatch("invalid public destination group for GAT max".into()));
                 }
-                let values = Tensor::new(Some(&vals), &[end - start])?.into();
-                let alpha_values: ValTensor<Fp> = Tensor::new(Some(&alpha_vals), &[end - start])?.into();
-                let exp_values: ValTensor<Fp> = Tensor::new(Some(&exp_vals), &[end - start])?.into();
-                let field_product = layouts::pairwise(config, region, &[&alpha_values, &values], BaseOp::Mult)?;
-                let field_sum = layouts::sum(config, region, &[&field_product])?;
-                let numerator_product = layouts::pairwise(config, region, &[&exp_values, &values], BaseOp::Mult)?;
-                let mut numerator = layouts::sum(config, region, &[&numerator_product])?;
-                numerator.set_scale(self.spec.scales.s_exp.checked_add(projected_scale).ok_or(CircuitError::UnsupportedOp)?,);
-                let field_from_numerator = layouts::pairwise(config, region, &[&numerator, &inverse], BaseOp::Mult)?;
-                layouts::enforce_equality(config, region, &[&field_sum, &field_from_numerator])?;
-                Self::range_check_bounded(config, region, &[&numerator], &(-bounds.max_aggregation_num, bounds.max_aggregation_num),)?;
-                let recovery_multiplier = scale_exponent_to_multiplier(recovery_scale)
-                    .map_err(|_| CircuitError::UnsupportedOp)
-                    .and_then(|value| { i128::try_from(value).map_err(|_| CircuitError::UnsupportedOp) })?;
-                let denominator_multiplier = scale_exponent_to_multiplier(projected_scale)
-                    .map_err(|_| CircuitError::UnsupportedOp)
-                    .and_then(|value| { i128::try_from(value).map_err(|_| CircuitError::UnsupportedOp) })?;
-                let numerator_scale = Self::constant_i128(&vec![recovery_multiplier; numerator.len()], numerator.dims(),)?;
-                let scaled_numerator = layouts::pairwise(config, region, &[&numerator, &numerator_scale], BaseOp::Mult,)?;
-                let denominator_scale = Self::constant_i128(&[denominator_multiplier], &[1])?;
-                let scaled_denominator = layouts::pairwise(config, region, &[&denominator, &denominator_scale], BaseOp::Mult,)?;
-                let q = self.signed_round_div_layout(config, region, &scaled_numerator, &scaled_denominator, Some(bounds),)?;
-                let q = if use_elu {
-                    let mut q = q;
-                    q.set_scale(recovery_scale);
-                    let mut elu = self.exact_lookup(config, region, &q, &self.spec.tables.elu, assigned_tables)?;
-                    elu.set_scale(elu_output_scale);
-                    elu
-                } else {
-                    let mut q = q;
-                    q.set_scale(self.spec.scales.s_out_pre);
-                    q
-                };
-                channel_outputs.push(q);
+                let maximum = scores[start..end].iter().copied().max().ok_or(CircuitError::UnsupportedOp)?;
+                maxima.push(ValType::Value(Value::known(integer_rep_to_felt(maximum))));
             }
-            for channel in 0..channels {
-                node_values[node * channels + channel] = Some(channel_outputs[channel].clone());
-            }
+            Tensor::new(Some(&maxima), &[graph.n])?.into()
+        };
+        max_claim.set_scale(score.scale());
+        let max_claim = region.assign(&config.custom_gates.inputs[1], &max_claim)?;
+        Self::range_check_bounded(
+            config,
+            region,
+            &[&max_claim],
+            &(-bounds.max_table_output_abs, bounds.max_table_output_abs),
+        )?;
+        let max_repeated = Self::repeat_by_destination_groups(&max_claim, destination_groups, graph.e, 1)?;
+        let mut one_edge = Self::constant_i128(&vec![1; graph.e], &[graph.e])?;
+        one_edge.set_scale(score.scale());
+        let mut max_minus_one = layouts::pairwise(config, region, &[&max_repeated, &one_edge], BaseOp::Sub)?;
+        max_minus_one.set_scale(score.scale());
+        max_minus_one.reshape(&[graph.e])?;
+        let mut max_test_input = layouts::pairwise(config, region, &[&score, &max_minus_one], BaseOp::Sub)?;
+        max_test_input.set_scale(score.scale());
+        max_test_input.reshape(&[graph.e])?;
+        let mut max_indicator = self.exact_lookup(
+            config,
+            region,
+            &max_test_input,
+            &self.spec.tables.max_relu,
+            assigned_tables,
+        )?;
+        Self::require_scale(&max_indicator, score.scale(), "max-ReLU indicator")?;
+        max_indicator.reshape(&[graph.e])?;
+        let mut max_indicator = layouts::boolean_identity(config, region, &[&max_indicator], true)?;
+        Self::require_scale(&max_indicator, score.scale(), "Boolean max-ReLU indicator")?;
+        max_indicator.reshape(&[graph.e])?;
+        let max_indicator_prefix = Self::segmented_prefix(
+            config,
+            region,
+            &max_indicator,
+            destination_groups,
+            graph.e,
+            1,
+        )?;
+        let public_max_degree = destination_groups
+            .iter()
+            .map(|(_, start, end)| end - start)
+            .max()
+            .and_then(|degree| i128::try_from(degree).ok())
+            .ok_or(CircuitError::UnsupportedOp)?;
+        // The recurrence resets at every public group and adds only boolean
+        // indicators, so each local prefix is in [0, local_degree]. This
+        // batched lookup additionally bounds the field representative by the
+        // graph's public maximum degree (the local bound follows from the
+        // constrained number of recurrence steps in that group).
+        Self::range_check_bounded(
+            config,
+            region,
+            &[&max_indicator_prefix],
+            &(0, public_max_degree),
+        )?;
+        let max_indicator_sum = Self::destination_group_endpoints(
+            &max_indicator_prefix,
+            destination_groups,
+            graph.e,
+            1,
+        )?;
+        let mut one_node = Self::constant_i128(&vec![1; graph.n], &[graph.n])?;
+        one_node.set_scale(score.scale());
+        let max_deficit = layouts::pairwise(config, region, &[&one_node, &max_indicator_sum], BaseOp::Sub)?;
+        let mut max_deficit = max_deficit;
+        max_deficit.set_scale(score.scale());
+        let max_deficit_relu = self.exact_lookup(
+            config,
+            region,
+            &max_deficit,
+            &self.spec.tables.max_relu,
+            assigned_tables,
+        )?;
+        Self::require_scale(&max_deficit_relu, score.scale(), "max-ReLU deficit output")?;
+        let mut zero_node = Self::constant_i128(&vec![0; graph.n], &[graph.n])?;
+        zero_node.set_scale(score.scale());
+        layouts::enforce_equality(config, region, &[&max_deficit_relu, &zero_node])?;
+
+        let mut delta = layouts::pairwise(config, region, &[&max_repeated, &score], BaseOp::Sub)?;
+        delta.reshape(&[graph.e])?;
+        delta.set_scale(self.spec.scales.s_delta);
+        Self::range_check_bounded(config, region, &[&delta], &(0, bounds.max_delta))?;
+        let mut exp = self.exact_lookup(config, region, &delta, &self.spec.tables.exp, assigned_tables)?;
+        exp.set_scale(self.spec.scales.s_exp);
+        Self::range_check_bounded(config, region, &[&exp], &(1, bounds.max_exp))?;
+
+        let denominator_prefix = Self::segmented_prefix(
+            config,
+            region,
+            &exp,
+            destination_groups,
+            graph.e,
+            1,
+        )?;
+        // Every positive exponential prefix is a local destination sum. The
+        // ledger's max_sum is max_degree*max_exp and is strictly below Fr/2.
+        Self::range_check_bounded(config, region, &[&denominator_prefix], &(1, bounds.max_sum))?;
+        let mut denominator = Self::destination_group_endpoints(
+            &denominator_prefix,
+            destination_groups,
+            graph.e,
+            1,
+        )?;
+        denominator.set_scale(self.spec.scales.s_exp);
+        Self::range_check_bounded(config, region, &[&denominator], &(1, bounds.max_sum))?;
+        let inverse = self.inverse_exact(config, region, &denominator)?;
+        let inverse_edges = Self::repeat_by_destination_groups(&inverse, destination_groups, graph.e, 1)?;
+        let mut alpha = layouts::pairwise(config, region, &[&exp, &inverse_edges], BaseOp::Mult)?;
+        alpha.set_scale(self.spec.scales.s_exp);
+
+        let exp_rows = Self::tile_rows(&exp, graph.e, channels)?;
+        let alpha_rows = Self::tile_rows(&alpha, graph.e, channels)?;
+        let mut field_product = layouts::pairwise(config, region, &[&alpha_rows, &src_values], BaseOp::Mult)?;
+        Self::canonicalize_edge_channels(&mut field_product, graph.e, channels, "GAT field product")?;
+        let field_prefix = Self::segmented_prefix(
+            config,
+            region,
+            &field_product,
+            destination_groups,
+            graph.e,
+            channels,
+        )?;
+        let mut field_sum = Self::destination_group_endpoints(
+            &field_prefix,
+            destination_groups,
+            graph.e,
+            channels,
+        )?;
+        Self::canonicalize_destination_channels(&mut field_sum, graph.n, channels, "GAT field-sum endpoints")?;
+        drop(field_prefix);
+        drop(field_product);
+
+        let mut numerator_product = layouts::pairwise(config, region, &[&exp_rows, &src_values], BaseOp::Mult)?;
+        Self::canonicalize_edge_channels(&mut numerator_product, graph.e, channels, "GAT numerator product")?;
+        let numerator_prefix = Self::segmented_prefix(
+            config,
+            region,
+            &numerator_product,
+            destination_groups,
+            graph.e,
+            channels,
+        )?;
+        // The source-native ledger derives this bound from max local degree,
+        // max exponential output, and the projected-value bound, so it also
+        // bounds each local prefix without imposing a bound across groups.
+        Self::range_check_bounded(
+            config,
+            region,
+            &[&numerator_prefix],
+            &(-bounds.max_aggregation_num, bounds.max_aggregation_num),
+        )?;
+        let mut numerator = Self::destination_group_endpoints(
+            &numerator_prefix,
+            destination_groups,
+            graph.e,
+            channels,
+        )?;
+        Self::canonicalize_destination_channels(&mut numerator, graph.n, channels, "GAT numerator endpoints")?;
+        numerator.set_scale(
+            self.spec
+                .scales
+                .s_exp
+                .checked_add(projected_scale)
+                .ok_or(CircuitError::UnsupportedOp)?,
+        );
+        Self::range_check_bounded(
+            config,
+            region,
+            &[&numerator],
+            &(-bounds.max_aggregation_num, bounds.max_aggregation_num),
+        )?;
+        drop(numerator_prefix);
+        drop(numerator_product);
+
+        let inverse_rows = Self::tile_rows(&inverse, graph.n, channels)?;
+        let field_from_numerator = layouts::pairwise(config, region, &[&numerator, &inverse_rows], BaseOp::Mult)?;
+        layouts::enforce_equality(config, region, &[&field_sum, &field_from_numerator])?;
+        drop(field_sum);
+        drop(field_from_numerator);
+
+        let recovery_multiplier = scale_exponent_to_multiplier(recovery_scale)
+            .map_err(|_| CircuitError::UnsupportedOp)
+            .and_then(|value| i128::try_from(value).map_err(|_| CircuitError::UnsupportedOp))?;
+        let denominator_multiplier = scale_exponent_to_multiplier(projected_scale)
+            .map_err(|_| CircuitError::UnsupportedOp)
+            .and_then(|value| i128::try_from(value).map_err(|_| CircuitError::UnsupportedOp))?;
+        let numerator_scale = Self::constant_i128(&vec![recovery_multiplier; numerator.len()], numerator.dims())?;
+        let mut scaled_numerator = layouts::pairwise(config, region, &[&numerator, &numerator_scale], BaseOp::Mult)?;
+        let denominator_scale = Self::constant_i128(&vec![denominator_multiplier; graph.n], &[graph.n])?;
+        let mut scaled_denominator = layouts::pairwise(config, region, &[&denominator, &denominator_scale], BaseOp::Mult)?;
+        let divisor_scale = self.spec.scales.s_exp.checked_add(projected_scale).ok_or(CircuitError::UnsupportedOp)?;
+        let dividend_scale = divisor_scale.checked_add(recovery_scale).ok_or(CircuitError::UnsupportedOp)?;
+        scaled_numerator.set_scale(dividend_scale);
+        scaled_denominator.set_scale(divisor_scale);
+        Self::require_dims(&scaled_numerator, &[graph.n, channels], "batched GAT signed-dividend")?;
+        Self::require_dims(&scaled_denominator, &[graph.n], "batched GAT destination divisor")?;
+        Self::require_scale(&scaled_numerator, dividend_scale, "batched GAT signed-dividend")?;
+        Self::require_scale(&scaled_denominator, divisor_scale, "batched GAT destination divisor")?;
+        let mut q = self.signed_round_div_layout(
+            config,
+            region,
+            &scaled_numerator,
+            &scaled_denominator,
+            Some(bounds),
+        )?;
+        if use_elu {
+            q.set_scale(recovery_scale);
+            let mut elu = self.exact_lookup(config, region, &q, &self.spec.tables.elu, assigned_tables)?;
+            elu.set_scale(elu_output_scale);
+            Ok(elu)
+        } else {
+            q.set_scale(self.spec.scales.s_out_pre);
+            Ok(q)
         }
-        let mut out = Vec::with_capacity(graph.n * channels);
-        for value in node_values {
-            out.push(value.ok_or(CircuitError::UnsupportedOp)?);
-        }
-        Self::append_tensors(&out, &[graph.n, channels])
     }
 }
 
@@ -873,6 +1354,7 @@ impl Op<Fp> for GatOp {
         self.spec.validate_for_compile().map_err(|e| CircuitError::DimMismatch(format!("invalid canonical GAT: {}", e)))?;
         let mut assigned_tables = HashMap::new();
         let graph = &self.spec.graph;
+        let destination_groups = graph.destination_groups_validated();
         for (value, dims, label) in [
             (values[FEATURE_INPUT], &[graph.n_total, self.spec.feature_dim][..], "feature input"),
             (values[NODE_ID_INPUT], &[graph.n][..], "node ids"),
@@ -896,7 +1378,22 @@ impl Op<Fp> for GatOp {
         let _edge_ptr = self.bind_topology(config, region, values[EDGE_PTR_INPUT], EDGE_PTR_INPUT)?;
         let weights = self.weight_tensors(values)?;
         let mut weight_idx = 0;
+        println!(
+            "EZKL_NATIVE_PHASE START stage=graph_gather direction=feature model_arch_id={} nodes={} feature_rows={} feature_dim={} input_values={}",
+            self.spec.model.model_arch_id,
+            graph.n,
+            graph.n_total,
+            self.spec.feature_dim,
+            features.len(),
+        );
+        let feature_gather_started = std::time::Instant::now();
         let mut current = layouts::gather(config, region, &[&features, &node_ids], 0)?;
+        println!(
+            "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=feature model_arch_id={} output_values={} elapsed_ms={:.3}",
+            self.spec.model.model_arch_id,
+            current.len(),
+            feature_gather_started.elapsed().as_secs_f64() * 1000.0,
+        );
         Self::require_dims(&current, &[graph.n, self.spec.feature_dim], "gathered features")?;
         current.set_scale(self.spec.scales.s_h[0]);
         let mut current_dim = self.spec.feature_dim;
@@ -932,6 +1429,7 @@ impl Op<Fp> for GatOp {
                     self.spec.scales.s_h_prime[layer_idx][head_idx],
                     self.spec.scales.s_a_src_hidden[layer_idx][head_idx],
                     self.spec.scales.s_a_dst_hidden[layer_idx][head_idx],
+                    &destination_groups,
                     &mut assigned_tables,
                 )?;
                 heads.push(aggregated);
@@ -970,6 +1468,7 @@ impl Op<Fp> for GatOp {
                 self.spec.scales.s_y_prime[head_idx],
                 self.spec.scales.s_a_src_output[head_idx],
                 self.spec.scales.s_a_dst_output[head_idx],
+                &destination_groups,
                 &mut assigned_tables,
             )?;
             let out_head_multiplier = scale_exponent_to_multiplier(self.spec.scales.s_out_head).map_err(|_| CircuitError::UnsupportedOp)?;
@@ -1018,3 +1517,258 @@ impl Op<Fp> for GatOp {
 #[cfg(test)]
 #[path = "../tests/bounded_range_tests.rs"]
 mod bounded_range_tests;
+
+#[cfg(test)]
+mod flat_slice_tests {
+    use super::*;
+
+    #[test]
+    fn flat_slice_matches_existing_multidimensional_range_and_keeps_values() {
+        let source_values = (0..24)
+            .map(|value| {
+                if value % 2 == 0 {
+                    ValType::Constant(Fp::from(value as u64))
+                } else {
+                    ValType::Value(Value::known(Fp::from(value as u64)))
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut source: ValTensor<Fp> = Tensor::new(Some(&source_values), &[2, 3, 4])
+            .unwrap()
+            .into();
+        source.set_scale(13);
+
+        let mut old_flatten_then_slice = source.clone();
+        old_flatten_then_slice.flatten();
+        let mut expected = old_flatten_then_slice.get_slice(&[3..11]).unwrap();
+        expected.reshape(&[4, 2]).unwrap();
+
+        let actual = GatOp::flatten_slice(&source, 3, 11, &[4, 2]).unwrap();
+        assert_eq!(actual.dims(), &[4, 2]);
+        assert_eq!(actual.scale(), 13);
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual
+            .get_inner_tensor()
+            .unwrap()
+            .iter()
+            .zip(expected.get_inner_tensor().unwrap().iter())
+        {
+            assert_eq!(actual.get_felt_eval(), expected.get_felt_eval());
+            assert_eq!(
+                std::mem::discriminant(actual),
+                std::mem::discriminant(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn flat_slice_rejects_invalid_bounds_and_shape() {
+        let source: ValTensor<Fp> = Tensor::new(
+            Some(&[ValType::Constant(Fp::from(1)), ValType::Constant(Fp::from(2))]),
+            &[2],
+        )
+        .unwrap()
+        .into();
+        assert!(GatOp::flatten_slice(&source, 3, 2, &[0]).is_err());
+        assert!(GatOp::flatten_slice(&source, 0, 3, &[3]).is_err());
+        assert!(GatOp::flatten_slice(&source, 0, 2, &[3]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod segmented_batch_tests {
+    use super::*;
+    use crate::circuit::region::{RegionCtx, RegionSettings};
+
+    fn dummy_layout() -> (BaseConfig<Fp>, RegionCtx<'static, Fp>) {
+        (
+            BaseConfig::dummy(12, 2),
+            RegionCtx::new_dummy(0, 2, RegionSettings::all_true(256, 4)),
+        )
+    }
+
+    fn integers(value: &ValTensor<Fp>) -> Vec<IntegerRep> {
+        value.int_evals().unwrap().iter().copied().collect()
+    }
+
+    fn exact_table(table_id: &str, rows: &[(i128, i128)]) -> ExactTable {
+        ExactTable {
+            table_id: table_id.into(),
+            input_scale: 0,
+            output_scale: 0,
+            function_id: table_id.into(),
+            domain_id: format!("{}-domain", table_id),
+            generator_id: format!("{}-generator", table_id),
+            rows: rows.to_vec(),
+            input_min: rows.first().map(|row| row.0).unwrap_or(0),
+            input_max: rows.last().map(|row| row.0).unwrap_or(0),
+            digest: format!("{}-digest", table_id),
+        }
+    }
+
+    fn refresh_table_registry(spec: &mut CanonicalGat) {
+        spec.tables.max_relu.refresh_digest().unwrap();
+        spec.tables.refresh_digest().unwrap();
+    }
+
+    #[test]
+    fn authenticated_max_relu_scale_closure_rejects_mismatched_resource_metadata() {
+        let baseline_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let loaded = crate::gat_adapter::load_dataset_with_manifest(
+            &baseline_root,
+            std::path::Path::new("resources/resource_manifest.json"),
+            "cora",
+        )
+        .unwrap();
+        let expected_scale = loaded.spec.scales.s_delta;
+        assert_eq!(loaded.spec.tables.max_relu.input_scale, expected_scale);
+        assert_eq!(loaded.spec.tables.max_relu.output_scale, expected_scale);
+        loaded.spec.validate_for_compile().unwrap();
+
+        for mismatch_input in [true, false] {
+            let mut altered = loaded.spec.clone();
+            if mismatch_input {
+                altered.tables.max_relu.input_scale = expected_scale + 1;
+            } else {
+                altered.tables.max_relu.output_scale = expected_scale + 1;
+            }
+            refresh_table_registry(&mut altered);
+            let error = altered.validate_for_compile().unwrap_err();
+            assert!(
+                error.contains("max_relu table scale closure"),
+                "unexpected max-ReLU scale rejection: {}",
+                error,
+            );
+        }
+    }
+
+    #[test]
+    fn ragged_prefix_resets_at_public_groups_and_keeps_signed_channels() {
+        let (config, mut region) = dummy_layout();
+        let groups = [(0, 0, 2), (1, 2, 3), (2, 3, 5)];
+        let values = GatOp::value_i128(&[1, -3, 2, 4, -1, 5, 7, 8, -4, 2], &[5, 2]).unwrap();
+        let prefix = GatOp::segmented_prefix(&config, &mut region, &values, &groups, 5, 2).unwrap();
+        assert_eq!(prefix.dims(), &[5, 2]);
+        assert_eq!(integers(&prefix), vec![1, -3, 3, 1, -1, 5, 7, 8, 3, 10]);
+
+        let endpoints = GatOp::destination_group_endpoints(&prefix, &groups, 5, 2).unwrap();
+        assert_eq!(endpoints.dims(), &[3, 2]);
+        assert_eq!(integers(&endpoints), vec![3, 1, -1, 5, 3, 10]);
+    }
+
+    #[test]
+    fn group_repeats_follow_ragged_edge_offsets_without_padding() {
+        let groups = [(0, 0, 2), (1, 2, 3), (2, 3, 5)];
+        let by_node = GatOp::value_i128(&[3, 7, 11], &[3]).unwrap();
+        let repeated = GatOp::repeat_by_destination_groups(&by_node, &groups, 5, 1).unwrap();
+        assert_eq!(repeated.dims(), &[5]);
+        assert_eq!(integers(&repeated), vec![3, 3, 7, 11, 11]);
+
+        let padded_schedule = [(0, 0, 2), (1, 3, 5)];
+        assert!(GatOp::repeat_by_destination_groups(&by_node, &padded_schedule, 5, 1).is_err());
+    }
+
+    #[test]
+    fn signed_division_batches_per_destination_divisors_and_rejects_bad_shapes() {
+        let (config, mut region) = dummy_layout();
+        let op = GatOp {
+            spec: CanonicalGat::default(),
+            rounding: RoundingMode::NearestTiesAway,
+        };
+        let dividend = GatOp::value_i128(&[5, -5, 0, 1], &[2, 2]).unwrap();
+        let divisor = GatOp::value_i128(&[2, 3], &[2]).unwrap();
+        let bounds = BoundFamily {
+            max_dividend_abs: 16,
+            max_aux_abs: 32,
+            max_divisor: 4,
+            ..BoundFamily::default()
+        };
+        let quotient = op
+            .signed_round_div_layout_mode(
+                &config,
+                &mut region,
+                &dividend,
+                &divisor,
+                RoundingMode::NearestTiesAway,
+                Some(&bounds),
+            )
+            .unwrap();
+        assert_eq!(quotient.dims(), &[2, 2]);
+        assert_eq!(integers(&quotient), vec![3, -3, 0, 0]);
+
+        let bad_divisor = GatOp::value_i128(&[2, 3, 4], &[3]).unwrap();
+        assert!(op
+            .signed_round_div_layout_mode(
+                &config,
+                &mut region,
+                &dividend,
+                &bad_divisor,
+                RoundingMode::NearestTiesAway,
+                Some(&bounds),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn batched_attention_keeps_ties_singleton_groups_and_negative_values() {
+        let (config, mut region) = dummy_layout();
+        let mut spec = CanonicalGat::default();
+        spec.graph.n = 2;
+        spec.graph.e = 3;
+        spec.tables.lrelu = exact_table("lrelu", &[(0, 0)]);
+        spec.tables.exp = exact_table("exp", &[(0, 1)]);
+        spec.tables.max_relu = exact_table("max_relu", &[(-1, 0), (0, 0), (1, 1)]);
+        let op = GatOp {
+            spec,
+            rounding: RoundingMode::NearestTiesAway,
+        };
+        let mut projected = GatOp::value_i128(&[-3, 5], &[2, 1]).unwrap();
+        projected.set_scale(0);
+        let source = GatOp::value_i128(&[0, 1, 0], &[3]).unwrap();
+        let destination = GatOp::value_i128(&[0, 0, 1], &[3]).unwrap();
+        let mut attention_src = GatOp::value_i128(&[0], &[1]).unwrap();
+        let mut attention_dst = GatOp::value_i128(&[0], &[1]).unwrap();
+        attention_src.set_scale(0);
+        attention_dst.set_scale(0);
+        let bounds = BoundFamily {
+            max_score_abs: 10,
+            max_table_output_abs: 10,
+            max_delta: 4,
+            max_exp: 1,
+            max_sum: 2,
+            max_aggregation_num: 10,
+            max_dividend_abs: 10,
+            max_aux_abs: 20,
+            max_divisor: 2,
+            ..BoundFamily::default()
+        };
+        let groups = [(0, 0, 2), (1, 2, 3)];
+        let mut tables = HashMap::new();
+        let output = op
+            .aggregate_head(
+                &config,
+                &mut region,
+                &projected,
+                &source,
+                &destination,
+                &attention_src,
+                &attention_dst,
+                1,
+                false,
+                &bounds,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &groups,
+                &mut tables,
+            )
+            .unwrap();
+        // The first destination has a tied maximum (both edges are active);
+        // the second has degree one. Negative source values remain in the
+        // exact numerator and are rounded only by the native signed divider.
+        assert_eq!(output.dims(), &[2, 1]);
+        assert_eq!(integers(&output), vec![1, -3]);
+    }
+}

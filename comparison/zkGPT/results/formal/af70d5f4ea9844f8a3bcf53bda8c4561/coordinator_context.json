@@ -1,0 +1,31 @@
+{
+  "build_log_path": "results/formal/af70d5f4ea9844f8a3bcf53bda8c4561/logs/build.log",
+  "build_log_sha256": "ec5f5142335fd2425b928030dd99bd81223f8732cf88823bb002f168f69c7604",
+  "created_unix_ns": 1791220630526156033,
+  "datasets": [
+    "cora",
+    "citeseer",
+    "pubmed",
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "native_source_sha256": "5067b861d5a18b1e36f21b089d4f4dc7f9cf8f084b239f2a35e5884ffc783102",
+  "preflight_sha256": "2393571b0af4b5373e6b99845eb76c2bb1619b6e239269f3574bcbf2d15b0a01",
+  "prover_fingerprint": {
+    "mtime_ns": 1791220318846434379,
+    "sha256": "0bb1060aa94436bcc3fbff3d5cc4d6530052e4e9435ffbad08af01244452396d",
+    "size_bytes": 3382696
+  },
+  "resource_manifest_sha256": "459e538bb5cb6bf1f2fa7c9adb3645678319f36612bfaa32e7589408a5a4c773",
+  "root_session_id": "af70d5f4ea9844f8a3bcf53bda8c4561",
+  "runtime_source_sha256": "978f9b522a242929b2895d01cee4a7ecb429a983da609000e900314bf01ae328",
+  "schema": "zkgpt-gat-coordinator-context-v1",
+  "session_manifest_sha256": "aae9e7c2c26177fabf47b5a3c2b9c80f695a926366870f845384b95c8f615fe7",
+  "source_tree_sha256": "5067b861d5a18b1e36f21b089d4f4dc7f9cf8f084b239f2a35e5884ffc783102",
+  "status": "PREPARED",
+  "verifier_fingerprint": {
+    "mtime_ns": 1791220319013432148,
+    "sha256": "21f5851171d1fe6b87a40a2170b03f8b5c5c082193429bd2000264299aaa38a8",
+    "size_bytes": 3310352
+  }
+}

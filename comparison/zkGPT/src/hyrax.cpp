@@ -2231,10 +2231,19 @@ bool open_hyrax_tensor_mle_impl(const HyraxTensorMleView &view, const HyraxTenso
 
 } // namespace
 
-bool commit_hyrax_tensor_mle(const HyraxTensorMleView &view, const HyraxScalarProvider &values, HyraxTensorMleCommitment &commitment, HyraxTensorMleProverState &state, std::string *reason) {
+namespace {
+
+bool commit_hyrax_tensor_mle_impl(const HyraxTensorMleView &view,
+                                  const HyraxScalarProvider &values,
+                                  HyraxTensorMleCommitment &commitment,
+                                  HyraxTensorMleProverState &state,
+                                  std::vector<Fr> *prepared_row_blindings,
+                                  std::string *reason) {
     try {
         (void)validate_tensor_view(view);
         if (!values.at || values.size != view.logical_length) throw std::invalid_argument("Hyrax tensor commit value provider is invalid");
+        if (prepared_row_blindings != nullptr && prepared_row_blindings->size() != view.rows)
+            throw std::invalid_argument("Hyrax tensor prepared row blinding count does not match its row domain");
         const zkgpt::NativeVector<G1> generators = tensor_column_generators(view);
         const G1 H = derive_pedersen_blinding_generator(view.basis_id);
         HyraxTensorMleCommitment next_commitment;
@@ -2249,16 +2258,22 @@ bool commit_hyrax_tensor_mle(const HyraxTensorMleView &view, const HyraxScalarPr
         next_commitment.columns = view.columns;
         next_commitment.row_commitments.reserve(static_cast<std::size_t>(view.rows));
         HyraxTensorMleProverState next_state;
-        next_state.row_blindings.reserve(static_cast<std::size_t>(view.rows));
+        if (prepared_row_blindings != nullptr) {
+            next_state.row_blindings = std::move(*prepared_row_blindings);
+        } else {
+            next_state.row_blindings.reserve(static_cast<std::size_t>(view.rows));
+        }
         for (std::uint64_t row = 0; row < view.rows; ++row) {
-            Fr rho;
-            rho.setByCSPRNG();
+            Fr rho = prepared_row_blindings != nullptr
+                ? next_state.row_blindings.at(static_cast<std::size_t>(row))
+                : Fr(0);
+            if (prepared_row_blindings == nullptr) rho.setByCSPRNG();
             const G1 row_commitment = masked_provider_commit(generators, view.columns, [&values, &view, row](std::uint64_t column) {
                 const std::uint64_t index = row * view.columns + column;
                 return index < view.logical_length ? values.at(index) : Fr(0);
             }) + H * rho;
             next_commitment.row_commitments.push_back(row_commitment);
-            next_state.row_blindings.push_back(rho);
+            if (prepared_row_blindings == nullptr) next_state.row_blindings.push_back(rho);
         }
         next_commitment.root_digest = tensor_root_digest(next_commitment);
         commitment = std::move(next_commitment);
@@ -2268,6 +2283,25 @@ bool commit_hyrax_tensor_mle(const HyraxTensorMleView &view, const HyraxScalarPr
         if (reason != nullptr) *reason = error.what();
         return false;
     }
+}
+
+} // namespace
+
+bool commit_hyrax_tensor_mle(const HyraxTensorMleView &view,
+                             const HyraxScalarProvider &values,
+                             HyraxTensorMleCommitment &commitment,
+                             HyraxTensorMleProverState &state,
+                             std::string *reason) {
+    return commit_hyrax_tensor_mle_impl(view, values, commitment, state, nullptr, reason);
+}
+
+bool commit_hyrax_tensor_mle_with_blindings(const HyraxTensorMleView &view,
+                                            const HyraxScalarProvider &values,
+                                            HyraxTensorMleCommitment &commitment,
+                                            HyraxTensorMleProverState &state,
+                                            std::vector<Fr> &&row_blindings,
+                                            std::string *reason) {
+    return commit_hyrax_tensor_mle_impl(view, values, commitment, state, &row_blindings, reason);
 }
 
 bool open_hyrax_tensor_mle_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason, const std::string &mask_identity, const zkgpt::native_pedersen::PedersenBasis *scalar_basis, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {

@@ -102,7 +102,9 @@ struct NativeLassoCapacityProfile {
 };
 
 NativeLassoFamilyPublic::MatrixDescriptor native_lasso_balanced_matrix_layout(std::uint64_t padded_queries, std::uint64_t table_domain);
-NativeLassoSparseView native_lasso_sparse_view(const NativeLassoFamilyProver& family);
+NativeLassoSparseView native_lasso_sparse_view(
+    const NativeLassoFamilyProver& family,
+    double* selected_row_mapping_ms = nullptr);
 NativeLassoCapacityProfile native_lasso_capacity_profile(std::uint64_t padded_queries, std::uint64_t table_domain);
 
 struct NativeLassoQueryProver {
@@ -118,6 +120,7 @@ struct NativeLassoQueryProver {
     bool has_commitment_blinding = false;
     std::string statement_l_digest;
     hyrax::HyraxTensorMleView tensor_view;
+    std::vector<F> tensor_commitment_blindings;
     hyrax::HyraxTensorMleCommitment tensor_commitment;
     hyrax::HyraxTensorMleProverState tensor_state;
     hyrax::HyraxScalarProvider value_provider;
@@ -222,7 +225,11 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
                                // Required by the formal typed-tensor path; runs Aux then L_qry after all M_f row chunks and before M_f β challenges.
                                const NativeLassoTensorTailProveHook& tensor_tail_stage = {},
                                // Optional sink for the time spent generating the four M_f row-commitment families.
-                               double* family_row_commitment_ms = nullptr);
+                               double* family_row_commitment_ms = nullptr,
+                               // Initial M_f hiding randomness is preparation, not the commitment computation.
+                               double* initial_blinding_prepare_ms = nullptr,
+                               // Lookup selected-row construction is proving work interleaved with M_f point binding.
+                               double* family_selected_row_mapping_ms = nullptr);
 
 bool native_lasso_verify_bundle(const NativeProofSession& session, const std::vector<NativeLassoFamilyPublic>& families, const NativeLassoQueryPublic& query,
                                 NativeLassoBundleResult* result = nullptr, std::string* reason = nullptr,

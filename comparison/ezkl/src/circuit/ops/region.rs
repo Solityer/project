@@ -734,8 +734,25 @@ impl<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash> RegionCtx<'a
             )?)
         } else {
             if !values.is_instance() {
+                let map_started = std::time::Instant::now();
+                let map_len = values.len();
+                if map_len >= 8192 {
+                    println!(
+                        "EZKL_NATIVE_PHASE START stage=constant_map_assignment elements={} tensor_dims={:?}",
+                        map_len,
+                        values.dims(),
+                    );
+                }
                 let values_map = values.create_constants_map_iterator();
                 self.assigned_constants.par_extend(values_map);
+                if map_len >= 8192 {
+                    println!(
+                        "EZKL_NATIVE_PHASE DONE stage=constant_map_assignment elements={} unique_constants={} elapsed_ms={:.3}",
+                        map_len,
+                        self.assigned_constants.len(),
+                        map_started.elapsed().as_secs_f64() * 1000.0,
+                    );
+                }
             }
             Ok(values.clone())
         }
@@ -763,8 +780,25 @@ impl<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash> RegionCtx<'a
             )?)
         } else {
             if !values.is_instance() {
+                let map_started = std::time::Instant::now();
+                let map_len = values.len();
+                if map_len >= 8192 {
+                    println!(
+                        "EZKL_NATIVE_PHASE START stage=constant_map_assignment kind=dynamic_lookup elements={} tensor_dims={:?}",
+                        map_len,
+                        values.dims(),
+                    );
+                }
                 let values_map = values.create_constants_map_iterator();
                 self.assigned_constants.par_extend(values_map);
+                if map_len >= 8192 {
+                    println!(
+                        "EZKL_NATIVE_PHASE DONE stage=constant_map_assignment kind=dynamic_lookup elements={} unique_constants={} elapsed_ms={:.3}",
+                        map_len,
+                        self.assigned_constants.len(),
+                        map_started.elapsed().as_secs_f64() * 1000.0,
+                    );
+                }
             }
 
             let flush_len = var.get_column_flush(self.combined_dynamic_shuffle_coord(), values)?;

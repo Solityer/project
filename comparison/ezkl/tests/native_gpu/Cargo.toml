@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 [workspace]
 [dependencies]
-halo2_proofs = { path = "../../vendor/halo2/halo2_proofs", features = ["icicle_gpu", "circuit-params"] }
+halo2_proofs = { path = "../../vendor/halo2/halo2_proofs", features = ["formal-gpu-msm", "circuit-params"] }
 halo2curves = { git = "https://github.com/privacy-scaling-explorations/halo2curves", rev = "b753a832e92d5c86c5c997327a9cf9de86a18851" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 [patch."https://github.com/ingonyama-zk/icicle"]

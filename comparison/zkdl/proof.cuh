@@ -1648,10 +1648,16 @@ inline void serialize_zk_terminal_relation(const ZkTerminalRelationProof& proof,
 
 inline bool deserialize_zk_terminal_relation(const std::vector<byte>& in,
                                              ZkTerminalRelationProof& proof,
-                                             std::string* error = nullptr) {
+                                             std::string* error = nullptr,
+                                             std::uint64_t max_body_bytes =
+                                                 ZkTerminalRelationProof::kMaxNestedProofBytes) {
     ZkTerminalRelationProof parsed;
     size_t offset = 0U;
     std::uint64_t count = 0U;
+    if (in.size() > max_body_bytes) {
+        if (error) *error = "terminal relation body exceeds its authenticated typed limit";
+        return false;
+    }
     if (in.size() < 4U || in[0] != 'Z' || in[1] != 'T' ||
         in[2] != 'R' || in[3] != '1') {
         if (error) *error = "invalid Zk terminal relation magic";
@@ -2520,7 +2526,11 @@ struct AuthenticatedSortedLookupProof {
     std::vector<byte> serialize() const;
     static bool deserialize(const std::vector<byte>& bytes,
                             AuthenticatedSortedLookupProof& proof,
-                            std::string* error = nullptr);
+                            std::string* error = nullptr,
+                            std::uint64_t max_terminal_body_bytes =
+                                ZkTerminalRelationProof::kMaxNestedProofBytes,
+                            std::uint64_t max_relation_body_bytes =
+                                ZkTerminalRelationProof::kMaxNestedProofBytes);
 };
 
 inline void serialize_authenticated_sorted_lookup(
@@ -2528,7 +2538,11 @@ inline void serialize_authenticated_sorted_lookup(
 
 inline bool deserialize_authenticated_sorted_lookup(
     const std::vector<byte>& bytes, AuthenticatedSortedLookupProof& proof,
-    std::string* error = nullptr);
+    std::string* error = nullptr,
+    std::uint64_t max_terminal_body_bytes =
+        ZkTerminalRelationProof::kMaxNestedProofBytes,
+    std::uint64_t max_relation_body_bytes =
+        ZkTerminalRelationProof::kMaxNestedProofBytes);
 
 inline void sorted_lookup_append_fr_wire(std::vector<byte>& out, const FrWire& value) {
     for (const std::uint32_t limb : value) append_u32(out, limb);
@@ -2659,7 +2673,11 @@ inline void serialize_authenticated_sorted_lookup_relation(
 inline bool deserialize_authenticated_sorted_lookup_relation(
     const std::vector<byte>& in, size_t& offset,
     AuthenticatedSortedLookupRelationProof& relation,
-    std::string* error = nullptr) {
+    std::string* error = nullptr,
+    std::uint64_t max_terminal_body_bytes =
+        ZkTerminalRelationProof::kMaxNestedProofBytes,
+    std::uint64_t max_relation_body_bytes =
+        ZkTerminalRelationProof::kMaxNestedProofBytes) {
     AuthenticatedSortedLookupRelationProof parsed;
     std::uint32_t kind = 0U;
     std::uint64_t count = 0U, nested_size = 0U;
@@ -2709,8 +2727,9 @@ inline bool deserialize_authenticated_sorted_lookup_relation(
     std::vector<byte> nested;
     if (!read_nested(nested, ZkSumcheckProof::kMaxNestedProofBytes) ||
         !deserialize_zk_sumcheck(nested, parsed.sumcheck, error) ||
-        !read_nested(nested, ZkTerminalRelationProof::kMaxNestedProofBytes) ||
-        !deserialize_zk_terminal_relation(nested, parsed.terminal_relation, error) ||
+        !read_nested(nested, max_terminal_body_bytes) ||
+        !deserialize_zk_terminal_relation(nested, parsed.terminal_relation, error,
+                                           max_terminal_body_bytes) ||
         !parsed.valid(error)) {
         if (error && error->empty()) *error = "invalid sorted-lookup relation payload";
         return false;
@@ -2763,7 +2782,8 @@ inline void serialize_authenticated_sorted_lookup(
 
 inline bool deserialize_authenticated_sorted_lookup(
     const std::vector<byte>& bytes, AuthenticatedSortedLookupProof& proof,
-    std::string* error) {
+    std::string* error, std::uint64_t max_terminal_body_bytes,
+    std::uint64_t max_relation_body_bytes) {
     AuthenticatedSortedLookupProof parsed;
     if (bytes.size() > AuthenticatedSortedLookupProof::kMaxProofBytes || bytes.size() < 8U ||
         bytes[0] != 'A' || bytes[1] != 'S' || bytes[2] != 'L' || bytes[3] != '1') {
@@ -2796,7 +2816,7 @@ inline bool deserialize_authenticated_sorted_lookup(
     parsed.relations.resize(static_cast<std::size_t>(count));
     for (auto& relation : parsed.relations) {
         if (!read_u64(bytes, offset, nested_size) || nested_size == 0U ||
-            nested_size > ZkTerminalRelationProof::kMaxNestedProofBytes ||
+            nested_size > max_relation_body_bytes ||
             nested_size > bytes.size() - offset)
             return false;
         std::vector<byte> encoded(
@@ -2805,7 +2825,9 @@ inline bool deserialize_authenticated_sorted_lookup(
         offset += static_cast<std::size_t>(nested_size);
         size_t nested_offset = 0U;
         if (!deserialize_authenticated_sorted_lookup_relation(encoded, nested_offset,
-                                                               relation, error) ||
+                                                               relation, error,
+                                                               max_terminal_body_bytes,
+                                                               max_relation_body_bytes) ||
             nested_offset != encoded.size())
             return false;
     }
@@ -2869,8 +2891,11 @@ inline std::vector<byte> AuthenticatedSortedLookupProof::serialize() const {
 
 inline bool AuthenticatedSortedLookupProof::deserialize(
     const std::vector<byte>& bytes, AuthenticatedSortedLookupProof& proof,
-    std::string* error) {
-    return deserialize_authenticated_sorted_lookup(bytes, proof, error);
+    std::string* error, std::uint64_t max_terminal_body_bytes,
+    std::uint64_t max_relation_body_bytes) {
+    return deserialize_authenticated_sorted_lookup(bytes, proof, error,
+                                                   max_terminal_body_bytes,
+                                                   max_relation_body_bytes);
 }
 
 struct CommitmentRecord {

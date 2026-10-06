@@ -39,6 +39,7 @@ from common import (
     verify_build_provenance,
     build_binary,
     finite_nonnegative,
+    verifier_timing,
     CAPACITY_PROOF_PATH,
 )
 
@@ -109,10 +110,11 @@ def independently_verify_final_cell(root: Path, cell: Mapping[str, Any]) -> Dict
             report.get("verifier_reads_witness") is not False or
             report.get("verifier_reads_checkpoint") is not False):
         raise ChainError("final independent verifier did not cryptographically accept")
+    timing_fields = {"decode_crypto_ms", "verify_crypto_ms", "crypto_verify_ms"}
     for key, value in original.items():
-        if key != "crypto_verify_ms" and report.get(key) != value:
+        if key not in timing_fields and report.get(key) != value:
             raise ChainError(f"final verifier identity mismatch for {key}: {dataset}")
-    finite_nonnegative(report.get("crypto_verify_ms"), "crypto_verify_ms", report_path)
+    verifier_timing(report, report_path)
     return {
         "dataset": dataset, "backend": backend, "status": "VERIFY_OK",
         "report_path": relative_path(root, report_path, "final verifier report"),

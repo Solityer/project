@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from common import ChainError, REPORT_SCHEMA, assert_fresh_files, baseline_root, binary_fingerprint, file_fingerprint, load_json, local_path, relative_path, require_bool, require_circuit_id, require_fixed_digest, require_regular, require_string, verifier_binary
+from common import ChainError, REPORT_SCHEMA, assert_fresh_files, baseline_root, binary_fingerprint, file_fingerprint, load_json, local_path, relative_path, require_bool, require_circuit_id, require_fixed_digest, require_regular, require_string, verifier_binary, verifier_timing
 
 def smoke_binary(root: Path, backend: str = "cpu") -> Path:
     if backend != "cpu":
@@ -197,9 +197,10 @@ def run_tiny_formal(root: Path, backend: str, retain_dir: str = "") -> Dict[str,
             )
         report_payload = load_json(report, "tiny independent verifier report")
         if not isinstance(report_payload, dict) or report_payload.get("schema") != REPORT_SCHEMA:
-            raise ChainError(f"tiny verifier report is not schema v3: {report}")
+            raise ChainError(f"tiny verifier report is not schema v4: {report}")
         if report_payload.get("status") != "VERIFY_OK" or report_payload.get("independent") is not True or report_payload.get("masked_full") is not True:
             raise ChainError("tiny independent verifier did not return VERIFY_OK")
+        verifier_timing(report_payload, report)
         require_bool(report_payload, "verifier_reads_checkpoint", False, report)
         require_bool(report_payload, "verifier_reads_witness", False, report)
         for key in ("statement_digest", "plan_digest", "proof_digest",

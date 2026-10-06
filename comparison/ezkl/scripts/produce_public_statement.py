@@ -335,7 +335,6 @@ def graph_from_resources(data_dir: Path, meta: dict[str, str]) -> tuple[list[int
         for node in range(node_ptr[graph], node_ptr[graph + 1]):
             graph_for_node[node] = graph
     raw: list[tuple[int, int, int]] = []
-    incoming: set[int] = set()
     with (data_dir / "edges.txt").open() as stream:
         for number, line in enumerate(stream, 1):
             pieces = line.split()
@@ -357,9 +356,33 @@ def graph_from_resources(data_dir: Path, meta: dict[str, str]) -> tuple[list[int
             if graph_for_node[destination] != graph:
                 fail(f"edge crosses graph boundary at line {number}")
             raw.append((graph, source, destination))
-            incoming.add(destination)
+
+    # Keep the first input occurrence of each directed edge, preserve input
+    # order within each destination group, add one self-loop for every node
+    # that lacks its own loop, then stable-sort by (graph, destination).
+    raw.sort(key=lambda value: (value[0], value[2]))
+    active_destination: tuple[int, int] | None = None
+    seen_sources: set[int] = set()
+    write = 0
+    for edge in raw:
+        graph, source, destination = edge
+        key = (graph, destination)
+        if active_destination != key:
+            active_destination = key
+            seen_sources.clear()
+        if source in seen_sources:
+            continue
+        seen_sources.add(source)
+        raw[write] = edge
+        write += 1
+    del raw[write:]
+
+    has_self_loop = [False] * nodes
+    for graph, source, destination in raw:
+        if source == destination:
+            has_self_loop[source] = True
     for node in range(nodes):
-        if node not in incoming:
+        if not has_self_loop[node]:
             raw.append((graph_for_node[node], node, node))
     raw.sort(key=lambda value: (value[0], value[2]))
     src = [value[1] for value in raw]
@@ -676,7 +699,11 @@ def main(
         checkpoint.get("dataset") != args.dataset or checkpoint.get("model_arch_id") != context["model_arch_id"] or
         secure.get("model_arch_id") != context["model_arch_id"] or checkpoint.get("quant_cfg_id") != context["quant_cfg_id"] or
         secure.get("quant_cfg_id") != context["quant_cfg_id"] or checkpoint.get("input_preprocess_id") != meta.get("input_preprocess_id") or
-        secure.get("input_preprocess_id") != meta.get("input_preprocess_id")
+        secure.get("input_preprocess_id") != meta.get("input_preprocess_id") or
+        checkpoint.get("self_loop_rule") != "per_node" or
+        checkpoint.get("edge_sort_rule") != "edge_gid_then_dst_stable" or
+        checkpoint.get("subgraph_rule") != "whole_graph" or
+        checkpoint.get("batching_rule") != ("multi_graph_batch" if args.dataset == "ppi" else "whole_graph_single")
     ):
         fail("authenticated config/checkpoint/metadata identity mismatch")
     preprocess_id = meta.get("input_preprocess_id", "")

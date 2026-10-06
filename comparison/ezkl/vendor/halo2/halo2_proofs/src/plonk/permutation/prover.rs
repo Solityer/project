@@ -175,8 +175,7 @@ impl Argument {
 
             let permutation_product_coset = domain.coeff_to_extended(&z);
 
-            let permutation_product_commitment =
-                permutation_product_commitment_projective.to_affine();
+            let permutation_product_commitment = permutation_product_commitment_projective.to_affine();
 
             // Hash the permutation product commitment
             transcript.write_point(permutation_product_commitment)?;

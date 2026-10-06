@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
+import hmac
 import json
 import math
 import os
@@ -32,13 +34,13 @@ BACKENDS = ("cpu", "gpu")
 FORMAL_BACKEND = "hybrid"
 NATIVE_FORMAL_BACKEND = "gpu"
 FORMAL_GPU_CARGO_FEATURE = "formal-gpu"
+FORMAL_GPU_EXECUTION_POLICY = "halo2-cpu-fft_icicle-bn254-gpu-msm-c16-chunk-1048576-v1"
 FORMAL_GPU_FEATURES = (
     "dep:halo2_solidity_verifier",
     "ezkl",
     "gpu-accelerated",
     "no-banner",
     "parallel-poly-read",
-    "precompute-coset",
     "reusable-verifier",
 )
 # Setup enables ICICLE but has no persisted per-stage invocation counters.
@@ -109,6 +111,126 @@ class ContractError(RuntimeError):
 
 def abort(message: str) -> NoReturn:
     raise ContractError(message)
+
+
+def validate_root_owned_phase(
+    session_dir: Path,
+    session_id: str,
+    phase: str,
+    dataset: str | None = None,
+    *,
+    consume_token: bool = False,
+) -> None:
+    """Require a live root-runner lease for every hidden baseline phase."""
+    if phase not in {"prepare", "cell", "finalize"}:
+        abort("internal formal phase is invalid")
+    if (phase == "cell") != (dataset is not None):
+        abort("internal formal phase dataset binding is invalid")
+    if not FORMAL_SESSION_ID.fullmatch(session_id):
+        abort("internal formal session id is malformed")
+
+    token = os.environ.get("COMPARISON_FORMAL_OWNER_TOKEN", "")
+    if not HEX64.fullmatch(token):
+        abort("internal formal phase requires an authenticated root-owner token")
+    lock_fd_text = os.environ.get("COMPARISON_FORMAL_ROOT_LOCK_FD", "")
+    if not lock_fd_text.isdigit():
+        abort("internal formal phase requires the inherited root lock descriptor")
+    lock_fd = int(lock_fd_text)
+
+    root_session = session_dir.parent
+    comparison_root = ROOT.parent
+    expected_session_dir = comparison_root / "runs" / "formal" / session_id
+    try:
+        if session_dir.resolve(strict=False) != expected_session_dir / "ezkl":
+            abort("internal EZKL session path does not match its root owner session")
+        state_path = expected_session_dir / "state.json"
+        state = load_json(state_path, "root formal session ownership state")
+    except OSError as exc:
+        abort(f"cannot inspect root formal owner state: {exc}")
+    if (root_session != expected_session_dir or state.get("schema") != "comparison-formal-session-v1"
+            or state.get("session_id") != session_id or state.get("status") != "RUNNING"):
+        abort("root formal owner session is absent, stale, or mismatched")
+
+    expected_stage = (f"prepare:ezkl" if phase == "prepare" else
+                      f"cell:ezkl:{dataset}" if phase == "cell" else "finalize:ezkl")
+    if state.get("stage") != expected_stage:
+        abort("root formal owner stage does not authorize this baseline phase")
+    expected_token_sha = state.get("internal_owner_token_sha256")
+    if (not isinstance(expected_token_sha, str)
+            or not hmac.compare_digest(hashlib.sha256(token.encode("ascii")).hexdigest(), expected_token_sha)):
+        abort("internal formal phase owner token does not match the root session")
+
+    lock = state.get("lock")
+    if not isinstance(lock, dict):
+        abort("root formal session has no lock owner identity")
+    owner_pid = lock.get("pid")
+    owner_boot_id = lock.get("boot_id")
+    owner_start_ticks = lock.get("start_ticks")
+    if (isinstance(owner_pid, bool) or not isinstance(owner_pid, int) or owner_pid <= 0
+            or not isinstance(owner_boot_id, str) or not re.fullmatch(r"[0-9a-f-]{36}", owner_boot_id)
+            or not isinstance(owner_start_ticks, str) or not owner_start_ticks.isdigit()):
+        abort("root formal lock owner identity is malformed")
+    try:
+        current_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        owner_stat = Path(f"/proc/{owner_pid}/stat").read_text(encoding="ascii")
+        owner_tail = owner_stat[owner_stat.rfind(")") + 2:].split()
+        owner_cmd = [part for part in Path(f"/proc/{owner_pid}/cmdline").read_bytes().split(b"\0") if part]
+        supervisor = state.get("owned_stage")
+        if not isinstance(supervisor, dict):
+            abort("root formal phase has no registered stage supervisor")
+        supervisor_pid = supervisor.get("pid")
+        supervisor_stat = Path(f"/proc/{supervisor_pid}/stat").read_text(encoding="ascii")
+        supervisor_tail = supervisor_stat[supervisor_stat.rfind(")") + 2:].split()
+        supervisor_cmd = [part for part in Path(f"/proc/{supervisor_pid}/cmdline").read_bytes().split(b"\0") if part]
+        supervisor_env = Path(f"/proc/{supervisor_pid}/environ").read_bytes().split(b"\0")
+    except (OSError, IndexError, TypeError, ValueError) as exc:
+        abort(f"root formal owner or stage supervisor is unavailable: {exc}")
+    owner_script = Path(os.fsdecode(owner_cmd[1])).resolve() if len(owner_cmd) > 1 else Path("/")
+    supervisor_script = Path(os.fsdecode(supervisor_cmd[1])).resolve() if len(supervisor_cmd) > 1 else Path("/")
+    owner_sha = hashlib.sha256(token.encode("ascii")).hexdigest()
+    env_session = f"COMPARISON_FORMAL_SESSION_ID={session_id}".encode("ascii")
+    ownership_checks = {
+        "root_boot_id": current_boot_id == owner_boot_id,
+        "root_start_ticks": len(owner_tail) > 19 and owner_tail[19] == owner_start_ticks,
+        "root_script": owner_script == (comparison_root / "formal_runner.py").resolve(),
+        "root_worker_argv": (b"--_worker" in owner_cmd and session_id.encode("ascii") in owner_cmd
+                             and b"--_lock-fd" in owner_cmd),
+        "supervisor_kind": supervisor.get("kind") == "stage-supervisor",
+        "supervisor_stage": supervisor.get("stage") == expected_stage,
+        "supervisor_session": supervisor.get("session_id") == session_id,
+        "supervisor_boot_id": supervisor.get("boot_id") == current_boot_id,
+        "supervisor_token_binding": supervisor.get("owner_token_sha256") == owner_sha,
+        "supervisor_root_binding": supervisor.get("root_owner") == lock,
+        "supervisor_pid": (not isinstance(supervisor_pid, bool) and isinstance(supervisor_pid, int)
+                           and supervisor_pid > 0),
+        "supervisor_parent": len(supervisor_tail) > 19 and supervisor_tail[1] == str(owner_pid),
+        "supervisor_start_ticks": (len(supervisor_tail) > 19
+                                   and supervisor_tail[19] == supervisor.get("start_ticks")),
+        "supervisor_script": supervisor_script == (comparison_root / "formal_runner.py").resolve(),
+        "supervisor_argv": (b"--_stage-supervisor" in supervisor_cmd
+                            and any(session_id.encode("ascii") in arg for arg in supervisor_cmd)),
+        "phase_parent": os.getppid() == supervisor_pid,
+        "supervisor_session_env": env_session in supervisor_env,
+    }
+    failed_checks = [name for name, passed in ownership_checks.items() if not passed]
+    if failed_checks:
+        abort("baseline phase was not launched under its authenticated root stage supervisor: "
+              + ",".join(failed_checks))
+
+    lock_path = comparison_root / "runs" / ".formal.lock"
+    if lock_path.is_symlink():
+        abort("root formal global lock path is aliased")
+    try:
+        inherited = os.fstat(lock_fd)
+        current = lock_path.stat(follow_symlinks=False)
+        if not (os.path.samefile(f"/proc/self/fd/{lock_fd}", lock_path)
+                and inherited.st_dev == current.st_dev and inherited.st_ino == current.st_ino):
+            abort("inherited root lock descriptor does not name the formal global lock")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, ValueError) as exc:
+        abort(f"cannot validate the inherited root formal lock: {exc}")
+    if consume_token:
+        os.environ.pop("COMPARISON_FORMAL_OWNER_TOKEN", None)
 
 
 def sha256(path: Path) -> str:
@@ -466,8 +588,9 @@ def validate_formal_python_environment() -> dict[str, Any]:
         abort(f"active Rust toolchain does not match rust-toolchain pin {rust_toolchain}: {active.stdout.strip() or active.stderr.strip()}")
     rustc_path = _tool_output(rustup_path, "which", "rustc", "--toolchain", rust_toolchain)
     cargo_path = _tool_output(rustup_path, "which", "cargo", "--toolchain", rust_toolchain)
+    rustdoc_path = _tool_output(rustup_path, "which", "rustdoc", "--toolchain", rust_toolchain)
     toolchain_roots: set[Path] = set()
-    for key, value in (("rustc", rustc_path), ("cargo", cargo_path)):
+    for key, value in (("rustc", rustc_path), ("cargo", cargo_path), ("rustdoc", rustdoc_path)):
         candidate = Path(value).resolve()
         if not candidate.is_file() or not os.access(candidate, os.X_OK):
             abort(f"pinned {key} toolchain binary is unavailable: {candidate}")
@@ -479,8 +602,12 @@ def validate_formal_python_environment() -> dict[str, Any]:
         abort("pinned rustc and cargo binaries come from different rustup toolchains")
     rustc_version = _tool_output(rustc_path, "--version")
     cargo_version = _tool_output(cargo_path, "--version")
-    if "nightly" not in rustc_version or "nightly" not in cargo_version:
-        abort(f"Rust/Cargo executable version does not match {rust_toolchain}: {rustc_version}; {cargo_version}")
+    rustdoc_version = _tool_output(rustdoc_path, "--version")
+    if any("nightly" not in version for version in (rustc_version, cargo_version, rustdoc_version)):
+        abort(
+            f"Rust/Cargo/Rustdoc executable versions do not match {rust_toolchain}: "
+            f"{rustc_version}; {cargo_version}; {rustdoc_version}"
+        )
     cuda_home = str(Path(nvcc_path).resolve().parent.parent)
     identity = {
         "python_executable": str(python_path),
@@ -493,6 +620,8 @@ def validate_formal_python_environment() -> dict[str, Any]:
         "rustc": rustc_version,
         "cargo_path": cargo_path,
         "cargo": cargo_version,
+        "rustdoc_path": rustdoc_path,
+        "rustdoc": rustdoc_version,
         "cmake_path": cmake_path,
         "cmake": _tool_output(cmake_path, "--version").splitlines()[0],
         "cmake_generator": "Unix Makefiles",
@@ -1365,7 +1494,7 @@ def formal_build_environment_identity(
 ) -> dict[str, Any]:
     required_runtime = {
         "python_executable", "python_version", "numpy_version", "rust_toolchain", "rustup_path", "rustc_path", "rustc",
-        "cargo_path", "cargo", "cmake_path", "cmake", "nvcc_path", "cuda_home", "cuda_runtime", "nvidia_smi_path",
+        "cargo_path", "cargo", "rustdoc_path", "rustdoc", "cmake_path", "cmake", "nvcc_path", "cuda_home", "cuda_runtime", "nvidia_smi_path",
         "rustup", "nvidia_smi", "cc_path", "cc", "cxx_path", "cxx", "make_path", "make", "path_sha256",
     }
     missing = required_runtime - set(runtime_identity)
@@ -1386,6 +1515,8 @@ def formal_build_environment_identity(
         "rustc": runtime_identity["rustc"],
         "cargo_path": runtime_identity["cargo_path"],
         "cargo": runtime_identity["cargo"],
+        "rustdoc_path": runtime_identity["rustdoc_path"],
+        "rustdoc": runtime_identity["rustdoc"],
         "cargo_home": str(ROOT / ".cargo_local"),
         "cargo_target_dir": str(ROOT / "target/gpu"),
         "cargo_mode": "offline-release",
@@ -1460,6 +1591,7 @@ def native_backend_identity() -> dict[str, Any]:
     if manifest["device"] != selected["name"] or manifest["driver_version"] != selected["driver_version"]:
         abort("native ICICLE backend device/driver identity does not match its selected device")
     return {
+        "native_execution_policy": FORMAL_GPU_EXECUTION_POLICY,
         "native_backend_manifest_sha256": sha256(manifest_path),
         "native_backend_libraries": libraries,
         "cuda_architecture": manifest["architecture"],
@@ -1605,13 +1737,15 @@ def validate_gpu_evidence_document(evidence: Any, *, backend: str) -> dict[str, 
         provenance = evidence.get("provenance")
         provenance = require_exact_keys(
             provenance,
-            {"frontend_commit", "abi", "device", "architecture", "runtime", "manifest_sha256"},
+            {"frontend_commit", "native_execution_policy", "abi", "device", "architecture", "runtime", "manifest_sha256"},
             "GPU evidence provenance",
         )
-        for key in ("frontend_commit", "abi", "device", "architecture", "runtime", "manifest_sha256"):
+        for key in ("frontend_commit", "native_execution_policy", "abi", "device", "architecture", "runtime", "manifest_sha256"):
             value = provenance.get(key)
             if not isinstance(value, str) or not value:
                 abort(f"GPU evidence provenance is missing {key}")
+        if provenance["native_execution_policy"] != FORMAL_GPU_EXECUTION_POLICY:
+            abort("GPU evidence does not identify the fixed CPU-FFT/GPU-MSM execution policy")
         require_digest(provenance["manifest_sha256"], "GPU backend manifest_sha256")
         if provenance["manifest_sha256"] != native_backend_identity()["native_backend_manifest_sha256"]:
             abort("GPU evidence is not bound to the authenticated native CUDA installation")
@@ -1641,16 +1775,60 @@ def require_positive_timings(timings: Any, label: str = "phase timings") -> dict
     return result
 
 
-def validate_commitment_metrics(path: Path, *, dataset: str, model_hash: str) -> dict[str, Any]:
-    metrics = load_json(path, "native commitment metrics")
-    require_exact_keys(metrics, {"schema_version", "dataset", "operation", "included_in", "model_hash", "duration_ms"}, "native commitment metrics")
-    if metrics["schema_version"] != 1 or metrics["dataset"] != dataset or metrics["model_hash"] != model_hash:
-        abort("native commitment metrics do not match the dataset/model statement")
-    if metrics["operation"] != "native_poseidon_model_hash" or metrics["included_in"] != "witness_generation":
-        abort("native commitment metrics do not measure the parameter Poseidon witness substage")
-    duration = metrics["duration_ms"]
+def validate_native_proof_metrics(path: Path, *, proof_sha256: str) -> dict[str, Any]:
+    metrics = load_json(path, "native proof metrics")
+    require_exact_keys(
+        metrics,
+        {
+            "schema_version",
+            "operation",
+            "included_in",
+            "measurement_scope",
+            "commitment_time_ms",
+            "prove_time_ms",
+            "proof_sha256",
+            "instance_commitment_count",
+            "phase0_advice_commitment_count",
+            "affine_normalization_batch_count",
+        },
+        "native proof metrics",
+    )
+    if (
+        metrics["schema_version"] != 2
+        or metrics["operation"] != "native_halo2_initial_instance_and_phase0_advice_commitments"
+        or metrics["included_in"] != "native_create_proof"
+        or metrics["measurement_scope"] != "pre_challenge_public_instance_and_phase0_advice_kzg_commitments_plus_affine_normalization"
+        or metrics["proof_sha256"] != proof_sha256
+    ):
+        abort("native proof metrics do not match the current proof artifact and timing boundary")
+    for name in ("instance_commitment_count", "phase0_advice_commitment_count", "affine_normalization_batch_count"):
+        count = metrics[name]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            abort(f"native proof metrics {name} must be a nonnegative integer diagnostic")
+    for name in ("commitment_time_ms", "prove_time_ms"):
+        duration = metrics[name]
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+            abort(f"native proof metrics {name} must be a positive finite measured duration")
+    return metrics
+
+
+def validate_native_verify_metrics(path: Path, *, proof_sha256: str) -> dict[str, Any]:
+    metrics = load_json(path, "native verification metrics")
+    require_exact_keys(
+        metrics,
+        {"schema_version", "operation", "included_in", "verify_time_ms", "proof_sha256"},
+        "native verification metrics",
+    )
+    if (
+        metrics["schema_version"] != 1
+        or metrics["operation"] != "native_halo2_independent_verifier"
+        or metrics["included_in"] != "native_verify_proof"
+        or metrics["proof_sha256"] != proof_sha256
+    ):
+        abort("native verification metrics do not match the current proof artifact and timing boundary")
+    duration = metrics["verify_time_ms"]
     if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
-        abort("native commitment duration_ms must be a positive finite measured duration")
+        abort("native verification duration_ms must be a positive finite measured duration")
     return metrics
 
 

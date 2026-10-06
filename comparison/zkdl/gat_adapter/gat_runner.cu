@@ -2,6 +2,11 @@
 #include "gat_native_bridge.hpp"
 #include "gat_native_resources.hpp"
 #include "output_stream.hpp"
+#include "checkpoint_manifest_json.hpp"
+#include "integer_bound_ledger.hpp"
+#include "lookup_table_index_bits.hpp"
+#include "signed_round_bounds.hpp"
+#include "static_table_bounds.hpp"
 
 #include <cuda_runtime.h>
 
@@ -24,6 +29,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <functional>
@@ -56,6 +62,12 @@ std::uint32_t checked_native_domain_u32(u64 value, const std::string &label, boo
     if ((!allow_zero && value == 0U) || value > kMaxNativeDomain || value > std::numeric_limits<std::uint32_t>::max())
         fail("BLOCKED: " + label + " exceeds the native u32 domain bound");
     return static_cast<std::uint32_t>(value);
+}
+
+bool checked_multiply_u64(u64 left, u64 right, u64 &product) {
+    if (right != 0U && left > std::numeric_limits<u64>::max() / right) return false;
+    product = left * right;
+    return true;
 }
 
 u64 checked_shape_product(const std::vector<u64> &shape, const std::string &label) {
@@ -430,6 +442,24 @@ std::string digest_graph(const Graph &graph) {
     return hex(hash.finish());
 }
 
+std::string digest_canonical_graph(const Graph &graph) {
+    Sha256 hash;
+    constexpr char tag[] = "comparison-canonical-graph-v1";
+    hash.update(reinterpret_cast<const std::uint8_t *>(tag), sizeof(tag));
+    hash_u64(hash, graph.nodes);
+    hash_u64(hash, graph.edges);
+    hash_u64(hash, graph.graphs);
+    const auto append = [&](const auto &values) {
+        hash_u64(hash, values.size());
+        for (const auto value : values) hash_u64(hash, value);
+    };
+    append(graph.src);
+    append(graph.dst);
+    append(graph.node_ptr);
+    append(graph.edge_ptr);
+    return hex(hash.finish());
+}
+
 std::string digest_graph_boundaries(const Graph &graph) {
     Sha256 hash;
     const std::string tag = "zkDL_gat_graph_boundaries_v1";
@@ -477,35 +507,7 @@ std::string digest_tables(const StaticTables &tables) {
 }
 
 std::string digest_ledger(const IntegerBoundLedger &ledger) {
-    Sha256 hash;
-    const auto hash_string = [&](const std::string &value) {
-        hash_u64(hash, static_cast<u64>(value.size()));
-        hash.update(value.data(), value.size());
-    };
-    const auto hash_family = [&](const IntegerBoundFamily &family) {
-        hash_u64(hash, family.layer);
-        hash_u64(hash, family.head);
-        hash_u64(hash, family.output ? 1U : 0U);
-        for (const auto value : {family.max_input_abs, family.max_weight_abs, family.max_attention_abs, family.max_bias_abs, family.max_score_abs,
-                                 family.max_table_output_abs, family.max_delta, family.max_exp, family.max_sum, family.max_aggregate_num,
-                                 family.max_dividend_abs, family.max_aux_abs, family.max_divisor, family.max_field_product_abs}) {
-            hash_i64(hash, value);
-        }
-    };
-    hash_string("zkDL_gat_integer_bound_ledger_v1");
-    hash_string(ledger.ledger_id);
-    hash_string(ledger.quant_cfg_id);
-    hash_string(ledger.static_table_id);
-    hash_string(ledger.field_modulus);
-    hash_string(ledger.scale_chain_digest);
-    hash_string(ledger.static_table_descriptor_digest);
-    for (const auto value : {ledger.max_score_abs, ledger.max_table_output_abs, ledger.max_delta, ledger.max_exp, ledger.max_sum, ledger.max_aggregate_num,
-                             ledger.max_dividend_abs, ledger.max_aux_abs, ledger.max_divisor}) {
-        hash_i64(hash, value);
-    }
-    hash_u64(hash, ledger.families.size());
-    for (const auto &family : ledger.families) hash_family(family);
-    return hex(hash.finish());
+    return integer_bound_ledger::digest(ledger);
 }
 
 std::string json_fragment(const std::string &text, const std::string &key, char open, char close) {
@@ -887,6 +889,7 @@ SignedRoundDivWitness make_round_div_witness(const Matrix &numerator, const std:
         denominator_scale == 0) {
         fail("SignedRoundDiv shape/scale mismatch in " + name);
     }
+    const auto auxiliary_start = std::chrono::steady_clock::now();
     SignedRoundDivWitness witness;
     witness.rows = numerator.rows;
     witness.cols = numerator.cols;
@@ -935,6 +938,8 @@ SignedRoundDivWitness make_round_div_witness(const Matrix &numerator, const std:
         throw;
     }
     BN_CTX_free(context);
+    witness.proof_auxiliary_construction_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - auxiliary_start).count();
     return witness;
 }
 
@@ -1179,13 +1184,20 @@ void aggregate_output_head(const Config &config, const Graph &graph, const Stati
 
 GatTrace run_forward(const Config &config, const Graph &graph, const ModelBundle &model, const StaticTables &tables, bool gpu_projection) {
     GatTrace trace;
+    // These vectors are retained for the whole forward.  Reserving their
+    // authenticated architecture counts makes the live-shape profile below
+    // match the actual vector storage instead of an unspecified growth path.
+    trace.hidden_layers.reserve(config.architecture.hidden_dims.size());
+    trace.output_heads.reserve(static_cast<std::size_t>(config.architecture.output_heads));
     trace.first_input = graph.feature_values;
     Matrix current = graph.feature_values;
     for (u64 layer = 0; layer < config.architecture.hidden_dims.size(); ++layer) {
         HiddenLayerTrace layer_trace;
+        layer_trace.heads.reserve(static_cast<std::size_t>(config.architecture.hidden_heads.at(layer)));
         layer_trace.input = current;
         std::vector<Matrix> head_outputs;
         const u64 head_count = config.architecture.hidden_heads.at(layer);
+        head_outputs.reserve(static_cast<std::size_t>(head_count));
         const u64 head_dim = config.architecture.hidden_dims.at(layer);
         const u64 in_dim = current.cols;
         for (u64 head = 0; head < head_count; ++head) {
@@ -1268,21 +1280,9 @@ u64 json_u64_field(const std::string &text, const std::string &key) {
 
 bool is_digest(const std::string &value) { return std::regex_match(value, std::regex("[0-9a-fA-F]{64}")); }
 
-std::vector<std::uint64_t> json_shape(const std::string &text, const std::string &what) { return parse_list(text, what); }
-
 std::map<std::string, std::vector<u64>> manifest_tensor_shapes(const std::string &manifest) {
-    const auto marker = manifest.find("\"tensor_index\"");
-    if (marker == std::string::npos) fail("checkpoint manifest tensor_index missing");
-    const std::string index = manifest.substr(marker);
-    const std::regex entry("\\\"([^\\\"]+)\\\"\\s*:\\s*\\{[\\s\\S]*?\\\"shape\\\"\\s*:\\s*\\[([^\\]]*)\\]");
-    std::map<std::string, std::vector<u64>> shapes;
-    for (std::sregex_iterator iterator(index.begin(), index.end(), entry), end; iterator != end; ++iterator) {
-        const std::string name = (*iterator)[1].str();
-        const auto shape = json_shape((*iterator)[2].str(), "manifest tensor shape " + name);
-        if (!shapes.emplace(name, shape).second) fail("duplicate checkpoint manifest tensor index: " + name);
-    }
-    if (shapes.empty()) fail("checkpoint manifest tensor_index is empty");
-    return shapes;
+    try { return checkpoint_manifest_json::tensor_shapes(manifest); }
+    catch (const std::exception &error) { fail(error.what()); }
 }
 
 void expect_manifest(const std::string &manifest, const Config &config) {
@@ -1521,28 +1521,6 @@ StaticTables load_static_table_descriptor(const Config &config) {
     return tables;
 }
 
-IntegerBoundFamily parse_ledger_family(const std::string &object) {
-    IntegerBoundFamily family;
-    family.layer = json_u64_value(object, "layer");
-    family.head = json_u64_value(object, "head");
-    family.output = json_bool_value(object, "output");
-    family.max_input_abs = json_i64_value(object, "max_input_abs");
-    family.max_weight_abs = json_i64_value(object, "max_weight_abs");
-    family.max_attention_abs = json_i64_value(object, "max_attention_abs");
-    family.max_bias_abs = json_i64_value(object, "max_bias_abs");
-    family.max_score_abs = json_i64_value(object, "max_score_abs");
-    family.max_table_output_abs = json_i64_value(object, "max_table_output_abs");
-    family.max_delta = json_i64_value(object, "max_delta");
-    family.max_exp = json_i64_value(object, "max_exp");
-    family.max_sum = json_i64_value(object, "max_sum");
-    family.max_aggregate_num = json_i64_value(object, "max_aggregate_num");
-    family.max_dividend_abs = json_i64_value(object, "max_dividend_abs");
-    family.max_aux_abs = json_i64_value(object, "max_aux_abs");
-    family.max_divisor = json_i64_value(object, "max_divisor");
-    family.max_field_product_abs = json_i64_value(object, "max_field_product_abs");
-    return family;
-}
-
 void validate_ledger_identity(const Config &config, const StaticTables &tables, const IntegerBoundLedger &ledger) {
     if (!ledger.authenticated || ledger.schema != "zkDL_gat_integer_bound_ledger_v1" ||
         ledger.ledger_id.empty() || ledger.degree_bound_id.empty() ||
@@ -1599,26 +1577,8 @@ IntegerBoundLedger load_integer_bound_ledger(const Config &config, const StaticT
     const auto text = file_text(config.integer_bound_ledger_path);
     if (trim(text).empty() || trim(text).front() != '{') { fail("BLOCKED: integer-bound ledger must use the canonical JSON resource format"); }
     IntegerBoundLedger ledger;
-    if (json_scalar(text, "schema") != "zkDL_gat_integer_bound_ledger_v1") fail("integer-bound ledger schema mismatch");
-    ledger.schema = json_scalar(text, "schema");
-    ledger.ledger_id = json_scalar(text, "ledger_id");
-    ledger.degree_bound_id = json_scalar(text, "degree_bound_id");
-    ledger.quant_cfg_id = json_scalar(text, "quant_cfg_id");
-    ledger.static_table_id = json_scalar(text, "static_table_id");
-    ledger.field_modulus = json_scalar(text, "field_modulus");
-    ledger.scale_chain_digest = json_scalar(text, "scale_chain_digest");
-    ledger.static_table_descriptor_digest = json_scalar(text, "static_table_descriptor_digest");
-    ledger.digest = json_scalar(text, "digest");
-    ledger.max_score_abs = json_i64_value(text, "max_score_abs");
-    ledger.max_table_output_abs = json_i64_value(text, "max_table_output_abs");
-    ledger.max_delta = json_i64_value(text, "max_delta");
-    ledger.max_exp = json_i64_value(text, "max_exp");
-    ledger.max_sum = json_i64_value(text, "max_sum");
-    ledger.max_aggregate_num = json_i64_value(text, "max_aggregate_num");
-    ledger.max_dividend_abs = json_i64_value(text, "max_dividend_abs");
-    ledger.max_aux_abs = json_i64_value(text, "max_aux_abs");
-    ledger.max_divisor = json_i64_value(text, "max_divisor");
-    for (const auto &object : json_objects(text, "families")) ledger.families.push_back(parse_ledger_family(object));
+    try { ledger = integer_bound_ledger::parse(text); }
+    catch (const std::exception &error) { fail(error.what()); }
     ledger.authenticated = true;
     ledger.descriptor_digest = authenticated_asset_digest(config, config.integer_bound_ledger_path);
     validate_ledger_identity(config, tables, ledger);
@@ -1682,8 +1642,13 @@ void admit_integer_bound_ledger(const Config &config, const Graph &graph, const 
                                 const IntegerBoundLedger &ledger) {
     if (!tables.authenticated || !ledger.authenticated) fail("BLOCKED: relation resources are not authenticated");
     u64 max_degree = 0;
-    for (u64 node = 0; node < graph.nodes; ++node) { max_degree = std::max(max_degree, graph.node_edge_ptr.at(node + 1) - graph.node_edge_ptr.at(node)); }
-    if (max_degree == 0) fail("BLOCKED: graph has no destination group for ledger admission");
+    u64 min_degree = std::numeric_limits<u64>::max();
+    for (u64 node = 0; node < graph.nodes; ++node) {
+        const u64 degree = graph.node_edge_ptr.at(node + 1) - graph.node_edge_ptr.at(node);
+        max_degree = std::max(max_degree, degree);
+        min_degree = std::min(min_degree, degree);
+    }
+    if (max_degree == 0 || min_degree == 0) fail("BLOCKED: graph has an empty destination group for ledger admission");
     const i64 input_bound = max_abs_matrix(graph.feature_values, "input_bound");
     i64 current_bound = input_bound;
     const auto table_output_bound = [&](const std::vector<i64> &values, i64 minimum, i64 maximum, i64 input_abs, const std::string &name) {
@@ -1720,8 +1685,14 @@ void admit_integer_bound_ledger(const Config &config, const Graph &graph, const 
             const i64 score_dst_bound = checked_i128(static_cast<__int128>(head_dim) * h_prime_bound * attention_dst_bound, prefix + ".score_dst_bound");
             const i64 score_bound = checked_i128(static_cast<__int128>(score_src_bound) + score_dst_bound, prefix + ".score_bound");
             const i64 table_bound = table_output_bound(tables.lrelu, tables.lrelu_min, tables.lrelu_max, score_bound, prefix + ".lrelu");
-            const i64 delta_bound = checked_i128(static_cast<__int128>(2) * table_bound, prefix + ".delta_bound");
-            if (delta_bound > static_cast<i64>(tables.exp_max)) fail("BLOCKED: ExpMap table domain admission failed for " + prefix);
+            i64 lrelu_output_min = 0, lrelu_output_max = 0;
+            if (!static_table_bounds::symmetric_output_interval(tables.lrelu, tables.lrelu_min, tables.lrelu_max, score_bound,
+                                                               lrelu_output_min, lrelu_output_max))
+                fail("BLOCKED: authenticated LReLU output span cannot be derived for " + prefix);
+            const i64 delta_bound = checked_i128(static_cast<__int128>(lrelu_output_max) - lrelu_output_min, prefix + ".delta_bound");
+            if (!static_table_bounds::exp_domain_covers_delta(delta_bound, tables.exp_max))
+                fail("BLOCKED: ExpMap table domain admission failed for " + prefix + " required_delta_span=" + std::to_string(delta_bound) +
+                     " exp_max=" + std::to_string(tables.exp_max));
             const i64 exp_bound = tables.exp.front();
             const i64 sum_bound = checked_i128(static_cast<__int128>(max_degree) * exp_bound, prefix + ".sum_bound");
             const i64 aggregate_num_bound = checked_i128(static_cast<__int128>(sum_bound) * h_prime_bound, prefix + ".aggregate_num_bound");
@@ -1745,7 +1716,13 @@ void admit_integer_bound_ledger(const Config &config, const Graph &graph, const 
             require_ledger_bound(family, divisor_bound, family.max_divisor, prefix + ".divisor");
             require_ledger_bound(family, field_product_bound, family.max_field_product_abs, prefix + ".field_product");
             require_round_div_no_wrap(dividend_bound, min_divisor, quotient_bound, family, prefix + ".signed_round_div");
-            const i64 elu_bound = table_output_bound(tables.elu, tables.elu_min, tables.elu_max, quotient_bound, prefix + ".elu");
+            i64 elu_query_bound = 0;
+            if (!static_table_bounds::positive_weighted_round_abs_bound(
+                    tables.exp, min_degree, h_prime_bound, config.quantization.hidden_aggregate_pre.at(layer),
+                    config.quantization.hidden_h_prime.at(layer).at(head), elu_query_bound))
+                fail("BLOCKED: cannot derive a positive-weighted aggregate bound for " + prefix + ".elu");
+            validate_field_bound(elu_query_bound, prefix + ".elu_query_bound");
+            const i64 elu_bound = table_output_bound(tables.elu, tables.elu_min, tables.elu_max, elu_query_bound, prefix + ".elu");
             next_bound = std::max(next_bound, elu_bound);
             for (const auto value : {score_bound, delta_bound, sum_bound, aggregate_num_bound, dividend_bound, divisor_bound, field_product_bound})
                 require_global(value, ledger.max_dividend_abs, prefix + ".global");
@@ -1769,8 +1746,14 @@ void admit_integer_bound_ledger(const Config &config, const Graph &graph, const 
                                                  prefix + ".score_dst_bound");
         const i64 score_bound = checked_i128(static_cast<__int128>(score_src_bound) + score_dst_bound, prefix + ".score_bound");
         const i64 table_bound = table_output_bound(tables.lrelu, tables.lrelu_min, tables.lrelu_max, score_bound, prefix + ".lrelu");
-        const i64 delta_bound = checked_i128(static_cast<__int128>(2) * table_bound, prefix + ".delta_bound");
-        if (delta_bound > static_cast<i64>(tables.exp_max)) fail("BLOCKED: ExpMap table domain admission failed for " + prefix);
+        i64 lrelu_output_min = 0, lrelu_output_max = 0;
+        if (!static_table_bounds::symmetric_output_interval(tables.lrelu, tables.lrelu_min, tables.lrelu_max, score_bound,
+                                                           lrelu_output_min, lrelu_output_max))
+            fail("BLOCKED: authenticated LReLU output span cannot be derived for " + prefix);
+        const i64 delta_bound = checked_i128(static_cast<__int128>(lrelu_output_max) - lrelu_output_min, prefix + ".delta_bound");
+        if (!static_table_bounds::exp_domain_covers_delta(delta_bound, tables.exp_max))
+            fail("BLOCKED: ExpMap table domain admission failed for " + prefix + " required_delta_span=" + std::to_string(delta_bound) +
+                 " exp_max=" + std::to_string(tables.exp_max));
         const i64 exp_bound = tables.exp.front();
         const i64 sum_bound = checked_i128(static_cast<__int128>(max_degree) * exp_bound, prefix + ".sum_bound");
         const i64 aggregate_num_bound = checked_i128(static_cast<__int128>(sum_bound) * y_prime_bound, prefix + ".aggregate_num_bound");
@@ -1915,7 +1898,7 @@ Backend parse_backend(const std::string &value) {
     fail("backend must be cpu or gpu");
 }
 
-Config load_config(const std::filesystem::path &path) {
+Config load_config(const std::filesystem::path &path, bool admission_only) {
     const auto absolute = std::filesystem::absolute(path).lexically_normal();
     if (absolute.parent_path().filename() != "configs") fail("config must be in baseline-local configs/");
     const auto values = read_kv(absolute);
@@ -2019,7 +2002,8 @@ Config load_config(const std::filesystem::path &path) {
     config.binding_mode = required("binding_mode");
     config.security_profile_id = required("security_profile_id");
     config.verifier_registry_digest = required("verifier_registry_digest");
-    if (!is_digest(config.verifier_registry_digest)) fail("verifier_registry_digest must be SHA-256");
+    if (!is_digest(config.verifier_registry_digest) && !(admission_only && config.verifier_registry_digest == "UNAVAILABLE"))
+        fail("verifier_registry_digest must be SHA-256");
     config.range_bits = parse_u64(required("range_bits"), "range_bits");
     config.batch_graphs = values.count("batch_graphs") ? parse_u64(values.at("batch_graphs"), "batch_graphs") : 1;
     config.seed = parse_u64(required("seed"), "seed");
@@ -2669,20 +2653,21 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         add_tensor(stage + "/trace/maximum", "witness", "node-major-little-endian", "node", {graph.nodes}, {"maximum"}, order, "destination_group_max", 1);
         add_tensor(stage + "/trace/denominator", "witness", "node-major-little-endian", "node", {graph.nodes}, {"sum"}, order, "destination_group_sum", 1);
         add_tensor(stage + "/trace/max_selector", "witness", "edge-major-little-endian", "edge", {graph.edges}, {"max_selector"}, order, "max_arg_selector", 1);
-        add_tensor(stage + "/trace/range_bits", "witness", "edge-major-little-endian", "bit", {graph.edges, config.range_bits}, {"range"}, order,
+        add_tensor(stage + "/trace/range_bits", "witness", "edge-major-little-endian", "bit", {graph.edges, table_index_bit_width(tables.exp.size())}, {"range"}, order,
                    "range_bit_decomposition", 1);
         for (const auto &name : {std::string("lrelu_idx"), std::string("exp_idx")}) {
             add_tensor(stage + "/trace/" + name, "witness", "edge-or-node-major-little-endian", "lookup", std::vector<u64>{graph.edges}, {name}, order,
                        "indexed_public_table", 1);
         }
-        for (const auto &name : {std::string("lrelu_bits"), std::string("exp_bits")}) {
-            add_tensor(stage + "/trace/" + name, "witness", "lookup-query-bit-major", "bit", std::vector<u64>{graph.edges, config.range_bits}, {name}, order,
-                       "lookup_index_bits", 1);
-        }
+        add_tensor(stage + "/trace/lrelu_bits", "witness", "lookup-query-bit-major", "bit",
+                   {graph.edges, table_index_bit_width(tables.lrelu.size())}, {"lrelu_bits"}, order, "lookup_index_bits", 1);
+        add_tensor(stage + "/trace/exp_bits", "witness", "lookup-query-bit-major", "bit",
+                   {graph.edges, table_index_bit_width(tables.exp.size())}, {"exp_bits"}, order, "lookup_index_bits", 1);
         if (!output) {
             add_tensor(stage + "/trace/elu_idx", "witness", "node-major-little-endian", "lookup", {graph.nodes, out_dim}, {"elu_idx"}, order,
                        "indexed_public_table", 1);
-            add_tensor(stage + "/trace/elu_bits", "witness", "lookup-query-bit-major", "bit", {graph.nodes, out_dim, config.range_bits}, {"elu_bits"}, order,
+            add_tensor(stage + "/trace/elu_bits", "witness", "lookup-query-bit-major", "bit",
+                       {graph.nodes, out_dim, table_index_bit_width(tables.elu.size())}, {"elu_bits"}, order,
                        "lookup_index_bits", 1);
         }
         const std::string value = stage + "/trace/" + (output ? "y_prime" : "h_prime");
@@ -2764,7 +2749,7 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
                    {"query", "table"}, true, false, {"tau_lrelu", "omega_lrelu"}, "lookup_lrelu:" + stage);
             add_op(stage + "/max_range", "segmented_max_range_sumcheck", 1, {stage + "/trace/leaky_relu", "sparse_route", "group_selectors"},
                    {stage + "/trace/maximum", stage + "/trace/max_selector", stage + "/trace/delta"}, {"node", "edge", "group"}, true, true,
-                   {"range_bits", "group_new", "group_end"}, "max_range:" + stage);
+                   {"range_bits", "group_new", "group_end"}, "public_route:max_range:" + stage);
             add_op(stage + "/exp_map", "indexed_public_table_sumcheck", 1,
                    {stage + "/trace/delta", "static_exp", stage + "/trace/exp_idx", stage + "/trace/exp_bits"}, {stage + "/trace/exp_weight"},
                    {"query", "table"}, true, false, {"tau_exp", "omega_exp"}, "lookup_exp:" + stage);
@@ -2772,16 +2757,16 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
                    "product_u:" + stage);
             add_op(stage + "/group_sum", "segmented_sumcheck", 1, {stage + "/trace/exp_weight", pu, "sparse_route", "edge_ptr", "node_edge_ptr"},
                    {stage + "/trace/denominator", stage + "/trace/aggregate_num"}, {"graph", "node", "edge", "feature"}, true, true,
-                   {"group_new", "group_end", "zero_padding"}, "group_sum:" + stage);
+                   {"group_new", "group_end", "zero_padding"}, "public_route:group_sum:" + stage);
             add_op(stage + "/inverse_alpha", "field_inverse_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/exp_weight", "node_edge_ptr"},
                    {stage + "/trace/inverse_field", stage + "/trace/alpha_field"}, {"node", "edge"}, true, false,
                    {"inverse_field", "alpha_field", "nonzero_denominator"}, "inverse_alpha:" + stage);
             add_op(stage + "/alpha_h_prime", "tensor_product_sumcheck", 2, {stage + "/trace/alpha_field", routed}, {pa}, {"edge", "feature"}, true, false, {},
                    "product_alpha:" + stage);
             add_op(stage + "/field_aggregate", "segmented_sumcheck", 1, {pa, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_pre_field"},
-                   {"node", "edge", "feature"}, true, true, {"group_new", "group_end"}, "field_aggregate:" + stage);
+                   {"node", "edge", "feature"}, true, true, {"group_new", "group_end"}, "public_route:field_aggregate:" + stage);
             add_op(stage + "/integer_numerator", "segmented_sumcheck", 1, {pu, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_num"},
-                   {"node", "edge", "feature"}, true, true, {"group_new", "group_end"}, "integer_numerator:" + stage);
+                   {"node", "edge", "feature"}, true, true, {"group_new", "group_end"}, "public_route:integer_numerator:" + stage);
             add_op(stage + "/consistency", "tensor_product_sumcheck", 2,
                    {stage + "/trace/denominator", stage + "/trace/aggregate_pre_field", stage + "/trace/aggregate_num"},
                    {stage + "/trace/consistency_residual_field"}, {"node", "feature"}, true, false, {}, "consistency:" + stage);
@@ -2822,7 +2807,7 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
                {"query", "table"}, true, false, {"tau_lrelu", "omega_lrelu"}, "lookup_lrelu:" + stage);
         add_op(stage + "/max_range", "segmented_max_range_sumcheck", 1, {stage + "/trace/leaky_relu", "sparse_route", "group_selectors"},
                {stage + "/trace/maximum", stage + "/trace/max_selector", stage + "/trace/delta"}, {"node", "edge", "group"}, true, true,
-               {"range_bits", "group_new", "group_end"}, "max_range:" + stage);
+               {"range_bits", "group_new", "group_end"}, "public_route:max_range:" + stage);
         add_op(stage + "/exp_map", "indexed_public_table_sumcheck", 1,
                {stage + "/trace/delta", "static_exp", stage + "/trace/exp_idx", stage + "/trace/exp_bits"}, {stage + "/trace/exp_weight"}, {"query", "table"},
                true, false, {"tau_exp", "omega_exp"}, "lookup_exp:" + stage);
@@ -2830,16 +2815,16 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
                "product_u:" + stage);
         add_op(stage + "/group_sum", "segmented_sumcheck", 1, {stage + "/trace/exp_weight", pu, "sparse_route", "edge_ptr", "node_edge_ptr"},
                {stage + "/trace/denominator", stage + "/trace/aggregate_num"}, {"graph", "node", "edge", "class"}, true, true,
-               {"group_new", "group_end", "zero_padding"}, "group_sum:" + stage);
+               {"group_new", "group_end", "zero_padding"}, "public_route:group_sum:" + stage);
         add_op(stage + "/inverse_alpha", "field_inverse_product_sumcheck", 2, {stage + "/trace/denominator", stage + "/trace/exp_weight", "node_edge_ptr"},
                {stage + "/trace/inverse_field", stage + "/trace/alpha_field"}, {"node", "edge"}, true, false,
                {"inverse_field", "alpha_field", "nonzero_denominator"}, "inverse_alpha:" + stage);
         add_op(stage + "/alpha_y_prime", "tensor_product_sumcheck", 2, {stage + "/trace/alpha_field", routed}, {pa}, {"edge", "class"}, true, false, {},
                "product_alpha:" + stage);
         add_op(stage + "/field_aggregate", "segmented_sumcheck", 1, {pa, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_pre_field"},
-               {"node", "edge", "class"}, true, true, {"group_new", "group_end"}, "field_aggregate:" + stage);
+               {"node", "edge", "class"}, true, true, {"group_new", "group_end"}, "public_route:field_aggregate:" + stage);
         add_op(stage + "/integer_numerator", "segmented_sumcheck", 1, {pu, "sparse_route", "node_edge_ptr"}, {stage + "/trace/aggregate_num"},
-               {"node", "edge", "class"}, true, true, {"group_new", "group_end"}, "integer_numerator:" + stage);
+               {"node", "edge", "class"}, true, true, {"group_new", "group_end"}, "public_route:integer_numerator:" + stage);
         add_op(stage + "/consistency", "tensor_product_sumcheck", 2,
                {stage + "/trace/denominator", stage + "/trace/aggregate_pre_field", stage + "/trace/aggregate_num"},
                {stage + "/trace/consistency_residual_field"}, {"node", "class"}, true, false, {}, "consistency:" + stage);
@@ -2889,25 +2874,34 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         plan.tensor_families.push_back(std::move(family));
     };
     if (config.range_bits == 0U || config.range_bits >= 31U) fail("relation operation views require a bounded range_bits width");
+    const u64 delta_range_bits = table_index_bit_width(tables.exp.size());
     const auto edge_shape = [&](u64 width = 1U) { return width == 1U ? std::vector<u64>{graph.edges} : std::vector<u64>{graph.edges, width}; };
     const auto node_shape = [&](u64 width = 1U) { return width == 1U ? std::vector<u64>{graph.nodes} : std::vector<u64>{graph.nodes, width}; };
-    const auto table_depth = [](std::size_t size) {
-        u64 depth = 0U;
-        std::size_t width = 1U;
-        while (width < size) {
-            width <<= 1U;
-            ++depth;
-        }
-        return depth;
-    };
     const auto append_round_views = [&](const std::string &operation, u64 width) {
         const auto shape = node_shape(width);
-        for (const auto &role : {"signed_numerator", "divisor", "signed_quotient", "a", "q_abs", "r", "delta", "sigma", "z", "a_inverse", "divisor_inverse"})
+        const auto padded_feature_shape = node_shape(power_of_two(width));
+        const auto range_widths = signed_round_bounds::derive(config, plan.integer_bound_ledger, operation);
+        for (const auto &role : {"signed_numerator", "signed_quotient", "a", "q_abs", "r", "delta", "sigma", "z", "a_inverse", "divisor_inverse"})
             append_view(operation + "/view/" + std::string(role), shape, "signed_round_div:" + std::string(role), "node");
-        for (const auto &value : {"a", "q_abs", "r", "delta", "divisor"})
-            for (u64 bit = 0U; bit < config.range_bits; ++bit)
-                append_view(operation + "/view/range/" + std::string(value) + "/" + std::to_string(bit), shape, "signed_round_div:range:" + std::string(value),
-                            "node");
+        // Main aggregation divisions carry both the source's unscaled node
+        // denominator and a separate scaled divisor view bound to rounddiv_aux.
+        // Each view is logically active across Fpad and explicitly FAC-bound;
+        // relation constraints use the canonical numerator's [N,F] active mask.
+        append_view(operation + "/view/divisor", padded_feature_shape,
+                    range_widths.binds_raw_denominator ? "signed_round_div:raw_divisor:full_padded_feature_broadcast" :
+                                                         "signed_round_div:divisor:full_padded_feature_broadcast",
+                    "node");
+        if (range_widths.binds_raw_denominator)
+            append_view(operation + "/view/divisor_aux", padded_feature_shape,
+                        "signed_round_div:divisor_aux:full_padded_feature_broadcast", "node");
+        const std::vector<std::pair<std::string, u64>> bit_widths = {
+            {"a", range_widths.a_bits}, {"q_abs", range_widths.q_bits}, {"r", range_widths.r_bits},
+            {"delta", range_widths.delta_bits}, {"divisor", range_widths.divisor_bits},
+        };
+        for (const auto &value : bit_widths)
+            for (u64 bit = 0U; bit < value.second; ++bit)
+                append_view(operation + "/view/range/" + value.first + "/" + std::to_string(bit), shape,
+                            "signed_round_div:range:" + value.first, "node");
     };
     const auto append_table_views = [&](const std::string &operation, const std::string &table_ref, bool edge_domain, u64 feature_width,
                                         const std::vector<i64> &table_values, i64 table_input_min) {
@@ -2916,14 +2910,16 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         append_view(operation + "/view/query", shape, "indexed_public_table:query", "lookup");
         append_view(operation + "/view/index", shape, "indexed_public_table:index", "lookup");
         append_view(operation + "/view/output0", shape, "indexed_public_table:output", "lookup");
-        const u64 depth = table_depth(table_values.size());
+        const u64 depth = table_index_bit_width(table_values.size());
         for (u64 bit = 0U; bit < depth; ++bit) append_view(operation + "/view/bit/" + std::to_string(bit), shape, "indexed_public_table:bit", "lookup");
     };
     const auto append_stage_views = [&](const std::string &stage, u64 width, bool output) {
         const auto edge = edge_shape();
         const auto edge_feature = edge_shape(width);
+        const auto edge_feature_broadcast = edge_shape(power_of_two(width));
         const auto node = node_shape();
         const auto node_feature = node_shape(width);
+        const auto node_feature_broadcast = node_shape(power_of_two(width));
         const std::string inner = stage + (output ? "/output_attention_inner_product" : "/attention_inner_product");
         append_view(inner + "/view/src_matrix", edge_feature, "attention_route:src", "edge");
         append_view(inner + "/view/dst_matrix", edge_feature, "attention_route:dst", "edge");
@@ -2933,27 +2929,35 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         const std::string max = stage + "/max_range";
         for (const auto &role : {"value", "maximum_broadcast", "selector", "delta", "group_new", "group_end", "selector_prefix", "selector_prev"})
             append_view(max + "/view/" + std::string(role), edge, "max_range:" + std::string(role), "edge");
-        for (u64 bit = 0U; bit < config.range_bits; ++bit) append_view(max + "/view/range_bit/" + std::to_string(bit), edge, "max_range:range_bit", "edge");
+        for (u64 bit = 0U; bit < delta_range_bits; ++bit) append_view(max + "/view/range_bit/" + std::to_string(bit), edge, "max_range:range_bit", "edge");
 
         const std::string group = stage + "/group_sum";
         for (const auto &role : {"group_new", "group_end"})
+            append_view(group + "/view/" + std::string(role), edge_feature_broadcast, "group_sum:" + std::string(role), "edge");
+        for (const auto &role : {"input0", "output0", "prefix0", "prefix_prev0"})
+            append_view(group + "/view/" + std::string(role), edge_feature_broadcast, "group_sum:" + std::string(role), "edge");
+        for (const auto &role : {"input1", "output1", "prefix1", "prefix_prev1"})
             append_view(group + "/view/" + std::string(role), edge_feature, "group_sum:" + std::string(role), "edge");
-        for (const auto &role : {"input0", "input1", "output0", "output1", "prefix0", "prefix_prev0", "prefix1", "prefix_prev1"})
-            append_view(group + "/view/" + std::string(role), edge_feature, "group_sum:" + std::string(role), "edge");
+
+        const std::string alpha_product = stage + (output ? "/alpha_y_prime" : "/alpha_h_prime");
+        append_view(alpha_product + "/view/input0", edge_feature_broadcast,
+                    "product_alpha:edge-scalar-feature-broadcast", "edge");
 
         const std::string inverse = stage + "/inverse_alpha";
         for (const auto &role : {"input0", "input1", "output0", "output1"})
             append_view(inverse + "/view/" + std::string(role), edge, "inverse_alpha:" + std::string(role), "edge");
 
         for (const auto &operation : {stage + "/field_aggregate", stage + "/integer_numerator"}) {
-            append_view(operation + "/view/group_new", edge_feature, "segmented_sum:group_new", "edge");
-            append_view(operation + "/view/group_end", edge_feature, "segmented_sum:group_end", "edge");
+            append_view(operation + "/view/group_new", edge_feature_broadcast, "segmented_sum:group_new", "edge");
+            append_view(operation + "/view/group_end", edge_feature_broadcast, "segmented_sum:group_end", "edge");
             for (const auto &role : {"input0", "output0", "prefix0", "prefix_prev0"})
                 append_view(operation + "/view/" + std::string(role), edge_feature, "segmented_sum:" + std::string(role), "edge");
         }
 
         const std::string consistency = stage + "/consistency";
-        for (const auto &role : {"input0", "input1", "input2", "output0"})
+        append_view(consistency + "/view/input0", node_feature_broadcast,
+                    "consistency:denominator-feature-broadcast", "node");
+        for (const auto &role : {"input1", "input2", "output0"})
             append_view(consistency + "/view/" + std::string(role), node_feature, "consistency:" + std::string(role), "node");
 
         append_round_views(stage + "/signed_round_div", width);
@@ -3423,6 +3427,8 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
     std::filesystem::create_directories(storage_directory);
     std::filesystem::permissions(storage_directory, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
     std::vector<NativeSortedLookupProviderInput> sorted_lookup_providers;
+    double sorted_lookup_protocol_construction_seconds = 0.0;
+    double proof_auxiliary_construction_seconds = 0.0;
     const auto family_for = [&](const std::string &id) -> const TensorFamily & {
         const auto found = families.find(id);
         if (found == families.end()) fail("canonical witness family is not in RelationPlan: " + id);
@@ -3443,7 +3449,12 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
     const auto native_bit_column = [&](const std::vector<i64> &values, u64 bit, const std::string &label) { return view(values.size(), 1U, [&values, bit, label](std::uint64_t index) { const auto value = values.at(index); if (value < 0 || bit >= 64U) fail("invalid bounded bit source: " + label); return native_wire(static_cast<i64>((static_cast<std::uint64_t>(value) >> bit) & 1U)); }); };
     const auto native_repeat_edge_bits = [&](const std::vector<std::uint8_t> &values, u64 width) { return view(values.size() * width, 1U, [&values, width](std::uint64_t index) { return native_wire(static_cast<i64>(values.at(index / width))); }); };
     const auto native_edge_feature_from_scalar = [&](const std::vector<i64> &values, u64 width) { return view(values.size() * width, 2U, [&values, width](std::uint64_t index) { return native_wire(values.at(index / width)); }); };
+    const auto native_edge_feature_from_field_scalar = [&](const std::vector<FieldValue> &values, u64 width) { return view(values.size() * width, 3U, [&values, width](std::uint64_t index) { return native_wire(values.at(index / width)); }); };
     const auto native_broadcast_node_vector = [&](const Graph &g, const std::vector<i64> &values) { if (values.size() != g.nodes) fail("node-to-edge broadcast shape mismatch"); return view(g.edges, 2U, [&g, &values](std::uint64_t index) { return native_wire(values.at(g.dst.at(index))); }); };
+    const auto native_broadcast_node_scalar_features = [&](const Graph &g, const std::vector<i64> &values, u64 width) {
+        if (values.size() != g.nodes || width == 0U) fail("node-to-feature broadcast shape mismatch");
+        return view(g.nodes * width, 2U, [&values, width](std::uint64_t index) { return native_wire(values.at(index / width)); });
+    };
     const auto native_broadcast_node_matrix = [&](const Graph &g, const Matrix &matrix) { if (matrix.rows != g.nodes) fail("node-to-edge matrix broadcast shape mismatch"); return view(g.edges * matrix.cols, 2U, [&g, &matrix](std::uint64_t index) { return native_wire(matrix.at(g.dst.at(index / matrix.cols), index % matrix.cols)); }); };
     const auto native_broadcast_node_field_matrix = [&](const Graph &g, const FieldMatrix &matrix) { if (matrix.rows != g.nodes) fail("node-to-edge field broadcast shape mismatch"); return view(g.edges * matrix.cols, 3U, [&g, &matrix](std::uint64_t index) { return native_wire(matrix.values.at(g.dst.at(index / matrix.cols) * matrix.cols + index % matrix.cols)); }); };
     const auto native_route_matrix = [&](const Graph &g, const Matrix &matrix, bool source) { if (matrix.rows != g.nodes) fail("route matrix shape mismatch"); return view(g.edges * matrix.cols, 2U, [&g, &matrix, source](std::uint64_t index) { return native_wire(matrix.at((source ? g.src : g.dst).at(index / matrix.cols), index % matrix.cols)); }); };
@@ -3451,12 +3462,13 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         if (input.size() != group_bits.size() * width || width == 0U) fail("segmented prefix input shape mismatch");
         return view(input.size(), 3U, [input, &group_bits, width, previous, running = std::vector<NativeFrWire>(width)](std::uint64_t index) mutable { const auto edge = index / width, column = index % width; if (edge == 0U || group_bits.at(edge) != 0U) running.at(column) = NativeFrWire{}; const auto prior = running.at(column); running.at(column) = native_fr_add(prior, input[index]); return previous ? prior : running.at(column); });
     };
-    const auto put = [&](const std::string &id, const auto &values) {
+    const auto put = [&](const std::string &id, const auto &values, double *reader_compute_seconds = nullptr) {
         const auto &family = family_for(id);
         if (values.size() != native_shape_product(family.logical_shape, id + ".logical")) fail("canonical witness logical value count mismatch: " + id);
         std::uint32_t encoding = 0U;
         if constexpr (std::is_same_v<std::decay_t<decltype(values)>, NativeValues>) encoding = values.encoding;
-        if (!logical.emplace(id, NativeFamilyStorage::persist_generated(storage_directory, values.size(), encoding, [&](std::uint64_t index) { return values[index]; })).second) fail("duplicate canonical witness values: " + id);
+        if (!logical.emplace(id, NativeFamilyStorage::persist_generated(storage_directory, values.size(), encoding, [&](std::uint64_t index) { return values[index]; },
+                                                                         reader_compute_seconds)).second) fail("duplicate canonical witness values: " + id);
     };
     const auto put_i64 = [&](const std::string &id, const auto &values) { put(id, native_i64_values(values)); };
     const auto put_u64 = [&](const std::string &id, const std::vector<u64> &values) { put(id, view(values.size(), 2U, [&values, id](std::uint64_t index) { if (values.at(index) > static_cast<u64>(std::numeric_limits<i64>::max())) fail("unsigned graph boundary exceeds field wire signed range: " + id); return native_wire(static_cast<i64>(values.at(index))); })); };
@@ -3502,6 +3514,8 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
 
     const auto write_sorted_lookup_provider = [&](const std::string &operation, const std::vector<i64> &query, i64 input_min,
                                                   const std::vector<i64> &output_values, const std::vector<i64> &table) {
+        const auto protocol_start = std::chrono::steady_clock::now();
+        double explicit_file_io_seconds = 0.0;
         const auto plan_query = std::find_if(plan.sorted_lookup.queries.begin(), plan.sorted_lookup.queries.end(),
                                              [&](const SortedLookupQueryPlan &item) { return item.operation_id == operation; });
         if (plan_query == plan.sorted_lookup.queries.end()) fail("sorted lookup operation is absent from RelationPlan: " + operation);
@@ -3561,21 +3575,47 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             std::reverse(result.begin(), result.end());
             return result;
         };
-        const auto write_u64 = [](std::ofstream &stream, u64 value) {
-            for (unsigned bit = 0U; bit < 8U; ++bit) stream.put(static_cast<char>(value >> (8U * bit)));
+        constexpr std::size_t kScratchWriteBufferBytes = 8U * 1024U * 1024U;
+        std::vector<char> output_buffer;
+        output_buffer.reserve(kScratchWriteBufferBytes);
+        const auto flush_buffer = [&](std::ofstream &stream) {
+            if (output_buffer.empty()) return;
+            const auto io_start = std::chrono::steady_clock::now();
+            stream.write(output_buffer.data(), static_cast<std::streamsize>(output_buffer.size()));
+            explicit_file_io_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - io_start).count();
+            output_buffer.clear();
         };
-        const auto write_u32 = [](std::ofstream &stream, std::uint32_t value) {
-            for (unsigned bit = 0U; bit < 4U; ++bit) stream.put(static_cast<char>(value >> (8U * bit)));
+        const auto append_bytes = [&](std::ofstream &stream, const char *bytes, std::size_t count) {
+            while (count != 0U) {
+                const std::size_t room = kScratchWriteBufferBytes - output_buffer.size();
+                const std::size_t take = std::min(room, count);
+                output_buffer.insert(output_buffer.end(), bytes, bytes + take);
+                bytes += take;
+                count -= take;
+                if (output_buffer.size() == kScratchWriteBufferBytes) flush_buffer(stream);
+            }
+        };
+        const auto write_u64 = [&](std::ofstream &stream, u64 value) {
+            std::array<char, 8U> encoded{};
+            for (unsigned bit = 0U; bit < encoded.size(); ++bit) encoded[bit] = static_cast<char>(value >> (8U * bit));
+            append_bytes(stream, encoded.data(), encoded.size());
+        };
+        const auto write_u32 = [&](std::ofstream &stream, std::uint32_t value) {
+            std::array<char, 4U> encoded{};
+            for (unsigned bit = 0U; bit < encoded.size(); ++bit) encoded[bit] = static_cast<char>(value >> (8U * bit));
+            append_bytes(stream, encoded.data(), encoded.size());
         };
         const auto write_u128 = [&](std::ofstream &stream, U128 value) {
-            for (unsigned bit = 0U; bit < 16U; ++bit) stream.put(static_cast<char>(value >> (8U * bit)));
+            std::array<char, 16U> encoded{};
+            for (unsigned bit = 0U; bit < encoded.size(); ++bit) encoded[bit] = static_cast<char>(value >> (8U * bit));
+            append_bytes(stream, encoded.data(), encoded.size());
         };
         const auto write_string = [&](std::ofstream &stream, const std::string &value) {
             write_u64(stream, value.size());
-            stream.write(value.data(), static_cast<std::streamsize>(value.size()));
+            append_bytes(stream, value.data(), value.size());
         };
         const auto write_field = [&](std::ofstream &stream, const FieldValue &value) {
-            stream.write(reinterpret_cast<const char *>(value.bytes.data()), static_cast<std::streamsize>(value.bytes.size()));
+            append_bytes(stream, reinterpret_cast<const char *>(value.bytes.data()), value.bytes.size());
         };
         const auto inverse_for = [&](U128 delta, BN_CTX *context) {
             if (delta == 0U) return FieldValue{};
@@ -3596,18 +3636,22 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         };
         const auto write_zero = [&](std::ofstream &stream, BN_CTX *context) { write_record(stream, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, context); };
         const auto scratch_dir = config.run_root / "scratch" / "sorted_lookup";
+        const auto directory_start = std::chrono::steady_clock::now();
         std::filesystem::create_directories(scratch_dir);
+        explicit_file_io_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - directory_start).count();
         const auto basename = "lookup_" + sha256_text(operation) + ".bin";
         const auto final_path = scratch_dir / basename;
         const auto temp_path = scratch_dir /
                                ("." + basename + ".tmp-" +
                                 std::to_string(static_cast<unsigned long long>(std::chrono::high_resolution_clock::now().time_since_epoch().count())));
+        const auto open_start = std::chrono::steady_clock::now();
         std::ofstream stream(temp_path, std::ios::binary | std::ios::trunc);
+        explicit_file_io_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - open_start).count();
         if (!stream) fail("cannot create sorted lookup scratch: " + operation);
         BN_CTX *context = BN_CTX_new();
         if (!context) fail("BN_CTX_new failed for sorted lookup scratch");
         try {
-            stream.write("ZKDLQTS1", 8);
+            append_bytes(stream, "ZKDLQTS1", 8U);
             write_u32(stream, 1U);
             write_string(stream, operation);
             write_string(stream, plan_query->commitment_role_map);
@@ -3653,17 +3697,24 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             }
             if (emitted != plan_query->merge_logical_rows) fail("sorted lookup merge stream length mismatch: " + operation);
             for (u64 index = emitted; index < plan_query->merge_domain; ++index) write_zero(stream, context);
+            flush_buffer(stream);
+            const auto flush_start = std::chrono::steady_clock::now();
             stream.flush();
+            explicit_file_io_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - flush_start).count();
             if (!stream) fail("sorted lookup scratch write failed: " + operation);
+            const auto close_start = std::chrono::steady_clock::now();
             stream.close();
+            explicit_file_io_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - close_start).count();
             if (!stream) fail("sorted lookup scratch close failed: " + operation);
             BN_CTX_free(context);
             context = nullptr;
             std::error_code remove_error;
+            const auto publish_start = std::chrono::steady_clock::now();
             std::filesystem::remove(final_path, remove_error);
             std::filesystem::rename(temp_path, final_path);
             std::filesystem::permissions(final_path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
                                          std::filesystem::perm_options::replace);
+            explicit_file_io_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - publish_start).count();
         } catch (...) {
             if (context) BN_CTX_free(context);
             stream.close();
@@ -3677,7 +3728,9 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         provider.query_ref = plan_query->query_ref;
         provider.merge_ref = plan_query->merge_ref;
         provider.scratch_path = std::filesystem::relative(final_path, config.baseline_root).generic_string();
+        const auto digest_start = std::chrono::steady_clock::now();
         provider.scratch_digest = sha256_file(final_path);
+        explicit_file_io_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - digest_start).count();
         provider.layout_digest = plan_query->layout_digest;
         std::stringstream role_stream(plan_query->commitment_role_map);
         for (std::string role; std::getline(role_stream, role, ',');) provider.commitment_roles.push_back(role);
@@ -3692,6 +3745,10 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         provider.y_bits = plan_query->y_bits;
         provider.key_max_u128 = plan_query->key_max_u128;
         sorted_lookup_providers.push_back(std::move(provider));
+        const double protocol_wall_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - protocol_start).count();
+        if (explicit_file_io_seconds < 0.0 || explicit_file_io_seconds > protocol_wall_seconds)
+            fail("sorted lookup file I/O timing exceeded protocol auxiliary construction interval: " + operation);
+        sorted_lookup_protocol_construction_seconds += protocol_wall_seconds - explicit_file_io_seconds;
     };
 
     const auto put_stage_base = [&](const std::string &stage, u64 layer, u64 head, bool output) {
@@ -3738,11 +3795,13 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
                 if (!selected) fail("max selector has no selected edge for destination group");
             }
             put_i64(stage + "/trace/max_selector", max_selector);
-            put(stage + "/trace/range_bits", bits_for(head_trace.delta, config.range_bits, stage + ".delta"));
+            put(stage + "/trace/range_bits", bits_for(head_trace.delta, table_index_bit_width(tables.exp.size()), stage + ".delta"));
             put_i64(stage + "/trace/lrelu_idx", head_trace.score);
             put_i64(stage + "/trace/exp_idx", head_trace.delta);
-            put(stage + "/trace/lrelu_bits", lookup_bits(head_trace.score, tables.lrelu_min, tables.lrelu_max, config.range_bits, stage + ".lrelu"));
-            put(stage + "/trace/exp_bits", lookup_bits(head_trace.delta, 0, static_cast<i64>(tables.exp_max), config.range_bits, stage + ".exp"));
+            put(stage + "/trace/lrelu_bits", lookup_bits(head_trace.score, tables.lrelu_min, tables.lrelu_max,
+                                                           table_index_bit_width(tables.lrelu.size()), stage + ".lrelu"));
+            put(stage + "/trace/exp_bits", lookup_bits(head_trace.delta, 0, static_cast<i64>(tables.exp_max),
+                                                        table_index_bit_width(tables.exp.size()), stage + ".exp"));
             put(stage + "/trace/rounddiv_aux", round_aux(head_trace.aggregate_round_div));
             put_field(stage + "/trace/rounddiv_a_inverse", head_trace.aggregate_round_div.a_inverse);
             put_field(stage + "/trace/rounddiv_divisor_inverse", head_trace.aggregate_round_div.divisor_inverse);
@@ -3761,7 +3820,8 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             put_matrix(stage + "/trace/elu_input", head_trace.elu_input);
             put_matrix(stage + "/trace/aggregate", head_trace.aggregate);
             put_i64(stage + "/trace/elu_idx", head_trace.aggregate_pre.values.empty() ? std::vector<i64>(graph.nodes, 0) : head_trace.aggregate_pre.values);
-            put(stage + "/trace/elu_bits", lookup_bits(head_trace.aggregate_pre.values, tables.elu_min, tables.elu_max, config.range_bits, stage + ".elu"));
+            put(stage + "/trace/elu_bits", lookup_bits(head_trace.aggregate_pre.values, tables.elu_min, tables.elu_max,
+                                                         table_index_bit_width(tables.elu.size()), stage + ".elu"));
         } else {
             const auto &head_trace = trace.output_heads.at(head);
             put_common(head_trace, head_trace.y_prime, "y_prime");
@@ -3791,7 +3851,9 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
     put_matrix("public_Y", trace.logits);
 
     const auto put_round_views = [&](const std::string &operation, const SignedRoundDivWitness &witness, const Matrix &numerator, u64 numerator_scale,
-                                     const Matrix &quotient) {
+                                     const Matrix &quotient, const std::vector<i64> *raw_denominator_nodes) {
+        proof_auxiliary_construction_seconds += witness.proof_auxiliary_construction_seconds;
+        const auto validation_start = std::chrono::steady_clock::now();
         if (witness.rows != numerator.rows || witness.cols != numerator.cols || quotient.rows != numerator.rows || quotient.cols != numerator.cols) {
             fail("SignedRoundDiv view shape does not match its canonical matrices: " + operation);
         }
@@ -3800,30 +3862,91 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             witness.delta.size() != count || witness.divisor.size() != count || witness.a_inverse.size() != count || witness.divisor_inverse.size() != count) {
             fail("SignedRoundDiv view witness is incomplete: " + operation);
         }
-        put(operation + "/view/signed_numerator", view(count, 2U, [&numerator, numerator_scale, operation](std::uint64_t index) { return native_wire(checked_i128(static_cast<__int128>(numerator.values.at(index)) * numerator_scale, operation + ".signed_numerator")); }));
-        put_i64(operation + "/view/divisor", witness.divisor);
-        put_matrix(operation + "/view/signed_quotient", quotient);
-        put_i64(operation + "/view/a", witness.a);
-        put_i64(operation + "/view/q_abs", witness.q);
-        put_i64(operation + "/view/r", witness.r);
-        put_i64(operation + "/view/delta", witness.delta);
-        put_i64(operation + "/view/sigma", witness.sigma);
-        put_i64(operation + "/view/z", witness.z);
-        put_field(operation + "/view/a_inverse", witness.a_inverse);
-        put_field(operation + "/view/divisor_inverse", witness.divisor_inverse);
-        for (u64 bit = 0U; bit < config.range_bits; ++bit) {
-            put(operation + "/view/range/a/" + std::to_string(bit), native_bit_column(witness.a, bit, operation + ".a"));
-            put(operation + "/view/range/q_abs/" + std::to_string(bit), native_bit_column(witness.q, bit, operation + ".q"));
-            put(operation + "/view/range/r/" + std::to_string(bit), native_bit_column(witness.r, bit, operation + ".r"));
-            put(operation + "/view/range/delta/" + std::to_string(bit), native_bit_column(witness.delta, bit, operation + ".delta"));
-            put(operation + "/view/range/divisor/" + std::to_string(bit), native_bit_column(witness.divisor, bit, operation + ".divisor"));
+        const auto &divisor_family = family_for(operation + "/view/divisor");
+        const u64 padded_width = divisor_family.padded_shape.size() == 1U ? 1U : divisor_family.padded_shape[1];
+        const auto bounds = signed_round_bounds::derive(config, plan.integer_bound_ledger, operation);
+        if ((divisor_family.logical_shape.size() != 1U && divisor_family.logical_shape.size() != 2U) ||
+            divisor_family.logical_shape[0] != witness.rows ||
+            (divisor_family.logical_shape.size() == 2U && divisor_family.logical_shape[1] != padded_width) ||
+            padded_width < witness.cols || witness.rows > std::numeric_limits<u64>::max() / padded_width) {
+            fail("SignedRoundDiv full-feature divisor view has an invalid authenticated shape: " + operation);
         }
+        for (u64 row = 0U; row < witness.rows; ++row) {
+            const i64 row_divisor = witness.divisor.at(static_cast<std::size_t>(row * witness.cols));
+            for (u64 feature = 1U; feature < witness.cols; ++feature)
+                if (witness.divisor.at(static_cast<std::size_t>(row * witness.cols + feature)) != row_divisor)
+                    fail("SignedRoundDiv divisor is not a row scalar before padded broadcast: " + operation);
+        }
+        const std::vector<std::tuple<std::string, const std::vector<i64> *, u64, i64>> range_roles = {
+            {"a", &witness.a, bounds.a_bits, bounds.a_max}, {"q_abs", &witness.q, bounds.q_bits, bounds.q_max},
+            {"r", &witness.r, bounds.r_bits, bounds.r_max}, {"delta", &witness.delta, bounds.delta_bits, bounds.delta_max},
+            {"divisor", &witness.divisor, bounds.divisor_bits, bounds.divisor_max},
+        };
+        for (const auto &role : range_roles) {
+            const u64 width = std::get<2>(role);
+            const i64 maximum = std::get<3>(role);
+            for (const i64 value : *std::get<1>(role))
+                if (value < 0 || value > maximum || (width < 63U && (static_cast<u64>(value) >> width) != 0U))
+                    fail("SignedRoundDiv witness exceeds authenticated role bound: " + operation + "/" + std::get<0>(role));
+        }
+        if (bounds.binds_raw_denominator) {
+            if (raw_denominator_nodes == nullptr || raw_denominator_nodes->size() != witness.rows ||
+                witness.rows > std::numeric_limits<u64>::max() / padded_width)
+                fail("SignedRoundDiv raw denominator source is missing or malformed: " + operation);
+            for (u64 row = 0U; row < witness.rows; ++row) {
+                const i64 raw = raw_denominator_nodes->at(static_cast<std::size_t>(row));
+                const i64 scaled = checked_i128(static_cast<__int128>(raw) * bounds.denominator_scale, operation + ".scaled_divisor");
+                if (raw <= 0 || witness.divisor.at(static_cast<std::size_t>(row * witness.cols)) != scaled)
+                    fail("SignedRoundDiv raw/scaled divisor witness mismatch: " + operation);
+            }
+            const auto &scaled_family = family_for(operation + "/view/divisor_aux");
+            if (scaled_family.logical_shape.size() != 2U || scaled_family.logical_shape[0] != witness.rows ||
+                scaled_family.logical_shape[1] != padded_width)
+                fail("SignedRoundDiv scaled divisor auxiliary view has an invalid authenticated shape: " + operation);
+        } else if (raw_denominator_nodes != nullptr) {
+            fail("SignedRoundDiv unexpectedly received a raw denominator for a public-divisor operation: " + operation);
+        }
+        proof_auxiliary_construction_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - validation_start).count();
+        put(operation + "/view/signed_numerator", view(count, 2U, [&numerator, numerator_scale, operation](std::uint64_t index) { return native_wire(checked_i128(static_cast<__int128>(numerator.values.at(index)) * numerator_scale, operation + ".signed_numerator")); }), &proof_auxiliary_construction_seconds);
+        if (bounds.binds_raw_denominator) {
+            put(operation + "/view/divisor", view(witness.rows * padded_width, 2U,
+                 [raw_denominator_nodes, padded_width](std::uint64_t index) {
+                     return native_wire(raw_denominator_nodes->at(static_cast<std::size_t>(index / padded_width)));
+                 }), &proof_auxiliary_construction_seconds);
+            put(operation + "/view/divisor_aux", view(witness.rows * padded_width, 2U,
+                 [&witness, padded_width](std::uint64_t index) {
+                     const u64 row = index / padded_width;
+                     return native_wire(witness.divisor.at(static_cast<std::size_t>(row * witness.cols)));
+                 }), &proof_auxiliary_construction_seconds);
+        } else {
+            put(operation + "/view/divisor", view(native_shape_product(divisor_family.logical_shape, operation + ".divisor.logical"), 2U,
+                 [&witness, padded_width](std::uint64_t index) {
+                     const u64 row = index / padded_width;
+                     return native_wire(witness.divisor.at(static_cast<std::size_t>(row * witness.cols)));
+                 }), &proof_auxiliary_construction_seconds);
+        }
+        put(operation + "/view/signed_quotient", native_matrix_values(quotient), &proof_auxiliary_construction_seconds);
+        put(operation + "/view/a", native_i64_values(witness.a), &proof_auxiliary_construction_seconds);
+        put(operation + "/view/q_abs", native_i64_values(witness.q), &proof_auxiliary_construction_seconds);
+        put(operation + "/view/r", native_i64_values(witness.r), &proof_auxiliary_construction_seconds);
+        put(operation + "/view/delta", native_i64_values(witness.delta), &proof_auxiliary_construction_seconds);
+        put(operation + "/view/sigma", native_i64_values(witness.sigma), &proof_auxiliary_construction_seconds);
+        put(operation + "/view/z", native_i64_values(witness.z), &proof_auxiliary_construction_seconds);
+        put(operation + "/view/a_inverse", native_field_values(witness.a_inverse), &proof_auxiliary_construction_seconds);
+        put(operation + "/view/divisor_inverse", native_field_values(witness.divisor_inverse), &proof_auxiliary_construction_seconds);
+        for (const auto &role : range_roles)
+            for (u64 bit = 0U; bit < std::get<2>(role); ++bit)
+                put(operation + "/view/range/" + std::get<0>(role) + "/" + std::to_string(bit),
+                    native_bit_column(*std::get<1>(role), bit, operation + "." + std::get<0>(role)), &proof_auxiliary_construction_seconds);
     };
 
     const auto put_group_views = [&](const std::string &stage, u64 width, bool output, u64 aggregate_scale, const auto &head_trace) {
         using HeadTrace = std::decay_t<decltype(head_trace)>;
         constexpr bool is_hidden = std::is_same_v<HeadTrace, HiddenHeadTrace>;
-        const auto edge_width = native_edge_feature_from_scalar(head_trace.exp_weight, width);
+        u64 padded_width = 1U;
+        while (padded_width < width) padded_width <<= 1U;
+        const auto edge_width = native_edge_feature_from_scalar(head_trace.exp_weight, padded_width);
         const auto pu = [&]() {
             if constexpr (is_hidden) {
                 return native_matrix_values(head_trace.product_u_h_prime);
@@ -3831,11 +3954,11 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
                 return native_matrix_values(head_trace.product_u_y_prime);
             }
         }();
-        const auto group_new_width = edge_group_bits(width);
-        const auto group_end_width = edge_group_end_bits(width);
+        const auto group_new_width = edge_group_bits(padded_width);
+        const auto group_end_width = edge_group_end_bits(padded_width);
         const auto denominator_nodes = node_vector_from_edges(head_trace.denominator);
         const auto denominator_edges = native_broadcast_node_vector(graph, denominator_nodes);
-        const auto denominator_broadcast = view(graph.edges * width, 2U, [denominator_edges, width](std::uint64_t index) { return denominator_edges[index / width]; });
+        const auto denominator_broadcast = view(graph.edges * padded_width, 2U, [denominator_edges, padded_width](std::uint64_t index) { return denominator_edges[index / padded_width]; });
         const std::string group = stage + "/group_sum";
         put(group + "/view/group_new", group_new_width);
         put(group + "/view/group_end", group_end_width);
@@ -3843,8 +3966,8 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         put(group + "/view/input1", pu);
         put(group + "/view/output0", denominator_broadcast);
         put(group + "/view/output1", native_broadcast_node_matrix(graph, head_trace.aggregate_num));
-        put(group + "/view/prefix0", native_prefix(edge_width, group_new, width, false));
-        put(group + "/view/prefix_prev0", native_prefix(edge_width, group_new, width, true));
+        put(group + "/view/prefix0", native_prefix(edge_width, group_new, padded_width, false));
+        put(group + "/view/prefix_prev0", native_prefix(edge_width, group_new, padded_width, true));
         put(group + "/view/prefix1", native_prefix(pu, group_new, width, false));
         put(group + "/view/prefix_prev1", native_prefix(pu, group_new, width, true));
 
@@ -3873,10 +3996,12 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         put_segmented(stage + "/integer_numerator", pu, native_broadcast_node_matrix(graph, head_trace.aggregate_num));
 
         const std::string consistency = stage + "/consistency";
-        put(consistency + "/view/input0", native_edge_feature_from_scalar(denominator_nodes, width));
+        put(consistency + "/view/input0", native_broadcast_node_scalar_features(graph, denominator_nodes, padded_width));
         put(consistency + "/view/input1", native_field_matrix_values(head_trace.aggregate_pre_field));
         put(consistency + "/view/input2", native_matrix_values(head_trace.aggregate_num));
         put(consistency + "/view/output0", native_field_matrix_values(head_trace.consistency_residual_field));
+        const std::string alpha_product = stage + (output ? "/alpha_y_prime" : "/alpha_h_prime");
+        put(alpha_product + "/view/input0", native_edge_feature_from_field_scalar(head_trace.alpha_field, padded_width));
 
         const auto put_max_views = [&]() {
             const std::string max = stage + "/max_range";
@@ -3900,7 +4025,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             const auto selector_prefix = [&](bool previous) { return view(graph.edges, 2U, [&max_selector, &group_new, previous, running = i64{0}](std::uint64_t index) mutable { if (index == 0U || group_new.at(index) != 0U) running = 0; const auto prior = running; running += max_selector.at(index); return native_wire(previous ? prior : running); }); };
             put(max + "/view/selector_prefix", selector_prefix(false));
             put(max + "/view/selector_prev", selector_prefix(true));
-            for (u64 bit = 0U; bit < config.range_bits; ++bit)
+            for (u64 bit = 0U; bit < table_index_bit_width(tables.exp.size()); ++bit)
                 put(max + "/view/range_bit/" + std::to_string(bit), native_bit_column(head_trace.delta, bit, max + ".range" + std::to_string(bit)));
         };
         put_max_views();
@@ -3945,10 +4070,10 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
                 return head_trace.y_quantized;
             }
         }();
-        put_round_views(round, head_trace.aggregate_round_div, head_trace.aggregate_num, aggregate_scale, rounded);
+        put_round_views(round, head_trace.aggregate_round_div, head_trace.aggregate_num, aggregate_scale, rounded, &denominator_nodes);
         if constexpr (!is_hidden) {
             put_round_views(stage + "/output_scale_alignment", head_trace.alignment_round_div, head_trace.y_quantized, config.quantization.output_head,
-                            head_trace.aligned);
+                            head_trace.aligned, nullptr);
             const std::string bias = stage + "/output_bias";
             put(bias + "/view/input0", native_matrix_values(head_trace.aligned));
             put(bias + "/view/input1", view(graph.nodes * width, 2U, [&head_trace, width](std::uint64_t index) { return native_wire(head_trace.bias.at(index % width)); }));
@@ -3977,7 +4102,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         const std::string stage = "output/head" + std::to_string(head);
         put_group_views(stage, config.architecture.classes, true, config.quantization.output_pre, trace.output_heads.at(head));
     }
-    put_round_views("final_average", trace.final_average_round_div, trace.output_sum, 1U, trace.logits);
+    put_round_views("final_average", trace.final_average_round_div, trace.output_sum, 1U, trace.logits, nullptr);
 
     NativeRelationWitnessInput result;
     result.tensors.reserve(plan.tensor_families.size());
@@ -4010,6 +4135,8 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
     }
 
     if (sorted_lookup_providers.size() != plan.sorted_lookup.queries.size()) fail("native witness sorted-lookup provider count does not match RelationPlan");
+    result.sorted_lookup_protocol_construction_seconds = sorted_lookup_protocol_construction_seconds;
+    result.proof_auxiliary_construction_seconds = proof_auxiliary_construction_seconds;
     result.sorted_lookup_providers = std::move(sorted_lookup_providers);
 
     populate_authenticated_resource_wire(config, result, true);
@@ -4334,7 +4461,7 @@ struct CliOptions {
 };
 
 void usage() {
-    std::cerr << "usage: gat_runner <inspect|prepare|run|prove|verify> --config FILE "
+    std::cerr << "usage: gat_runner <inspect|admit|prepare|run|prove|verify> --config FILE "
                  "[--backend cpu|gpu] [--run-dir DIR]\n";
 }
 
@@ -4345,7 +4472,7 @@ CliOptions parse_cli(int argc, char **argv) {
     }
     CliOptions options;
     options.command = argv[1];
-    const std::set<std::string> commands = {"inspect", "prepare", "run", "prove", "verify"};
+    const std::set<std::string> commands = {"inspect", "admit", "prepare", "run", "prove", "verify"};
     if (!commands.count(options.command)) fail("unknown command: " + options.command);
     for (int i = 2; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -4435,10 +4562,8 @@ Matrix read_public_output(const std::filesystem::path &path, std::uint64_t expec
     return output;
 }
 
-void write_plan(const std::filesystem::path &path, const RelationPlan &plan, const StaticTables &tables) {
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream output(path);
-    if (!output) fail("cannot write relation plan " + path.string());
+std::string serialize_plan_text(const RelationPlan &plan, const StaticTables &tables) {
+    std::ostringstream output;
     output << "schema_id=" << plan.schema_id << "\nproof_scope=" << plan.proof_scope << "\nbinding_rule=" << plan.binding_rule << "\n"
            << "registry_digest=" << plan.registry_digest << "\nterminal_claims_digest=" << plan.terminal_claims_digest << "\n"
            << "schema_digest=" << plan.schema_digest << "\nmapping_digest=" << plan.mapping_digest << "\n"
@@ -4509,6 +4634,15 @@ void write_plan(const std::filesystem::path &path, const RelationPlan &plan, con
         }
         output << '|' << operation.selector_id << '|' << operation.terminal_point << '|' << operation.terminal_value << '|' << operation.terminal_claim << '\n';
     }
+    return output.str();
+}
+
+void write_plan(const std::filesystem::path &path, const RelationPlan &plan, const StaticTables &tables) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary);
+    if (!output) fail("cannot write relation plan " + path.string());
+    const std::string serialized = serialize_plan_text(plan, tables);
+    if (!serialized.empty()) output.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
     finish_output(output, path, "relation plan");
 }
 
@@ -4546,11 +4680,51 @@ void write_envelope(const std::filesystem::path &path, const ProofEnvelope &enve
            << "proof_size_bytes=" << envelope.proof_size_bytes << "\ncommitment_size_bytes=" << envelope.commitment_size_bytes << "\n"
            << "commitment_time_semantics=" << envelope.commitment_time_semantics << "\n"
            << "commitment_time_seconds=" << std::setprecision(17) << envelope.commitment_time_seconds << "\nprove_time_seconds=" << envelope.prove_time_seconds
-           << "\n"
            << "verify_time_seconds=" << envelope.verify_time_seconds << "\nverifier_reads_witness=" << (envelope.verifier_reads_witness ? 1 : 0) << "\n"
            << "gpu_kernel_executed=" << (envelope.gpu_kernel_executed ? 1 : 0) << "\nsilent_fallback=" << (envelope.silent_fallback ? 1 : 0) << "\n"
            << "output_bound=" << (envelope.output_bound ? 1 : 0) << "\nerror=" << envelope.error << "\n";
     finish_output(output, path, "proof envelope");
+}
+
+void write_proof_timing(const std::filesystem::path &path, const ProofEnvelope &envelope) {
+    constexpr const char *kProofAuxiliaryTimingScope =
+        "signed_round_aux_witness_and_relation_views;steady_clock_wall;exclude_family_storage_write_hash_and_explicit_file_io";
+    const std::vector<double> components = {
+        envelope.proof_auxiliary_construction_seconds, envelope.sorted_lookup_protocol_construction_seconds,
+        envelope.relation_context_prove_seconds, envelope.relation_prove_wall_seconds,
+        envelope.relation_commitment_time_seconds, envelope.prove_provider_file_io_excluded_seconds,
+        envelope.proof_serialization_seconds,
+    };
+    if (envelope.status != "PROVED" || envelope.proof_auxiliary_construction_scope != kProofAuxiliaryTimingScope ||
+        std::any_of(components.begin(), components.end(), [](double value) { return !std::isfinite(value) || value < 0.0; }) ||
+        envelope.relation_commitment_time_seconds > envelope.relation_prove_wall_seconds ||
+        envelope.prove_provider_file_io_excluded_seconds > envelope.relation_prove_wall_seconds - envelope.relation_commitment_time_seconds) {
+        fail("raw proof timing sidecar has invalid status/scope/components");
+    }
+    const double recomposed_prove = envelope.proof_auxiliary_construction_seconds + envelope.sorted_lookup_protocol_construction_seconds +
+        envelope.relation_context_prove_seconds + envelope.relation_prove_wall_seconds - envelope.relation_commitment_time_seconds -
+        envelope.prove_provider_file_io_excluded_seconds + envelope.proof_serialization_seconds;
+    if (!std::isfinite(recomposed_prove) || !std::isfinite(envelope.prove_time_seconds) ||
+        std::abs(recomposed_prove - envelope.prove_time_seconds) >
+            2e-12 * std::max(1.0, std::max(std::abs(recomposed_prove), std::abs(envelope.prove_time_seconds)))) {
+        fail("raw proof timing sidecar components do not sum to Prove Time");
+    }
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path);
+    if (!output) fail("cannot write proof timing diagnostics " + path.string());
+    output << "schema_id=zkDL_gat_proof_timing_v1\nstatus=PROVED\n"
+           << "statement_id=" << envelope.statement_id << "\nproof_id=" << envelope.proof_id << "\n"
+           << "commitment_time_seconds=" << std::setprecision(17) << envelope.commitment_time_seconds << "\n"
+           << "prove_time_seconds=" << envelope.prove_time_seconds << "\n"
+           << "proof_auxiliary_construction_seconds=" << envelope.proof_auxiliary_construction_seconds << "\n"
+           << "proof_auxiliary_construction_scope=" << envelope.proof_auxiliary_construction_scope << "\n"
+           << "sorted_lookup_protocol_construction_seconds=" << envelope.sorted_lookup_protocol_construction_seconds << "\n"
+           << "relation_context_prove_seconds=" << envelope.relation_context_prove_seconds << "\n"
+           << "relation_prove_wall_seconds=" << envelope.relation_prove_wall_seconds << "\n"
+           << "relation_commitment_time_seconds=" << envelope.relation_commitment_time_seconds << "\n"
+           << "prove_provider_file_io_excluded_seconds=" << envelope.prove_provider_file_io_excluded_seconds << "\n"
+           << "proof_serialization_seconds=" << envelope.proof_serialization_seconds << "\n";
+    finish_output(output, path, "proof timing diagnostics");
 }
 
 ProofEnvelope read_envelope(const std::filesystem::path &path) {
@@ -4690,6 +4864,14 @@ int produce(const Config &config, const CliOptions &options) {
         write_plan(directory / "relation.plan", relation, tables);
 
         const auto witness = build_native_relation_witness(run_config, graph, model, tables, relation, trace);
+        // Every private trace family above has been synchronously persisted
+        // into authenticated NativeFamilyStorage.  The native proof core only
+        // requires this non-null request token; it consumes those storage
+        // readers and the already-built public statement, never a lazy view of
+        // GatTrace.  Release the full forward trace before constructing the
+        // prover context and proof so it cannot overlap the much larger native
+        // relation phases.
+        trace = GatTrace{};
         NativeProveRequest request;
         request.config = &run_config;
         request.graph = &graph;
@@ -4732,6 +4914,7 @@ int produce(const Config &config, const CliOptions &options) {
         }
         write_bytes(proof_path, result.proof_bytes);
         write_envelope(envelope_path, result.envelope);
+        write_proof_timing(directory / "proof.timing", result.envelope);
         const auto record = record_from_envelope(run_config, statement, result.envelope, "NOT_RUN");
         write_run_record(record_path, record);
         return 0;
@@ -4803,6 +4986,168 @@ void validate_statement_binding(const Config &config, const Graph &graph, const 
     }
 }
 
+int admit(const Config &config) {
+    const auto model = load_model_bundle(config);
+    const auto graph = load_graph(config);
+    const auto tables = build_static_tables(config, graph);
+    const auto relation = build_relation_plan(config, graph, tables);
+    std::string relation_error;
+    if (!relation_plan_complete(relation, &relation_error)) fail(relation_error);
+    admit_integer_bound_ledger(config, graph, model, tables, relation.integer_bound_ledger);
+    NativeRelationPlanMetrics plan_metrics;
+    if (!zkdl_gat_native_relation_plan_metrics(config, graph, tables, relation, &plan_metrics, &relation_error))
+        fail(relation_error.empty() ? "native relation descriptor admission failed" : relation_error);
+    const std::uint64_t relation_plan_text_bytes =
+        static_cast<std::uint64_t>(serialize_plan_text(relation, tables).size());
+
+    std::uint64_t logical_family_elements = 0U;
+    std::uint64_t private_family_storage_upper_bytes = 0U;
+    std::uint64_t maximum_padded_family_domain = 0U;
+    for (const auto &family : relation.tensor_families) {
+        std::uint64_t logical_elements = 1U, padded_domain = 1U;
+        if (family.logical_shape.empty() || family.logical_shape.size() != family.padded_shape.size())
+            fail("native admission found a malformed relation-family shape: " + family.id);
+        for (std::size_t axis = 0U; axis < family.logical_shape.size(); ++axis) {
+            if (family.logical_shape[axis] == 0U || family.padded_shape[axis] < family.logical_shape[axis] ||
+                !checked_multiply_u64(logical_elements, family.logical_shape[axis], logical_elements) ||
+                !checked_multiply_u64(padded_domain, family.padded_shape[axis], padded_domain))
+                fail("native admission relation-family shape overflows: " + family.id);
+        }
+        if (logical_family_elements > std::numeric_limits<std::uint64_t>::max() - logical_elements)
+            fail("native admission logical family element total overflows");
+        logical_family_elements += logical_elements;
+        maximum_padded_family_domain = std::max(maximum_padded_family_domain, padded_domain);
+        if (family.visibility != "public") {
+            if (logical_elements > (std::numeric_limits<std::uint64_t>::max() - 24U) / 32U ||
+                private_family_storage_upper_bytes > std::numeric_limits<std::uint64_t>::max() - (logical_elements * 32U + 24U))
+                fail("native admission private-family storage upper bound overflows");
+            private_family_storage_upper_bytes += logical_elements * 32U + 24U;
+        }
+    }
+    constexpr std::string_view sorted_roles = "table_key,query_x,query_y,query_key,query_prefix,merge_key,merge_delta,merge_marker,merge_inverse,merge_prefix,merge_bits,merge_delta_bits,query_bits";
+    std::uint64_t sorted_lookup_scratch_upper_bytes = 0U;
+    std::uint64_t maximum_sorted_lookup_scratch_bytes = 0U;
+    std::uint64_t maximum_sorted_lookup_merge_logical_rows = 0U;
+    std::uint64_t sorted_lookup_outer_commitment_count = 0U;
+    std::uint64_t sorted_lookup_outer_segment_count = 0U;
+    for (const auto &query : relation.sorted_lookup.queries) {
+        const std::uint64_t record_domains = query.table_domain + query.query_domain + query.merge_domain;
+        if (record_domains > (std::numeric_limits<std::uint64_t>::max() - 124U) / 107U)
+            fail("native admission sorted-lookup scratch bound overflows");
+        const std::uint64_t header_bytes = 124U + query.operation_id.size() + sorted_roles.size() + query.key_max_u128.size();
+        const std::uint64_t scratch_bytes = record_domains * 107U + header_bytes;
+        if (sorted_lookup_scratch_upper_bytes > std::numeric_limits<std::uint64_t>::max() - scratch_bytes)
+            fail("native admission total sorted-lookup scratch bound overflows");
+        sorted_lookup_scratch_upper_bytes += scratch_bytes;
+        maximum_sorted_lookup_scratch_bytes = std::max(maximum_sorted_lookup_scratch_bytes, scratch_bytes);
+        maximum_sorted_lookup_merge_logical_rows = std::max(maximum_sorted_lookup_merge_logical_rows, query.merge_logical_rows);
+        const std::uint64_t query_segments = (query.query_domain + (1ULL << 18U) - 1U) / (1ULL << 18U);
+        const std::uint64_t merge_segments = (query.merge_domain + (1ULL << 18U) - 1U) / (1ULL << 18U);
+        const std::uint64_t outer_count = 9U + query.x_bits + query.y_bits;
+        const std::uint64_t query_outer_segments = query_segments * 4U;
+        const std::uint64_t merge_outer_segments = merge_segments * (5U + query.x_bits + query.y_bits);
+        if (sorted_lookup_outer_commitment_count > std::numeric_limits<std::uint64_t>::max() - outer_count ||
+            query_outer_segments > std::numeric_limits<std::uint64_t>::max() - merge_outer_segments ||
+            sorted_lookup_outer_segment_count > std::numeric_limits<std::uint64_t>::max() - query_outer_segments - merge_outer_segments) {
+            fail("native admission sorted-lookup outer commitment profile overflows");
+        }
+        sorted_lookup_outer_commitment_count += outer_count;
+        sorted_lookup_outer_segment_count += query_outer_segments + merge_outer_segments;
+    }
+    std::uint64_t model_parameter_elements = 0U;
+    std::uint64_t model_commitment_segment_count = 0U;
+    for (const auto &item : model.tensors) {
+        if (item.second.values.size() > std::numeric_limits<std::uint64_t>::max() - model_parameter_elements)
+            fail("native admission model parameter element total overflows");
+        model_parameter_elements += item.second.values.size();
+        const auto &shape = item.second.shape;
+        if (shape.empty()) fail("native admission found a model tensor with empty shape");
+        std::uint64_t domain = 1U;
+        const std::size_t begin = shape.size() == 3U && shape.front() == 1U ? 1U : 0U;
+        for (std::size_t axis = begin; axis < shape.size(); ++axis) {
+            if (shape[axis] == 0U || shape[axis] > (1ULL << 30U)) fail("native admission model tensor axis is invalid");
+            std::uint64_t padded_axis = 1U;
+            while (padded_axis < shape[axis]) {
+                if (padded_axis > (1ULL << 29U)) fail("native admission model tensor padded axis overflows");
+                padded_axis <<= 1U;
+            }
+            if (!checked_multiply_u64(domain, padded_axis, domain) || domain > (1ULL << 30U))
+                fail("native admission model tensor padded domain overflows");
+        }
+        const std::uint64_t segments = (domain + (1ULL << 18U) - 1U) / (1ULL << 18U);
+        if (model_commitment_segment_count > std::numeric_limits<std::uint64_t>::max() - segments)
+            fail("native admission model commitment segment total overflows");
+        model_commitment_segment_count += segments;
+    }
+    std::cout << "{\"schema\":\"zkdl_native_relation_admission_v1\",\"status\":\"PASS\",\"dataset\":\"" << config.dataset
+              << "\",\"input_preprocess_id\":" << json_quote_config(config.input_preprocess_id)
+              << ",\"batching_rule\":" << json_quote_config(config.batching_rule)
+              << ",\"nodes\":" << graph.nodes << ",\"edges\":" << graph.edges << ",\"graphs\":" << graph.graphs
+              << ",\"checkpoint_tensor_count\":" << model.tensors.size()
+              << ",\"model_parameter_elements\":" << model_parameter_elements
+              << ",\"model_commitment_segment_count\":" << model_commitment_segment_count
+              << ",\"tensor_family_count\":" << relation.tensor_families.size()
+              << ",\"operation_count\":" << relation.operation_families.size()
+              << ",\"native_primitive_count\":" << plan_metrics.primitive_count
+              << ",\"native_constraint_count\":" << plan_metrics.constraint_count
+              << ",\"native_route_count\":" << plan_metrics.route_count
+              << ",\"native_fac_binding_count\":" << plan_metrics.fac_binding_count
+              << ",\"native_padding_family_count\":" << plan_metrics.padding_family_count
+              << ",\"native_family_segment_count\":" << plan_metrics.family_segment_count
+              << ",\"native_primitive_opening_segment_count\":" << plan_metrics.primitive_opening_segment_count
+              << ",\"native_operation_descriptor_bytes\":" << plan_metrics.operation_descriptor_bytes
+              << ",\"native_operation_descriptor_max_bytes\":" << plan_metrics.operation_descriptor_max_bytes
+              << ",\"native_sumcheck_body_max_bytes\":" << plan_metrics.sumcheck_body_max_bytes
+              << ",\"native_terminal_relation_body_max_bytes\":" << plan_metrics.terminal_relation_body_max_bytes
+              << ",\"native_constraint_body_max_bytes\":" << plan_metrics.constraint_body_max_bytes
+              << ",\"native_padding_record_body_max_bytes\":" << plan_metrics.padding_record_body_max_bytes
+              << ",\"native_hidden_matmul_body_max_bytes\":" << plan_metrics.hidden_matmul_body_max_bytes
+              << ",\"native_sparse_route_body_max_bytes\":" << plan_metrics.sparse_route_body_max_bytes
+              << ",\"native_fac_line8_body_max_bytes\":" << plan_metrics.fac_line8_body_max_bytes
+              << ",\"native_sorted_lookup_relation_body_max_bytes\":" << plan_metrics.sorted_lookup_relation_body_max_bytes
+              << ",\"native_sorted_lookup_proof_body_max_bytes\":" << plan_metrics.sorted_lookup_proof_body_max_bytes
+              << ",\"native_relation_proof_sections_wire_bytes_upper_bound\":" << plan_metrics.relation_proof_sections_wire_bytes_upper_bound
+              << ",\"native_proof_wire_bytes_upper_bound\":" << plan_metrics.proof_wire_bytes_upper_bound
+              << ",\"native_commitment_section_wire_bytes_upper_bound\":" << plan_metrics.commitment_section_wire_bytes_upper_bound
+              << ",\"native_operation_descriptor_resident_bytes_upper_bound\":" << plan_metrics.operation_descriptor_resident_bytes_upper_bound
+              << ",\"relation_plan_text_bytes\":" << relation_plan_text_bytes
+              << ",\"native_trace_i64_payload_bytes\":" << plan_metrics.trace_i64_payload_bytes
+              << ",\"native_trace_field_payload_bytes\":" << plan_metrics.trace_field_payload_bytes
+              << ",\"native_trace_u8_payload_bytes\":" << plan_metrics.trace_u8_payload_bytes
+              << ",\"native_trace_object_metadata_bytes\":" << plan_metrics.trace_object_metadata_bytes
+              << ",\"native_trace_forward_live_peak_bytes_upper_bound\":" << plan_metrics.trace_forward_live_peak_bytes_upper_bound
+              << ",\"native_maximum_route_source_domain\":" << plan_metrics.maximum_route_source_domain
+              << ",\"native_maximum_route_edge_domain\":" << plan_metrics.maximum_route_edge_domain
+              << ",\"native_route_sumcheck_live_peak_bytes_upper_bound\":" << plan_metrics.route_sumcheck_live_peak_bytes_upper_bound
+              << ",\"sorted_lookup_query_count\":" << relation.sorted_lookup.queries.size()
+              << ",\"maximum_sorted_lookup_merge_logical_rows\":" << maximum_sorted_lookup_merge_logical_rows
+              << ",\"sorted_lookup_outer_commitment_count\":" << sorted_lookup_outer_commitment_count
+              << ",\"sorted_lookup_outer_segment_count\":" << sorted_lookup_outer_segment_count
+              << ",\"logical_family_elements\":" << logical_family_elements
+              << ",\"maximum_padded_family_domain\":" << maximum_padded_family_domain
+              << ",\"private_family_storage_upper_bound_bytes\":" << private_family_storage_upper_bytes
+              << ",\"sorted_lookup_scratch_upper_bound_bytes\":" << sorted_lookup_scratch_upper_bytes
+              << ",\"maximum_sorted_lookup_scratch_bytes\":" << maximum_sorted_lookup_scratch_bytes
+              << ",\"integer_bound_ledger_digest\":\"" << relation.integer_bound_ledger_digest
+              << "\",\"relation_registry_digest\":\"" << relation.registry_digest
+              << "\",\"canonical_graph_digest\":\"" << digest_canonical_graph(graph)
+              << "\",\"canonical_graph_nodes\":" << graph.nodes
+              << ",\"canonical_graph_edges\":" << graph.edges
+              << ",\"canonical_graph_count\":" << graph.graphs
+              << ",\"canonical_graph_node_ptr\":[";
+    for (std::size_t index = 0U; index < graph.node_ptr.size(); ++index) {
+        if (index != 0U) std::cout << ',';
+        std::cout << graph.node_ptr[index];
+    }
+    std::cout << "],\"canonical_graph_edge_ptr\":[";
+    for (std::size_t index = 0U; index < graph.edge_ptr.size(); ++index) {
+        if (index != 0U) std::cout << ',';
+        std::cout << graph.edge_ptr[index];
+    }
+    std::cout << "]}\n";
+    return 0;
+}
+
 int verify_only(const Config &config, const CliOptions &options) {
     const auto directory = run_path(config, options.run_dir);
     auto run_config = config_for_run(config, directory);
@@ -4821,7 +5166,7 @@ int verify_only(const Config &config, const CliOptions &options) {
         statement_loaded = true;
         envelope = read_envelope(envelope_path);
         envelope_loaded = true;
-        if (envelope.schema_id != "zkDL_gat_proof_envelope_v2" ||
+        if (envelope.schema_id != "zkDL_gat_proof_envelope_v1" ||
             envelope.commitment_time_semantics != "native_tensor_commitments" || envelope.status != "PROVED" ||
             envelope.native_core_api != "zkdl_native_gat_bridge_v1" ||
             envelope.proof_id.empty() || envelope.statement_id != statement.statement_id || envelope.proof_scope != statement.proof_scope ||
@@ -4899,13 +5244,14 @@ int verify_only(const Config &config, const CliOptions &options) {
 int main(int argc, char **argv) {
     try {
         const auto options = zkdl_gat::parse_cli(argc, argv);
-        const auto config = zkdl_gat::load_config(options.config);
+        const auto config = zkdl_gat::load_config(options.config, options.command == "admit");
         if (options.command == "inspect") {
             std::cout << "dataset=" << config.dataset << " baseline_root=" << config.baseline_root.string()
                       << " checkpoint_bundle=" << config.checkpoint_bundle.string()
                       << " backend=" << (options.has_backend ? zkdl_gat::backend_name(options.backend) : "unspecified") << "\n";
             return 0;
         }
+        if (options.command == "admit") return zkdl_gat::admit(config);
         if (options.command == "prepare") return zkdl_gat::prepare(config, options);
         if (options.command == "run" || options.command == "prove") return zkdl_gat::produce(config, options);
         return zkdl_gat::verify_only(config, options);

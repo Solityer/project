@@ -1,0 +1,133 @@
+[ezkl-formal] GPU_BUILD_STAGE=prerequisite-authentication
+native ICICLE prerequisites need setup: formal GPU execution has no selected physical CUDA device identity
+[ezkl-formal] GPU_BUILD_STAGE=prepare-native-cuda-backend
+[ezkl-formal] GPU_SETUP_STAGE=reset-stale-native-build-directory path=/home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda
+[ezkl-formal] GPU_SETUP_STAGE=configure selected_device=index:0 uuid:GPU-3cde57ba-ae43-4452-bd59-7b156b36db71 logical:0 architecture=sm_121 compiler=/usr/local/cuda-13.0/bin/nvcc
+-- The CUDA compiler identification is NVIDIA 13.0.88
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting CUDA compiler ABI info
+-- Detecting CUDA compiler ABI info - done
+-- Check for working CUDA compiler: /usr/local/cuda-13.0/bin/nvcc - skipped
+-- Detecting CUDA compile features
+-- Detecting CUDA compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/aarch64-linux-gnu-g++-13 - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Using multi-threaded CUDA compilation.
+-- Configuring done (1.5s)
+-- Generating done (0.0s)
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    CMAKE_C_COMPILER
+
+
+-- Build files have been written to: /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda
+[ezkl-formal] GPU_SETUP_STAGE=compile selected_device_uuid=GPU-3cde57ba-ae43-4452-bd59-7b156b36db71
+[  6%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/extern.cu.o
+[ 13%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/vec_ops/extern.cu.o
+[ 26%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/merkle-tree/extern.cu.o
+[ 26%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/merkle-tree/extern_mmcs.cu.o
+[ 33%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/poseidon/extern.cu.o
+[ 40%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/poseidon2/extern.cu.o
+[ 46%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/ntt/extern.cu.o
+[ 53%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/ntt/kernel_ntt.cu.o
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/kernels.cuh(40): warning #940-D: missing return statement at end of non-void function "poseidon2::sbox_el(S, int) [with S=bn254::scalar_t]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon2::sbox_el(S, int) [with S=bn254::scalar_t]" at line 46
+            instantiation of "void poseidon2::sbox<S,T>(S *, int) [with S=bn254::scalar_t, T=2]" at line 210
+            instantiation of "void poseidon2::permute_state<S,T>(S *, const poseidon2::Poseidon2Constants<S> &) [with S=bn254::scalar_t, T=2]" at line 293
+            instantiation of "void poseidon2::absorb_2d_state<S,T>(const matrix::Matrix<S> *, S *, unsigned int, unsigned int, uint64_t, const poseidon2::Poseidon2Constants<S> &) [with S=bn254::scalar_t, T=2]" at line 316
+            instantiation of "void poseidon2::hash_2d_kernel<S,T>(const matrix::Matrix<S> *, S *, unsigned int, unsigned int, unsigned int, poseidon2::Poseidon2Constants<S>) [with S=bn254::scalar_t, T=2]" at line 54 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/poseidon2.cuh
+            instantiation of "cudaError_t poseidon2::Poseidon2<S>::hash_2d(const matrix::Matrix<S> *, S *, unsigned int, unsigned int, uint64_t, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 11 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/extern.cu
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(44): warning #940-D: missing return statement at end of non-void function "poseidon::sbox_el(S, int) [with S=bn254::scalar_t]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::sbox_el(S, int) [with S=bn254::scalar_t]" at line 78
+            instantiation of "S poseidon::full_round<S,T>(S, size_t, int, int, __nv_bool, __nv_bool, __nv_bool, S *, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=3]" at line 103
+            instantiation of "void poseidon::full_rounds<S,T>(S *, size_t, size_t, __nv_bool, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=3]" at line 195
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=3]" at line 45 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=3]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=3]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=3]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=3]" at line 45 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=5]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=5]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=5]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=5]" at line 46 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=9]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=9]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=9]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=9]" at line 47 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=12]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=12]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=12]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=12]" at line 48 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+[ 60%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/polynomials/polynomials.cu.o
+[ 66%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/polynomials/cuda_backend/polynomial_cuda_backend.cu.o
+[ 73%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/polynomials/polynomials_c_api.cu.o
+[ 80%] Linking CUDA static library ../../lib/libingo_field_bn254.a
+[ 80%] Built target icicle_field
+[ 86%] Building CUDA object src/curves/CMakeFiles/icicle_curve.dir/extern.cu.o
+[ 93%] Building CUDA object src/curves/CMakeFiles/icicle_curve.dir/__/msm/extern.cu.o
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/extern.cu: In function ‘cudaError_t msm::bn254_precompute_msm_bases_cuda(bn254::affine_t*, int, int, int, bool, device_context::DeviceContext&, bn254::affine_t*)’:
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/extern.cu:37:185: warning: ‘cudaError_t msm::precompute_msm_bases(A*, int, int, int, bool, device_context::DeviceContext&, A*) [with A = Affine<Field<bn254::fq_config> >; P = Projective<Field<bn254::fq_config>, Field<bn254::fp_config>, bn254::b, bn254::generator_x, bn254::generator_y>; cudaError_t = cudaError]’ is deprecated: Use precompute_msm_points instead. [-Wdeprecated-declarations]
+   37 |     return precompute_msm_bases<affine_t, projective_t>(
+      |        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~                                                                                                                                ^                                                                                 
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/msm.cu:917:66: note: declared here
+  917 |   [[deprecated("Use precompute_msm_points instead.")]] cudaError_t precompute_msm_bases(
+      |                                                                  ^~~~~~~~~~~~~~~~~~~~
+[100%] Linking CUDA static library ../../lib/libingo_curve_bn254.a
+[100%] Built target icicle_curve
+[ezkl-formal] GPU_SETUP_STAGE=record_identity selected_device_uuid=GPU-3cde57ba-ae43-4452-bd59-7b156b36db71
+[ezkl-formal] native ICICLE GPU backend identity recorded: /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda/native_backend_manifest.json
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+  File "/home/pzh/project/comparison/ezkl/scripts/formal_common.py", line 1500, in validate_gpu_environment
+    identity = native_backend_identity()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pzh/project/comparison/ezkl/scripts/formal_common.py", line 1457, in native_backend_identity
+    live_selected = _selected_cuda_device_from_environment()
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pzh/project/comparison/ezkl/scripts/formal_common.py", line 369, in _selected_cuda_device_from_environment
+    abort("formal GPU execution has no selected physical CUDA device identity")
+  File "/home/pzh/project/comparison/ezkl/scripts/formal_common.py", line 111, in abort
+    raise ContractError(message)
+formal_common.ContractError: formal GPU execution has no selected physical CUDA device identity

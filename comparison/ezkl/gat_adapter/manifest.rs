@@ -227,6 +227,7 @@ pub struct CoreRunManifest {
 #[allow(missing_docs)]
 pub struct GpuProvenance {
     pub frontend_commit: String,
+    pub native_execution_policy: String,
     pub abi: String,
     pub device: String,
     pub architecture: String,

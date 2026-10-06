@@ -240,8 +240,27 @@ where
     pub pretty_public_inputs: Option<PrettyElements>,
     /// timestamp
     pub timestamp: Option<u128>,
+    /// In-process native proof measurements. This is intentionally excluded
+    /// from the verifier-facing proof artifact serialization.
+    #[serde(skip)]
+    pub proof_timing: Option<ProofTiming>,
     /// (optional) version of ezkl used to generate the proof
     version: Option<String>,
+}
+
+/// Native proof work measured by Halo2's scoped commitment hook.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProofTiming {
+    /// Initial public-instance and phase-zero advice-polynomial commitments.
+    pub commitment_ms: f64,
+    /// Number of per-proof public instance commitments included in the timer.
+    pub instance_commitment_count: usize,
+    /// Number of per-proof phase-zero advice commitments included in the timer.
+    pub phase0_advice_commitment_count: usize,
+    /// Number of affine-normalization batches included in the timer.
+    pub affine_normalization_batch_count: usize,
+    /// Remaining proof construction and verifier-facing encoding.
+    pub prove_ms: f64,
 }
 
 #[cfg(feature = "python-bindings")]
@@ -303,6 +322,7 @@ where
                     .unwrap()
                     .as_millis(),
             ),
+            proof_timing: None,
             version: Some(crate::version().to_string()),
         }
     }
@@ -337,6 +357,11 @@ where
         let proof: Self =
             serde_json::from_reader(reader).map_err(|e| PfsysError::LoadProof(format!("{}", e)))?;
         Ok(proof)
+    }
+
+    /// Decode an already-read JSON proof artifact.
+    pub fn decode_json_bytes(proof_bytes: &[u8]) -> Result<Self, PfsysError> {
+        serde_json::from_slice(proof_bytes).map_err(|e| PfsysError::LoadProof(format!("{}", e)))
     }
 }
 
@@ -477,6 +502,8 @@ where
 
     info!("proof started...");
     // not wasm32 unknown
+    let commitment_measurement = halo2_proofs::plonk::commitment_timing::begin()
+        .map_err(|error| PfsysError::TimingError(error.to_string()))?;
     let now = Instant::now();
 
     create_proof::<Scheme, P, _, _, TW, _>(
@@ -487,10 +514,24 @@ where
         &mut rng,
         &mut transcript,
     )?;
+    let commitment_timing = commitment_measurement
+        .finish()
+        .map_err(|error| PfsysError::TimingError(error.to_string()))?;
+    let commitment_elapsed = commitment_timing.elapsed;
     let proof = transcript.finalize();
     let hex_proof = format!("0x{}", hex::encode(&proof));
+    let prove_elapsed = now.elapsed();
 
-    let checkable_pf = Snark::new(protocol, instances, proof, Some(hex_proof), split, None);
+    let mut checkable_pf = Snark::new(protocol, instances, proof, Some(hex_proof), split, None);
+    checkable_pf.proof_timing = Some(ProofTiming {
+        commitment_ms: commitment_elapsed.as_secs_f64() * 1000.0,
+        instance_commitment_count: commitment_timing.instance_commitments,
+        phase0_advice_commitment_count: commitment_timing.advice_commitments,
+        affine_normalization_batch_count: commitment_timing.normalization_batches,
+        prove_ms: (prove_elapsed.as_secs_f64() * 1000.0
+            - commitment_elapsed.as_secs_f64() * 1000.0)
+            .max(0.0),
+    });
 
     // sanity check that the generated proof is valid
     if check_mode == CheckMode::SAFE {
@@ -716,8 +757,133 @@ mod tests {
 
     use super::*;
     use halo2_proofs::poly::kzg::commitment::KZGCommitmentScheme;
+    use halo2_proofs::poly::kzg::commitment::ParamsKZG;
+    use halo2_proofs::SerdeFormat;
     use halo2curves::bn256::{Bn256, Fr, G1Affine};
+    use std::io::Cursor;
     use tempfile::Builder;
+
+    #[derive(Clone, Copy)]
+    struct CopyCycleCircuit {
+        mismatch: bool,
+    }
+
+    impl Circuit<Fr> for CopyCycleCircuit {
+        type Config = (
+            halo2_proofs::plonk::Column<halo2_proofs::plonk::Advice>,
+            halo2_proofs::plonk::Column<halo2_proofs::plonk::Advice>,
+            halo2_proofs::plonk::Column<halo2_proofs::plonk::Advice>,
+        );
+        type FloorPlanner = halo2_proofs::circuit::SimpleFloorPlanner;
+        type Params = ();
+
+        fn without_witnesses(&self) -> Self {
+            Self { mismatch: false }
+        }
+
+        fn configure(meta: &mut halo2_proofs::plonk::ConstraintSystem<Fr>) -> Self::Config {
+            let a = meta.advice_column();
+            let b = meta.advice_column();
+            let c = meta.advice_column();
+            meta.enable_equality(a);
+            meta.enable_equality(b);
+            meta.enable_equality(c);
+            (a, b, c)
+        }
+
+        fn synthesize(
+            &self,
+            columns: Self::Config,
+            mut layouter: impl halo2_proofs::circuit::Layouter<Fr>,
+        ) -> Result<(), halo2_proofs::plonk::Error> {
+            use halo2_proofs::circuit::Value;
+            layouter.assign_region(
+                || "multi-column copy cycle equivalence",
+                |mut region| {
+                    let a0 = region.assign_advice(|| "a0", columns.0, 0, || Value::known(Fr::from(5)))?;
+                    let a1 = region.assign_advice(|| "a1", columns.0, 1, || Value::known(Fr::from(7)))?;
+                    let b2 = region.assign_advice(|| "b2", columns.1, 2, || Value::known(Fr::from(5)))?;
+                    let b3 = region.assign_advice(|| "b3", columns.1, 3, || Value::known(Fr::from(7)))?;
+                    let _c0 = region.assign_advice(|| "singleton", columns.2, 0, || Value::known(Fr::from(11)))?;
+                    let c4_value = if self.mismatch { 6 } else { 5 };
+                    let c4 = region.assign_advice(|| "c4", columns.2, 4, || Value::known(Fr::from(c4_value)))?;
+
+                    region.constrain_equal(a0.cell(), b2.cell())?;
+                    region.constrain_equal(b2.cell(), c4.cell())?;
+                    region.constrain_equal(c4.cell(), a0.cell())?;
+                    region.constrain_equal(a0.cell(), b2.cell())?;
+                    region.constrain_equal(a1.cell(), b3.cell())?;
+                    Ok(())
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn test_copy_cycle_relation_acceptance_and_tamper_rejection() {
+        use halo2_proofs::poly::kzg::multiopen::{ProverSHPLONK, VerifierSHPLONK};
+        use halo2_proofs::poly::kzg::strategy::SingleStrategy;
+        use halo2_proofs::transcript::{
+            Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer, TranscriptWriterBuffer,
+        };
+        use rand::rngs::OsRng;
+
+        let params = ParamsKZG::<Bn256>::setup(5, OsRng);
+        let circuit = CopyCycleCircuit { mismatch: false };
+        let vk = halo2_proofs::plonk::keygen_vk(&params, &circuit).unwrap();
+        let pk = halo2_proofs::plonk::keygen_pk(&params, vk, &circuit).unwrap();
+
+        let prove = |circuit: CopyCycleCircuit| {
+            let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+            halo2_proofs::plonk::create_proof::<
+                KZGCommitmentScheme<Bn256>,
+                ProverSHPLONK<_>,
+                _,
+                _,
+                _,
+                _,
+            >(&params, &pk, &[circuit], &[&[]], OsRng, &mut transcript)?;
+            Ok::<_, halo2_proofs::plonk::Error>(transcript.finalize())
+        };
+        let verify = |proof: &[u8]| {
+            let verifier_params = params.verifier_params();
+            let strategy = SingleStrategy::new(verifier_params);
+            let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(proof);
+            halo2_proofs::plonk::verify_proof::<
+                KZGCommitmentScheme<Bn256>,
+                VerifierSHPLONK<_>,
+                _,
+                Blake2bRead<_, _, Challenge255<_>>,
+                SingleStrategy<_>,
+            >(
+                verifier_params,
+                pk.get_vk(),
+                strategy,
+                &[&[]],
+                &mut transcript,
+                params.n(),
+            )
+            .is_ok()
+        };
+
+        let valid_proof = prove(circuit).expect("valid copy-cycle proof generation");
+        assert!(verify(&valid_proof), "valid multi-cycle proof rejected");
+
+        let mismatched = prove(CopyCycleCircuit { mismatch: true });
+        assert!(
+            mismatched
+                .as_ref()
+                .map(|proof| verify(proof))
+                .unwrap_or(false)
+                == false,
+            "mismatched copy-equivalence class was accepted",
+        );
+
+        let mut tampered = valid_proof;
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        assert!(!verify(&tampered), "tampered proof was accepted");
+    }
 
     #[tokio::test]
     async fn test_can_load_saved_srs() {
@@ -731,6 +897,65 @@ mod tests {
     }
 
     #[test]
+    fn test_authenticated_srs_domain_reduction_matches_full_read() {
+        const SOURCE_K: u32 = 5;
+        const TARGET_K: u32 = 3;
+
+        let source = <KZGCommitmentScheme<Bn256> as CommitmentScheme>::new_params(SOURCE_K);
+        let mut encoded = Vec::new();
+        source
+            .write_custom(&mut encoded, SerdeFormat::RawBytes)
+            .unwrap();
+
+        let mut full_reader = Cursor::new(encoded.as_slice());
+        let mut expected = ParamsKZG::<Bn256>::read_custom(
+            &mut full_reader,
+            SerdeFormat::RawBytes,
+        )
+        .unwrap();
+        expected.downsize(TARGET_K);
+
+        let mut selective_reader = Cursor::new(encoded.as_slice());
+        let actual = ParamsKZG::<Bn256>::read_custom_for_k(
+            &mut selective_reader,
+            SerdeFormat::RawBytes,
+            TARGET_K,
+            SOURCE_K,
+        )
+        .unwrap();
+
+        let mut expected_bytes = Vec::new();
+        expected
+            .write_custom(&mut expected_bytes, SerdeFormat::RawBytes)
+            .unwrap();
+        let mut actual_bytes = Vec::new();
+        actual
+            .write_custom(&mut actual_bytes, SerdeFormat::RawBytes)
+            .unwrap();
+        assert_eq!(expected_bytes, actual_bytes);
+
+        let mut wrong_header = Cursor::new(encoded.as_slice());
+        assert!(ParamsKZG::<Bn256>::read_custom_for_k(
+            &mut wrong_header,
+            SerdeFormat::RawBytes,
+            TARGET_K,
+            SOURCE_K + 1,
+        )
+        .is_err());
+
+        let mut truncated = encoded;
+        truncated.pop();
+        let mut truncated_reader = Cursor::new(truncated.as_slice());
+        assert!(ParamsKZG::<Bn256>::read_custom_for_k(
+            &mut truncated_reader,
+            SerdeFormat::RawBytes,
+            TARGET_K,
+            SOURCE_K,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn test_snark_serialization_roundtrip() {
         let snark = Snark::<Fr, G1Affine> {
             proof: vec![1, 2, 3, 4, 5, 6, 7, 8],
@@ -740,6 +965,7 @@ mod tests {
             split: None,
             pretty_public_inputs: None,
             timestamp: None,
+            proof_timing: None,
             version: None,
         };
 

@@ -7,6 +7,7 @@ backend=""
 python_bin=""
 cargo_bin=""
 rustc_bin=""
+rustdoc_bin=""
 cmake_bin=""
 make_bin=""
 nvcc_bin=""
@@ -25,7 +26,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --cpu) [[ -z "$backend" ]] || usage; backend=cpu; shift ;;
     --gpu) [[ -z "$backend" ]] || usage; backend=gpu; shift ;;
-    --python|--cargo|--rustc|--cmake|--make|--nvcc|--cc|--cxx|--nvidia-smi|--selected-device-json|--build-environment-json)
+    --python|--cargo|--rustc|--rustdoc|--cmake|--make|--nvcc|--cc|--cxx|--nvidia-smi|--selected-device-json|--build-environment-json)
       [[ $# -ge 2 ]] || usage
       key=$1
       value=$2
@@ -33,6 +34,7 @@ while [[ $# -gt 0 ]]; do
         --python) python_bin=$value ;;
         --cargo) cargo_bin=$value ;;
         --rustc) rustc_bin=$value ;;
+        --rustdoc) rustdoc_bin=$value ;;
         --cmake) cmake_bin=$value ;;
         --make) make_bin=$value ;;
         --nvcc) nvcc_bin=$value ;;
@@ -48,19 +50,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$backend" && "$python_bin" = /* && -x "$python_bin" ]] || usage
+for entry in "cargo_bin:$cargo_bin" "rustc_bin:$rustc_bin" "rustdoc_bin:$rustdoc_bin"; do
+  name=${entry%%:*}
+  path=${entry#*:}
+  [[ "$path" = /* && -x "$path" ]] || { echo "formal $name must be an absolute executable path: $path" >&2; exit 2; }
+done
 export CARGO_HOME="$ROOT/.cargo_local"
-unset RUSTUP_TOOLCHAIN CARGO_BUILD_TARGET CARGO_TARGET_DIR RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
+export CARGO_BUILD_JOBS=2
+export RUSTUP_TOOLCHAIN=nightly-2025-12-01
+export RUSTC="$rustc_bin"
+export RUSTDOC="$rustdoc_bin"
+unset CARGO_BUILD_TARGET CARGO_TARGET_DIR RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
 export PYTHONPATH="$ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}"
 
 if [[ "$backend" == gpu ]]; then
-  for entry in "cargo_bin:$cargo_bin" "rustc_bin:$rustc_bin" "cmake_bin:$cmake_bin" "make_bin:$make_bin" "nvcc_bin:$nvcc_bin" "cc_bin:$cc_bin" "cxx_bin:$cxx_bin" "nvidia_smi_bin:$nvidia_smi_bin"; do
+  for entry in "cmake_bin:$cmake_bin" "make_bin:$make_bin" "nvcc_bin:$nvcc_bin" "cc_bin:$cc_bin" "cxx_bin:$cxx_bin" "nvidia_smi_bin:$nvidia_smi_bin"; do
     name=${entry%%:*}
     path=${entry#*:}
     [[ "$path" = /* && -x "$path" ]] || { echo "formal $name must be an absolute executable path: $path" >&2; exit 2; }
   done
   [[ -n "$selected_device_json" && -n "$build_environment_json" ]] || { echo "formal GPU selected-device and build-environment identities are required" >&2; exit 2; }
   export CARGO_TARGET_DIR="$ROOT/target/gpu"
-  export RUSTC="$rustc_bin"
   export CC="$cc_bin"
   export CXX="$cxx_bin"
   export CUDA_HOME="$(dirname "$(dirname "$nvcc_bin")")"
@@ -72,9 +82,84 @@ if [[ "$backend" == gpu ]]; then
   export CMAKE_C_COMPILER="$cc_bin"
   export CMAKE_CXX_COMPILER="$cxx_bin"
   echo "[ezkl-formal] GPU_BUILD_STAGE=prerequisite-authentication" >&2
+  IFS=$'\t' read -r selected_device_uuid selected_device_arch < <("$python_bin" - "$selected_device_json" <<'PY'
+import json
+import sys
+device = json.loads(sys.argv[1])
+expected = {"index", "uuid", "name", "driver_version", "compute_capability", "logical_device_id"}
+if not isinstance(device, dict) or set(device) != expected or device.get("logical_device_id") != 0:
+    raise SystemExit("formal selected physical CUDA device contract is invalid")
+if not isinstance(device.get("uuid"), str) or not device["uuid"] or not isinstance(device.get("compute_capability"), str):
+    raise SystemExit("formal selected physical CUDA device contract is incomplete")
+print(device["uuid"] + "\t" + device["compute_capability"].replace(".", ""))
+PY
+  )
+  export CUDA_DEVICE_ORDER=PCI_BUS_ID
+  export CUDA_VISIBLE_DEVICES="$selected_device_uuid"
+  export ICICLE_DEVICE_ID=0
+  export CUDA_ARCH="$selected_device_arch"
+  export EZKL_FORMAL_SELECTED_CUDA_DEVICE="$selected_device_json"
 fi
 
+set_native_gpu_environment() {
+  local native_dir="$ROOT/artifacts/build/icicle-cuda"
+  local manifest="$native_dir/native_backend_manifest.json"
+  export ICICLE_BACKEND_INSTALL_DIR="$native_dir"
+  export ICICLE_NATIVE_LIB_DIR="$native_dir/lib"
+  if [[ -f "$manifest" && ! -L "$manifest" ]]; then
+    export ICICLE_NATIVE_MANIFEST_SHA256=$("$python_bin" - "$manifest" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+    )
+  else
+    unset ICICLE_NATIVE_MANIFEST_SHA256
+  fi
+}
+
+# The isolated cargo home may contain deliberately shared source symlinks to
+# ~/.cargo. After a crate is pruned there, a dangling source symlink prevents
+# Cargo from extracting its locked, cached archive. Preserve such links in a
+# quarantine and let Cargo unpack/checksum the official archive itself.
+"$python_bin" - "$ROOT" "$CARGO_HOME" <<'PY'
+import os
+import sys
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+root = Path(sys.argv[1])
+cargo_home = Path(sys.argv[2])
+lock = tomllib.loads((root / "Cargo.lock").read_text())
+registry_roots = list((cargo_home / "registry" / "src").glob("*"))
+cache_roots = list((cargo_home / "registry" / "cache").glob("*"))
+timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+quarantine = cargo_home / "recovery-quarantine" / timestamp
+moved = []
+for package in lock.get("package", []):
+    if not str(package.get("source", "")).startswith("registry+"):
+        continue
+    package_dir = f"{package['name']}-{package['version']}"
+    archive_name = package_dir + ".crate"
+    if not any((cache / archive_name).is_file() for cache in cache_roots):
+        continue
+    for registry_root in registry_roots:
+        source = registry_root / package_dir
+        if source.is_symlink() and not source.exists():
+            quarantine.mkdir(parents=True, exist_ok=True)
+            destination = quarantine / f"{registry_root.name}--{package_dir}"
+            os.replace(source, destination)
+            moved.append((source, destination))
+if moved:
+    print(f"[ezkl-formal] preserved {len(moved)} dangling baseline-local Cargo source links in {quarantine}", flush=True)
+    for source, destination in moved:
+        print(f"[ezkl-formal] Cargo cache recovery: {source.name} -> {destination}", flush=True)
+PY
+
 if [[ "$backend" == gpu ]]; then
+  set_native_gpu_environment
   set +e
   "$python_bin" - <<'PY'
 from formal_common import ContractError, validate_gpu_environment
@@ -99,7 +184,11 @@ PY
       --nvidia-smi "$nvidia_smi_bin" \
       --selected-device-json "$selected_device_json"
   fi
-  source "$ROOT/artifacts/build/icicle-cuda/env.sh"
+  set_native_gpu_environment
+  export CUDA_DEVICE_ORDER=PCI_BUS_ID
+  export CUDA_VISIBLE_DEVICES="$selected_device_uuid"
+  export ICICLE_DEVICE_ID=0
+  export CUDA_ARCH="$selected_device_arch"
   "$python_bin" - <<'PY'
 from formal_common import validate_gpu_environment
 validate_gpu_environment()
@@ -111,16 +200,14 @@ if [[ "$backend" == gpu ]]; then
   default_feature_mode=disabled
 else
   features=(ezkl)
-  default_feature_mode=enabled
+  default_feature_mode=disabled
 fi
 
 echo "[ezkl-formal] BUILD_STAGE=rust-release-build backend=$backend default_features=$default_feature_mode features=${features[*]}" >&2
 if [[ "$backend" == gpu ]]; then
-  "$cargo_bin" build --offline --release --no-default-features --target-dir "$ROOT/target/gpu" --features "${features[0]}"
+  "$cargo_bin" build --offline --locked --release --no-default-features --target-dir "$ROOT/target/gpu" --features "${features[0]}"
 else
-  cargo_bin=$(command -v cargo)
-  [[ "$cargo_bin" = /* && -x "$cargo_bin" ]] || { echo "cargo is not an executable absolute path" >&2; exit 2; }
-  "$cargo_bin" build --offline --release --target-dir "$ROOT/target/cpu" --features "$(IFS=,; echo "${features[*]}")"
+  "$cargo_bin" build --offline --locked --release --no-default-features --target-dir "$ROOT/target/cpu" --features "$(IFS=,; echo "${features[*]}")"
 fi
 
 binary="$ROOT/target/$backend/release/ezkl"
@@ -134,14 +221,14 @@ echo "[ezkl-formal] BUILD_STAGE=verify-native-cli-contract binary=$binary" >&2
 "$binary" gat-contract --output artifacts/gat_adapter/formal_cli.json
 
 if [[ "$backend" == gpu ]]; then
-  "$python_bin" -u - "$backend" "$binary" "$ROOT/artifacts/build/$backend/build_receipt.json" "$selected_device_json" "$build_environment_json" <<'PY'
+  "$python_bin" -u - "$backend" "$binary" "$ROOT/artifacts/build/$backend/build_receipt.json" "$selected_device_json" "$build_environment_json" "$rustc_bin" "$cargo_bin" "$rustdoc_bin" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 from formal_common import CONTRACT, FORMAL_GPU_FEATURES, ROOT, canonical_json_digest, load_cli_contract, native_backend_identity, resource_manifest_hash, sha256, source_tree_hash
 
-backend, binary_text, receipt_text, selected_text, environment_text = sys.argv[1:]
+backend, binary_text, receipt_text, selected_text, environment_text, rustc_path, cargo_path, rustdoc_path = sys.argv[1:]
 binary = Path(binary_text)
 receipt = Path(receipt_text)
 selected = json.loads(selected_text)
@@ -169,8 +256,12 @@ payload = {
     "adapter_contract_id": contract["contract_id"],
     "adapter_contract_sha256": sha256(CONTRACT),
     "relation_id": contract["relation_id"],
+    "rustc_path": rustc_path,
     "rustc": environment["rustc"],
+    "cargo_path": cargo_path,
     "cargo": environment["cargo"],
+    "rustdoc_path": rustdoc_path,
+    "rustdoc": environment["rustdoc"],
     "build_environment": environment,
     "build_environment_sha256": environment_digest,
     **native,
@@ -180,7 +271,7 @@ receipt.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 print(f"[ezkl-formal] wrote current GPU build receipt {receipt}")
 PY
 else
-  "$python_bin" -u - "$backend" "$binary" "$ROOT/artifacts/build/$backend/build_receipt.json" <<'PY'
+  "$python_bin" -u - "$backend" "$binary" "$ROOT/artifacts/build/$backend/build_receipt.json" "$rustc_bin" "$cargo_bin" "$rustdoc_bin" <<'PY'
 import json
 import subprocess
 import sys
@@ -188,12 +279,12 @@ from pathlib import Path
 
 from formal_common import CONTRACT, ROOT, load_cli_contract, resource_manifest_hash, sha256, source_tree_hash
 
-backend, binary_text, receipt_text = sys.argv[1:]
+backend, binary_text, receipt_text, rustc_path, cargo_path, rustdoc_path = sys.argv[1:]
 binary = Path(binary_text)
 receipt = Path(receipt_text)
 contract = load_cli_contract()
 payload = {
-    "schema_version": 1,
+    "schema_version": 2,
     "baseline": "ezkl",
     "backend": backend,
     "features": ["ezkl"],
@@ -204,8 +295,12 @@ payload = {
     "adapter_contract_id": contract["contract_id"],
     "adapter_contract_sha256": sha256(CONTRACT),
     "relation_id": contract["relation_id"],
-    "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
-    "cargo": subprocess.check_output(["cargo", "--version"], text=True).strip(),
+    "rustc_path": rustc_path,
+    "rustc": subprocess.check_output([rustc_path, "--version"], text=True).strip(),
+    "cargo_path": cargo_path,
+    "cargo": subprocess.check_output([cargo_path, "--version"], text=True).strip(),
+    "rustdoc_path": rustdoc_path,
+    "rustdoc": subprocess.check_output([rustdoc_path, "--version"], text=True).strip(),
 }
 receipt.parent.mkdir(parents=True, exist_ok=True)
 receipt.write_text(json.dumps(payload, indent=2) + "\n")

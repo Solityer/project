@@ -103,27 +103,92 @@ std::uint64_t layer::coefficient_storage_bytes_for(std::size_t distinct_count) {
 
 void layeredCircuit::initSubset() 
 {
+    const std::size_t layer0_domain = circuit.empty() ? 0 : circuit.front().size;
+    std::vector<std::pair<u64, u64>> support_ranges = source_support_ranges;
+    if (support_ranges.empty() && layer0_domain != 0) support_ranges.emplace_back(0, static_cast<u64>(layer0_domain));
+    std::vector<u64> support_prefix;
+    support_prefix.reserve(support_ranges.size() + 1);
+    support_prefix.push_back(0);
+    u64 support_entries = 0;
+    u64 previous_end = 0;
+    for (const auto& range : support_ranges) {
+        if (range.second == 0 || range.first < previous_end || range.first > layer0_domain ||
+            range.second > static_cast<u64>(layer0_domain) - range.first ||
+            range.second > std::numeric_limits<u64>::max() - support_entries)
+            throw std::invalid_argument("native GKR source support range is invalid");
+        previous_end = range.first + range.second;
+        support_entries += range.second;
+        support_prefix.push_back(support_entries);
+    }
+    if (support_entries > std::numeric_limits<std::size_t>::max())
+        throw std::length_error("native GKR source support exceeds native size_t");
+    const std::size_t bitmap_word_count = static_cast<std::size_t>(support_entries / 64 + (support_entries % 64 != 0));
+    // Reuse one zeroed bitmap for all lanes. Each enumeration clears its words
+    // before returning, so only one packed source-support allocation is live.
+    zkgpt::NativeVector<std::uint64_t> source_seen(bitmap_word_count, 0);
+    const auto support_index_for_coordinate = [&support_ranges, &support_prefix](u64 coordinate) -> std::size_t {
+        const auto after = std::upper_bound(support_ranges.begin(), support_ranges.end(), coordinate,
+            [](u64 value, const auto& range) { return value < range.first; });
+        if (after == support_ranges.begin()) throw std::out_of_range("native GKR input index is outside logical source support");
+        const std::size_t index = static_cast<std::size_t>((after - support_ranges.begin()) - 1);
+        const auto& range = support_ranges[index];
+        if (coordinate < range.first || coordinate - range.first >= range.second)
+            throw std::out_of_range("native GKR input index is outside logical source support");
+        return static_cast<std::size_t>(support_prefix[index] + coordinate - range.first);
+    };
+    const auto coordinate_for_support_index = [&support_ranges, &support_prefix](u64 index) -> u64 {
+        const auto after = std::upper_bound(support_prefix.begin(), support_prefix.end(), index);
+        if (after == support_prefix.begin()) throw std::logic_error("native GKR source bitmap rank is invalid");
+        const std::size_t range_index = static_cast<std::size_t>((after - support_prefix.begin()) - 1);
+        if (range_index >= support_ranges.size() || index >= support_prefix[range_index + 1])
+            throw std::logic_error("native GKR source bitmap rank is outside support ranges");
+        return support_ranges[range_index].first + index - support_prefix[range_index];
+    };
     for (int i = 1; i < size; ++i) 
     {
         auto &cur = circuit[i], &lst = circuit[i - 1];
         bool has_pre_layer_u = cur.ty == layerType::FFT || cur.ty == layerType::IFFT;
         bool has_pre_layer_v = false, has_v_operand = false;
-        auto validate_coordinate = [&](u64 coordinate) {
-            if (coordinate >= circuit[0].size) throw std::out_of_range("native GKR input index exceeds domain");
+        const auto checked_source_domain = [&](std::size_t source_layer, u64 coordinate) -> std::size_t {
+            if (source_layer >= circuit.size()) throw std::out_of_range("native GKR source layer exceeds circuit");
+            const std::size_t domain = circuit[source_layer].size;
+            if (coordinate >= domain) throw std::out_of_range("native GKR input index exceeds its source-layer domain");
+            return domain;
         };
-        std::size_t subset_u_reference_count = 0, subset_v_reference_count = 0;
-        for (const auto& gate : cur.uni_gates) if (!gate.lu) { validate_coordinate(gate.u); ++subset_u_reference_count; }
-        for (const auto& gate : cur.bin_gates) {
-            if (!gate.getLayerIdU(i)) { validate_coordinate(gate.u); ++subset_u_reference_count; }
-            if (!gate.getLayerIdV(i)) { validate_coordinate(gate.v); ++subset_v_reference_count; }
-        }
-        auto finish_map = [](auto& map, auto& original, u64& count) {
-            std::sort(map.begin(), map.end());
-            map.erase(std::unique(map.begin(), map.end()), map.end());
+        const auto make_subset_map = [&](std::size_t source_layer, const auto& visit_coordinates) {
+            const std::size_t domain = circuit.at(source_layer).size;
+            if (source_layer != 0 || source_seen.size() != static_cast<std::size_t>(support_entries / 64 + (support_entries % 64 != 0)))
+                throw std::logic_error("native GKR source-map bitmap does not match its logical source support");
+            std::size_t unique_count = 0;
+            visit_coordinates([&](std::size_t actual_source_layer, u64 coordinate) {
+                const std::size_t actual_domain = checked_source_domain(actual_source_layer, coordinate);
+                if (actual_source_layer != source_layer || actual_domain != domain)
+                    throw std::logic_error("native GKR source map mixes source-layer domains");
+                const std::size_t index = support_index_for_coordinate(coordinate);
+                const std::uint64_t mask = std::uint64_t(1) << (index & 63);
+                std::uint64_t& word = source_seen[index >> 6];
+                if ((word & mask) == 0) { word |= mask; ++unique_count; }
+            });
+            if (unique_count == 0) return zkgpt::NativeVector<u64>{};
+            zkgpt::NativeVector<u64> coordinates;
+            coordinates.reserve(unique_count);
+            for (std::size_t word_index = 0; word_index < source_seen.size(); ++word_index) {
+                std::uint64_t word = source_seen[word_index];
+                while (word != 0) {
+                    const unsigned bit = static_cast<unsigned>(__builtin_ctzll(word));
+                    const u64 support_index = static_cast<u64>(word_index) * 64 + bit;
+                    if (support_index >= support_entries) throw std::logic_error("native GKR source bitmap emitted an out-of-support index");
+                    coordinates.push_back(coordinate_for_support_index(support_index));
+                    word &= word - 1;
+                }
+                source_seen[word_index] = 0;
+            }
+            if (coordinates.size() != unique_count)
+                throw std::logic_error("native GKR source bitmap unique count changed during enumeration");
+            return coordinates;
+        };
+        auto finish_map = [](auto&& map, auto& original, u64& count) {
             count = map.size();
-            // The sorted unique coordinate vector is itself the canonical
-            // source map. Moving it avoids a second full-size map allocation
-            // while preserving the source-coordinate meaning of every entry.
             original = std::move(map);
         };
         auto subset_index = [](const auto& sorted_coordinates, u64 coordinate) {
@@ -132,31 +197,38 @@ void layeredCircuit::initSubset()
             return static_cast<u64>(found - sorted_coordinates.begin());
         };
         {
-            zkgpt::NativeVector<u64> subset_uidx;
-            subset_uidx.reserve(subset_u_reference_count);
-            for (const auto& gate : cur.uni_gates) {
-                if (!gate.lu) subset_uidx.push_back(gate.u);
-                has_pre_layer_u |= gate.lu != 0;
+            const auto source_layer_for_unary = [i](const uniGate& gate) -> std::size_t {
+                return gate.lu == 0 ? 0 : static_cast<std::size_t>(i - 1);
+            };
+            auto subset_uidx = make_subset_map(0, [&](const auto& add) {
+                for (const auto& gate : cur.uni_gates) {
+                    if (source_layer_for_unary(gate) == 0) add(source_layer_for_unary(gate), gate.u);
+                    has_pre_layer_u |= gate.lu != 0;
+                }
+                for (const auto& gate : cur.bin_gates) {
+                    const std::size_t source_layer = gate.getLayerIdU(i);
+                    if (source_layer == 0) add(source_layer, gate.u);
+                    has_v_operand = true;
+                    has_pre_layer_u |= source_layer != 0;
+                    has_pre_layer_v |= gate.getLayerIdV(i) != 0;
+                }
+            });
+            finish_map(std::move(subset_uidx), cur.ori_id_u, cur.size_u[0]);
+            for (auto& gate : cur.uni_gates) {
+                if (!gate.lu) gate.u = subset_index(cur.ori_id_u, gate.u);
             }
-            for (const auto& gate : cur.bin_gates) {
-                has_v_operand = true;
-                if (!gate.getLayerIdU(i)) subset_uidx.push_back(gate.u);
-                has_pre_layer_u |= gate.getLayerIdU(i) != 0;
-                has_pre_layer_v |= gate.getLayerIdV(i) != 0;
+            for (auto& gate : cur.bin_gates) {
+                if (!gate.getLayerIdU(i)) gate.u = subset_index(cur.ori_id_u, gate.u);
             }
-            if (subset_uidx.size() != subset_u_reference_count)
-                throw std::logic_error("native GKR U subset reference count changed during construction");
-            finish_map(subset_uidx, cur.ori_id_u, cur.size_u[0]);
-            for (auto& gate : cur.uni_gates) if (!gate.lu) gate.u = subset_index(cur.ori_id_u, gate.u);
-            for (auto& gate : cur.bin_gates) if (!gate.getLayerIdU(i)) gate.u = subset_index(cur.ori_id_u, gate.u);
         }
         {
-            zkgpt::NativeVector<u64> subset_vidx;
-            subset_vidx.reserve(subset_v_reference_count);
-            for (const auto& gate : cur.bin_gates) if (!gate.getLayerIdV(i)) subset_vidx.push_back(gate.v);
-            if (subset_vidx.size() != subset_v_reference_count)
-                throw std::logic_error("native GKR V subset reference count changed during construction");
-            finish_map(subset_vidx, cur.ori_id_v, cur.size_v[0]);
+            auto subset_vidx = make_subset_map(0, [&](const auto& add) {
+                for (const auto& gate : cur.bin_gates) {
+                    const std::size_t source_layer = gate.getLayerIdV(i);
+                    if (source_layer == 0) add(source_layer, gate.v);
+                }
+            });
+            finish_map(std::move(subset_vidx), cur.ori_id_v, cur.size_v[0]);
             for (auto& gate : cur.bin_gates) if (!gate.getLayerIdV(i)) gate.v = subset_index(cur.ori_id_v, gate.v);
         }
         cur.bit_length_u[0] = ceilPow2BitLength(cur.size_u[0]);
@@ -205,4 +277,5 @@ void layeredCircuit::init(u8 q_bit_size, u8 _layer_sz)
 {
     size = _layer_sz;
     circuit.resize(size);
+    source_support_ranges.clear();
 }

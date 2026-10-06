@@ -1,0 +1,93 @@
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling libc v0.2.189
+   Compiling serde_core v1.0.229
+   Compiling cfg-if v1.0.4
+   Compiling zerocopy v0.8.57
+   Compiling serde v1.0.229
+   Compiling libm v0.2.16
+   Compiling num-traits v0.2.19
+   Compiling zeroize v1.9.0
+   Compiling getrandom v0.2.17
+   Compiling subtle v2.6.1
+   Compiling rand_core v0.6.4
+   Compiling typenum v1.20.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling num-integer v0.1.47
+   Compiling bytes v1.12.1
+   Compiling generic-array v0.14.7
+   Compiling const-oid v0.9.6
+   Compiling memchr v2.8.3
+   Compiling tap v1.0.1
+   Compiling wyz v0.5.1
+   Compiling radium v0.7.0
+   Compiling funty v2.0.0
+   Compiling once_cell v1.21.4
+   Compiling itoa v1.0.18
+   Compiling bitvec v1.1.1
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling arrayvec v0.7.8
+   Compiling cpufeatures v0.2.17
+   Compiling sha2 v0.10.9
+   Compiling getrandom v0.3.4
+   Compiling rand_core v0.9.5
+   Compiling ff v0.13.1
+info: syncing channel updates for 1.56.0-aarch64-unknown-linux-gnu
+   Compiling rand_chacha v0.9.0
+   Compiling alloy-rlp v0.3.16
+   Compiling rand v0.9.5
+   Compiling der v0.7.10
+   Compiling const-hex v1.19.1
+   Compiling pin-project-lite v0.2.17
+   Compiling ruint v1.20.0
+   Compiling base16ct v0.2.0
+   Compiling sec1 v0.7.3
+   Compiling hmac v0.12.1
+   Compiling crypto-bigint v0.5.5
+   Compiling rfc6979 v0.4.0
+   Compiling spki v0.7.3
+   Compiling signature v2.2.0
+   Compiling either v1.18.0
+   Compiling smallvec v1.16.1
+   Compiling derive_more v2.1.1
+   Compiling foldhash v0.2.0
+   Compiling hybrid-array v0.4.15
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling hashbrown v0.17.1
+   Compiling cpufeatures v0.3.1
+   Compiling const-oid v0.10.2
+   Compiling digest v0.11.3
+   Compiling getrandom v0.4.3
+   Compiling tracing-core v0.1.36
+   Compiling tracing v0.1.44
+   Compiling keccak v0.2.2
+   Compiling sha3 v0.11.0
+   Compiling rand_chacha v0.3.1
+   Compiling rand v0.8.8
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.151
+   Compiling bitflags v2.13.2
+   Compiling crossbeam-utils v0.8.23
+   Compiling thiserror v2.0.20
+info: syncing channel updates for nightly-2025-12-01-aarch64-unknown-linux-gnu
+info: latest update on 2021-10-21 for version 1.56.0 (09c42c458 2021-10-18)
+info: downloading 5 components
+error: could not download file from 'https://static.rust-lang.org/dist/2025-12-01/channel-rust-nightly.toml.sha256' to '/home/pzh/.rustup/tmp/p08s2o08kvmi_7xa_file': error downloading file: error sending request for url (https://static.rust-lang.org/dist/2025-12-01/channel-rust-nightly.toml.sha256): client error (Connect): tls handshake eof
+error: could not compile `thiserror` (lib)
+
+Caused by:
+  process didn't exit successfully: `rustc --crate-name thiserror --edition=2021 /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.20/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=3 -C linker-plugin-lto -C codegen-units=1 -C relocation-model=pic --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "std"))' -C metadata=452a5b3c752cb9a0 -C extra-filename=-193c9076d7b1efb4 --out-dir /home/pzh/project/comparison/ezkl/target/cpu/release/deps -C strip=debuginfo -L dependency=/home/pzh/project/comparison/ezkl/target/cpu/release/deps --extern thiserror_impl=/home/pzh/project/comparison/ezkl/target/cpu/release/deps/libthiserror_impl-bcb03e9d30bc5b81.so --cap-lints allow --cfg error_generic_member_access --check-cfg 'cfg(error_generic_member_access)' --check-cfg 'cfg(thiserror_nightly_testing)' --check-cfg 'cfg(thiserror_no_backtrace_type)'` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+info: rolling back changes
+error: component download failed for rust-std-aarch64-unknown-linux-gnu: could not download file from 'https://static.rust-lang.org/dist/2021-10-21/rust-std-1.56.0-aarch64-unknown-linux-gnu.tar.xz' to '/home/pzh/.rustup/downloads/3cd1c69c618e5efaf578a156c2a950c93964f9b47ba4d705d5700bdc64880231.partial': error downloading file: error sending request for url (https://static.rust-lang.org/dist/2021-10-21/rust-std-1.56.0-aarch64-unknown-linux-gnu.tar.xz): client error (Connect): tls handshake eof
+error: could not compile `ff` (lib)
+
+Caused by:
+  process didn't exit successfully: `rustc --crate-name ff --edition=2021 /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/ff-0.13.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=3 -C linker-plugin-lto -C codegen-units=1 -C relocation-model=pic --cfg 'feature="alloc"' --cfg 'feature="bits"' --cfg 'feature="bitvec"' --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "bits", "bitvec", "byteorder", "default", "derive", "derive_bits", "ff_derive", "std"))' -C metadata=481d6bd48136a111 -C extra-filename=-f6fff58d2fab54d0 --out-dir /home/pzh/project/comparison/ezkl/target/cpu/release/deps -C strip=debuginfo -L dependency=/home/pzh/project/comparison/ezkl/target/cpu/release/deps --extern bitvec=/home/pzh/project/comparison/ezkl/target/cpu/release/deps/libbitvec-5f6c3607c42dec98.rmeta --extern rand_core=/home/pzh/project/comparison/ezkl/target/cpu/release/deps/librand_core-a916a45a0cf5d660.rmeta --extern subtle=/home/pzh/project/comparison/ezkl/target/cpu/release/deps/libsubtle-4da67ae2d950a901.rmeta --cap-lints allow` (exit status: 1)

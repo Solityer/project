@@ -155,8 +155,10 @@ struct Model {
 Tensor2D load_features(const std::string& cache_dir, const CanonicalConfig& config, const QuantConfig& quant, const Graph& graph);
 std::vector<Int> load_labels(const std::string& cache_dir, const Graph& graph);
 Graph load_graph(const std::string& cache_dir, const CanonicalConfig& config);
+std::string comparison_canonical_graph_digest(const Graph& graph);
 
 std::string sha256_file_digest(const std::string& path);
+std::string sha256_bytes_digest(const std::string& bytes);
 
 enum class RoundingMode { TOWARD_ZERO, NEAREST_TIES_AWAY };
 
@@ -333,6 +335,18 @@ struct ForwardResult {
     Tensor2D logits;
     GatTrace trace;
 };
+
+using ForwardAdmissionProgress = void (*)(const char* phase, std::size_t layer,
+                                         std::size_t head, bool complete);
+
+// Bounded, value-exact preflight of the canonical forward relation. The
+// implementation streams one attention head at a time and retains no proof
+// witness trace; optional reference arguments are for native equivalence tests
+// only and are never serialized by the formal runner.
+bool run_forward_admission(const Graph& graph, const Tensor2D& features, const Model& model, const QuantConfig& quant,
+                           const std::vector<std::array<unsigned, 5>>& division_range_profiles, std::string* reason = nullptr,
+                           const ForwardResult* retained_reference = nullptr,
+                           ForwardAdmissionProgress progress = nullptr);
 
 ForwardResult run_forward(const Graph& graph, const Tensor2D& features, const Model& model, const QuantConfig& quant);
 bool validate_relation(const Graph& graph, const Tensor2D& features, const Model& model, const QuantConfig& quant, const ForwardResult& result);

@@ -593,6 +593,18 @@ impl Model {
         run_args: &RunArgs,
         check_mode: CheckMode,
     ) -> Result<GraphSettings, GraphError> {
+        let formal_phase_log = std::env::var_os("EZKL_FORMAL_BUILD_RECEIPT_SHA256").is_some();
+        let gen_params_started = instant::Instant::now();
+        if formal_phase_log {
+            println!(
+                "EZKL_NATIVE_PHASE START stage=model_gen_params k={} graph_nodes={} graph_inputs={} graph_params={} graph_outputs={}",
+                run_args.logrows,
+                self.graph.nodes.len(),
+                self.graph.inputs.len(),
+                self.graph.param_inputs.len(),
+                self.graph.outputs.len(),
+            );
+        }
         let instance_shapes = self.instance_shapes()?;
         #[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
         debug!(
@@ -663,16 +675,37 @@ impl Model {
             })
             .collect::<Result<Vec<_>, GraphError>>()?;
 
+        let dummy_layout_started = instant::Instant::now();
+        if formal_phase_log {
+            println!(
+                "EZKL_NATIVE_PHASE START stage=dummy_layout_with_runtime_params k={} graph_nodes={} input_tensors={} param_tensors={}",
+                run_args.logrows,
+                self.graph.nodes.len(),
+                inputs.len(),
+                runtime_params.len(),
+            );
+        }
         let res = self.dummy_layout_with_runtime_params(
             run_args,
             &inputs,
             &runtime_params,
             RegionSettings::all_false(run_args.decomp_base, run_args.decomp_legs),
         )?;
+        if formal_phase_log {
+            println!(
+                "EZKL_NATIVE_PHASE DONE stage=dummy_layout_with_runtime_params elapsed_ms={:.3} rows={} assignments={} dynamic_lookup_coord={} max_dynamic_input_len={} dynamic_lookups={}",
+                dummy_layout_started.elapsed().as_secs_f64() * 1000.0,
+                res.num_rows,
+                res.linear_coord,
+                res.dynamic_lookup_params.total_dynamic_col_size,
+                res.dynamic_lookup_params.max_dynamic_input_len,
+                res.dynamic_lookup_params.num_dynamic_lookups,
+            );
+        }
 
         // if we're using percentage tolerance, we need to add the necessary range check ops for it.
 
-        Ok(GraphSettings {
+        let settings = GraphSettings {
             run_args: run_args.clone(),
             model_instance_shapes: instance_shapes,
             module_sizes: crate::graph::modules::ModuleSizes::default(),
@@ -700,7 +733,19 @@ impl Model {
             ),
             #[cfg(any(not(feature = "ezkl"), target_arch = "wasm32"))]
             timestamp: None,
-        })
+        };
+        if formal_phase_log {
+            println!(
+                "EZKL_NATIVE_PHASE DONE stage=model_gen_params elapsed_ms={:.3} rows={} assignments={} dynamic_lookup_coord={} max_dynamic_input_len={} dynamic_lookups={}",
+                gen_params_started.elapsed().as_secs_f64() * 1000.0,
+                settings.num_rows,
+                settings.total_assignments,
+                settings.dynamic_lookup_params.total_dynamic_col_size,
+                settings.dynamic_lookup_params.max_dynamic_input_len,
+                settings.dynamic_lookup_params.num_dynamic_lookups,
+            );
+        }
+        Ok(settings)
     }
 
     /// Runs a forward pass on sample data !
@@ -1422,6 +1467,7 @@ impl Model {
         region: &mut RegionCtx<Fp>,
         results: &mut BTreeMap<usize, Vec<ValTensor<Fp>>>,
     ) -> Result<Vec<ValTensor<Fp>>, GraphError> {
+        let formal_phase_log = std::env::var_os("EZKL_FORMAL_BUILD_RECEIPT_SHA256").is_some();
         // index over results to get original inputs
         let orig_inputs: BTreeMap<usize, _> = results
             .clone()
@@ -1479,6 +1525,17 @@ impl Model {
             );
 
             let start = instant::Instant::now();
+            if formal_phase_log {
+                println!(
+                    "EZKL_NATIVE_PHASE START stage=layout_node graph_nodes={} node_index={} op={} input_shapes={:?} output_shapes={:?} linear_coord={}",
+                    self.graph.nodes.len(),
+                    idx,
+                    node.as_str(),
+                    values.iter().map(|value| value.dims()).collect_vec(),
+                    node.out_dims(),
+                    region.linear_coord(),
+                );
+            }
             match &node {
                 NodeType::Node(n) => {
                     let mut res = if node.is_constant() && node.num_uses() == 1 {
@@ -1616,6 +1673,16 @@ impl Model {
                     results.insert(*idx, full_results);
                 }
             }
+            if formal_phase_log {
+                println!(
+                    "EZKL_NATIVE_PHASE DONE stage=layout_node graph_nodes={} node_index={} op={} elapsed_ms={:.3} linear_coord={}",
+                    self.graph.nodes.len(),
+                    idx,
+                    node.as_str(),
+                    start.elapsed().as_secs_f64() * 1000.0,
+                    region.linear_coord(),
+                );
+            }
             debug!("------------ layout of {} took {:?}", idx, start.elapsed());
         }
 
@@ -1672,6 +1739,19 @@ impl Model {
         runtime_params: &[ValTensor<Fp>],
         region_settings: RegionSettings,
     ) -> Result<DummyPassRes, GraphError> {
+        let formal_phase_log = std::env::var_os("EZKL_FORMAL_BUILD_RECEIPT_SHA256").is_some();
+        let layout_started = instant::Instant::now();
+        if formal_phase_log {
+            println!(
+                "EZKL_NATIVE_PHASE START stage=dummy_layout_graph k={} graph_nodes={} input_tensors={} param_tensors={} input_shapes={:?} param_shapes={:?}",
+                run_args.logrows,
+                self.graph.nodes.len(),
+                inputs.len(),
+                runtime_params.len(),
+                inputs.iter().map(|tensor| tensor.dims()).collect_vec(),
+                runtime_params.iter().map(|tensor| tensor.dims()).collect_vec(),
+            );
+        }
         if self.graph.param_inputs.len() != runtime_params.len() {
             return Err(GraphError::MisformedParams(format!(
                 "runtime parameter input count {} does not match graph declaration {}",
@@ -1721,6 +1801,17 @@ impl Model {
         let mut region = RegionCtx::new_dummy(0, run_args.num_inner_cols, region_settings);
 
         let outputs = self.layout_nodes(&mut model_config, &mut region, &mut results)?;
+        if formal_phase_log {
+            println!(
+                "EZKL_NATIVE_PHASE DONE stage=dummy_layout_graph elapsed_ms={:.3} graph_nodes={} linear_coord={} rows={} dynamic_lookup_coord={} max_dynamic_input_len={}",
+                layout_started.elapsed().as_secs_f64() * 1000.0,
+                self.graph.nodes.len(),
+                region.linear_coord(),
+                region.row(),
+                region.dynamic_lookup_col_coord(),
+                region.max_dynamic_input_len(),
+            );
+        }
 
         if self.visibility.output.is_public() || self.visibility.output.is_fixed() {
             let res = outputs

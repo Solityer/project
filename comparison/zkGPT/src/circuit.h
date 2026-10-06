@@ -130,7 +130,9 @@ class layeredCircuit {
 public:
 	vector<layer> circuit;
     u8 size;
+	std::vector<std::pair<u64, u64>> source_support_ranges;
     void init(u8 q_bit_size, u8 _layer_sz);
+	void set_source_support_ranges(std::vector<std::pair<u64, u64>> ranges) { source_support_ranges = std::move(ranges); }
 	void initSubset();
 };
 

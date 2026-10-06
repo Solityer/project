@@ -1,0 +1,10 @@
+{
+  "active_stage": "cell",
+  "completed_stages": [],
+  "failure": "native prover failed with 1; see baseline-local/runs/formal/af70d5f4ea9844f8a3bcf53bda8c4561/cora/prover.stderr.log",
+  "schema": "zkgpt-gat-formal-session-v1",
+  "session_id": "af70d5f4ea9844f8a3bcf53bda8c4561",
+  "started_unix_ns": 1791220625922126390,
+  "status": "FAILED",
+  "updated_unix_ns": 1791225099318449065
+}

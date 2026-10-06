@@ -15,6 +15,9 @@ struct NativeProveRequest {
     const ModelBundle *model = nullptr;
     const StaticTables *tables = nullptr;
     const RelationPlan *relation = nullptr;
+    // Non-null run-lifetime token retained for ABI compatibility. Native
+    // proving reads private values only through the authenticated storage
+    // readers in witness; it does not dereference this trace pointer.
     const GatTrace *trace = nullptr;
     const PublicStatement *statement = nullptr;
     Backend backend = Backend::Cpu;
@@ -41,6 +44,45 @@ struct NativeVerifyRequest {
     const RelationPlan *relation = nullptr;
     const StaticTables *tables = nullptr;
 };
+
+struct NativeRelationPlanMetrics {
+    std::uint64_t operation_count = 0U;
+    std::uint64_t primitive_count = 0U;
+    std::uint64_t constraint_count = 0U;
+    std::uint64_t route_count = 0U;
+    std::uint64_t fac_binding_count = 0U;
+    std::uint64_t padding_family_count = 0U;
+    std::uint64_t family_segment_count = 0U;
+    std::uint64_t primitive_opening_segment_count = 0U;
+    std::uint64_t operation_descriptor_bytes = 0U;
+    std::uint64_t operation_descriptor_max_bytes = 0U;
+    std::uint64_t sumcheck_body_max_bytes = 0U;
+    std::uint64_t terminal_relation_body_max_bytes = 0U;
+    std::uint64_t constraint_body_max_bytes = 0U;
+    std::uint64_t padding_record_body_max_bytes = 0U;
+    std::uint64_t hidden_matmul_body_max_bytes = 0U;
+    std::uint64_t sparse_route_body_max_bytes = 0U;
+    std::uint64_t fac_line8_body_max_bytes = 0U;
+    std::uint64_t sorted_lookup_relation_body_max_bytes = 0U;
+    std::uint64_t sorted_lookup_proof_body_max_bytes = 0U;
+    std::uint64_t sorted_lookup_outer_commitment_count = 0U;
+    std::uint64_t relation_proof_sections_wire_bytes_upper_bound = 0U;
+    std::uint64_t proof_wire_bytes_upper_bound = 0U;
+    std::uint64_t commitment_section_wire_bytes_upper_bound = 0U;
+    std::uint64_t operation_descriptor_resident_bytes_upper_bound = 0U;
+    std::uint64_t trace_i64_payload_bytes = 0U;
+    std::uint64_t trace_field_payload_bytes = 0U;
+    std::uint64_t trace_u8_payload_bytes = 0U;
+    std::uint64_t trace_object_metadata_bytes = 0U;
+    std::uint64_t trace_forward_live_peak_bytes_upper_bound = 0U;
+    std::uint64_t maximum_route_source_domain = 0U;
+    std::uint64_t maximum_route_edge_domain = 0U;
+    std::uint64_t route_sumcheck_live_peak_bytes_upper_bound = 0U;
+};
+
+bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &graph,
+                                           const StaticTables &tables, const RelationPlan &plan,
+                                           NativeRelationPlanMetrics *metrics, std::string *error);
 
 #if defined(__GNUC__) || defined(__clang__)
 #define ZKDL_GAT_WEAK __attribute__((weak))

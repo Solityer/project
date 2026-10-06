@@ -69,6 +69,12 @@ std::string sha256_file(const std::string& path) {
     return out.str();
 }
 
+void update_sha_u64le(cybozu::Sha256& hasher, std::uint64_t value) {
+    std::array<unsigned char, 8> encoded{};
+    for (unsigned bit = 0; bit < encoded.size(); ++bit) encoded[bit] = static_cast<unsigned char>(value >> (8U * bit));
+    hasher.update(encoded.data(), encoded.size());
+}
+
 std::string basename_of(const std::string& path) {
     const std::size_t slash = path.find_last_of("/\\");
     return slash == std::string::npos ? path : path.substr(slash + 1);
@@ -347,6 +353,53 @@ std::string output_name(std::size_t head, const char* kind) {
 }
 
 std::string sha256_file_digest(const std::string& path) { return sha256_file(path); }
+
+std::string sha256_bytes_digest(const std::string& bytes) {
+    cybozu::Sha256 hasher;
+    hasher.update(bytes.data(), bytes.size());
+    unsigned char digest[32] = {};
+    if (hasher.digest(digest, sizeof(digest), nullptr, 0) != sizeof(digest))
+        throw std::runtime_error("SHA-256 implementation failed");
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (unsigned char byte : digest) out << std::setw(2) << static_cast<unsigned>(byte);
+    return out.str();
+}
+
+std::string comparison_canonical_graph_digest(const Graph& graph) {
+    if (graph.src.size() != graph.dst.size() || graph.node_ptr.size() != graph.graph_count + 1 ||
+        graph.edge_ptr.size() != graph.graph_count + 1) {
+        throw std::invalid_argument("canonical graph identity has inconsistent topology vectors");
+    }
+    cybozu::Sha256 hasher;
+    static constexpr char domain[] = "comparison-canonical-graph-v1";
+    hasher.update(domain, sizeof(domain));
+    update_sha_u64le(hasher, static_cast<std::uint64_t>(graph.num_nodes));
+    update_sha_u64le(hasher, static_cast<std::uint64_t>(graph.src.size()));
+    update_sha_u64le(hasher, static_cast<std::uint64_t>(graph.graph_count));
+    const auto update_int_vector = [&hasher](const std::vector<Int>& values) {
+        update_sha_u64le(hasher, static_cast<std::uint64_t>(values.size()));
+        for (Int value : values) {
+            if (value < 0) throw std::invalid_argument("canonical graph identity contains a negative coordinate");
+            update_sha_u64le(hasher, static_cast<std::uint64_t>(value));
+        }
+    };
+    const auto update_size_vector = [&hasher](const std::vector<std::size_t>& values) {
+        update_sha_u64le(hasher, static_cast<std::uint64_t>(values.size()));
+        for (std::size_t value : values) update_sha_u64le(hasher, static_cast<std::uint64_t>(value));
+    };
+    update_int_vector(graph.src);
+    update_int_vector(graph.dst);
+    update_size_vector(graph.node_ptr);
+    update_size_vector(graph.edge_ptr);
+    std::array<unsigned char, 32> digest{};
+    if (hasher.digest(digest.data(), digest.size(), nullptr, 0) != digest.size())
+        throw std::runtime_error("canonical graph SHA-256 failed");
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (unsigned char byte : digest) out << std::setw(2) << static_cast<unsigned>(byte);
+    return out.str();
+}
 
 std::size_t Shape::elements() const {
     std::size_t result = 1;

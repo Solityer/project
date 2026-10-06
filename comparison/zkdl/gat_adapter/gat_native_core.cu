@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <filesystem>
 #include <initializer_list>
@@ -14,6 +15,8 @@
 
 #include "gat_native_resources.hpp"
 #include "gat_native_core.cuh"
+#include "lookup_table_index_bits.hpp"
+#include "signed_round_bounds.hpp"
 #include "gat_native_resources.cu"
 
 namespace zkdl_gat {
@@ -799,8 +802,9 @@ relation::OperationDescriptor sorted_lookup_operation(const Config &config, cons
     operation.public_route = plan_operation.public_route;
     operation.requires_reindex = plan_operation.requires_reindex;
     operation.batch_family = "authenticated_sorted_lookup";
-    if (plan_operation.inputs.size() < 3U || plan_operation.outputs.size() != 1U) {
-        if (error) *error = "BLOCKED: sorted lookup relation lacks query/index/table inputs and one output";
+    operation.selector_refs = plan_operation.auxiliary;
+    if (plan_operation.inputs.size() != 4U || plan_operation.outputs.size() != 1U) {
+        if (error) *error = "BLOCKED: sorted lookup relation must have query/table/index/bit inputs and one output";
         return {};
     }
     operation.public_table_ref = plan_operation.inputs[1];
@@ -852,6 +856,23 @@ bool fac_axes(const std::map<std::string, const TensorFamily *> &families, const
         feature = checked_native_u32(flattened, ref + "/feature", error);
     } catch (const std::runtime_error &) {
         return false;
+    }
+    return true;
+}
+
+bool fac_logical_outer_mask(const TensorFamily &family, std::uint32_t outer_domain, bool source_zero,
+                            std::vector<std::uint32_t> &outer_map, std::vector<std::uint8_t> &active,
+                            std::string *error) {
+    if (family.logical_shape.empty() || family.padded_shape.empty() || family.logical_shape.size() != family.padded_shape.size() ||
+        family.padded_shape.front() != outer_domain || family.logical_shape.front() == 0U || family.logical_shape.front() > outer_domain) {
+        if (error) *error = "BLOCKED: FAC4DNN logical outer selector shape is not authenticated: " + family.id;
+        return false;
+    }
+    outer_map.assign(outer_domain, 0U);
+    active.assign(outer_domain, 0U);
+    for (std::uint32_t row = 0U; row < family.logical_shape.front(); ++row) {
+        if (!source_zero) outer_map[row] = row;
+        active[row] = 1U;
     }
     return true;
 }
@@ -928,10 +949,23 @@ bool add_fac_feature_broadcast(relation::OperationDescriptor &operation, const s
         if (error) *error = "BLOCKED: FAC4DNN feature broadcast axes are not canonical: " + view_ref + " -> " + canonical_ref;
         return false;
     }
-    std::vector<std::uint32_t> outer_map(view_outer);
-    for (std::uint32_t index = 0U; index < view_outer; ++index) outer_map[index] = index;
+    const TensorFamily *view_family = tensor_family(families, view_ref);
+    const TensorFamily *canonical_family = tensor_family(families, canonical_ref);
+    if (view_family == nullptr || canonical_family == nullptr || view_family->logical_shape.empty() || canonical_family->logical_shape.empty() ||
+        view_family->logical_shape.front() != canonical_family->logical_shape.front()) {
+        if (error) *error = "BLOCKED: FAC4DNN feature broadcast logical outer rows are not aligned: " + view_ref + " -> " + canonical_ref;
+        return false;
+    }
+    if (view_feature > 1U && (view_family->logical_shape.size() != 2U || view_family->padded_shape.size() != 2U ||
+                              view_family->logical_shape[1] != view_family->padded_shape[1])) {
+        if (error) *error = "BLOCKED: FAC4DNN scalar-feature view must contain every padded feature lane: " + view_ref;
+        return false;
+    }
+    std::vector<std::uint32_t> outer_map;
+    std::vector<std::uint8_t> active;
+    if (!fac_logical_outer_mask(*view_family, view_outer, false, outer_map, active, error)) return false;
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature, std::move(outer_map),
-                                std::vector<std::uint32_t>(view_feature, 0U), std::vector<std::uint8_t>(view_outer, 1U), error);
+                                std::vector<std::uint32_t>(view_feature, 0U), std::move(active), error);
 }
 
 bool add_fac_selector_column(relation::OperationDescriptor &operation, const std::string &view_ref, const std::string &canonical_ref,
@@ -940,14 +974,29 @@ bool add_fac_selector_column(relation::OperationDescriptor &operation, const std
     std::uint32_t view_outer = 0U, view_feature = 0U;
     std::uint32_t canonical_outer = 0U, canonical_feature = 0U;
     if (!fac_axes(families, view_ref, view_outer, view_feature, error) || !fac_axes(families, canonical_ref, canonical_outer, canonical_feature, error) ||
-        view_outer != canonical_outer || view_feature != 1U || canonical_feature == 0U || column >= canonical_feature) {
+        view_outer != canonical_outer || view_feature == 0U || canonical_feature == 0U || column >= canonical_feature) {
         if (error) *error = "BLOCKED: FAC4DNN public selector-column axes are not canonical: " + view_ref + " -> " + canonical_ref;
         return false;
     }
-    std::vector<std::uint32_t> outer_map(view_outer);
-    for (std::uint32_t index = 0U; index < view_outer; ++index) outer_map[index] = index;
+    const TensorFamily *view_family = tensor_family(families, view_ref);
+    const TensorFamily *canonical_family = tensor_family(families, canonical_ref);
+    if (view_family == nullptr || canonical_family == nullptr || view_family->logical_shape.empty() || canonical_family->logical_shape.empty() ||
+        view_family->logical_shape.front() != canonical_family->logical_shape.front()) {
+        if (error) *error = "BLOCKED: FAC4DNN selector-column logical outer rows are not aligned: " + view_ref + " -> " + canonical_ref;
+        return false;
+    }
+    std::vector<std::uint32_t> outer_map;
+    std::vector<std::uint8_t> active;
+    if (!fac_logical_outer_mask(*view_family, view_outer, false, outer_map, active, error)) return false;
+    // These are auxiliary operation views with a full padded feature axis.
+    // Their producer repeats the selected public selector column at every
+    // feature coordinate, including lanes that are padding for the related
+    // canonical matrix.  The auxiliary view is logically [E,Fpad], so those
+    // repeated selector lanes are active; canonical product/output tensors
+    // retain their own zero-padding Qpad contract.
+    std::vector<std::uint32_t> feature_map(view_feature, column);
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature, std::move(outer_map),
-                                {column}, std::vector<std::uint8_t>(view_outer, 1U), error);
+                                std::move(feature_map), std::move(active), error);
 }
 
 bool add_fac_feature_block(relation::OperationDescriptor &operation, const std::string &view_ref, const std::string &canonical_ref,
@@ -965,17 +1014,25 @@ bool add_fac_feature_block(relation::OperationDescriptor &operation, const std::
         if (error) *error = "BLOCKED: FAC4DNN feature-block extent exceeds canonical feature axis: " + view_ref + " -> " + canonical_ref;
         return false;
     }
-    std::vector<std::uint32_t> outer_map(view_outer);
-    for (std::uint32_t index = 0U; index < view_outer; ++index) outer_map[index] = index;
     std::vector<std::uint32_t> feature_map(view_feature);
     const TensorFamily *canonical_family = tensor_family(families, canonical_ref);
-    if (canonical_family == nullptr) {
+    const TensorFamily *view_family = tensor_family(families, view_ref);
+    if (canonical_family == nullptr || view_family == nullptr || view_family->logical_shape.empty() || canonical_family->logical_shape.empty() ||
+        view_family->logical_shape.front() != canonical_family->logical_shape.front()) {
         if (error) *error = "BLOCKED: FAC4DNN feature-block canonical family is missing: " + canonical_ref;
         return false;
     }
 
     if (canonical_family->mapping == "rounddiv_auxiliary:node-column-channel") {
-        if (canonical_family->padded_shape.size() != 3U || canonical_family->padded_shape.back() == 0U || block >= canonical_family->padded_shape.back()) {
+        const bool padded_divisor_broadcast = view_family->mapping == "signed_round_div:divisor_aux:full_padded_feature_broadcast";
+        if (canonical_family->padded_shape.size() != 3U || canonical_family->logical_shape.size() != 3U ||
+            canonical_family->logical_shape[2U] != 8U || canonical_family->padded_shape[2U] != 8U ||
+            view_family->logical_shape.size() != 2U || view_family->padded_shape.size() != 2U || canonical_family->padded_shape.back() == 0U ||
+            block >= canonical_family->padded_shape.back() ||
+            (padded_divisor_broadcast && (block != 6U || view_family->logical_shape[1] != view_family->padded_shape[1] ||
+                                          view_family->padded_shape[1] != canonical_family->padded_shape[1] ||
+                                          canonical_family->logical_shape[1] > view_family->logical_shape[1])) ||
+            (!padded_divisor_broadcast && view_family->logical_shape[1] != canonical_family->logical_shape[1])) {
             if (error) *error = "BLOCKED: rounddiv_auxiliary channel descriptor is malformed: " + canonical_ref;
             return false;
         }
@@ -986,7 +1043,8 @@ bool add_fac_feature_block(relation::OperationDescriptor &operation, const std::
             return false;
         }
         for (std::uint32_t index = 0U; index < view_feature; ++index) {
-            const std::uint64_t mapped = static_cast<std::uint64_t>(index) * channels + block;
+            const std::uint32_t logical_feature = padded_divisor_broadcast && index >= canonical_family->logical_shape[1] ? 0U : index;
+            const std::uint64_t mapped = static_cast<std::uint64_t>(logical_feature) * channels + block;
             if (mapped >= canonical_feature || mapped > std::numeric_limits<std::uint32_t>::max()) {
                 if (error) *error = "BLOCKED: FAC4DNN feature-block mapping exceeds canonical feature domain: " + canonical_ref;
                 return false;
@@ -997,8 +1055,11 @@ bool add_fac_feature_block(relation::OperationDescriptor &operation, const std::
         for (std::uint32_t index = 0U; index < view_feature; ++index)
             feature_map[index] = checked_native_u32(block_start + index, canonical_ref + "/feature-map", error, true);
     }
+    std::vector<std::uint32_t> outer_map;
+    std::vector<std::uint8_t> active;
+    if (!fac_logical_outer_mask(*view_family, view_outer, false, outer_map, active, error)) return false;
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature, std::move(outer_map),
-                                std::move(feature_map), std::vector<std::uint8_t>(view_outer, 1U), error);
+                                std::move(feature_map), std::move(active), error);
 }
 
 bool add_fac_scalar_broadcast(relation::OperationDescriptor &operation, const std::string &view_ref, const std::string &canonical_ref,
@@ -1011,9 +1072,19 @@ bool add_fac_scalar_broadcast(relation::OperationDescriptor &operation, const st
         if (error) *error = "BLOCKED: FAC4DNN scalar broadcast axes are not canonical: " + view_ref + " -> " + canonical_ref;
         return false;
     }
+    const TensorFamily *view_family = tensor_family(families, view_ref);
+    const TensorFamily *canonical_family = tensor_family(families, canonical_ref);
+    if (view_family == nullptr || canonical_family == nullptr || canonical_family->logical_shape != std::vector<std::uint64_t>{1U} ||
+        view_family->logical_shape.empty() ||
+        (view_family->logical_shape.size() == 2U && view_family->logical_shape[1] != view_family->padded_shape[1])) {
+        if (error) *error = "BLOCKED: FAC4DNN scalar broadcast logical shape is not canonical: " + view_ref + " -> " + canonical_ref;
+        return false;
+    }
+    std::vector<std::uint32_t> outer_map;
+    std::vector<std::uint8_t> active;
+    if (!fac_logical_outer_mask(*view_family, view_outer, true, outer_map, active, error)) return false;
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature,
-                                std::vector<std::uint32_t>(view_outer, 0U), std::vector<std::uint32_t>(view_feature, 0U),
-                                std::vector<std::uint8_t>(view_outer, 1U), error);
+                                std::move(outer_map), std::vector<std::uint32_t>(view_feature, 0U), std::move(active), error);
 }
 
 bool add_fac_vector_broadcast(relation::OperationDescriptor &operation, const std::string &view_ref, const std::string &canonical_ref,
@@ -1021,17 +1092,21 @@ bool add_fac_vector_broadcast(relation::OperationDescriptor &operation, const st
                               std::string *error) {
     std::uint32_t view_outer = 0U, view_feature = 0U;
     if (!fac_axes(families, view_ref, view_outer, view_feature, error)) return false;
+    const TensorFamily *view_family = tensor_family(families, view_ref);
     const TensorFamily *canonical = tensor_family(families, canonical_ref);
-    if (canonical == nullptr || canonical->padded_shape.size() != 1U || canonical->padded_shape.front() == 0U ||
-        canonical->padded_shape.front() != view_feature) {
+    if (view_family == nullptr || canonical == nullptr || view_family->logical_shape.size() != 2U || canonical->logical_shape.size() != 1U ||
+        canonical->padded_shape.size() != 1U || canonical->padded_shape.front() == 0U || canonical->padded_shape.front() != view_feature ||
+        view_family->logical_shape[1] != canonical->logical_shape.front() || view_family->padded_shape[1] != canonical->padded_shape.front()) {
         if (error) *error = "BLOCKED: FAC4DNN vector broadcast axes are not canonical: " + view_ref + " -> " + canonical_ref;
         return false;
     }
-    std::vector<std::uint32_t> outer_map(view_outer, 0U);
+    std::vector<std::uint32_t> outer_map;
+    std::vector<std::uint8_t> active;
+    if (!fac_logical_outer_mask(*view_family, view_outer, true, outer_map, active, error)) return false;
     std::vector<std::uint32_t> feature_map(view_feature);
     for (std::uint32_t index = 0U; index < view_feature; ++index) feature_map[index] = index;
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, 1U, view_feature, view_feature, std::move(outer_map),
-                                std::move(feature_map), std::vector<std::uint8_t>(view_outer, 1U), error);
+                                std::move(feature_map), std::move(active), error);
 }
 
 bool add_fac_feature_column(relation::OperationDescriptor &operation, const std::string &view_ref, const std::string &canonical_ref,
@@ -1203,6 +1278,7 @@ relation::OperationDescriptor grouped_sum_operation(const OperationFamily &plan_
     operation.padding = "all-padding-values-zero;group-boundary-masked";
     operation.public_route = plan_operation.public_route;
     operation.requires_reindex = plan_operation.requires_reindex;
+    operation.selector_refs = plan_operation.auxiliary;
     for (const auto &ref : plan_operation.inputs) append_unique(operation.source_refs, ref);
     for (const auto &ref : plan_operation.outputs) append_unique(operation.source_refs, ref);
     const std::string group_new = required_view(plan_operation, domains, "group_new", "", error);
@@ -1256,7 +1332,7 @@ relation::OperationDescriptor grouped_sum_operation(const OperationFamily &plan_
 
     const bool input0_scalar = [&]() {
         std::uint32_t outer = 0U, feature = 0U;
-        return fac_axes(families, input0, outer, feature, nullptr) && feature == 1U;
+        return fac_axes(families, plan_operation.inputs[0], outer, feature, nullptr) && feature == 1U;
     }();
     if ((input0_scalar ? !add_fac_feature_broadcast(operation, input0, plan_operation.inputs[0], domains, families, error) :
                          !add_fac_identity_from_families(operation, input0, plan_operation.inputs[0], domains, families, error)) ||
@@ -1281,7 +1357,7 @@ relation::OperationDescriptor grouped_sum_operation(const OperationFamily &plan_
     return operation;
 }
 
-relation::OperationDescriptor max_range_operation(const Config &config, const OperationFamily &plan_operation,
+relation::OperationDescriptor max_range_operation(const StaticTables &tables, const OperationFamily &plan_operation,
                                                   const std::map<std::string, std::uint32_t> &domains,
                                                   const std::map<std::string, const TensorFamily *> &families, const Graph *graph, std::string *error) {
     relation::OperationDescriptor operation;
@@ -1294,6 +1370,7 @@ relation::OperationDescriptor max_range_operation(const Config &config, const Op
     operation.padding = "all-padding-values-zero;group-boundary-masked";
     operation.public_route = plan_operation.public_route;
     operation.requires_reindex = plan_operation.requires_reindex;
+    operation.selector_refs = plan_operation.auxiliary;
     for (const auto &ref : plan_operation.inputs) append_unique(operation.source_refs, ref);
     for (const auto &ref : plan_operation.outputs) append_unique(operation.source_refs, ref);
     if (plan_operation.outputs.size() < 3U || plan_operation.inputs.empty()) {
@@ -1314,8 +1391,9 @@ relation::OperationDescriptor max_range_operation(const Config &config, const Op
     }
     std::uint32_t width = 0U;
     try {
-        width = checked_native_u32(config.range_bits, operation.id + "/range_bits", error);
-    } catch (const std::runtime_error &) {
+        width = table_index_bit_width(tables.exp.size());
+    } catch (const std::exception &) {
+        if (error) *error = "BLOCKED: max/range relation lacks an authenticated ExpMap-derived delta width";
         return relation::OperationDescriptor{};
     }
     if (width == 0U || width >= 31U) {
@@ -1392,6 +1470,7 @@ relation::OperationDescriptor max_range_operation(const Config &config, const Op
 }
 
 relation::OperationDescriptor signed_round_operation(const Config &config, const OperationFamily &plan_operation,
+                                                     const IntegerBoundLedger &ledger,
                                                      const std::map<std::string, std::uint32_t> &domains,
                                                      const std::map<std::string, const TensorFamily *> &families, std::string *error) {
     relation::OperationDescriptor operation;
@@ -1405,11 +1484,22 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
     operation.public_route = plan_operation.public_route;
     operation.requires_reindex = plan_operation.requires_reindex;
     operation.batch_family = "signed_round_div";
+    operation.selector_refs = plan_operation.auxiliary;
     for (const auto &input : plan_operation.inputs) append_unique(operation.source_refs, input);
     for (const auto &output : plan_operation.outputs) append_unique(operation.source_refs, output);
     const std::string numerator = required_view(plan_operation, domains, "signed_numerator", plan_operation.inputs.empty() ? "" : plan_operation.inputs.front(),
                                                 error);
     const std::string divisor = required_view(plan_operation, domains, "divisor", plan_operation.inputs.size() < 2U ? "" : plan_operation.inputs[1], error);
+    signed_round_bounds::Widths widths;
+    try {
+        widths = signed_round_bounds::derive(config, ledger, plan_operation.id);
+    } catch (const std::exception &exception) {
+        if (error) *error = "BLOCKED: signed-round authenticated bounds are invalid: " + std::string(exception.what());
+        return relation::OperationDescriptor{};
+    }
+    const std::string divisor_aux = widths.binds_raw_denominator ?
+        required_view(plan_operation, domains, "divisor_aux", "", error) : std::string();
+    const std::string scaled_divisor = widths.binds_raw_denominator ? divisor_aux : divisor;
     const std::string signed_q = required_view(plan_operation, domains, "signed_quotient", plan_operation.outputs.empty() ? "" : plan_operation.outputs.front(),
                                                error);
     const std::string a = required_view(plan_operation, domains, "a", "", error);
@@ -1424,6 +1514,17 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
         if (ref.empty()) return relation::OperationDescriptor{};
         add_ref(operation, ref);
     }
+    if (widths.binds_raw_denominator) {
+        if (divisor_aux.empty()) return relation::OperationDescriptor{};
+        add_ref(operation, divisor_aux);
+    }
+    const auto has_node_feature_broadcast_divisor = [&]() {
+        std::uint32_t view_outer = 0U, view_feature = 0U;
+        std::uint32_t canonical_outer = 0U, canonical_feature = 0U;
+        return fac_axes(families, divisor, view_outer, view_feature, nullptr) &&
+               fac_axes(families, plan_operation.inputs[1], canonical_outer, canonical_feature, nullptr) &&
+               view_outer == canonical_outer && canonical_feature == 1U;
+    };
     if (plan_operation.inputs.size() >= 2U) {
         bool divisor_is_public_broadcast = false;
         if (domains.count(divisor) != 0U && domains.count(plan_operation.inputs[1]) != 0U && domains.at(divisor) != domains.at(plan_operation.inputs[1])) {
@@ -1432,6 +1533,10 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
                 operation.has_public_divisor = true;
                 operation.public_divisor = relation::fr_from_signed_i64(static_cast<std::int64_t>(config.architecture.output_heads));
                 divisor_is_public_broadcast = true;
+            } else if (has_node_feature_broadcast_divisor()) {
+                // Per-node denominator is explicitly broadcast into the
+                // node/feature division view.  FAC binds each feature lane
+                // back to that same canonical node scalar.
             } else {
                 if (error) *error = "BLOCKED: SignedRoundDiv divisor view is cross-domain without a public scale route";
                 return relation::OperationDescriptor{};
@@ -1455,33 +1560,34 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
             return relation::OperationDescriptor{};
     }
     sort_fac_bindings(operation);
-    const std::vector<std::string> range_values = {a, q, r, delta, divisor};
+    const std::vector<std::pair<std::string, std::string>> range_values = {
+        {a, "a"}, {q, "q_abs"}, {r, "r"}, {delta, "delta"}, {scaled_divisor, "divisor"},
+    };
     std::map<std::string, std::vector<std::string>> range_bits;
-
-    constexpr std::uint32_t kMaxSignedRoundRangeBits = 24U;
-    if (config.range_bits == 0U || config.range_bits > kMaxSignedRoundRangeBits) {
-        if (error) *error = "BLOCKED: SignedRoundDiv range_bits is not a bounded native width";
-        return relation::OperationDescriptor{};
-    }
-    std::uint32_t width = 0U;
-    try {
-        width = checked_native_u32(config.range_bits, operation.id + "/range_bits", error);
-    } catch (const std::runtime_error &) {
-        return relation::OperationDescriptor{};
-    }
-    const std::uint64_t estimated_constraints = 16U + 5U * static_cast<std::uint64_t>(width);
-    if (width >= 31U || estimated_constraints > relation::kMaxRelationConstraints) {
-        if (error) *error = "BLOCKED: SignedRoundDiv range_bits is not a bounded native width";
-        return relation::OperationDescriptor{};
-    }
-    for (const auto &value : range_values) {
+    const std::map<std::string, std::uint32_t> range_widths = {
+        {a, widths.a_bits}, {q, widths.q_bits}, {r, widths.r_bits}, {delta, widths.delta_bits}, {scaled_divisor, widths.divisor_bits},
+    };
+    std::uint64_t total_range_bits = 0U;
+    for (const auto &entry : range_values) {
+        const auto &value = entry.first;
+        const auto &role = entry.second;
+        const std::uint32_t width = range_widths.at(value);
+        if (width == 0U || width > 63U) {
+            if (error) *error = "BLOCKED: SignedRoundDiv authenticated role width is outside native bounds: " + value;
+            return relation::OperationDescriptor{};
+        }
+        total_range_bits += width;
         for (std::uint32_t bit = 0U; bit < width; ++bit) {
-            const std::string ref = required_view(plan_operation, domains, "range/" + value.substr(value.rfind('/') + 1U) + "/" + std::to_string(bit), "",
+            const std::string ref = required_view(plan_operation, domains, "range/" + role + "/" + std::to_string(bit), "",
                                                   error);
             if (ref.empty()) return relation::OperationDescriptor{};
             range_bits[value].push_back(ref);
             add_ref(operation, ref);
         }
+    }
+    if (total_range_bits > (relation::kMaxRelationConstraints - 32U) / 2U) {
+        if (error) *error = "BLOCKED: SignedRoundDiv authenticated range roles exceed native relation capacity";
+        return relation::OperationDescriptor{};
     }
 
     if (plan_operation.outputs.size() > 1U) {
@@ -1492,7 +1598,7 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
             !add_fac_feature_block(operation, q, aux, domains, families, 3U, error) ||
             !add_fac_feature_block(operation, r, aux, domains, families, 4U, error) ||
             !add_fac_feature_block(operation, delta, aux, domains, families, 5U, error) ||
-            !add_fac_feature_block(operation, divisor, aux, domains, families, 6U, error))
+            !add_fac_feature_block(operation, scaled_divisor, aux, domains, families, 6U, error))
             return relation::OperationDescriptor{};
     }
     const std::string aux_prefix = plan_operation.id;
@@ -1502,13 +1608,25 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
     const std::string divisor_inverse_canonical = aux_prefix.find("/signed_round_div") != std::string::npos ?
                                                       aux_prefix.substr(0U, aux_prefix.find("/signed_round_div")) + "/trace/rounddiv_divisor_inverse" :
                                                       std::string();
-    if (!a_inverse_canonical.empty() && domains.count(a_inverse_canonical) != 0U &&
-        !add_fac_identity_from_families(operation, a_inverse, a_inverse_canonical, domains, families, error))
-        return relation::OperationDescriptor{};
-    if (!divisor_inverse_canonical.empty() && domains.count(divisor_inverse_canonical) != 0U &&
-        !add_fac_identity_from_families(operation, divisor_inverse, divisor_inverse_canonical, domains, families, error))
-        return relation::OperationDescriptor{};
+    if (!a_inverse_canonical.empty() && domains.count(a_inverse_canonical) != 0U) {
+        append_unique(operation.source_refs, a_inverse_canonical);
+        if (!add_fac_identity_from_families(operation, a_inverse, a_inverse_canonical, domains, families, error))
+            return relation::OperationDescriptor{};
+    }
+    if (!divisor_inverse_canonical.empty() && domains.count(divisor_inverse_canonical) != 0U) {
+        append_unique(operation.source_refs, divisor_inverse_canonical);
+        if (!add_fac_identity_from_families(operation, divisor_inverse, divisor_inverse_canonical, domains, families, error))
+            return relation::OperationDescriptor{};
+    }
     sort_fac_bindings(operation);
+    if (widths.binds_raw_denominator) {
+        relation::ConstraintDescriptor scale_relation;
+        scale_relation.id = operation.id + "/scaled-divisor";
+        scale_relation.degree = 1U;
+        scale_relation.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, scaled_divisor)}));
+        scale_relation.terms.push_back(monomial(relation::fr_from_signed_i64(-widths.denominator_scale), {local_ref(operation, divisor)}));
+        operation.constraints.push_back(std::move(scale_relation));
+    }
     relation::ConstraintDescriptor signed_n;
     signed_n.id = operation.id + "/signed-numerator";
     signed_n.degree = 2U;
@@ -1524,14 +1642,14 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
         public_divisor.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, divisor)}));
         operation.constraints.push_back(std::move(public_divisor));
     }
-    operation.constraints.push_back(signed_round_linear(operation.id + "/nearest-ties-away", operation, a, divisor, q, r, delta));
+    operation.constraints.push_back(signed_round_linear(operation.id + "/nearest-ties-away", operation, a, scaled_divisor, q, r, delta));
     relation::ConstraintDescriptor slack;
     slack.id = operation.id + "/slack";
     slack.degree = 1U;
     slack.constant = zkdl::fr_from_u32(1U);
     slack.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, r)}));
     slack.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, delta)}));
-    slack.terms.push_back(monomial(relation::fr_from_signed_i64(-2), {local_ref(operation, divisor)}));
+    slack.terms.push_back(monomial(relation::fr_from_signed_i64(-2), {local_ref(operation, scaled_divisor)}));
     operation.constraints.push_back(std::move(slack));
     relation::ConstraintDescriptor a_inv;
     a_inv.id = operation.id + "/a-inverse";
@@ -1544,7 +1662,7 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
     d_inv.id = operation.id + "/divisor-inverse";
     d_inv.degree = 2U;
     d_inv.constant = zkdl::fr_neg(zkdl::fr_from_u32(1U));
-    d_inv.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, divisor), local_ref(operation, divisor_inverse)}));
+    d_inv.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, scaled_divisor), local_ref(operation, divisor_inverse)}));
     operation.constraints.push_back(std::move(d_inv));
     relation::ConstraintDescriptor q_sign;
     q_sign.id = operation.id + "/signed-quotient";
@@ -1560,11 +1678,14 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
     zero_sign.degree = 2U;
     zero_sign.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, sigma), local_ref(operation, zero)}));
     operation.constraints.push_back(std::move(zero_sign));
-    for (const auto &value : range_values) {
+    for (const auto &entry : range_values) {
+        const auto &value = entry.first;
+        const auto &role = entry.second;
+        const std::uint32_t width = range_widths.at(value);
         operation.constraints.push_back(
-            reconstruction_constraint(operation.id + "/range/" + value.substr(value.rfind('/') + 1U), operation, value, range_bits[value], width));
+            reconstruction_constraint(operation.id + "/range/" + role, operation, value, range_bits[value], width));
         for (std::uint32_t bit = 0U; bit < width; ++bit)
-            operation.constraints.push_back(boolean_constraint(operation.id + "/range-bit/" + value.substr(value.rfind('/') + 1U) + "/" + std::to_string(bit),
+            operation.constraints.push_back(boolean_constraint(operation.id + "/range-bit/" + role + "/" + std::to_string(bit),
                                                                operation, range_bits[value][bit]));
     }
     std::string validation_error;
@@ -1597,8 +1718,12 @@ relation::OperationDescriptor sparse_route_operation(const Graph &graph, const O
     }
     const std::uint32_t node_domain = padded_domain(source_family->padded_shape.front(), error, plan_operation.id + "/node");
     const std::uint32_t edge_domain = padded_domain(output_family->padded_shape.front(), error, plan_operation.id + "/edge");
-    const std::uint64_t source_feature = flattened_feature_domain(*source_family, error, plan_operation.id + "/source");
-    const std::uint64_t output_feature = flattened_feature_domain(*output_family, error, plan_operation.id + "/output");
+    const auto route_feature_domain = [&](const TensorFamily &family, const std::string &label) {
+        if (family.padded_shape.size() == 1U) return std::uint64_t{1U};
+        return flattened_feature_domain(family, error, label);
+    };
+    const std::uint64_t source_feature = route_feature_domain(*source_family, plan_operation.id + "/source");
+    const std::uint64_t output_feature = route_feature_domain(*output_family, plan_operation.id + "/output");
     if (node_domain == 0U || edge_domain == 0U || source_feature == 0U || output_feature == 0U || (source_feature != output_feature && source_feature != 1U) ||
         source_feature > kMaxNativeDomain || output_feature > kMaxNativeDomain || graph.nodes > node_domain ||
         graph.edges > edge_domain || domains.find(source_ref) == domains.end() || domains.find(output_ref) == domains.end() ||
@@ -1706,7 +1831,8 @@ relation::OperationDescriptor inverse_broadcast_operation(const Graph &graph, co
     return operation;
 }
 
-relation::OperationDescriptor canonical_operation(const Config &config, const StaticTables &tables, const OperationFamily &plan_operation,
+relation::OperationDescriptor canonical_operation(const Config &config, const StaticTables &tables, const IntegerBoundLedger &ledger,
+                                                  const OperationFamily &plan_operation,
                                                   const std::map<std::string, std::uint32_t> &domains,
                                                   const std::map<std::string, const TensorFamily *> &families, const Graph *graph, std::string *error) {
     relation::OperationDescriptor operation;
@@ -1733,8 +1859,11 @@ relation::OperationDescriptor canonical_operation(const Config &config, const St
         return relation::OperationDescriptor{};
     };
     try {
-        if (plan_operation.kind == "field_addition" || plan_operation.kind == "tensor_sumcheck" || plan_operation.kind == "output_bias") {
-            operation.kind = plan_operation.kind == "output_bias" ?
+        const bool output_bias = plan_operation.kind == "output_bias" ||
+                                 (plan_operation.id.size() >= 12U &&
+                                  plan_operation.id.compare(plan_operation.id.size() - 12U, 12U, "/output_bias") == 0);
+        if (plan_operation.kind == "field_addition" || plan_operation.kind == "tensor_sumcheck" || output_bias) {
+            operation.kind = output_bias ?
                                  relation::RelationKind::Bias :
                                  (plan_operation.kind == "tensor_sumcheck" ? relation::RelationKind::HeadSum : relation::RelationKind::Add);
             if (plan_operation.outputs.size() != 1U || plan_operation.inputs.empty()) return unsupported("one output and aligned input MLE tensors");
@@ -1743,7 +1872,7 @@ relation::OperationDescriptor canonical_operation(const Config &config, const St
             std::vector<std::string> refs = inputs;
             refs.push_back(output);
             set_tensor_refs(operation, refs);
-            const bool bias_vector = plan_operation.kind == "output_bias" && inputs.size() == 2U;
+            const bool bias_vector = output_bias && inputs.size() == 2U;
             if ((!bias_vector && !bind_aligned_views(operation, plan_operation, inputs, domains, error)) ||
                 (bias_vector && (!add_fac_identity_from_families(operation, inputs[0], plan_operation.inputs[0], domains, families, error) ||
                                  !add_fac_vector_broadcast(operation, inputs[1], plan_operation.inputs[1], domains, families, error))) ||
@@ -1788,7 +1917,15 @@ relation::OperationDescriptor canonical_operation(const Config &config, const St
             const std::vector<std::string> inputs = aligned_inputs(plan_operation, domains);
             const std::string output = aligned_output(plan_operation, domains);
             set_tensor_refs(operation, {inputs[0], inputs[1], inputs[2], output});
-            if (!bind_aligned_views(operation, plan_operation, inputs, domains, error) ||
+            std::uint32_t input0_outer = 0U, input0_feature = 0U;
+            const bool input0_feature_broadcast =
+                fac_axes(families, plan_operation.inputs[0], input0_outer, input0_feature, error) && input0_feature == 1U;
+            const bool input0_binding_ok = input0_feature_broadcast ?
+                add_fac_feature_broadcast(operation, inputs[0], plan_operation.inputs[0], domains, families, error) :
+                add_fac_identity_from_families(operation, inputs[0], plan_operation.inputs[0], domains, families, error);
+            if (!input0_binding_ok ||
+                !add_fac_identity_from_families(operation, inputs[1], plan_operation.inputs[1], domains, families, error) ||
+                !add_fac_identity_from_families(operation, inputs[2], plan_operation.inputs[2], domains, families, error) ||
                 !bind_output_view(operation, plan_operation, output, 0U, domains, error))
                 return relation::OperationDescriptor{};
             sort_fac_bindings(operation);
@@ -1796,10 +1933,30 @@ relation::OperationDescriptor canonical_operation(const Config &config, const St
         } else if (plan_operation.kind == "tensor_product_sumcheck") {
             operation.kind = relation::RelationKind::Product;
             if (plan_operation.inputs.size() < 2U || plan_operation.outputs.size() != 1U) return unsupported("two aligned input tensors and one output tensor");
-            const std::vector<std::string> inputs = aligned_inputs(plan_operation, domains);
+            std::vector<std::string> inputs = aligned_inputs(plan_operation, domains);
             const std::string output = aligned_output(plan_operation, domains);
+            const auto ends_with = [](const std::string &value, const std::string &suffix) {
+                return value.size() >= suffix.size() &&
+                       value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+            };
+            bool first_input_feature_broadcast = false;
+            if (ends_with(plan_operation.id, "/u_h_prime") || ends_with(plan_operation.id, "/u_y_prime")) {
+                const std::size_t operation_start = plan_operation.id.rfind('/');
+                const std::size_t stage_end = operation_start == std::string::npos ? 0U : operation_start;
+                inputs[0] = plan_operation.id.substr(0U, stage_end) + "/group_sum/view/input0";
+                first_input_feature_broadcast = true;
+            } else if (ends_with(plan_operation.id, "/alpha_h_prime") ||
+                       ends_with(plan_operation.id, "/alpha_y_prime")) {
+                inputs[0] = plan_operation.id + "/view/input0";
+                first_input_feature_broadcast = true;
+            }
             set_tensor_refs(operation, {inputs[0], inputs[1], output});
-            if (!bind_aligned_views(operation, plan_operation, inputs, domains, error) ||
+            const bool input_bindings_ok = first_input_feature_broadcast ?
+                add_fac_feature_broadcast(operation, inputs[0], plan_operation.inputs[0], domains, families, error) :
+                bind_aligned_views(operation, plan_operation, inputs, domains, error);
+            if (!input_bindings_ok ||
+                (first_input_feature_broadcast &&
+                 !add_fac_identity_from_families(operation, inputs[1], plan_operation.inputs[1], domains, families, error)) ||
                 !bind_output_view(operation, plan_operation, output, 0U, domains, error))
                 return relation::OperationDescriptor{};
             sort_fac_bindings(operation);
@@ -1819,11 +1976,11 @@ relation::OperationDescriptor canonical_operation(const Config &config, const St
         } else if (plan_operation.kind == "indexed_public_table_sumcheck") {
             return sorted_lookup_operation(config, tables, plan_operation, domains, families, error);
         } else if (plan_operation.kind == "segmented_max_range_sumcheck") {
-            return max_range_operation(config, plan_operation, domains, families, graph, error);
+            return max_range_operation(tables, plan_operation, domains, families, graph, error);
         } else if (plan_operation.kind == "segmented_sumcheck") {
             return grouped_sum_operation(plan_operation, domains, families, graph, error);
         } else if (plan_operation.kind == "signed_round_div_sumcheck") {
-            return signed_round_operation(config, plan_operation, domains, families, error);
+            return signed_round_operation(config, plan_operation, ledger, domains, families, error);
         } else if (plan_operation.kind == "tensor_matmul_sumcheck") {
             if (plan_operation.inputs.size() != 2U || plan_operation.outputs.size() != 1U) return unsupported("one input, model kernel, and output tensor");
             relation::PrimitiveDescriptor primitive;
@@ -1894,52 +2051,89 @@ bool build_canonical_operations(const Config &config, const StaticTables &tables
         }
     operations.clear();
     std::set<std::string> ids;
+    std::vector<std::string> contract_errors;
     for (const auto &plan_operation : relation.operation_families) {
-        relation::OperationDescriptor operation = canonical_operation(config, tables, plan_operation, domains, families, graph, error);
-        if (operation.id.empty()) return false;
+        std::string operation_error;
+        relation::OperationDescriptor operation = canonical_operation(config, tables, relation.integer_bound_ledger, plan_operation, domains, families, graph,
+                                                                        &operation_error);
+        if (operation.id.empty()) {
+            contract_errors.push_back(plan_operation.id + ": " +
+                                      (operation_error.empty() ? "canonical descriptor construction failed" : operation_error));
+            continue;
+        }
+        bool operation_valid = true;
+        bool all_operation_refs_present = true;
         for (const auto &ref : operation.tensor_refs) {
             const auto found = domains.find(ref);
             if (found == domains.end()) {
-                if (error) *error = "BLOCKED: native relation witness is missing tensor " + ref + " required by " + operation.id;
-                return false;
+                contract_errors.push_back(operation.id + ": missing tensor " + ref);
+                operation_valid = false;
+                all_operation_refs_present = false;
             }
         }
         for (const auto &primitive : operation.primitives) {
             for (const auto &ref : primitive.tensor_refs) {
                 const auto found = domains.find(ref);
                 if (found == domains.end()) {
-                    if (error) *error = "BLOCKED: native relation witness is missing primitive tensor " + ref + " required by " + operation.id;
-                    return false;
+                    contract_errors.push_back(operation.id + ": missing primitive tensor " + ref);
+                    operation_valid = false;
+                    all_operation_refs_present = false;
                 }
             }
             const auto &shape = primitive.matmul_shape;
-            if (domains.at(primitive.tensor_refs[0]) != shape.a_size() || domains.at(primitive.tensor_refs[1]) != shape.b_size() ||
-                domains.at(primitive.tensor_refs[2]) != shape.c_size()) {
-                if (error) *error = "BLOCKED: primitive tensor domains do not match fixed padded zkMatMul shape for " + operation.id;
-                return false;
+            if (primitive.tensor_refs.size() == 3U &&
+                std::all_of(primitive.tensor_refs.begin(), primitive.tensor_refs.end(),
+                            [&](const std::string &ref) { return domains.count(ref) != 0U; }) &&
+                (domains.at(primitive.tensor_refs[0]) != shape.a_size() ||
+                 domains.at(primitive.tensor_refs[1]) != shape.b_size() ||
+                 domains.at(primitive.tensor_refs[2]) != shape.c_size())) {
+                contract_errors.push_back(operation.id + ": primitive tensor domains do not match fixed padded zkMatMul shape");
+                operation_valid = false;
             }
         }
-        if (operation.tensor_refs.empty()) return false;
+        if (operation.tensor_refs.empty()) {
+            contract_errors.push_back(operation.id + ": descriptor has no tensor references");
+            operation_valid = false;
+            all_operation_refs_present = false;
+        }
 
         const bool has_route = operation.kind == relation::RelationKind::SparseRoute || !operation.selector_source_ref.empty();
-        if (!has_route) {
+        if (!has_route && all_operation_refs_present && !operation.tensor_refs.empty()) {
             const std::uint32_t domain = domains.at(operation.tensor_refs.front());
             for (const auto &ref : operation.tensor_refs)
                 if (domains.at(ref) != domain) {
-                    if (error) *error = "BLOCKED: operation " + operation.id + " has non-aligned MLE domains; explicit FAC4DNN reindex witness is required";
-                    return false;
+                    contract_errors.push_back(operation.id + ": tensor references have non-aligned MLE domains; explicit FAC4DNN reindex witness is required");
+                    operation_valid = false;
+                    break;
                 }
         }
         if (!ids.insert(operation.id).second) {
-            if (error) *error = "duplicate canonical native operation id: " + operation.id;
-            return false;
+            contract_errors.push_back(operation.id + ": duplicate canonical native operation id");
+            operation_valid = false;
         }
         if (!operation.constraints.empty()) {
             const auto shape = families.find(operation.tensor_refs.front());
-            if (shape == families.end() || shape->second == nullptr) { if (error) *error = "pointwise operation is missing authenticated active shape: " + operation.id; return false; }
-            for (auto& constraint : operation.constraints) { constraint.logical_shape = shape->second->logical_shape; constraint.padded_shape = shape->second->padded_shape; }
+            if (shape == families.end() || shape->second == nullptr) {
+                contract_errors.push_back(operation.id + ": pointwise operation is missing authenticated active shape");
+                operation_valid = false;
+            } else {
+                for (auto& constraint : operation.constraints) {
+                    constraint.logical_shape = shape->second->logical_shape;
+                    constraint.padded_shape = shape->second->padded_shape;
+                }
+            }
         }
+        if (!operation_valid) continue;
         operations.push_back(std::move(operation));
+    }
+    if (!contract_errors.empty()) {
+        if (error) {
+            std::ostringstream message;
+            message << "BLOCKED: native relation contract audit found " << contract_errors.size() << " issue(s)";
+            for (const auto &item : contract_errors) message << "\n - " << item;
+            *error = message.str();
+        }
+        return false;
     }
     return !operations.empty();
 }
@@ -2313,10 +2507,11 @@ bool sorted_scratch_layout(const Config &config, const NativeSortedLookupProvide
 }
 
 bool sorted_scratch_provider(const SortedLookupScratchLayout &layout, std::uint64_t section_offset, std::uint32_t domain, std::uint32_t field,
-                             relation::SegmentedTensorProvider &provider, std::string *error) {
+                             relation::SegmentedTensorProvider &provider, std::string *error,
+                             double *explicit_io_decode_seconds = nullptr) {
     const auto path = layout.path;
     provider = relation::SegmentedTensorProvider(domain, layout.segment_size,
-                                                 [path, section_offset, domain, field](std::uint64_t offset, std::uint32_t count, std::vector<FrWire> &output,
+                                                 [path, section_offset, domain, field, explicit_io_decode_seconds](std::uint64_t offset, std::uint32_t count, std::vector<FrWire> &output,
                                                                                        std::string *read_error) {
                                                      constexpr std::uint64_t record_bytes = SortedLookupScratchLayout::kRecordBytes;
                                                      if (offset > domain || count > domain - offset || offset > std::numeric_limits<std::uint64_t>::max() / record_bytes ||
@@ -2337,6 +2532,7 @@ bool sorted_scratch_provider(const SortedLookupScratchLayout &layout, std::uint6
                                                          if (read_error) *read_error = "sorted-lookup scratch offset exceeds stream range";
                                                          return false;
                                                      }
+                                                     const auto explicit_io_decode_start = std::chrono::steady_clock::now();
                                                      std::ifstream stream(path, std::ios::binary);
                                                      if (!stream) {
                                                          if (read_error) *read_error = "cannot open sorted-lookup scratch";
@@ -2403,6 +2599,8 @@ bool sorted_scratch_provider(const SortedLookupScratchLayout &layout, std::uint6
                                                                  break;
                                                          }
                                                      }
+                                                     if (explicit_io_decode_seconds != nullptr)
+                                                         *explicit_io_decode_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - explicit_io_decode_start).count();
                                                      return true;
                                                  });
     return provider.valid(error);
@@ -2556,12 +2754,13 @@ bool sorted_lookup_public_table_providers(const StaticTables &tables, const Oper
 
 bool sorted_lookup_prover_providers(const zkdl::AuthenticatedSortedLookupDescriptor &descriptor, const SortedLookupScratchLayout &layout,
                                     const relation::SegmentedTensorProvider &table_keys, const relation::SegmentedTensorProvider &table_active,
-                                    relation::AuthenticatedSortedLookupProviderSet &providers, std::string *error) {
+                                    relation::AuthenticatedSortedLookupProviderSet &providers, std::string *error,
+                                    double *explicit_io_decode_seconds = nullptr) {
     providers = relation::AuthenticatedSortedLookupProviderSet{};
     providers.table_keys = table_keys;
     providers.table_active = table_active;
     const auto scratch = [&](std::uint64_t offset, std::uint32_t domain, std::uint32_t field, relation::SegmentedTensorProvider &result) {
-        return sorted_scratch_provider(layout, offset, domain, field, result, error);
+        return sorted_scratch_provider(layout, offset, domain, field, result, error, explicit_io_decode_seconds);
     };
     if (!scratch(layout.query_offset, descriptor.query_domain, 0U, providers.query_keys) ||
         !scratch(layout.query_offset, descriptor.query_domain, 3U, providers.query_x) ||
@@ -2611,7 +2810,9 @@ std::string sorted_lookup_join_roles(const std::vector<std::string> &roles) {
 
 bool sorted_lookup_build_prover_context(const Config &config, const StaticTables &tables, const RelationPlan &plan, const PublicStatement &statement,
                                         const relation::RelationStatement &relation_statement, const NativeRelationWitness &witness,
-                                        relation::ProverContext &context, std::string *error) {
+                                        relation::ProverContext &context, std::string *error,
+                                        double *outer_commitment_wall_seconds,
+                                        double *outer_commitment_file_io_seconds) {
     std::map<std::string, const relation::OperationDescriptor *> operations;
     for (const auto &operation : context.operations)
         if (operation.batch_family == "authenticated_sorted_lookup" && !operations.emplace(operation.id, &operation).second) {
@@ -2662,8 +2863,16 @@ bool sorted_lookup_build_prover_context(const Config &config, const StaticTables
             return false;
         }
         std::array<zkdl::byte, 32U> expected_scratch{}, actual_scratch{};
-        if (!parse_digest(input.scratch_digest, expected_scratch) || !streaming_file_digest(layout.path, actual_scratch, error) ||
-            expected_scratch != actual_scratch) {
+        if (!parse_digest(input.scratch_digest, expected_scratch)) {
+            if (error && error->empty()) *error = "BLOCKED: sorted-lookup scratch digest mismatch";
+            return false;
+        }
+        const auto scratch_digest_start = std::chrono::steady_clock::now();
+        const bool scratch_digest_read = streaming_file_digest(layout.path, actual_scratch, error);
+        if (context.provider_file_io_decode_time_seconds != nullptr)
+            *context.provider_file_io_decode_time_seconds += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - scratch_digest_start).count();
+        if (!scratch_digest_read || expected_scratch != actual_scratch) {
             if (error && error->empty()) *error = "BLOCKED: sorted-lookup scratch digest mismatch";
             return false;
         }
@@ -2671,7 +2880,8 @@ bool sorted_lookup_build_prover_context(const Config &config, const StaticTables
         const auto plan_operation = sorted_lookup_plan_operation(plan, query.operation_id);
         if (plan_operation == nullptr || !sorted_lookup_public_table_providers(tables, *plan_operation, query, table_keys, table_active, error)) return false;
         relation::AuthenticatedSortedLookupProviderSet providers;
-        if (!sorted_lookup_prover_providers(descriptor, layout, table_keys, table_active, providers, error)) return false;
+        if (!sorted_lookup_prover_providers(descriptor, layout, table_keys, table_active, providers, error,
+                                            context.provider_file_io_decode_time_seconds)) return false;
 
         std::vector<zkdl::AuthenticatedSortedLookupCommitmentRef> refs;
         std::vector<zkdl::CpuG1Point> outer;
@@ -2679,20 +2889,36 @@ bool sorted_lookup_build_prover_context(const Config &config, const StaticTables
         std::vector<std::vector<FrWire>> segment_blinders;
         std::vector<std::vector<zkdl::CpuG1Point>> segment_commitments;
         const auto add_outer = [&](std::uint32_t role, std::uint32_t column, const std::string &name, const relation::SegmentedTensorProvider &provider) {
+            const auto commitment_operation_start = std::chrono::steady_clock::now();
+            const double provider_io_before_commitment = context.provider_file_io_decode_time_seconds != nullptr
+                ? *context.provider_file_io_decode_time_seconds : 0.0;
             FrWire blinder = zkdl::cpu_fresh_csprng_scalar();
             while (blinder == FrWire{}) blinder = zkdl::cpu_fresh_csprng_scalar();
             relation::CommitmentWire wire;
             relation::SegmentCommitmentMaterial material;
             const std::string tensor_id = "sorted_lookup/" + query.operation_id + "/" + name;
-            const auto commitment_start = std::chrono::steady_clock::now();
+            double commitment_crypto_seconds = 0.0;
             const bool commitment_built = relation::zktr_build_segment_commitment_material(
                 tensor_id, 3U, provider, context.ipa_generators, context.ipa_blinding_generator,
-                context.ipa_u_generator, blinder, relation_statement, wire, material, error);
-            if (context.commitment_open_time_seconds != nullptr)
-                *context.commitment_open_time_seconds += std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - commitment_start).count();
+                context.ipa_u_generator, blinder, relation_statement, wire, material, error, &commitment_crypto_seconds);
             if (!commitment_built) return false;
+            const auto point_conversion_start = std::chrono::steady_clock::now();
             const zkdl::CpuG1Point commitment = zkdl::cpu_g1_from_native(wire.commitment);
+            const double point_conversion_seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - point_conversion_start).count();
+            if (context.commitment_open_time_seconds != nullptr)
+                *context.commitment_open_time_seconds += commitment_crypto_seconds + point_conversion_seconds;
+            if (outer_commitment_wall_seconds != nullptr)
+                *outer_commitment_wall_seconds += std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - commitment_operation_start).count();
+            if (outer_commitment_file_io_seconds != nullptr && context.provider_file_io_decode_time_seconds != nullptr) {
+                const double provider_io_delta = *context.provider_file_io_decode_time_seconds - provider_io_before_commitment;
+                if (provider_io_delta < 0.0) {
+                    if (error) *error = "sorted-lookup commitment provider I/O timing moved backwards";
+                    return false;
+                }
+                *outer_commitment_file_io_seconds += provider_io_delta;
+            }
             if (commitment.is_zero()) return false;
             zkdl::AuthenticatedSortedLookupCommitmentRef ref;
             ref.role = role;
@@ -2786,7 +3012,8 @@ bool sorted_lookup_build_verifier_context(const StaticTables &tables, const Rela
     return true;
 }
 
-bool decode_native_witness(const NativeRelationWitnessInput &input, NativeRelationWitness &output, std::string *error) {
+bool decode_native_witness(const NativeRelationWitnessInput &input, NativeRelationWitness &output, std::string *error,
+                           double *provider_file_io_decode_seconds = nullptr) {
     output = NativeRelationWitness{};
     output.registry_path = input.registry_path;
     output.srs_digest = input.srs_digest;
@@ -2812,7 +3039,7 @@ bool decode_native_witness(const NativeRelationWitnessInput &input, NativeRelati
             if (!supplied.values.empty() || supplied.logical_shape.empty() || supplied.logical_shape.size() != supplied.padded_shape.size()) { if (error) *error = "native compact tensor ABI is ambiguous"; return false; }
             std::uint32_t segment_size = 0U, segment_count = 0U;
             if (!relation::SegmentedTensorProvider::shape(tensor.domain_size, 1U << 18U, segment_size, segment_count, error)) return false;
-            tensor.stored_provider = relation::SegmentedTensorProvider(tensor.domain_size, segment_size, [storage = supplied.storage, logical = supplied.logical_shape, padded = supplied.padded_shape](std::uint64_t offset, std::uint32_t count, std::vector<FrWire>& output, std::string* reader_error) { return storage->read_padded(logical, padded, offset, count, output, reader_error); });
+            tensor.stored_provider = relation::SegmentedTensorProvider(tensor.domain_size, segment_size, [storage = supplied.storage, logical = supplied.logical_shape, padded = supplied.padded_shape, provider_file_io_decode_seconds](std::uint64_t offset, std::uint32_t count, std::vector<FrWire>& output, std::string* reader_error) { return storage->read_padded(logical, padded, offset, count, output, reader_error, provider_file_io_decode_seconds); });
         } else tensor.values.assign(supplied.values.begin(), supplied.values.end());
         output.tensors.push_back(std::move(tensor));
     }
@@ -2910,19 +3137,33 @@ bool decode_native_witness(const NativeRelationWitnessInput &input, NativeRelati
     return true;
 }
 
-bool context_from_request(const NativeProveRequest &request, relation::ProverContext &context, std::string *error) {
+struct NativeProveContextTiming {
+    double relation_context_wall_seconds = 0.0;
+    double blinder_sampling_seconds = 0.0;
+    double sorted_lookup_outer_commitment_wall_seconds = 0.0;
+    double sorted_lookup_outer_commitment_file_io_seconds = 0.0;
+    double explicit_file_io_seconds = 0.0;
+};
+
+bool context_from_request(const NativeProveRequest &request, relation::ProverContext &context,
+                          NativeProveContextTiming &timing, std::string *error) {
     if (!request.config || !request.graph || !request.model || !request.tables || !request.relation || !request.trace || !request.statement ||
         !request.witness) {
         if (error) *error = "BLOCKED: native prove request lacks canonical tensors/witness/selectors/public Y";
         return false;
     }
     NativeRelationWitness witness;
-    if (!decode_native_witness(*request.witness, witness, error)) return false;
+    if (!decode_native_witness(*request.witness, witness, error,
+                               context.provider_file_io_decode_time_seconds)) return false;
+    const double provider_io_after_witness_decode = context.provider_file_io_decode_time_seconds != nullptr
+        ? *context.provider_file_io_decode_time_seconds : 0.0;
+    const auto relation_context_start = std::chrono::steady_clock::now();
     if (!resource_admission(*request.config, witness, true, error)) return false;
     if (!statement_from_adapter(*request.config, *request.graph, *request.model, *request.tables, *request.relation, *request.statement, witness,
                                 context.statement, error))
         return false;
     context.tensors = std::move(witness.tensors);
+    const auto blinder_sampling_start = std::chrono::steady_clock::now();
     for (const auto &tensor : context.tensors) {
         if (tensor.visibility == 1U) continue;
         if (tensor.visibility == 2U) {
@@ -2944,6 +3185,8 @@ bool context_from_request(const NativeProveRequest &request, relation::ProverCon
             return false;
         }
     }
+    timing.blinder_sampling_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - blinder_sampling_start).count();
     if (!build_canonical_operations(*request.config, *request.tables, *request.relation, context.tensors, context.operations, request.graph, error))
         return false;
     if (!shape_contract_from_witness(*request.relation, witness, context.tensor_descriptors, error)) return false;
@@ -2968,7 +3211,8 @@ bool context_from_request(const NativeProveRequest &request, relation::ProverCon
     context.ipa_blinding_generator = witness.ipa_blinding_generator;
     context.ipa_u_generator = witness.ipa_u_generator;
     if (!sorted_lookup_build_prover_context(*request.config, *request.tables, *request.relation, *request.statement, context.statement, witness, context,
-                                            error))
+                                            error, &timing.sorted_lookup_outer_commitment_wall_seconds,
+                                            &timing.sorted_lookup_outer_commitment_file_io_seconds))
         return false;
     context.registered_model_commitments = witness.registered_model_commitments;
     context.hiding_commitment_records = witness.hiding_commitment_records;
@@ -3000,6 +3244,10 @@ bool context_from_request(const NativeProveRequest &request, relation::ProverCon
             if (error) *error = "native relation tensor rejected: " + shape_error;
             return false;
         }
+    timing.relation_context_wall_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - relation_context_start).count();
+    if (context.provider_file_io_decode_time_seconds != nullptr)
+        timing.explicit_file_io_seconds = *context.provider_file_io_decode_time_seconds - provider_io_after_witness_decode;
     return true;
 }
 
@@ -3162,6 +3410,1072 @@ bool context_from_verify(const NativeVerifyRequest &request, relation::VerifierC
 
 }
 
+bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &graph,
+                                            const StaticTables &tables, const RelationPlan &plan,
+                                            NativeRelationPlanMetrics *metrics, std::string *error) {
+    if (metrics == nullptr) {
+        if (error) *error = "native relation admission metrics output is null";
+        return false;
+    }
+    *metrics = NativeRelationPlanMetrics{};
+    std::vector<relation::TensorWitness> shape_tensors;
+    std::map<std::string, std::uint64_t> domains;
+    constexpr std::uint64_t kSegmentSize = 1ULL << 18U;
+    const auto add = [&](std::uint64_t *target, std::uint64_t value, const char *label) -> bool {
+        if (value > std::numeric_limits<std::uint64_t>::max() - *target) {
+            if (error) *error = std::string("native relation admission metric overflows: ") + label;
+            return false;
+        }
+        *target += value;
+        return true;
+    };
+    const auto checked_add_wire = [&](std::uint64_t left, std::uint64_t right,
+                                      std::uint64_t &sum, const char *label) -> bool {
+        if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+            if (error) *error = std::string("native typed proof-wire bound overflows: ") + label;
+            return false;
+        }
+        sum = left + right;
+        return true;
+    };
+    const auto checked_mul_wire = [&](std::uint64_t left, std::uint64_t right,
+                                      std::uint64_t &product, const char *label) -> bool {
+        if (!checked_mul_u64(left, right, product)) {
+            if (error) *error = std::string("native typed proof-wire bound overflows: ") + label;
+            return false;
+        }
+        return true;
+    };
+    const auto log2_domain = [](std::uint64_t domain, std::uint32_t &bits) {
+        if (!native_power_of_two(domain)) return false;
+        bits = 0U;
+        while (domain > 1U) { domain >>= 1U; ++bits; }
+        return true;
+    };
+    const auto hyrax_wire_bytes_for_segment = [&](std::uint64_t domain,
+                                      std::uint64_t segment_size,
+                                      std::uint64_t &bytes,
+                                      std::uint64_t &segments) -> bool {
+        if (domain == 0U || !native_power_of_two(domain) || domain > kMaxNativeDomain ||
+            segment_size == 0U || !native_power_of_two(segment_size) ||
+            segment_size > domain || domain % segment_size != 0U ||
+            segment_size > kSegmentSize) {
+            if (error) *error = "native Hyrax wire profile received a non-canonical domain";
+            return false;
+        }
+        segments = domain / segment_size;
+        std::uint32_t domain_bits = 0U, inner_bits = 0U;
+        if (!log2_domain(domain, domain_bits) || !log2_domain(segment_size, inner_bits)) {
+            if (error) *error = "native Hyrax wire profile could not derive point lengths";
+            return false;
+        }
+        // The v3 codec pads the IPA fold domain to next_pow2(segment_size + 1).
+        std::uint32_t fold_bits = 0U;
+        std::uint64_t padded = 1U;
+        while (padded < segment_size + 1U) { padded <<= 1U; ++fold_bits; }
+        std::uint64_t point_bits = 0U, round_bytes = 0U;
+        if (!checked_add_wire(inner_bits, domain_bits - inner_bits, point_bits,
+                              "Hyrax point bits") ||
+            !checked_mul_wire(32U, point_bits, round_bytes, "Hyrax point bytes") ||
+            !checked_add_wire(556U, round_bytes, bytes, "Hyrax fixed/point bytes")) return false;
+        std::uint64_t folds = 0U;
+        if (!checked_mul_wire(96U, fold_bits, folds, "Hyrax fold bytes") ||
+            !checked_add_wire(bytes, folds, bytes, "Hyrax total bytes")) return false;
+        return true;
+    };
+    const auto hyrax_wire_bytes = [&](std::uint64_t domain, std::uint64_t &bytes,
+                                      std::uint64_t &segments) -> bool {
+        return hyrax_wire_bytes_for_segment(domain, std::min(domain, kSegmentSize),
+                                            bytes, segments);
+    };
+    const auto sumcheck_wire_bytes = [&](const std::string &label, std::uint64_t domain,
+                                         std::uint32_t degree, std::uint64_t &bytes) -> bool {
+        if (domain < 2U || !native_power_of_two(domain) || degree == 0U || degree >= 4096U) {
+            if (error) *error = "native Sumcheck wire profile received an unsupported domain/degree";
+            return false;
+        }
+        std::uint32_t rounds = 0U;
+        if (!log2_domain(domain, rounds) || rounds == 0U || rounds > 30U) {
+            if (error) *error = "native Sumcheck wire profile received an unsupported round count";
+            return false;
+        }
+        std::uint64_t vector_payload = 0U, first_round = 0U, later_round = 0U;
+        if (!checked_mul_wire(128U, static_cast<std::uint64_t>(degree) + 1U,
+                              vector_payload, "Sumcheck vector-linear proof") ||
+            !checked_add_wire(1364U, vector_payload, first_round,
+                              "Sumcheck initial round") ||
+            !checked_add_wire(1412U, vector_payload, later_round,
+                              "Sumcheck chained round")) return false;
+        std::uint64_t body = 472U + label.size();
+        if (!checked_add_wire(body, first_round, body, "Sumcheck first round") ||
+            (rounds > 1U && !checked_mul_wire(rounds - 1U, later_round,
+                                               vector_payload, "Sumcheck later rounds")) ||
+            (rounds > 1U && !checked_add_wire(body, vector_payload, body,
+                                               "Sumcheck later rounds"))) return false;
+        bytes = body;
+        if (bytes > zkdl::ZkSumcheckProof::kMaxNestedProofBytes) {
+            if (error) *error = "native typed Sumcheck body exceeds the strict 4 MiB nested parser limit: " + label;
+            return false;
+        }
+        return true;
+    };
+    const auto terminal_wire_bytes_for_segment = [&](std::uint64_t domain,
+                                         std::uint64_t segment_size,
+                                         std::uint64_t references,
+                                         std::uint64_t product_nodes,
+                                         const std::string &label,
+                                         std::uint64_t &bytes) -> bool {
+        std::uint64_t opening = 0U, segments = 0U;
+        if (references == 0U || references > zkdl::ZkTerminalRelationProof::kMaxTerminalCommitments ||
+            product_nodes > zkdl::ZkTerminalRelationProof::kMaxProductNodes ||
+            !hyrax_wire_bytes_for_segment(domain, segment_size, opening, segments) ||
+            segments > (1U << 12U)) {
+            if (error && error->empty()) *error =
+                "native terminal relation typed shape exceeds parser limits: " + label +
+                " (domain=" + std::to_string(domain) +
+                ", segment_size=" + std::to_string(segment_size) +
+                ", references=" + std::to_string(references) +
+                ", segments=" + std::to_string(segments) +
+                ", product_nodes=" + std::to_string(product_nodes) + ")";
+            return false;
+        }
+        // ZkTerminalRelationProof serializes one mirrored first opening and
+        // every segment opening per provider, plus the product DAG and link.
+        std::uint64_t per_reference = 64U, segment_frame = 8U + opening;
+        if (!checked_add_wire(per_reference, opening, per_reference,
+                              "terminal mirrored opening") ||
+            !checked_mul_wire(segments, segment_frame, segment_frame,
+                              "terminal segment openings") ||
+            !checked_add_wire(per_reference, segment_frame, per_reference,
+                              "terminal segment openings")) return false;
+        std::uint64_t references_bytes = 0U, products_bytes = 0U;
+        if (!checked_mul_wire(references, per_reference, references_bytes,
+                              "terminal provider records") ||
+            !checked_mul_wire(product_nodes, 604U, products_bytes,
+                              "terminal product nodes") ||
+            !checked_add_wire(644U, references_bytes, bytes,
+                              "terminal fixed/provider bytes") ||
+            !checked_add_wire(bytes, products_bytes, bytes,
+                              "terminal product bytes")) return false;
+        return true;
+    };
+    const auto terminal_wire_bytes = [&](std::uint64_t domain,
+                                         std::uint64_t references,
+                                         std::uint64_t product_nodes,
+                                         const std::string &label,
+                                         std::uint64_t &bytes) -> bool {
+        return terminal_wire_bytes_for_segment(
+            domain, std::min(domain, kSegmentSize), references,
+            product_nodes, label, bytes);
+    };
+    const auto product_node_count = [](const relation::ConstraintDescriptor &descriptor,
+                                       std::uint64_t &count) {
+        count = 0U;
+        for (const auto &term : descriptor.terms) {
+            if (term.refs.empty() || term.refs.size() - 1U >
+                    std::numeric_limits<std::uint64_t>::max() - count) return false;
+            count += term.refs.size() - 1U;
+        }
+        return true;
+    };
+    const auto constraint_wire_bytes = [&](const relation::ConstraintDescriptor &descriptor,
+                                           std::uint64_t domain, std::uint64_t references,
+                                           const std::string &operation_context,
+                                           std::uint64_t &bytes) -> bool {
+        std::vector<zkdl::byte> encoded_descriptor;
+        relation::append_constraint(encoded_descriptor, descriptor);
+        std::uint64_t products = 0U, sumcheck = 0U, terminal = 0U;
+        const std::string typed_label = operation_context + "/" + descriptor.id;
+        if (!product_node_count(descriptor, products) ||
+            !sumcheck_wire_bytes(operation_context, domain, descriptor.degree + 2U, sumcheck) ||
+            !terminal_wire_bytes(domain, references, products, typed_label, terminal)) return false;
+        std::uint64_t indices = 0U, body = encoded_descriptor.size();
+        if (!checked_mul_wire(references, 4U, indices, "constraint opening-index vectors") ||
+            !checked_add_wire(body, 16U, body, "constraint opening-index counts") ||
+            !checked_add_wire(body, indices, body, "constraint opening tensor indices") ||
+            !checked_add_wire(body, indices, body, "constraint opening commitment indices") ||
+            !checked_add_wire(body, 16U, body, "constraint nested-proof framing") ||
+            !checked_add_wire(body, sumcheck, body, "constraint Sumcheck body") ||
+            !checked_add_wire(body, terminal, body, "constraint terminal body")) return false;
+        bytes = body;
+        metrics->sumcheck_body_max_bytes = std::max(metrics->sumcheck_body_max_bytes, sumcheck);
+        metrics->terminal_relation_body_max_bytes =
+            std::max(metrics->terminal_relation_body_max_bytes, terminal);
+        metrics->constraint_body_max_bytes =
+            std::max(metrics->constraint_body_max_bytes, bytes);
+        return true;
+    };
+    const auto route_wire_bytes = [&](const std::string &route_id,
+                                      std::uint64_t edge_domain, std::uint64_t node_domain,
+                                      std::uint64_t feature_domain, std::uint64_t source_feature_domain,
+                                      std::uint64_t &bytes) -> bool {
+        std::uint64_t source_domain = 0U, output_domain = 0U;
+        if (!checked_mul_wire(node_domain, source_feature_domain, source_domain,
+                              "sparse-route source domain") ||
+            !checked_mul_wire(edge_domain, feature_domain, output_domain,
+                              "sparse-route output domain")) return false;
+        std::uint32_t edge_bits = 0U, node_bits = 0U, feature_bits = 0U, source_bits = 0U;
+        std::uint64_t sumcheck = 0U, source_opening = 0U, output_opening = 0U;
+        std::uint64_t source_segments = 0U, output_segments = 0U;
+        if (!log2_domain(edge_domain, edge_bits) || !log2_domain(node_domain, node_bits) ||
+            !log2_domain(feature_domain, feature_bits) ||
+            !log2_domain(source_feature_domain, source_bits) ||
+            !sumcheck_wire_bytes(route_id + "/hidden-route/" + std::string(64U, '0'),
+                                 std::max<std::uint64_t>(2U, source_domain), 2U, sumcheck) ||
+            !hyrax_wire_bytes(source_domain, source_opening, source_segments) ||
+            !hyrax_wire_bytes(output_domain, output_opening, output_segments)) return false;
+        std::uint64_t point_bits = 0U, point_bytes = 0U;
+        if (!checked_add_wire(edge_bits, node_bits, point_bits, "route point lengths") ||
+            !checked_add_wire(point_bits, feature_bits, point_bits, "route point lengths") ||
+            !checked_add_wire(point_bits, source_bits, point_bits, "route point lengths") ||
+            !checked_mul_wire(point_bits, 32U, point_bytes, "route point bytes") ||
+            !checked_add_wire(424U, point_bytes, bytes, "route fixed point bytes") ||
+            !checked_add_wire(bytes, 8U, bytes, "route Sumcheck framing") ||
+            !checked_add_wire(bytes, sumcheck, bytes, "route Sumcheck bytes") ||
+            !checked_add_wire(bytes, source_opening, bytes, "route source opening") ||
+            !checked_add_wire(bytes, output_opening, bytes, "route output opening") ||
+            !checked_add_wire(bytes, 352U, bytes, "route terminal equality")) return false;
+        return true;
+    };
+    const auto hidden_matmul_wire_bytes = [&](const relation::OperationDescriptor &operation,
+                                              const relation::PrimitiveDescriptor &primitive,
+                                              std::size_t primitive_index,
+                                              std::uint64_t &bytes) -> bool {
+        std::array<std::uint64_t, 3U> sizes{};
+        if (!primitive.matmul_shape.tensor_sizes(sizes)) {
+            if (error) *error = "native hidden-matmul wire profile has invalid tensor shapes: " + operation.id;
+            return false;
+        }
+        std::uint64_t opening_bytes = 0U;
+        for (const auto domain : sizes) {
+            std::uint64_t one_opening = 0U, segments = 0U, one_bytes = 0U;
+            if (!hyrax_wire_bytes(domain, one_opening, segments) ||
+                segments > (1U << 12U) ||
+                !checked_mul_wire(one_opening, segments, one_bytes,
+                                  "hidden-matmul segmented openings") ||
+                !checked_add_wire(opening_bytes, one_bytes, opening_bytes,
+                                  "hidden-matmul segmented openings")) {
+                if (error && error->empty()) *error = "native hidden-matmul opening exceeds strict segment limits: " + operation.id;
+                return false;
+            }
+        }
+        const auto ceil_bits = [](std::uint32_t value) {
+            std::uint64_t domain = 1U;
+            std::uint32_t bits = 0U;
+            while (domain < value) { domain <<= 1U; ++bits; }
+            return bits;
+        };
+        const std::uint64_t point_bits = ceil_bits(primitive.matmul_shape.num) +
+                                         ceil_bits(primitive.matmul_shape.m) +
+                                         ceil_bits(primitive.matmul_shape.k);
+        std::uint64_t point_bytes = 0U, sumcheck = 0U;
+        const std::string label = "gat.relation." + operation.id + "/hidden-matmul/" +
+                                  std::to_string(primitive_index);
+        if (!checked_mul_wire(point_bits, 32U, point_bytes,
+                              "hidden-matmul challenge points") ||
+            !sumcheck_wire_bytes(label, primitive.matmul_shape.n, 2U, sumcheck) ||
+            !checked_add_wire(1120U, point_bytes, bytes,
+                              "hidden-matmul fixed/point bytes") ||
+            !checked_add_wire(bytes, 8U, bytes, "hidden-matmul Sumcheck framing") ||
+            !checked_add_wire(bytes, sumcheck, bytes, "hidden-matmul Sumcheck body") ||
+            !checked_add_wire(bytes, 156U, bytes, "hidden-matmul opening headers") ||
+            !checked_add_wire(bytes, opening_bytes, bytes,
+                              "hidden-matmul opening bodies") ||
+            !checked_add_wire(bytes, 8U + 504U + 8U + 344U, bytes,
+                              "hidden-matmul terminal bindings")) return false;
+        metrics->sumcheck_body_max_bytes =
+            std::max(metrics->sumcheck_body_max_bytes, sumcheck);
+        if (bytes > relation::HiddenMatMulProof::kMaxProofBytes) {
+            if (error) *error = "native typed hidden-matmul proof exceeds the strict 256 MiB parser limit: " + operation.id;
+            return false;
+        }
+        metrics->hidden_matmul_body_max_bytes =
+            std::max(metrics->hidden_matmul_body_max_bytes, bytes);
+        return true;
+    };
+    for (const auto &family : plan.tensor_families) {
+        if (family.id.empty() || family.logical_shape.empty() || family.logical_shape.size() != family.padded_shape.size()) {
+            if (error) *error = "native relation admission found an incomplete tensor-family shape";
+            return false;
+        }
+        std::uint64_t domain = 1U;
+        bool padded = false;
+        for (std::size_t axis = 0U; axis < family.padded_shape.size(); ++axis) {
+            if (family.logical_shape[axis] == 0U || family.padded_shape[axis] < family.logical_shape[axis] ||
+                !checked_mul_u64(domain, family.padded_shape[axis], domain) || domain > kMaxNativeDomain) {
+                if (error) *error = "native relation admission tensor-family domain is invalid: " + family.id;
+                return false;
+            }
+            padded = padded || family.logical_shape[axis] != family.padded_shape[axis];
+        }
+        if (!domains.emplace(family.id, domain).second) {
+            if (error) *error = "native relation admission found a duplicate tensor family: " + family.id;
+            return false;
+        }
+        relation::TensorWitness tensor;
+        tensor.id = family.id;
+        tensor.visibility = 1U;
+        tensor.domain_size = static_cast<std::uint32_t>(domain);
+        shape_tensors.push_back(std::move(tensor));
+        const std::uint64_t segments = (domain + kSegmentSize - 1U) / kSegmentSize;
+        if (!add(&metrics->family_segment_count, segments, "family segment count") ||
+            (relation::qpad_record_required(
+                 family.logical_shape, family.padded_shape,
+                 family.visibility == "public") &&
+             !add(&metrics->padding_family_count, 1U, "padding family count"))) return false;
+    }
+    std::vector<relation::OperationDescriptor> operations;
+    if (!build_canonical_operations(config, tables, plan, shape_tensors, operations, &graph, error) ||
+        !operation_set_matches_plan(plan, operations, error) ||
+        !relation::descriptor_vector_valid(operations, error) ||
+        !relation::formal_relation_components_supported(operations, error)) return false;
+    metrics->operation_count = operations.size();
+    std::uint64_t operation_section_wire_bytes = 8U;
+    std::uint64_t padding_section_wire_bytes = 8U;
+    std::uint64_t sorted_lookup_section_wire_bytes = 8U;
+    std::uint64_t commitment_section_wire_bytes = 8U;
+    for (const auto &operation : operations) {
+        std::vector<zkdl::byte> encoded;
+        relation::append_operation(encoded, operation);
+        if (!add(&metrics->operation_descriptor_bytes, encoded.size(), "operation descriptor bytes") ||
+            !add(&metrics->primitive_count, operation.primitives.size(), "primitive count") ||
+            !add(&metrics->constraint_count, operation.constraints.size(), "constraint count") ||
+            !add(&metrics->fac_binding_count, operation.fac_bindings.size(), "FAC binding count")) return false;
+        metrics->operation_descriptor_max_bytes =
+            std::max<std::uint64_t>(metrics->operation_descriptor_max_bytes, encoded.size());
+        if (operation.kind == relation::RelationKind::SparseRoute || !operation.selector_source_ref.empty())
+            if (!add(&metrics->route_count, 1U, "route count")) return false;
+        if (operation.kind == relation::RelationKind::SparseRoute || !operation.selector_source_ref.empty()) {
+            std::uint64_t route_source_domain = 0U, route_output_domain = 0U;
+            if (!checked_mul_u64(operation.selector_node_domain,
+                                 operation.selector_source_feature_domain,
+                                 route_source_domain) ||
+                !checked_mul_u64(operation.selector_edge_domain,
+                                 operation.selector_feature_domain,
+                                 route_output_domain) ||
+                route_source_domain == 0U || route_output_domain == 0U ||
+                domains.find(operation.selector_source_ref) == domains.end() ||
+                domains.find(operation.selector_output_ref) == domains.end() ||
+                domains.at(operation.selector_source_ref) != route_source_domain ||
+                domains.at(operation.selector_output_ref) != route_output_domain) {
+                if (error) *error = "native route source/output dimensions do not match canonical families: " + operation.id;
+                return false;
+            }
+            metrics->maximum_route_source_domain =
+                std::max(metrics->maximum_route_source_domain, route_source_domain);
+            metrics->maximum_route_edge_domain =
+                std::max(metrics->maximum_route_edge_domain, route_output_domain);
+        }
+        for (const auto &binding : operation.fac_bindings) {
+            std::uint64_t source_domain = 0U, output_domain = 0U;
+            if (!checked_mul_u64(binding.canonical_outer_domain,
+                                 binding.canonical_feature_domain, source_domain) ||
+                !checked_mul_u64(binding.view_outer_domain,
+                                 binding.view_feature_domain, output_domain) ||
+                source_domain == 0U || output_domain == 0U ||
+                domains.find(binding.canonical_ref) == domains.end() ||
+                domains.find(binding.view_ref) == domains.end() ||
+                domains.at(binding.canonical_ref) != source_domain ||
+                domains.at(binding.view_ref) != output_domain) {
+                if (error) *error = "native FAC route dimensions do not match canonical families: " + operation.id;
+                return false;
+            }
+            metrics->maximum_route_source_domain =
+                std::max(metrics->maximum_route_source_domain, source_domain);
+            metrics->maximum_route_edge_domain =
+                std::max(metrics->maximum_route_edge_domain, output_domain);
+        }
+        for (const auto &primitive : operation.primitives) {
+            for (const auto &tensor_id : primitive.tensor_refs) {
+                const auto found = domains.find(tensor_id);
+                if (found == domains.end()) {
+                    if (error) *error = "native relation admission primitive refers to an unplanned tensor: " + tensor_id;
+                    return false;
+                }
+                const std::uint64_t segments = (found->second + kSegmentSize - 1U) / kSegmentSize;
+                if (!add(&metrics->primitive_opening_segment_count, segments, "primitive opening segment count")) return false;
+            }
+        }
+
+        // Calculate the same typed body lengths used by the production
+        // serializers.  These are source-domain/segment-derived bounds, not
+        // repeated parser-cap allowances.
+        std::uint64_t operation_wire_bytes = encoded.size() + 8U; // primitive count
+        for (std::size_t primitive_index = 0U;
+             primitive_index < operation.primitives.size(); ++primitive_index) {
+            std::uint64_t primitive_bytes = 0U, framed = 0U;
+            if (!hidden_matmul_wire_bytes(operation, operation.primitives[primitive_index],
+                                          primitive_index, primitive_bytes) ||
+                !checked_add_wire(8U, primitive_bytes, framed,
+                                  "operation primitive frame") ||
+                !checked_add_wire(operation_wire_bytes, framed, operation_wire_bytes,
+                                  "operation primitive section")) return false;
+        }
+        if (!checked_add_wire(operation_wire_bytes, 8U, operation_wire_bytes,
+                              "operation primitive-binding count")) return false;
+
+        const bool has_route = operation.kind == relation::RelationKind::SparseRoute ||
+                               !operation.selector_source_ref.empty();
+        std::uint64_t route_bytes = 0U;
+        if (has_route) {
+            if (!route_wire_bytes(operation.id, operation.selector_edge_domain,
+                                  operation.selector_node_domain,
+                                  operation.selector_feature_domain,
+                                  operation.selector_source_feature_domain, route_bytes)) return false;
+            metrics->sparse_route_body_max_bytes =
+                std::max(metrics->sparse_route_body_max_bytes, route_bytes);
+        }
+        if (!checked_add_wire(operation_wire_bytes, 8U, operation_wire_bytes,
+                              "operation route frame") ||
+            !checked_add_wire(operation_wire_bytes, route_bytes, operation_wire_bytes,
+                              "operation route body")) return false;
+
+        std::uint64_t fac_bytes = 0U;
+        if (!operation.fac_bindings.empty()) {
+            fac_bytes = 368U;
+            for (std::size_t binding_index = 0U;
+                 binding_index < operation.fac_bindings.size(); ++binding_index) {
+                const auto &binding = operation.fac_bindings[binding_index];
+                const std::string selector_id = operation.id +
+                    "/fac4dnn-line8/selector/" + std::to_string(binding_index);
+                std::uint64_t binding_route = 0U, framed = 0U;
+                if (!route_wire_bytes(selector_id, binding.view_outer_domain,
+                                      binding.canonical_outer_domain,
+                                      binding.view_feature_domain,
+                                      binding.canonical_feature_domain, binding_route) ||
+                    binding_route > zkdl::ZkSumcheckProof::kMaxNestedProofBytes ||
+                    !checked_add_wire(8U, binding_route, framed,
+                                      "FAC selector-route frame") ||
+                    !checked_add_wire(fac_bytes, framed, fac_bytes,
+                                      "FAC selector-route records")) {
+                    if (error && error->empty()) *error = "native FAC selector route exceeds the strict 4 MiB nested parser limit";
+                    return false;
+                }
+                metrics->sparse_route_body_max_bytes =
+                    std::max(metrics->sparse_route_body_max_bytes, binding_route);
+            }
+            metrics->fac_line8_body_max_bytes =
+                std::max(metrics->fac_line8_body_max_bytes, fac_bytes);
+        }
+        if (!checked_add_wire(operation_wire_bytes, 8U, operation_wire_bytes,
+                              "operation FAC frame") ||
+            !checked_add_wire(operation_wire_bytes, fac_bytes, operation_wire_bytes,
+                              "operation FAC body")) return false;
+
+        std::uint64_t relation_domain = 0U;
+        const auto operation_domain = [&]() -> bool {
+            for (const auto &ref : operation.tensor_refs) {
+                const auto found = domains.find(ref);
+                if (found == domains.end()) return false;
+                if (relation_domain == 0U) relation_domain = found->second;
+                else if (relation_domain != found->second) return false;
+            }
+            return relation_domain >= 2U;
+        };
+        const bool batched_relation = !operation.batch_family.empty() &&
+                                      operation.batch_family != "authenticated_sorted_lookup";
+        std::uint64_t batch_bytes = 0U, constraint_section_bytes = 8U;
+        if (batched_relation) {
+            if (!operation_domain()) {
+                if (error) *error = "native batch relation tensors do not share a supported domain: " + operation.id;
+                return false;
+            }
+            relation::ConstraintDescriptor batched;
+            batched.id = operation.id + "/batch/" + operation.batch_family;
+            batched.degree = 1U;
+            if (!operation.constraints.empty()) {
+                batched.logical_shape = operation.constraints.front().logical_shape;
+                batched.padded_shape = operation.constraints.front().padded_shape;
+            }
+            for (const auto &constraint : operation.constraints) {
+                batched.degree = std::max(batched.degree, constraint.degree);
+                batched.terms.insert(batched.terms.end(), constraint.terms.begin(),
+                                     constraint.terms.end());
+            }
+            std::uint64_t constraint_bytes = 0U;
+            if (!constraint_wire_bytes(batched, relation_domain,
+                                       operation.tensor_refs.size(),
+                                       "gat.relation." + batched.id,
+                                       constraint_bytes) ||
+                !checked_add_wire(4U, constraint_bytes, batch_bytes,
+                                  "batched constraint payload")) return false;
+        }
+        if (!checked_add_wire(operation_wire_bytes, 8U, operation_wire_bytes,
+                              "operation batch frame") ||
+            !checked_add_wire(operation_wire_bytes, batch_bytes, operation_wire_bytes,
+                              "operation batch body")) return false;
+        if (!batched_relation) {
+            if (!operation.constraints.empty() && !operation_domain()) {
+                if (error) *error = "native relation tensors do not share a supported proof domain: " + operation.id;
+                return false;
+            }
+            for (const auto &constraint : operation.constraints) {
+                std::uint64_t constraint_bytes = 0U;
+                if (!constraint_wire_bytes(constraint, relation_domain,
+                                           operation.tensor_refs.size(),
+                                           "gat.relation." + constraint.id,
+                                           constraint_bytes) ||
+                    !checked_add_wire(constraint_section_bytes, constraint_bytes,
+                                      constraint_section_bytes,
+                                      "operation constraint bodies")) return false;
+            }
+        }
+        if (!checked_add_wire(operation_wire_bytes, constraint_section_bytes,
+                              operation_wire_bytes, "operation constraint section") ||
+            !checked_add_wire(operation_section_wire_bytes, operation_wire_bytes,
+                              operation_section_wire_bytes,
+                              "total operation proof section")) return false;
+    }
+
+    // Commitment records carry the authenticated segment vector itself.  Its
+    // size is determined by each canonical family and the fixed protocol
+    // segment size; no SRS point is counted as a native sizeof(G1) estimate.
+    for (const auto &family : plan.tensor_families) {
+        const auto found = domains.find(family.id);
+        if (found == domains.end()) {
+            if (error) *error = "native commitment wire profile lost a canonical family: " + family.id;
+            return false;
+        }
+        const std::uint64_t segments = (found->second + kSegmentSize - 1U) / kSegmentSize;
+        std::uint64_t segment_bytes = 0U, commitment_bytes = 180U + family.id.size();
+        if (!checked_mul_wire(segments, 104U, segment_bytes,
+                              "family segment commitment records") ||
+            !checked_add_wire(commitment_bytes, segment_bytes, commitment_bytes,
+                              "family commitment wire") ||
+            !checked_add_wire(commitment_section_wire_bytes, commitment_bytes,
+                              commitment_section_wire_bytes,
+                              "family commitment section")) return false;
+    }
+
+    const auto sorted_relation_wire_bytes = [&](std::uint32_t kind,
+                                                const std::string &operation_id,
+                                                const std::vector<std::string> &tags,
+                                                std::uint64_t domain,
+                                                std::uint64_t segment_size,
+                                                std::uint64_t product_nodes,
+                                                std::uint64_t &bytes) -> bool {
+        if (tags.empty() || tags.size() > 128U) {
+            if (error) *error = "native sorted-lookup relation exceeds the strict 128-reference parser limit";
+            return false;
+        }
+        const std::string context = "gat.sorted_lookup.relation." + std::to_string(kind);
+        const std::string typed_label = operation_id + "/relation." + std::to_string(kind);
+        std::uint64_t tag_bytes = 0U, sumcheck = 0U, terminal = 0U;
+        for (const auto &tag : tags)
+            if (!checked_add_wire(tag_bytes, 8U + tag.size(), tag_bytes,
+                                  "sorted-lookup relation tags")) return false;
+        if (!sumcheck_wire_bytes(context, domain, 4U, sumcheck) ||
+            !terminal_wire_bytes_for_segment(domain, segment_size,
+                                              tags.size(), product_nodes, typed_label,
+                                              terminal)) return false;
+        std::uint64_t ref_bytes = 0U;
+        if (!checked_mul_wire(tags.size(), 8U, ref_bytes,
+                              "sorted-lookup relation index arrays") ||
+            !checked_add_wire(92U, ref_bytes, bytes,
+                              "sorted-lookup relation fixed/index bytes") ||
+            !checked_add_wire(bytes, tag_bytes, bytes,
+                              "sorted-lookup relation provider tags") ||
+            !checked_add_wire(bytes, sumcheck, bytes,
+                              "sorted-lookup relation Sumcheck") ||
+            !checked_add_wire(bytes, terminal, bytes,
+                              "sorted-lookup relation terminal")) return false;
+        metrics->sumcheck_body_max_bytes =
+            std::max(metrics->sumcheck_body_max_bytes, sumcheck);
+        metrics->terminal_relation_body_max_bytes =
+            std::max(metrics->terminal_relation_body_max_bytes, terminal);
+        metrics->sorted_lookup_relation_body_max_bytes =
+            std::max(metrics->sorted_lookup_relation_body_max_bytes, bytes);
+        return true;
+    };
+
+    for (const auto &query : plan.sorted_lookup.queries) {
+        const std::uint64_t bit_count = static_cast<std::uint64_t>(query.x_bits) + query.y_bits;
+        if (query.table_domain == 0U || query.query_domain == 0U || query.merge_domain == 0U ||
+            query.segment_size > kSegmentSize || !native_power_of_two(query.segment_size) ||
+            query.table_domain % query.segment_size != 0U ||
+            query.query_domain % query.segment_size != 0U ||
+            query.merge_domain % query.segment_size != 0U ||
+            8U + 2U * bit_count > 128U || 9U + bit_count > 256U) {
+            if (error) *error = "native sorted-lookup typed profile disagrees with its authenticated segmented descriptor: " + query.operation_id;
+            return false;
+        }
+        const auto tags_for_kind = [&](std::uint32_t kind,
+                                       std::vector<std::string> &tags,
+                                       std::uint64_t &products,
+                                       std::uint64_t &domain) -> bool {
+            products = 0U;
+            if (kind == 1U) {
+                tags = {"query_x", "query_y", "query_key", "query_active", "query_prefix",
+                        "query_prefix_next", "query_first", "query_last", "query_endpoint"};
+                products = 7U; domain = query.query_domain;
+            } else if (kind == 2U) {
+                tags = {"merge_prefix", "merge_prefix_next", "merge_key", "merge_active", "merge_first"};
+                products = 4U; domain = query.merge_domain;
+            } else if (kind == 3U) {
+                tags = {"merge_key", "merge_previous_key", "merge_delta", "merge_active"};
+                for (std::uint64_t bit = 0U; bit < bit_count; ++bit) {
+                    tags.push_back("merge_bit_" + std::to_string(bit));
+                    tags.push_back("merge_delta_bit_" + std::to_string(bit));
+                }
+                tags.insert(tags.end(), {"merge_inverse", "merge_nonzero", "merge_marker", "merge_first"});
+                products = 2U * bit_count + 9U; domain = query.merge_domain;
+            } else if (kind == 4U) {
+                tags = {"merge_marker", "merge_active"};
+                products = 1U; domain = query.merge_domain;
+            } else if (kind == 5U) {
+                tags = {"merge_prefix_next", "merge_last", "merge_endpoint"};
+                products = 2U; domain = query.merge_domain;
+            } else return false;
+            return true;
+        };
+        std::uint64_t relation_section_bytes = 8U;
+        for (std::uint32_t kind = 1U; kind <= 5U; ++kind) {
+            std::vector<std::string> tags;
+            std::uint64_t products = 0U, domain = 0U, body = 0U, framed = 0U;
+            if (!tags_for_kind(kind, tags, products, domain) ||
+                !sorted_relation_wire_bytes(kind, query.operation_id, tags, domain, query.segment_size,
+                                            products, body) ||
+                !checked_add_wire(8U, body, framed, "sorted-lookup relation proof frame") ||
+                !checked_add_wire(relation_section_bytes, framed,
+                                  relation_section_bytes,
+                                  "sorted-lookup relation section")) return false;
+        }
+        const std::uint64_t commitment_refs = 9U + bit_count;
+        const std::uint64_t descriptor_bytes = 220U +
+            std::string("authenticated_sorted_lookup_v1").size() +
+            query.operation_id.size() + query.table_ref.size() +
+            query.query_ref.size() + query.merge_ref.size();
+        std::uint64_t ref_bytes = 0U, lookup_bytes = descriptor_bytes;
+        if (!checked_mul_wire(commitment_refs, 24U, ref_bytes,
+                              "sorted-lookup outer commitment references") ||
+            !checked_add_wire(8U, ref_bytes, ref_bytes,
+                              "sorted-lookup commitment vector") ||
+            !checked_add_wire(lookup_bytes, ref_bytes, lookup_bytes,
+                              "sorted-lookup descriptor/reference section") ||
+            !checked_add_wire(lookup_bytes, relation_section_bytes, lookup_bytes,
+                              "sorted-lookup relation section") ||
+            !checked_add_wire(lookup_bytes, 1056U, lookup_bytes,
+                              "sorted-lookup endpoint binding tail")) return false;
+        metrics->sorted_lookup_proof_body_max_bytes =
+            std::max(metrics->sorted_lookup_proof_body_max_bytes, lookup_bytes);
+        if (lookup_bytes > zkdl::AuthenticatedSortedLookupProof::kMaxProofBytes) {
+            if (error) *error = "native typed authenticated sorted-lookup proof exceeds the strict 256 MiB parser limit: " + query.operation_id;
+            return false;
+        }
+        if (!checked_add_wire(8U, lookup_bytes, lookup_bytes,
+                              "sorted-lookup proof vector frame") ||
+            !checked_add_wire(sorted_lookup_section_wire_bytes, lookup_bytes,
+                              sorted_lookup_section_wire_bytes,
+                              "sorted-lookup proof section")) return false;
+
+        const auto add_sorted_outer = [&](const std::string &role,
+                                          std::uint64_t domain) -> bool {
+            const std::uint64_t segments = domain / query.segment_size;
+            std::uint64_t record_bytes = 180U +
+                std::string("sorted_lookup/").size() + query.operation_id.size() +
+                1U + role.size(), segment_bytes = 0U;
+            if (!checked_mul_wire(segments, 104U, segment_bytes,
+                                  "sorted-lookup outer segment commitments") ||
+                !checked_add_wire(record_bytes, segment_bytes, record_bytes,
+                                  "sorted-lookup outer commitment") ||
+                !checked_add_wire(commitment_section_wire_bytes, record_bytes,
+                                  commitment_section_wire_bytes,
+                                  "sorted-lookup commitment section") ||
+                metrics->sorted_lookup_outer_commitment_count ==
+                    std::numeric_limits<std::uint64_t>::max()) return false;
+            ++metrics->sorted_lookup_outer_commitment_count;
+            return true;
+        };
+        for (const auto *role : {"query_x", "query_y", "query_key", "query_prefix"})
+            if (!add_sorted_outer(role, query.query_domain)) return false;
+        for (const auto *role : {"merge_key", "merge_delta", "merge_marker",
+                                 "merge_inverse", "merge_prefix"})
+            if (!add_sorted_outer(role, query.merge_domain)) return false;
+        for (std::uint64_t bit = 0U; bit < bit_count; ++bit)
+            if (!add_sorted_outer("merge_bit_" + std::to_string(bit),
+                                  query.merge_domain)) return false;
+    }
+
+    // Qpad records exist only for non-public padded families.  The two
+    // providers are the actual family and its public selector, both on this
+    // family's authenticated padded domain.
+    for (const auto &family : plan.tensor_families) {
+        if (!relation::qpad_record_required(
+                family.logical_shape, family.padded_shape,
+                family.visibility == "public")) continue;
+        const std::uint64_t domain = domains.at(family.id);
+        const auto descriptor = relation::qpad_constraint_descriptor(family.id);
+        std::uint64_t relation_bytes = 0U, record_bytes = 64U + family.id.size();
+        if (!constraint_wire_bytes(descriptor, domain, 2U,
+                                   "gat.relation.padding." + descriptor.id,
+                                   relation_bytes) ||
+            !checked_add_wire(record_bytes, relation_bytes, record_bytes,
+                              "Qpad record body") ||
+            !checked_add_wire(8U, record_bytes, record_bytes,
+                              "Qpad record frame") ||
+            !checked_add_wire(padding_section_wire_bytes, record_bytes,
+                              padding_section_wire_bytes,
+                              "Qpad proof section")) return false;
+        metrics->padding_record_body_max_bytes =
+            std::max(metrics->padding_record_body_max_bytes, record_bytes - 8U);
+        if (record_bytes - 8U > zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes) {
+            if (error) *error = "native typed Qpad record exceeds the strict 4 MiB parser limit: " + family.id;
+            return false;
+        }
+    }
+
+    if (metrics->padding_family_count > (1U << 20U) ||
+        shape_tensors.size() + metrics->sorted_lookup_outer_commitment_count > (1U << 20U) ||
+        plan.sorted_lookup.queries.size() > (1U << 16U)) {
+        if (error) *error = "native typed proof sections exceed a strict top-level parser item-count limit "
+            "(qpad=" + std::to_string(metrics->padding_family_count) + "/" +
+            std::to_string(1U << 20U) + ", commitments=" +
+            std::to_string(shape_tensors.size() + metrics->sorted_lookup_outer_commitment_count) +
+            "/1048576, sorted_lookup=" + std::to_string(plan.sorted_lookup.queries.size()) +
+            "/65536)";
+        return false;
+    }
+
+    metrics->commitment_section_wire_bytes_upper_bound = commitment_section_wire_bytes;
+    if (!checked_add_wire(padding_section_wire_bytes, operation_section_wire_bytes,
+                          metrics->relation_proof_sections_wire_bytes_upper_bound,
+                          "relation proof sections") ||
+        !checked_add_wire(metrics->relation_proof_sections_wire_bytes_upper_bound,
+                          sorted_lookup_section_wire_bytes,
+                          metrics->relation_proof_sections_wire_bytes_upper_bound,
+                          "sorted-lookup proof section")) return false;
+    std::uint64_t public_y_domain = 0U, public_y_opening = 0U, public_y_segments = 0U;
+    const auto public_y = domains.find("public_Y");
+    if (public_y == domains.end() ||
+        !hyrax_wire_bytes(public_y->second, public_y_opening, public_y_segments)) {
+        if (error) *error = "native proof-wire profile lacks the canonical public_Y opening domain";
+        return false;
+    }
+    public_y_domain = public_y->second;
+    std::uint64_t public_y_openings = 0U, public_output_values = 0U;
+    if (!checked_mul_wire(public_y_opening, public_y_segments, public_y_openings,
+                          "public_Y segmented opening") ||
+        !checked_mul_wire(graph.nodes, config.architecture.classes,
+                          public_output_values, "public_Y logical value count") ||
+        !checked_mul_wire(public_output_values, 32U, public_output_values,
+                          "public_Y canonical field bytes") ||
+        !checked_add_wire(public_output_values, 8U, public_output_values,
+                          "public_Y field vector framing")) return false;
+    std::uint64_t proof_bytes = 8U + 268U; // GATR header/version + RelationStatement fixed fields.
+    if (!checked_add_wire(proof_bytes, public_output_values, proof_bytes,
+                          "proof statement public output") ||
+        !checked_add_wire(proof_bytes, commitment_section_wire_bytes, proof_bytes,
+                          "proof commitment section") ||
+        !checked_add_wire(proof_bytes, metrics->relation_proof_sections_wire_bytes_upper_bound,
+                          proof_bytes, "proof relation sections") ||
+        !checked_add_wire(proof_bytes, 8U, proof_bytes,
+                          "proof hiding commitment section") ||
+        !checked_add_wire(proof_bytes, 392U, proof_bytes,
+                          "proof public output opening/binding framing") ||
+        !checked_add_wire(proof_bytes, public_y_openings, proof_bytes,
+                          "proof public output opening") ||
+        !checked_add_wire(proof_bytes, 32U, proof_bytes,
+                          "proof transcript digest")) return false;
+    metrics->proof_wire_bytes_upper_bound = proof_bytes;
+
+    // At proof time the input witness still owns the encoded descriptors,
+    // ProverContext owns decoded descriptors, and Proof owns one copied
+    // descriptor vector.  The wire bytes bound dynamic payload; add actual
+    // C++ descriptor/container headers for the two live decoded copies.
+    std::uint64_t descriptor_object_bytes = 0U;
+    for (const auto &operation : operations) {
+        std::uint64_t object_bytes = sizeof(relation::OperationDescriptor);
+        const std::uint64_t string_count = operation.source_refs.size() +
+            operation.tensor_refs.size() + operation.selector_refs.size() +
+            operation.fac_bindings.size() * 2U + operation.primitives.size() * 3U +
+            operation.constraints.size();
+        std::uint64_t string_objects = 0U, nested_objects = 0U;
+        if (!checked_mul_wire(string_count, sizeof(std::string) - 8U,
+                              string_objects, "operation descriptor string objects") ||
+            !checked_mul_wire(operation.constraints.size(),
+                              sizeof(relation::ConstraintDescriptor),
+                              nested_objects, "operation constraint objects") ||
+            !checked_add_wire(object_bytes, string_objects, object_bytes,
+                              "operation descriptor objects") ||
+            !checked_add_wire(object_bytes, nested_objects, object_bytes,
+                              "operation descriptor objects")) return false;
+        for (const auto &constraint : operation.constraints) {
+            std::uint64_t monomial_objects = 0U, refs = 0U;
+            if (!checked_mul_wire(constraint.terms.size(), sizeof(relation::Monomial),
+                                  monomial_objects, "constraint monomial objects")) return false;
+            for (const auto &term : constraint.terms)
+                if (!checked_add_wire(refs, term.refs.size() * sizeof(std::uint32_t),
+                                      refs, "constraint ref vectors")) return false;
+            if (!checked_add_wire(object_bytes, monomial_objects, object_bytes,
+                                  "operation descriptor nested objects") ||
+                !checked_add_wire(object_bytes, refs, object_bytes,
+                                  "operation descriptor nested refs")) return false;
+        }
+        if (!checked_add_wire(descriptor_object_bytes, object_bytes,
+                              descriptor_object_bytes,
+                              "operation descriptor resident headers")) return false;
+    }
+    std::uint64_t encoded_descriptor_copies = 0U;
+    if (!checked_mul_wire(metrics->operation_descriptor_bytes, 3U,
+                          encoded_descriptor_copies,
+                          "caller/context/proof operation descriptor payloads") ||
+        !checked_mul_wire(descriptor_object_bytes, 2U,
+                          metrics->operation_descriptor_resident_bytes_upper_bound,
+                          "context/proof operation descriptor objects") ||
+        !checked_add_wire(metrics->operation_descriptor_resident_bytes_upper_bound,
+                          encoded_descriptor_copies,
+                          metrics->operation_descriptor_resident_bytes_upper_bound,
+                          "encoded operation descriptor payloads")) return false;
+
+    // Typed source payload for the one GatTrace held by produce().  These
+    // formulas follow the owning vectors in HiddenHeadTrace,
+    // OutputHeadTrace and SignedRoundDivWitness; edge gathers are E x D/C,
+    // while aggregates are N x D/C.  They deliberately count the native
+    // trace, not operation views (which are streamed by NativeFamilyStorage).
+    std::uint64_t trace_i64_elements = 0U;
+    std::uint64_t trace_field_elements = 0U;
+    std::uint64_t trace_u8_elements = 0U;
+    const auto add_shape_elements = [&](std::uint64_t *target, std::uint64_t rows,
+                                        std::uint64_t columns, std::uint64_t replicas,
+                                        const char *label) -> bool {
+        std::uint64_t cells = 0U, total = 0U;
+        if (!checked_mul_u64(rows, columns, cells) || !checked_mul_u64(cells, replicas, total)) {
+            if (error) *error = std::string("native trace typed shape overflows: ") + label;
+            return false;
+        }
+        return add(target, total, label);
+    };
+    const auto add_elements = [&](std::uint64_t *target, std::uint64_t count,
+                                  std::uint64_t replicas, const char *label) -> bool {
+        std::uint64_t total = 0U;
+        if (!checked_mul_u64(count, replicas, total)) {
+            if (error) *error = std::string("native trace typed count overflows: ") + label;
+            return false;
+        }
+        return add(target, total, label);
+    };
+    std::uint64_t hidden_head_count = 0U;
+    std::uint64_t maximum_hidden_dim = 0U;
+    std::uint64_t maximum_hidden_width = graph.features;
+    for (std::size_t layer = 0U; layer < config.architecture.hidden_dims.size(); ++layer) {
+        const std::uint64_t dim = config.architecture.hidden_dims[layer];
+        const std::uint64_t heads = config.architecture.hidden_heads.at(layer);
+        std::uint64_t hidden_width = 0U;
+        if (dim == 0U || heads == 0U || !checked_mul_u64(dim, heads, hidden_width) ||
+            !add(&hidden_head_count, heads, "trace hidden head count")) {
+            if (error && error->empty()) *error = "native trace architecture shape is invalid";
+            return false;
+        }
+        maximum_hidden_dim = std::max(maximum_hidden_dim, dim);
+        maximum_hidden_width = std::max(maximum_hidden_width, hidden_width);
+        const std::uint64_t edge_matrix_count = 2U;
+        const std::uint64_t hidden_node_i64_matrices = 5U;
+        const std::uint64_t hidden_round_i64_arrays = 5U;
+        // h_prime, aggregate_pre/num, elu_input, aggregate; routed/product
+        // edge matrices; six edge vectors; maximum/denominator node vectors;
+        // SignedRoundDiv's five int64 arrays.
+        if (!add_shape_elements(&trace_i64_elements, graph.nodes, dim,
+                                hidden_node_i64_matrices + hidden_round_i64_arrays,
+                                "hidden node and round-div int64 arrays") ||
+            !add_shape_elements(&trace_i64_elements, graph.edges, dim, edge_matrix_count,
+                                "hidden edge matrices") ||
+            !add_elements(&trace_i64_elements, graph.edges, 6U, "hidden edge vectors") ||
+            !add_elements(&trace_i64_elements, graph.nodes, 2U, "hidden node vectors") ||
+            // E-sized inverse/alpha fields, E x D product, two N x D
+            // aggregate fields and two N x D SignedRoundDiv fields.
+            !add_elements(&trace_field_elements, graph.edges, 2U, "hidden edge fields") ||
+            !add_shape_elements(&trace_field_elements, graph.edges, dim, 1U,
+                                "hidden edge field matrix") ||
+            !add_shape_elements(&trace_field_elements, graph.nodes, dim, 4U,
+                                "hidden node fields") ||
+            !add_shape_elements(&trace_u8_elements, graph.nodes, dim, 2U,
+                                "hidden round-div byte arrays")) return false;
+    }
+    const std::uint64_t output_dim = config.architecture.classes;
+    const std::uint64_t output_heads = config.architecture.output_heads;
+    if (output_dim == 0U || output_heads == 0U ||
+        !add_shape_elements(&trace_i64_elements, graph.nodes, graph.features, 1U,
+                            "trace first input") ||
+        !add_shape_elements(&trace_i64_elements, graph.nodes, output_dim, 2U,
+                            "trace output sum/logits") ||
+        // Final-average SignedRoundDiv witness.
+        !add_shape_elements(&trace_i64_elements, graph.nodes, output_dim, 5U,
+                            "trace final-average int64 arrays") ||
+        !add_shape_elements(&trace_field_elements, graph.nodes, output_dim, 2U,
+                            "trace final-average field arrays") ||
+        !add_shape_elements(&trace_u8_elements, graph.nodes, output_dim, 2U,
+                            "trace final-average byte arrays")) {
+        if (error && error->empty()) *error = "native trace output shape is invalid";
+        return false;
+    }
+    for (std::size_t layer = 0U; layer < config.architecture.hidden_dims.size(); ++layer) {
+        const std::uint64_t width = config.architecture.hidden_heads[layer] * config.architecture.hidden_dims[layer];
+        const std::uint64_t input_width = layer == 0U ? graph.features :
+            config.architecture.hidden_heads[layer - 1U] * config.architecture.hidden_dims[layer - 1U];
+        if (!add_shape_elements(&trace_i64_elements, graph.nodes, input_width, 1U,
+                                "hidden layer input matrix") ||
+            !add_shape_elements(&trace_i64_elements, graph.nodes, width, 1U,
+                                "hidden layer concat matrix")) return false;
+    }
+    // Output heads own six node matrices (y_prime, aggregate_pre/num,
+    // y_quantized, aligned and output), two edge matrices, 6 edge vectors,
+    // two node vectors, one class bias, two SignedRoundDiv records (five
+    // int64, two field and two byte vectors apiece), and typed field arrays.
+    if (!add_shape_elements(&trace_i64_elements, graph.nodes, output_dim,
+                            output_heads * 16U, "output head matrices and round-div arrays") ||
+        !add_shape_elements(&trace_i64_elements, graph.edges, output_dim,
+                            output_heads * 2U, "output head edge matrices") ||
+        !add_elements(&trace_i64_elements, graph.edges, output_heads * 6U,
+                      "output head edge vectors") ||
+        !add_elements(&trace_i64_elements, graph.nodes, output_heads * 2U,
+                      "output head node vectors") ||
+        !add_elements(&trace_i64_elements, output_dim, output_heads,
+                      "output head bias vectors") ||
+        !add_shape_elements(&trace_field_elements, graph.nodes, output_dim,
+                            output_heads * 6U, "output head field matrices and round-div arrays") ||
+        !add_shape_elements(&trace_field_elements, graph.edges, output_dim,
+                            output_heads, "output head edge field matrix") ||
+        !add_elements(&trace_field_elements, graph.edges, output_heads * 2U,
+                      "output head edge fields") ||
+        !add_shape_elements(&trace_u8_elements, graph.nodes, output_dim,
+                            output_heads * 4U, "output head round-div byte arrays")) return false;
+
+    if (!checked_mul_u64(trace_i64_elements, sizeof(std::int64_t), metrics->trace_i64_payload_bytes) ||
+        !checked_mul_u64(trace_field_elements, sizeof(FieldValue), metrics->trace_field_payload_bytes) ||
+        !checked_mul_u64(trace_u8_elements, sizeof(std::uint8_t), metrics->trace_u8_payload_bytes)) {
+        if (error) *error = "native trace typed payload byte count overflows";
+        return false;
+    }
+    // Object metadata includes all trace containers and the contiguous
+    // storage for architecture-sized layer/head objects.  Per-value vectors
+    // above are constructed from exact shape on empty vectors in this source.
+    std::uint64_t hidden_layer_object_bytes = 0U, hidden_head_object_bytes = 0U;
+    std::uint64_t output_head_object_bytes = 0U, trace_metadata = sizeof(GatTrace);
+    if (!checked_mul_u64(config.architecture.hidden_dims.size(), sizeof(HiddenLayerTrace), hidden_layer_object_bytes) ||
+        !checked_mul_u64(hidden_head_count, sizeof(HiddenHeadTrace), hidden_head_object_bytes) ||
+        !checked_mul_u64(output_heads, sizeof(OutputHeadTrace), output_head_object_bytes) ||
+        !add(&trace_metadata, hidden_layer_object_bytes, "trace layer object metadata") ||
+        !add(&trace_metadata, hidden_head_object_bytes, "trace hidden-head object metadata") ||
+        !add(&trace_metadata, output_head_object_bytes, "trace output-head object metadata")) return false;
+    metrics->trace_object_metadata_bytes = trace_metadata;
+
+    std::uint64_t trace_payload = metrics->trace_i64_payload_bytes;
+    if (!add(&trace_payload, metrics->trace_field_payload_bytes, "trace payload bytes") ||
+        !add(&trace_payload, metrics->trace_u8_payload_bytes, "trace payload bytes") ||
+        !add(&trace_payload, trace_metadata, "trace payload object metadata")) return false;
+    // run_forward's actual overlap: current is a copy of graph input / the
+    // previous concat; at concat, head_outputs copies every aggregate and
+    // concat/current coexist; an active head retains projected while its
+    // h_prime copy is in trace and attention_scores returns one E-vector.
+    std::uint64_t current_elements = 0U, current_bytes = 0U;
+    std::uint64_t max_active_projection_bytes = 0U, max_attention_return_bytes = 0U;
+    std::uint64_t max_hidden_head_output_bytes = 0U;
+    std::uint64_t max_output_projection_bytes = 0U, node_temporary_bytes = 0U;
+    std::uint64_t matrix_header_bytes = 0U, max_head_output_count = 0U;
+    if (!checked_mul_u64(graph.nodes, maximum_hidden_width, current_elements) ||
+        !checked_mul_u64(current_elements, sizeof(std::int64_t), current_bytes) ||
+        !checked_mul_u64(graph.nodes, maximum_hidden_dim, max_active_projection_bytes) ||
+        !checked_mul_u64(max_active_projection_bytes, sizeof(std::int64_t), max_active_projection_bytes) ||
+        !checked_mul_u64(graph.edges, sizeof(std::int64_t), max_attention_return_bytes) ||
+        !checked_mul_u64(graph.nodes, maximum_hidden_dim, max_hidden_head_output_bytes) ||
+        !checked_mul_u64(max_hidden_head_output_bytes, sizeof(std::int64_t), max_hidden_head_output_bytes) ||
+        !checked_mul_u64(graph.nodes, output_dim, max_output_projection_bytes) ||
+        !checked_mul_u64(max_output_projection_bytes, sizeof(std::int64_t), max_output_projection_bytes) ||
+        !checked_mul_u64(graph.nodes, 2U, node_temporary_bytes) ||
+        !checked_mul_u64(node_temporary_bytes, sizeof(std::int64_t), node_temporary_bytes) ||
+        !checked_mul_u64(sizeof(Matrix), config.architecture.hidden_heads.empty() ? 0U :
+                             *std::max_element(config.architecture.hidden_heads.begin(), config.architecture.hidden_heads.end()),
+                         matrix_header_bytes)) {
+        if (error) *error = "native trace live-shape upper bound overflows";
+        return false;
+    }
+    for (std::size_t layer = 0U; layer < config.architecture.hidden_dims.size(); ++layer) {
+        std::uint64_t elements = 0U, bytes = 0U;
+        if (!checked_mul_u64(graph.nodes, config.architecture.hidden_dims[layer], elements) ||
+            !checked_mul_u64(elements, config.architecture.hidden_heads[layer], elements) ||
+            !checked_mul_u64(elements, sizeof(std::int64_t), bytes)) {
+            if (error) *error = "native trace concat live shape overflows";
+            return false;
+        }
+        max_hidden_head_output_bytes = std::max(max_hidden_head_output_bytes, bytes);
+        max_head_output_count = std::max(max_head_output_count, config.architecture.hidden_heads[layer]);
+    }
+    std::uint64_t hidden_forward_temp = current_bytes;
+    if (!add(&hidden_forward_temp, max_active_projection_bytes, "trace active hidden projection temp") ||
+        !add(&hidden_forward_temp, max_attention_return_bytes, "trace hidden attention return temp") ||
+        !add(&hidden_forward_temp, node_temporary_bytes, "trace hidden denominator temp") ||
+        !add(&hidden_forward_temp, max_hidden_head_output_bytes, "trace concat head-output copies") ||
+        !add(&hidden_forward_temp, current_bytes, "trace previous current/concat overlap") ||
+        !add(&hidden_forward_temp, current_bytes, "trace current copy of concat") ||
+        !add(&hidden_forward_temp, matrix_header_bytes, "trace head-output matrix headers") ||
+        !add(&hidden_forward_temp, sizeof(Matrix) * 4U, "trace active matrix headers")) return false;
+    std::uint64_t output_forward_temp = current_bytes;
+    if (!add(&output_forward_temp, max_output_projection_bytes, "trace active output projection temp") ||
+        !add(&output_forward_temp, max_attention_return_bytes, "trace output attention return temp") ||
+        !add(&output_forward_temp, node_temporary_bytes, "trace output denominator copies") ||
+        !add(&output_forward_temp, sizeof(Matrix) * 4U, "trace active output matrix headers")) return false;
+    (void)max_head_output_count;
+    metrics->trace_forward_live_peak_bytes_upper_bound = trace_payload;
+    if (!add(&metrics->trace_forward_live_peak_bytes_upper_bound,
+             std::max(hidden_forward_temp, output_forward_temp),
+             "trace forward live peak")) return false;
+
+    // gat_sparse_route.cuh materializes four full source-domain Sumcheck
+    // arrays (public selector, source, zero selector and output value).  The
+    // public selector is produced while source/zero and the output opening's
+    // first bounded segment are live; its MLE builder also holds a node-sized
+    // result and one edge-sized indicator.  The segmented Sumcheck then holds
+    // bounded provider blocks alongside those arrays.  Model both real peaks.
+    const std::uint64_t route_domain = metrics->maximum_route_source_domain;
+    const std::uint64_t route_sumcheck_domain = std::max<std::uint64_t>(2U, route_domain);
+    std::uint64_t route_arrays = 0U, route_bytes = 0U, route_segment_bytes = 0U;
+    std::uint64_t route_edge_indicator_bytes = 0U, route_selector_build_bytes = 0U;
+    std::uint64_t route_output_segment_bytes = 0U;
+    if (!checked_mul_u64(route_sumcheck_domain, 4U, route_arrays) ||
+        !checked_mul_u64(route_arrays, sizeof(FrWire), route_bytes) ||
+        !checked_mul_u64(std::min<std::uint64_t>(
+                             std::max(route_domain, metrics->maximum_route_edge_domain),
+                             kSegmentSize), sizeof(FrWire) * 8U, route_segment_bytes) ||
+        !checked_mul_u64(metrics->maximum_route_edge_domain, sizeof(FrWire),
+                         route_edge_indicator_bytes) ||
+        route_sumcheck_domain == std::numeric_limits<std::uint64_t>::max() ||
+        !checked_mul_u64(route_sumcheck_domain + 1U, sizeof(FrWire),
+                         route_selector_build_bytes) ||
+        !checked_mul_u64(std::min<std::uint64_t>(metrics->maximum_route_edge_domain,
+                                                kSegmentSize),
+                         sizeof(FrWire), route_output_segment_bytes)) {
+        if (error) *error = "native route Sumcheck live shape overflows";
+        return false;
+    }
+    // Selector construction overlaps the source and zero arrays (2D), its
+    // output (D), outer/feature factors (at most D+1 together), the edge
+    // indicator (E), and the retained output opening segment.  D+1 is
+    // conservatively bounded by D+1 to cover the scalar-domain case.
+    std::uint64_t selector_peak = route_bytes;
+    if (!add(&selector_peak, route_selector_build_bytes,
+             "route selector construction arrays") ||
+        !add(&selector_peak, route_edge_indicator_bytes,
+             "route selector edge indicator") ||
+        !add(&selector_peak, route_output_segment_bytes,
+             "route output opening segment")) return false;
+    std::uint64_t sumcheck_peak = route_bytes;
+    if (!add(&metrics->route_sumcheck_live_peak_bytes_upper_bound,
+             0U, "route Sumcheck segment buffers") ||
+        !add(&sumcheck_peak, route_segment_bytes,
+             "route Sumcheck segment buffers") ||
+        !add(&sumcheck_peak, route_output_segment_bytes,
+             "route Sumcheck retained output segment") ||
+        !add(&sumcheck_peak, 8U * sizeof(std::vector<FrWire>),
+             "route Sumcheck vector metadata") ||
+        !add(&selector_peak, 4U * sizeof(std::vector<FrWire>),
+             "route Sumcheck vector metadata") ||
+        !add(&sumcheck_peak, sizeof(relation::SparseRouteProof),
+             "route proof object metadata")) return false;
+    metrics->route_sumcheck_live_peak_bytes_upper_bound =
+        std::max(selector_peak, sumcheck_peak);
+    return true;
+}
+
 bool zkdl_gat_relation_prove(const relation::ProverContext &context, relation::Proof *proof, std::string *error) {
     if (!proof) {
         if (error) *error = "relation proof output pointer is null";
@@ -3180,20 +4494,35 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
         return false;
     }
     relation::ProverContext context;
+    NativeProveContextTiming context_timing;
     double commitment_open_seconds = 0.0;
     double relation_commitment_seconds = 0.0;
+    double provider_file_io_decode_seconds = 0.0;
+    double relation_commitment_file_io_decode_seconds = 0.0;
     context.commitment_open_time_seconds = &commitment_open_seconds;
     context.relation_commitment_time_seconds = &relation_commitment_seconds;
-    if (!context_from_request(request, context, error))
+    context.provider_file_io_decode_time_seconds = &provider_file_io_decode_seconds;
+    context.relation_commitment_file_io_decode_time_seconds = &relation_commitment_file_io_decode_seconds;
+    if (!context_from_request(request, context, context_timing, error))
         return reject(result, error, error ? *error : "native relation context rejected", request.config, request.statement, request.backend);
     context.gpu_backend = request.backend == Backend::Gpu;
     const std::uint64_t gpu_kernel_before = zkdl::gpu_crypto_kernel_invocations();
+    const double provider_io_before_prove = provider_file_io_decode_seconds;
     const auto prove_start = std::chrono::steady_clock::now();
     relation::Proof proof;
     if (!relation::prove(context, proof, error))
         return reject(result, error, error ? *error : "native relation prover rejected witness", request.config, request.statement, request.backend);
     const double relation_prove_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - prove_start).count();
+    const double provider_io_during_prove = provider_file_io_decode_seconds - provider_io_before_prove;
+    const double provider_io_outside_commitments = provider_io_during_prove - relation_commitment_file_io_decode_seconds;
+    const double context_file_io_outside_commitments = context_timing.explicit_file_io_seconds -
+        context_timing.sorted_lookup_outer_commitment_file_io_seconds;
+    const double relation_context_prove_seconds = context_timing.relation_context_wall_seconds -
+        context_timing.blinder_sampling_seconds - context_timing.sorted_lookup_outer_commitment_wall_seconds -
+        context_file_io_outside_commitments;
+    const double sorted_lookup_generation_seconds = request.witness->sorted_lookup_protocol_construction_seconds;
+    const double proof_auxiliary_construction_seconds = request.witness->proof_auxiliary_construction_seconds;
     const std::uint64_t gpu_kernel_after = zkdl::gpu_crypto_kernel_invocations();
     if (context.gpu_backend && gpu_kernel_after <= gpu_kernel_before)
         return reject(result, error, "BLOCKED: formal GPU prover completed without a native cryptographic kernel", request.config, request.statement,
@@ -3202,9 +4531,22 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
     result->proof_bytes = proof.serialize();
     const double serialization_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - serialization_start).count();
-    if (relation_commitment_seconds > relation_prove_seconds)
-        return reject(result, error, "native proof metric accounting exceeded relation prove interval",
+    if (relation_commitment_seconds > relation_prove_seconds ||
+        provider_io_during_prove < relation_commitment_file_io_decode_seconds ||
+        provider_io_during_prove > relation_prove_seconds ||
+        relation_prove_seconds - relation_commitment_seconds - provider_io_outside_commitments < 0.0 ||
+        context_timing.sorted_lookup_outer_commitment_wall_seconds < context_timing.sorted_lookup_outer_commitment_file_io_seconds ||
+        context_file_io_outside_commitments < 0.0 || relation_context_prove_seconds < 0.0 ||
+        sorted_lookup_generation_seconds < 0.0 || proof_auxiliary_construction_seconds < 0.0 ||
+        !std::isfinite(context_timing.relation_context_wall_seconds) ||
+        !std::isfinite(context_timing.blinder_sampling_seconds) ||
+        !std::isfinite(context_timing.sorted_lookup_outer_commitment_wall_seconds) ||
+        !std::isfinite(context_timing.sorted_lookup_outer_commitment_file_io_seconds) ||
+        !std::isfinite(context_timing.explicit_file_io_seconds) || !std::isfinite(sorted_lookup_generation_seconds) ||
+        !std::isfinite(proof_auxiliary_construction_seconds)) {
+        return reject(result, error, "native proof metric accounting exceeded its measured stage boundary",
                       request.config, request.statement, request.backend);
+    }
     result->envelope.native_core_api = kBridgeApi;
     result->envelope.statement_id = request.statement->statement_id;
     result->envelope.proof_id = digest_hex(zkdl::sha256(result->proof_bytes));
@@ -3219,7 +4561,21 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
     result->envelope.proof_size_bytes = result->proof_bytes.size();
     result->envelope.commitment_size_bytes = serialized_commitment_section_size(proof);
     result->envelope.commitment_time_seconds = commitment_open_seconds;
-    result->envelope.prove_time_seconds = relation_prove_seconds - relation_commitment_seconds + serialization_seconds;
+    result->envelope.proof_auxiliary_construction_seconds = proof_auxiliary_construction_seconds;
+    result->envelope.sorted_lookup_protocol_construction_seconds = sorted_lookup_generation_seconds;
+    result->envelope.relation_context_prove_seconds = relation_context_prove_seconds;
+    result->envelope.relation_prove_wall_seconds = relation_prove_seconds;
+    result->envelope.relation_commitment_time_seconds = relation_commitment_seconds;
+    result->envelope.prove_provider_file_io_excluded_seconds = provider_io_outside_commitments;
+    result->envelope.proof_serialization_seconds = serialization_seconds;
+    result->envelope.proof_auxiliary_construction_scope =
+        "signed_round_aux_witness_and_relation_views;steady_clock_wall;exclude_family_storage_write_hash_and_explicit_file_io";
+    result->envelope.prove_time_seconds = proof_auxiliary_construction_seconds + sorted_lookup_generation_seconds + relation_context_prove_seconds +
+        relation_prove_seconds - relation_commitment_seconds - provider_io_outside_commitments + serialization_seconds;
+    if (!std::isfinite(result->envelope.commitment_time_seconds) || result->envelope.commitment_time_seconds < 0.0 ||
+        !std::isfinite(result->envelope.prove_time_seconds) || result->envelope.prove_time_seconds < 0.0)
+        return reject(result, error, "native proof commitment/prove timing is negative or non-finite",
+                      request.config, request.statement, request.backend);
     result->envelope.verify_time_seconds = 0.0;
     result->envelope.verifier_reads_witness = false;
     result->envelope.gpu_kernel_executed = context.gpu_backend;
@@ -3230,7 +4586,6 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
 }
 
 bool zkdl_gat_native_core_verify(const NativeVerifyRequest &request, std::string *error) {
-    const auto verify_start = std::chrono::steady_clock::now();
     if (!request.config || !request.statement || !request.envelope || !request.proof_bytes)
         return reject(nullptr, error, "native verify request lacks proof envelope/bytes", request.config, request.statement, request.backend);
     if (request.envelope->schema_id != "zkDL_gat_proof_envelope_v1" || request.envelope->statement_id != request.statement->statement_id ||
@@ -3247,16 +4602,58 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest &request, std::string
     relation::VerifierContext context;
     if (!context_from_verify(request, context, error))
         return reject(nullptr, error, error ? *error : "independent verifier context rejected", request.config, request.statement, request.backend);
+    NativeRelationPlanMetrics typed_plan_metrics;
+    std::string typed_plan_error;
+    if (request.graph == nullptr || request.tables == nullptr || request.relation == nullptr ||
+        !zkdl_gat_native_relation_plan_metrics(*request.config, *request.graph,
+                                               *request.tables, *request.relation,
+                                               &typed_plan_metrics, &typed_plan_error)) {
+        return reject(nullptr, error,
+                      typed_plan_error.empty()
+                          ? "independent verifier lacks its authenticated typed relation plan"
+                          : typed_plan_error,
+                      request.config, request.statement, request.backend);
+    }
+    if (request.proof_bytes->size() > typed_plan_metrics.proof_wire_bytes_upper_bound) {
+        return reject(nullptr, error,
+                      "independent proof bytes exceed the authenticated typed wire upper bound",
+                      request.config, request.statement, request.backend);
+    }
+    std::vector<std::string> expected_qpad_ids;
+    for (const auto &descriptor : context.tensor_descriptors) {
+        if (relation::qpad_record_required(
+                descriptor.logical_shape, descriptor.padded_shape,
+                descriptor.visibility == 1U))
+            expected_qpad_ids.push_back(descriptor.id);
+    }
+    if (expected_qpad_ids.size() != typed_plan_metrics.padding_family_count) {
+        return reject(nullptr, error,
+                      "independent verifier Qpad context disagrees with authenticated plan metrics",
+                      request.config, request.statement, request.backend);
+    }
     context.gpu_backend = request.backend == Backend::Gpu;
     const std::uint64_t gpu_kernel_before = zkdl::gpu_crypto_kernel_invocations();
+    // Include verifier-facing proof parsing/canonical decoding and package
+    // identity checks.  Resource loading and verifier-context construction
+    // above remain outside this cryptographic verification interval.
+    const auto verify_start = std::chrono::steady_clock::now();
     relation::Proof proof;
     std::string parse_error;
-    if (!relation::Proof::deserialize(*request.proof_bytes, proof, &parse_error))
+    if (!relation::Proof::deserialize(*request.proof_bytes, proof,
+                                      expected_qpad_ids,
+                                      typed_plan_metrics.padding_record_body_max_bytes,
+                                      typed_plan_metrics.terminal_relation_body_max_bytes,
+                                      typed_plan_metrics.sorted_lookup_relation_body_max_bytes,
+                                      &parse_error))
         return reject(nullptr, error, "native GAT relation proof parse failed: " + parse_error, request.config, request.statement, request.backend);
     if (request.envelope->proof_size_bytes != request.proof_bytes->size() || request.envelope->proof_id != digest_hex(zkdl::sha256(*request.proof_bytes))) {
         return reject(nullptr, error, "proof envelope size/id is not bound to native proof bytes", request.config, request.statement, request.backend);
     }
-    if (!relation::verify(proof, context, error))
+    const bool verified = relation::verify(
+        proof, context, error,
+        typed_plan_metrics.terminal_relation_body_max_bytes);
+    const auto verify_end = std::chrono::steady_clock::now();
+    if (!verified)
         return reject(nullptr, error, error ? *error : "native relation verifier rejected proof", request.config, request.statement, request.backend);
     const std::uint64_t gpu_kernel_after = zkdl::gpu_crypto_kernel_invocations();
     if (context.gpu_backend && gpu_kernel_after <= gpu_kernel_before)
@@ -3264,7 +4661,7 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest &request, std::string
                       request.backend);
     if ((!context.gpu_backend && request.envelope->gpu_kernel_executed) || (context.gpu_backend && !request.envelope->gpu_kernel_executed))
         return reject(nullptr, error, "GPU cryptographic provenance flag is inconsistent", request.config, request.statement, request.backend);
-    request.envelope->verify_time_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - verify_start).count();
+    request.envelope->verify_time_seconds = std::chrono::duration<double>(verify_end - verify_start).count();
     return true;
 }
 

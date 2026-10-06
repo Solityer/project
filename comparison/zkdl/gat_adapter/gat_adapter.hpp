@@ -196,6 +196,7 @@ struct StaticTables {
 };
 
 struct IntegerBoundFamily {
+    std::string family_id;
     std::uint64_t layer = 0;
     std::uint64_t head = 0;
     bool output = false;
@@ -242,6 +243,7 @@ struct IntegerBoundLedger {
 struct SignedRoundDivWitness {
     std::uint64_t rows = 0;
     std::uint64_t cols = 0;
+    double proof_auxiliary_construction_seconds = 0.0;
     std::vector<std::uint8_t> sigma;
     std::vector<std::uint8_t> z;
     std::vector<std::int64_t> a;
@@ -478,7 +480,7 @@ struct PublicStatement {
 };
 
 struct ProofEnvelope {
-    std::string schema_id = "zkDL_gat_proof_envelope_v2";
+    std::string schema_id = "zkDL_gat_proof_envelope_v1";
     std::string statement_id;
     std::string proof_id;
     std::string backend;
@@ -496,6 +498,15 @@ struct ProofEnvelope {
     double commitment_time_seconds = 0.0;
     double prove_time_seconds = 0.0;
     double verify_time_seconds = 0.0;
+    double proof_auxiliary_construction_seconds = 0.0;
+    double sorted_lookup_protocol_construction_seconds = 0.0;
+    double relation_context_prove_seconds = 0.0;
+    double relation_prove_wall_seconds = 0.0;
+    double relation_commitment_time_seconds = 0.0;
+    double prove_provider_file_io_excluded_seconds = 0.0;
+    double proof_serialization_seconds = 0.0;
+    std::string proof_auxiliary_construction_scope =
+        "signed_round_aux_witness_and_relation_views;steady_clock_wall;exclude_family_storage_write_hash_and_explicit_file_io";
     bool verifier_reads_witness = false;
     bool gpu_kernel_executed = false;
     bool silent_fallback = false;
@@ -528,7 +539,7 @@ struct RunRecord {
     std::string error;
 };
 
-Config load_config(const std::filesystem::path &path);
+Config load_config(const std::filesystem::path &path, bool admission_only = false);
 struct AssetManifestEntry {
     std::string path;
     std::uint64_t bytes = 0;

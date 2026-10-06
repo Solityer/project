@@ -3615,10 +3615,139 @@ template<class Vector> bool masked_validate_circuit(const layeredCircuit &circui
     return true;
 }
 
+bool validate_native_gkr_point_domains_impl(
+    const layeredCircuit &circuit,
+    const std::vector<NativeGkrMatmulShape> &matmuls,
+    std::size_t input_domain, std::string *reason) {
+    const auto fail = [reason](const std::string &message) {
+        masked_set_reason(reason, message);
+        return false;
+    };
+    if (circuit.size != circuit.circuit.size() || circuit.circuit.size() < 2)
+        return fail("native GKR shape admission has an invalid layer count");
+    if (circuit.circuit.front().size != input_domain ||
+        !masked_power_of_two(input_domain) ||
+        input_domain > (std::size_t(1) << 62))
+        return fail("native GKR shape admission has an invalid canonical input domain");
+
+    std::size_t matmul_index = 0;
+    for (std::size_t layer_id = 0; layer_id < circuit.circuit.size(); ++layer_id) {
+        const layer &current = circuit.circuit[layer_id];
+        if (current.size == 0 || current.bit_length < 0 || current.bit_length >= 63 ||
+            current.bit_length != ceilPow2BitLength(current.size))
+            return fail("native GKR shape admission found a noncanonical layer domain at layer " +
+                        std::to_string(layer_id));
+        if (layer_id == 0) continue;
+
+        const int expected_max_u = std::max<int>(current.bit_length_u[0],
+                                                 current.bit_length_u[1]);
+        const int expected_max_v = current.need_phase2
+            ? std::max<int>(current.bit_length_v[0], current.bit_length_v[1])
+            : 0;
+        if (current.max_bl_u != expected_max_u ||
+            current.max_bl_v != expected_max_v ||
+            (current.ty != layerType::FCONN && current.max_bl_u < 0) ||
+            (current.need_phase2 && current.ty != layerType::FCONN &&
+             current.max_bl_v < 0))
+            return fail("native GKR shape admission found inconsistent sumcheck extents at layer " +
+                        std::to_string(layer_id));
+
+        if (current.bit_length_u[1] >= 0) {
+            if (layer_id == 0 || current.size_u[1] != circuit.circuit[layer_id - 1].size ||
+                current.bit_length_u[1] != circuit.circuit[layer_id - 1].bit_length)
+                return fail("native GKR U predecessor extent is not source-derived at layer " +
+                            std::to_string(layer_id));
+        } else if (current.size_u[1] != 0) {
+            return fail("native GKR U predecessor extent is present without a source at layer " +
+                        std::to_string(layer_id));
+        }
+        if (current.bit_length_v[1] >= 0) {
+            if (layer_id == 0 || current.size_v[1] != circuit.circuit[layer_id - 1].size ||
+                current.bit_length_v[1] != circuit.circuit[layer_id - 1].bit_length)
+                return fail("native GKR V predecessor extent is not source-derived at layer " +
+                            std::to_string(layer_id));
+        } else if (current.size_v[1] != 0) {
+            return fail("native GKR V predecessor extent is present without a source at layer " +
+                        std::to_string(layer_id));
+        }
+
+        if (current.ty == layerType::FCONN) {
+            if (matmul_index >= matmuls.size())
+                return fail("native GKR shape admission is missing an FCONN MatMul descriptor");
+            const NativeGkrMatmulShape &shape = matmuls[matmul_index++];
+            if (!masked_fconn_shape_matches(current, shape, reason) ||
+                !masked_validate_matmul_segment(shape, input_domain, reason))
+                return false;
+            const std::size_t rows_bits = static_cast<std::size_t>(
+                ceilPow2BitLength(static_cast<u64>(shape.rows)));
+            const std::size_t cols_bits = static_cast<std::size_t>(
+                ceilPow2BitLength(static_cast<u64>(shape.cols)));
+            if (rows_bits > std::numeric_limits<std::size_t>::max() - cols_bits)
+                return fail("native GKR FCONN row/column domain overflows host size");
+            std::size_t fconn_input_point_bits =
+                static_cast<std::size_t>(current.bit_length);
+            if (layer_id + 1 < circuit.circuit.size()) {
+                const layer &higher = circuit.circuit[layer_id + 1];
+                if (higher.ty == layerType::FCONN) {
+                    if (matmul_index >= matmuls.size())
+                        return fail("native GKR adjacent FCONN layer has no MatMul descriptor");
+                    const NativeGkrMatmulShape &higher_shape = matmuls[matmul_index];
+                    const std::size_t higher_inner_bits = static_cast<std::size_t>(
+                        ceilPow2BitLength(static_cast<u64>(higher_shape.inner)));
+                    const std::size_t higher_row_bits = static_cast<std::size_t>(
+                        ceilPow2BitLength(static_cast<u64>(higher_shape.rows)));
+                    if (higher_inner_bits >
+                        std::numeric_limits<std::size_t>::max() - higher_row_bits)
+                        return fail("native GKR adjacent FCONN point domain overflows host size");
+                    fconn_input_point_bits = higher_inner_bits + higher_row_bits;
+                } else {
+                    if (higher.max_bl_u < 0)
+                        return fail("native GKR higher layer emits no point for FCONN at layer " +
+                                    std::to_string(layer_id));
+                    fconn_input_point_bits = static_cast<std::size_t>(higher.max_bl_u);
+                }
+            }
+            if (fconn_input_point_bits < rows_bits + cols_bits)
+                return fail("native GKR FCONN predecessor point is shorter than its row/column domain at layer " +
+                            std::to_string(layer_id));
+            continue;
+        }
+
+        // In the canonical GAT protocol alpha is nonzero for every ordinary
+        // layer. A layer immediately below FCONN is anchored at its own exact
+        // bit_length before sumcheckInit; otherwise its incoming point is the
+        // higher ordinary layer's emitted U challenge vector.
+        std::size_t incoming_u_bits = static_cast<std::size_t>(current.bit_length);
+        if (layer_id + 1 < circuit.circuit.size() &&
+            circuit.circuit[layer_id + 1].ty != layerType::FCONN) {
+            const int emitted = circuit.circuit[layer_id + 1].max_bl_u;
+            if (emitted < 0)
+                return fail("native GKR higher layer emits no U point at layer " +
+                            std::to_string(layer_id + 1));
+            incoming_u_bits = static_cast<std::size_t>(emitted);
+        }
+        if (incoming_u_bits < static_cast<std::size_t>(current.bit_length))
+            return fail("native GKR U equality point is shorter than the active layer domain at layer " +
+                        std::to_string(layer_id));
+    }
+    if (matmul_index != matmuls.size())
+        return fail("native GKR MatMul descriptors are not consumed exactly once by FCONN layers");
+    if (reason != nullptr) reason->clear();
+    return true;
+}
+
 void masked_gkr_progress(const std::string &message) {
     std::cerr << "[zkGPT][gkr] " << message << std::endl;
 }
 
+}
+
+bool validate_native_gkr_point_domains(
+    const layeredCircuit &circuit,
+    const std::vector<NativeGkrMatmulShape> &matmuls,
+    std::size_t input_domain, std::string *reason) {
+    return validate_native_gkr_point_domains_impl(circuit, matmuls,
+                                                  input_domain, reason);
 }
 
 std::uint64_t native_masked_gkr_input_fold_storage_bytes(
@@ -3751,6 +3880,9 @@ bool prove_masked_gkr_transcript(
             if (!masked_validate_matmul_segment(matmul.shape, input_size, reason))
                 throw std::runtime_error(*reason);
         }
+        if (!validate_native_gkr_point_domains(circuit, descriptor_shapes,
+                                               input_size, reason))
+            throw std::runtime_error(*reason);
         std::size_t input_segment_domain = 0;
         std::vector<std::size_t> input_segment_logical_lengths;
         if (!masked_input_segment_domain(descriptor_shapes, input_size,
@@ -3928,7 +4060,22 @@ bool prove_masked_gkr_transcript(
                 alpha = F_ONE;
                 beta = F_ZERO;
             }
-            native_prover.sumcheckInit(alpha, beta);
+            if (current.ty == layerType::FCONN) {
+                native_prover.sumcheckInit(alpha, beta);
+            } else {
+                const std::size_t current_bits = current.bit_length > 0
+                    ? static_cast<std::size_t>(current.bit_length) : 0;
+                const std::vector<F> &current_u_point = r_u[layer_id + 1];
+                const std::vector<F> &current_v_point = r_v[layer_id + 1];
+                if (!alpha.isZero() && current_u_point.size() < current_bits)
+                    throw std::runtime_error(
+                        "masked GKR current u equality point is shorter than its active domain");
+                if (!beta.isZero() && current_v_point.size() < current_bits)
+                    throw std::runtime_error(
+                        "masked GKR current v equality point is shorter than its active domain");
+                native_prover.sumcheckInit(alpha, beta,
+                                           current_u_point, current_v_point);
+            }
 
             if (current.ty == layerType::FCONN) {
                 masked_gkr_progress("layer=" + std::to_string(layer_id) +

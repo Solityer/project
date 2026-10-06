@@ -553,6 +553,26 @@ impl<T: Clone + TensorType> Tensor<T> {
         self[index].clone()
     }
 
+    /// Clone one checked range from the tensor's row-major flat storage.
+    ///
+    /// Unlike `get_slice(&[range])`, this does not enumerate multidimensional
+    /// coordinates, and unlike cloning then flattening the source it copies
+    /// only the requested elements. Scale and visibility metadata are kept.
+    pub fn get_flat_slice(&self, range: Range<usize>) -> Result<Tensor<T>, TensorError> {
+        if range.start > range.end || range.end > self.inner.len() {
+            return Err(TensorError::DimError(format!(
+                "flat tensor range {}..{} is outside length {}",
+                range.start,
+                range.end,
+                self.inner.len()
+            )));
+        }
+        let mut output = Tensor::new(Some(&self.inner[range.clone()]), &[range.end - range.start])?;
+        output.scale = self.scale;
+        output.visibility = self.visibility.clone();
+        Ok(output)
+    }
+
     /// Display a tensor
     pub fn show(&self) -> String {
         if self.len() > 12 {
@@ -1997,5 +2017,57 @@ mod tests {
             a.get_slice(&[0..2, 0..1]).unwrap(),
             b.get_slice(&[0..2, 0..1]).unwrap()
         );
+    }
+
+    #[test]
+    fn flat_slice_matches_flatten_then_slice_for_checked_ranges() {
+        use crate::graph::Visibility;
+
+        let mut source = Tensor::<IntegerRep>::new(
+            Some(&(0..24).collect::<Vec<_>>()),
+            &[2, 3, 4],
+        )
+        .unwrap();
+        source.set_scale(9);
+        source.set_visibility(&Visibility::Private);
+
+        for range in [0..0, 0..24, 3..11, 17..24] {
+            let mut flattened = source.clone();
+            flattened.flatten();
+            let expected = flattened.get_slice(&[range.clone()]).unwrap();
+            let actual = source.get_flat_slice(range.clone()).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual.dims(), &[range.end - range.start]);
+            assert_eq!(actual.scale(), Some(9));
+            assert_eq!(actual.visibility(), Some(Visibility::Private));
+        }
+
+        assert!(source.get_flat_slice(25..25).is_err());
+        assert!(source.get_flat_slice(5..4).is_err());
+    }
+
+    #[test]
+    fn flat_slice_preserves_assigned_value_variants_and_order() {
+        use halo2curves::bn256::Fr;
+
+        let source = Tensor::new(
+            Some(&[
+                ValType::Constant(Fr::from(3)),
+                ValType::Value(Value::known(Fr::from(5))),
+                ValType::Constant(Fr::from(7)),
+                ValType::Value(Value::known(Fr::from(11))),
+            ]),
+            &[2, 2],
+        )
+        .unwrap();
+        let actual = source.get_flat_slice(1..4).unwrap();
+        assert!(matches!(actual[0], ValType::Value(_)));
+        assert!(matches!(actual[1], ValType::Constant(_)));
+        assert!(matches!(actual[2], ValType::Value(_)));
+        let values = actual
+            .iter()
+            .map(|value| value.get_felt_eval().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(values, vec![Fr::from(5), Fr::from(7), Fr::from(11)]);
     }
 }

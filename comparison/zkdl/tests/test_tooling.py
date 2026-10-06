@@ -20,6 +20,14 @@ FIXTURES = ROOT / "tests" / "fixtures"
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from final_validate import validate_collection
+from prepare_form_resources import (
+    analytic_sorted_lookup_plan,
+    ledger_bounds_plan,
+    make_tables,
+    relation_family_domains,
+    table_digest,
+    table_shape_plan,
+)
 from result_artifacts import ArtifactError, DATASETS, require_formal_five
 
 
@@ -55,6 +63,71 @@ class ToolingTests(unittest.TestCase):
             else:
                 instance = json.loads(fixture_path.read_text(encoding="utf-8"))
             jsonschema.validate(instance, schema)
+
+    def test_exp_map_covers_exact_leaky_relu_output_span(self) -> None:
+        for range_bits, expected_span, expected_padded in ((12, 4915, 8192), (14, 19661, 32768)):
+            values = {
+                "range_bits": str(range_bits),
+                "quant_cfg_id": f"test_quant_{range_bits}",
+                "static_table_id": f"test_table_{range_bits}",
+                "K_out": "1",
+            }
+            shape = table_shape_plan(values, "0" * 64)
+            shape_plan = analytic_sorted_lookup_plan(values, shape, nodes=3, profile=[(1, 2)], edges=4)
+            shape_exp_family = next(item for item in shape_plan["table_families"] if item["table_ref"] == "static_exp")
+            self.assertEqual(shape_exp_family["logical_rows"], expected_span + 1)
+            self.assertEqual(shape_exp_family["input_max"], expected_span)
+
+            table = make_tables(values, "0" * 64)
+            span = max(table["lrelu"]) - min(table["lrelu"])
+            self.assertEqual(span, expected_span)
+            self.assertEqual(table["exp_max"], span)
+            self.assertEqual(len(table["exp"]), span + 1)
+            self.assertEqual(table["exp_padded_domain"], expected_padded)
+
+            planner_values = {
+                **values,
+                "dataset": "synthetic",
+                "hidden_profile": "[1x2]",
+                "d_in_profile": "[4]",
+                "num_classes": "7",
+                "batch_graphs": "1",
+            }
+            _, _, ledger_families, _ = ledger_bounds_plan(planner_values, degree=4, model_max=3)
+            family_domains = relation_family_domains(
+                planner_values,
+                nodes=3,
+                edges=4,
+                table=table,
+                model_domains=[1],
+                graph_count=1,
+                ledger_families=ledger_families,
+                quantization={
+                    "s_out_pre": "16",
+                    "s_y_prime": "64",
+                    "s_h_prime_hidden_0": "64",
+                },
+            )
+            delta_width = expected_span.bit_length()
+            max_range_views = [
+                name for name in family_domains
+                if name.startswith("hidden/layer0/head0/max_range/view/range_bit/")
+            ]
+            self.assertEqual(len(max_range_views), delta_width)
+            self.assertIn("hidden/layer0/head0/trace/range_bits", family_domains)
+
+            plan = analytic_sorted_lookup_plan(values, table, nodes=3, profile=[(1, 2)], edges=4)
+            exp_family = next(item for item in plan["table_families"] if item["table_ref"] == "static_exp")
+            self.assertEqual(exp_family["logical_rows"], span + 1)
+            self.assertEqual(exp_family["input_min"], 0)
+            self.assertEqual(exp_family["input_max"], span)
+            self.assertEqual(exp_family["padded_domain"], expected_padded)
+
+            stale = dict(table)
+            old_max = 1 << range_bits
+            stale["exp_max"] = old_max
+            stale["exp"] = table["exp"][:old_max + 1]
+            self.assertNotEqual(table_digest(stale), table["digest"])
 
     def test_collector_and_final_validator(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / "tests") as directory:

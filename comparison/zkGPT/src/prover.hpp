@@ -34,6 +34,9 @@ public:
 
     void sumcheckInitAll(const vector<F>::const_iterator &r_0_from_v);
     void sumcheckInit(const F &alpha_0, const F &beta_0);
+    void sumcheckInit(const F &alpha_0, const F &beta_0,
+                      const vector<F> &current_u_point,
+                      const vector<F> &current_v_point);
     void sumcheckDotProdInitPhase1();
     void sumcheckInitPhase1(const F &relu_rou_0);
     void sumcheckInitPhase2();

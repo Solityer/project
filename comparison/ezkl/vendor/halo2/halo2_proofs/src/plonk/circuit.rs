@@ -2583,6 +2583,11 @@ impl<F: Field> ConstraintSystem<F> {
         self.num_instance_columns
     }
 
+    /// Returns number of columns participating in the copy permutation.
+    pub fn num_permutation_columns(&self) -> usize {
+        self.permutation.get_columns().len()
+    }
+
     /// Returns number of selectors
     pub fn num_selectors(&self) -> usize {
         self.num_selectors

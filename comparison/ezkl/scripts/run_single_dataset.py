@@ -57,7 +57,8 @@ from formal_common import (
     source_tree_hash,
     validate_artifact_identity,
     validate_config,
-    validate_commitment_metrics,
+    validate_native_proof_metrics,
+    validate_native_verify_metrics,
     validate_gpu_environment,
     validate_gpu_evidence,
     validate_native_srs_manifest,
@@ -460,8 +461,6 @@ def main(
     gpu_env = env.copy()
     if args.backend == "gpu":
         gpu_env["ENABLE_ICICLE_GPU"] = "1"
-        gpu_env["ICICLE_SMALL_K"] = "2"
-        gpu_env["ICICLE_SMALL_K_FFT"] = "2"
     setup_ms = 0.0
     if args.reuse_setup and (output / "setup_timing.json").is_file():
         setup_ms = float(load_json(output / "setup_timing.json", "setup timing")["duration_ms"])
@@ -596,9 +595,6 @@ def main(
         env=env,
     )
     require_file(witness, "private witness")
-    commitment_path = output / "commitment_metrics.json"
-    commitment = validate_commitment_metrics(commitment_path, dataset=args.dataset, model_hash=statement_document["public_ezkl"]["model_hash"])
-
     prove_ms = run_command(
         [
             str(binary),
@@ -621,6 +617,8 @@ def main(
         env=gpu_env,
     )
     require_file(proof, "verifier-facing proof")
+    proof_metrics_path = output / "native_proof_metrics.json"
+    proof_metrics = validate_native_proof_metrics(proof_metrics_path, proof_sha256=sha256(proof))
 
     verify_ms = run_command(
         [
@@ -647,6 +645,8 @@ def main(
         phase="independent official ezkl verify",
         env=env,
     )
+    verify_metrics_path = output / "native_verify_metrics.json"
+    verify_metrics = validate_native_verify_metrics(verify_metrics_path, proof_sha256=sha256(proof))
 
     core_manifest = output / "core_run_manifest.json"
     core = validate_core_manifest(
@@ -726,12 +726,20 @@ def main(
         "verifier_reads_witness": False,
         "proof_contains_private_witness": False,
         "core_run_manifest_sha256": sha256(core_manifest),
-        "commitment_time_ms": commitment["duration_ms"],
+        "commitment_time_ms": proof_metrics["commitment_time_ms"],
+        "prove_time_ms": proof_metrics["prove_time_ms"],
+        "verify_time_ms": verify_metrics["verify_time_ms"],
         "commitment_metric": {
-            "operation": commitment["operation"],
-            "included_in": commitment["included_in"],
-            "path": baseline_relative(commitment_path, "native commitment metrics"),
-            "sha256": sha256(commitment_path),
+            "operation": proof_metrics["operation"],
+            "included_in": proof_metrics["included_in"],
+            "path": baseline_relative(proof_metrics_path, "native proof metrics"),
+            "sha256": sha256(proof_metrics_path),
+        },
+        "verify_metric": {
+            "operation": verify_metrics["operation"],
+            "included_in": verify_metrics["included_in"],
+            "path": baseline_relative(verify_metrics_path, "native verification metrics"),
+            "sha256": sha256(verify_metrics_path),
         },
         "phase_timings_ms": {
             "prepare_compile_setup": round(prepare_ms, 3),

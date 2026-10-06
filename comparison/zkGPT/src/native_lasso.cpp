@@ -574,7 +574,9 @@ NativeLassoFamilyPublic::MatrixDescriptor native_lasso_balanced_matrix_layout(st
     return result;
 }
 
-NativeLassoSparseView native_lasso_sparse_view(const NativeLassoFamilyProver& family) {
+NativeLassoSparseView native_lasso_sparse_view(
+    const NativeLassoFamilyProver& family,
+    double* selected_row_mapping_ms) {
     const std::uint64_t queries = family.padded_queries;
     const std::uint64_t table_domain = family.table.size();
     std::uint64_t full_domain = 0;
@@ -585,13 +587,20 @@ NativeLassoSparseView native_lasso_sparse_view(const NativeLassoFamilyProver& fa
     view.full_domain = full_domain;
     view.nonzero_count = queries;
     const NativeLassoFamilyProver* witness = &family;
-    view.for_each_nonzero = [witness, queries, table_domain](const NativeLassoSparseEntryCallback& callback) {
+    view.for_each_nonzero = [witness, queries, table_domain,
+                             selected_row_mapping_ms](const NativeLassoSparseEntryCallback& callback) {
         if (!callback) throw std::invalid_argument("native Lasso sparse M_f callback is empty");
         for (std::uint64_t query = 0; query < queries; ++query) {
+            const auto mapping_begin = std::chrono::steady_clock::now();
             const std::uint64_t selected = witness->selected_table_row_at ? witness->selected_table_row_at(query) : witness->selected_table_rows[static_cast<std::size_t>(query)];
             if (selected >= table_domain || selected > (std::numeric_limits<std::uint64_t>::max() - query) / queries)
                 throw std::overflow_error("native Lasso sparse M_f support index overflows");
-            callback(selected * queries + query, F_ONE);
+            const std::uint64_t index = selected * queries + query;
+            if (selected_row_mapping_ms != nullptr) {
+                *selected_row_mapping_ms += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - mapping_begin).count();
+            }
+            callback(index, F_ONE);
         }
     };
     view.value_at = [witness, queries, table_domain, full_domain](std::uint64_t index) {
@@ -1657,17 +1666,19 @@ hyrax::HyraxGeneratorProvider matrix_generators(const NativeLassoFamilyPublic& f
     return provider;
 }
 
-void commit_family_rows(const NativeLassoFamilyProver& family, MaskedFamilyState& state) {
+double commit_family_rows(const NativeLassoFamilyProver& family,
+                          MaskedFamilyState& state,
+                          double* selected_row_mapping_ms) {
+    double mapping_ms = 0.0;
+    const auto commitment_begin = std::chrono::steady_clock::now();
     const std::uint64_t rows = family.matrix_layout.rows;
-    const NativeLassoSparseView sparse = native_lasso_sparse_view(family);
+    const NativeLassoSparseView sparse = native_lasso_sparse_view(family, &mapping_ms);
     const G1 H = hyrax::derive_pedersen_blinding_generator(state.basis_id);
     state.row_commitments.reserve(static_cast<std::size_t>(rows));
-    state.row_blindings.reserve(static_cast<std::size_t>(rows));
+    if (state.row_blindings.size() != rows)
+        throw std::invalid_argument("native Lasso prepared row blinding count is invalid");
     for (std::uint64_t row = 0; row < rows; ++row) {
-        F rho;
-        rho.setByCSPRNG();
-        state.row_commitments.push_back(H * rho);
-        state.row_blindings.push_back(rho);
+        state.row_commitments.push_back(H * state.row_blindings[static_cast<std::size_t>(row)]);
     }
     sparse.for_each_nonzero([&](std::uint64_t index, const F& value) {
         if (value != F_ONE) throw std::invalid_argument("native Lasso M_f is not one-hot");
@@ -1676,6 +1687,10 @@ void commit_family_rows(const NativeLassoFamilyProver& family, MaskedFamilyState
         if (row >= rows) throw std::out_of_range("native Lasso M_f row is out of range");
         state.row_commitments[static_cast<std::size_t>(row)] += family.matrix_layout.column_generators[static_cast<std::size_t>(column)];
     });
+    const double elapsed_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - commitment_begin).count();
+    if (selected_row_mapping_ms != nullptr) *selected_row_mapping_ms += mapping_ms;
+    return std::max(0.0, elapsed_ms - mapping_ms);
 }
 
 struct MatrixRowFold {
@@ -2515,7 +2530,9 @@ bool native_lasso_t2_booleanity_dense_reference_smoke() {
 
 bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLassoFamilyProver>& families, NativeLassoQueryProver& query,
                                NativeLassoBundleResult* result, std::string* reason, const NativeLassoTensorTailProveHook& tensor_tail_stage,
-                               double* family_row_commitment_ms) {
+                               double* family_row_commitment_ms,
+                               double* initial_blinding_prepare_ms,
+                               double* family_selected_row_mapping_ms) {
     SessionCheckpointGuard checkpoint_guard(session);
     try {
         if (families.empty() || query.tensor_view.full_domain == 0 || !tensor_tail_stage || !validate_query(query, reason)) {
@@ -2547,11 +2564,20 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
             const NativeLassoFamilyProver& family = families[index];
             MaskedFamilyState state;
             state.basis_id = family_basis_id(session, family);
-            const auto row_commitment_begin = std::chrono::steady_clock::now();
-            commit_family_rows(family, state);
+            if (family.matrix_layout.rows > std::numeric_limits<std::size_t>::max())
+                throw std::overflow_error("native Lasso row blinding extent exceeds size_t");
+            const auto blinding_prepare_begin = std::chrono::steady_clock::now();
+            state.row_blindings.resize(static_cast<std::size_t>(family.matrix_layout.rows));
+            for (F& blinding : state.row_blindings)
+                blinding.setByCSPRNG();
+            if (initial_blinding_prepare_ms != nullptr) {
+                *initial_blinding_prepare_ms += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - blinding_prepare_begin).count();
+            }
+            const double row_commitment_ms = commit_family_rows(
+                family, state, family_selected_row_mapping_ms);
             if (family_row_commitment_ms != nullptr) {
-                *family_row_commitment_ms += std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - row_commitment_begin).count();
+                *family_row_commitment_ms += row_commitment_ms;
             }
             const std::string commitment_label = family_prefix(family) + "/commitment";
             session.absorb(commitment_label, masked_family_payload(family, state.row_commitments, state.basis_id));

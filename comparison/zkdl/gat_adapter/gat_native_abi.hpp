@@ -99,6 +99,15 @@ struct NativeSortedLookupProviderInput {
 
 struct NativeRelationWitnessInput {
 
+    // Measured by the canonical native witness builder for sorted-lookup
+    // protocol auxiliary witness generation/sorting. Explicit file I/O is
+    // removed before this value is handed to the prover core.
+    double sorted_lookup_protocol_construction_seconds = 0.0;
+
+    // Net proof-specific SignedRoundDiv auxiliary construction and relation-view
+    // reader computation. Family storage and digest I/O are outside this value.
+    double proof_auxiliary_construction_seconds = 0.0;
+
     std::vector<NativeTensorWitnessInput> tensors;
     std::vector<NativeTensorShapeInput> tensor_shapes;
 

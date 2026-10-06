@@ -1293,6 +1293,65 @@ struct OperationDescriptor {
     bool has_public_divisor = false;
     FrWire public_divisor{};
 
+    bool authenticated_sorted_lookup_body_valid() const {
+        if (kind != RelationKind::TableLookup ||
+            batch_family != "authenticated_sorted_lookup" || degree != 2U ||
+            tensor_refs.size() != 3U || source_refs.size() != 8U ||
+            !constraints.empty() || !primitives.empty() ||
+            fac_bindings.size() != 3U || !requires_reindex || public_route ||
+            padding != "fixed-zero-padding;authenticated-sorted-lookup-v1" ||
+            public_table_ref.empty() ||
+            source_refs[1U] != public_table_ref ||
+            std::find(source_refs.begin(), source_refs.end(), public_table_ref) == source_refs.end() ||
+            std::find(tensor_refs.begin(), tensor_refs.end(), public_table_ref) != tensor_refs.end()) {
+            return false;
+        }
+        const std::array<std::string, 3U> expected_views = {
+            id + "/view/query", id + "/view/index", id + "/view/output0"};
+        const std::array<std::string, 3U> expected_canonical = {
+            source_refs[0U], source_refs[2U], source_refs[4U]};
+        const std::set<std::string> tensor_set(tensor_refs.begin(), tensor_refs.end());
+        if (tensor_set.size() != 3U || tensor_set != std::set<std::string>(expected_views.begin(), expected_views.end()))
+            return false;
+
+        std::set<std::string> bound_views;
+        std::uint32_t common_outer = 0U;
+        std::uint32_t common_feature = 0U;
+        for (const auto& binding : fac_bindings) {
+            const auto view = std::find(expected_views.begin(), expected_views.end(), binding.view_ref);
+            if (view == expected_views.end() ||
+                !bound_views.insert(binding.view_ref).second ||
+                binding.canonical_ref.empty() || binding.canonical_ref == binding.view_ref ||
+                binding.canonical_ref == public_table_ref ||
+                binding.canonical_ref != expected_canonical[static_cast<std::size_t>(view - expected_views.begin())] ||
+                std::find(source_refs.begin(), source_refs.end(), binding.canonical_ref) == source_refs.end() ||
+                binding.view_outer_domain == 0U ||
+                (binding.view_outer_domain & (binding.view_outer_domain - 1U)) != 0U ||
+                binding.view_outer_domain != binding.canonical_outer_domain ||
+                binding.view_feature_domain == 0U ||
+                (binding.view_feature_domain & (binding.view_feature_domain - 1U)) != 0U ||
+                binding.view_feature_domain != binding.canonical_feature_domain ||
+                binding.source_outer_index.size() != binding.view_outer_domain ||
+                binding.selector_active.size() != binding.view_outer_domain ||
+                binding.source_feature_index.size() != binding.view_feature_domain) {
+                return false;
+            }
+            if (common_outer == 0U) {
+                common_outer = binding.view_outer_domain;
+                common_feature = binding.view_feature_domain;
+            } else if (binding.view_outer_domain != common_outer ||
+                       binding.view_feature_domain != common_feature) {
+                return false;
+            }
+            for (std::uint32_t index = 0U; index < binding.view_outer_domain; ++index)
+                if (binding.source_outer_index[index] != index || binding.selector_active[index] != 1U)
+                    return false;
+            for (std::uint32_t index = 0U; index < binding.view_feature_domain; ++index)
+                if (binding.source_feature_index[index] != index) return false;
+        }
+        return bound_views == tensor_set;
+    }
+
     bool valid(std::string* error = nullptr) const {
         const bool canonical_root = id == "head_sum" || id == "final_average" ||
                                     id == "terminal_opening";
@@ -1313,9 +1372,16 @@ struct OperationDescriptor {
             if (error) *error = "relation operation descriptor is missing mapping/padding/terminal identity";
             return false;
         }
+        const bool authenticated_sorted_lookup_body = authenticated_sorted_lookup_body_valid();
+        if (batch_family == "authenticated_sorted_lookup" &&
+            !authenticated_sorted_lookup_body) {
+            if (error) *error = "authenticated sorted-lookup descriptor lacks its complete canonical FAC/table body";
+            return false;
+        }
         if (source_refs.empty() || tensor_refs.empty() ||
             (constraints.empty() && primitives.empty() &&
-             kind != RelationKind::SparseRoute && kind != RelationKind::PublicOutput)) {
+             kind != RelationKind::SparseRoute && kind != RelationKind::PublicOutput &&
+             !authenticated_sorted_lookup_body)) {
             if (error) *error = "relation operation descriptor has no tensor/constraint body";
             return false;
         }
@@ -1786,7 +1852,11 @@ struct PaddingProofRecord {
     std::vector<byte> serialize() const;
     static bool deserialize(const std::vector<byte>& bytes,
                             PaddingProofRecord& record,
-                            std::string* error = nullptr);
+                            std::string* error = nullptr,
+                            std::uint64_t max_record_body_bytes =
+                                zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes,
+                            std::uint64_t max_terminal_body_bytes =
+                                zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes);
 };
 
 struct Proof {
@@ -1810,6 +1880,15 @@ struct Proof {
 
     std::vector<byte> serialize() const;
     static bool deserialize(const std::vector<byte>& bytes, Proof& proof,
+                            std::string* error = nullptr);
+    // A formal verifier supplies the authenticated plan-derived Qpad ids and
+    // their native typed per-record byte ceiling.  The generic wire-only
+    // entry point above retains its smaller untrusted-item limit.
+    static bool deserialize(const std::vector<byte>& bytes, Proof& proof,
+                            const std::vector<std::string>& expected_qpad_ids,
+                            std::uint64_t max_qpad_record_bytes,
+                            std::uint64_t max_terminal_body_bytes,
+                            std::uint64_t max_sorted_lookup_relation_body_bytes,
                             std::string* error = nullptr);
 };
 
@@ -1860,6 +1939,12 @@ struct ProverContext {
     // Portion of commitment_open_time_seconds spent in relation::prove;
     // native-core subtracts this interval from Prove Time exactly once.
     double* relation_commitment_time_seconds = nullptr;
+    // Explicit file authentication/read/decode time from witness providers.
+    // Mapped payload access and page faults remain in the measured operation.
+    double* provider_file_io_decode_time_seconds = nullptr;
+    // Explicit provider file I/O/decode consumed by whole commitment calls;
+    // this portion is already removed with relation_commitment_time_seconds.
+    double* relation_commitment_file_io_decode_time_seconds = nullptr;
     // Native core sets this for a requested CUDA proof.  The relation layer
     // currently fails closed until the complete GAT relation (not only a
     // primitive) is implemented on native CUDA cryptographic kernels.
@@ -2108,7 +2193,9 @@ struct ConstraintProof;
 inline std::vector<byte> serialize_constraint_payload(const ConstraintProof& proof);
 inline bool deserialize_constraint_payload(const std::vector<byte>& bytes,
                                            ConstraintProof& proof,
-                                           std::string* error = nullptr);
+                                           std::string* error = nullptr,
+                                           std::uint64_t max_terminal_body_bytes =
+                                               zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes);
 
 inline void append_primitive(std::vector<byte>& out,
                              const PrimitiveDescriptor& primitive) {
@@ -2601,8 +2688,10 @@ inline void append_constraint_proof(std::vector<byte>& out, const ConstraintProo
     out.insert(out.end(), terminal.begin(), terminal.end());
 }
 
-inline bool read_constraint_proof(const std::vector<byte>& in, size_t& offset,
-                                  ConstraintProof& proof) {
+inline bool read_constraint_proof(
+    const std::vector<byte>& in, size_t& offset, ConstraintProof& proof,
+    std::uint64_t max_terminal_body_bytes =
+        zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes) {
     std::uint64_t count = 0U, proof_bytes = 0U;
     if (!read_constraint(in, offset, proof.descriptor) ||
         !zkdl::read_u64(in, offset, count) || count == 0U || count > kMaxRelationOpenings) return false;
@@ -2621,13 +2710,14 @@ inline bool read_constraint_proof(const std::vector<byte>& in, size_t& offset,
     offset += static_cast<size_t>(proof_bytes);
     if (!zkdl::deserialize_zk_sumcheck(encoded, proof.zk_sumcheck, nullptr)) return false;
     if (!zkdl::read_u64(in, offset, proof_bytes) || proof_bytes == 0U ||
-        proof_bytes > zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes ||
+        proof_bytes > max_terminal_body_bytes ||
         proof_bytes > in.size() - offset) return false;
     encoded.assign(in.begin() + static_cast<std::ptrdiff_t>(offset),
                    in.begin() + static_cast<std::ptrdiff_t>(offset + proof_bytes));
     offset += static_cast<size_t>(proof_bytes);
     if (!zkdl::deserialize_zk_terminal_relation(
-            encoded, proof.terminal_relation, nullptr)) return false;
+            encoded, proof.terminal_relation, nullptr,
+            max_terminal_body_bytes)) return false;
     return true;
 }
 
@@ -2651,24 +2741,27 @@ inline std::vector<byte> PaddingProofRecord::serialize() const {
 
 inline bool PaddingProofRecord::deserialize(const std::vector<byte>& bytes,
                                             PaddingProofRecord& record,
-                                            std::string* error) {
+                                            std::string* error,
+                                            std::uint64_t max_record_body_bytes,
+                                            std::uint64_t max_terminal_body_bytes) {
     PaddingProofRecord parsed;
     std::uint32_t version = 0U;
     std::uint64_t nested_size = 0U;
     std::size_t offset = 0U;
-    if (bytes.size() < 4U || bytes[0] != 'P' || bytes[1] != 'A' ||
+    if (bytes.size() > max_record_body_bytes || bytes.size() < 4U ||
+        bytes[0] != 'P' || bytes[1] != 'A' ||
         bytes[2] != 'D' || bytes[3] != '1') {
-        if (error) *error = "invalid Qpad proof magic";
+        if (error) *error = "invalid Qpad proof framing or authenticated body bound";
         return false;
     }
     offset = 4U;
-    if (!zkdl::read_u32(bytes, offset, version) || version != kVersion ||
+    if (!zkdl::read_u32(bytes, offset, version) || version != PaddingProofRecord::kVersion ||
         !zkdl::read_string(bytes, offset, parsed.tensor_id) ||
         !zkdl::read_u32(bytes, offset, parsed.commitment_index) ||
         !zkdl::read_u32(bytes, offset, parsed.domain_size) ||
         !read_digest(bytes, offset, parsed.selector_digest) ||
         !zkdl::read_u64(bytes, offset, nested_size) || nested_size == 0U ||
-        nested_size > zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes ||
+        nested_size > max_record_body_bytes ||
         nested_size != bytes.size() - offset) {
         if (error) *error = "truncated or trailing Qpad proof record";
         return false;
@@ -2676,7 +2769,8 @@ inline bool PaddingProofRecord::deserialize(const std::vector<byte>& bytes,
     std::vector<byte> relation_bytes(
         bytes.begin() + static_cast<std::ptrdiff_t>(offset), bytes.end());
     std::size_t relation_offset = 0U;
-    if (!read_constraint_proof(relation_bytes, relation_offset, parsed.relation) ||
+    if (!read_constraint_proof(relation_bytes, relation_offset, parsed.relation,
+                               max_terminal_body_bytes) ||
         relation_offset != relation_bytes.size() || parsed.tensor_id.empty() ||
         parsed.domain_size == 0U ||
         parsed.selector_digest == std::array<byte, 32U>{{}}) {
@@ -2729,8 +2823,10 @@ inline void append_operation_proof(std::vector<byte>& out, const OperationProof&
     for (const auto& constraint : proof.constraints) append_constraint_proof(out, constraint);
 }
 
-inline bool read_operation_proof(const std::vector<byte>& in, size_t& offset,
-                                 OperationProof& proof) {
+inline bool read_operation_proof(
+    const std::vector<byte>& in, size_t& offset, OperationProof& proof,
+    std::uint64_t max_terminal_body_bytes =
+        zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes) {
     std::uint64_t count = 0U, bytes = 0U;
     if (!read_operation_strict(in, offset, proof.descriptor) ||
         !zkdl::read_u64(in, offset, count) || count > 8U) return false;
@@ -2769,7 +2865,8 @@ inline bool read_operation_proof(const std::vector<byte>& in, size_t& offset,
     offset += static_cast<size_t>(bytes);
     if (!proof.batch_proof.empty()) {
         ConstraintProof batch;
-        if (!deserialize_constraint_payload(proof.batch_proof, batch)) return false;
+        if (!deserialize_constraint_payload(proof.batch_proof, batch, nullptr,
+                                            max_terminal_body_bytes)) return false;
     }
     if (!zkdl::read_u64(in, offset, count) || count > kMaxRelationConstraints ||
         (count == 0U && proof.primitive_proofs.empty() && proof.route_proof.empty() &&
@@ -2777,7 +2874,8 @@ inline bool read_operation_proof(const std::vector<byte>& in, size_t& offset,
          proof.descriptor.kind != RelationKind::PublicOutput)) return false;
     proof.constraints.resize(static_cast<size_t>(count));
     for (auto& constraint : proof.constraints)
-        if (!read_constraint_proof(in, offset, constraint)) return false;
+        if (!read_constraint_proof(in, offset, constraint,
+                                   max_terminal_body_bytes)) return false;
     return true;
 }
 
@@ -3152,9 +3250,29 @@ inline std::vector<byte> Proof::serialize() const {
     return out;
 }
 
-inline bool Proof::deserialize(const std::vector<byte>& bytes, Proof& proof,
-                               std::string* error) {
+inline bool proof_deserialize_impl(
+    const std::vector<byte>& bytes, Proof& proof,
+    const std::vector<std::string>* expected_qpad_ids,
+    std::uint64_t max_qpad_record_bytes,
+    std::uint64_t max_terminal_body_bytes,
+    std::uint64_t max_sorted_lookup_relation_body_bytes,
+    std::string* error) {
     const std::uint64_t max_items = 1U << 20;
+    if (expected_qpad_ids != nullptr) {
+        if (expected_qpad_ids->size() > max_items ||
+            max_terminal_body_bytes == 0U ||
+            (!expected_qpad_ids->empty() && max_qpad_record_bytes == 0U)) {
+            if (error) *error = "authenticated relation context has invalid item/body bounds";
+            return false;
+        }
+        std::set<std::string> expected_ids;
+        for (const auto& id : *expected_qpad_ids) {
+            if (id.empty() || !expected_ids.insert(id).second) {
+                if (error) *error = "authenticated Qpad context has empty or duplicate tensor ids";
+                return false;
+            }
+        }
+    }
     size_t offset = 0U;
     Proof parsed;
     std::uint32_t version = 0U;
@@ -3165,7 +3283,7 @@ inline bool Proof::deserialize(const std::vector<byte>& bytes, Proof& proof,
         return false;
     }
     offset = 4U;
-    if (!zkdl::read_u32(bytes, offset, version) || version != kVersion ||
+    if (!zkdl::read_u32(bytes, offset, version) || version != Proof::kVersion ||
         !read_statement(bytes, offset, parsed.statement) ||
         !zkdl::read_u64(bytes, offset, count) || count == 0U || count > max_items) {
         if (error) *error = "invalid GAT relation proof header";
@@ -3182,24 +3300,46 @@ inline bool Proof::deserialize(const std::vector<byte>& bytes, Proof& proof,
             if (error) *error = "duplicate/empty GAT commitment id";
             return false;
         }
-    if (!zkdl::read_u64(bytes, offset, count) || count > kMaxRelationOpenings) {
-        if (error) *error = "invalid Qpad proof record section";
+    const std::uint64_t qpad_count_limit = expected_qpad_ids == nullptr
+        ? kMaxRelationOpenings
+        : static_cast<std::uint64_t>(expected_qpad_ids->size());
+    if (!zkdl::read_u64(bytes, offset, count) || count > qpad_count_limit ||
+        (expected_qpad_ids != nullptr && count != expected_qpad_ids->size())) {
+        if (error) *error = expected_qpad_ids == nullptr
+            ? "invalid Qpad proof record section"
+            : "Qpad proof record count does not match the authenticated tensor plan";
         return false;
     }
-    parsed.padding_records.resize(static_cast<std::size_t>(count));
-    for (auto& padding : parsed.padding_records) {
+    const std::uint64_t nested_qpad_cap =
+        zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes;
+    const std::uint64_t qpad_body_limit = expected_qpad_ids == nullptr
+        ? nested_qpad_cap
+        : max_qpad_record_bytes;
+    parsed.padding_records.reserve(static_cast<std::size_t>(count));
+    for (std::size_t index = 0U; index < static_cast<std::size_t>(count); ++index) {
         std::uint64_t padding_bytes = 0U;
         if (!zkdl::read_u64(bytes, offset, padding_bytes) || padding_bytes == 0U ||
-            padding_bytes > zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes ||
+            padding_bytes > qpad_body_limit ||
             padding_bytes > bytes.size() - offset) {
-            if (error) *error = "truncated Qpad proof record";
+            if (error) *error = expected_qpad_ids == nullptr
+                ? "truncated Qpad proof record"
+                : "Qpad record body exceeds the authenticated typed plan bound";
             return false;
         }
         const std::vector<byte> encoded(
             bytes.begin() + static_cast<std::ptrdiff_t>(offset),
             bytes.begin() + static_cast<std::ptrdiff_t>(offset + padding_bytes));
         offset += static_cast<std::size_t>(padding_bytes);
-        if (!PaddingProofRecord::deserialize(encoded, padding, error)) return false;
+        PaddingProofRecord padding;
+        if (!PaddingProofRecord::deserialize(encoded, padding, error,
+                                             qpad_body_limit,
+                                             max_terminal_body_bytes)) return false;
+        if (expected_qpad_ids != nullptr &&
+            padding.tensor_id != (*expected_qpad_ids)[index]) {
+            if (error) *error = "Qpad proof tensor id/order does not match the authenticated tensor plan";
+            return false;
+        }
+        parsed.padding_records.push_back(std::move(padding));
     }
     if (!zkdl::read_u64(bytes, offset, count) || count != 0U) {
         if (error) *error = "invalid GAT hiding commitment section";
@@ -3212,14 +3352,17 @@ inline bool Proof::deserialize(const std::vector<byte>& bytes, Proof& proof,
     parsed.operations.resize(static_cast<size_t>(count));
     std::set<std::string> operation_ids;
     for (auto& operation : parsed.operations)
-        if (!read_operation_proof(bytes, offset, operation)) {
+        if (!read_operation_proof(bytes, offset, operation,
+                                  max_terminal_body_bytes)) {
             if (error) *error = "truncated GAT operation section";
             return false;
         } else if (!operation_ids.insert(operation.descriptor.id).second) {
             if (error) *error = "duplicate GAT operation id";
             return false;
         }
-    if (!zkdl::read_u64(bytes, offset, count) || count > (1U << 16U)) {
+    if (!zkdl::read_u64(bytes, offset, count) || count > (1U << 16U) ||
+        (expected_qpad_ids != nullptr && count != 0U &&
+         max_sorted_lookup_relation_body_bytes == 0U)) {
         if (error) *error = "invalid authenticated sorted-lookup proof section";
         return false;
     }
@@ -3236,7 +3379,11 @@ inline bool Proof::deserialize(const std::vector<byte>& bytes, Proof& proof,
             bytes.begin() + static_cast<std::ptrdiff_t>(offset),
             bytes.begin() + static_cast<std::ptrdiff_t>(offset + lookup_bytes));
         offset += static_cast<std::size_t>(lookup_bytes);
-        if (!zkdl::AuthenticatedSortedLookupProof::deserialize(encoded, lookup, error)) return false;
+        if (!zkdl::AuthenticatedSortedLookupProof::deserialize(
+                encoded, lookup, error, max_terminal_body_bytes,
+                expected_qpad_ids == nullptr
+                    ? zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes
+                    : max_sorted_lookup_relation_body_bytes)) return false;
     }
     std::uint64_t public_binding_size = 0U;
     if (!zkdl::read_u32(bytes, offset, parsed.public_output_commitment) || !deserialize_hidden_matmul_opening(bytes, offset, parsed.public_output_opening) || !zkdl::read_u64(bytes, offset, public_binding_size) || public_binding_size == 0U || public_binding_size > 4096U || public_binding_size > bytes.size() - offset) { if (error) *error = "truncated public output segmented opening"; return false; }
@@ -3250,6 +3397,27 @@ inline bool Proof::deserialize(const std::vector<byte>& bytes, Proof& proof,
     }
     proof = std::move(parsed);
     return true;
+}
+
+inline bool Proof::deserialize(const std::vector<byte>& bytes, Proof& proof,
+                               std::string* error) {
+    return proof_deserialize_impl(bytes, proof, nullptr,
+        zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes,
+        zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes,
+        zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes, error);
+}
+
+inline bool Proof::deserialize(
+    const std::vector<byte>& bytes, Proof& proof,
+    const std::vector<std::string>& expected_qpad_ids,
+    std::uint64_t max_qpad_record_bytes,
+    std::uint64_t max_terminal_body_bytes,
+    std::uint64_t max_sorted_lookup_relation_body_bytes,
+    std::string* error) {
+    return proof_deserialize_impl(bytes, proof, &expected_qpad_ids,
+                                  max_qpad_record_bytes,
+                                  max_terminal_body_bytes,
+                                  max_sorted_lookup_relation_body_bytes, error);
 }
 
 inline void absorb_descriptor(zkdl::Transcript& transcript,
@@ -4215,8 +4383,10 @@ inline bool zktr_build_segment_commitment_material(
     const zkdl::CpuG1Point& blinding_generator,
     const zkdl::CpuG1Point& u_generator, const FrWire& tensor_blinder,
     const RelationStatement& statement, CommitmentWire& commitment,
-    SegmentCommitmentMaterial& material, std::string* error = nullptr) {
+    SegmentCommitmentMaterial& material, std::string* error = nullptr,
+    double* commitment_crypto_time_seconds = nullptr) {
     try {
+        double commitment_crypto_seconds = 0.0;
         ZkRelationSegmentLayout layout;
         if (tensor_id.empty() || visibility == 0U ||
             !provider.valid(error) ||
@@ -4283,9 +4453,14 @@ inline bool zktr_build_segment_commitment_material(
                                             layout.logical_domain - offset),
                     actual, "segment commitment actual length", error))
                 return false;
+            const auto crypto_start = std::chrono::steady_clock::now();
             const zkdl::CpuG1Point xi = zkdl::cpu_g1_add(
                 zkdl::cpu_g1_sum(frame_generators, values),
                 zkdl::cpu_g1_mul(blinding_generator, material.blinders[segment]));
+            const G1Jacobian_t encoded_commitment = zkdl::cpu_g1_to_native(xi);
+            const zkdl::CpuG1Point next_legacy = zkdl::cpu_g1_add(legacy, xi);
+            commitment_crypto_seconds += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - crypto_start).count();
             if (xi.is_zero() && visibility != 1U) {
                 if (error) *error = "private segment commitment point is zero";
                 return false;
@@ -4297,14 +4472,19 @@ inline bool zktr_build_segment_commitment_material(
             wire.padded_length = layout.segment_size;
             wire.padding_length = layout.segment_size - actual;
             wire.frame_digest = frame_digest;
-            wire.commitment = zkdl::cpu_g1_to_native(xi);
+            wire.commitment = encoded_commitment;
             commitment.segment_commitments.push_back(std::move(wire));
             material.commitments.push_back(xi);
-            legacy = zkdl::cpu_g1_add(legacy, xi);
+            legacy = next_legacy;
         }
+        const auto finalization_start = std::chrono::steady_clock::now();
         commitment.commitment = zkdl::cpu_g1_to_native(legacy);
+        commitment_crypto_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - finalization_start).count();
         commitment.segment_commitment_digest = segment_commitment_digest(commitment);
         if (!segment_commitment_wire_shape_valid(commitment, error)) return false;
+        if (commitment_crypto_time_seconds != nullptr)
+            *commitment_crypto_time_seconds += commitment_crypto_seconds;
         return true;
     } catch (const std::exception& exception) {
         if (error) *error = exception.what();
@@ -5841,16 +6021,19 @@ inline std::vector<byte> serialize_constraint_payload(const ConstraintProof& pro
     return encoded;
 }
 
-inline bool deserialize_constraint_payload(const std::vector<byte>& bytes,
-                                           ConstraintProof& proof,
-                                           std::string* error) {
+inline bool deserialize_constraint_payload(
+    const std::vector<byte>& bytes, ConstraintProof& proof,
+    std::string* error,
+    std::uint64_t max_terminal_body_bytes) {
     if (bytes.size() < 4U || bytes[0] != 'B' || bytes[1] != 'C' ||
         bytes[2] != 'H' || bytes[3] != '2') {
         if (error) *error = "invalid batched relation proof magic";
         return false;
     }
     size_t offset = 4U;
-    if (!read_constraint_proof(bytes, offset, proof) || offset != bytes.size()) {
+    if (!read_constraint_proof(bytes, offset, proof,
+                               max_terminal_body_bytes) ||
+        offset != bytes.size()) {
         if (error) *error = "truncated or trailing batched relation proof";
         return false;
     }
@@ -7583,6 +7766,16 @@ inline bool qpad_selector_provider(
     return true;
 }
 
+inline bool qpad_record_required(const std::vector<std::uint64_t>& logical_shape,
+                                const std::vector<std::uint64_t>& padded_shape,
+                                bool is_public) {
+    if (is_public || logical_shape.empty() ||
+        logical_shape.size() != padded_shape.size()) return false;
+    for (std::size_t axis = 0U; axis < logical_shape.size(); ++axis)
+        if (logical_shape[axis] != padded_shape[axis]) return true;
+    return false;
+}
+
 inline ConstraintDescriptor qpad_constraint_descriptor(const std::string& tensor_id) {
     ConstraintDescriptor descriptor;
     descriptor.id = "gat.padding/" + tensor_id + "/zero-mask";
@@ -7793,10 +7986,9 @@ inline bool prove_padding_records(
     records.clear();
     std::size_t index = 0U;
     for (const auto& descriptor : context.tensor_descriptors) {
-        bool padded = false;
-        for (std::size_t axis = 0U; axis < descriptor.logical_shape.size(); ++axis)
-            padded = padded || descriptor.logical_shape[axis] != descriptor.padded_shape[axis];
-        if (!padded || descriptor.visibility == 1U) continue;
+        if (!qpad_record_required(descriptor.logical_shape,
+                                  descriptor.padded_shape,
+                                  descriptor.visibility == 1U)) continue;
         PaddingProofRecord record;
         if (!prove_padding_record(
                 descriptor, index, tensor_map, context.blinding_scalars,
@@ -7816,10 +8008,10 @@ inline bool verify_padding_records(
     zkdl::Transcript& transcript, std::string* error = nullptr) {
     std::vector<const TensorDescriptor*> expected;
     for (const auto& descriptor : context.tensor_descriptors) {
-        bool padded = false;
-        for (std::size_t axis = 0U; axis < descriptor.logical_shape.size(); ++axis)
-            padded = padded || descriptor.logical_shape[axis] != descriptor.padded_shape[axis];
-        if (padded && descriptor.visibility != 1U) expected.push_back(&descriptor);
+        if (qpad_record_required(descriptor.logical_shape,
+                                 descriptor.padded_shape,
+                                 descriptor.visibility == 1U))
+            expected.push_back(&descriptor);
     }
     if (proof.padding_records.size() != expected.size()) {
         if (error) *error = "Qpad proof record count does not match authenticated tensor families";
@@ -7931,16 +8123,28 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             SegmentCommitmentMaterial material;
             const FrWire randomness = relation_blinding_scalar(tensor, context.blinding_scalars);
             const auto commitment_start = std::chrono::steady_clock::now();
+            double commitment_crypto_seconds = 0.0;
+            const double provider_io_before = context.provider_file_io_decode_time_seconds != nullptr
+                ? *context.provider_file_io_decode_time_seconds : 0.0;
             const bool commitment_built = zktr_build_segment_commitment_material(
                     tensor.id, tensor.visibility, provider, context.ipa_generators,
                     context.ipa_blinding_generator, context.ipa_u_generator, randomness,
-                    proof.statement, commitment, material, error);
+                    proof.statement, commitment, material, error, &commitment_crypto_seconds);
             const double commitment_seconds = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - commitment_start).count();
             if (context.commitment_open_time_seconds != nullptr)
-                *context.commitment_open_time_seconds += commitment_seconds;
+                *context.commitment_open_time_seconds += commitment_crypto_seconds;
             if (context.relation_commitment_time_seconds != nullptr)
                 *context.relation_commitment_time_seconds += commitment_seconds;
+            if (context.relation_commitment_file_io_decode_time_seconds != nullptr &&
+                context.provider_file_io_decode_time_seconds != nullptr) {
+                const double provider_io_delta = *context.provider_file_io_decode_time_seconds - provider_io_before;
+                if (provider_io_delta < 0.0 || provider_io_delta > commitment_seconds) {
+                    if (error) *error = "native tensor explicit provider I/O timing exceeded its commitment interval";
+                    return false;
+                }
+                *context.relation_commitment_file_io_decode_time_seconds += provider_io_delta;
+            }
             if (!commitment_built) return false;
             segment_blinding_scalars[tensor.id] = material.blinders;
             proof.commitments.push_back(commitment);
@@ -8182,8 +8386,11 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
     }
 }
 
-inline bool verify(const Proof& proof, const VerifierContext& context,
-                   std::string* error = nullptr) {
+inline bool verify(
+    const Proof& proof, const VerifierContext& context,
+    std::string* error = nullptr,
+    std::uint64_t max_terminal_body_bytes =
+        zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes) {
     if (proof.version != Proof::kVersion || !same_bytes(proof.statement.statement_digest,
                                                          context.statement.statement_digest) ||
         !same_bytes(proof.statement.model_digest, context.statement.model_digest) ||
@@ -8329,7 +8536,8 @@ inline bool verify(const Proof& proof, const VerifierContext& context,
                 return false;
             }
             ConstraintProof payload;
-            if (!deserialize_constraint_payload(operation.batch_proof, payload, error)) return false;
+            if (!deserialize_constraint_payload(operation.batch_proof, payload, error,
+                                                max_terminal_body_bytes)) return false;
             const ConstraintDescriptor batched = batched_family_descriptor(
                 expected_operation, transcript, error);
             if (batched.id.empty() ||

@@ -3,9 +3,11 @@
 #include <mcl/bn256.hpp>
 
 #include <cassert>
+#include <algorithm>
 #include <cstdio>
 #include <iostream>
 #include <string>
+#include <vector>
 
 using namespace mcl::bn;
 
@@ -56,6 +58,41 @@ layeredCircuit make_circuit() {
     return circuit;
 }
 
+layeredCircuit make_fconn_then_ordinary_circuit() {
+    layeredCircuit circuit;
+    circuit.init(0, 3);
+
+    circuit.circuit[0].ty = layerType::INPUT;
+    circuit.circuit[0].size = 16;
+    circuit.circuit[0].zero_start_id = 16;
+    circuit.circuit[0].bit_length = 4;
+
+    circuit.circuit[1].ty = layerType::ADD_BIAS;
+    circuit.circuit[1].size = 2;
+    circuit.circuit[1].zero_start_id = 2;
+    circuit.circuit[1].bit_length = 1;
+    circuit.circuit[1].reserve_gate_arrays(2, 0);
+    circuit.circuit[1].reserve_coefficients(1);
+    circuit.circuit[1].add_unary(0, 8, 0, 1);
+    circuit.circuit[1].add_unary(1, 9, 0, 1);
+
+    circuit.circuit[2].ty = layerType::FCONN;
+    circuit.circuit[2].size = 2;
+    circuit.circuit[2].zero_start_id = 2;
+    circuit.circuit[2].bit_length = 1;
+    circuit.circuit[2].need_phase2 = true;
+    circuit.circuit[2].native_relation_id = "masked-layered-gkr/fconn0";
+    circuit.circuit[2].native_family_id = "masked-layered-gkr/family0";
+    circuit.circuit[2].native_rows = 1;
+    circuit.circuit[2].native_inner = 2;
+    circuit.circuit[2].native_cols = 2;
+    circuit.circuit[2].native_lhs_offset = 0;
+    circuit.circuit[2].native_rhs_offset = 4;
+    circuit.circuit[2].native_output_offset = 8;
+    circuit.initSubset();
+    return circuit;
+}
+
 layeredCircuit make_ordinary_phase2_circuit() {
     layeredCircuit circuit;
     circuit.init(0, 3);
@@ -87,6 +124,58 @@ layeredCircuit make_ordinary_phase2_circuit() {
     circuit.circuit[2].add_binary(1, 1, 1, 1, 0);
     circuit.initSubset();
     return circuit;
+}
+
+void test_bitmap_subset_matches_raw_sort_unique() {
+    layeredCircuit circuit;
+    circuit.init(0, 3);
+    circuit.circuit[0].ty = layerType::INPUT;
+    circuit.circuit[0].size = 131;
+    circuit.circuit[0].bit_length = 8;
+    circuit.circuit[1].ty = layerType::INPUT;
+    circuit.circuit[1].size = 10;
+    circuit.circuit[1].bit_length = 4;
+    circuit.circuit[2].ty = layerType::ADD_BIAS;
+    circuit.circuit[2].size = 6;
+    circuit.circuit[2].reserve_gate_arrays(5, 4);
+    circuit.circuit[2].reserve_coefficients(1);
+    circuit.circuit[2].add_unary(0, 17, 0, 1);
+    circuit.circuit[2].add_unary(1, 17, 0, 1);
+    circuit.circuit[2].add_unary(2, 130, 0, 1);
+    circuit.circuit[2].add_unary(3, 2, 0, 1);
+    circuit.circuit[2].add_unary(4, 5, 1, 1); // Previous-layer source: not part of the layer-0 map.
+    circuit.circuit[2].add_binary(0, 4, 129, 1, 0);
+    circuit.circuit[2].add_binary(1, 17, 4, 1, 0);
+    circuit.circuit[2].add_binary(2, 2, 3, 1, 1); // Both operands come from layer 1.
+    circuit.circuit[2].add_binary(3, 8, 17, 1, 2); // U from layer 1, V from layer 0.
+
+    std::vector<u64> expected_u{17, 17, 130, 2, 4, 17};
+    std::vector<u64> expected_v{129, 4, 17};
+    std::sort(expected_u.begin(), expected_u.end());
+    expected_u.erase(std::unique(expected_u.begin(), expected_u.end()), expected_u.end());
+    std::sort(expected_v.begin(), expected_v.end());
+    expected_v.erase(std::unique(expected_v.begin(), expected_v.end()), expected_v.end());
+    const auto old_sort_unique_index = [](const std::vector<u64>& coordinates, u64 coordinate) {
+        const auto found = std::lower_bound(coordinates.begin(), coordinates.end(), coordinate);
+        assert(found != coordinates.end() && *found == coordinate);
+        return static_cast<u64>(found - coordinates.begin());
+    };
+
+    circuit.initSubset();
+    const layer& mapped = circuit.circuit[2];
+    assert(std::vector<u64>(mapped.ori_id_u.begin(), mapped.ori_id_u.end()) == expected_u);
+    assert(std::vector<u64>(mapped.ori_id_v.begin(), mapped.ori_id_v.end()) == expected_v);
+    assert(mapped.uni_gates[0].u == old_sort_unique_index(expected_u, 17));
+    assert(mapped.uni_gates[1].u == old_sort_unique_index(expected_u, 17));
+    assert(mapped.uni_gates[2].u == old_sort_unique_index(expected_u, 130));
+    assert(mapped.uni_gates[3].u == old_sort_unique_index(expected_u, 2));
+    assert(mapped.uni_gates[4].u == 5);
+    assert(mapped.bin_gates[0].u == old_sort_unique_index(expected_u, 4));
+    assert(mapped.bin_gates[0].v == old_sort_unique_index(expected_v, 129));
+    assert(mapped.bin_gates[1].u == old_sort_unique_index(expected_u, 17));
+    assert(mapped.bin_gates[1].v == old_sort_unique_index(expected_v, 4));
+    assert(mapped.bin_gates[2].u == 2 && mapped.bin_gates[2].v == 3);
+    assert(mapped.bin_gates[3].u == 8 && mapped.bin_gates[3].v == old_sort_unique_index(expected_v, 17));
 }
 
 NativeLayeredGkrWitness make_witness() {
@@ -191,6 +280,7 @@ bool replace_opening_payload(std::vector<NativeProofMessage>& messages, const st
 }
 
 int main() {
+    test_bitmap_subset_matches_raw_sort_unique();
     initPairing(BN254);
     const layeredCircuit circuit = make_circuit();
     NativeLayeredGkrWitness witness = make_witness();
@@ -274,6 +364,59 @@ int main() {
     NativeProofSession wrong_output("masked-layered-gkr-smoke-v1", statement_fixture());
     assert(prove_masked_gkr_transcript(wrong_output, circuit, witness, output_view, &reason));
     assert(!verify_masked_gkr_transcript(wrong_output, circuit, {Fr(11), Fr(28)}, descriptors, &reason));
+
+    // Traverse a high FCONN layer followed by a lower ordinary layer. This
+    // exercises the driver-owned equality-point handoff across the FCONN
+    // early-continue branch, where the legacy prover point arrays are stale.
+    const layeredCircuit fconn_then_ordinary =
+        make_fconn_then_ordinary_circuit();
+    NativeLayeredGkrWitness fconn_then_ordinary_witness = make_witness();
+    const std::vector<NativeGkrMatmulShape> fconn_then_ordinary_descriptors{
+        fconn_then_ordinary_witness.matmuls.front().shape};
+    assert(validate_native_gkr_point_domains(
+        fconn_then_ordinary, fconn_then_ordinary_descriptors, 16, &reason));
+    std::vector<NativeGkrMatmulShape> wrong_terminal_domain =
+        fconn_then_ordinary_descriptors;
+    wrong_terminal_domain.front().cols += 1;
+    assert(!validate_native_gkr_point_domains(
+        fconn_then_ordinary, wrong_terminal_domain, 16, &reason));
+    NativeProofSession fconn_then_ordinary_session(
+        "masked-layered-gkr-fconn-to-ordinary-v1", statement_fixture());
+    if (!prove_masked_gkr_transcript(
+            fconn_then_ordinary_session, fconn_then_ordinary,
+            fconn_then_ordinary_witness, output_view, &reason) ||
+        !verify_masked_gkr_transcript(
+            fconn_then_ordinary_session, fconn_then_ordinary, output_view,
+            fconn_then_ordinary_descriptors, &reason)) {
+        std::cerr << "FCONN-to-ordinary proof/verification failed: " << reason << '\n';
+        return 13;
+    }
+    const std::string mixed_wire = "/tmp/zkgpt-native-masked-layered-gkr-mixed.smoke";
+    assert(fconn_then_ordinary_session.write(mixed_wire, &reason));
+    NativeProofSession mixed_fresh;
+    assert(NativeProofSession::read(mixed_wire, mixed_fresh, &reason));
+    assert(verify_masked_gkr_transcript(
+        mixed_fresh, fconn_then_ordinary, output_view,
+        fconn_then_ordinary_descriptors, &reason));
+    std::remove(mixed_wire.c_str());
+    std::vector<NativeProofMessage> fconn_then_ordinary_mutant =
+        fconn_then_ordinary_session.messages();
+    assert(mutate_input_binding_payload(fconn_then_ordinary_mutant));
+    NativeProofSession fconn_then_ordinary_mutant_session;
+    assert(NativeProofSession::from_messages(
+        fconn_then_ordinary_session.domain(),
+        fconn_then_ordinary_session.statement(),
+        fconn_then_ordinary_mutant, fconn_then_ordinary_mutant_session,
+        &reason));
+    assert(!verify_masked_gkr_transcript(
+        fconn_then_ordinary_mutant_session, fconn_then_ordinary,
+        output_view, fconn_then_ordinary_descriptors, &reason));
+    const std::vector<Fr> wrong_fconn_output{Fr(11), Fr(28)};
+    const zkgpt::NativeFieldView wrong_fconn_output_view =
+        zkgpt::NativeFieldView::from_vector(wrong_fconn_output);
+    assert(!verify_masked_gkr_transcript(
+        fconn_then_ordinary_session, fconn_then_ordinary,
+        wrong_fconn_output_view, fconn_then_ordinary_descriptors, &reason));
 
     NativeProofSession fresh("masked-layered-gkr-smoke-v1", statement_fixture());
     assert(prove_masked_gkr_transcript(fresh, circuit, witness, output_view, &reason));

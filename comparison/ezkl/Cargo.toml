@@ -221,7 +221,6 @@ formal-gpu = [
     "gpu-accelerated",
     "no-banner",
     "parallel-poly-read",
-    "precompute-coset",
     "reusable-verifier",
 ]
 web = ["wasm-bindgen-rayon"]
@@ -267,7 +266,7 @@ mv-lookup = ["halo2_proofs/mv-lookup", "snark-verifier/mv-lookup"]
 asm = ["halo2curves/asm", "halo2_proofs/asm"]
 precompute-coset = ["halo2_proofs/precompute-coset"]
 det-prove = []
-gpu-accelerated = ["halo2_proofs/icicle_gpu"]
+gpu-accelerated = ["halo2_proofs/formal-gpu-msm"]
 empty-cmd = []
 no-banner = []
 no-update = []

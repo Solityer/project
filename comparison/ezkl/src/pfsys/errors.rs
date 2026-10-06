@@ -18,6 +18,9 @@ pub enum PfsysError {
     /// Invalid commitment scheme
     #[error("invalid commitment scheme")]
     InvalidCommitmentScheme,
+    /// Failed to maintain native proof timing state
+    #[error("native proof timing failed: {0}")]
+    TimingError(String),
     /// Failed to load vk from file
     #[error("failed to load vk from file: {0}")]
     LoadVk(String),

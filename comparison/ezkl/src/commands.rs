@@ -89,6 +89,9 @@ pub const DEFAULT_GAT_SETUP_CONTEXT: &str = "circuit_ref.json";
 /// Phase of the two-stage native GAT preparation flow.
 #[derive(Debug, Copy, Clone, ValueEnum, Serialize, Deserialize, PartialEq, PartialOrd)]
 pub enum GatPreparePhase {
+    /// Inspect the full canonical relation and Halo2 constraint shape without
+    /// generating proving or verification keys.
+    Admission,
     /// Compile/setup the native circuit and emit its actual CircuitRef.
     Setup,
     /// Consume an externally produced statement and finalize the artifact manifest.
@@ -98,6 +101,7 @@ pub enum GatPreparePhase {
 impl ToFlags for GatPreparePhase {
     fn to_flags(&self) -> Vec<String> {
         vec![match self {
+            Self::Admission => "admission",
             Self::Setup => "setup",
             Self::Final => "final",
         }
@@ -459,8 +463,9 @@ pub enum Commands {
         /// Canonical dataset name: cora, citeseer, pubmed, ppi or ogbn_arxiv.
         #[arg(long)]
         dataset: String,
-        /// Native preparation phase; setup emits the actual CircuitRef and
-        /// final consumes the externally produced statement.
+        /// Native preparation phase; admission checks the exact relation/shape,
+        /// setup emits the actual CircuitRef, and final consumes the externally
+        /// produced statement.
         #[arg(long, value_enum, default_value_t = GatPreparePhase::Final)]
         phase: GatPreparePhase,
         /// Baseline-local authenticated resource manifest.
@@ -469,6 +474,9 @@ pub enum Commands {
         /// Directory receiving settings, compiled circuit, keys and metadata.
         #[arg(long, default_value = DEFAULT_GAT_OUTPUT_DIR, value_hint = clap::ValueHint::DirPath)]
         output_dir: PathBuf,
+        /// Authenticated native admission directory used by the formal runner.
+        #[arg(long, hide = true, value_hint = clap::ValueHint::DirPath)]
+        admission_dir: Option<PathBuf>,
         /// Path to an authentic official ezkl SRS; dummy/generated SRS is rejected.
         #[arg(long, value_hint = clap::ValueHint::FilePath)]
         srs_path: PathBuf,

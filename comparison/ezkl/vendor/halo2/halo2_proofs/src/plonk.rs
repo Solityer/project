@@ -25,6 +25,7 @@ mod circuit;
 mod error;
 mod evaluation;
 mod keygen;
+pub mod commitment_timing;
 #[cfg(not(feature = "mv-lookup"))]
 mod lookup;
 #[cfg(feature = "mv-lookup")]

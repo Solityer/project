@@ -226,7 +226,7 @@ struct GatLassoWorkspaceProfile {
 };
 
 struct GatCapacityReport {
-    std::string schema = "zkgpt-gat-capacity-v3";
+    std::string schema = "zkgpt-gat-capacity-v6";
     std::size_t num_nodes = 0;
     std::size_t num_edges = 0;
     std::size_t num_features = 0;
@@ -247,8 +247,13 @@ struct GatCapacityReport {
     std::size_t materialized_g1 = 0;
     std::size_t explicit_gate_count = 0;
     std::uint64_t estimated_peak_host_memory_bytes = 0;
+    std::uint64_t forward_admission_peak_host_memory_bytes_upper_bound = 0;
+    bool forward_value_admission_ready = false;
+    std::uint64_t device_peak_bytes = 0;
+    std::string memory_accounting_kind = "host-only";
     std::uint64_t estimated_native_heap_bytes_upper_bound = 0;
     std::uint64_t estimated_native_mapped_bytes_upper_bound = 0;
+    std::vector<std::pair<std::string, std::uint64_t>> native_mapped_phase_breakdown;
     std::uint64_t lasso_heap_workspace_peak_bytes = 0;
     std::uint64_t estimated_native_scratch_bytes = 0;
     std::size_t native_sparse_relation_count = 0;
@@ -292,6 +297,13 @@ struct GatCapacityReport {
     std::uint64_t max_single_relation_builder_array_bytes_upper_bound = 0;
     std::uint64_t gkr_subset_source_map_bytes_upper_bound = 0;
     std::uint64_t gkr_subset_sort_scratch_bytes_upper_bound = 0;
+    std::uint64_t gkr_subset_bitmap_scratch_bytes_upper_bound = 0;
+    std::uint64_t gkr_point_shape_bitmap_scratch_bytes = 0;
+    std::uint64_t gkr_point_shape_layer_count = 0;
+    std::uint64_t gkr_point_shape_fconn_count = 0;
+    std::string gkr_point_shape_digest;
+    bool gkr_point_shape_ready = false;
+    std::uint64_t gkr_subset_source_support_entries_upper_bound = 0;
     std::uint64_t native_transcript_heap_bytes_upper_bound = 0;
     std::uint64_t transcript_content_bytes_upper_bound = 0;
     std::uint64_t transcript_wire_bytes_upper_bound = 0;
@@ -343,8 +355,39 @@ struct GatCapacityReport {
     std::string reason;
 };
 
-GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, const QuantConfig& quant);
+GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, const QuantConfig& quant,
+                                      std::uint64_t feature_source_file_bytes = 0);
 void finalize_gat_capacity_report(GatCapacityReport& report);
+std::vector<std::array<unsigned, 5>> canonical_division_range_profiles(const Graph& graph, const Model& model, const QuantConfig& quant);
+
+struct GatPointDomainAdmission {
+    bool ready = false;
+    std::string reason;
+    std::string digest;
+    std::uint64_t layer_count = 0;
+    std::uint64_t fconn_count = 0;
+    std::uint64_t bitmap_bytes = 0;
+};
+
+GatPointDomainAdmission inspect_gat_point_domain_admission(const Graph& graph, const Model& model, const QuantConfig& quant);
+
+struct GatGkrLayerShapeProfile {
+    std::uint32_t layer_type = 0;
+    std::uint64_t size = 0;
+    std::uint64_t size_u0 = 0;
+    std::uint64_t size_u1 = 0;
+    std::uint64_t size_v0 = 0;
+    std::uint64_t size_v1 = 0;
+    std::uint64_t unary_gates = 0;
+    std::uint64_t binary_gates = 0;
+    std::uint64_t native_rows = 0;
+    std::uint64_t native_inner = 0;
+    std::uint64_t native_cols = 0;
+    std::int32_t bit_length = -1;
+    std::int32_t max_bl_u = -1;
+    std::int32_t max_bl_v = -1;
+    bool need_phase2 = false;
+};
 
 struct GatCircuitPlan {
     std::string recipe_schema = "canonical_plan_recipe_v3";
@@ -354,6 +397,9 @@ struct GatCircuitPlan {
     std::uint32_t sparse_relation_version = kSparseGkrRelationVersion;
     std::size_t sparse_chunk_size = kSparseGkrChunkEntries;
     std::string sparse_plan_digest;
+    std::string gkr_point_shape_digest;
+    std::vector<GatGkrLayerShapeProfile> gkr_layer_shape_profile;
+    std::uint64_t gkr_point_shape_bitmap_bytes = 0;
     bool virtual_sparse = false;
     std::string model_arch_id;
     CanonicalModelShape model_shape;
@@ -550,6 +596,8 @@ struct SparseGkrProofWire {
     bool hyrax_lasso_complete = true;
 };
 
+struct VerifierContext;
+
 struct GatProofArtifact {
     std::uint32_t version = 8;
     std::string schema = "zkgpt-gat-proof-v8";
@@ -571,15 +619,34 @@ struct GatProofArtifact {
     SparseGkrProofWire sparse_gkr;
 
     bool has_private_payload() const;
-    bool valid_wire(std::string* reason = nullptr, const NativeProofSession* authenticated_session = nullptr) const;
+    bool valid_wire(std::string* reason = nullptr) const;
     bool native_session(NativeProofSession& out, std::string* reason = nullptr) const;
+    bool serialize(std::string& bytes, std::uint64_t max_wire_bytes,
+                   std::string* reason = nullptr) const;
+    // Caller must first run valid_wire() on this immutable artifact. This
+    // separates the internal transcript self-check from measured wire encoding.
+    bool serialize_after_wire_validation(std::string& bytes,
+                                         std::uint64_t max_wire_bytes,
+                                         std::string* reason = nullptr) const;
     bool write(const std::string& path, std::string* reason = nullptr) const;
     bool write(const std::string& path, std::uint64_t max_wire_bytes,
                std::string* reason = nullptr) const;
+    static bool read_wire_bytes(const std::string& path, std::string& bytes,
+                                std::uint64_t max_wire_bytes,
+                                std::string* reason = nullptr);
+    static bool parse_wire(const std::string& bytes, GatProofArtifact& out,
+                           std::uint64_t max_wire_bytes,
+                           std::string* reason = nullptr);
+    static bool decode_wire(const std::string& bytes, GatProofArtifact& out,
+                            std::uint64_t max_wire_bytes,
+                            std::string* reason = nullptr);
     static bool read(const std::string& path, GatProofArtifact& out, std::string* reason = nullptr);
     static bool read(const std::string& path, GatProofArtifact& out,
                      std::uint64_t max_wire_bytes,
                      std::string* reason = nullptr);
+  private:
+    bool valid_wire_with_session(std::string* reason, const NativeProofSession& authenticated_session) const;
+    friend bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact, std::string* reason);
 };
 
 struct VerifierContext {
@@ -649,10 +716,13 @@ struct ProveResult {
     std::string diagnostic;
     bool has_artifact = false;
     double preparation_ms = 0.0;
+    double initial_commitment_blinding_prepare_ms = 0.0;
     double aux_commitment_ms = 0.0;
     double lasso_query_commitment_ms = 0.0;
+    double lasso_family_generator_derive_ms = 0.0;
     double lasso_family_commitment_ms = 0.0;
     double commitment_ms = 0.0;
+    double lasso_family_selected_row_mapping_ms = 0.0;
     double self_verify_ms = 0.0;
     GatProofArtifact artifact;
 };

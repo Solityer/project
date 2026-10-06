@@ -1,0 +1,110 @@
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/halo2/halo2_proofs/src/plonk/vanishing/verifier.rs:123:9
+    |
+123 |         &self,
+    |         ^^^^^ the lifetime is elided here
+124 |         x: ChallengeX<C>,
+125 |     ) -> impl Iterator<Item = VerifierQuery<C, M>> + Clone {
+    |                               ^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+125 |     ) -> impl Iterator<Item = VerifierQuery<'_, C, M>> + Clone {
+    |                                             +++
+
+warning: hiding a lifetime that's named elsewhere is confusing
+  --> vendor/halo2/halo2_proofs/src/poly/ipa/commitment.rs:81:36
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<C> {
+   |                   -------          ^^^^^^^^^ the same lifetime is hidden here
+   |                   |
+   |                   the lifetime is named here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'params`
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<'params, C> {
+   |                                           ++++++++
+
+warning: `halo2_proofs` (lib) generated 4 warnings (run `cargo fix --lib -p halo2_proofs` to apply 4 suggestions)
+warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
+   --> src/../gat_adapter/loader.rs:629:30
+    |
+629 |         let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
+    |                              ^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `ezkl` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+     Running unittests src/lib.rs (target/cpu/debug/deps/ezkl-bc493644d0660ac4)
+
+running 1 test
+EZKL_NATIVE_PHASE START stage=graph_gather direction=source nodes=2 edges=3 channels=1 input_values=2
+EZKL_NATIVE_PHASE DONE stage=graph_gather direction=source nodes=2 edges=3 channels=1 input_values=2 output_values=3 elapsed_ms=2.509
+EZKL_NATIVE_PHASE START stage=graph_gather direction=destination nodes=2 edges=3 channels=1 input_values=2
+EZKL_NATIVE_PHASE DONE stage=graph_gather direction=destination nodes=2 edges=3 channels=1 input_values=2 output_values=3 elapsed_ms=0.504
+EZKL_NATIVE_PHASE START stage=exact_table_assignment model_arch_id= table_id=lrelu rows=1
+EZKL_NATIVE_PHASE DONE stage=exact_table_assignment model_arch_id= table_id=lrelu rows=1 elapsed_ms=0.040
+EZKL_NATIVE_PHASE START stage=exact_table_assignment model_arch_id= table_id=max_relu rows=3
+EZKL_NATIVE_PHASE DONE stage=exact_table_assignment model_arch_id= table_id=max_relu rows=3 elapsed_ms=0.186
+EZKL_NATIVE_PHASE START stage=exact_table_assignment model_arch_id= table_id=exp rows=1
+EZKL_NATIVE_PHASE DONE stage=exact_table_assignment model_arch_id= table_id=exp rows=1 elapsed_ms=0.015
+
+thread 'gat_adapter::op::segmented_batch_tests::batched_attention_keeps_ties_singleton_groups_and_negative_values' (3759853) panicked at src/../gat_adapter/op.rs:1659:14:
+called `Result::unwrap()` on an `Err` value: DimMismatch("GAT segmented-prefix tensor shape [3, 1] is not canonical; expected [3]")
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/b84478a1c477756cd3e1974eda867a6bb31e8902/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/b84478a1c477756cd3e1974eda867a6bb31e8902/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/b84478a1c477756cd3e1974eda867a6bb31e8902/library/core/src/result.rs:1867:5
+   3: <core::result::Result<ezkl::tensor::val::ValTensor<halo2curves::bn256::fr::Fr>, ezkl::circuit::ops::errors::CircuitError>>::unwrap
+             at /rustc/b84478a1c477756cd3e1974eda867a6bb31e8902/library/core/src/result.rs:1233:23
+   4: ezkl::gat_adapter::op::segmented_batch_tests::batched_attention_keeps_ties_singleton_groups_and_negative_values
+             at ./src/../gat_adapter/op.rs:1659:14
+   5: ezkl::gat_adapter::op::segmented_batch_tests::batched_attention_keeps_ties_singleton_groups_and_negative_values::{closure#0}
+             at ./src/../gat_adapter/op.rs:1605:75
+   6: <ezkl::gat_adapter::op::segmented_batch_tests::batched_attention_keeps_ties_singleton_groups_and_negative_values::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/b84478a1c477756cd3e1974eda867a6bb31e8902/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/b84478a1c477756cd3e1974eda867a6bb31e8902/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test gat_adapter::op::segmented_batch_tests::batched_attention_keeps_ties_singleton_groups_and_negative_values ... FAILED
+
+failures:
+
+failures:
+    gat_adapter::op::segmented_batch_tests::batched_attention_keeps_ties_singleton_groups_and_negative_values
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 83 filtered out; finished in 0.16s
+
+error: test failed, to rerun pass `--lib`

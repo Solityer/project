@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -95,11 +96,15 @@ public:
     std::uint64_t count() const noexcept { return count_; }
 
     template<class Reader>
-    static std::shared_ptr<const NativeFamilyStorage> persist_generated(const std::filesystem::path& directory, std::uint64_t count, std::uint32_t encoding, Reader reader) {
+    static std::shared_ptr<const NativeFamilyStorage> persist_generated(const std::filesystem::path& directory, std::uint64_t count, std::uint32_t encoding, Reader reader,
+                                                                         double* reader_compute_seconds = nullptr) {
         if (count == 0U || count > (1ULL << 30U) || encoding > 3U) throw std::runtime_error("private family logical values/encoding are invalid");
         if (encoding == 0U) {
             bool boolean = true, signed64 = true;
+            const auto compute_start = reader_compute_seconds == nullptr ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
             for (std::uint64_t index = 0U; index < count; ++index) { const auto value = reader(index); boolean = boolean && value[0U] <= 1U && std::all_of(value.begin() + 1U, value.end(), [](std::uint32_t limb) { return limb == 0U; }); std::int64_t decoded = 0; signed64 = signed64 && stored_signed_value(value, decoded); }
+            if (reader_compute_seconds != nullptr)
+                *reader_compute_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - compute_start).count();
             encoding = boolean ? 1U : (signed64 ? 2U : 3U);
         }
         const std::uint64_t payload = encoding == 1U ? (count + 7U) / 8U : count * (encoding == 2U ? 8U : 32U);
@@ -118,15 +123,27 @@ public:
             checked_write(file.fd, header.data(), header.size());
             std::vector<std::uint8_t> buffer;
             buffer.reserve(kBufferBytes + 32U);
+            constexpr std::size_t kReaderBatchScalars = kBufferBytes / sizeof(StoredFieldWire);
+            std::vector<StoredFieldWire> generated;
+            generated.reserve(kReaderBatchScalars);
             std::uint8_t packed = 0U;
-            for (std::uint64_t index = 0U; index < count; ++index) {
-                const auto value = reader(index);
-                if (!std::lexicographical_compare(value.rbegin(), value.rend(), kStoredScalarModulus.rbegin(), kStoredScalarModulus.rend())) throw std::runtime_error("private family contains a non-canonical field residue");
-                if (encoding == 1U && (value[0U] > 1U || std::any_of(value.begin() + 1U, value.end(), [](std::uint32_t limb) { return limb != 0U; }))) throw std::runtime_error("private family boolean conversion failed");
-                if (encoding == 1U) { packed |= static_cast<std::uint8_t>(value[0U] << (index & 7U)); if ((index & 7U) == 7U || index + 1U == count) { buffer.push_back(packed); packed = 0U; } }
-                else if (encoding == 2U) { std::int64_t decoded = 0; if (!stored_signed_value(value, decoded)) throw std::runtime_error("private family signed conversion failed"); const auto raw = static_cast<std::uint64_t>(decoded); for (unsigned byte = 0U; byte < 8U; ++byte) buffer.push_back(static_cast<std::uint8_t>(raw >> (8U * byte))); }
-                else { for (const auto limb : value) for (unsigned byte = 0U; byte < 4U; ++byte) buffer.push_back(static_cast<std::uint8_t>(limb >> (8U * byte))); }
-                if (buffer.size() >= kBufferBytes) { checked_write(file.fd, buffer.data(), buffer.size()); buffer.clear(); }
+            for (std::uint64_t base = 0U; base < count; base += kReaderBatchScalars) {
+                const std::size_t batch_count = static_cast<std::size_t>(std::min<std::uint64_t>(kReaderBatchScalars, count - base));
+                generated.clear();
+                const auto compute_start = reader_compute_seconds == nullptr ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+                for (std::size_t offset = 0U; offset < batch_count; ++offset) generated.push_back(reader(base + offset));
+                if (reader_compute_seconds != nullptr)
+                    *reader_compute_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - compute_start).count();
+                for (std::size_t offset = 0U; offset < batch_count; ++offset) {
+                    const std::uint64_t index = base + offset;
+                    const auto &value = generated[offset];
+                    if (!std::lexicographical_compare(value.rbegin(), value.rend(), kStoredScalarModulus.rbegin(), kStoredScalarModulus.rend())) throw std::runtime_error("private family contains a non-canonical field residue");
+                    if (encoding == 1U && (value[0U] > 1U || std::any_of(value.begin() + 1U, value.end(), [](std::uint32_t limb) { return limb != 0U; }))) throw std::runtime_error("private family boolean conversion failed");
+                    if (encoding == 1U) { packed |= static_cast<std::uint8_t>(value[0U] << (index & 7U)); if ((index & 7U) == 7U || index + 1U == count) { buffer.push_back(packed); packed = 0U; } }
+                    else if (encoding == 2U) { std::int64_t decoded = 0; if (!stored_signed_value(value, decoded)) throw std::runtime_error("private family signed conversion failed"); const auto raw = static_cast<std::uint64_t>(decoded); for (unsigned byte = 0U; byte < 8U; ++byte) buffer.push_back(static_cast<std::uint8_t>(raw >> (8U * byte))); }
+                    else { for (const auto limb : value) for (unsigned byte = 0U; byte < 4U; ++byte) buffer.push_back(static_cast<std::uint8_t>(limb >> (8U * byte))); }
+                    if (buffer.size() >= kBufferBytes) { checked_write(file.fd, buffer.data(), buffer.size()); buffer.clear(); }
+                }
             }
             if (!buffer.empty()) checked_write(file.fd, buffer.data(), buffer.size());
             if (::fsync(file.fd) != 0) throw std::runtime_error("private family fsync failed");
@@ -150,29 +167,56 @@ public:
 
     static std::shared_ptr<const NativeFamilyStorage> persist(const std::filesystem::path& directory, const std::vector<StoredFieldWire>& values) { return persist_generated(directory, values.size(), 0U, [&](std::uint64_t index) { return values.at(static_cast<std::size_t>(index)); }); }
 
-    bool read_padded(const std::vector<std::uint64_t>& logical_shape, const std::vector<std::uint64_t>& padded_shape, std::uint64_t offset, std::uint32_t count, std::vector<StoredFieldWire>& values, std::string* error) const {
+    bool read_padded(const std::vector<std::uint64_t>& logical_shape, const std::vector<std::uint64_t>& padded_shape, std::uint64_t offset, std::uint32_t count, std::vector<StoredFieldWire>& values, std::string* error, double* explicit_io_decode_seconds = nullptr) const {
         try {
             if (count > (1U << 18U) || logical_shape.empty() || logical_shape.size() != padded_shape.size()) throw std::runtime_error("private family reader shape/range is invalid");
             std::uint64_t logical_count = 1U, padded_count = 1U;
             for (std::size_t axis = 0U; axis < logical_shape.size(); ++axis) { if (logical_shape[axis] == 0U || padded_shape[axis] < logical_shape[axis] || logical_count > std::numeric_limits<std::uint64_t>::max() / logical_shape[axis] || padded_count > (1ULL << 30U) / padded_shape[axis]) throw std::runtime_error("private family Cartesian shape overflows"); logical_count *= logical_shape[axis]; padded_count *= padded_shape[axis]; }
             if (logical_count != count_ || offset > padded_count || count > padded_count - offset) throw std::runtime_error("private family reader exceeds its authenticated Cartesian domain");
+            const auto explicit_io_start = std::chrono::steady_clock::now();
             StoredFileDescriptor file(::open(path_.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC));
             if (file.fd < 0) throw std::runtime_error("private family storage open failed");
             authenticate(file.fd);
             void* mapping = ::mmap(nullptr, bytes_, PROT_READ, MAP_PRIVATE, file.fd, 0);
             if (mapping == MAP_FAILED) throw std::runtime_error("private family mapping failed");
+            if (explicit_io_decode_seconds != nullptr)
+                *explicit_io_decode_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - explicit_io_start).count();
             struct MappingLease { void* address; std::size_t bytes; ~MappingLease() { ::munmap(address, bytes); } } lease{mapping, static_cast<std::size_t>(bytes_)};
             const auto* payload = static_cast<const std::uint8_t*>(mapping) + kHeaderBytes;
             values.assign(count, StoredFieldWire{});
+            const std::size_t encoded_width = encoding_ == 1U ? 1U : (encoding_ == 2U ? 8U : 32U);
+            std::vector<std::uint8_t> encoded(static_cast<std::size_t>(count) * encoded_width, 0U);
+            std::vector<std::uint8_t> bit_offsets(encoding_ == 1U ? count : 0U, 0U);
             for (std::uint32_t index = 0U; index < count; ++index) {
                 std::uint64_t padded = offset + index, logical = 0U, stride = 1U;
                 bool active = true;
                 for (std::size_t axis = logical_shape.size(); axis-- > 0U;) { const std::uint64_t coordinate = padded % padded_shape[axis]; padded /= padded_shape[axis]; if (coordinate >= logical_shape[axis]) { active = false; break; } logical += coordinate * stride; stride *= logical_shape[axis]; }
                 if (!active) continue;
-                if (encoding_ == 1U) values[index][0U] = (payload[logical / 8U] >> (logical & 7U)) & 1U;
-                else if (encoding_ == 2U) { std::uint64_t raw = 0U; for (unsigned byte = 0U; byte < 8U; ++byte) raw |= static_cast<std::uint64_t>(payload[logical * 8U + byte]) << (8U * byte); std::int64_t decoded; std::memcpy(&decoded, &raw, sizeof(decoded)); values[index] = stored_from_signed(decoded); }
-                else { for (unsigned limb = 0U; limb < 8U; ++limb) for (unsigned byte = 0U; byte < 4U; ++byte) values[index][limb] |= static_cast<std::uint32_t>(payload[logical * 32U + limb * 4U + byte]) << (8U * byte); }
+                if (encoding_ == 1U) {
+                    encoded[index] = payload[logical / 8U];
+                    bit_offsets[index] = static_cast<std::uint8_t>(logical & 7U);
+                } else {
+                    std::memcpy(encoded.data() + static_cast<std::size_t>(index) * encoded_width,
+                                payload + logical * encoded_width, encoded_width);
+                }
             }
+            const auto decode_start = std::chrono::steady_clock::now();
+            for (std::uint32_t index = 0U; index < count; ++index) {
+                const auto* source = encoded.data() + static_cast<std::size_t>(index) * encoded_width;
+                if (encoding_ == 1U) {
+                    values[index][0U] = (source[0U] >> bit_offsets[index]) & 1U;
+                } else if (encoding_ == 2U) {
+                    std::uint64_t raw = 0U;
+                    for (unsigned byte = 0U; byte < 8U; ++byte) raw |= static_cast<std::uint64_t>(source[byte]) << (8U * byte);
+                    std::int64_t decoded;
+                    std::memcpy(&decoded, &raw, sizeof(decoded));
+                    values[index] = stored_from_signed(decoded);
+                } else {
+                    for (unsigned limb = 0U; limb < 8U; ++limb) for (unsigned byte = 0U; byte < 4U; ++byte) values[index][limb] |= static_cast<std::uint32_t>(source[limb * 4U + byte]) << (8U * byte);
+                }
+            }
+            if (explicit_io_decode_seconds != nullptr)
+                *explicit_io_decode_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - decode_start).count();
             return true;
         } catch (const std::exception& exception) { if (error) *error = exception.what(); return false; }
     }

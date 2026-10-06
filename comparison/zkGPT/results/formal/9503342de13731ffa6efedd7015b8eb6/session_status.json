@@ -1,0 +1,10 @@
+{
+  "active_stage": "prepare",
+  "completed_stages": [],
+  "failure": "five-dataset-preflight exited with code 2; see /home/pzh/project/comparison/zkGPT/results/formal/9503342de13731ffa6efedd7015b8eb6/logs/five-dataset-preflight.stderr.log",
+  "schema": "zkgpt-gat-formal-session-v1",
+  "session_id": "9503342de13731ffa6efedd7015b8eb6",
+  "started_unix_ns": 1791254730414940917,
+  "status": "FAILED",
+  "updated_unix_ns": 1791255489162242378
+}

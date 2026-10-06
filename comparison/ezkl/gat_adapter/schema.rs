@@ -486,6 +486,45 @@ impl CanonicalGraph {
         out
     }
 
+    /// SHA-256 identity used to compare the normalized graph arrays across
+    /// native baselines. The encoding streams the already-consumed arrays
+    /// without building a second graph-sized byte buffer.
+    pub fn comparison_canonical_digest(&self) -> Result<String, String> {
+        #[cfg(feature = "ezkl")]
+        {
+            use sha2::{Digest, Sha256};
+
+            fn update_u64(hasher: &mut Sha256, value: usize, label: &str) -> Result<(), String> {
+                let value = u64::try_from(value)
+                    .map_err(|_| format!("{} does not fit the shared u64 graph encoding", label))?;
+                hasher.update(value.to_le_bytes());
+                Ok(())
+            }
+
+            let mut hasher = Sha256::new();
+            hasher.update(b"comparison-canonical-graph-v1\0");
+            for (label, value) in [("N", self.n_total), ("E", self.e), ("G", self.g_batch)] {
+                update_u64(&mut hasher, value, label)?;
+            }
+            for (label, values) in [
+                ("src", self.src.as_slice()),
+                ("dst", self.dst.as_slice()),
+                ("node_ptr", self.node_ptr.as_slice()),
+                ("edge_ptr", self.edge_ptr.as_slice()),
+            ] {
+                update_u64(&mut hasher, values.len(), label)?;
+                for value in values {
+                    update_u64(&mut hasher, *value, label)?;
+                }
+            }
+            Ok(hex::encode(hasher.finalize()))
+        }
+        #[cfg(not(feature = "ezkl"))]
+        {
+            Err("shared canonical graph digest requires the official ezkl SHA-256 feature".into())
+        }
+    }
+
     /// Fill the topology digest after constructing a canonical graph.
     pub fn refresh_digest(&mut self) -> Result<(), String> {
         self.topology_digest = sha256_digest(&self.canonical_bytes())?;
@@ -535,29 +574,37 @@ impl CanonicalGraph {
                 return Err("edge_ptr must be strictly increasing".into());
             }
         }
-        for (k, (src, dst)) in self.src.iter().zip(&self.dst).enumerate() {
-            if *src >= self.n || *dst >= self.n {
-                return Err(format!("edge {} references a node outside [0,n)", k));
-            }
-            let graph = self.graph_for_edge(k)?;
-            if self.graph_for_node(*src)? != graph || self.graph_for_node(*dst)? != graph {
-                return Err(format!("edge {} crosses a graph boundary", k));
-            }
-        }
+        let mut has_self_loop = vec![false; self.n];
         for graph in 0..self.g_batch {
-            let start = self.edge_ptr[graph];
-            let end = self.edge_ptr[graph + 1];
-            for pair in self.dst[start..end].windows(2) {
-                if pair[0] > pair[1] {
-                    return Err("edges must be stably sorted by destination within each graph".into(),);
+            let node_start = self.node_ptr[graph];
+            let node_end = self.node_ptr[graph + 1];
+            let edge_start = self.edge_ptr[graph];
+            let edge_end = self.edge_ptr[graph + 1];
+            let mut previous_destination = None;
+            let mut sources_for_destination = HashSet::new();
+            for edge in edge_start..edge_end {
+                let src = self.src[edge];
+                let dst = self.dst[edge];
+                if src < node_start || src >= node_end || dst < node_start || dst >= node_end {
+                    return Err(format!("edge {} crosses graph boundary", edge));
+                }
+                if previous_destination != Some(dst) {
+                    if previous_destination.is_some_and(|previous| previous > dst) {
+                        return Err("edges must be stably sorted by destination within each graph".into());
+                    }
+                    previous_destination = Some(dst);
+                    sources_for_destination.clear();
+                }
+                if !sources_for_destination.insert(src) {
+                    return Err(format!("duplicate directed edge ({}, {})", src, dst));
+                }
+                if src == dst {
+                    has_self_loop[src] = true;
                 }
             }
         }
-        for node in 0..self.n {
-            let has_incoming = self.dst.iter().any(|dst| *dst == node);
-            if !has_incoming {
-                return Err(format!("node {} has no incoming edge/self-loop", node));
-            }
+        if let Some(node) = has_self_loop.iter().position(|present| !present) {
+            return Err(format!("node {} is missing its required per-node self-loop", node));
         }
         Ok(())
     }
@@ -575,6 +622,12 @@ impl CanonicalGraph {
     /// Return contiguous edge ranges for each destination group.
     pub fn destination_groups(&self) -> Result<Vec<(usize, usize, usize)>, String> {
         self.validate()?;
+        Ok(self.destination_groups_validated())
+    }
+
+    /// Build contiguous destination ranges after the caller has already
+    /// validated this immutable canonical graph.
+    pub(crate) fn destination_groups_validated(&self) -> Vec<(usize, usize, usize)> {
         let mut groups = Vec::new();
         for graph in 0..self.g_batch {
             let mut start = self.edge_ptr[graph];
@@ -589,7 +642,7 @@ impl CanonicalGraph {
                 start = next;
             }
         }
-        Ok(groups)
+        groups
     }
 }
 
@@ -1355,6 +1408,10 @@ impl CanonicalGat {
         let (elu_input_scale, elu_output_scale) = self.scales.shared_elu_scales()?;
         for (label, table, input_scale, output_scale) in [
             ("lrelu", &self.tables.lrelu, self.scales.s_delta, self.scales.s_delta,),("exp", &self.tables.exp, self.scales.s_delta, self.scales.s_exp,),("elu", &self.tables.elu, elu_input_scale, elu_output_scale),
+            // The auxiliary max/ReLU table operates on canonical integer
+            // representatives. Its registered scale still closes to the
+            // score scale used by the max witness relation.
+            ("max_relu", &self.tables.max_relu, self.scales.s_delta, self.scales.s_delta),
         ] {
             if table.input_scale != input_scale || table.output_scale != output_scale {
                 return Err(format!(

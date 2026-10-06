@@ -1,0 +1,16 @@
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/pzh/project/comparison/zkGPT/build/cpu
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 12%] Built target mcl
+[ 68%] Built target gpt_lib
+[ 93%] Built target gat_adapter
+[100%] Built target zkgpt_gat_prover
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 62%] Built target gpt_lib
+[ 68%] Built target mcl
+[ 93%] Built target gat_adapter
+[100%] Built target zkgpt_gat_verifier
+built zkgpt_gat_prover and zkgpt_gat_verifier (cpu) at /home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/

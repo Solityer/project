@@ -54,7 +54,7 @@ cmake_args=(
     -DMCL_TEST_WITH_GMP=OFF
 )
 cmake "${cmake_args[@]}"
-cmake --build "${build_dir}" --target zkgpt_gat_prover zkgpt_gat_verifier --parallel
+cmake --build "${build_dir}" --target zkgpt_gat_prover zkgpt_gat_verifier --parallel 2
 
 if [[ "${developer_tests}" -eq 1 ]]; then
     smoke_build_dir="${ROOT_DIR}/build/cpu-tests"
@@ -67,7 +67,7 @@ if [[ "${developer_tests}" -eq 1 ]]; then
         -DMCL_TEST_WITH_GMP=OFF
     )
     cmake "${smoke_cmake_args[@]}"
-    cmake --build "${smoke_build_dir}" --target gat_adapter_smoke --parallel
+    cmake --build "${smoke_build_dir}" --target gat_adapter_smoke --parallel 2
     echo "built isolated gat_adapter_smoke (cpu tests) at ${smoke_build_dir}/tests/"
 fi
 

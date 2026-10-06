@@ -40,7 +40,7 @@ fn manifest() -> Result<(GpuProvenance, Value), EZKLError> {
         if path.is_symlink() || !path.is_file() || libraries.get(&relative).and_then(Value::as_str) != Some(crate::execute::get_file_hash(&path)?.as_str()) { return Err(format!("ICICLE native library digest mismatch: {}", name).into()); }
     }
     let text = |key: &str| value[key].as_str().map(str::to_string).filter(|x| !x.is_empty()).ok_or_else(|| format!("ICICLE backend manifest missing {}", key));
-    let provenance = GpuProvenance { frontend_commit: FRONTEND_COMMIT.into(), abi: text("abi")?, device: text("device")?, architecture: text("architecture")?, runtime: text("runtime")?, manifest_sha256: digest };
+    let provenance = GpuProvenance { frontend_commit: FRONTEND_COMMIT.into(), native_execution_policy: halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY.into(), abi: text("abi")?, device: text("device")?, architecture: text("architecture")?, runtime: text("runtime")?, manifest_sha256: digest };
     Ok((provenance, value))
 }
 
@@ -56,19 +56,38 @@ pub fn initialize() -> Result<(), EZKLError> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProofRecord { proof_sha256: String, msm_calls: u64, ntt_calls: u64, synchronized_calls: u64, device_id: usize, evidence: GpuEvidence }
+struct ProofRecord { proof_sha256: String, native_execution_policy: String, msm_operations: u64, gpu_msm_chunk_calls: u64, ntt_calls: u64, cpu_fft_calls: u64, synchronized_calls: u64, device_id: usize, evidence: GpuEvidence }
 
 fn invocation_digest(record: &ProofRecord) -> Result<String, EZKLError> {
-    super::schema::sha256_digest(&serde_json::to_vec(&(record.proof_sha256.as_str(), record.msm_calls, record.ntt_calls, record.synchronized_calls, record.device_id, &record.evidence.provenance))?).map_err(EZKLError::from)
+    super::schema::sha256_digest(&serde_json::to_vec(&(record.proof_sha256.as_str(), record.native_execution_policy.as_str(), record.msm_operations, record.gpu_msm_chunk_calls, record.ntt_calls, record.cpu_fft_calls, record.synchronized_calls, record.device_id, &record.evidence.provenance))?).map_err(EZKLError::from)
+}
+
+fn validate_record(record: &ProofRecord) -> Result<u64, EZKLError> {
+    let expected_policy = halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY;
+    let invocations = record.gpu_msm_chunk_calls.checked_add(record.ntt_calls).ok_or("native GPU invocation counter overflow")?;
+    if record.native_execution_policy != expected_policy
+        || record.msm_operations == 0
+        || record.gpu_msm_chunk_calls < record.msm_operations
+        || record.ntt_calls != 0
+        || record.cpu_fft_calls == 0
+        || record.synchronized_calls != invocations
+        || record.evidence.gpu_kernel_invocation_count != invocations
+        || record.evidence.provenance.as_ref().map(|p| p.native_execution_policy.as_str()) != Some(expected_policy)
+    {
+        return Err("native GPU proof counters do not match the fixed CPU-FFT/GPU-MSM execution policy".into());
+    }
+    Ok(invocations)
 }
 
 /// Persist successful native GPU operation counters after the proof is saved.
 pub fn write_proof_record(directory: &Path, proof_path: &Path) -> Result<(), EZKLError> {
-    let (msm_calls, ntt_calls, synchronized_calls, device_id) = halo2_proofs::icicle::execution_stats();
-    if msm_calls == 0 || ntt_calls == 0 || synchronized_calls != msm_calls + ntt_calls { return Err("native GPU proof did not complete synchronized MSM and NTT operations".into()); }
+    let (msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id) = halo2_proofs::icicle::execution_stats();
     let (provenance, _) = manifest()?;
-    let evidence = GpuEvidence { backend: "CUDA".into(), gpu_backend: "icicle-cuda".into(), backend_loaded: true, cpu_fallback: false, device_synchronized: true, gpu_kernel_invocation_count: msm_calls + ntt_calls, provenance: Some(provenance), invocation_trace_sha256: String::new() };
-    let mut record = ProofRecord { proof_sha256: crate::execute::get_file_hash(proof_path)?, msm_calls, ntt_calls, synchronized_calls, device_id, evidence };
+    let policy = halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY.to_owned();
+    let invocations = gpu_msm_chunk_calls.checked_add(ntt_calls).ok_or("native GPU invocation counter overflow")?;
+    let evidence = GpuEvidence { backend: "CUDA".into(), gpu_backend: "icicle-cuda".into(), backend_loaded: true, cpu_fallback: false, device_synchronized: true, gpu_kernel_invocation_count: invocations, provenance: Some(provenance), invocation_trace_sha256: String::new() };
+    let mut record = ProofRecord { proof_sha256: crate::execute::get_file_hash(proof_path)?, native_execution_policy: policy, msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id, evidence };
+    validate_record(&record)?;
     record.evidence.invocation_trace_sha256 = invocation_digest(&record)?;
     std::fs::write(directory.join("gpu_prover_record.json"), serde_json::to_vec_pretty(&record)?)?;
     Ok(())
@@ -81,7 +100,7 @@ pub fn read_proof_evidence(directory: &Path, proof_path: &Path) -> Result<GpuEvi
     if path.is_symlink() { return Err("GPU prover record must not be a symlink".into()); }
     let record: ProofRecord = serde_json::from_slice(&std::fs::read(&path)?)?;
     let (provenance, _) = manifest()?;
-    let count = record.msm_calls + record.ntt_calls;
-    if record.proof_sha256 != crate::execute::get_file_hash(proof_path)? || record.msm_calls == 0 || record.ntt_calls == 0 || record.synchronized_calls != count || record.evidence.gpu_kernel_invocation_count != count || record.evidence.provenance.as_ref() != Some(&provenance) || !record.evidence.backend_loaded || !record.evidence.device_synchronized || record.evidence.cpu_fallback || record.evidence.backend != "CUDA" || record.evidence.gpu_backend != "icicle-cuda" || record.evidence.invocation_trace_sha256 != invocation_digest(&record)? { return Err("GPU native prover execution evidence is inconsistent with the verified proof".into()); }
+    let count = validate_record(&record)?;
+    if record.proof_sha256 != crate::execute::get_file_hash(proof_path)? || record.evidence.provenance.as_ref() != Some(&provenance) || !record.evidence.backend_loaded || !record.evidence.device_synchronized || record.evidence.cpu_fallback || record.evidence.backend != "CUDA" || record.evidence.gpu_backend != "icicle-cuda" || record.evidence.invocation_trace_sha256 != invocation_digest(&record)? || count != record.gpu_msm_chunk_calls { return Err("GPU native prover execution evidence is inconsistent with the verified proof".into()); }
     Ok(record.evidence)
 }

@@ -1,0 +1,4 @@
+[ezkl-formal] GPU_BUILD_STAGE=prerequisite-authentication
+native ICICLE prerequisites need setup: formal GPU execution has no selected physical CUDA device identity
+[ezkl-formal] GPU_BUILD_STAGE=prepare-native-cuda-backend
+formal CUDA_VISIBLE_DEVICES/ICICLE_DEVICE_ID do not match selected device

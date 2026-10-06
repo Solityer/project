@@ -44,7 +44,7 @@ struct Options {
 
 struct Record {
     std::string schema = "zkgpt-gat-result-v2";
-    std::string paper_timing_semantics = "zkgpt-gat-paper-timing-v2-native-tensor-commitments";
+    std::string paper_timing_semantics = "zkgpt-gat-paper-timing-v3-native-commitment-io-excluded";
     std::string dataset;
     std::string backend;
     std::string capability_status = "FORMAL_CPU_MASKED_FULL";
@@ -101,13 +101,17 @@ struct Record {
     double preparation_net_ms = 0.0;
     double aux_commitment_ms = 0.0;
     double lasso_query_commitment_ms = 0.0;
+    double lasso_family_generator_derive_ms = 0.0;
     double lasso_family_commitment_ms = 0.0;
+    double lasso_family_selected_row_mapping_ms = 0.0;
     double commitment_ms = 0.0;
     double prove_total_ms = 0.0;
     double self_verify_ms = 0.0;
     double prove_ms = 0.0;
     double verify_ms = 0.0;
+    double initial_commitment_blinding_prepare_ms = 0.0;
     double serialize_ms = 0.0;
+    double artifact_wire_self_check_ms = 0.0;
     double artifact_write_ms = 0.0;
     double artifact_readback_ms = 0.0;
 };
@@ -531,6 +535,15 @@ void json_bool(std::ostringstream& out, const char* key, bool value, bool comma 
     out << "  \"" << key << "\": " << bool_json(value) << (comma ? ",\n" : "\n");
 }
 
+void json_size_array(std::ostringstream& out, const char* key, const std::vector<std::size_t>& values, const char* indent = "    ") {
+    out << indent << "\"" << key << "\": [";
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) out << ',';
+        out << values[index];
+    }
+    out << ']';
+}
+
 void json_number(std::ostringstream& out, const char* key, double value, bool comma = true) {
     out << "  \"" << key << "\": " << std::setprecision(std::numeric_limits<double>::max_digits10)
         << value << (comma ? ",\n" : "\n");
@@ -598,13 +611,17 @@ void write_result(const std::string& path, const Record& record) {
     out << "    \"preparation_net\": " << record.preparation_net_ms << ",\n";
     out << "    \"aux_commitment\": " << record.aux_commitment_ms << ",\n";
     out << "    \"lasso_query_commitment\": " << record.lasso_query_commitment_ms << ",\n";
+    out << "    \"lasso_family_generator_derive\": " << record.lasso_family_generator_derive_ms << ",\n";
     out << "    \"lasso_family_commitments\": " << record.lasso_family_commitment_ms << ",\n";
+    out << "    \"lasso_family_selected_row_mapping\": " << record.lasso_family_selected_row_mapping_ms << ",\n";
     out << "    \"commitment\": " << record.commitment_ms << ",\n";
     out << "    \"prove_total\": " << record.prove_total_ms << ",\n";
     out << "    \"self_verify\": " << record.self_verify_ms << ",\n";
     out << "    \"prove\": " << record.prove_ms << ",\n";
     out << "    \"verify\": " << record.verify_ms << ",\n";
+    out << "    \"initial_commitment_blinding_prepare\": " << record.initial_commitment_blinding_prepare_ms << ",\n";
     out << "    \"serialize\": " << record.serialize_ms << ",\n";
+    out << "    \"artifact_wire_self_check\": " << record.artifact_wire_self_check_ms << ",\n";
     out << "    \"artifact_write\": " << record.artifact_write_ms << ",\n";
     out << "    \"artifact_readback\": " << record.artifact_readback_ms << "\n";
     out << "  }\n";
@@ -675,7 +692,8 @@ void write_registration(const std::string& path, const ModelRegistration& regist
 }
 
 void write_capacity_report(const GatCapacityReport& report, const std::string& dataset, const std::string& backend, const std::string& quant_cfg_id,
-                           const std::string& cache_identity, const std::string& checkpoint_identity) {
+                           const std::string& cache_identity, const std::string& checkpoint_identity,
+                           const Graph* graph = nullptr, const CanonicalConfig* config = nullptr) {
     std::ostringstream out;
     out << "{\n";
     json_string(out, "schema", report.schema);
@@ -684,6 +702,8 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     json_string(out, "quant_cfg_id", quant_cfg_id);
     json_string(out, "cache_identity", cache_identity);
     json_string(out, "checkpoint_identity", checkpoint_identity);
+    json_string(out, "memory_accounting_kind", report.memory_accounting_kind);
+    out << "  \"device_peak_bytes\": " << report.device_peak_bytes << ",\n";
     const auto number = [&out](const char* key, const auto value, bool comma = true) { out << "  \"" << key << "\": " << value << (comma ? ",\n" : "\n"); };
     number("num_nodes", report.num_nodes);
     number("num_edges", report.num_edges);
@@ -738,6 +758,13 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("max_single_relation_builder_array_bytes_upper_bound", report.max_single_relation_builder_array_bytes_upper_bound);
     number("gkr_subset_source_map_bytes_upper_bound", report.gkr_subset_source_map_bytes_upper_bound);
     number("gkr_subset_sort_scratch_bytes_upper_bound", report.gkr_subset_sort_scratch_bytes_upper_bound);
+    number("gkr_subset_bitmap_scratch_bytes_upper_bound", report.gkr_subset_bitmap_scratch_bytes_upper_bound);
+    number("gkr_point_shape_bitmap_scratch_bytes", report.gkr_point_shape_bitmap_scratch_bytes);
+    number("gkr_point_shape_layer_count", report.gkr_point_shape_layer_count);
+    number("gkr_point_shape_fconn_count", report.gkr_point_shape_fconn_count);
+    json_string(out, "gkr_point_shape_digest", report.gkr_point_shape_digest);
+    json_bool(out, "gkr_point_shape_ready", report.gkr_point_shape_ready);
+    number("gkr_subset_source_support_entries_upper_bound", report.gkr_subset_source_support_entries_upper_bound);
     number("native_transcript_heap_bytes_upper_bound", report.native_transcript_heap_bytes_upper_bound);
     number("transcript_content_bytes_upper_bound", report.transcript_content_bytes_upper_bound);
     number("transcript_wire_bytes_upper_bound", report.transcript_wire_bytes_upper_bound);
@@ -755,6 +782,8 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("gkr_prefix_workspace_bytes_upper_bound", report.gkr_prefix_workspace_bytes_upper_bound);
     number("l_query_zero_interval_count_upper_bound", report.l_query_zero_interval_count_upper_bound);
     number("estimated_peak_host_memory_bytes", report.estimated_peak_host_memory_bytes);
+    number("forward_admission_peak_host_memory_bytes_upper_bound", report.forward_admission_peak_host_memory_bytes_upper_bound);
+    json_bool(out, "forward_value_admission_ready", report.forward_value_admission_ready);
     number("estimated_native_scratch_bytes", report.estimated_native_scratch_bytes);
     number("estimated_native_heap_bytes_upper_bound", report.estimated_native_heap_bytes_upper_bound);
     number("estimated_native_mapped_bytes_upper_bound", report.estimated_native_mapped_bytes_upper_bound);
@@ -778,6 +807,14 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("artifact_disk_available_bytes", report.artifact_disk_available_bytes);
     json_bool(out, "scratch_artifact_same_filesystem", report.scratch_artifact_same_filesystem);
     number("shared_scratch_artifact_available_bytes", report.shared_scratch_artifact_available_bytes);
+    out << "  \"native_mapped_phase_breakdown\": {";
+    for (std::size_t index = 0; index < report.native_mapped_phase_breakdown.size(); ++index) {
+        const auto& entry = report.native_mapped_phase_breakdown[index];
+        if (index != 0) out << ',';
+        out << "\n    \"" << json_escape(entry.first) << "\": " << entry.second;
+    }
+    if (!report.native_mapped_phase_breakdown.empty()) out << '\n';
+    out << "  },\n";
     out << "  \"lasso_workspace_profile\": [";
     for (std::size_t index = 0; index < report.lasso_workspace_profile.size(); ++index) {
         const GatLassoWorkspaceProfile& family = report.lasso_workspace_profile[index];
@@ -842,7 +879,26 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     json_bool(out, "full_relation_bound", report.full_relation_bound);
     json_bool(out, "ready", report.ready);
     json_string(out, "status", report.ready ? "READY" : "BLOCKED");
-    json_string(out, "reason", report.reason, false);
+    json_string(out, "reason", report.reason, graph != nullptr);
+    if (graph != nullptr) {
+        if (config == nullptr) throw std::invalid_argument("canonical graph identity requires its consumed config");
+        const std::string input_preprocess_id = config->get("input_preprocess_id");
+        const std::string batching_rule = config->get("batching_rule");
+        if (input_preprocess_id.empty() || batching_rule.empty())
+            throw std::invalid_argument("canonical graph identity config is missing preprocessing or batching semantics");
+        out << "  \"canonical_graph_identity\": {\n";
+        out << "    \"digest\": \"" << comparison_canonical_graph_digest(*graph) << "\",\n";
+        out << "    \"nodes\": " << graph->num_nodes << ",\n";
+        out << "    \"edges\": " << graph->edges() << ",\n";
+        out << "    \"graphs\": " << graph->graph_count << ",\n";
+        json_size_array(out, "node_ptr", graph->node_ptr);
+        out << ",\n";
+        json_size_array(out, "edge_ptr", graph->edge_ptr);
+        out << ",\n";
+        out << "    \"input_preprocess_id\": \"" << json_escape(input_preprocess_id) << "\",\n";
+        out << "    \"batching_rule\": \"" << json_escape(batching_rule) << "\"\n";
+        out << "  }\n";
+    }
     out << "}\n";
     std::cout << out.str();
 }
@@ -1041,11 +1097,102 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
+            std::cerr << "CAPACITY_STAGE_BEGIN dataset=" << options.dataset << " stage=resource_snapshot\n" << std::flush;
             const CapacityResourceSnapshot resource_snapshot = capacity_resource_snapshot(run_dir);
+            std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset << " stage=resource_snapshot host_headroom_bytes="
+                      << resource_snapshot.host_headroom_bytes << " shared_disk_available_bytes="
+                      << resource_snapshot.shared_available_bytes << " same_filesystem="
+                      << (resource_snapshot.same_filesystem ? "true" : "false") << '\n' << std::flush;
+            std::cerr << "CAPACITY_STAGE_BEGIN dataset=" << options.dataset << " stage=canonical_graph_load\n" << std::flush;
             const Graph graph = load_graph(cache_dir, config);
-            const Model shape_model = Model::load_shape_only(bundle_dir);
+            std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset << " stage=canonical_graph_load nodes="
+                      << graph.num_nodes << " edges=" << graph.edges() << " features=" << graph.num_features
+                      << " graphs=" << graph.graph_count << '\n' << std::flush;
+            const std::filesystem::path feature_txt = std::filesystem::path(cache_dir) / "features.txt";
+            const std::filesystem::path feature_npy = std::filesystem::path(cache_dir) / "features.npy";
+            const std::filesystem::path feature_source = std::filesystem::is_regular_file(feature_txt) ? feature_txt : feature_npy;
+            if (!std::filesystem::is_regular_file(feature_source)) throw std::runtime_error("canonical feature source is missing");
+            const std::uintmax_t feature_file_size = std::filesystem::file_size(feature_source);
+            if (feature_file_size == 0 || feature_file_size > std::numeric_limits<std::uint64_t>::max())
+                throw std::runtime_error("canonical feature source has an invalid file size");
+            std::cerr << "CAPACITY_STAGE_BEGIN dataset=" << options.dataset << " stage=shape_estimate\n" << std::flush;
+            Model shape_model = Model::load_shape_only(bundle_dir);
             shape_model.validate_identity(config);
-            GatCapacityReport report = inspect_gat_capacity(graph, shape_model, quant);
+            GatCapacityReport report = inspect_gat_capacity(graph, shape_model, quant, static_cast<std::uint64_t>(feature_file_size));
+            std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset << " stage=shape_estimate host_peak_upper_bytes="
+                      << report.estimated_peak_host_memory_bytes << " disk_peak_upper_bytes="
+                      << report.disk_requirement_bytes_upper_bound << " artifact_bytes_upper="
+                      << report.artifact_disk_bytes_upper_bound << '\n' << std::flush;
+            std::cerr << "CAPACITY_STAGE_BEGIN dataset=" << options.dataset << " stage=gkr_point_shape\n" << std::flush;
+            const bool point_shape_ready = report.gkr_point_shape_ready;
+            const std::uint64_t point_shape_bitmap_bytes = report.gkr_point_shape_bitmap_scratch_bytes;
+            std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset << " stage=gkr_point_shape status="
+                      << (point_shape_ready ? "PASS" : "BLOCKED") << " layers=" << report.gkr_point_shape_layer_count
+                      << " fconn=" << report.gkr_point_shape_fconn_count << " bitmap_bytes=" << point_shape_bitmap_bytes;
+            if (!point_shape_ready) std::cerr << " reason=" << report.reason;
+            std::cerr << '\n' << std::flush;
+            if (!point_shape_ready) {
+                report.ready = false;
+                report.reason = "native GKR point-domain shape admission failed: " + report.reason;
+            } else {
+                const std::uint64_t heap_bitmap_bytes =
+                    point_shape_bitmap_bytes <= zkgpt::native_storage::heap_limit
+                        ? point_shape_bitmap_bytes : 0;
+                const std::uint64_t mapped_bitmap_bytes =
+                    point_shape_bitmap_bytes > zkgpt::native_storage::heap_limit
+                        ? point_shape_bitmap_bytes : 0;
+                if (heap_bitmap_bytes > std::numeric_limits<std::uint64_t>::max() -
+                                            report.estimated_native_heap_bytes_upper_bound ||
+                    point_shape_bitmap_bytes > std::numeric_limits<std::uint64_t>::max() -
+                                                     report.estimated_peak_host_memory_bytes)
+                    throw std::overflow_error("GKR shape-admission capacity bound overflows u64");
+                report.estimated_native_heap_bytes_upper_bound += heap_bitmap_bytes;
+                report.estimated_peak_host_memory_bytes += point_shape_bitmap_bytes;
+                report.native_mapped_phase_breakdown.emplace_back(
+                    "shape_admission", mapped_bitmap_bytes);
+                report.native_mapped_phase_breakdown.emplace_back(
+                    "component:shape_admission_bitmap", mapped_bitmap_bytes);
+                report.estimated_native_mapped_bytes_upper_bound = std::max(
+                    report.estimated_native_mapped_bytes_upper_bound,
+                    mapped_bitmap_bytes);
+                report.estimated_native_scratch_bytes = std::max(
+                    report.estimated_native_scratch_bytes,
+                    mapped_bitmap_bytes);
+            }
+            shape_model = Model{};
+            if (point_shape_ready && report.forward_admission_peak_host_memory_bytes_upper_bound <= resource_snapshot.host_headroom_bytes) {
+                std::cerr << "CAPACITY_STAGE_BEGIN dataset=" << options.dataset << " stage=canonical_forward_inputs\n" << std::flush;
+                const Tensor2D features = load_features(cache_dir, config, quant, graph);
+                const Model model = Model::load(bundle_dir);
+                model.validate_identity(config);
+                std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset << " stage=canonical_forward_inputs feature_rows="
+                          << features.rows << " feature_cols=" << features.cols << " model_layers="
+                          << model.manifest.layers << " hidden_heads=" << model.hidden_heads()
+                          << " output_heads=" << model.manifest.output_heads << '\n' << std::flush;
+                std::cerr << "CAPACITY_STAGE_BEGIN dataset=" << options.dataset << " stage=canonical_all_value_forward\n" << std::flush;
+                const std::vector<std::array<unsigned, 5>> division_profiles = canonical_division_range_profiles(graph, model, quant);
+                std::string admission_reason;
+                const auto progress = [](const char* phase, std::size_t layer, std::size_t head, bool complete) {
+                    std::cerr << "CAPACITY_FORWARD_ADMISSION phase=" << phase << " layer=" << layer
+                              << " head=" << head << " status=" << (complete ? "DONE" : "BEGIN")
+                              << '\n' << std::flush;
+                };
+                if (run_forward_admission(graph, features, model, quant, division_profiles, &admission_reason,
+                                          nullptr, progress)) {
+                    report.forward_value_admission_ready = true;
+                    std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset
+                              << " stage=canonical_all_value_forward status=PASS\n" << std::flush;
+                } else {
+                    report.ready = false;
+                    report.reason = "canonical all-value forward admission failed: " + admission_reason;
+                    std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset
+                              << " stage=canonical_all_value_forward status=BLOCKED reason="
+                              << admission_reason << '\n' << std::flush;
+                }
+            } else if (point_shape_ready) {
+                report.ready = false;
+                report.reason = "canonical forward-admission host bound exceeds current available memory";
+            }
             report.host_memory_limit_bytes = resource_snapshot.host_headroom_bytes;
             report.native_scratch_available_bytes = resource_snapshot.scratch_available_bytes;
             report.artifact_disk_available_bytes = resource_snapshot.artifact_available_bytes;
@@ -1053,7 +1200,7 @@ int main(int argc, char** argv) {
             report.shared_scratch_artifact_available_bytes = resource_snapshot.shared_available_bytes;
             finalize_gat_capacity_report(report);
             write_capacity_report(report, options.dataset, options.backend, quant.quant_cfg_id, rel_display(root, cache_dir + "/integrity.sha256"),
-                                  rel_display(root, bundle_dir + "/integrity.sha256"));
+                                  rel_display(root, bundle_dir + "/integrity.sha256"), &graph, &config);
             return report.ready ? 0 : 1;
         }
 
@@ -1183,12 +1330,19 @@ int main(int argc, char** argv) {
         record.preparation_ms = proved.preparation_ms;
         record.aux_commitment_ms = proved.aux_commitment_ms;
         record.lasso_query_commitment_ms = proved.lasso_query_commitment_ms;
+        record.lasso_family_generator_derive_ms = proved.lasso_family_generator_derive_ms;
         record.lasso_family_commitment_ms = proved.lasso_family_commitment_ms;
+        record.lasso_family_selected_row_mapping_ms = proved.lasso_family_selected_row_mapping_ms;
+        record.initial_commitment_blinding_prepare_ms = proved.initial_commitment_blinding_prepare_ms;
         record.commitment_ms = proved.commitment_ms;
         record.self_verify_ms = proved.self_verify_ms;
         const double timing_components[] = {record.prove_total_ms, record.preparation_ms,
             record.aux_commitment_ms, record.lasso_query_commitment_ms,
-            record.lasso_family_commitment_ms, record.commitment_ms, record.self_verify_ms};
+            record.lasso_family_generator_derive_ms,
+            record.lasso_family_commitment_ms,
+            record.initial_commitment_blinding_prepare_ms,
+            record.lasso_family_selected_row_mapping_ms,
+            record.commitment_ms, record.self_verify_ms};
         for (double component : timing_components) {
             if (!std::isfinite(component) || component < 0.0)
                 throw std::runtime_error("native prover returned a non-finite or negative timing component");
@@ -1196,12 +1350,15 @@ int main(int argc, char** argv) {
         if (record.preparation_ms < record.lasso_query_commitment_ms)
             throw std::runtime_error("native preparation timing is shorter than its L_qry commitment substage");
         record.preparation_net_ms = record.preparation_ms - record.lasso_query_commitment_ms;
-        const double expected_commitment = record.aux_commitment_ms +
-            record.lasso_query_commitment_ms + record.lasso_family_commitment_ms;
-        if (!std::isfinite(expected_commitment) || expected_commitment != record.commitment_ms)
+        const double expected_total_commitment = record.aux_commitment_ms +
+            record.lasso_query_commitment_ms +
+            record.lasso_family_generator_derive_ms +
+            record.lasso_family_commitment_ms;
+        if (!std::isfinite(expected_total_commitment) || expected_total_commitment != record.commitment_ms)
             throw std::runtime_error("native commitment timing does not equal its measured commitment substages");
         const double paper_prove_without_artifact_write = record.prove_total_ms -
-            record.preparation_net_ms - record.commitment_ms - record.self_verify_ms;
+            record.initial_commitment_blinding_prepare_ms - record.commitment_ms -
+            record.self_verify_ms;
         if (!std::isfinite(paper_prove_without_artifact_write) || paper_prove_without_artifact_write < 0.0)
             throw std::runtime_error("native prove timing decomposition is invalid");
         record.prove_ms = paper_prove_without_artifact_write;
@@ -1216,11 +1373,40 @@ int main(int argc, char** argv) {
 
         const std::string artifact_file = run_dir + "/proof.artifact";
         std::string artifact_reason;
+        std::string artifact_wire;
+        const auto artifact_wire_self_check_begin = Clock::now();
+        if (!proved.artifact.valid_wire(&artifact_reason))
+            throw std::runtime_error("proof artifact failed internal wire self-check: " + artifact_reason);
+        record.artifact_wire_self_check_ms = elapsed_ms(artifact_wire_self_check_begin, Clock::now());
+        const auto artifact_serialize_begin = Clock::now();
+        if (!proved.artifact.serialize_after_wire_validation(
+                artifact_wire, artifact_wire_limit, &artifact_reason))
+            throw std::runtime_error("proof artifact in-memory serialization failed: " + artifact_reason);
+        record.serialize_ms = elapsed_ms(artifact_serialize_begin, Clock::now());
+        record.prove_ms += record.serialize_ms;
+        if (artifact_wire.empty() || artifact_wire.size() > artifact_wire_limit)
+            throw std::runtime_error("serialized proof artifact has invalid exact byte length");
+        record.proof_size_bytes = static_cast<std::uint64_t>(artifact_wire.size());
+        record.artifact_size_bytes = record.proof_size_bytes;
+        record.artifact_sha256 = sha256_bytes_digest(artifact_wire);
         const auto artifact_write_begin = Clock::now();
-        if (!proved.artifact.write(artifact_file, artifact_wire_limit,
-                                   &artifact_reason))
-            throw std::runtime_error("proof artifact serialization failed: " + artifact_reason);
+        std::ofstream artifact_out(artifact_file.c_str(), std::ios::binary | std::ios::trunc);
+        if (!artifact_out)
+            throw std::runtime_error("cannot open proof artifact for writing");
+        artifact_out.write(artifact_wire.data(), static_cast<std::streamsize>(artifact_wire.size()));
+        artifact_out.flush();
+        if (!artifact_out.good()) {
+            artifact_out.close();
+            std::remove(artifact_file.c_str());
+            throw std::runtime_error("proof artifact write failed");
+        }
+        artifact_out.close();
+        if (artifact_out.fail()) {
+            std::remove(artifact_file.c_str());
+            throw std::runtime_error("proof artifact close failed");
+        }
         record.artifact_write_ms = elapsed_ms(artifact_write_begin, Clock::now());
+        std::string().swap(artifact_wire);
         proved.artifact = GatProofArtifact{};
         GatProofArtifact artifact;
         const auto artifact_readback_begin = Clock::now();
@@ -1228,9 +1414,8 @@ int main(int argc, char** argv) {
                                     &artifact_reason))
             throw std::runtime_error("serialized proof artifact cannot be read: " + artifact_reason);
         record.artifact_readback_ms = elapsed_ms(artifact_readback_begin, Clock::now());
-        record.serialize_ms = record.artifact_write_ms + record.artifact_readback_ms;
-        record.prove_ms += record.artifact_write_ms;
         if (!std::isfinite(record.prove_ms) || !std::isfinite(record.serialize_ms) ||
+            !std::isfinite(record.artifact_wire_self_check_ms) ||
             record.artifact_write_ms < 0.0 || record.artifact_readback_ms < 0.0)
             throw std::runtime_error("artifact timing decomposition is invalid");
         record.artifact_path = run_rel + "/proof.artifact";
@@ -1242,10 +1427,9 @@ int main(int argc, char** argv) {
             }
         }
         struct stat artifact_stat;
-        if (::stat(artifact_file.c_str(), &artifact_stat) != 0 || artifact_stat.st_size < 0) throw std::runtime_error("cannot stat proof artifact");
-        record.proof_size_bytes = static_cast<std::uint64_t>(artifact_stat.st_size);
-        record.artifact_size_bytes = record.proof_size_bytes;
-        record.artifact_sha256 = sha256_file_digest(artifact_file);
+        if (::stat(artifact_file.c_str(), &artifact_stat) != 0 || artifact_stat.st_size < 0 ||
+            static_cast<std::uint64_t>(artifact_stat.st_size) != record.proof_size_bytes)
+            throw std::runtime_error("proof artifact file size differs from its in-memory canonical wire");
         record.verifier_report_path = run_rel + "/verifier_report.json";
 
         const auto verify_begin = Clock::now();

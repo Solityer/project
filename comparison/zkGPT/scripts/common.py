@@ -31,7 +31,7 @@ BACKENDS: Tuple[str, ...] = ("cpu", "gpu")
 FORMAL_BACKENDS: Tuple[str, ...] = ("cpu",)
 
 RESULT_SCHEMA = "zkgpt-gat-result-v2"
-REPORT_SCHEMA = "zkgpt-gat-independent-verifier-v3"
+REPORT_SCHEMA = "zkgpt-gat-independent-verifier-v4"
 EXECUTION_SCHEMA = "zkgpt-gat-execution-v3"
 RESOURCE_MANIFEST_SCHEMA = "zkgpt-gat-resource-manifest-v1"
 PREFLIGHT_SCHEMA = "zkgpt-gat-formal-preflight-v3"
@@ -40,7 +40,7 @@ COLLECTED_SCHEMA = "zkgpt-gat-collected-results-v3"
 FINAL_SCHEMA = "zkgpt-gat-final-validation-v3"
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
-PAPER_TIMING_SEMANTICS = "zkgpt-gat-paper-timing-v2-native-tensor-commitments"
+PAPER_TIMING_SEMANTICS = "zkgpt-gat-paper-timing-v4-native-commitment-wire-io-excluded"
 FORMAL_SESSION_SCHEMA = "zkgpt-gat-formal-session-v1"
 
 _ACTIVE_OWNED_PROCESSES: Dict[int, subprocess.Popen] = {}
@@ -125,7 +125,7 @@ def derive_run_nonce(session_id: str, dataset: str) -> str:
 def runtime_source_sha256(root: Path) -> str:
     """Fingerprint formal runtime helpers so session-bound outputs reject stale code."""
     paths = [path for path in (root / "scripts").glob("*.py") if path.is_file()]
-    paths.extend(root / name for name in ("run_zkgpt_formal.sh", "run_zkgpt_cpu_formal.sh", "build.sh") if (root / name).is_file())
+    paths.extend(root / name for name in ("build.sh",) if (root / name).is_file())
     digest = hashlib.sha256()
     for path in sorted(set(paths), key=lambda value: value.relative_to(root).as_posix()):
         require_regular(path, "formal runtime source")
@@ -133,10 +133,14 @@ def runtime_source_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
-def create_formal_session(root: Path) -> Tuple[str, Dict[str, Any], str]:
+def create_formal_session(root: Path, session_id: Optional[str] = None) -> Tuple[str, Dict[str, Any], str]:
     """Create one immutable manifest binding all five formal cells to current code."""
-    session_id = secrets.token_hex(16)
+    session_id = secrets.token_hex(16) if session_id is None else session_id
+    if not HEX32_RE.fullmatch(session_id):
+        raise ChainError("formal session id must be 32 lowercase hexadecimal characters")
     output_dir = formal_results_directory(root, session_id)
+    if any(output_dir.iterdir()):
+        raise ChainError(f"formal session directory must be fresh and empty: {output_dir}")
     manifest = {
         "schema": FORMAL_SESSION_SCHEMA,
         "session_id": session_id,
@@ -185,7 +189,7 @@ def formal_run_lock(root: Path):
 def require_formal_session(root: Path) -> Tuple[str, Dict[str, Any], str]:
     session_id = os.environ.get("ZKGPT_FORMAL_SESSION_ID", "")
     if not HEX32_RE.fullmatch(session_id):
-        raise ChainError("formal helper requires the session created by run_zkgpt_formal.sh")
+        raise ChainError("formal helper requires the session created by the comparison coordinator")
     path = formal_session_path(root, session_id)
     manifest = load_json(path, "formal session manifest")
     if not isinstance(manifest, dict) or manifest.get("schema") != FORMAL_SESSION_SCHEMA:
@@ -984,9 +988,12 @@ def require_timing(result: Mapping[str, Any], path: Any) -> Dict[str, float]:
         raise ChainError(f"{path} uses stale or unsupported paper timing semantics")
     required = (
         "load", "registration", "witness", "preparation", "preparation_net",
-        "aux_commitment", "lasso_query_commitment", "lasso_family_commitments",
-        "commitment", "prove_total", "self_verify", "prove", "verify",
-        "serialize", "artifact_write", "artifact_readback",
+        "aux_commitment", "lasso_query_commitment",
+        "lasso_family_generator_derive", "lasso_family_commitments",
+        "lasso_family_selected_row_mapping",
+        "initial_commitment_blinding_prepare", "commitment", "prove_total",
+        "self_verify", "prove", "verify", "serialize",
+        "artifact_wire_self_check", "artifact_write", "artifact_readback",
     )
     for key in required:
         normalized[key] = finite_nonnegative(timing.get(key), f"timing_ms.{key}", path)
@@ -997,17 +1004,31 @@ def require_timing(result: Mapping[str, Any], path: Any) -> Dict[str, float]:
     def timing_equal(left: float, right: float) -> bool:
         return math.isclose(left, right, rel_tol=1e-12, abs_tol=1e-9)
 
-    expected = normalized["aux_commitment"] + normalized["lasso_query_commitment"] + normalized["lasso_family_commitments"]
+    expected = (normalized["aux_commitment"] + normalized["lasso_query_commitment"] +
+                normalized["lasso_family_generator_derive"] +
+                normalized["lasso_family_commitments"])
     if not timing_equal(expected, normalized["commitment"]):
         raise ChainError(f"{path} commitment total does not equal its measured native substages")
     if not timing_equal(normalized["preparation"] - normalized["lasso_query_commitment"], normalized["preparation_net"]):
         raise ChainError(f"{path} preparation net does not subtract the overlapping L_qry commitment")
-    if not timing_equal(normalized["artifact_write"] + normalized["artifact_readback"], normalized["serialize"]):
-        raise ChainError(f"{path} serialization total does not equal write plus readback")
-    paper_prove = normalized["prove_total"] - normalized["preparation_net"] - normalized["commitment"] - normalized["self_verify"] + normalized["artifact_write"]
+    if normalized["preparation"] + 1e-9 < (normalized["lasso_query_commitment"] + normalized["initial_commitment_blinding_prepare"]):
+        raise ChainError(f"{path} preparation total omits initial commitment blinding preparation")
+    paper_prove = (normalized["prove_total"] -
+                   normalized["initial_commitment_blinding_prepare"] -
+                   normalized["commitment"] - normalized["self_verify"] +
+                   normalized["serialize"])
     if paper_prove < 0 or not timing_equal(paper_prove, normalized["prove"]):
         raise ChainError(f"{path} Prove Time decomposition is invalid")
     return normalized
+
+
+def verifier_timing(report: Mapping[str, Any], where: Any) -> Dict[str, float]:
+    decode_ms = finite_nonnegative(report.get("decode_crypto_ms"), "decode_crypto_ms", where)
+    verify_ms = finite_nonnegative(report.get("verify_crypto_ms"), "verify_crypto_ms", where)
+    total_ms = finite_nonnegative(report.get("crypto_verify_ms"), "crypto_verify_ms", where)
+    if decode_ms + verify_ms != total_ms:
+        raise ChainError(f"{where} Verify Time does not equal its measured decode and verification stages")
+    return {"decode_crypto_ms": decode_ms, "verify_crypto_ms": verify_ms, "crypto_verify_ms": total_ms}
 
 
 def paper_metrics(result: Mapping[str, Any], report: Mapping[str, Any], where: Any) -> Dict[str, Any]:
@@ -1018,10 +1039,10 @@ def paper_metrics(result: Mapping[str, Any], report: Mapping[str, Any], where: A
     return {
         "commitment_time_ms": timing["commitment"],
         "prove_time_ms": timing["prove"],
-        "verify_time_ms": finite_nonnegative(report.get("crypto_verify_ms"), "crypto_verify_ms", where),
+        "verify_time_ms": verifier_timing(report, where)["crypto_verify_ms"],
         "proof_size_bytes": size,
         "paper_timing_semantics": PAPER_TIMING_SEMANTICS,
-        "timing_scope": "Commitment Time measures Aux, L_qry, and native Lasso family tensor commitments; Prove Time excludes preparation, those commitments, and prover self-verification, and includes artifact write but excludes local artifact readback.",
+        "timing_scope": "Commitment Time includes native cryptographic computations for initial Aux and L_qry bindings and M_f row bindings, plus the per-proof M_f column-generator derivation; sampling the initial hiding randomness is excluded. Prove Time excludes only that initial randomness preparation, Commitment Time, and prover self-verification; it includes native relation evaluation, borrowed Aux witness construction, Lasso table-value/index and lookup-protocol construction, later protocol work, and canonical in-memory wire serialization. Canonical forward generation, explicit dataset/checkpoint file I/O and decode, and one-time model registration are outside this proof timer; artifact wire self-check, artifact file write, and readback are recorded separately and excluded.",
     }
 
 
@@ -1292,7 +1313,7 @@ def validate_formal_cell(
     report_path = run_path / "verifier_report.json"
     report = load_json(report_path, "independent verifier report")
     if not isinstance(report, dict) or report.get("schema") != REPORT_SCHEMA or report.get("status") != "VERIFY_OK" or report.get("independent") is not True or report.get("masked_full") is not True:
-        raise ChainError(f"independent verifier report is not schema-v3 VERIFY_OK: {report_path}")
+        raise ChainError(f"independent verifier report is not schema-v4 VERIFY_OK: {report_path}")
     if report.get("dataset") != dataset or report.get("backend") != backend:
         raise ChainError(f"independent verifier dataset/backend mismatch: {report_path}")
     require_bool(report, "verifier_reads_witness", False, report_path)

@@ -94,7 +94,7 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
             "fixture_evidence_digest": evidence_digest,
         }
         envelope = {
-            "schema_id": "zkDL_gat_proof_envelope_v2",
+            "schema_id": "zkDL_gat_proof_envelope_v1",
             "fixture_mode": 1,
             "status": "PROVED",
             "native_core_api": "zkdl_native_gat_bridge_v1",
@@ -144,6 +144,22 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
         }
         write_kv(run_dir / "run.record", record)
         write_kv(run_dir / "proof.meta", envelope)
+        write_kv(run_dir / "proof.timing", {
+            "schema_id": "zkDL_gat_proof_timing_v1",
+            "status": "PROVED",
+            "statement_id": statement_id,
+            "proof_id": proof_digest,
+            "commitment_time_seconds": "0",
+            "prove_time_seconds": "0",
+            "proof_auxiliary_construction_seconds": "0",
+            "proof_auxiliary_construction_scope": "signed_round_aux_witness_and_relation_views;steady_clock_wall;exclude_family_storage_write_hash_and_explicit_file_io",
+            "sorted_lookup_protocol_construction_seconds": "0",
+            "relation_context_prove_seconds": "0",
+            "relation_prove_wall_seconds": "0",
+            "relation_commitment_time_seconds": "0",
+            "prove_provider_file_io_excluded_seconds": "0",
+            "proof_serialization_seconds": "0",
+        })
         write_kv(run_dir / "statement.txt", statement)
         write_kv(run_dir / "verification.result", verification)
         (run_dir / "independent_verify.evidence").chmod(0o600)

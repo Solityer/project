@@ -274,6 +274,126 @@ where
             s_g2,
         })
     }
+
+    /// Reads an authenticated raw SRS directly at a smaller proof domain.
+    ///
+    /// The caller must authenticate the complete file against the trusted SRS
+    /// digest before using this method.  For a smaller target domain, only the
+    /// required prefix of `g` is decoded; the remainder and the full
+    /// `g_lagrange` section are skipped, while `g2` and `s_g2` are read from the
+    /// checked end of the file.  The target-domain Lagrange basis is then
+    /// derived from the same `g` prefix as `downsize`, rather than taking a
+    /// prefix of the larger-domain Lagrange basis.
+    ///
+    /// At the source domain this delegates to `read_custom` so the max-k path
+    /// preserves its original full read and validation behavior.
+    pub fn read_custom_for_k<R: io::Read + io::Seek>(
+        reader: &mut R,
+        format: SerdeFormat,
+        target_k: u32,
+        expected_source_k: u32,
+    ) -> io::Result<Self>
+    where
+        E::G1Affine: SerdeCurveAffine<
+            ScalarExt = <E as Engine>::Fr,
+            CurveExt = <E as Engine>::G1,
+        >,
+        E::G1: CurveExt<AffineExt = E::G1Affine>,
+        E::G2Affine: SerdeCurveAffine,
+    {
+        if !matches!(format, SerdeFormat::RawBytes) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "selective SRS loading requires the authenticated RawBytes format",
+            ));
+        }
+
+        let file_len = reader.seek(io::SeekFrom::End(0))?;
+        reader.seek(io::SeekFrom::Start(0))?;
+        let mut encoded_k = [0u8; 4];
+        reader.read_exact(&mut encoded_k)?;
+        let source_k = u32::from_le_bytes(encoded_k);
+        if source_k != expected_source_k {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("SRS header k={} does not match authenticated k={}", source_k, expected_source_k),
+            ));
+        }
+        if target_k > source_k {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("requested SRS k={} exceeds source k={}", target_k, source_k),
+            ));
+        }
+        if target_k == source_k {
+            reader.seek(io::SeekFrom::Start(0))?;
+            return Self::read_custom(reader, format);
+        }
+
+        let source_n = 1u64.checked_shl(source_k).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid SRS source domain")
+        })?;
+        let target_n = 1u64.checked_shl(target_k).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid SRS target domain")
+        })?;
+        let g1_bytes = <E::G1Affine as SerdeCurveAffine>::byte_length(format) as u64;
+        let g2_bytes = <E::G2Affine as SerdeCurveAffine>::byte_length(format) as u64;
+        let expected_len = 4u64
+            .checked_add(
+                source_n
+                    .checked_mul(g1_bytes)
+                    .and_then(|bytes| bytes.checked_mul(2))
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "SRS length overflow"))?,
+            )
+            .and_then(|bytes| bytes.checked_add(g2_bytes.checked_mul(2)?))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "SRS length overflow"))?;
+        if file_len != expected_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("authenticated SRS has an invalid encoded length: expected {}, got {}", expected_len, file_len),
+            ));
+        }
+
+        let target_n_usize = usize::try_from(target_n).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "SRS target domain exceeds address space")
+        })?;
+        let mut g = Vec::with_capacity(target_n_usize);
+        for _ in 0..target_n_usize {
+            g.push(<E::G1Affine as SerdeCurveAffine>::read(reader, format)?);
+        }
+
+        let skipped_points = source_n
+            .checked_sub(target_n)
+            .and_then(|remaining_g| remaining_g.checked_add(source_n))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "SRS skip length overflow"))?;
+        let skipped_bytes = skipped_points
+            .checked_mul(g1_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "SRS skip length overflow"))?;
+        let skipped_bytes = i64::try_from(skipped_bytes).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "SRS skip length exceeds seek range")
+        })?;
+        reader.seek(io::SeekFrom::Current(skipped_bytes))?;
+
+        let g2 = <E::G2Affine as SerdeCurveAffine>::read(reader, format)?;
+        let s_g2 = <E::G2Affine as SerdeCurveAffine>::read(reader, format)?;
+        if reader.seek(io::SeekFrom::Current(0))? != file_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "selective SRS reader did not end at the authenticated file boundary",
+            ));
+        }
+
+        let mut params = Self {
+            k: source_k,
+            n: source_n,
+            g,
+            g_lagrange: Vec::new(),
+            g2,
+            s_g2,
+        };
+        params.downsize(target_k);
+        Ok(params)
+    }
 }
 
 // TODO: see the issue at https://github.com/appliedzkp/halo2/issues/45
@@ -304,6 +424,8 @@ where
         self.n = 1 << k;
 
         self.g.truncate(self.n as usize);
+        self.g.shrink_to_fit();
+        drop(std::mem::take(&mut self.g_lagrange));
         self.g_lagrange = g_to_lagrange(self.g.iter().map(|g| g.to_curve()).collect(), k);
     }
 
@@ -424,5 +546,76 @@ mod test {
         assert_eq!(params0.g_lagrange, params1.g_lagrange);
         assert_eq!(params0.g2, params1.g2);
         assert_eq!(params0.s_g2, params1.s_g2);
+    }
+
+    #[test]
+    fn test_selective_raw_srs_matches_full_read_then_downsize() {
+        const SOURCE_K: u32 = 5;
+        const TARGET_K: u32 = 3;
+
+        use crate::SerdeFormat;
+        use halo2curves::bn256::Bn256;
+        use std::io::Cursor;
+
+        let source = ParamsKZG::<Bn256>::new(SOURCE_K);
+        let mut encoded = Vec::new();
+        source.write_custom(&mut encoded, SerdeFormat::RawBytes).unwrap();
+
+        let mut full_reader = Cursor::new(encoded.as_slice());
+        let mut expected = ParamsKZG::<Bn256>::read_custom(
+            &mut full_reader,
+            SerdeFormat::RawBytes,
+        )
+        .unwrap();
+        expected.downsize(TARGET_K);
+
+        let mut selective_reader = Cursor::new(encoded.as_slice());
+        let actual = ParamsKZG::<Bn256>::read_custom_for_k(
+            &mut selective_reader,
+            SerdeFormat::RawBytes,
+            TARGET_K,
+            SOURCE_K,
+        )
+        .unwrap();
+
+        assert_eq!(expected.k, actual.k);
+        assert_eq!(expected.n, actual.n);
+        assert_eq!(expected.g, actual.g);
+        assert_eq!(expected.g_lagrange, actual.g_lagrange);
+        assert_eq!(expected.g2, actual.g2);
+        assert_eq!(expected.s_g2, actual.s_g2);
+    }
+
+    #[test]
+    fn test_selective_raw_srs_rejects_invalid_target_and_length() {
+        const SOURCE_K: u32 = 4;
+
+        use crate::SerdeFormat;
+        use halo2curves::bn256::Bn256;
+        use std::io::Cursor;
+
+        let source = ParamsKZG::<Bn256>::new(SOURCE_K);
+        let mut encoded = Vec::new();
+        source.write_custom(&mut encoded, SerdeFormat::RawBytes).unwrap();
+
+        let mut too_large_reader = Cursor::new(encoded.as_slice());
+        assert!(ParamsKZG::<Bn256>::read_custom_for_k(
+            &mut too_large_reader,
+            SerdeFormat::RawBytes,
+            SOURCE_K + 1,
+            SOURCE_K,
+        )
+        .is_err());
+
+        let mut truncated = encoded;
+        truncated.pop();
+        let mut truncated_reader = Cursor::new(truncated.as_slice());
+        assert!(ParamsKZG::<Bn256>::read_custom_for_k(
+            &mut truncated_reader,
+            SerdeFormat::RawBytes,
+            SOURCE_K - 1,
+            SOURCE_K,
+        )
+        .is_err());
     }
 }

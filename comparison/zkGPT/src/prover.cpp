@@ -13,9 +13,19 @@ void require_prefix_vector_bound(const zkgpt::NativeVector<linear_poly>& values,
                                  std::size_t expected_size, const char* name) {
     if (values.size() != expected_size)
         throw std::logic_error(std::string("native GKR prefix vector has an unexpected size: ") + name);
-    if (expected_size > std::numeric_limits<std::size_t>::max() / 2 ||
-        values.capacity() > expected_size * 2)
-        throw std::logic_error(std::string("native GKR prefix vector exceeded its 2x allocation bound: ") + name);
+    // Every phase releases its prior buffers before resizing from empty. A
+    // larger capacity would invalidate the exact source-derived formal
+    // admission bound, so fail closed if this STL allocates past the request.
+    if (values.capacity() != expected_size)
+        throw std::logic_error(std::string("native GKR prefix vector capacity differs from its requested size: ") + name);
+}
+
+void resize_prefix_vector_exact(zkgpt::NativeVector<linear_poly>& values,
+                                std::size_t requested_size, const char* name) {
+    if (!values.empty() || values.capacity() != 0)
+        throw std::logic_error(std::string("native GKR prefix buffer was not released before resize: ") + name);
+    values.resize(requested_size);
+    require_prefix_vector_bound(values, requested_size, name);
 }
 
 } // namespace
@@ -40,15 +50,6 @@ void prover::init()
     proof_size = 0;
     r_u.resize(activeCircuit().size + 1);
     r_v.resize(activeCircuit().size + 1);
-
-    V_mult[0].resize(1);
-    V_mult[1].resize(1);
-    mult_array[0].resize(1);
-    mult_array[1].resize(1);
-    tmp_V_mult[0].resize(1);
-    tmp_V_mult[1].resize(1);
-    tmp_mult_array[0].resize(1);
-    tmp_mult_array[1].resize(1);
 
 }
 
@@ -102,11 +103,26 @@ void prover::sumcheckInitAll(const vector<F>::const_iterator &r_0_from_v)
  */
 void prover::sumcheckInit(const F &alpha_0, const F &beta_0)
 {
+    if (sumcheck_id == 0) throw std::logic_error("native sumcheck layer index underflow");
     prove_timer.start();
     alpha = alpha_0;
     beta = beta_0;
     beta_point_0 = r_u.at(sumcheck_id);
     beta_point_1 = r_v.at(sumcheck_id);
+    --sumcheck_id;
+    prove_timer.stop();
+}
+
+void prover::sumcheckInit(const F &alpha_0, const F &beta_0,
+                          const vector<F> &current_u_point,
+                          const vector<F> &current_v_point)
+{
+    if (sumcheck_id == 0) throw std::logic_error("native sumcheck layer index underflow");
+    prove_timer.start();
+    alpha = alpha_0;
+    beta = beta_0;
+    beta_point_0 = current_u_point;
+    beta_point_1 = current_v_point;
     --sumcheck_id;
     prove_timer.stop();
 }
@@ -169,14 +185,10 @@ void prover::sumcheckInitPhase1(const F &relu_rou_0)
     for (unsigned lane = 0; lane < 2; ++lane) {
         const std::size_t active_extent = zkgpt::native_gkr::checked_extent(total_size[lane], "native GKR phase1 active prefix");
         const std::size_t fold_extent = zkgpt::native_gkr::checked_extent(std::max<u64>(1, total_size[lane] / 2 + total_size[lane] % 2), "native GKR phase1 fold prefix");
-        V_mult[lane].resize(std::max<std::size_t>(1, active_extent));
-        mult_array[lane].resize(std::max<std::size_t>(1, active_extent));
-        tmp_V_mult[lane].resize(fold_extent);
-        tmp_mult_array[lane].resize(fold_extent);
-        require_prefix_vector_bound(V_mult[lane], std::max<std::size_t>(1, active_extent), "phase1 values");
-        require_prefix_vector_bound(mult_array[lane], std::max<std::size_t>(1, active_extent), "phase1 multipliers");
-        require_prefix_vector_bound(tmp_V_mult[lane], fold_extent, "phase1 folded values");
-        require_prefix_vector_bound(tmp_mult_array[lane], fold_extent, "phase1 folded multipliers");
+        resize_prefix_vector_exact(V_mult[lane], std::max<std::size_t>(1, active_extent), "phase1 values");
+        resize_prefix_vector_exact(mult_array[lane], std::max<std::size_t>(1, active_extent), "phase1 multipliers");
+        resize_prefix_vector_exact(tmp_V_mult[lane], fold_extent, "phase1 folded values");
+        resize_prefix_vector_exact(tmp_mult_array[lane], fold_extent, "phase1 folded multipliers");
         if (active_extent == 0) { V_mult[lane][0].clear(); mult_array[lane][0].clear(); }
     }
     timer useless_t;
@@ -329,14 +341,10 @@ void prover::sumcheckInitPhase2()
     for (unsigned lane = 0; lane < 2; ++lane) {
         const std::size_t active_extent = zkgpt::native_gkr::checked_extent(total_size[lane], "native GKR phase2 active prefix");
         const std::size_t fold_extent = zkgpt::native_gkr::checked_extent(std::max<u64>(1, total_size[lane] / 2 + total_size[lane] % 2), "native GKR phase2 fold prefix");
-        V_mult[lane].resize(std::max<std::size_t>(1, active_extent));
-        mult_array[lane].resize(std::max<std::size_t>(1, active_extent));
-        tmp_V_mult[lane].resize(fold_extent);
-        tmp_mult_array[lane].resize(fold_extent);
-        require_prefix_vector_bound(V_mult[lane], std::max<std::size_t>(1, active_extent), "phase2 values");
-        require_prefix_vector_bound(mult_array[lane], std::max<std::size_t>(1, active_extent), "phase2 multipliers");
-        require_prefix_vector_bound(tmp_V_mult[lane], fold_extent, "phase2 folded values");
-        require_prefix_vector_bound(tmp_mult_array[lane], fold_extent, "phase2 folded multipliers");
+        resize_prefix_vector_exact(V_mult[lane], std::max<std::size_t>(1, active_extent), "phase2 values");
+        resize_prefix_vector_exact(mult_array[lane], std::max<std::size_t>(1, active_extent), "phase2 multipliers");
+        resize_prefix_vector_exact(tmp_V_mult[lane], fold_extent, "phase2 folded values");
+        resize_prefix_vector_exact(tmp_mult_array[lane], fold_extent, "phase2 folded multipliers");
         if (active_extent == 0) { V_mult[lane][0].clear(); mult_array[lane][0].clear(); }
     }
 

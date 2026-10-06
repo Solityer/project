@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <fstream>
 #include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -64,6 +65,7 @@ std::string read_text(const std::string& path, const char* description, std::siz
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in) throw std::runtime_error(std::string("cannot open ") + description + ": " + path);
     std::ostringstream out;
+    out << std::setprecision(17);
     out << in.rdbuf();
     if (!in.good() && !in.eof()) throw std::runtime_error(std::string("cannot read ") + description + ": " + path);
     return out.str();
@@ -159,8 +161,12 @@ void write_report(const std::string& path, const std::string& json) {
 }
 
 std::string report_json(const std::string& status, const std::string& reason, const std::string& statement_digest, const std::string& context,
-                        const std::string& logits, const std::string& artifact, const std::string& artifact_fs, const VerifierContext* public_context = nullptr,
-                        const GatProofArtifact* proof_artifact = nullptr, double crypto_verify_ms = 0.0) {
+                        const std::string& logits, const std::string& artifact,
+                        const VerifierContext* public_context = nullptr,
+                        const GatProofArtifact* proof_artifact = nullptr,
+                        const std::string* artifact_wire = nullptr,
+                        double decode_crypto_ms = 0.0,
+                        double verify_crypto_ms = 0.0) {
     const std::string dataset = public_context == nullptr ? std::string() : public_context->registration.dataset;
     const std::string backend = public_context == nullptr ? std::string() : public_context->backend;
     const std::string plan_digest = public_context == nullptr ? std::string() : public_context->plan.plan_digest;
@@ -175,23 +181,17 @@ std::string report_json(const std::string& status, const std::string& reason, co
     const std::string proof_digest = proof_artifact == nullptr ? std::string() : zkgpt::gat::canonical_digest64(proof_artifact->transcript_digest);
     std::string artifact_sha256;
     std::uint64_t artifact_size_bytes = 0;
-    if (proof_artifact != nullptr) {
-        try {
-            struct stat info{};
-            if (::stat(artifact_fs.c_str(), &info) == 0 && info.st_size >= 0) {
-                artifact_size_bytes = static_cast<std::uint64_t>(info.st_size);
-                artifact_sha256 = zkgpt::gat::sha256_file_digest(artifact_fs);
-            }
-        } catch (...) {
-            artifact_sha256.clear();
-            artifact_size_bytes = 0;
-        }
+    if (artifact_wire != nullptr) {
+        artifact_size_bytes = static_cast<std::uint64_t>(artifact_wire->size());
+        artifact_sha256 = zkgpt::gat::sha256_bytes_digest(*artifact_wire);
     }
+    const double crypto_verify_ms = decode_crypto_ms + verify_crypto_ms;
     const std::size_t slash = context.find_last_of("/\\");
     const std::string statement = slash == std::string::npos ? "public_statement.json" : context.substr(0, slash + 1) + "public_statement.json";
     std::ostringstream out;
+    out << std::setprecision(17);
     out << "{\n"
-        << "  \"schema\": \"zkgpt-gat-independent-verifier-v3\",\n"
+        << "  \"schema\": \"zkgpt-gat-independent-verifier-v4\",\n"
         << "  \"status\": \"" << json_escape(status) << "\",\n"
         << "  \"independent\": true,\n"
         << "  \"masked_full\": true,\n"
@@ -216,6 +216,8 @@ std::string report_json(const std::string& status, const std::string& reason, co
         << "  \"artifact_path\": \"" << json_escape(artifact) << "\",\n"
         << "  \"artifact_sha256\": \"" << json_escape(artifact_sha256) << "\",\n"
         << "  \"artifact_size_bytes\": " << artifact_size_bytes << ",\n"
+        << "  \"decode_crypto_ms\": " << decode_crypto_ms << ",\n"
+        << "  \"verify_crypto_ms\": " << verify_crypto_ms << ",\n"
         << "  \"crypto_verify_ms\": " << crypto_verify_ms << ",\n"
         << "  \"reason\": \"" << json_escape(reason) << "\"\n"
         << "}\n";
@@ -260,7 +262,7 @@ int main(int argc, char** argv) {
         VerifierContext& context = *context_storage;
         std::string context_reason;
         if (!zkgpt::gat::read_verifier_context(context_path, context, &context_reason)) {
-            const std::string report = report_json("REJECTED", context_reason, "", context_rel, logits_rel, artifact_rel, artifact_path);
+            const std::string report = report_json("REJECTED", context_reason, "", context_rel, logits_rel, artifact_rel);
             write_report(options.report, report);
             std::cout << report;
             return 1;
@@ -273,7 +275,7 @@ int main(int argc, char** argv) {
         if (artifact_wire_limit == 0) {
             const std::string report = report_json(
                 "REJECTED", artifact_limit_reason, statement_digest,
-                context_rel, logits_rel, artifact_rel, artifact_path, &context,
+                context_rel, logits_rel, artifact_rel, &context,
                 nullptr);
             write_report(options.report, report);
             std::cout << report;
@@ -284,7 +286,18 @@ int main(int argc, char** argv) {
         if (external_logits.rows != context.public_logits.rows || external_logits.cols != context.public_logits.cols ||
             external_logits.values != context.public_logits.values) {
             const std::string report = report_json("REJECTED", "separately supplied public logits do not match v4 context", statement_digest, context_rel,
-                                                   logits_rel, artifact_rel, artifact_path, &context, nullptr);
+                                                   logits_rel, artifact_rel, &context, nullptr);
+            write_report(options.report, report);
+            std::cout << report;
+            return 1;
+        }
+
+        std::string artifact_wire;
+        std::string artifact_reason;
+        if (!GatProofArtifact::read_wire_bytes(artifact_path, artifact_wire,
+                                              artifact_wire_limit, &artifact_reason)) {
+            const std::string report =
+                report_json("REJECTED", artifact_reason, statement_digest, context_rel, logits_rel, artifact_rel, &context);
             write_report(options.report, report);
             std::cout << report;
             return 1;
@@ -292,11 +305,15 @@ int main(int argc, char** argv) {
 
         std::unique_ptr<GatProofArtifact> artifact_storage(new GatProofArtifact());
         GatProofArtifact& artifact = *artifact_storage;
-        std::string artifact_reason;
-        if (!GatProofArtifact::read(artifact_path, artifact, artifact_wire_limit,
-                                    &artifact_reason)) {
-            const std::string report =
-                report_json("REJECTED", artifact_reason, statement_digest, context_rel, logits_rel, artifact_rel, artifact_path, &context, nullptr);
+        const auto decode_begin = std::chrono::steady_clock::now();
+        const bool decoded = GatProofArtifact::parse_wire(
+            artifact_wire, artifact, artifact_wire_limit, &artifact_reason);
+        const double decode_crypto_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - decode_begin).count();
+        if (!decoded) {
+            const std::string report = report_json(
+                "REJECTED", artifact_reason, statement_digest, context_rel, logits_rel,
+                artifact_rel, &context, nullptr, &artifact_wire, decode_crypto_ms, 0.0);
             write_report(options.report, report);
             std::cout << report;
             return 1;
@@ -304,15 +321,17 @@ int main(int argc, char** argv) {
         std::string verify_reason;
         const auto crypto_verify_begin = std::chrono::steady_clock::now();
         const bool crypto_verified = zkgpt::gat::verify_gat(context, artifact, &verify_reason);
-        const double crypto_verify_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - crypto_verify_begin).count();
+        const double verify_crypto_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - crypto_verify_begin).count();
         if (!crypto_verified) {
             const std::string report = report_json("REJECTED", verify_reason.empty() ? "verify_gat rejected proof" : verify_reason, statement_digest,
-                                                   context_rel, logits_rel, artifact_rel, artifact_path, &context, &artifact, crypto_verify_ms);
+                                                   context_rel, logits_rel, artifact_rel, &context, &artifact, &artifact_wire,
+                                                   decode_crypto_ms, verify_crypto_ms);
             write_report(options.report, report);
             std::cout << report;
             return 1;
         }
-        const std::string report = report_json("VERIFY_OK", "", statement_digest, context_rel, logits_rel, artifact_rel, artifact_path, &context, &artifact, crypto_verify_ms);
+        const std::string report = report_json("VERIFY_OK", "", statement_digest, context_rel, logits_rel, artifact_rel, &context, &artifact,
+                                               &artifact_wire, decode_crypto_ms, verify_crypto_ms);
         write_report(options.report, report);
         std::cout << "VERIFY_OK\n";
         return 0;

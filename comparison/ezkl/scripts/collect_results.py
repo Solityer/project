@@ -24,6 +24,7 @@ from formal_common import (
     CANONICAL_STATEMENT_MODE,
     DATASETS,
     FORMAL_GPU_FEATURES,
+    FORMAL_GPU_EXECUTION_POLICY,
     FORMAL_PHASE_BACKENDS,
     FORMAL_SESSION_ID,
     NATIVE_FORMAL_BACKEND,
@@ -45,7 +46,8 @@ from formal_common import (
     sha256,
     source_tree_hash,
     validate_artifact_identity,
-    validate_commitment_metrics,
+    validate_native_proof_metrics,
+    validate_native_verify_metrics,
     validate_gpu_evidence,
     validate_gpu_evidence_document,
     validate_gpu_environment,
@@ -83,7 +85,10 @@ REQUIRED_RESULT_KEYS = {
     "native_public_instance_binding",
     "phase_timings_ms",
     "commitment_time_ms",
+    "prove_time_ms",
+    "verify_time_ms",
     "commitment_metric",
+    "verify_metric",
     "gpu_evidence",
     "circuit_ref",
     "proof_instances",
@@ -328,18 +333,32 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
     if public_output_values(public_output, dataset=dataset) != statement_document["public_ezkl"]["y"]:
         abort(f"{path} public output Y disagrees element-by-element with statement")
     metric = require_exact_keys(result["commitment_metric"], {"operation", "included_in", "path", "sha256"}, "result commitment metric")
-    commitment_path = path_from_result(metric["path"], "native commitment metrics")
-    if commitment_path != path.parent / "commitment_metrics.json":
-        abort(f"{path} commitment metrics do not belong to this formal cell")
-    require_digest(metric["sha256"], "native commitment metrics digest")
+    commitment_path = path_from_result(metric["path"], "native proof metrics")
+    if commitment_path != path.parent / "native_proof_metrics.json":
+        abort(f"{path} native proof metrics do not belong to this formal cell")
+    require_digest(metric["sha256"], "native proof metrics digest")
     if sha256(commitment_path) != metric["sha256"]:
-        abort(f"{path} native commitment metrics digest mismatch")
-    commitment = validate_commitment_metrics(commitment_path, dataset=dataset, model_hash=statement_document["public_ezkl"]["model_hash"])
-    if metric["operation"] != commitment["operation"] or metric["included_in"] != commitment["included_in"]:
+        abort(f"{path} native proof metrics digest mismatch")
+    proof_metrics = validate_native_proof_metrics(commitment_path, proof_sha256=result["proof_sha256"])
+    if metric["operation"] != proof_metrics["operation"] or metric["included_in"] != proof_metrics["included_in"]:
         abort(f"{path} native commitment measurement scope mismatch")
     duration = result["commitment_time_ms"]
-    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0 or duration != commitment["duration_ms"]:
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0 or duration != proof_metrics["commitment_time_ms"]:
         abort(f"{path} commitment_time_ms does not match the native measured duration")
+    if result["prove_time_ms"] != proof_metrics["prove_time_ms"]:
+        abort(f"{path} prove_time_ms does not match native proof timing")
+    verify_metric = require_exact_keys(result["verify_metric"], {"operation", "included_in", "path", "sha256"}, "result native verification metric")
+    verify_metrics_path = path_from_result(verify_metric["path"], "native verification metrics")
+    if verify_metrics_path != path.parent / "native_verify_metrics.json":
+        abort(f"{path} native verification metrics do not belong to this formal cell")
+    require_digest(verify_metric["sha256"], "native verification metrics digest")
+    if sha256(verify_metrics_path) != verify_metric["sha256"]:
+        abort(f"{path} native verification metrics digest mismatch")
+    native_verify_metrics = validate_native_verify_metrics(verify_metrics_path, proof_sha256=result["proof_sha256"])
+    if verify_metric["operation"] != native_verify_metrics["operation"] or verify_metric["included_in"] != native_verify_metrics["included_in"]:
+        abort(f"{path} native verification measurement scope mismatch")
+    if result["verify_time_ms"] != native_verify_metrics["verify_time_ms"]:
+        abort(f"{path} verify_time_ms does not match native verification timing")
     validate_proof_instances(result, proof)
     artifact_manifest = path_from_result(result["artifact_manifest_path"], "artifact identity manifest")
     artifact = validate_artifact_identity(
@@ -412,12 +431,12 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
     validate_gpu_evidence_from_result(result)
     if native_backend == "gpu":
         record = load_json(proof.parent / "gpu_prover_record.json", "native GPU prover record")
-        require_exact_keys(record, {"proof_sha256", "msm_calls", "ntt_calls", "synchronized_calls", "device_id", "evidence"}, "native GPU prover record")
-        counts = [record[key] for key in ("msm_calls", "ntt_calls", "synchronized_calls", "device_id")]
+        require_exact_keys(record, {"proof_sha256", "native_execution_policy", "msm_operations", "gpu_msm_chunk_calls", "ntt_calls", "cpu_fft_calls", "synchronized_calls", "device_id", "evidence"}, "native GPU prover record")
+        counts = [record[key] for key in ("msm_operations", "gpu_msm_chunk_calls", "ntt_calls", "cpu_fft_calls", "synchronized_calls", "device_id")]
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
             abort("native GPU prover record has invalid device/call counters")
-        calls = record["msm_calls"] + record["ntt_calls"]
-        if record["proof_sha256"] != result["proof_sha256"] or calls <= 0 or record["synchronized_calls"] != calls or record["evidence"] != result["gpu_evidence"] or result["gpu_evidence"]["gpu_kernel_invocation_count"] != calls:
+        calls = record["gpu_msm_chunk_calls"] + record["ntt_calls"]
+        if record["proof_sha256"] != result["proof_sha256"] or record["native_execution_policy"] != FORMAL_GPU_EXECUTION_POLICY or record["msm_operations"] <= 0 or record["gpu_msm_chunk_calls"] < record["msm_operations"] or record["ntt_calls"] != 0 or record["cpu_fft_calls"] <= 0 or calls <= 0 or record["synchronized_calls"] != calls or record["evidence"] != result["gpu_evidence"] or result["gpu_evidence"]["gpu_kernel_invocation_count"] != calls:
             abort("native GPU prover record is not synchronized and bound to the verified proof")
         if formal:
             if record["device_id"] != result["selected_cuda_device"]["logical_device_id"]:

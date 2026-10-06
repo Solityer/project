@@ -22,6 +22,31 @@ pub fn get_device() -> CudaResult<usize> {
     unsafe { cudaGetDevice(&mut device_id) }.wrap_value(device_id as usize)
 }
 
+/// Returns the CUDA runtime's current free and total device memory in bytes.
+pub fn get_memory_info() -> CudaResult<(usize, usize)> {
+    let mut free_memory = 0usize;
+    let mut total_memory = 0usize;
+    unsafe {
+        cudaMemGetInfo(&mut free_memory as *mut usize, &mut total_memory as *mut usize).wrap()?;
+    }
+    Ok((free_memory, total_memory))
+}
+
+/// Returns CUDA's stable UUID for a runtime device ordinal.
+pub fn get_device_uuid(device_id: usize) -> CudaResult<String> {
+    let mut properties = MaybeUninit::<crate::bindings::cudaDeviceProp>::uninit();
+    unsafe {
+        crate::bindings::cudaGetDeviceProperties(properties.as_mut_ptr(), device_id as i32).wrap()?;
+        let uuid = properties.assume_init().uuid;
+        let bytes = uuid.bytes;
+        let raw = bytes.iter().map(|byte| format!("{:02x}", *byte as u8)).collect::<String>();
+        Ok(format!(
+            "GPU-{}-{}-{}-{}-{}",
+            &raw[0..8], &raw[8..12], &raw[12..16], &raw[16..20], &raw[20..32],
+        ))
+    }
+}
+
 pub fn get_device_from_pointer(ptr: *const ::std::os::raw::c_void) -> CudaResult<usize> {
     let mut ptr_attributes = MaybeUninit::<cudaPointerAttributes>::uninit();
     unsafe {

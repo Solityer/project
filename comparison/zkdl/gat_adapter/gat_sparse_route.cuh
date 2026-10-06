@@ -208,12 +208,26 @@ inline bool prove_sparse_route(const OperationDescriptor &descriptor, const std:
         zero_selector[0] = zkdl::fr_from_u32(1U);
         const auto constraint = sparse_route_sumcheck_descriptor(descriptor, header_digest);
         ZkSumcheckProverResult sumcheck_result;
-        if (!prove_zk_sumcheck(constraint,
-                               {sparse_route_public_selector(descriptor, edge_point, feature_point), source_values, zero_selector,
-                                std::vector<FrWire>(domain, output_value)},
+        // Keep one owner for each actual Sumcheck input.  A braced temporary
+        // passed to prove_zk_sumcheck(const vector<vector<FrWire>>& ...) copied
+        // both full-domain lvalue vectors into the initializer_list and again
+        // into the function's vector argument, multiplying route resident
+        // memory without changing the relation.  Moving the same four arrays
+        // into the vector preserves the prover inputs and their order.
+        std::vector<std::vector<FrWire>> sumcheck_values;
+        sumcheck_values.reserve(4U);
+        sumcheck_values.push_back(sparse_route_public_selector(descriptor, edge_point, feature_point));
+        sumcheck_values.push_back(std::move(source_values));
+        sumcheck_values.push_back(std::move(zero_selector));
+        sumcheck_values.emplace_back(domain, output_value);
+        if (!prove_zk_sumcheck(constraint, sumcheck_values,
                                2U, domain, generators, ipa_blinding_generator, ipa_u_generator, FrWire{}, statement, constraint.id, transcript, sumcheck_result,
                                error))
             return false;
+        // The later Hyrax openings read the authenticated source provider and
+        // only retain bounded segment buffers; these full-domain Sumcheck
+        // inputs are no longer live after its transcript has been produced.
+        sumcheck_values.clear();
         route.sumcheck = std::move(sumcheck_result.proof);
         const std::uint32_t source_feature_bits = log2_exact(route.source_feature_domain);
         const std::uint32_t source_bits = log2_exact(source->domain_size);

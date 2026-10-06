@@ -134,14 +134,22 @@ where
             if P::QUERY_INSTANCE {
                 let instance_commitments_projective: Vec<_> = instance_values
                     .iter()
-                    .map(|poly| params.commit_lagrange(poly, Blind::default()))
+                    .map(|poly| {
+                        let _commitment_timer =
+                            crate::plonk::commitment_timing::instance_guard();
+                        params.commit_lagrange(poly, Blind::default())
+                    })
                     .collect();
                 let mut instance_commitments =
                     vec![Scheme::Curve::identity(); instance_commitments_projective.len()];
-                <Scheme::Curve as CurveAffine>::CurveExt::batch_normalize(
-                    &instance_commitments_projective,
-                    &mut instance_commitments,
-                );
+                {
+                    let _commitment_timer =
+                        crate::plonk::commitment_timing::normalization_guard();
+                    <Scheme::Curve as CurveAffine>::CurveExt::batch_normalize(
+                        &instance_commitments_projective,
+                        &mut instance_commitments,
+                    );
+                }
                 let instance_commitments = instance_commitments;
                 drop(instance_commitments_projective);
 
@@ -331,6 +339,10 @@ where
             HashMap::<usize, Scheme::Scalar>::with_capacity_and_hasher(meta.num_challenges, s);
 
         let unusable_rows_start = params.n() as usize - (meta.blinding_factors() + 1);
+        let initial_advice_phase = meta
+            .phases()
+            .next()
+            .expect("constraint system must expose its initial advice phase");
         for current_phase in pk.vk.cs.phases() {
             let _start = Instant::now();
             let column_indices = meta
@@ -419,14 +431,31 @@ where
                 let advice_commitments_projective: Vec<_> = advice_values
                     .iter()
                     .zip(blinds.iter())
-                    .map(|(poly, blind)| params.commit_lagrange(poly, *blind))
+                    .map(|(poly, blind)| {
+                        if current_phase == initial_advice_phase {
+                            let _commitment_timer =
+                                crate::plonk::commitment_timing::advice_guard();
+                            params.commit_lagrange(poly, *blind)
+                        } else {
+                            params.commit_lagrange(poly, *blind)
+                        }
+                    })
                     .collect();
                 let mut advice_commitments =
                     vec![Scheme::Curve::identity(); advice_commitments_projective.len()];
-                <Scheme::Curve as CurveAffine>::CurveExt::batch_normalize(
-                    &advice_commitments_projective,
-                    &mut advice_commitments,
-                );
+                if current_phase == initial_advice_phase {
+                    let _commitment_timer =
+                        crate::plonk::commitment_timing::normalization_guard();
+                    <Scheme::Curve as CurveAffine>::CurveExt::batch_normalize(
+                        &advice_commitments_projective,
+                        &mut advice_commitments,
+                    );
+                } else {
+                    <Scheme::Curve as CurveAffine>::CurveExt::batch_normalize(
+                        &advice_commitments_projective,
+                        &mut advice_commitments,
+                    );
+                }
                 let advice_commitments = advice_commitments;
                 drop(advice_commitments_projective);
 
@@ -966,4 +995,25 @@ fn test_create_proof() {
         &mut transcript,
     )
     .expect("proof generation should not fail");
+}
+
+#[test]
+fn initial_advice_commitment_phase_is_phase_zero_only() {
+    use halo2curves::bn256::Fr;
+    use super::circuit::sealed::SealedPhase;
+
+    let mut cs = ConstraintSystem::<Fr>::default();
+    cs.advice_column_in::<super::circuit::FirstPhase>(super::circuit::FirstPhase);
+    cs.advice_column_in::<super::circuit::SecondPhase>(super::circuit::SecondPhase);
+
+    let mut phases = cs.phases();
+    let initial_advice_phase = phases
+        .next()
+        .expect("constraint system must expose an initial advice phase");
+    let challenge_dependent_phase = phases
+        .next()
+        .expect("second-phase advice column must expose its phase");
+    assert_eq!(initial_advice_phase, super::circuit::FirstPhase.to_sealed());
+    assert_ne!(challenge_dependent_phase, initial_advice_phase);
+    assert!(phases.next().is_none());
 }
