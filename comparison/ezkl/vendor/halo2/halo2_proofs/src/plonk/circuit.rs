@@ -25,6 +25,139 @@ use super::lookup;
 use super::mv_lookup as lookup;
 
 mod compress_selectors;
+pub(crate) use self::compress_selectors::PackedSelectorAssignment;
+
+/// Packed row activations for a selector, and for a compressed selector
+/// polynomial while it is being converted to field elements. Selector values
+/// are stored least-significant bit first, matching the native VK wire format.
+#[derive(Clone, Debug)]
+pub(crate) struct SelectorBitmap {
+    len: usize,
+    bits_per_value: u32,
+    bytes: Vec<u8>,
+}
+
+impl SelectorBitmap {
+    pub(crate) fn zeroed(len: usize, bits_per_value: u32) -> std::io::Result<Self> {
+        if bits_per_value == 0 || bits_per_value > u64::BITS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "selector bitmap value width is out of range",
+            ));
+        }
+        let total_bits = len.checked_mul(bits_per_value as usize).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "selector bitmap length overflow",
+            )
+        })?;
+        let byte_len = total_bits.checked_add(7).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "selector bitmap byte length overflow",
+            )
+        })? / 8;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(byte_len)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::OutOfMemory, error))?;
+        bytes.resize(byte_len, 0);
+        Ok(Self {
+            len,
+            bits_per_value,
+            bytes,
+        })
+    }
+
+    pub(crate) fn read_activation<R: std::io::Read>(
+        reader: &mut R,
+        len: usize,
+    ) -> std::io::Result<Self> {
+        let mut bitmap = Self::zeroed(len, 1)?;
+        reader.read_exact(&mut bitmap.bytes)?;
+        if len % 8 != 0 {
+            let used_bits = len % 8;
+            let mask = (1u8 << used_bits) - 1;
+            if let Some(last) = bitmap.bytes.last_mut() {
+                *last &= mask;
+            }
+        }
+        Ok(bitmap)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn value(&self, index: usize) -> u64 {
+        assert!(index < self.len);
+        let bit_start = index * self.bits_per_value as usize;
+        let mut value = 0u64;
+        for offset in 0..self.bits_per_value as usize {
+            let bit_index = bit_start + offset;
+            if (self.bytes[bit_index / 8] >> (bit_index % 8)) & 1 == 1 {
+                value |= 1u64 << offset;
+            }
+        }
+        value
+    }
+
+    pub(crate) fn set_value(&mut self, index: usize, value: u64) -> std::io::Result<()> {
+        if index >= self.len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "selector bitmap row is out of bounds",
+            ));
+        }
+        if self.bits_per_value < u64::BITS && value >= (1u64 << self.bits_per_value) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "selector bitmap value does not fit its packed width",
+            ));
+        }
+        let bit_start = index * self.bits_per_value as usize;
+        for offset in 0..self.bits_per_value as usize {
+            let bit_index = bit_start + offset;
+            let mask = 1u8 << (bit_index % 8);
+            let byte = &mut self.bytes[bit_index / 8];
+            if (value >> offset) & 1 == 1 {
+                *byte |= mask;
+            } else {
+                *byte &= !mask;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_intersection(&self, other: &Self) -> bool {
+        assert_eq!(self.len, other.len);
+        assert_eq!(self.bits_per_value, 1);
+        assert_eq!(other.bits_per_value, 1);
+        self.bytes
+            .iter()
+            .zip(&other.bytes)
+            .any(|(left, right)| left & right != 0)
+    }
+
+    pub(crate) fn for_each_set_bit(&self, mut visit: impl FnMut(usize)) {
+        assert_eq!(self.bits_per_value, 1);
+        for (byte_index, byte) in self.bytes.iter().copied().enumerate() {
+            let mut remaining = byte;
+            while remaining != 0 {
+                let bit = remaining.trailing_zeros() as usize;
+                let row = byte_index * 8 + bit;
+                if row < self.len {
+                    visit(row);
+                }
+                remaining &= remaining - 1;
+            }
+        }
+    }
+}
 
 /// A column type
 pub trait ColumnType:
@@ -80,6 +213,18 @@ impl<C: ColumnType> Column<C> {
     /// Return expression from column at the specified rotation
     pub fn rot<F: Field>(&self, rotation: i32) -> Expression<F> {
         self.query_cell(Rotation(rotation))
+    }
+}
+
+impl Column<Any> {
+    /// Stable ordered identity used when binding native permutation storage.
+    pub(crate) fn native_storage_identity(&self) -> (u8, u8, u64) {
+        let (kind, phase) = match self.column_type {
+            Any::Instance => (0, 0),
+            Any::Advice(advice) => (1, advice.phase()),
+            Any::Fixed => (2, 0),
+        };
+        (kind, phase, self.index as u64)
     }
 }
 
@@ -2196,6 +2341,96 @@ impl<F: Field> ConstraintSystem<F> {
         (self, polys)
     }
 
+    /// Compress selector activations without expanding their packed row sets
+    /// into `Vec<Vec<bool>>` or materializing every field-valued selector
+    /// polynomial at once. Native key generation uses the returned assignment
+    /// map to build one packed combination column at a time.
+    pub(crate) fn compress_selector_bitmaps(
+        mut self,
+        selectors: &[SelectorBitmap],
+    ) -> (
+        Self,
+        usize,
+        Vec<compress_selectors::PackedSelectorAssignment<F>>,
+    ) {
+        assert_eq!(selectors.len(), self.num_selectors);
+
+        let mut degrees = vec![0; selectors.len()];
+        for expression in self.gates.iter().flat_map(|gate| gate.polys.iter()) {
+            if let Some(selector) = expression.extract_simple_selector() {
+                degrees[selector.0] = max(degrees[selector.0], expression.degree());
+            }
+        }
+
+        let max_degree = self.degree();
+        let mut new_columns = Vec::new();
+        let (combination_count, assignments) =
+            compress_selectors::process_bitmaps(selectors, &degrees, max_degree, || {
+                let column = self.fixed_column();
+                new_columns.push(column);
+                Expression::Fixed(FixedQuery {
+                    index: Some(self.query_fixed_index(column, Rotation::cur())),
+                    column_index: column.index,
+                    rotation: Rotation::cur(),
+                })
+            });
+
+        let mut selector_map = vec![None; assignments.len()];
+        let mut selector_replacements = vec![None; assignments.len()];
+        for assignment in &assignments {
+            selector_replacements[assignment.selector] = Some(assignment.expression.clone());
+            selector_map[assignment.selector] = Some(new_columns[assignment.combination_index]);
+        }
+        self.selector_map = selector_map
+            .into_iter()
+            .map(|column| column.expect("every selector receives a fixed-column mapping"))
+            .collect();
+        let selector_replacements = selector_replacements
+            .into_iter()
+            .map(|expression| expression.expect("every selector receives a fixed expression"))
+            .collect::<Vec<_>>();
+        self.replace_selectors_with_fixed(&selector_replacements);
+        (self, combination_count, assignments)
+    }
+
+    /// Replace selectors with one fixed column per selector while retaining
+    /// the compact activation input used by native key generation.
+    pub(crate) fn directly_convert_selector_bitmaps(
+        mut self,
+        selectors: &[SelectorBitmap],
+    ) -> (
+        Self,
+        usize,
+        Vec<compress_selectors::PackedSelectorAssignment<F>>,
+    ) {
+        assert_eq!(selectors.len(), self.num_selectors);
+        let mut new_columns = Vec::with_capacity(selectors.len());
+        let mut assignments = Vec::with_capacity(selectors.len());
+        for selector in 0..selectors.len() {
+            let column = self.fixed_column();
+            new_columns.push(column);
+            let rotation = Rotation::cur();
+            let expression = Expression::Fixed(FixedQuery {
+                index: Some(self.query_fixed_index(column, rotation)),
+                column_index: column.index,
+                rotation,
+            });
+            assignments.push(compress_selectors::PackedSelectorAssignment {
+                selector,
+                combination_index: selector,
+                root_value: 1,
+                expression,
+            });
+        }
+        let selector_replacements = assignments
+            .iter()
+            .map(|assignment| assignment.expression.clone())
+            .collect::<Vec<_>>();
+        self.replace_selectors_with_fixed(&selector_replacements);
+        self.num_selectors = 0;
+        (self, new_columns.len(), assignments)
+    }
+
     /// Does not combine selectors and directly replaces them everywhere with fixed columns.
     pub fn directly_convert_selectors_to_fixed(
         mut self,
@@ -2730,7 +2965,7 @@ impl<'a, F: Field> VirtualCells<'a, F> {
 
 #[cfg(test)]
 mod tests {
-    use super::Expression;
+    use super::{Expression, SelectorBitmap};
     use halo2curves::bn256::Fr;
 
     #[test]
@@ -2769,5 +3004,28 @@ mod tests {
         );
 
         assert_eq!(happened, expected);
+    }
+
+    #[test]
+    fn selector_bitmap_three_bit_words_rows_and_padding_are_bounded() {
+        let mut values = SelectorBitmap::zeroed(128, 3).expect("allocate 3-bit values");
+        for (row, value) in [(21, 5), (42, 6), (63, 7), (64, 4), (127, 3)] {
+            values.set_value(row, value).expect("set packed selector value");
+        }
+        for (row, expected) in [(21, 5), (42, 6), (63, 7), (64, 4), (127, 3)] {
+            assert_eq!(values.value(row), expected);
+        }
+        assert!(values.set_value(128, 1).is_err(), "out-of-domain row must fail");
+        assert!(values.set_value(0, 8).is_err(), "value outside 3-bit width must fail");
+
+        let mut activations = SelectorBitmap::zeroed(130, 1).expect("allocate activation bits");
+        for row in [63, 64, 129] {
+            activations.set_value(row, 1).expect("set activation");
+        }
+        let mut active_rows = Vec::new();
+        activations.for_each_set_bit(|row| active_rows.push(row));
+        assert_eq!(active_rows, [63, 64, 129]);
+        assert!(activations.set_value(130, 1).is_err(), "activation row must be bounded");
+        assert_eq!(activations.bytes.last().copied().unwrap() & 0b1111_1100, 0);
     }
 }

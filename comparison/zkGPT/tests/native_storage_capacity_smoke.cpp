@@ -1,10 +1,13 @@
 #include "../gat_adapter/native_storage.hpp"
 #include "circuit.h"
+#include "../gat_adapter/gat_proof.hpp"
 #include "polynomial.h"
 #include "utils.hpp"
 #include <mcl/bn256.hpp>
+#include <array>
 #include <cassert>
 #include <iostream>
+#include <limits>
 
 using namespace mcl::bn;
 
@@ -15,6 +18,57 @@ int main() {
     assert(floorPow2BitLength(u64(1) << 32) == 32 && ceilPow2BitLength(~u64(0)) == 64);
     const uniGate high_gate(high, high + 1, 0, NativeCoefficientId(0));
     assert(high_gate.g == high && high_gate.u == high + 1);
+    const u64 packed_limit = PackedU40::maximum;
+    const PackedU40 packed_limit_value(packed_limit);
+    assert(static_cast<u64>(packed_limit_value) == packed_limit);
+    bool packed_index_overflow_rejected = false;
+    try { (void)PackedU40(packed_limit + 1U); }
+    catch (const std::length_error&) { packed_index_overflow_rejected = true; }
+    assert(packed_index_overflow_rejected);
+
+    zkgpt::gat::PackedResidualTargets packed_targets;
+    const std::array<std::int64_t, 17> target_alphabet = {
+        std::numeric_limits<std::int64_t>::min(), -1000000001LL, -100000001LL, -10000001LL,
+        -1000001LL, -100001LL, -10001LL, -1001LL, -1LL,
+        0LL, 1LL, 1001LL, 10001LL, 100001LL, 1000001LL, 100000001LL,
+        std::numeric_limits<std::int64_t>::max()};
+    packed_targets.reserve(target_alphabet.size() * 2U);
+    for (std::int64_t value : target_alphabet) packed_targets.push_back(value);
+    for (auto it = target_alphabet.rbegin(); it != target_alphabet.rend(); ++it)
+        packed_targets.push_back(*it);
+    packed_targets.freeze();
+    assert(packed_targets.size() == target_alphabet.size() * 2U);
+    assert(packed_targets.dictionary_size() == target_alphabet.size());
+    assert(packed_targets.mapped_bytes() == packed_targets.size());
+    assert(packed_targets.dictionary_heap_bytes() <=
+           zkgpt::gat::PackedResidualTargets::dictionary_heap_upper_bound());
+    std::size_t target_index = 0;
+    for (std::int64_t target : packed_targets) {
+        const std::int64_t expected = target_index < target_alphabet.size()
+            ? target_alphabet[target_index]
+            : target_alphabet[target_alphabet.size() * 2U - target_index - 1U];
+        assert(target == expected);
+        ++target_index;
+    }
+    bool packed_target_alphabet_overflow_rejected = false;
+    try {
+        zkgpt::gat::PackedResidualTargets overflow;
+        overflow.reserve(18);
+        for (std::int64_t value = 0; value < 18; ++value) overflow.push_back(value);
+    } catch (const std::length_error&) { packed_target_alphabet_overflow_rejected = true; }
+    assert(packed_target_alphabet_overflow_rejected);
+
+    layer wide_coefficients;
+    wide_coefficients.size = 257;
+    wide_coefficients.reserve_gate_arrays(257, 0);
+    wide_coefficients.reserve_coefficients(257);
+    assert(wide_coefficients.wide_coefficient_format);
+    for (u64 index = 0; index < 257; ++index)
+        wide_coefficients.add_unary(index, index, 0, static_cast<ll>(index) - 128);
+    for (u64 index = 0; index < 257; ++index)
+        assert(wide_coefficients.coefficient(wide_coefficients.uni_gates[index]) == static_cast<ll>(index) - 128);
+    assert(wide_coefficients.wide_uni_coefficient_ids.size() == 257 &&
+           wide_coefficients.wide_uni_coefficient_ids.capacity() == 257);
     layeredCircuit circuit;
     circuit.init(0, 2);
     circuit.circuit[0].size = u64(1) << 33;

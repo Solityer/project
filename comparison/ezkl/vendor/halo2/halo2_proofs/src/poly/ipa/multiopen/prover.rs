@@ -75,12 +75,13 @@ impl<'params, C: CurveAffine> Prover<'params, IPACommitmentScheme<C>> for Prover
             .fold(None, |q_prime_poly, (points, poly)| {
                 let mut poly = points
                     .iter()
-                    .fold(poly.clone().unwrap().values, |poly, point| {
+                    .fold(poly.clone().unwrap().into_values(), |poly, point| {
                         kate_division(&poly, *point)
                     });
                 poly.resize(self.params.n as usize, C::Scalar::ZERO);
                 let poly = Polynomial {
                     values: poly,
+                    mapped: None,
                     _marker: PhantomData,
                 };
 

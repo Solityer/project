@@ -1,4 +1,4 @@
-use super::Expression;
+use super::{Expression, SelectorBitmap};
 use ff::Field;
 
 /// This describes a selector and where it is activated.
@@ -28,6 +28,17 @@ pub struct SelectorAssignment<F> {
     pub combination_index: usize,
 
     /// The expression we wish to substitute with
+    pub expression: Expression<F>,
+}
+
+/// A selector replacement together with its exact integer root in the
+/// compressed fixed-column encoding. The root is represented as a small
+/// integer until one fixed column at a time is converted to field elements.
+#[derive(Debug, Clone)]
+pub(crate) struct PackedSelectorAssignment<F> {
+    pub selector: usize,
+    pub combination_index: usize,
+    pub root_value: u64,
     pub expression: Expression<F>,
 }
 
@@ -238,6 +249,134 @@ where
     (combination_assignments, selector_assignments)
 }
 
+/// Selector compression over packed activation columns. The ordering,
+/// greedy grouping, degree checks, and selector replacement expressions are
+/// the same as `process`; only the row-set representation changes.
+pub(crate) fn process_bitmaps<F: Field, E>(
+    selectors: &[SelectorBitmap],
+    degrees: &[usize],
+    max_degree: usize,
+    mut allocate_fixed_column: E,
+) -> (usize, Vec<PackedSelectorAssignment<F>>)
+where
+    E: FnMut() -> Expression<F>,
+{
+    assert_eq!(selectors.len(), degrees.len());
+    if selectors.is_empty() {
+        return (0, Vec::new());
+    }
+    let n = selectors[0].len();
+    assert!(selectors.iter().all(|selector| selector.len() == n));
+
+    let mut selector_assignments = Vec::with_capacity(selectors.len());
+    let mut combination_count = 0usize;
+
+    // Complex or unused selectors cannot participate in simple-selector
+    // packing. Preserve the original selector order and give each one its own
+    // fixed column exactly as the uncompressed algorithm does.
+    for (selector, degree) in degrees.iter().enumerate() {
+        if *degree == 0 {
+            selector_assignments.push(PackedSelectorAssignment {
+                selector,
+                combination_index: combination_count,
+                root_value: 1,
+                expression: allocate_fixed_column(),
+            });
+            combination_count = combination_count
+                .checked_add(1)
+                .expect("selector combination count overflow");
+        }
+    }
+
+    let simple: Vec<usize> = degrees
+        .iter()
+        .enumerate()
+        .filter_map(|(selector, degree)| (*degree != 0).then_some(selector))
+        .collect();
+
+    // The conflict matrix is deliberately only selector-sized. Activation
+    // rows remain bit-packed, so checking a selector pair does not materialize
+    // either N-element boolean vector.
+    let mut exclusion_matrix = (0..simple.len())
+        .map(|i| vec![false; i])
+        .collect::<Vec<_>>();
+    for (i, selector) in simple.iter().copied().enumerate() {
+        for (j, other_selector) in simple.iter().copied().enumerate().take(i) {
+            if selectors[selector].has_intersection(&selectors[other_selector]) {
+                exclusion_matrix[i][j] = true;
+            }
+        }
+    }
+
+    let mut added = vec![false; simple.len()];
+    for i in 0..simple.len() {
+        if added[i] {
+            continue;
+        }
+        added[i] = true;
+        let first_selector = simple[i];
+        let mut degree = degrees[first_selector] - 1;
+        let mut combination = vec![(i, first_selector)];
+        let mut combination_indices = vec![i];
+
+        'try_selectors: for j in (i + 1)..simple.len() {
+            let selector = simple[j];
+            if degree + combination.len() == max_degree {
+                break 'try_selectors;
+            }
+            if added[j] {
+                continue 'try_selectors;
+            }
+            for &member in &combination_indices {
+                if exclusion_matrix[j][member] {
+                    continue 'try_selectors;
+                }
+            }
+            let new_degree = std::cmp::max(degree, degrees[selector] - 1);
+            if new_degree + combination.len() + 1 > max_degree {
+                continue 'try_selectors;
+            }
+            degree = new_degree;
+            combination.push((j, selector));
+            combination_indices.push(j);
+            added[j] = true;
+        }
+
+        let combination_index = combination_count;
+        combination_count = combination_count
+            .checked_add(1)
+            .expect("selector combination count overflow");
+        let query = allocate_fixed_column();
+        let combination_len = combination.len();
+        let mut assigned_root = F::ONE;
+        let mut root_value = 1u64;
+        for (_, selector) in combination {
+            assert!(root_value <= max_degree as u64);
+            let mut expression = query.clone();
+            let mut root = F::ONE;
+            for _ in 0..combination_len {
+                if root != assigned_root {
+                    expression = expression * (Expression::Constant(root) - query.clone());
+                }
+                root += F::ONE;
+            }
+            selector_assignments.push(PackedSelectorAssignment {
+                selector,
+                combination_index,
+                root_value,
+                expression,
+            });
+            assigned_root += F::ONE;
+            root_value = root_value
+                .checked_add(1)
+                .expect("selector root value overflow");
+        }
+    }
+
+    assert_eq!(selector_assignments.len(), selectors.len());
+    (combination_count, selector_assignments)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +497,101 @@ mod tests {
                         (selectors[selector.selector].max_degree - 1) + expr_degree <= max_degree
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn packed_selector_compression_preserves_group_values_and_order() {
+        let raw = vec![
+            vec![true, false, true, false, false, false, false, false],
+            vec![false, true, false, true, false, false, false, false],
+            vec![false, false, true, false, true, false, false, false],
+            vec![false, false, false, false, false, false, false, true],
+            vec![false, false, false, false, false, true, false, false],
+        ];
+        let degrees = vec![1, 1, 1, 0, 1];
+        let descriptions: Vec<_> = raw
+            .iter()
+            .zip(&degrees)
+            .enumerate()
+            .map(
+                |(selector, (activations, max_degree))| SelectorDescription {
+                    selector,
+                    activations: activations.clone(),
+                    max_degree: *max_degree,
+                },
+            )
+            .collect();
+        let mut old_query = 0;
+        let (expected_columns, _) = process::<Fp, _>(
+            descriptions,
+            6,
+            || {
+                let query = old_query;
+                old_query += 1;
+                Expression::Fixed(FixedQuery {
+                    index: Some(query),
+                    column_index: query,
+                    rotation: Rotation::cur(),
+                })
+            },
+            true,
+        );
+
+        let packed = raw
+            .iter()
+            .map(|activations| {
+                let mut bitmap = SelectorBitmap::zeroed(activations.len(), 1).unwrap();
+                for (row, active) in activations.iter().copied().enumerate() {
+                    if active {
+                        bitmap.set_value(row, 1).unwrap();
+                    }
+                }
+                bitmap
+            })
+            .collect::<Vec<_>>();
+        let mut new_query = 0;
+        let (new_column_count, assignments) =
+            process_bitmaps::<Fp, _>(&packed, &degrees, 6, || {
+                let query = new_query;
+                new_query += 1;
+                Expression::Fixed(FixedQuery {
+                    index: Some(query),
+                    column_index: query,
+                    rotation: Rotation::cur(),
+                })
+            });
+        assert_eq!(new_column_count, expected_columns.len());
+
+        let assignments_by_column: Vec<Vec<_>> = (0..new_column_count)
+            .map(|column| {
+                assignments
+                    .iter()
+                    .filter(|assignment| assignment.combination_index == column)
+                    .collect()
+            })
+            .collect();
+        for (column_index, expected) in expected_columns.iter().enumerate() {
+            let members = &assignments_by_column[column_index];
+            let max_root = members
+                .iter()
+                .map(|assignment| assignment.root_value)
+                .max()
+                .unwrap();
+            let width = u64::BITS - max_root.leading_zeros();
+            let mut packed_column = SelectorBitmap::zeroed(raw[0].len(), width).unwrap();
+            for assignment in members {
+                packed[assignment.selector].for_each_set_bit(|row| {
+                    packed_column.set_value(row, assignment.root_value).unwrap();
+                });
+            }
+            let mut roots = vec![Fp::ZERO; max_root as usize + 1];
+            for root in 1..roots.len() {
+                roots[root] = roots[root - 1] + Fp::ONE;
+            }
+            for row in 0..packed_column.len() {
+                assert_eq!(roots[packed_column.value(row) as usize], expected[row]);
             }
         }
     }

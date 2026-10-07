@@ -52,7 +52,7 @@ from collect_results import _validate_preflight
 from gat_zkgpt_experiment import run_cell
 
 
-ROOT_CAPACITY_PROFILE_SCHEMA = "comparison-baseline-capacity-profile-v1"
+ROOT_CAPACITY_PROFILE_SCHEMA = "comparison-baseline-capacity-profile-v2"
 CELL_INTERNAL_LOG_RESERVE_BYTES = 16 * 1024 * 1024
 FINALIZATION_INTERNAL_DISK_RESERVE_BYTES = 64 * 1024 * 1024
 HOST_ACCOUNTING_OVERHEAD_BYTES = 64 * 1024 * 1024
@@ -188,6 +188,7 @@ def _capacity_profile(session_id: str, session_dir: Path,
             "additional_disk_peak_bytes": additional_disk,
             "cell_retained_artifact_bytes_upper_bound": retained_upper,
             "host_peak_bytes": host_upper,
+            "device_peak_bytes": 0,
             "phase_coverage": ["setup", "witness", "commitment", "prove", "verify"],
         }
     fs_device = os.stat(session_dir.parent.parent, follow_symlinks=False).st_dev
@@ -198,6 +199,8 @@ def _capacity_profile(session_id: str, session_dir: Path,
         "fs_device_id": str(fs_device),
         "preexisting_baseline_artifact_bytes": _tree_regular_bytes(session_dir),
         "finalization_disk_bytes_upper_bound": FINALIZATION_INTERNAL_DISK_RESERVE_BYTES,
+        "memory_accounting_kind": "host-only",
+        "device": None,
         "bound_methods": {
             "additional_disk_peak": "source_derived_upper_bound",
             "host_peak": "source_derived_upper_bound",

@@ -27,7 +27,7 @@ use std::ops::MulAssign;
 fn div_by_vanishing<F: Field>(poly: Polynomial<F, Coeff>, roots: &[F]) -> Vec<F> {
     let poly = roots
         .iter()
-        .fold(poly.values, |poly, point| kate_division(&poly, *point));
+        .fold(poly.into_values(), |poly, point| kate_division(&poly, *point));
 
     poly
 }
@@ -43,6 +43,7 @@ impl<'a, C: CurveAffine> Commitment<C::Scalar, PolynomialPointer<'a, C>> {
 
         let low_degree_equivalent = Polynomial {
             values: poly,
+            mapped: None,
             _marker: PhantomData,
         };
 
@@ -56,17 +57,17 @@ impl<'a, C: CurveAffine> Commitment<C::Scalar, PolynomialPointer<'a, C>> {
 impl<'a, C: CurveAffine> CommitmentExtension<'a, C> {
     fn linearisation_contribution(&self, u: C::Scalar) -> Polynomial<C::Scalar, Coeff> {
         let p_x = self.commitment.get().poly;
-        let r_eval = eval_polynomial(&self.low_degree_equivalent.values[..], u);
+        let r_eval = eval_polynomial(&self.low_degree_equivalent[..], u);
         p_x - r_eval
     }
 
     fn quotient_contribution(&self) -> Polynomial<C::Scalar, Coeff> {
         let len = self.low_degree_equivalent.len();
         let mut p_x = self.commitment.get().poly.clone();
-        parallelize(&mut p_x.values[0..len], |lhs, start| {
+        parallelize(&mut p_x[0..len], |lhs, start| {
             for (lhs, rhs) in lhs
                 .iter_mut()
-                .zip(self.low_degree_equivalent.values[start..].iter())
+                .zip(self.low_degree_equivalent[start..].iter())
             {
                 *lhs -= *rhs;
             }
@@ -170,6 +171,7 @@ where
 
             Polynomial {
                 values: poly,
+                mapped: None,
                 _marker: PhantomData,
             }
         };
@@ -274,7 +276,7 @@ where
         // sanity check
         #[cfg(debug_assertions)]
         {
-            let must_be_zero = eval_polynomial(&l_x.values[..], *u);
+            let must_be_zero = eval_polynomial(&l_x[..], *u);
             assert_eq!(must_be_zero, E::Fr::ZERO);
         }
 
@@ -288,6 +290,7 @@ where
 
         let h_x = Polynomial {
             values: h_x,
+            mapped: None,
             _marker: PhantomData,
         };
 

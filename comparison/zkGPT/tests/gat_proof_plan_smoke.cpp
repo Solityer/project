@@ -335,7 +335,8 @@ int main() {
     for (std::size_t index = 1; index + 1 < plan.circuit.circuit.size(); ++index) {
         if (plan.circuit.circuit[index].ty != layerType::FCONN) continue;
         const auto& binding_values = witness.values.at(index + 1);
-        if (binding_values.size() != plan.circuit.circuit[index].size ||
+        if (checked_output_bindings >= plan.matmuls.size() ||
+            binding_values.size() != plan.matmuls[checked_output_bindings].output_coordinates ||
             std::any_of(binding_values.begin(), binding_values.end(), [](const Fr& value) { return !value.isZero(); })) {
             std::cerr << "nonzero FCONN output did not bind to its canonical Aux output span\n";
             return 10;

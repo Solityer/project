@@ -17,6 +17,7 @@
 #endif
 
 #include <mutex>
+#include <memory>
 
 namespace zkdl {
 
@@ -203,6 +204,16 @@ inline CpuFp cpu_fp_mont_factor() {
 }
 
 inline CpuFp cpu_fp_from_mont(const CpuFp& value) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    zkdl_blst::blst_fp mont{};
+    for (size_t i = 0U; i < 6U; ++i) {
+        mont.l[i] = static_cast<std::uint64_t>(value[2U * i]) |
+                    (static_cast<std::uint64_t>(value[2U * i + 1U]) << 32U);
+    }
+    CpuFp out{};
+    zkdl_blst::blst_uint32_from_fp(out.data(), &mont);
+    return out;
+#else
     // Native Fp coordinates are Montgomery residues (Fp_ONE is R mod p).
     // The host implementation stores ordinary residues, so multiply by
     // R^{-1} rather than treating a Montgomery coordinate as canonical.
@@ -212,10 +223,25 @@ inline CpuFp cpu_fp_from_mont(const CpuFp& value) {
         2723605613U, 1543969431U, 4202751123U, 368467651U
     } }));
     return cpu_fp_mul(value, r_inverse);
+#endif
 }
 
 inline CpuFp cpu_fp_to_mont(const CpuFp& value) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    if (cpu_fp_compare(value, kFpModulus) >= 0) {
+        throw std::invalid_argument("non-canonical G1 Fp coordinate");
+    }
+    zkdl_blst::blst_fp mont{};
+    zkdl_blst::blst_fp_from_uint32(&mont, value.data());
+    CpuFp out{};
+    for (size_t i = 0U; i < 6U; ++i) {
+        out[2U * i] = static_cast<std::uint32_t>(mont.l[i]);
+        out[2U * i + 1U] = static_cast<std::uint32_t>(mont.l[i] >> 32U);
+    }
+    return out;
+#else
     return cpu_fp_mul(value, cpu_fp_mont_factor());
+#endif
 }
 
 struct CpuG1Point {
@@ -261,7 +287,7 @@ inline G1Jacobian_t cpu_g1_to_native(const CpuG1Point& point) {
     return out;
 }
 
-inline CpuG1Point cpu_g1_double(const CpuG1Point& input) {
+inline CpuG1Point cpu_g1_double_portable(const CpuG1Point& input) {
     if (input.is_zero()) return input;
     const CpuFp a = cpu_fp_mul(input.x, input.x);
     const CpuFp b = cpu_fp_mul(input.y, input.y);
@@ -278,7 +304,7 @@ inline CpuG1Point cpu_g1_double(const CpuG1Point& input) {
     return out;
 }
 
-inline CpuG1Point cpu_g1_add(const CpuG1Point& left, const CpuG1Point& right) {
+inline CpuG1Point cpu_g1_add_portable(const CpuG1Point& left, const CpuG1Point& right) {
     if (left.is_zero()) return right;
     if (right.is_zero()) return left;
     const CpuFp z1z1 = cpu_fp_mul(left.z, left.z);
@@ -287,7 +313,7 @@ inline CpuG1Point cpu_g1_add(const CpuG1Point& left, const CpuG1Point& right) {
     const CpuFp u2 = cpu_fp_mul(right.x, z1z1);
     CpuFp s1 = cpu_fp_mul(cpu_fp_mul(left.y, right.z), z2z2);
     const CpuFp s2 = cpu_fp_mul(cpu_fp_mul(right.y, left.z), z1z1);
-    if (cpu_fp_compare(u1, u2) == 0 && cpu_fp_compare(s1, s2) == 0) return cpu_g1_double(left);
+    if (cpu_fp_compare(u1, u2) == 0 && cpu_fp_compare(s1, s2) == 0) return cpu_g1_double_portable(left);
     const CpuFp h = cpu_fp_sub(u2, u1);
     CpuFp i = cpu_fp_add(h, h); i = cpu_fp_mul(i, i);
     const CpuFp j = cpu_fp_mul(h, i);
@@ -303,6 +329,81 @@ inline CpuG1Point cpu_g1_add(const CpuG1Point& left, const CpuG1Point& right) {
     return out;
 }
 
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+inline zkdl_blst::blst_fp cpu_fp_to_blst(const CpuFp& value) {
+    if (cpu_fp_compare(value, kFpModulus) >= 0) {
+        throw std::invalid_argument("non-canonical G1 Fp coordinate");
+    }
+    zkdl_blst::blst_fp out{};
+    zkdl_blst::blst_fp_from_uint32(&out, value.data());
+    return out;
+}
+
+inline CpuFp cpu_fp_from_blst(const zkdl_blst::blst_fp& value) {
+    CpuFp out{};
+    zkdl_blst::blst_uint32_from_fp(out.data(), &value);
+    return out;
+}
+
+inline zkdl_blst::blst_p1 cpu_g1_to_blst(const CpuG1Point& point) {
+    if (point.is_zero()) {
+        const CpuFp one = cpu_fp_one();
+        return zkdl_blst::blst_p1{cpu_fp_to_blst(CpuFp{}),
+                                  cpu_fp_to_blst(one),
+                                  cpu_fp_to_blst(CpuFp{})};
+    }
+    zkdl_blst::blst_p1 out{cpu_fp_to_blst(point.x),
+                           cpu_fp_to_blst(point.y),
+                           cpu_fp_to_blst(point.z)};
+    if (!zkdl_blst::blst_p1_on_curve(&out)) {
+        throw std::invalid_argument("G1 arithmetic input is not on the curve");
+    }
+    return out;
+}
+
+inline bool cpu_g1_point_valid(const CpuG1Point& point, bool require_subgroup = true) {
+    try {
+        const zkdl_blst::blst_p1 native = cpu_g1_to_blst(point);
+        return zkdl_blst::blst_p1_on_curve(&native) &&
+               (!require_subgroup || zkdl_blst::blst_p1_in_g1(&native));
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+inline CpuG1Point cpu_g1_from_blst(const zkdl_blst::blst_p1& point) {
+    if (zkdl_blst::blst_p1_is_inf(&point)) return CpuG1Point::zero();
+    CpuG1Point out;
+    out.x = cpu_fp_from_blst(point.x);
+    out.y = cpu_fp_from_blst(point.y);
+    out.z = cpu_fp_from_blst(point.z);
+    return out;
+}
+#endif
+
+inline CpuG1Point cpu_g1_double(const CpuG1Point& input) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    const zkdl_blst::blst_p1 native = cpu_g1_to_blst(input);
+    zkdl_blst::blst_p1 doubled{};
+    zkdl_blst::blst_p1_double(&doubled, &native);
+    return cpu_g1_from_blst(doubled);
+#else
+    return cpu_g1_double_portable(input);
+#endif
+}
+
+inline CpuG1Point cpu_g1_add(const CpuG1Point& left, const CpuG1Point& right) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    const zkdl_blst::blst_p1 native_left = cpu_g1_to_blst(left);
+    const zkdl_blst::blst_p1 native_right = cpu_g1_to_blst(right);
+    zkdl_blst::blst_p1 sum{};
+    zkdl_blst::blst_p1_add_or_double(&sum, &native_left, &native_right);
+    return cpu_g1_from_blst(sum);
+#else
+    return cpu_g1_add_portable(left, right);
+#endif
+}
+
 inline CpuG1Point cpu_g1_neg(const CpuG1Point& input) {
     if (input.is_zero()) return input;
     CpuG1Point out = input;
@@ -311,20 +412,62 @@ inline CpuG1Point cpu_g1_neg(const CpuG1Point& input) {
     return out;
 }
 
-inline CpuG1Point cpu_g1_mul(const CpuG1Point& input, const FrWire& scalar) {
+inline CpuG1Point cpu_g1_mul_portable(const CpuG1Point& input, const FrWire& scalar) {
     CpuG1Point result = CpuG1Point::zero();
     CpuG1Point base = input;
     int highest = blstrs__scalar__Scalar_LIMBS * 32 - 1;
     while (highest >= 0 && ((scalar[static_cast<size_t>(highest / 32)] >>
                              (highest % 32)) & 1U) == 0U) --highest;
     for (int bit = 0; bit <= highest; ++bit) {
-        if ((scalar[bit / 32U] >> (bit % 32U)) & 1U) result = cpu_g1_add(result, base);
-        base = cpu_g1_double(base);
+        if ((scalar[bit / 32U] >> (bit % 32U)) & 1U) result = cpu_g1_add_portable(result, base);
+        base = cpu_g1_double_portable(base);
     }
     return result;
 }
 
+inline CpuG1Point cpu_g1_mul_integer_bits(const CpuG1Point& input, const FrWire& scalar) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    const zkdl_blst::blst_p1 native = cpu_g1_to_blst(input);
+    zkdl_blst::blst_p1 product{};
+    zkdl_blst::blst_p1_mult(
+        &product, &native, reinterpret_cast<const zkdl_blst::byte*>(scalar.data()),
+        sizeof(FrWire) * 8U);
+    return cpu_g1_from_blst(product);
+#else
+    return cpu_g1_mul_portable(input, scalar);
+#endif
+}
+
+inline CpuG1Point cpu_g1_mul(const CpuG1Point& input, const FrWire& scalar) {
+    return cpu_g1_mul_integer_bits(input, scalar);
+}
+
+inline CpuG1Point cpu_g1_mul_canonical(const CpuG1Point& input, const FrWire& scalar) {
+    if (!fr_canonical(scalar)) {
+        throw std::invalid_argument("non-canonical G1 scalar");
+    }
+    return cpu_g1_mul_integer_bits(input, scalar);
+}
+
 inline bool cpu_g1_equal(const CpuG1Point& left, const CpuG1Point& right) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    const zkdl_blst::blst_p1 native_left = cpu_g1_to_blst(left);
+    const zkdl_blst::blst_p1 native_right = cpu_g1_to_blst(right);
+    return zkdl_blst::blst_p1_is_equal(&native_left, &native_right);
+#else
+    if (left.is_zero() || right.is_zero()) return left.is_zero() && right.is_zero();
+    const CpuFp z1z1 = cpu_fp_mul(left.z, left.z);
+    const CpuFp z2z2 = cpu_fp_mul(right.z, right.z);
+    const CpuFp x1 = cpu_fp_mul(left.x, z2z2);
+    const CpuFp x2 = cpu_fp_mul(right.x, z1z1);
+    if (cpu_fp_compare(x1, x2) != 0) return false;
+    const CpuFp y1 = cpu_fp_mul(left.y, cpu_fp_mul(right.z, z2z2));
+    const CpuFp y2 = cpu_fp_mul(right.y, cpu_fp_mul(left.z, z1z1));
+    return cpu_fp_compare(y1, y2) == 0;
+#endif
+}
+
+inline bool cpu_g1_equal_portable(const CpuG1Point& left, const CpuG1Point& right) {
     if (left.is_zero() || right.is_zero()) return left.is_zero() && right.is_zero();
     const CpuFp z1z1 = cpu_fp_mul(left.z, left.z);
     const CpuFp z2z2 = cpu_fp_mul(right.z, right.z);
@@ -336,12 +479,82 @@ inline bool cpu_g1_equal(const CpuG1Point& left, const CpuG1Point& right) {
     return cpu_fp_compare(y1, y2) == 0;
 }
 
+inline CpuG1Point cpu_g1_sum_portable(const std::vector<CpuG1Point>& points,
+                                     const std::vector<FrWire>& scalars) {
+    if (points.size() != scalars.size()) throw std::invalid_argument("G1 MSM shape mismatch");
+    CpuG1Point result = CpuG1Point::zero();
+    for (size_t i = 0; i < points.size(); ++i) {
+        result = cpu_g1_add_portable(result, cpu_g1_mul_portable(points[i], scalars[i]));
+    }
+    return result;
+}
+
+static constexpr size_t kCpuG1MsmChunkPoints = 1U << 14U;
+static constexpr size_t kCpuG1MsmProfileBytes = 16U * 1024U * 1024U;
+
+inline size_t cpu_g1_msm_workspace_bound_bytes() {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    const size_t scratch_bytes =
+        zkdl_blst::blst_p1s_mult_pippenger_scratch_sizeof(kCpuG1MsmChunkPoints);
+    if (scratch_bytes > std::numeric_limits<size_t>::max() -
+                            kCpuG1MsmChunkPoints *
+                                (sizeof(zkdl_blst::blst_p1_affine) + sizeof(const zkdl_blst::byte*))) {
+        throw std::overflow_error("BLST G1 MSM workspace size overflow");
+    }
+    return scratch_bytes + kCpuG1MsmChunkPoints *
+                               (sizeof(zkdl_blst::blst_p1_affine) + sizeof(const zkdl_blst::byte*));
+#else
+    return 0U;
+#endif
+}
+
 inline CpuG1Point cpu_g1_sum(const std::vector<CpuG1Point>& points,
                              const std::vector<FrWire>& scalars) {
     if (points.size() != scalars.size()) throw std::invalid_argument("G1 MSM shape mismatch");
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    if (points.empty()) return CpuG1Point::zero();
+    if (cpu_g1_msm_workspace_bound_bytes() > kCpuG1MsmProfileBytes) {
+        throw std::runtime_error("BLST G1 MSM exceeds its source-bound workspace profile");
+    }
     CpuG1Point result = CpuG1Point::zero();
-    for (size_t i = 0; i < points.size(); ++i) result = cpu_g1_add(result, cpu_g1_mul(points[i], scalars[i]));
+    std::unique_ptr<zkdl_blst::blst_p1_affine[]> affine(
+        new zkdl_blst::blst_p1_affine[kCpuG1MsmChunkPoints]);
+    std::unique_ptr<const zkdl_blst::byte*[]> scalar_ptrs(
+        new const zkdl_blst::byte*[kCpuG1MsmChunkPoints]);
+    const size_t scratch_bytes =
+        zkdl_blst::blst_p1s_mult_pippenger_scratch_sizeof(kCpuG1MsmChunkPoints);
+    if (scratch_bytes == 0U || scratch_bytes % sizeof(zkdl_blst::limb_t) != 0U) {
+        throw std::runtime_error("BLST returned an invalid Pippenger scratch bound");
+    }
+    std::unique_ptr<zkdl_blst::limb_t[]> scratch(
+        new zkdl_blst::limb_t[scratch_bytes / sizeof(zkdl_blst::limb_t)]);
+    const zkdl_blst::blst_p1_affine* affine_sources[2] = {affine.get(), nullptr};
+    for (size_t offset = 0U; offset < points.size();) {
+        const size_t count = std::min(kCpuG1MsmChunkPoints, points.size() - offset);
+        for (size_t i = 0U; i < count; ++i) {
+            if (!fr_canonical(scalars[offset + i])) {
+                throw std::invalid_argument("non-canonical G1 MSM scalar");
+            }
+            const zkdl_blst::blst_p1 projective = cpu_g1_to_blst(points[offset + i]);
+            zkdl_blst::blst_p1_to_affine(&affine[i], &projective);
+            scalar_ptrs[i] = reinterpret_cast<const zkdl_blst::byte*>(scalars[offset + i].data());
+        }
+        zkdl_blst::blst_p1 partial{};
+        zkdl_blst::blst_p1s_mult_pippenger(
+            &partial, affine_sources, count, scalar_ptrs.get(), sizeof(FrWire) * 8U,
+            scratch.get());
+        result = cpu_g1_add(result, cpu_g1_from_blst(partial));
+        offset += count;
+    }
     return result;
+#else
+    CpuG1Point result = CpuG1Point::zero();
+    for (size_t i = 0; i < points.size(); ++i) {
+        if (!fr_canonical(scalars[i])) throw std::invalid_argument("non-canonical G1 MSM scalar");
+        result = cpu_g1_add(result, cpu_g1_mul_portable(points[i], scalars[i]));
+    }
+    return result;
+#endif
 }
 
 inline CpuG1Point cpu_opening_commitment_eval(const std::vector<CpuG1Point>& generators,

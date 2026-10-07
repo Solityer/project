@@ -375,6 +375,34 @@ char bit_length(std::size_t value) {
     return bits;
 }
 
+std::size_t fconn_axis_domain(std::size_t logical_extent, const char* what) {
+    if (logical_extent == 0) throw std::invalid_argument(std::string(what) + " is zero");
+    std::size_t domain = 1;
+    while (domain < logical_extent) {
+        if (domain > (std::numeric_limits<std::size_t>::max() >> 1))
+            throw std::overflow_error(std::string("zkGPT FCONN padded axis overflows: ") + what);
+        domain <<= 1;
+    }
+    return domain;
+}
+
+std::size_t fconn_output_domain(std::size_t rows, std::size_t cols) {
+    return checked_mul(fconn_axis_domain(rows, "rows"),
+                       fconn_axis_domain(cols, "columns"),
+                       "FCONN padded output domain");
+}
+
+std::size_t fconn_padded_output_index(std::size_t rows, std::size_t cols,
+                                      std::size_t logical_index) {
+    if (logical_index >= checked_mul(rows, cols, "FCONN logical output coordinates"))
+        throw std::out_of_range("FCONN logical output coordinate is invalid");
+    const std::size_t padded_cols = fconn_axis_domain(cols, "columns");
+    const std::size_t row = logical_index / cols;
+    const std::size_t col = logical_index % cols;
+    return checked_add(checked_mul(row, padded_cols, "FCONN padded output row"),
+                       col, "FCONN padded output index");
+}
+
 std::string hidden_tensor_name(std::size_t layer, std::size_t head, const char* kind) {
     std::ostringstream out;
     out << "hidden/layer" << layer << "/head" << head << "/" << kind;
@@ -1830,7 +1858,7 @@ void append_fconn_claim_link(GatCircuitPlan& plan, const MatMulDescriptor& descr
 void append_projection_layer(GatCircuitPlan& plan, const MatMulDescriptor& descriptor) {
     layer current;
     current.ty = layerType::FCONN;
-    current.size = as_u64(std::max<std::size_t>(1, descriptor.output_coordinates), "projection layer size");
+    current.size = as_u64(fconn_output_domain(descriptor.rows, descriptor.cols), "projection layer size");
     current.zero_start_id = current.size;
     current.bit_length = bit_length(current.size);
     current.need_phase2 = true;
@@ -1857,7 +1885,7 @@ void append_projection_layer(GatCircuitPlan& plan, const MatMulDescriptor& descr
         unary.reserve(checked_mul(descriptor.output_coordinates, 2,
                                   "shape-only FCONN binding gate count"));
         for (std::size_t index = 0; index < descriptor.output_coordinates; ++index) {
-            unary.push_back({index, index, 1, 1});
+            unary.push_back({index, fconn_padded_output_index(descriptor.rows, descriptor.cols, index), 1, 1});
             unary.push_back({index, descriptor.output_offset + index, 0, -1});
         }
         append_explicit_layer(plan, layerType::ADD_BIAS,
@@ -1876,7 +1904,10 @@ void append_projection_layer(GatCircuitPlan& plan, const MatMulDescriptor& descr
     binding.reserve_gate_arrays(checked_mul(descriptor.output_coordinates, 2, "FCONN binding gate count"), 0);
     binding.reserve_coefficients(2);
     for (std::size_t index = 0; index < descriptor.output_coordinates; ++index) {
-        binding.add_unary(as_u64(index, "FCONN binding output"), as_u64(index, "FCONN binding previous output"), 1, 1);
+        binding.add_unary(as_u64(index, "FCONN binding output"),
+                          as_u64(fconn_padded_output_index(descriptor.rows, descriptor.cols, index),
+                                 "FCONN binding previous output"),
+                          1, 1);
         binding.add_unary(as_u64(index, "FCONN binding output"), as_u64(descriptor.output_offset + index, "FCONN binding input coordinate"), 0, -1);
     }
     plan.circuit.circuit.push_back(std::move(binding));
@@ -1901,7 +1932,7 @@ struct RelationLayerBuilder {
     std::size_t emitted_unary = 0;
     std::size_t emitted_binary = 0;
     bool shape_only = false;
-    zkgpt::NativeVector<Int> targets;
+    PackedResidualTargets targets;
     layer relation;
 
     void reserve(std::size_t output_count, std::size_t residual_count, std::size_t unary_count, std::size_t binary_count,
@@ -1914,6 +1945,8 @@ struct RelationLayerBuilder {
         shape_only = active_gkr_point_shape_collector != nullptr;
         if (shape_only) return;
         targets.reserve(residual_count);
+        if (residual_count != 0 && targets.capacity() != residual_count)
+            throw std::length_error("canonical GAT residual target capacity differs from its exact source count");
         relation.reserve_gate_arrays(unary_count, binary_count);
         relation.reserve_coefficients(coefficient_count);
     }
@@ -2211,6 +2244,7 @@ void finish_relation_layer(GatCircuitPlan& plan, RelationLayerBuilder& builder, 
     plan.public_output_coordinates = public_output_coordinates;
     plan.residual_coordinates = builder.next_output - public_output_coordinates;
     plan.residual_targets = std::move(builder.targets);
+    plan.residual_targets.freeze();
     cybozu::Sha256 target_hasher;
     const std::string domain = "zkgpt-gat-public-residual-targets-v1";
     target_hasher.update(domain.data(), domain.size());
@@ -3734,7 +3768,7 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan& plan, std::string* rea
                     link.output_segment != "Aux" ||
                     link.lhs_point_rule != "fconn/lhs/row-major-mle-v1" ||
                     link.rhs_point_rule != "fconn/rhs/column-major-padded-mle-v1" ||
-                    link.output_point_rule != "fconn/output/row-major-mle-v1" ||
+                    link.output_point_rule != "fconn/output/row-major-axis-padded-mle-v1" ||
                     link.source_rule != "canonical_input_oracle")
                     return fail("virtual FCONN claim link does not match its canonical relation descriptor");
                 ++fconn_link_index;
@@ -3783,15 +3817,13 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan& plan, std::string* rea
                 if (current.native_relation_id != descriptor.relation_id || current.native_family_id != descriptor.family_id ||
                     current.native_rows != descriptor.rows || current.native_inner != descriptor.inner || current.native_cols != descriptor.cols ||
                     current.native_lhs_offset != descriptor.lhs_offset || current.native_rhs_offset != descriptor.rhs_offset ||
-                    current.native_output_offset != descriptor.output_offset || current.size != descriptor.output_coordinates)
+                    current.native_output_offset != descriptor.output_offset ||
+                    current.size != fconn_output_domain(descriptor.rows, descriptor.cols))
                     return fail("FCONN layer metadata does not match canonical MatMul order");
                 continue;
             }
             const layer& previous = plan.circuit.circuit[layer_id - 1];
             if (previous.ty == layerType::FCONN) {
-                if (current.size != previous.size || !current.bin_gates.empty() ||
-                    current.uni_gates.size() != checked_mul(static_cast<std::size_t>(current.size), 2, "FCONN binding gate count"))
-                    return fail("FCONN output binding layer shape is invalid");
                 const MatMulDescriptor* descriptor = nullptr;
                 for (const MatMulDescriptor& candidate : plan.matmuls)
                     if (candidate.relation_id == previous.native_relation_id) {
@@ -3799,10 +3831,15 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan& plan, std::string* rea
                         break;
                     }
                 if (descriptor == nullptr) return fail("FCONN binding has no descriptor");
+                if (current.size != descriptor->output_coordinates || !current.bin_gates.empty() ||
+                    current.uni_gates.size() != checked_mul(static_cast<std::size_t>(current.size), 2, "FCONN binding gate count"))
+                    return fail("FCONN output binding layer shape is invalid");
                 for (std::size_t index = 0; index < current.size; ++index) {
                     const uniGate& previous_gate = current.uni_gates[index * 2];
                     const uniGate& input_gate = current.uni_gates[index * 2 + 1];
-                    if (previous_gate.g != index || previous_gate.u != index || previous_gate.lu != 1 || current.coefficient(previous_gate) != 1 || input_gate.g != index ||
+                    const std::size_t padded_index = fconn_padded_output_index(
+                        descriptor->rows, descriptor->cols, index);
+                    if (previous_gate.g != index || previous_gate.u != padded_index || previous_gate.lu != 1 || current.coefficient(previous_gate) != 1 || input_gate.g != index ||
                         input_gate.lu != 0 || current.coefficient(input_gate) != -1 || input_gate.u >= current.ori_id_u.size() ||
                         current.ori_id_u[input_gate.u] != descriptor->output_offset + index)
                         return fail("FCONN output binding coordinate is not canonical");
@@ -3852,7 +3889,7 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan& plan, std::string* rea
                 link.inner != descriptor.inner || link.cols != descriptor.cols ||
                 link.lhs_point_rule != "fconn/lhs/row-major-mle-v1" ||
                 link.rhs_point_rule != "fconn/rhs/column-major-padded-mle-v1" ||
-                link.output_point_rule != "fconn/output/row-major-mle-v1" ||
+                link.output_point_rule != "fconn/output/row-major-axis-padded-mle-v1" ||
                 link.source_rule != "canonical_input_oracle")
                 return fail("canonical FCONN claim link does not match its MatMul descriptor");
         }
@@ -5307,7 +5344,9 @@ bool evaluate_layered_values(
                 if (current.native_relation_id != descriptor.relation_id || current.native_family_id != descriptor.family_id ||
                     current.native_rows != descriptor.rows || current.native_inner != descriptor.inner || current.native_cols != descriptor.cols ||
                     current.native_lhs_offset != descriptor.lhs_offset || current.native_rhs_offset != descriptor.rhs_offset ||
-                    current.native_output_offset != descriptor.output_offset || descriptor.output_coordinates != output.size())
+                    current.native_output_offset != descriptor.output_offset ||
+                    current.size != fconn_output_domain(descriptor.rows, descriptor.cols) ||
+                    (!streamed_terminal && current.size != output.size()))
                     return fail("FCONN layer metadata does not match canonical MatMul descriptor");
                 const std::size_t lhs_count = checked_mul(descriptor.rows, descriptor.inner, "FCONN lhs evaluation");
                 const std::size_t rhs_count = checked_mul(descriptor.inner, descriptor.cols, "FCONN rhs evaluation");
@@ -5322,7 +5361,9 @@ bool evaluate_layered_values(
                             const std::size_t rhs = descriptor.rhs_offset + term * descriptor.cols + col;
                             value += input_at(lhs) * input_at(rhs);
                         }
-                        const std::size_t output_index = row * descriptor.cols + col;
+                        const std::size_t output_index = fconn_padded_output_index(
+                            descriptor.rows, descriptor.cols,
+                            row * descriptor.cols + col);
                         if (streamed_terminal) {
                             if (terminal_expected->at(output_index) != value)
                                 return fail("GAT terminal FCONN output mismatch at row " + std::to_string(output_index));
@@ -5332,6 +5373,16 @@ bool evaluate_layered_values(
                     }
                 }
                 if (streamed_terminal) {
+                    const std::size_t padded_rows = fconn_axis_domain(descriptor.rows, "rows");
+                    const std::size_t padded_cols = fconn_axis_domain(descriptor.cols, "columns");
+                    for (std::size_t row = 0; row < padded_rows; ++row) {
+                        for (std::size_t col = 0; col < padded_cols; ++col) {
+                            if (row < descriptor.rows && col < descriptor.cols) continue;
+                            const std::size_t index = row * padded_cols + col;
+                            if (terminal_expected->at(index) != Fr(0))
+                                return fail("GAT terminal FCONN padding is not zero at coordinate " + std::to_string(index));
+                        }
+                    }
                     if (expected_values == nullptr) values[layer_id].clear();
                 } else {
                     if (expected_values != nullptr && output != expected_values->at(layer_id)) return fail("GAT circuit witness layer does not match official gate evaluation");
@@ -6596,7 +6647,8 @@ bool read_context_plan(ContextReader &reader, GatCircuitPlan &plan) {
     if (!reader.read_size(plan.public_output_coordinates, "public output coordinates") ||
         !reader.read_size(plan.residual_coordinates, "residual coordinates") || !reader.read_count(count, "residual targets")) return false;
     plan.residual_targets.resize(count);
-    for (Int& target : plan.residual_targets) { std::uint64_t encoded = 0; if (!reader.read_u64(encoded)) return false; target = static_cast<Int>(encoded); }
+    for (std::size_t index = 0; index < count; ++index) { std::uint64_t encoded = 0; if (!reader.read_u64(encoded)) return false; plan.residual_targets.set(index, static_cast<Int>(encoded)); }
+    plan.residual_targets.freeze();
     if (!reader.read_count(count, "division range profiles", kContextMaxDescriptors)) return false;
     plan.division_range_bits.resize(count);
     for (auto& profile : plan.division_range_bits) for (unsigned& width : profile) { std::uint64_t encoded = 0; if (!reader.read_u64(encoded) || encoded == 0 || encoded > 63) return false; width = static_cast<unsigned>(encoded); }
@@ -6635,10 +6687,18 @@ bool read_context_plan(ContextReader &reader, GatCircuitPlan &plan) {
         }
         if (!reader.read_count(count, "unary original ids", kContextMaxElements)) return false;
         current.ori_id_u.resize(count);
-        for (u64 &value : current.ori_id_u) if (!reader.read_u64(value)) return false;
+        for (PackedU40 &value : current.ori_id_u) {
+            u64 decoded = 0;
+            if (!reader.read_u64(decoded) || decoded > PackedU40::kMaxValue) return false;
+            value = decoded;
+        }
         if (!reader.read_count(count, "binary original ids", kContextMaxElements)) return false;
         current.ori_id_v.resize(count);
-        for (u64 &value : current.ori_id_v) if (!reader.read_u64(value)) return false;
+        for (PackedU40 &value : current.ori_id_v) {
+            u64 decoded = 0;
+            if (!reader.read_u64(decoded) || decoded > PackedU40::kMaxValue) return false;
+            value = decoded;
+        }
         if (!reader.read_count(count, "unary gates", kContextMaxElements)) return false;
         current.reserve_gate_arrays(count, 0);
         for (std::size_t i = 0; i < count; ++i) {
@@ -6975,15 +7035,13 @@ bool context_layer_metadata_valid(const GatCircuitPlan& plan, std::string* reaso
             if (current.native_relation_id != descriptor.relation_id || current.native_family_id != descriptor.family_id ||
                 current.native_rows != descriptor.rows || current.native_inner != descriptor.inner || current.native_cols != descriptor.cols ||
                 current.native_lhs_offset != descriptor.lhs_offset || current.native_rhs_offset != descriptor.rhs_offset ||
-                current.native_output_offset != descriptor.output_offset || current.size != descriptor.output_coordinates)
+                current.native_output_offset != descriptor.output_offset ||
+                current.size != fconn_output_domain(descriptor.rows, descriptor.cols))
                 return fail("FCONN layer does not match compact MatMul descriptor");
             continue;
         }
         if (i > 0 && plan.circuit.circuit[i - 1].ty == layerType::FCONN) {
             const layer& previous = plan.circuit.circuit[i - 1];
-            if (current.size != previous.size || !current.bin_gates.empty() ||
-                current.uni_gates.size() != checked_mul(static_cast<std::size_t>(current.size), 2, "FCONN binding metadata gate count"))
-                return fail("FCONN binding metadata shape is invalid");
             const MatMulDescriptor* descriptor = nullptr;
             for (const MatMulDescriptor& candidate : plan.matmuls)
                 if (candidate.relation_id == previous.native_relation_id) {
@@ -6991,10 +7049,15 @@ bool context_layer_metadata_valid(const GatCircuitPlan& plan, std::string* reaso
                     break;
                 }
             if (descriptor == nullptr) return fail("FCONN binding metadata lacks descriptor");
+            if (current.size != descriptor->output_coordinates || !current.bin_gates.empty() ||
+                current.uni_gates.size() != checked_mul(static_cast<std::size_t>(current.size), 2, "FCONN binding metadata gate count"))
+                return fail("FCONN binding metadata shape is invalid");
             for (std::size_t index = 0; index < current.size; ++index) {
                 const uniGate& previous_gate = current.uni_gates[index * 2];
                 const uniGate& input_gate = current.uni_gates[index * 2 + 1];
-                if (previous_gate.g != index || previous_gate.u != index || previous_gate.lu != 1 || current.coefficient(previous_gate) != 1 || input_gate.g != index ||
+                const std::size_t padded_index = fconn_padded_output_index(
+                    descriptor->rows, descriptor->cols, index);
+                if (previous_gate.g != index || previous_gate.u != padded_index || previous_gate.lu != 1 || current.coefficient(previous_gate) != 1 || input_gate.g != index ||
                     input_gate.lu != 0 || current.coefficient(input_gate) != -1 || input_gate.u >= current.ori_id_u.size() ||
                     current.ori_id_u[input_gate.u] != descriptor->output_offset + index)
                     return fail("FCONN binding metadata coordinate is not canonical");
@@ -7637,31 +7700,80 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             ubytes(maximum_binary_gate_array_entries, binary_gate_entry_bytes, "maximum binary gate array"));
         report.max_single_gate_array_bytes_upper_bound = maximum_single_gate_array_bytes;
         report.max_materialized_gate_bytes = static_cast<std::size_t>(std::min<std::uint64_t>(maximum_single_gate_array_bytes, std::numeric_limits<std::size_t>::max()));
-        // The native prover keeps exactly eight prefix vectors in one sumcheck
-        // phase: two active and two folded vectors for each lane. Finalization
-        // releases all eight before the next phase, so U and V storage is
-        // sequential. Each vector is resized once from empty per phase and
-        // runtime checks that capacity equals the requested size; no 2x
-        // per-vector allocation-transition envelope is live or admitted.
-        const std::uint64_t max_u_prefix = std::max(max_source_refs, max_layer_outputs);
-        const std::uint64_t max_v_prefix = std::max(max_source_refs / 2 + max_source_refs % 2, max_layer_outputs);
-        const std::uint64_t u_active_source = std::max<std::uint64_t>(1, max_source_refs);
-        const std::uint64_t v_active_source = std::max<std::uint64_t>(1, max_source_refs / 2 + max_source_refs % 2);
-        const std::uint64_t active_output = std::max<std::uint64_t>(1, max_layer_outputs);
-        const std::uint64_t u_fold_source = std::max<std::uint64_t>(1, u_active_source / 2 + u_active_source % 2);
-        const std::uint64_t v_fold_source = std::max<std::uint64_t>(1, v_active_source / 2 + v_active_source % 2);
-        const std::uint64_t fold_output = std::max<std::uint64_t>(1, active_output / 2 + active_output % 2);
-        const std::uint64_t phase1_prefix_slots = umul(2,
-            uadd(uadd(u_active_source, active_output, "GKR phase1 active prefix storage"),
-                 uadd(u_fold_source, fold_output, "GKR phase1 folded prefix storage"), "GKR phase1 prefix storage"),
-            "GKR phase1 prefix vector pairs");
-        const std::uint64_t phase2_prefix_slots = umul(2,
-            uadd(uadd(v_active_source, active_output, "GKR phase2 active prefix storage"),
-                 uadd(v_fold_source, fold_output, "GKR phase2 folded prefix storage"), "GKR phase2 prefix storage"),
-            "GKR phase2 prefix vector pairs");
-        report.gkr_prefix_workspace_bytes_upper_bound = ubytes(
-            std::max(phase1_prefix_slots, phase2_prefix_slots),
-            sizeof(linear_poly), "GKR valid-prefix workspace");
+        // Each active sumcheck phase owns value and multiplier Fr arenas for
+        // both lanes. The scalar prefix is folded in-place to interleaved
+        // affine (a,b) pairs, so each arena holds max(2, round_up_even(n))
+        // field elements for its source extent n. The two bounded linear_poly
+        // scratch arrays are ordinary heap vectors; include their actual
+        // maximum single-call size in the workspace report, but not in mapped
+        // storage. finalize1 releases phase one before phase two starts.
+        const std::uint64_t prefix_heap_limit = static_cast<std::uint64_t>(zkgpt::native_storage::heap_limit);
+        const auto prefix_phase = [&umul, &uadd, &ubytes, prefix_heap_limit](std::uint64_t lane0,
+                                                                             std::uint64_t lane1) {
+            const auto arena_capacity = [&uadd](std::uint64_t extent, const char* what) {
+                return std::max<std::uint64_t>(2U,
+                    uadd(extent, extent & 1U, what));
+            };
+            const std::uint64_t capacity0 = arena_capacity(lane0, "GKR lane 0 packed arena capacity");
+            const std::uint64_t capacity1 = arena_capacity(lane1, "GKR lane 1 packed arena capacity");
+            const std::uint64_t arena0_bytes = ubytes(capacity0, sizeof(Fr), "GKR lane 0 packed arena");
+            const std::uint64_t arena1_bytes = ubytes(capacity1, sizeof(Fr), "GKR lane 1 packed arena");
+            const std::uint64_t arena_bytes = umul(2, uadd(arena0_bytes, arena1_bytes,
+                "GKR packed value and multiplier arenas"), "GKR four packed prefix arenas");
+
+            constexpr std::uint64_t kChunkPairs = 1U << 16U;
+            const std::uint64_t fold0 = lane0 / 2U + lane0 % 2U;
+            const std::uint64_t fold1 = lane1 / 2U + lane1 % 2U;
+            const std::uint64_t largest_fold = std::max(fold0, fold1);
+            const std::uint64_t scratch_pairs = std::min(largest_fold, kChunkPairs);
+            const std::uint64_t workers = largest_fold < (1U << 15U)
+                ? 1U : std::min<std::uint64_t>(32U, scratch_pairs);
+            const std::uint64_t scratch_bytes = largest_fold == 0 ? 0 : uadd(
+                ubytes(umul(2, scratch_pairs, "GKR bounded prefix scratch entries"), sizeof(linear_poly),
+                       "GKR bounded prefix fold scratch arrays"),
+                ubytes(workers, sizeof(quadratic_poly), "GKR prefix worker partials"),
+                "GKR bounded prefix fold scratch and partials");
+            const std::uint64_t host_bytes = uadd(
+                uadd(arena0_bytes <= prefix_heap_limit ? arena0_bytes : 0,
+                     arena1_bytes <= prefix_heap_limit ? arena1_bytes : 0,
+                     "GKR packed prefix heap arenas"),
+                uadd(arena0_bytes <= prefix_heap_limit ? arena0_bytes : 0,
+                     arena1_bytes <= prefix_heap_limit ? arena1_bytes : 0,
+                     "GKR packed multiplier heap arenas"),
+                "GKR packed prefix heap storage");
+            const std::uint64_t heap_workspace = uadd(host_bytes, scratch_bytes,
+                "GKR packed prefix heap and bounded scratch");
+            const std::uint64_t total_bytes = uadd(arena_bytes, scratch_bytes,
+                "GKR packed prefix arenas and bounded fold scratch");
+
+            const auto mapped_one = [prefix_heap_limit, &ubytes](std::uint64_t capacity, const char* what) {
+                const std::uint64_t bytes = ubytes(capacity, sizeof(Fr), what);
+                return bytes > prefix_heap_limit ? bytes : std::uint64_t(0);
+            };
+            const std::uint64_t mapped_bytes = umul(2,
+                uadd(mapped_one(capacity0, "GKR mapped lane 0 packed arena"),
+                     mapped_one(capacity1, "GKR mapped lane 1 packed arena"),
+                     "GKR mapped packed value arenas"), "GKR mapped value and multiplier arenas");
+            return std::array<std::uint64_t, 3>{total_bytes, mapped_bytes, heap_workspace};
+        };
+        std::uint64_t max_prefix_phase_bytes = 0;
+        std::uint64_t max_prefix_mapped_bytes = 0;
+        std::uint64_t max_prefix_heap_bytes = 0;
+        for (std::size_t index = 1; index < layer_shapes.size(); ++index) {
+            const GatGkrLayerShapeProfile& shape = layer_shapes[index];
+            if (shape.layer_type == static_cast<std::uint32_t>(layerType::FCONN)) continue;
+            const auto phase1 = prefix_phase(shape.size_u0, shape.size_u1);
+            max_prefix_phase_bytes = std::max(max_prefix_phase_bytes, phase1[0]);
+            max_prefix_mapped_bytes = std::max(max_prefix_mapped_bytes, phase1[1]);
+            max_prefix_heap_bytes = std::max(max_prefix_heap_bytes, phase1[2]);
+            if (shape.need_phase2) {
+                const auto phase2 = prefix_phase(shape.size_v0, shape.size_v1);
+                max_prefix_phase_bytes = std::max(max_prefix_phase_bytes, phase2[0]);
+                max_prefix_mapped_bytes = std::max(max_prefix_mapped_bytes, phase2[1]);
+                max_prefix_heap_bytes = std::max(max_prefix_heap_bytes, phase2[2]);
+            }
+        }
+        report.gkr_prefix_workspace_bytes_upper_bound = max_prefix_phase_bytes;
 
         const std::uint64_t gkr_layers = report.gkr_layer_count_upper_bound;
         const std::uint64_t input_domain = report.flattened_input_domain_entries;
@@ -7862,51 +7974,103 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             "borrowed Aux span count");
         const std::uint64_t aux_chunk_count = aux_length / AuxValueProviderState::chunk_entries +
             (aux_length % AuxValueProviderState::chunk_entries != 0);
-        // run_forward retains one complete integer/field trace while its final
-        // validate_relation call constructs a second complete trace. 64 bytes
-        // per canonical Aux coordinate bounds one trace's vector capacity
-        // (including Field vectors and the larger DivisionWitness records);
-        // account for both live trace trees here.
-        const std::uint64_t simultaneous_forward_trace_backing =
-            ubytes(aux_length, 128, "simultaneous forward and relation-validation trace backing");
+        // Bound the actual typed vectors in one canonical trace tree. Int is
+        // int64, Field is BN254 Fr, and an unreserved DivisionWitness push_back
+        // vector can retain up to twice its logical size. All other vectors
+        // below are sized/reserved from their exact public graph/model shapes.
+        const std::uint64_t attention_per_coordinate_bytes = uadd(
+            uadd(umul(4, sizeof(Int), "attention Int coordinate vectors"),
+                 umul(2, sizeof(Fr), "attention Field coordinate vectors"), "attention coordinate vectors"),
+            umul(2, sizeof(DivisionWitness), "unreserved attention division capacity"),
+            "typed attention coordinate bytes");
+        const std::uint64_t attention_per_node_bytes = uadd(umul(4, sizeof(Int), "attention node Int vectors"),
+            sizeof(Fr), "attention node bytes");
+        const std::uint64_t attention_per_edge_bytes = uadd(umul(5, sizeof(Int), "attention edge Int vectors"),
+            sizeof(Fr), "attention edge bytes");
+        const auto attention_trace_bytes = [&umul, &uadd, &ubytes, &graph_nodes, &graph_edges,
+                                             attention_per_coordinate_bytes,
+                                             attention_per_node_bytes, attention_per_edge_bytes](std::uint64_t dim) {
+            const std::uint64_t coordinates = umul(graph_nodes, dim, "typed attention coordinates");
+            return uadd(ubytes(coordinates, static_cast<std::size_t>(attention_per_coordinate_bytes),
+                               "typed attention coordinate backing"),
+                uadd(ubytes(graph_nodes, static_cast<std::size_t>(attention_per_node_bytes),
+                            "typed attention node backing"),
+                     ubytes(graph_edges, static_cast<std::size_t>(attention_per_edge_bytes),
+                            "typed attention edge backing"), "typed attention node/edge backing"),
+                "typed attention trace backing");
+        };
+        const std::uint64_t hidden_attention_trace_bytes = umul(hidden_heads_u,
+            uadd(attention_trace_bytes(h0_u), attention_trace_bytes(h1_u), "two hidden attention layers"),
+            "hidden attention heads");
+        const std::uint64_t output_attention_trace_bytes = umul(output_heads_u,
+            attention_trace_bytes(classes_u), "output attention heads");
+        const std::uint64_t trace_input_bytes = ubytes(umul(graph_nodes,
+            u64_from_size(graph.num_features, "typed trace feature width"), "typed trace input coordinates"),
+            sizeof(Int), "typed trace input backing");
+        const std::uint64_t trace_hidden_concat_bytes = ubytes(umul(graph_nodes,
+            umul(hidden_heads_u, uadd(h0_u, h1_u, "typed hidden concatenation widths"),
+                 "typed hidden concatenation entries"), "typed hidden concatenation entries"),
+            sizeof(Int), "typed hidden concatenation backing");
+        const std::uint64_t per_output_head_trace_bytes = uadd(
+            ubytes(umul(152, nc, "typed output per-head arrays"), 1, "typed output per-head arrays"),
+            ubytes(classes_u, sizeof(Int), "typed output bias backing"), "typed output head backing");
+        const std::uint64_t trace_output_head_bytes = umul(output_heads_u, per_output_head_trace_bytes,
+            "typed output-head trace backing");
+        const std::uint64_t trace_global_output_bytes = ubytes(umul(152, nc,
+            "typed global output arrays and reserved division witnesses"), 1,
+            "typed global output arrays and reserved division witnesses");
+        // run_forward and validate_relation each retain a local current tensor.
+        // During assignment the old layer and new layer buffers may overlap;
+        // charge input plus both hidden concatenation widths for each tree.
+        const std::uint64_t trace_current_copy_bytes = ubytes(umul(graph_nodes,
+            uadd(u64_from_size(graph.num_features, "current input width"),
+                 umul(hidden_heads_u, uadd(h0_u, h1_u, "current hidden widths"),
+                      "current hidden widths"), "current tensor source/destination envelope"),
+            "current tensor source/destination entries"), sizeof(Int),
+            "current tensor source/destination backing");
+        const std::uint64_t one_typed_trace_tree_bytes = uadd(hidden_attention_trace_bytes,
+            uadd(output_attention_trace_bytes,
+                uadd(trace_input_bytes,
+                    uadd(trace_hidden_concat_bytes,
+                        uadd(trace_output_head_bytes,
+                            uadd(trace_global_output_bytes, trace_current_copy_bytes,
+                                 "typed trace global outputs and current tensor"),
+                            "typed trace output heads and global outputs"),
+                        "typed trace hidden concatenations and outputs"),
+                    "typed trace input and concatenations"),
+                "typed trace attention and owned vectors"), "one typed canonical trace tree");
+        const std::uint64_t simultaneous_forward_trace_backing = umul(2, one_typed_trace_tree_bytes,
+            "simultaneous forward and relation-validation typed trace trees");
         const std::uint64_t borrowed_aux_metadata = uadd(
             ubytes(aux_span_count, sizeof(AuxValueSpan), "borrowed Aux spans"),
             ubytes(aux_chunk_count, sizeof(std::size_t), "borrowed Aux chunk map"), "borrowed Aux provider metadata");
-        // run_forward and validate_relation each keep a separate copied logits
-        // vector in addition to their trace-owned logits. Bound two vectors at
-        // twice logical capacity each.
-        const std::uint64_t duplicated_public_logits = ubytes(u64_from_size(output_coordinates, "forward logits count"),
-            4 * sizeof(Int), "duplicate forward logits capacity");
-        // compute_attention builds one incoming-range vector for a head at a
-        // time. Bound its pair capacity and allocator/control overhead while
-        // both trace trees are live. make_bound_family scans existing trace
-        // arrays and does not materialize another trace-sized vector.
+        // compute_attention builds one incoming-range vector at a time while
+        // both trees are live. make_bound_family scans trace arrays in place.
         const std::uint64_t forward_helper_bytes = ubytes(graph_nodes, 64, "forward range/helper vector workspace");
         // A second StaticTables instance is built by validate_relation. The
         // existing Lasso table/index bound is larger than two native raw-table
         // copies and therefore safely covers that duplicate.
-        report.borrowed_trace_bytes_upper_bound = uadd(simultaneous_forward_trace_backing,
-            uadd(report.lasso_table_and_index_bytes_upper_bound,
-                uadd(borrowed_aux_metadata, uadd(duplicated_public_logits,
-                    uadd(forward_helper_bytes, 1ULL << 20, "forward helper metadata allowance"),
-                    "forward relation-validation helper and logits"), "forward Aux metadata and validation work"),
-                "second static table and forward Aux state"), "simultaneous forward trace and validation state");
+        // The proof retains one trace tree. The forward self-validation peak
+        // below separately accounts for both trees and its duplicate tables.
+        report.borrowed_trace_bytes_upper_bound = uadd(one_typed_trace_tree_bytes,
+            uadd(borrowed_aux_metadata, uadd(forward_helper_bytes, 1ULL << 20,
+                "proof trace helper metadata allowance"), "proof trace provider/helper metadata"),
+            "one typed borrowed trace and provider state");
+        const std::uint64_t forward_relation_validation_peak = uadd(graph_bytes,
+            uadd(model_bytes,
+                uadd(simultaneous_forward_trace_backing,
+                    uadd(report.lasso_table_and_index_bytes_upper_bound,
+                        uadd(borrowed_aux_metadata,
+                            uadd(forward_helper_bytes, 1ULL << 20,
+                                 "dual-trace forward helper metadata allowance"),
+                            "dual-trace provider and helper metadata"),
+                        "dual-trace table/index and provider state"),
+                    "dual-trace relation validation and tables"),
+                "dual-trace validation model"), "dual-trace validation graph");
         const std::uint64_t heap_limit = static_cast<std::uint64_t>(zkgpt::native_storage::heap_limit);
         const auto mapped_allocation = [heap_limit](std::uint64_t bytes) { return bytes > heap_limit ? bytes : std::uint64_t(0); };
         const auto mapped_growth = [&mapped_allocation, &umul, &ubytes](std::uint64_t count, std::size_t width, const char* what) {
             return mapped_allocation(umul(2, ubytes(count, width, what), what));
-        };
-        const auto mapped_collection = [&umul, heap_limit](std::uint64_t logical_bytes,
-                                                            std::uint64_t max_logical_allocation,
-                                                            std::uint64_t allocation_count,
-                                                            const char* what) {
-            if (logical_bytes == 0 || max_logical_allocation == 0 || allocation_count == 0) return std::uint64_t(0);
-            const std::uint64_t total_capacity = umul(2, logical_bytes, what);
-            const std::uint64_t max_capacity = umul(2, max_logical_allocation, what);
-            if (max_capacity <= heap_limit) return std::uint64_t(0);
-            const std::uint64_t mapped_count = std::min(allocation_count, total_capacity / (heap_limit + 1));
-            if (mapped_count == 0) return std::uint64_t(0);
-            return std::min(total_capacity, umul(mapped_count, max_capacity, what));
         };
         const auto mapped_reserved_collection = [&umul, heap_limit](std::uint64_t logical_bytes,
                                                                     std::uint64_t max_allocation,
@@ -7937,20 +8101,36 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t coefficient_pools_mapped_bytes = coefficient_pool_per_layer_bytes > heap_limit
             ? mapped_allocation(coefficient_pools_heap_bytes)
             : 0;
+        const bool wide_coefficient_ids = coefficient_candidates > 256U;
+        const std::uint64_t wide_id_entry_bytes = sizeof(u32);
         const std::uint64_t mapped_direct_gate_arrays = uadd(
-            mapped_collection(ubytes(direct_unary_count, unary_gate_entry_bytes, "direct unary gate arrays"), direct_unary_gate_array_bytes,
+            mapped_reserved_collection(ubytes(direct_unary_count, unary_gate_entry_bytes, "direct unary gate arrays"), direct_unary_gate_array_bytes,
                 layer_array_count, "mapped direct unary gate arrays"),
-            mapped_collection(ubytes(direct_binary_count, binary_gate_entry_bytes, "direct binary gate arrays"), direct_binary_gate_array_bytes,
+            mapped_reserved_collection(ubytes(direct_binary_count, binary_gate_entry_bytes, "direct binary gate arrays"), direct_binary_gate_array_bytes,
                 layer_array_count, "mapped direct binary gate arrays"), "mapped direct GKR gate arrays");
+        const std::uint64_t mapped_direct_wide_ids = wide_coefficient_ids ? uadd(
+            mapped_reserved_collection(ubytes(direct_unary_count, wide_id_entry_bytes, "direct wide unary coefficient IDs"),
+                ubytes(maximum_unary_layer_gates, wide_id_entry_bytes, "maximum direct wide unary coefficient IDs"),
+                layer_array_count, "mapped direct wide unary coefficient IDs"),
+            mapped_reserved_collection(ubytes(direct_binary_count, wide_id_entry_bytes, "direct wide binary coefficient IDs"),
+                ubytes(maximum_binary_layer_gates, wide_id_entry_bytes, "maximum direct wide binary coefficient IDs"),
+                layer_array_count, "mapped direct wide binary coefficient IDs"),
+            "mapped direct wide coefficient IDs") : 0;
         const std::uint64_t mapped_relation_gate_arrays = uadd(
             mapped_allocation(ubytes(relation_counts.unary, unary_gate_entry_bytes, "reserved relation unary gates")),
             mapped_allocation(ubytes(relation_counts.binary, binary_gate_entry_bytes, "reserved relation binary gates")),
             "mapped reserved relation gate arrays");
+        const std::uint64_t mapped_relation_wide_ids = wide_coefficient_ids ? uadd(
+            mapped_allocation(ubytes(relation_counts.unary, wide_id_entry_bytes, "reserved wide relation unary coefficient IDs")),
+            mapped_allocation(ubytes(relation_counts.binary, wide_id_entry_bytes, "reserved wide relation binary coefficient IDs")),
+            "mapped reserved relation wide coefficient IDs") : 0;
         const std::uint64_t mapped_gate_arrays = uadd(
-            uadd(mapped_direct_gate_arrays, mapped_relation_gate_arrays, "mapped GKR gate arrays"),
+            uadd(uadd(mapped_direct_gate_arrays, mapped_relation_gate_arrays, "mapped GKR gate arrays"),
+                uadd(mapped_direct_wide_ids, mapped_relation_wide_ids, "mapped wide coefficient sidecars"),
+                "mapped GKR gate arrays and sidecars"),
             coefficient_pools_mapped_bytes, "mapped GKR coefficient pools and gates");
         const std::uint64_t origin_map_reference_bytes = ubytes(input_map_entries,
-            sizeof(std::uint64_t), "actual GKR input source-coordinate maps");
+            sizeof(PackedU40), "actual GKR input source-coordinate maps");
         const std::uint64_t origin_map_count = input_map_count;
         std::uint64_t origin_map_domain = 0;
         for (const InputSegment& segment : report.input_layout.segments)
@@ -7968,27 +8148,36 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         if (max_unique_map_entries > origin_map_domain ||
             input_map_entries > umul(origin_map_count, origin_map_domain, "actual GKR input map domain bound"))
             throw std::logic_error("actual GKR input source maps exceed their logical input support");
-        const std::uint64_t origin_map_max_bytes = ubytes(max_unique_map_entries, sizeof(std::uint64_t), "maximum exact unique source-coordinate map");
+        const std::uint64_t origin_map_max_bytes = ubytes(max_unique_map_entries, sizeof(PackedU40), "maximum exact unique source-coordinate map");
         const std::uint64_t origin_map_logical_bytes = origin_map_reference_bytes;
         const std::uint64_t mapped_origin_maps = mapped_reserved_collection(origin_map_logical_bytes, origin_map_max_bytes,
             origin_map_count, "mapped exact unique source-coordinate maps");
-        const std::uint64_t builder_target_bytes = ubytes(relation_residual_entries, sizeof(Int), "reserved relation residual targets");
+        const std::uint64_t builder_target_bytes = ubytes(relation_residual_entries, sizeof(u8), "reserved packed relation residual target IDs");
+        const std::uint64_t builder_target_dictionary_heap_bytes = PackedResidualTargets::dictionary_heap_upper_bound();
         const std::uint64_t builder_unary_bytes = ubytes(relation_counts.unary, sizeof(uniGate), "reserved relation unary gates");
         const std::uint64_t builder_binary_bytes = ubytes(relation_counts.binary, sizeof(binGate), "reserved relation binary gates");
+        const std::uint64_t builder_wide_unary_bytes = wide_coefficient_ids
+            ? ubytes(relation_counts.unary, wide_id_entry_bytes, "reserved wide relation unary coefficient IDs") : 0;
+        const std::uint64_t builder_wide_binary_bytes = wide_coefficient_ids
+            ? ubytes(relation_counts.binary, wide_id_entry_bytes, "reserved wide relation binary coefficient IDs") : 0;
         const std::uint64_t builder_target_capacity_bytes = builder_target_bytes;
         const std::uint64_t builder_unary_capacity_bytes = builder_unary_bytes;
         const std::uint64_t builder_binary_capacity_bytes = builder_binary_bytes;
-        const std::uint64_t builder_max_bytes = std::max({builder_target_capacity_bytes, builder_unary_capacity_bytes, builder_binary_capacity_bytes});
+        const std::uint64_t builder_max_bytes = std::max({builder_target_capacity_bytes, builder_unary_capacity_bytes,
+            builder_binary_capacity_bytes, builder_wide_unary_bytes, builder_wide_binary_bytes});
         report.max_single_relation_builder_array_bytes_upper_bound = builder_max_bytes;
         const std::uint64_t mapped_gate_builder = uadd(
             mapped_allocation(builder_target_capacity_bytes),
-            uadd(mapped_allocation(builder_unary_capacity_bytes), mapped_allocation(builder_binary_capacity_bytes),
-                 "mapped relation builder gate arrays"), "mapped relation builder reserved arrays");
+            uadd(uadd(mapped_allocation(builder_unary_capacity_bytes), mapped_allocation(builder_binary_capacity_bytes),
+                    "mapped relation builder gate arrays"),
+                uadd(mapped_allocation(builder_wide_unary_bytes), mapped_allocation(builder_wide_binary_bytes),
+                    "mapped relation builder wide coefficient IDs"),
+                "mapped relation builder gates and sidecars"), "mapped relation builder reserved arrays");
         const std::uint64_t mapped_residual_targets = mapped_allocation(builder_target_capacity_bytes);
         const std::uint64_t subset_u_entries = max_input_u_entries;
         const std::uint64_t subset_v_entries = max_input_v_entries;
-        const std::uint64_t subset_u_bytes = ubytes(subset_u_entries, sizeof(std::uint64_t), "GKR U exact unique source map capacity");
-        const std::uint64_t subset_v_bytes = ubytes(subset_v_entries, sizeof(std::uint64_t), "GKR V exact unique source map capacity");
+        const std::uint64_t subset_u_bytes = ubytes(subset_u_entries, sizeof(PackedU40), "GKR U exact unique source map capacity");
+        const std::uint64_t subset_v_bytes = ubytes(subset_v_entries, sizeof(PackedU40), "GKR V exact unique source map capacity");
         report.gkr_subset_source_map_bytes_upper_bound = std::max(subset_u_bytes, subset_v_bytes);
         const std::uint64_t bitmap_word_count = origin_map_domain / 64 + (origin_map_domain % 64 != 0);
         const std::uint64_t mapped_subset_scratch_peak = mapped_allocation(
@@ -7996,7 +8185,8 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         report.gkr_subset_sort_scratch_bytes_upper_bound = 0;
         report.gkr_subset_bitmap_scratch_bytes_upper_bound = ubytes(bitmap_word_count, sizeof(std::uint64_t), "one packed source-map bitmap");
         const std::uint64_t gate_builder_mapped_peak = uadd(
-            uadd(mapped_direct_gate_arrays, coefficient_pools_mapped_bytes, "gate-builder coefficient pools"),
+            uadd(uadd(mapped_direct_gate_arrays, mapped_direct_wide_ids, "gate-builder direct gates and coefficient IDs"),
+                coefficient_pools_mapped_bytes, "gate-builder coefficient pools"),
             mapped_gate_builder, "gate-builder mapped buffers before relation-array transfer");
         const std::uint64_t gate_subset_mapped_peak = uadd(mapped_gate_arrays,
             uadd(mapped_residual_targets, uadd(mapped_origin_maps, mapped_subset_scratch_peak, "gate-subset mapped buffers"),
@@ -8042,9 +8232,7 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             "mapped FCONN fold buffers");
         const std::uint64_t mapped_fconn_source_weights = uadd(mapped_growth(max_inner_domain, sizeof(Fr), "mapped FCONN inner equality weights"),
             mapped_growth(max_outer_domain, sizeof(Fr), "mapped FCONN outer equality weights"), "mapped FCONN source weights");
-        const std::uint64_t max_prefix_domain = std::max(max_u_prefix, max_v_prefix);
-        const std::uint64_t max_prefix_allocation = ubytes(max_prefix_domain, sizeof(linear_poly), "GKR prefix allocation");
-        const std::uint64_t mapped_gkr_prefix = max_prefix_allocation > heap_limit ? report.gkr_prefix_workspace_bytes_upper_bound : 0;
+        const std::uint64_t mapped_gkr_prefix = max_prefix_mapped_bytes;
 
         std::uint64_t mapped_lasso_persistent = 0;
         std::uint64_t mapped_lasso_transient_peak = 0;
@@ -8053,33 +8241,27 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             // The row ledger, row commitments and row-fold vectors are ordinary
             // std::vector allocations. Only the sparse/T2 witness and prepared
             // Hyrax opening buffers use NativeVector backing here.
-            const std::uint64_t booleanity_peak = workspace.t2_booleanity
-                ? mapped_growth(workspace.private_witness_bytes, 1, "mapped Lasso T2 private witness")
-                : mapped_allocation(workspace.private_witness_bytes);
-            const std::uint64_t opening_peak = uadd(mapped_growth(workspace.masked_opening_generator_bytes, 1, "mapped Lasso opening generators"),
-                uadd(mapped_growth(workspace.masked_opening_coefficient_bytes, 1, "mapped Lasso opening coefficients"),
-                    mapped_growth(workspace.masked_opening_response_bytes, 1, "mapped Lasso opening responses"), "mapped Lasso opening workspace"),
+            const std::uint64_t booleanity_peak = mapped_allocation(workspace.private_witness_bytes);
+            const std::uint64_t opening_peak = uadd(mapped_allocation(workspace.masked_opening_generator_bytes),
+                uadd(mapped_allocation(workspace.masked_opening_coefficient_bytes),
+                    mapped_allocation(workspace.masked_opening_response_bytes), "mapped Lasso opening workspace"),
                 "mapped Lasso opening workspace");
             mapped_lasso_transient_peak = std::max(mapped_lasso_transient_peak,
                 std::max(booleanity_peak, opening_peak));
         }
-        const auto mapped_tensor_retained = [&mapped_growth, &uadd](const std::array<std::uint64_t, 3>& shape) {
-            return uadd(mapped_growth(shape[1], sizeof(G1), "mapped tensor retained generators"),
-                mapped_growth(shape[1], sizeof(Fr), "mapped tensor retained coefficients"), "mapped tensor retained rows");
-        };
-        const auto mapped_tensor_transient = [&mapped_growth, &uadd, &umul](const std::array<std::uint64_t, 3>& shape) {
-            return uadd(mapped_growth(shape[1], sizeof(Fr), "mapped tensor row weights"),
-                uadd(umul(2, mapped_growth(shape[2], sizeof(G1), "mapped tensor column generators"), "mapped tensor generator columns"),
-                    umul(3, mapped_growth(shape[2], sizeof(Fr), "mapped tensor column coefficients"), "mapped tensor coefficient columns"),
+        const auto mapped_tensor_transient = [&mapped_allocation, &ubytes, &uadd, &umul](const std::array<std::uint64_t, 3>& shape) {
+            return uadd(mapped_allocation(ubytes(shape[1], sizeof(Fr), "mapped tensor row weights")),
+                uadd(umul(2, mapped_allocation(ubytes(shape[2], sizeof(G1), "mapped tensor column generators")), "mapped tensor generator columns"),
+                    umul(3, mapped_allocation(ubytes(shape[2], sizeof(Fr), "mapped tensor column coefficients")), "mapped tensor coefficient columns"),
                     "mapped tensor column workspace"), "mapped tensor transient workspace");
         };
-        const std::uint64_t mapped_tensor_retained_bytes = uadd(mapped_tensor_retained(aux_tensor), mapped_tensor_retained(l_query_tensor),
-            "mapped Aux/L_qry retained rows");
+        // Tensor row commitments/blindings use ordinary std::vector backing,
+        // already covered by the host workspace bound; they are not mmap scratch.
+        const std::uint64_t mapped_tensor_retained_bytes = 0;
         const std::uint64_t mapped_tensor_opening_peak = std::max(mapped_tensor_transient(aux_tensor), mapped_tensor_transient(l_query_tensor));
-        const std::uint64_t mapped_w_active = umul(mapped_growth(w_active, sizeof(G1), "mapped W MLE generators"), 1,
-            "mapped W MLE generators");
+        const std::uint64_t mapped_w_active = mapped_allocation(ubytes(w_active, sizeof(G1), "mapped W MLE generators"));
         const std::uint64_t mapped_w_mle_peak = uadd(mapped_w_active,
-            umul(2, mapped_growth(w_active, sizeof(Fr), "mapped W MLE coefficients"), "mapped W MLE field buffers"), "mapped W MLE workspace");
+            umul(2, mapped_allocation(ubytes(w_active, sizeof(Fr), "mapped W MLE coefficients")), "mapped W MLE field buffers"), "mapped W MLE workspace");
 
         const std::uint64_t proof_persistent_mapped = uadd(mapped_gate_arrays,
             uadd(mapped_origin_maps,
@@ -8139,13 +8321,20 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             gkr_mapped_peak, lasso_tensor_mapped_peak, input_open_mapped_peak});
         report.estimated_native_scratch_bytes = report.estimated_native_mapped_bytes_upper_bound;
 
-        const std::uint64_t native_live_allocation_count = uadd(umul(6, layer_array_count, "live native vector allocation count"), 130,
+        const std::uint64_t live_layer_vector_count = umul(
+            wide_coefficient_ids ? 8U : 6U, layer_array_count,
+            "live native per-layer vector allocation count");
+        const std::uint64_t native_live_allocation_count = uadd(live_layer_vector_count, 130,
             "live native vector allocation count");
         report.estimated_native_heap_bytes_upper_bound = uadd(
             umul(native_live_allocation_count, heap_limit, "native heap allocation upper bound"),
-            uadd(coefficient_pools_heap_bytes, input_fold_heap_bytes,
-                 "native coefficient-pool and bounded input-fold heap"),
-            "native heap, coefficient-pool, and bounded input-fold upper bound");
+            uadd(max_prefix_heap_bytes,
+                uadd(uadd(coefficient_pools_heap_bytes, input_fold_heap_bytes,
+                         "native coefficient-pool and bounded input-fold heap"),
+                    builder_target_dictionary_heap_bytes,
+                    "native coefficient, input-fold, and packed target-dictionary heap"),
+                "GKR prefix and bounded native heap workspace"),
+            "native heap and bounded GKR/helper workspaces upper bound");
         report.estimated_native_heap_bytes_upper_bound = uadd(report.estimated_native_heap_bytes_upper_bound,
             mapped_subset_scratch_peak == 0 ? report.gkr_subset_bitmap_scratch_bytes_upper_bound : 0,
             "native heap plus one heap-backed source-map bitmap");
@@ -8265,10 +8454,17 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                     "forward admission source and decode buffer"), "forward admission input decode peak"),
             "forward admission input decode with quantized features");
         const std::uint64_t admission_phase_host_bytes = uadd(graph_bytes,
-            uadd(model_bytes, std::max(forward_execution_peak, feature_decode_peak),
+            uadd(model_bytes, std::max({forward_execution_peak, feature_decode_peak, forward_relation_validation_peak - graph_bytes - model_bytes}),
                 "forward admission model and workspaces"), "forward admission graph, model, and workspaces");
         report.forward_admission_peak_host_memory_bytes_upper_bound = admission_phase_host_bytes;
-        report.estimated_peak_host_memory_bytes = std::max(proof_phase_host_bytes, admission_phase_host_bytes);
+        const std::uint64_t shape_admission_peak_host_bytes = uadd(graph_bytes,
+            uadd(model_bytes,
+                uadd(report.gkr_point_shape_bitmap_scratch_bytes,
+                    uadd(umul(layer_array_count, 4096, "shape-admission layer metadata"), 1ULL << 20,
+                         "shape-admission profile metadata"), "shape-admission bitmap and metadata"),
+                "shape-admission model and workspaces"), "shape-admission graph and workspaces");
+        report.estimated_peak_host_memory_bytes = std::max({proof_phase_host_bytes, admission_phase_host_bytes,
+                                                             shape_admission_peak_host_bytes});
 
         const bool pointer_ok = report.ppi_node_ptr_boundary && report.ppi_edge_ptr_boundary;
         report.sparse_ready = pointer_ok && report.sparse_domain_entries != 0;
@@ -8417,7 +8613,7 @@ void GatCircuitPlan::release_native_proof_backing() const {
         residual_targets.size() != residual_coordinates)
         throw std::logic_error("native GAT proof backing is incomplete and cannot be released");
     for (layer& current : circuit.circuit) current.release_native_proof_backing();
-    zkgpt::NativeVector<Int>().swap(residual_targets);
+    PackedResidualTargets().swap(residual_targets);
     native_proof_backing_resident = false;
 }
 

@@ -1532,8 +1532,9 @@ inline bool zk_terminal_relation_shape_valid(const ZkTerminalRelationProof& proo
         if (!zk_terminal_g1_nonzero_valid(proof.terminal_commitments[index], error) ||
             proof.terminal_segment_openings[index].empty() ||
             !hyrax_opening_v3_shape_valid(proof.terminal_openings[index], error) ||
-            !zk_terminal_g1_equal(proof.terminal_openings[index].tau,
-                                  proof.terminal_commitments[index]) ||
+            (proof.terminal_segment_openings[index].size() == 1U &&
+             !zk_terminal_g1_equal(proof.terminal_openings[index].tau,
+                                   proof.terminal_commitments[index])) ||
             proof.terminal_openings[index].descriptor_digest != proof.context.descriptor_digest ||
             proof.terminal_openings[index].registry_digest != proof.context.registry_digest ||
             proof.terminal_openings[index].srs_digest != proof.context.srs_digest)

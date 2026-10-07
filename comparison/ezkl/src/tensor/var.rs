@@ -4,6 +4,20 @@ use log::{debug, error, warn};
 use crate::circuit::{region::ConstantsMap, CheckMode};
 
 use super::*;
+
+fn witness_value_is_known<T>(value: halo2_proofs::circuit::Value<T>) -> bool {
+    let mut known = false;
+    let _ = value.map(|_| known = true);
+    known
+}
+
+fn declared_source_phase(column: halo2_proofs::plonk::Column<halo2_proofs::plonk::Any>) -> Option<u8> {
+    match column.column_type() {
+        halo2_proofs::plonk::Any::Advice(advice) => Some(advice.phase()),
+        _ => None,
+    }
+}
+
 /// A wrapper around Halo2's Column types that represents a tensor of variables in the circuit.
 /// VarTensors are used to store and manage circuit columns, typically for assigning ValTensor
 /// values during circuit layout. The tensor organizes storage into blocks of columns, where each
@@ -805,7 +819,27 @@ impl VarTensor {
             // Handle direct value assignment
             ValType::Value(v) => match &self {
                 VarTensor::Advice { inner: advices, .. } => {
-                    ValType::PrevAssigned(region.assign_advice(|| "k", advices[x][y], z, || v)?)
+                    let destination_column = advices[x][y].index();
+                    let destination_phase = advices[x][y].column_type().phase();
+                    let witness_known = witness_value_is_known(v.clone());
+                    let assigned = region
+                        .assign_advice(|| "k", advices[x][y], z, || v)
+                        .map_err(|error| {
+                            error!(
+                                "advice assignment failed: source=ValType::Value witness_known={} destination_block=({}, {}) destination_column={} destination_phase={} destination_row={} tensor_coord={} offset={} error={:?}",
+                                witness_known,
+                                x,
+                                y,
+                                destination_column,
+                                destination_phase,
+                                z,
+                                coord,
+                                offset,
+                                error
+                            );
+                            error
+                        })?;
+                    ValType::PrevAssigned(assigned)
                 }
                 _ => {
                     error!("VarTensor was not initialized");
@@ -815,7 +849,32 @@ impl VarTensor {
             // Handle copying previously assigned value
             ValType::PrevAssigned(v) => match &self {
                 VarTensor::Advice { inner: advices, .. } => {
-                    ValType::PrevAssigned(v.copy_advice(|| "k", region, advices[x][y], z)?)
+                    let source_cell = v.cell();
+                    let destination_column = advices[x][y].index();
+                    let destination_phase = advices[x][y].column_type().phase();
+                    let source_phase = declared_source_phase(source_cell.column);
+                    let witness_known = witness_value_is_known(v.value());
+                    let assigned = v
+                        .copy_advice(|| "k", region, advices[x][y], z)
+                        .map_err(|error| {
+                            error!(
+                                "advice copy failed: source=ValType::PrevAssigned witness_known={} source_column={} source_phase={:?} source_row={} destination_block=({}, {}) destination_column={} destination_phase={} destination_row={} tensor_coord={} offset={} error={:?}",
+                                witness_known,
+                                source_cell.column.index(),
+                                source_phase,
+                                source_cell.row_offset,
+                                x,
+                                y,
+                                destination_column,
+                                destination_phase,
+                                z,
+                                coord,
+                                offset,
+                                error
+                            );
+                            error
+                        })?;
+                    ValType::PrevAssigned(assigned)
                 }
                 _ => {
                     error!("VarTensor was not initialized");
@@ -825,7 +884,32 @@ impl VarTensor {
             // Handle copying previously assigned constant
             ValType::AssignedConstant(v, val) => match &self {
                 VarTensor::Advice { inner: advices, .. } => {
-                    ValType::AssignedConstant(v.copy_advice(|| "k", region, advices[x][y], z)?, val)
+                    let source_cell = v.cell();
+                    let destination_column = advices[x][y].index();
+                    let destination_phase = advices[x][y].column_type().phase();
+                    let source_phase = declared_source_phase(source_cell.column);
+                    let witness_known = witness_value_is_known(v.value());
+                    let assigned = v
+                        .copy_advice(|| "k", region, advices[x][y], z)
+                        .map_err(|error| {
+                            error!(
+                                "advice copy failed: source=ValType::AssignedConstant witness_known={} source_column={} source_phase={:?} source_row={} destination_block=({}, {}) destination_column={} destination_phase={} destination_row={} tensor_coord={} offset={} error={:?}",
+                                witness_known,
+                                source_cell.column.index(),
+                                source_phase,
+                                source_cell.row_offset,
+                                x,
+                                y,
+                                destination_column,
+                                destination_phase,
+                                z,
+                                coord,
+                                offset,
+                                error
+                            );
+                            error
+                        })?;
+                    ValType::AssignedConstant(assigned, val)
                 }
                 _ => {
                     error!("VarTensor was not initialized");
@@ -834,11 +918,29 @@ impl VarTensor {
             },
             // Handle assigning evaluated value
             ValType::AssignedValue(v) => match &self {
-                VarTensor::Advice { inner: advices, .. } => ValType::PrevAssigned(
-                    region
-                        .assign_advice(|| "k", advices[x][y], z, || v)?
-                        .evaluate(),
-                ),
+                VarTensor::Advice { inner: advices, .. } => {
+                    let destination_column = advices[x][y].index();
+                    let destination_phase = advices[x][y].column_type().phase();
+                    let witness_known = witness_value_is_known(v.evaluate());
+                    let assigned = region
+                        .assign_advice(|| "k", advices[x][y], z, || v)
+                        .map_err(|error| {
+                            error!(
+                                "advice assignment failed: source=ValType::AssignedValue witness_known={} destination_block=({}, {}) destination_column={} destination_phase={} destination_row={} tensor_coord={} offset={} error={:?}",
+                                witness_known,
+                                x,
+                                y,
+                                destination_column,
+                                destination_phase,
+                                z,
+                                coord,
+                                offset,
+                                error
+                            );
+                            error
+                        })?;
+                    ValType::PrevAssigned(assigned.evaluate())
+                }
                 _ => {
                     error!("VarTensor was not initialized");
                     return Err(halo2_proofs::plonk::Error::Synthesis);

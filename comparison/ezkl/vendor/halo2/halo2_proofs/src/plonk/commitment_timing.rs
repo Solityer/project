@@ -54,7 +54,9 @@ pub struct Guard {
 }
 
 fn lock_state() -> std::sync::MutexGuard<'static, State> {
-    STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Begin an isolated commitment measurement for one native proof.

@@ -147,18 +147,152 @@ bool json_string_at(const std::string &text, std::size_t offset, std::string &va
     return true;
 }
 
-bool json_key_value_offset(const std::string &text, const std::string &key, std::size_t &value_offset) {
-    const std::string marker = "\"" + key + "\"";
-    const std::size_t key_pos = text.find(marker);
-    if (key_pos == std::string::npos) return false;
+bool json_string_token_end(const std::string &text, std::size_t &offset, std::size_t *content_begin = nullptr,
+                           std::size_t *content_end = nullptr, bool *has_escape = nullptr) {
+    if (offset >= text.size() || text[offset] != '"') return false;
+    const std::size_t begin = offset + 1U;
+    std::size_t position = begin;
+    bool escaped = false;
+    while (position < text.size()) {
+        const unsigned char value = static_cast<unsigned char>(text[position]);
+        if (value == '"') {
+            if (content_begin) *content_begin = begin;
+            if (content_end) *content_end = position;
+            if (has_escape) *has_escape = escaped;
+            offset = position + 1U;
+            return true;
+        }
+        if (value < 0x20U) return false;
+        if (value != '\\') {
+            ++position;
+            continue;
+        }
+        escaped = true;
+        ++position;
+        if (position >= text.size()) return false;
+        const char escape = text[position++];
+        if (escape == '"' || escape == '\\' || escape == '/' || escape == 'b' || escape == 'f' ||
+            escape == 'n' || escape == 'r' || escape == 't') continue;
+        if (escape != 'u' || position + 4U > text.size()) return false;
+        for (std::size_t digit = 0U; digit < 4U; ++digit) {
+            if (hex_nibble(text[position + digit]) < 0) return false;
+        }
+        position += 4U;
+    }
+    return false;
+}
 
-    if (text.find(marker, key_pos + marker.size()) != std::string::npos) return false;
-    std::size_t colon = key_pos + marker.size();
-    skip_space(text, colon);
-    if (colon >= text.size() || text[colon] != ':') return false;
-    value_offset = colon + 1U;
-    skip_space(text, value_offset);
-    return value_offset < text.size();
+bool json_skip_value(const std::string &text, std::size_t &offset, unsigned depth = 0U) {
+    if (depth > 128U) return false;
+    skip_space(text, offset);
+    if (offset >= text.size()) return false;
+    if (text[offset] == '"') return json_string_token_end(text, offset);
+    if (text[offset] == '{') {
+        ++offset;
+        skip_space(text, offset);
+        if (offset < text.size() && text[offset] == '}') { ++offset; return true; }
+        std::set<std::string> keys;
+        while (offset < text.size()) {
+            if (text[offset] != '"') return false;
+            std::size_t key_begin = 0U, key_end = 0U;
+            bool has_escape = false;
+            if (!json_string_token_end(text, offset, &key_begin, &key_end, &has_escape) || has_escape ||
+                !keys.insert(text.substr(key_begin, key_end - key_begin)).second) return false;
+            skip_space(text, offset);
+            if (offset >= text.size() || text[offset++] != ':') return false;
+            if (!json_skip_value(text, offset, depth + 1U)) return false;
+            skip_space(text, offset);
+            if (offset >= text.size()) return false;
+            if (text[offset] == '}') { ++offset; return true; }
+            if (text[offset++] != ',') return false;
+            skip_space(text, offset);
+        }
+        return false;
+    }
+    if (text[offset] == '[') {
+        ++offset;
+        skip_space(text, offset);
+        if (offset < text.size() && text[offset] == ']') { ++offset; return true; }
+        while (offset < text.size()) {
+            if (!json_skip_value(text, offset, depth + 1U)) return false;
+            skip_space(text, offset);
+            if (offset >= text.size()) return false;
+            if (text[offset] == ']') { ++offset; return true; }
+            if (text[offset++] != ',') return false;
+            skip_space(text, offset);
+        }
+        return false;
+    }
+
+    const std::size_t begin = offset;
+    if (text[offset] == 't' || text[offset] == 'f' || text[offset] == 'n') {
+        const char *literal = text[offset] == 't' ? "true" : text[offset] == 'f' ? "false" : "null";
+        const std::size_t length = std::char_traits<char>::length(literal);
+        if (text.compare(offset, length, literal) != 0) return false;
+        offset += length;
+    } else {
+        if (text[offset] == '-') ++offset;
+        if (offset >= text.size()) return false;
+        if (text[offset] == '0') ++offset;
+        else if (text[offset] >= '1' && text[offset] <= '9') {
+            do { ++offset; } while (offset < text.size() && text[offset] >= '0' && text[offset] <= '9');
+        } else return false;
+        if (offset < text.size() && text[offset] == '.') {
+            ++offset;
+            const std::size_t fraction = offset;
+            while (offset < text.size() && text[offset] >= '0' && text[offset] <= '9') ++offset;
+            if (offset == fraction) return false;
+        }
+        if (offset < text.size() && (text[offset] == 'e' || text[offset] == 'E')) {
+            ++offset;
+            if (offset < text.size() && (text[offset] == '+' || text[offset] == '-')) ++offset;
+            const std::size_t exponent = offset;
+            while (offset < text.size() && text[offset] >= '0' && text[offset] <= '9') ++offset;
+            if (offset == exponent) return false;
+        }
+    }
+    if (offset == begin || (offset < text.size() && !std::isspace(static_cast<unsigned char>(text[offset])) &&
+                            text[offset] != ',' && text[offset] != '}' && text[offset] != ']')) return false;
+    return true;
+}
+
+bool json_key_value_offset(const std::string &text, const std::string &key, std::size_t &value_offset) {
+    std::size_t offset = 0U;
+    skip_space(text, offset);
+    if (offset >= text.size() || text[offset++] != '{') return false;
+    skip_space(text, offset);
+    if (offset < text.size() && text[offset] == '}') return false;
+
+    std::set<std::string> keys;
+    bool found = false;
+    std::size_t selected_value = 0U;
+    while (offset < text.size()) {
+        if (text[offset] != '"') return false;
+        std::size_t key_begin = 0U, key_end = 0U;
+        bool has_escape = false;
+        if (!json_string_token_end(text, offset, &key_begin, &key_end, &has_escape) || has_escape) return false;
+        const std::string member_key = text.substr(key_begin, key_end - key_begin);
+        if (!keys.insert(member_key).second) return false;
+        skip_space(text, offset);
+        if (offset >= text.size() || text[offset++] != ':') return false;
+        skip_space(text, offset);
+        const std::size_t member_value = offset;
+        if (!json_skip_value(text, offset)) return false;
+        if (member_key == key) {
+            if (found) return false;
+            found = true;
+            selected_value = member_value;
+        }
+        skip_space(text, offset);
+        if (offset >= text.size()) return false;
+        if (text[offset] == '}') { ++offset; break; }
+        if (text[offset++] != ',') return false;
+        skip_space(text, offset);
+    }
+    skip_space(text, offset);
+    if (offset != text.size() || !found || selected_value >= text.size()) return false;
+    value_offset = selected_value;
+    return true;
 }
 
 bool json_string_field(const std::string &text, const std::string &key, std::string &value) {

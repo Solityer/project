@@ -745,6 +745,8 @@ def native_admit_all_datasets(
     cs_keys = {
         "degree", "num_fixed_columns", "num_advice_columns", "num_instance_columns", "num_selectors",
         "num_lookup_arguments", "num_shuffle_arguments", "num_permutation_columns", "num_blinding_factors",
+        "selector_fixed_column_count", "fixed_column_count_post_compression",
+        "permutation_copy_call_count", "permutation_successor_entry_count_upper",
     }
     for dataset in DATASETS:
         admission_dir = admission_root / dataset
@@ -760,7 +762,7 @@ def native_admit_all_datasets(
         if not isinstance(admission, dict) or set(admission) != expected_keys:
             abort(f"{dataset} native admission JSON has an incompatible schema")
         if (
-            admission["schema_version"] != 2
+            admission["schema_version"] != 3
             or admission["relation_id"] != "R_GAT-ezkl"
             or admission["dataset"] != dataset
             or isinstance(admission["logrows"], bool)
@@ -795,20 +797,35 @@ def native_admit_all_datasets(
             isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in cs.values()
         ):
             abort(f"{dataset} native admission has malformed exact Halo2 constraint-shape counts")
+        if cs["fixed_column_count_post_compression"] != (
+            cs["num_fixed_columns"] + cs["selector_fixed_column_count"]
+        ):
+            abort(f"{dataset} native admission post-compression fixed-column count is inconsistent")
+        expected_successor_entries = min(
+            cs["num_permutation_columns"] * admission["domain_size"],
+            2 * cs["permutation_copy_call_count"],
+        )
+        if cs["permutation_successor_entry_count_upper"] != expected_successor_entries:
+            abort(f"{dataset} native admission compact permutation entry bound is inconsistent")
         memory = admission["native_memory_model"]
         memory_keys = {
             "schema", "proof_logrows", "proof_domain_size", "advice_column_phase_ids",
             "size_of_fr_bytes", "size_of_assigned_fr_bytes", "size_of_option_fr_bytes",
             "size_of_usize_bytes", "size_of_usize_pair_bytes", "size_of_g1_affine_bytes",
             "cuda_uuid", "cuda_free_bytes_at_admission", "cuda_total_memory_bytes",
+            "selector_activation_bitmap_bytes", "fixed_polynomial_read_mode",
+            "fixed_polynomial_read_chunk_fields_upper", "fixed_polynomial_read_raw_chunk_bytes_upper",
+            "fixed_polynomial_read_decoded_chunk_bytes_upper", "fixed_polynomial_read_heap_scratch_bytes_upper",
         }
-        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-memory-model-v1":
+        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-memory-model-v2":
             abort(f"{dataset} native admission has an incompatible source memory model")
         positive_memory_keys = {
             "proof_logrows", "proof_domain_size", "size_of_fr_bytes",
             "size_of_assigned_fr_bytes", "size_of_option_fr_bytes", "size_of_usize_bytes",
             "size_of_usize_pair_bytes", "size_of_g1_affine_bytes",
             "cuda_total_memory_bytes",
+            "fixed_polynomial_read_chunk_fields_upper", "fixed_polynomial_read_raw_chunk_bytes_upper",
+            "fixed_polynomial_read_decoded_chunk_bytes_upper", "fixed_polynomial_read_heap_scratch_bytes_upper",
         }
         if any(
             isinstance(memory.get(key), bool) or not isinstance(memory.get(key), int) or memory[key] <= 0
@@ -830,6 +847,21 @@ def native_admit_all_datasets(
             or re.fullmatch(r"GPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", memory["cuda_uuid"]) is None
         ):
             abort(f"{dataset} native admission memory model is internally inconsistent")
+        expected_bitmap = cs["num_selectors"] * ((admission["domain_size"] + 7) // 8)
+        read_chunk_fields = memory["fixed_polynomial_read_chunk_fields_upper"]
+        if (
+            memory["selector_activation_bitmap_bytes"] != expected_bitmap
+            or memory["fixed_polynomial_read_mode"] != "streamed_one_polynomial_chunked_v1"
+            or read_chunk_fields != 16 * 1024
+            or memory["fixed_polynomial_read_raw_chunk_bytes_upper"]
+            != read_chunk_fields * memory["size_of_fr_bytes"]
+            or memory["fixed_polynomial_read_decoded_chunk_bytes_upper"]
+            != read_chunk_fields * memory["size_of_fr_bytes"]
+            or memory["fixed_polynomial_read_heap_scratch_bytes_upper"]
+            != memory["fixed_polynomial_read_raw_chunk_bytes_upper"]
+            + memory["fixed_polynomial_read_decoded_chunk_bytes_upper"]
+        ):
+            abort(f"{dataset} native admission fixed-polynomial streaming bounds are inconsistent")
         phase_ids = memory["advice_column_phase_ids"]
         if (
             not isinstance(phase_ids, list)
@@ -857,6 +889,246 @@ def native_admit_all_datasets(
             flush=True,
         )
     return admissions
+
+
+_CUB_QUERY_COUNTS = {
+    "scalar_index_sort_pairs": 1 << 24,
+    "sorted_bucket_run_length_encode": 1 << 24,
+    "bucket_offsets_exclusive_scan": 1_048_561,
+    "bucket_size_offset_sort_pairs_descending": 1_048_560,
+    "bucket_size_index_sort_pairs_descending": 1_048_560,
+    "large_bucket_prefix_inclusive_scan": 104_206,
+}
+
+
+def _validate_cub_workspace_query(
+    value: object,
+    *,
+    source_sha256: str,
+    backend_manifest_sha256: str,
+    selected_device: dict[str, object],
+) -> dict[str, object]:
+    keys = {
+        "schema", "icicle_source_tree_sha256", "native_backend_manifest_sha256", "device_uuid",
+        "total_memory_bytes", "scalar_bits", "c", "chunk_scalars", "window_count", "M", "B",
+        "H_max", "L_max", "cuda_runtime_version", "cuda_driver_version", "cuda_toolkit_version",
+        "cub_version", "device_compute_capability", "queries", "scratch_bytes_sum",
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        abort("native CUB workspace query has an incompatible exact schema")
+    expected_constants = {
+        "schema": "ezkl.icicle.cub_msm_workspace_query.v1",
+        "icicle_source_tree_sha256": source_sha256,
+        "native_backend_manifest_sha256": backend_manifest_sha256,
+        "device_uuid": selected_device.get("uuid"),
+        "scalar_bits": 254,
+        "c": 16,
+        "chunk_scalars": 1 << 20,
+        "window_count": 16,
+        "M": 1 << 24,
+        "B": 1_048_560,
+        "H_max": 1_048_560,
+        "L_max": 104_206,
+        "device_compute_capability": selected_device.get("compute_capability"),
+    }
+    for key, expected in expected_constants.items():
+        if value.get(key) != expected:
+            abort(f"native CUB workspace query identity/constant mismatch: {key}")
+    for key in ("total_memory_bytes", "cuda_runtime_version", "cuda_driver_version", "cub_version", "scratch_bytes_sum"):
+        item = value.get(key)
+        if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+            abort(f"native CUB workspace query has invalid {key}")
+    toolkit = value.get("cuda_toolkit_version")
+    if not isinstance(toolkit, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolkit) is None:
+        abort("native CUB workspace query has invalid CUDA toolkit version")
+    queries = value.get("queries")
+    if not isinstance(queries, list) or len(queries) != len(_CUB_QUERY_COUNTS):
+        abort("native CUB workspace query has an incomplete set of CUB operations")
+    query_sum = 0
+    for query, (expected_name, expected_count) in zip(queries, _CUB_QUERY_COUNTS.items(), strict=True):
+        if not isinstance(query, dict) or set(query) != {"name", "num_items", "scratch_bytes"}:
+            abort("native CUB workspace query contains a malformed operation")
+        if query.get("name") != expected_name or query.get("num_items") != expected_count:
+            abort(f"native CUB workspace query operation shape mismatch: {expected_name}")
+        scratch = query.get("scratch_bytes")
+        if isinstance(scratch, bool) or not isinstance(scratch, int) or scratch < 0:
+            abort(f"native CUB workspace query has invalid scratch bytes: {expected_name}")
+        query_sum += scratch
+    if value["scratch_bytes_sum"] != query_sum:
+        abort("native CUB workspace query scratch total does not equal its operation sum")
+    return value
+
+
+def _gpu_query_environment(
+    selected_device: dict[str, object],
+    gpu_identity: dict[str, object],
+    build_environment: dict[str, object],
+) -> dict[str, str]:
+    env = os.environ.copy()
+    for name in ("LD_PRELOAD", "ICICLE_SMALL_K", "ICICLE_SMALL_K_FFT", "EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID"):
+        env.pop(name, None)
+    env.update({
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+        "CUDA_VISIBLE_DEVICES": str(selected_device["uuid"]),
+        "ICICLE_DEVICE_ID": "0",
+        "ENABLE_ICICLE_GPU": "1",
+        "EZKL_GAT_BACKEND": "gpu",
+        "ICICLE_BACKEND_INSTALL_DIR": str(ROOT / "artifacts/build/icicle-cuda"),
+        "ICICLE_NATIVE_LIB_DIR": str(ROOT / "artifacts/build/icicle-cuda/lib"),
+        "ICICLE_NATIVE_MANIFEST_SHA256": str(gpu_identity["native_backend_manifest_sha256"]),
+        "CUDA_ARCH": str(build_environment["cuda_architecture"]).removeprefix("sm_"),
+    })
+    return env
+
+
+def _build_native_cub_workspace_query(
+    session_dir: Path,
+    runtime_identity: dict[str, object],
+    selected_device: dict[str, object],
+    build_environment: dict[str, object],
+    gpu_identity: dict[str, object],
+) -> dict[str, object]:
+    source = require_file(ROOT / "tools/native_msm_workspace_query.cu", "native CUB workspace query source")
+    source_sha256 = sha256(source)
+    manifest_path = require_file(ROOT / "artifacts/build/icicle-cuda/native_backend_manifest.json", "native ICICLE manifest")
+    backend_manifest = load_json(manifest_path, "native ICICLE manifest")
+    icicle_source_sha256 = backend_manifest.get("native_source_sha256")
+    if (
+        not isinstance(icicle_source_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", icicle_source_sha256) is None
+        or sha256(manifest_path) != gpu_identity.get("native_backend_manifest_sha256")
+    ):
+        abort("native CUB workspace query cannot bind the current ICICLE source/manifest identity")
+    if selected_device.get("logical_device_id") != 0:
+        abort("native CUB workspace query requires the formally selected CUDA logical device zero")
+    arch = build_environment.get("cuda_architecture")
+    nvcc = runtime_identity.get("nvcc_path")
+    if not isinstance(arch, str) or re.fullmatch(r"sm_[0-9]+", arch) is None or not isinstance(nvcc, str):
+        abort("native CUB workspace query lacks source-matched CUDA compiler/architecture identity")
+
+    query_dir = session_dir / "capacity"
+    if query_dir.exists():
+        if query_dir.is_symlink() or not query_dir.is_dir() or any(query_dir.iterdir()):
+            abort("native CUB workspace query directory must be fresh and empty")
+    else:
+        query_dir.mkdir(parents=True, exist_ok=False)
+    binary_path = query_dir / "native_msm_workspace_query"
+    result_path = query_dir / "native_msm_workspace_query.json"
+    build_log_path = query_dir / "native_msm_workspace_query_build.log"
+    if any(path.exists() or path.is_symlink() for path in (binary_path, result_path, build_log_path)):
+        abort("native CUB workspace query refuses to overwrite an existing session artifact")
+    env = _gpu_query_environment(selected_device, gpu_identity, build_environment)
+    build_command = [
+        nvcc, "-O2", "-std=c++17", f"-arch={arch}", local_cli(source, "CUB query source"),
+        "-o", local_cli(binary_path, "CUB query binary"),
+    ]
+    print(f"[ezkl-formal] build session-bound CUB workspace query: {' '.join(build_command)}", flush=True)
+    try:
+        built = subprocess.run(
+            build_command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=600, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        build_log_path.write_text((exc.stdout or "") + (exc.stderr or ""), encoding="utf-8")
+        abort("native CUB workspace query build exceeded its 600 second bound")
+    build_log_path.write_text(built.stdout, encoding="utf-8")
+    if built.returncode != 0 or not binary_path.is_file() or binary_path.is_symlink():
+        abort(f"native CUB workspace query build failed with exit {built.returncode}; see {build_log_path}")
+
+    command = [
+        local_cli(binary_path, "CUB query binary"),
+        "--icicle-source-tree-sha256", icicle_source_sha256,
+        "--native-backend-manifest-sha256", str(gpu_identity["native_backend_manifest_sha256"]),
+    ]
+    print(f"[ezkl-formal] run session-bound CUB workspace query: {' '.join(command)}", flush=True)
+    try:
+        measured = subprocess.run(
+            command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=120, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        abort("native CUB workspace query exceeded its 120 second bound")
+    if measured.returncode != 0:
+        abort(f"native CUB workspace query failed with exit {measured.returncode}: {measured.stderr.strip()}")
+    try:
+        query = json.loads(measured.stdout)
+    except json.JSONDecodeError as exc:
+        abort(f"native CUB workspace query emitted malformed JSON: {exc}")
+    query = _validate_cub_workspace_query(
+        query,
+        source_sha256=icicle_source_sha256,
+        backend_manifest_sha256=str(gpu_identity["native_backend_manifest_sha256"]),
+        selected_device=selected_device,
+    )
+    result_path.write_text(json.dumps(query, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    return {
+        "schema": "ezkl.icicle.cub_msm_workspace_query_receipt.v1",
+        "source_path": source.relative_to(ROOT).as_posix(),
+        "source_sha256": source_sha256,
+        "binary_path": binary_path.relative_to(ROOT).as_posix(),
+        "binary_sha256": sha256(binary_path),
+        "build_log_path": build_log_path.relative_to(ROOT).as_posix(),
+        "build_log_sha256": sha256(build_log_path),
+        "result_path": result_path.relative_to(ROOT).as_posix(),
+        "result_sha256": sha256(result_path),
+        "native_backend_manifest_path": manifest_path.relative_to(ROOT).as_posix(),
+        "native_backend_manifest_sha256": sha256(manifest_path),
+        "icicle_source_tree_sha256": icicle_source_sha256,
+        "query": query,
+    }
+
+
+def _validate_native_cub_workspace_receipt(
+    receipt: object,
+    session_dir: Path,
+    selected_device: dict[str, object],
+    gpu_identity: dict[str, object],
+) -> dict[str, object]:
+    fields = {
+        "schema", "source_path", "source_sha256", "binary_path", "binary_sha256", "build_log_path",
+        "build_log_sha256", "result_path", "result_sha256", "native_backend_manifest_path",
+        "native_backend_manifest_sha256", "icicle_source_tree_sha256", "query",
+    }
+    if not isinstance(receipt, dict) or set(receipt) != fields or receipt.get("schema") != "ezkl.icicle.cub_msm_workspace_query_receipt.v1":
+        abort("EZKL session has no complete CUB workspace query source/binary receipt")
+    source = local_path(receipt.get("source_path"), "CUB query source")
+    binary = local_path(receipt.get("binary_path"), "CUB query binary")
+    build_log = local_path(receipt.get("build_log_path"), "CUB query build log")
+    result_path = local_path(receipt.get("result_path"), "CUB query result")
+    manifest_path = local_path(receipt.get("native_backend_manifest_path"), "native ICICLE manifest")
+    try:
+        binary.relative_to(session_dir)
+        result_path.relative_to(session_dir)
+        build_log.relative_to(session_dir)
+    except ValueError:
+        abort("session CUB query build artifacts are outside the authenticated session directory")
+    for path, digest, label in (
+        (source, receipt.get("source_sha256"), "CUB source"),
+        (binary, receipt.get("binary_sha256"), "CUB binary"),
+        (build_log, receipt.get("build_log_sha256"), "CUB build log"),
+        (result_path, receipt.get("result_sha256"), "CUB JSON result"),
+        (manifest_path, receipt.get("native_backend_manifest_sha256"), "ICICLE manifest"),
+    ):
+        if not isinstance(digest, str) or sha256(path) != digest:
+            abort(f"EZKL session CUB workspace query {label} digest changed")
+    if (
+        source != ROOT / "tools/native_msm_workspace_query.cu"
+        or receipt["native_backend_manifest_sha256"] != gpu_identity.get("native_backend_manifest_sha256")
+    ):
+        abort("EZKL session CUB workspace query is bound to a stale helper/backend source")
+    backend_manifest = load_json(manifest_path, "native ICICLE manifest")
+    if backend_manifest.get("native_source_sha256") != receipt.get("icicle_source_tree_sha256"):
+        abort("EZKL session CUB workspace query ICICLE source digest changed")
+    query_file = load_json(result_path, "CUB workspace query JSON")
+    query = _validate_cub_workspace_query(
+        query_file,
+        source_sha256=str(receipt["icicle_source_tree_sha256"]),
+        backend_manifest_sha256=str(receipt["native_backend_manifest_sha256"]),
+        selected_device=selected_device,
+    )
+    if receipt.get("query") != query:
+        abort("EZKL session CUB workspace query embedded result differs from its source-bound JSON")
+    return receipt
 
 
 def _shared_graph_identity_from_admissions(admissions: dict[str, dict[str, object]]) -> dict[str, object]:
@@ -908,7 +1180,8 @@ _INTERNAL_SESSION_FIELDS = {
     "resource_manifest_sha256", "resource_file_identities", "config_sha256s",
     "srs_manifest_sha256", "srs_path", "srs_sha256", "srs_file_identity",
     "native_admissions", "archived_previous_outputs", "cell_receipts", "active_dataset",
-    "final_matrix_path", "final_matrix_sha256", "shared_capacity_profile", "shared_graph_identity", "error",
+    "final_matrix_path", "final_matrix_sha256", "shared_capacity_profile", "shared_graph_identity",
+    "native_msm_workspace_query", "error",
 }
 
 
@@ -980,6 +1253,7 @@ def _new_internal_session_document(
         "final_matrix_sha256": None,
         "shared_capacity_profile": None,
         "shared_graph_identity": None,
+        "native_msm_workspace_query": None,
         "error": None,
     }
     return document
@@ -1144,6 +1418,13 @@ def _internal_prepare(args: argparse.Namespace, session_dir: Path, session_id: s
         abort("native build did not produce a matching binary/resource/adapter receipt")
     if not build_log.is_file() or build_log.is_symlink() or build_log.stat().st_size == 0:
         abort("formal native build did not produce a nonempty session-specific build log")
+
+    cub_workspace_receipt = _build_native_cub_workspace_query(
+        session_dir, runtime_identity, selected_device, build_environment, gpu_identity,
+    )
+    document = _load_internal_session(session_file, session_id)
+    document["native_msm_workspace_query"] = cub_workspace_receipt
+    _write_session_record(session_file, document)
 
     build_receipt = ROOT / "artifacts/build/gpu/build_receipt.json"
     receipt = load_json(build_receipt, "current formal GPU build receipt")
@@ -1322,6 +1603,10 @@ def _restore_internal_context(
         abort("current formal toolchain/device environment differs from authenticated prepare")
     if gpu_identity != document.get("gpu_identity"):
         abort("current native ICICLE backend identity differs from authenticated prepare")
+    session_dir = ROOT.parent / "runs/formal" / session_id / "ezkl"
+    _validate_native_cub_workspace_receipt(
+        document.get("native_msm_workspace_query"), session_dir, selected_device, gpu_identity,
+    )
     binary = local_path(document.get("binary_path"), "authenticated formal binary")
     build_receipt = local_path(document.get("build_receipt_path"), "authenticated GPU build receipt")
     build_log = local_path(document.get("build_log_path"), "authenticated formal build log")
@@ -1363,10 +1648,11 @@ def _restore_internal_context(
         settings_path = prepared_dir / "settings.json"
         compiled_path = prepared_dir / "compiled.circuit"
         if (
-            admission.get("schema_version") != 2
+            admission.get("schema_version") != 3
             or admission.get("dataset") != dataset
             or admission.get("relation_id") != "R_GAT-ezkl"
             or admission.get("resource_manifest_sha256") != document.get("resource_manifest_sha256")
+            or sha256(local_path(record.get("path"), f"{dataset} admission receipt")) != record.get("sha256")
             or admission.get("relation_identity") != record.get("relation_identity")
             or admission.get("settings_sha256") != record.get("settings_sha256")
             or admission.get("compiled_circuit_sha256") != record.get("compiled_circuit_sha256")

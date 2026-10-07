@@ -29,6 +29,8 @@ public:
     zkgpt::NativeVector<linear_poly> V_mult[2];
     zkgpt::NativeVector<linear_poly> tmp_mult_array[2];
     zkgpt::NativeVector<linear_poly> tmp_V_mult[2];
+    zkgpt::native_gkr::PackedAffinePrefixArena native_mult_prefix[2];
+    zkgpt::native_gkr::PackedAffinePrefixArena native_value_prefix[2];
     int** mat_val;
     void init();
 
@@ -73,7 +75,16 @@ public:
     const std::vector<zkgpt::NativeFieldVector>* native_values = nullptr;
     const zkgpt::NativeFieldView* native_terminal_values = nullptr;
     std::function<F(u64)> native_input_value_at;
-    F getCirValue(u8 layer_id, const zkgpt::NativeVector<u64> &ori, u64 u);
+    template <class CoordinateVector>
+    F getCirValue(u8 layer_id, const CoordinateVector &ori, u64 u) {
+        if (native_values != nullptr) {
+            if (!layer_id && native_input_value_at) return native_input_value_at(ori.at(u));
+            if (native_terminal_values != nullptr && static_cast<std::size_t>(layer_id) + 1 == native_values->size())
+                return native_terminal_values->at(static_cast<std::size_t>(u));
+            return !layer_id ? native_values->at(0).at(ori.at(u)) : native_values->at(layer_id).at(u);
+        }
+        return !layer_id ? val[0][ori[u]] : val[layer_id][u];
+    }
     u64 proof_size;
     vector<G> gens;
     Commit_return cc;

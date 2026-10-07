@@ -13,14 +13,13 @@ use crate::{
     plonk::{self, Error},
     poly::{
         commitment::{Blind, Params},
-        Coeff, ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial, ProverQuery, Rotation,
+        Coeff, LagrangeCoeff, Polynomial, ProverQuery, Rotation,
     },
     transcript::{EncodedChallenge, TranscriptWrite},
 };
 
 pub(crate) struct CommittedSet<C: CurveAffine> {
     pub(crate) permutation_product_poly: Polynomial<C::Scalar, Coeff>,
-    pub(crate) permutation_product_coset: Polynomial<C::Scalar, ExtendedLagrangeCoeff>,
     permutation_product_blind: Blind<C::Scalar>,
 }
 
@@ -81,11 +80,19 @@ impl Argument {
 
         let mut sets = vec![];
 
-        for (columns, permutations) in self
-            .columns
-            .chunks(chunk_len)
-            .zip(pkey.permutations.chunks(chunk_len))
-        {
+        assert_eq!(
+            pkey.columns, self.columns,
+            "permutation PK columns disagree with circuit"
+        );
+        let mut omega_powers: Polynomial<C::Scalar, LagrangeCoeff> =
+            Polynomial::mapped_filled(params.n() as usize, C::Scalar::ONE)
+                .map_err(Error::NativeStorage)?;
+        let omega = domain.get_omega();
+        for row in 1..omega_powers.len() {
+            omega_powers[row] = omega_powers[row - 1] * omega;
+        }
+
+        for (set_index, columns) in self.columns.chunks(chunk_len).enumerate() {
             // Goal is to compute the products of fractions
             //
             // (p_j(\omega^i) + \delta^j \omega^i \beta + \gamma) /
@@ -97,7 +104,10 @@ impl Argument {
             let mut modified_values = vec![C::Scalar::ONE; params.n() as usize];
 
             // Iterate over each column of the permutation
-            for (&column, permuted_column_values) in columns.iter().zip(permutations.iter()) {
+            for (column_offset, &column) in columns.iter().enumerate() {
+                let column_index = set_index * chunk_len + column_offset;
+                let permuted_column_values =
+                    pkey.sigma_lagrange(domain, column_index, &omega_powers[..])?;
                 let values = match column.column_type() {
                     Any::Advice(_) => advice,
                     Any::Fixed => fixed,
@@ -151,14 +161,12 @@ impl Argument {
 
             // Compute the evaluations of the permutation product polynomial
             // over our domain, starting with z[0] = 1
-            let mut z = vec![last_z];
+            let mut z: Polynomial<C::Scalar, LagrangeCoeff> =
+                Polynomial::mapped_filled(params.n() as usize, last_z)
+                    .map_err(Error::NativeStorage)?;
             for row in 1..(params.n() as usize) {
-                let mut tmp = z[row - 1];
-
-                tmp *= &modified_values[row - 1];
-                z.push(tmp);
+                z[row] = z[row - 1] * modified_values[row - 1];
             }
-            let mut z = domain.lagrange_from_vec(z);
             // Set blinding factors
             for z in &mut z[params.n() as usize - blinding_factors..] {
                 *z = C::Scalar::random(&mut rng);
@@ -171,18 +179,16 @@ impl Argument {
             let permutation_product_commitment_projective = params.commit_lagrange(&z, blind);
             let permutation_product_blind = blind;
             let z = domain.lagrange_to_coeff(z);
-            let permutation_product_poly = z.clone();
+            let permutation_product_poly = z;
 
-            let permutation_product_coset = domain.coeff_to_extended(&z);
-
-            let permutation_product_commitment = permutation_product_commitment_projective.to_affine();
+            let permutation_product_commitment =
+                permutation_product_commitment_projective.to_affine();
 
             // Hash the permutation product commitment
             transcript.write_point(permutation_product_commitment)?;
 
             sets.push(CommittedSet {
                 permutation_product_poly,
-                permutation_product_coset,
                 permutation_product_blind,
             });
         }
@@ -196,9 +202,9 @@ impl<C: CurveAffine> Committed<C> {
         Constructed {
             sets: self
                 .sets
-                .iter()
+                .into_iter()
                 .map(|set| ConstructedSet {
-                    permutation_product_poly: set.permutation_product_poly.clone(),
+                    permutation_product_poly: set.permutation_product_poly,
                     permutation_product_blind: set.permutation_product_blind,
                 })
                 .collect(),

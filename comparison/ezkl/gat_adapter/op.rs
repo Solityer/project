@@ -21,6 +21,8 @@ use crate::tensor::{Tensor, ValTensor, ValType};
 use super::relation::RoundingMode;
 use super::schema::{scale_exponent_to_multiplier, BoundFamily, CanonicalGat, ExactTable};
 
+const MAX_GAT_EDGE_CHUNK_CELLS: usize = 1 << 18;
+
 /// Input positions used by [`GatOp`].
 pub const FEATURE_INPUT: usize = 0;
 /// Public node-id input position.
@@ -698,6 +700,192 @@ impl GatOp {
         Ok(output)
     }
 
+    /// Assign and constrain one bounded slice of a segmented prefix. If a
+    /// chunk starts inside a destination group, `carry` is the previous
+    /// chunk's final assigned prefix cell for each channel; the first
+    /// recurrence therefore remains linked to the native AssignedCell rather
+    /// than to a host-computed value.
+    fn segmented_prefix_chunk(
+        config: &BaseConfig<Fp>,
+        region: &mut RegionCtx<Fp>,
+        values: &ValTensor<Fp>,
+        destination_groups: &[(usize, usize, usize)],
+        chunk_start: usize,
+        edge_count: usize,
+        channels: usize,
+        carry_cells: &[ValType<Fp>],
+        carry_witness: &[Option<Fp>],
+        all_unknown: bool,
+    ) -> Result<(ValTensor<Fp>, Vec<ValType<Fp>>, Vec<Option<Fp>>), CircuitError> {
+        let chunk_edges = values.dims().first().copied().unwrap_or(0);
+        let chunk_end = chunk_start
+            .checked_add(chunk_edges)
+            .ok_or(CircuitError::UnsupportedOp)?;
+        let expected_dims = if channels == 1 {
+            vec![chunk_edges]
+        } else {
+            vec![chunk_edges, channels]
+        };
+        if channels == 0
+            || chunk_edges == 0
+            || values.dims() != expected_dims
+            || chunk_end > edge_count
+        {
+            return Err(CircuitError::DimMismatch(
+                "GAT segmented-prefix chunk shape or range is not canonical".into(),
+            ));
+        }
+
+        let first_group = destination_groups.partition_point(|(_, _, end)| *end <= chunk_start);
+        let mut group_index = first_group;
+        let mut accumulators = vec![Fp::ZERO; channels];
+        if let Some((node, group_start, group_end)) = destination_groups.get(first_group).copied() {
+            if node != first_group || group_start > chunk_start || chunk_start >= group_end {
+                return Err(CircuitError::DimMismatch(
+                    "GAT segmented-prefix chunk does not begin in its public destination group".into(),
+                ));
+            }
+            if group_start < chunk_start {
+                if carry_cells.len() != channels || carry_witness.len() != channels {
+                    return Err(CircuitError::DimMismatch(
+                        "GAT segmented-prefix chunk is missing its per-channel assigned/witness carry".into(),
+                    ));
+                }
+                if !all_unknown {
+                    for (channel, value) in carry_witness.iter().enumerate() {
+                        accumulators[channel] = value.ok_or(CircuitError::UnsupportedOp)?;
+                    }
+                }
+            }
+        } else {
+            return Err(CircuitError::DimMismatch(
+                "GAT segmented-prefix chunk starts beyond the destination schedule".into(),
+            ));
+        }
+
+        let input_inner = values.get_inner_tensor()?;
+        let mut prefix_witness = Vec::with_capacity(values.len());
+        for row in chunk_start..chunk_end {
+            while group_index < destination_groups.len()
+                && row >= destination_groups[group_index].2
+            {
+                group_index += 1;
+                accumulators.fill(Fp::ZERO);
+            }
+            let (node, group_start, group_end) = destination_groups
+                .get(group_index)
+                .copied()
+                .ok_or(CircuitError::UnsupportedOp)?;
+            if node != group_index || group_start > row || row >= group_end {
+                return Err(CircuitError::DimMismatch(
+                    "GAT segmented-prefix chunk crossed an invalid destination boundary".into(),
+                ));
+            }
+            for channel in 0..channels {
+                let item = if all_unknown {
+                    ValType::Value(Value::unknown())
+                } else {
+                        let current = input_inner[(row - chunk_start) * channels + channel]
+                            .get_felt_eval()
+                            .ok_or(CircuitError::UnsupportedOp)?;
+                    accumulators[channel] += current;
+                    ValType::Value(Value::known(accumulators[channel]))
+                };
+                prefix_witness.push(item);
+            }
+        }
+
+        let mut claimed: ValTensor<Fp> = Tensor::new(Some(&prefix_witness), &expected_dims)?.into();
+        drop(prefix_witness);
+        claimed.set_scale(values.scale());
+        let claimed = region.assign(&config.custom_gates.inputs[1], &claimed)?;
+        let claimed_inner = claimed.get_inner_tensor()?;
+        region.increment(claimed.len());
+        let mut group_index = first_group;
+        let mut previous_values = Vec::with_capacity(values.len());
+        for row in chunk_start..chunk_end {
+            while group_index < destination_groups.len()
+                && row >= destination_groups[group_index].2
+            {
+                group_index += 1;
+            }
+            let (_, group_start, _) = destination_groups
+                .get(group_index)
+                .copied()
+                .ok_or(CircuitError::UnsupportedOp)?;
+            for channel in 0..channels {
+                let previous = if row == group_start {
+                    ValType::Constant(Fp::ZERO)
+                } else if row == chunk_start {
+                    carry_cells
+                        .get(channel)
+                        .cloned()
+                        .ok_or(CircuitError::UnsupportedOp)?
+                } else {
+                    // `claimed_inner` contains the assigned previous prefix
+                    // cell, preserving the recurrence's native equality link.
+                    claimed_inner[(row - chunk_start - 1) * channels + channel].clone()
+                };
+                previous_values.push(previous);
+            }
+        }
+        let mut previous: ValTensor<Fp> = Tensor::new(Some(&previous_values), &expected_dims)?.into();
+        drop(previous_values);
+        previous.set_scale(values.scale());
+        let recurrence = layouts::pairwise(config, region, &[&previous, values], BaseOp::Add)?;
+        layouts::enforce_equality(config, region, &[&recurrence, &claimed])?;
+
+        let last_row = (chunk_edges - 1) * channels;
+        let carry_out_cells = (0..channels)
+            .map(|channel| claimed_inner[last_row + channel].clone())
+            .collect();
+        let carry_out_witness = if all_unknown {
+            vec![None; channels]
+        } else {
+            accumulators.into_iter().map(Some).collect()
+        };
+        Ok((claimed, carry_out_cells, carry_out_witness))
+    }
+
+    /// Append only complete destination endpoints represented in this edge
+    /// chunk. Chunks and the public destination schedule are both ordered, so
+    /// the resulting N x C endpoint vector stays canonical without retaining
+    /// the edge-prefix tensor.
+    fn append_chunk_endpoints(
+        chunk_prefix: &ValTensor<Fp>,
+        destination_groups: &[(usize, usize, usize)],
+        chunk_start: usize,
+        chunk_end: usize,
+        channels: usize,
+        next_group: &mut usize,
+        endpoints: &mut Vec<ValType<Fp>>,
+    ) -> Result<(), CircuitError> {
+        let inner = chunk_prefix.get_inner_tensor()?;
+        while let Some((node, group_start, group_end)) = destination_groups.get(*next_group).copied() {
+            if group_end > chunk_end {
+                break;
+            }
+            if node != *next_group || group_start >= group_end || group_end <= chunk_start {
+                return Err(CircuitError::DimMismatch(
+                    "GAT chunk endpoint does not match its ordered public destination group".into(),
+                ));
+            }
+            let local_row = group_end - 1 - chunk_start;
+            let offset = local_row
+                .checked_mul(channels)
+                .ok_or(CircuitError::UnsupportedOp)?;
+            for channel in 0..channels {
+                endpoints.push(
+                    inner
+                        .get_flat_index(offset + channel)
+                        .clone(),
+                );
+            }
+            *next_group += 1;
+        }
+        Ok(())
+    }
+
     /// Constrain one field prefix recurrence per edge/channel, resetting at
     /// every public destination boundary. The public schedule only chooses
     /// predecessor cells; every recurrence is enforced by `pairwise` and an
@@ -756,9 +944,11 @@ impl GatOp {
             ));
         }
         let mut claimed: ValTensor<Fp> = Tensor::new(Some(&prefix_witness), &expected_dims)?.into();
+        drop(prefix_witness);
         claimed.set_scale(values.scale());
         let claimed = region.assign(&config.custom_gates.inputs[1], &claimed)?;
         let claimed_inner = claimed.get_inner_tensor()?;
+        region.increment(claimed.len());
 
         let mut previous_values = Vec::with_capacity(values.len());
         for (_, start, end) in destination_groups.iter().copied() {
@@ -773,6 +963,7 @@ impl GatOp {
             }
         }
         let mut previous: ValTensor<Fp> = Tensor::new(Some(&previous_values), &expected_dims)?.into();
+        drop(previous_values);
         previous.set_scale(values.scale());
         let recurrence = layouts::pairwise(config, region, &[&previous, values], BaseOp::Add)?;
         layouts::enforce_equality(config, region, &[&recurrence, &claimed])?;
@@ -821,6 +1012,7 @@ impl GatOp {
             Tensor::new(Some(&inverse_values), denominator.dims())?.into()
         };
         let inv = region.assign(&config.custom_gates.inputs[1], &inv)?;
+        region.increment(inv.len());
         let product = layouts::pairwise(config, region, &[denominator, &inv], BaseOp::Mult)?;
         let one = Self::constant_i128(&vec![1; denominator.len()], denominator.dims())?;
         layouts::enforce_equality(config, region, &[&product, &one])?;
@@ -899,12 +1091,19 @@ impl GatOp {
             )
         };
         let q = region.assign(&config.custom_gates.inputs[1], &q)?;
+        region.increment(q.len());
         let q_floor = region.assign(&config.custom_gates.inputs[1], &q_floor)?;
+        region.increment(q_floor.len());
         let rem = region.assign(&config.custom_gates.inputs[1], &rem)?;
+        region.increment(rem.len());
         let abs = region.assign(&config.custom_gates.inputs[1], &abs)?;
+        region.increment(abs.len());
         let sigma = region.assign(&config.custom_gates.inputs[1], &sigma)?;
+        region.increment(sigma.len());
         let zero = region.assign(&config.custom_gates.inputs[1], &zero)?;
+        region.increment(zero.len());
         let rounded_up = region.assign(&config.custom_gates.inputs[1], &rounded_up)?;
+        region.increment(rounded_up.len());
         let sigma = layouts::boolean_identity(config, region, &[&sigma], true)?;
         let zero = layouts::boolean_identity(config, region, &[&zero], true)?;
         let rounded_up = layouts::boolean_identity(config, region, &[&rounded_up], true)?;
@@ -944,6 +1143,7 @@ impl GatOp {
             Tensor::new(Some(&vals), abs.dims())?.into()
         };
         let abs_inv = region.assign(&config.custom_gates.inputs[1], &abs_inv)?;
+        region.increment(abs_inv.len());
         let abs_product = layouts::pairwise(config, region, &[&abs, &abs_inv], BaseOp::Mult)?;
         let one_minus_zero = layouts::pairwise(config, region, &[&one, &zero], BaseOp::Sub)?;
         layouts::enforce_equality(config, region, &[&abs_product, &one_minus_zero])?;
@@ -979,6 +1179,7 @@ impl GatOp {
             Self::value_i128(&deltas, rem.dims())?
         };
         let delta_vals = region.assign(&config.custom_gates.inputs[1], &delta_vals)?;
+        region.increment(delta_vals.len());
 
         match rounding {
             RoundingMode::TowardZero => {
@@ -1059,59 +1260,96 @@ impl GatOp {
         Self::require_scale(projected, projected_scale, "projected tensor")?;
         Self::require_scale(attention_src, attention_src_scale, "source attention vector",)?;
         Self::require_scale(attention_dst, attention_dst_scale, "destination attention vector",)?;
-        println!(
-            "EZKL_NATIVE_PHASE START stage=graph_gather direction=source nodes={} edges={} channels={} input_values={}",
-            graph.n,
-            graph.e,
-            channels,
-            projected.len(),
-        );
-        let src_gather_started = std::time::Instant::now();
-        let mut src_values = layouts::gather(config, region, &[projected, source], 0)?;
-        println!(
-            "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=source nodes={} edges={} channels={} input_values={} output_values={} elapsed_ms={:.3}",
-            graph.n,
-            graph.e,
-            channels,
-            projected.len(),
-            src_values.len(),
-            src_gather_started.elapsed().as_secs_f64() * 1000.0,
-        );
-        println!(
-            "EZKL_NATIVE_PHASE START stage=graph_gather direction=destination nodes={} edges={} channels={} input_values={}",
-            graph.n,
-            graph.e,
-            channels,
-            projected.len(),
-        );
-        let dst_gather_started = std::time::Instant::now();
-        let mut dst_values = layouts::gather(config, region, &[projected, dst], 0)?;
-        println!(
-            "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=destination nodes={} edges={} channels={} input_values={} output_values={} elapsed_ms={:.3}",
-            graph.n,
-            graph.e,
-            channels,
-            projected.len(),
-            dst_values.len(),
-            dst_gather_started.elapsed().as_secs_f64() * 1000.0,
-        );
-        src_values.set_scale(projected_scale);
-        dst_values.set_scale(projected_scale);
-        let mut src_score = layouts::einsum(config, region, &[&src_values, attention_src], "ij,j->i")?;
-        let mut dst_score = layouts::einsum(config, region, &[&dst_values, attention_dst], "ij,j->i")?;
-        src_score.set_scale(self.spec.scales.s_delta);
-        dst_score.set_scale(self.spec.scales.s_delta);
-        let mut score = layouts::pairwise(config, region, &[&src_score, &dst_score], BaseOp::Add)?;
-        score.set_scale(self.spec.scales.s_delta);
-        Self::range_check_bounded(config, region, &[&score], &(-bounds.max_score_abs, bounds.max_score_abs),)?;
-        let mut score = self.exact_lookup(config, region, &score, &self.spec.tables.lrelu, assigned_tables)?;
-        score.set_scale(self.spec.scales.s_delta);
-        Self::range_check_bounded(config, region, &[&score], &(-bounds.max_table_output_abs, bounds.max_table_output_abs),)?;
-        if destination_groups.len() != graph.n || score.dims() != [graph.e] {
+        if channels == 0
+            || channels > MAX_GAT_EDGE_CHUNK_CELLS
+            || destination_groups.len() != graph.n
+        {
             return Err(CircuitError::DimMismatch(
                 "GAT destination schedule or score shape is not canonical".into(),
             ));
         }
+        let edge_chunk_rows = (MAX_GAT_EDGE_CHUNK_CELLS / channels).max(1);
+        let mut score_values = Vec::with_capacity(graph.e);
+        let mut source_gather_ms = 0.0;
+        let mut destination_gather_ms = 0.0;
+        let mut score_chunk_count = 0usize;
+        println!(
+            "EZKL_NATIVE_PHASE START stage=graph_gather direction=source nodes={} edges={} channels={} input_values={} max_chunk_cells={}",
+            graph.n, graph.e, channels, projected.len(), MAX_GAT_EDGE_CHUNK_CELLS,
+        );
+        println!(
+            "EZKL_NATIVE_PHASE START stage=graph_gather direction=destination nodes={} edges={} channels={} input_values={} max_chunk_cells={}",
+            graph.n, graph.e, channels, projected.len(), MAX_GAT_EDGE_CHUNK_CELLS,
+        );
+        for chunk_start in (0..graph.e).step_by(edge_chunk_rows) {
+            let chunk_end = chunk_start.saturating_add(edge_chunk_rows).min(graph.e);
+            let chunk_rows = chunk_end - chunk_start;
+            {
+                let source_chunk = Self::flatten_slice(source, chunk_start, chunk_end, &[chunk_rows])?;
+                let gather_started = std::time::Instant::now();
+                let mut src_values = layouts::gather(config, region, &[projected, &source_chunk], 0)?;
+                source_gather_ms += gather_started.elapsed().as_secs_f64() * 1000.0;
+                src_values.set_scale(projected_scale);
+
+                let destination_chunk = Self::flatten_slice(dst, chunk_start, chunk_end, &[chunk_rows])?;
+                let gather_started = std::time::Instant::now();
+                let mut dst_values = layouts::gather(config, region, &[projected, &destination_chunk], 0)?;
+                destination_gather_ms += gather_started.elapsed().as_secs_f64() * 1000.0;
+                dst_values.set_scale(projected_scale);
+
+                let mut src_score = layouts::einsum(config, region, &[&src_values, attention_src], "ij,j->i")?;
+                let mut dst_score = layouts::einsum(config, region, &[&dst_values, attention_dst], "ij,j->i")?;
+                src_score.set_scale(self.spec.scales.s_delta);
+                dst_score.set_scale(self.spec.scales.s_delta);
+                let mut score_chunk = layouts::pairwise(config, region, &[&src_score, &dst_score], BaseOp::Add)?;
+                score_chunk.set_scale(self.spec.scales.s_delta);
+                Self::range_check_bounded(
+                    config,
+                    region,
+                    &[&score_chunk],
+                    &(-bounds.max_score_abs, bounds.max_score_abs),
+                )?;
+                let mut score_chunk = self.exact_lookup(
+                    config,
+                    region,
+                    &score_chunk,
+                    &self.spec.tables.lrelu,
+                    assigned_tables,
+                )?;
+                score_chunk.set_scale(self.spec.scales.s_delta);
+                Self::range_check_bounded(
+                    config,
+                    region,
+                    &[&score_chunk],
+                    &(-bounds.max_table_output_abs, bounds.max_table_output_abs),
+                )?;
+                score_values.extend(score_chunk.get_inner_tensor()?.iter().cloned());
+            }
+            score_chunk_count += 1;
+        }
+        println!(
+            "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=source nodes={} edges={} channels={} input_values={} output_values={} chunks={} elapsed_ms={:.3}",
+            graph.n,
+            graph.e,
+            channels,
+            projected.len(),
+            graph.e.checked_mul(channels).ok_or(CircuitError::UnsupportedOp)?,
+            score_chunk_count,
+            source_gather_ms,
+        );
+        println!(
+            "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=destination nodes={} edges={} channels={} input_values={} output_values={} chunks={} elapsed_ms={:.3}",
+            graph.n,
+            graph.e,
+            channels,
+            projected.len(),
+            graph.e.checked_mul(channels).ok_or(CircuitError::UnsupportedOp)?,
+            score_chunk_count,
+            destination_gather_ms,
+        );
+        let mut score: ValTensor<Fp> = Tensor::new(Some(&score_values), &[graph.e])?.into();
+        drop(score_values);
+        score.set_scale(self.spec.scales.s_delta);
         let mut max_claim = if score.any_unknowns()? {
             Self::unknown_tensor(&[graph.n])?
         } else {
@@ -1128,6 +1366,7 @@ impl GatOp {
         };
         max_claim.set_scale(score.scale());
         let max_claim = region.assign(&config.custom_gates.inputs[1], &max_claim)?;
+        region.increment(max_claim.len());
         Self::range_check_bounded(
             config,
             region,
@@ -1235,53 +1474,138 @@ impl GatOp {
         let mut alpha = layouts::pairwise(config, region, &[&exp, &inverse_edges], BaseOp::Mult)?;
         alpha.set_scale(self.spec.scales.s_exp);
 
-        let exp_rows = Self::tile_rows(&exp, graph.e, channels)?;
-        let alpha_rows = Self::tile_rows(&alpha, graph.e, channels)?;
-        let mut field_product = layouts::pairwise(config, region, &[&alpha_rows, &src_values], BaseOp::Mult)?;
-        Self::canonicalize_edge_channels(&mut field_product, graph.e, channels, "GAT field product")?;
-        let field_prefix = Self::segmented_prefix(
-            config,
-            region,
-            &field_product,
-            destination_groups,
-            graph.e,
-            channels,
-        )?;
-        let mut field_sum = Self::destination_group_endpoints(
-            &field_prefix,
-            destination_groups,
-            graph.e,
-            channels,
-        )?;
-        Self::canonicalize_destination_channels(&mut field_sum, graph.n, channels, "GAT field-sum endpoints")?;
-        drop(field_prefix);
-        drop(field_product);
+        let projected_unknown = projected.any_unknowns()?;
+        let field_prefix_unknown = projected_unknown || alpha.any_unknowns()?;
+        let numerator_prefix_unknown = projected_unknown || exp.any_unknowns()?;
+        let endpoint_capacity = graph.n.checked_mul(channels).ok_or(CircuitError::UnsupportedOp)?;
+        let mut field_endpoint_values = Vec::with_capacity(endpoint_capacity);
+        let mut numerator_endpoint_values = Vec::with_capacity(endpoint_capacity);
+        let mut field_carry_cells = Vec::new();
+        let mut field_carry_witness = Vec::new();
+        let mut numerator_carry_cells = Vec::new();
+        let mut numerator_carry_witness = Vec::new();
+        let mut field_next_group = 0usize;
+        let mut numerator_next_group = 0usize;
+        let mut field_scale = None;
+        for chunk_start in (0..graph.e).step_by(edge_chunk_rows) {
+            let chunk_end = chunk_start.saturating_add(edge_chunk_rows).min(graph.e);
+            let chunk_rows = chunk_end - chunk_start;
+            {
+                let source_chunk = Self::flatten_slice(source, chunk_start, chunk_end, &[chunk_rows])?;
+                let mut src_values = layouts::gather(config, region, &[projected, &source_chunk], 0)?;
+                src_values.set_scale(projected_scale);
 
-        let mut numerator_product = layouts::pairwise(config, region, &[&exp_rows, &src_values], BaseOp::Mult)?;
-        Self::canonicalize_edge_channels(&mut numerator_product, graph.e, channels, "GAT numerator product")?;
-        let numerator_prefix = Self::segmented_prefix(
-            config,
-            region,
-            &numerator_product,
-            destination_groups,
-            graph.e,
+                let alpha_chunk = Self::flatten_slice(&alpha, chunk_start, chunk_end, &[chunk_rows])?;
+                let alpha_rows = Self::tile_rows(&alpha_chunk, chunk_rows, channels)?;
+                let mut field_product = layouts::pairwise(config, region, &[&alpha_rows, &src_values], BaseOp::Mult)?;
+                Self::canonicalize_edge_channels(
+                    &mut field_product,
+                    chunk_rows,
+                    channels,
+                    "GAT field-product chunk",
+                )?;
+                field_scale.get_or_insert(field_product.scale());
+                let (field_prefix, next_field_carry_cells, next_field_carry_witness) = Self::segmented_prefix_chunk(
+                    config,
+                    region,
+                    &field_product,
+                    destination_groups,
+                    chunk_start,
+                    graph.e,
+                    channels,
+                    &field_carry_cells,
+                    &field_carry_witness,
+                    field_prefix_unknown,
+                )?;
+                Self::append_chunk_endpoints(
+                    &field_prefix,
+                    destination_groups,
+                    chunk_start,
+                    chunk_end,
+                    channels,
+                    &mut field_next_group,
+                    &mut field_endpoint_values,
+                )?;
+                field_carry_cells = next_field_carry_cells;
+                field_carry_witness = next_field_carry_witness;
+                drop(field_prefix);
+                drop(field_product);
+                drop(alpha_rows);
+
+                let exp_chunk = Self::flatten_slice(&exp, chunk_start, chunk_end, &[chunk_rows])?;
+                let exp_rows = Self::tile_rows(&exp_chunk, chunk_rows, channels)?;
+                let mut numerator_product = layouts::pairwise(config, region, &[&exp_rows, &src_values], BaseOp::Mult)?;
+                Self::canonicalize_edge_channels(
+                    &mut numerator_product,
+                    chunk_rows,
+                    channels,
+                    "GAT numerator-product chunk",
+                )?;
+                let (numerator_prefix, next_numerator_carry_cells, next_numerator_carry_witness) = Self::segmented_prefix_chunk(
+                    config,
+                    region,
+                    &numerator_product,
+                    destination_groups,
+                    chunk_start,
+                    graph.e,
+                    channels,
+                    &numerator_carry_cells,
+                    &numerator_carry_witness,
+                    numerator_prefix_unknown,
+                )?;
+                // This source-native ledger bounds each local prefix by the
+                // maximum destination degree, exponential output, and
+                // projected value, independent of the chunk boundary.
+                Self::range_check_bounded(
+                    config,
+                    region,
+                    &[&numerator_prefix],
+                    &(-bounds.max_aggregation_num, bounds.max_aggregation_num),
+                )?;
+                Self::append_chunk_endpoints(
+                    &numerator_prefix,
+                    destination_groups,
+                    chunk_start,
+                    chunk_end,
+                    channels,
+                    &mut numerator_next_group,
+                    &mut numerator_endpoint_values,
+                )?;
+                numerator_carry_cells = next_numerator_carry_cells;
+                numerator_carry_witness = next_numerator_carry_witness;
+                drop(numerator_prefix);
+                drop(numerator_product);
+                drop(exp_rows);
+                drop(src_values);
+            }
+        }
+        if field_next_group != destination_groups.len()
+            || numerator_next_group != destination_groups.len()
+            || field_endpoint_values.len() != endpoint_capacity
+            || numerator_endpoint_values.len() != endpoint_capacity
+        {
+            return Err(CircuitError::DimMismatch(
+                "GAT chunked aggregation did not emit every canonical destination endpoint".into(),
+            ));
+        }
+        let endpoint_dims = if channels == 1 {
+            vec![graph.n]
+        } else {
+            vec![graph.n, channels]
+        };
+        let mut field_sum: ValTensor<Fp> =
+            Tensor::new(Some(&field_endpoint_values), &endpoint_dims)?.into();
+        drop(field_endpoint_values);
+        Self::canonicalize_destination_channels(
+            &mut field_sum,
+            graph.n,
             channels,
+            "GAT field endpoints",
         )?;
-        // The source-native ledger derives this bound from max local degree,
-        // max exponential output, and the projected-value bound, so it also
-        // bounds each local prefix without imposing a bound across groups.
-        Self::range_check_bounded(
-            config,
-            region,
-            &[&numerator_prefix],
-            &(-bounds.max_aggregation_num, bounds.max_aggregation_num),
-        )?;
-        let mut numerator = Self::destination_group_endpoints(
-            &numerator_prefix,
-            destination_groups,
-            graph.e,
-            channels,
-        )?;
+        field_sum.set_scale(field_scale.ok_or(CircuitError::UnsupportedOp)?);
+        let mut numerator: ValTensor<Fp> =
+            Tensor::new(Some(&numerator_endpoint_values), &[graph.n, channels])?.into();
+        drop(numerator_endpoint_values);
         Self::canonicalize_destination_channels(&mut numerator, graph.n, channels, "GAT numerator endpoints")?;
         numerator.set_scale(
             self.spec
@@ -1296,9 +1620,6 @@ impl GatOp {
             &[&numerator],
             &(-bounds.max_aggregation_num, bounds.max_aggregation_num),
         )?;
-        drop(numerator_prefix);
-        drop(numerator_product);
-
         let inverse_rows = Self::tile_rows(&inverse, graph.n, channels)?;
         let field_from_numerator = layouts::pairwise(config, region, &[&numerator, &inverse_rows], BaseOp::Mult)?;
         layouts::enforce_equality(config, region, &[&field_sum, &field_from_numerator])?;
@@ -1388,6 +1709,7 @@ impl Op<Fp> for GatOp {
         );
         let feature_gather_started = std::time::Instant::now();
         let mut current = layouts::gather(config, region, &[&features, &node_ids], 0)?;
+        println!("EZKL_NATIVE_WITNESS stage=feature_gather unknown={}", current.any_unknowns()?);
         println!(
             "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=feature model_arch_id={} output_values={} elapsed_ms={:.3}",
             self.spec.model.model_arch_id,
@@ -1401,7 +1723,17 @@ impl Op<Fp> for GatOp {
             let mut heads = Vec::new();
             for (head_idx, _head) in layer.heads.iter().enumerate() {
                 let bounds = self.bound_family(layer_idx, head_idx, false)?;
-                let projection = layouts::identity(config, region, &[&weights[weight_idx]])?;
+                let projection = layouts::identity(config, region, &[&weights[weight_idx]])
+                    .map_err(|error| {
+                        log::error!(
+                            "GAT hidden projection input assignment failed: layer={} head={} linear_coord={} error={:?}",
+                            layer_idx,
+                            head_idx,
+                            region.linear_coord(),
+                            error
+                        );
+                        error
+                    })?;
                 let attention_src = layouts::identity(config, region, &[&weights[weight_idx + 1]])?;
                 let attention_dst = layouts::identity(config, region, &[&weights[weight_idx + 2]])?;
                 weight_idx += 3;
@@ -1411,7 +1743,27 @@ impl Op<Fp> for GatOp {
                 if projection.dims() != [current_dim, layer.d_head] {
                     return Err(CircuitError::DimMismatch("GAT projection shape".into()));
                 }
-                let mut projected = layouts::einsum(config, region, &[&current, &projection], "ij,jk->ik")?;
+                let mut projected = layouts::einsum(config, region, &[&current, &projection], "ij,jk->ik")
+                    .map_err(|error| {
+                        log::error!(
+                            "GAT hidden projection einsum failed: layer={} head={} input_dims={:?} weight_dims={:?} linear_coord={} error={:?}",
+                            layer_idx,
+                            head_idx,
+                            current.dims(),
+                            projection.dims(),
+                            region.linear_coord(),
+                            error
+                        );
+                        error
+                    })?;
+                println!(
+                    "EZKL_NATIVE_WITNESS stage=hidden_projection layer={} head={} input_unknown={} weight_unknown={} output_unknown={}",
+                    layer_idx,
+                    head_idx,
+                    current.any_unknowns()?,
+                    projection.any_unknowns()?,
+                    projected.any_unknowns()?
+                );
                 projected.set_scale(self.spec.scales.s_h_prime[layer_idx][head_idx]);
                 let aggregated = self.aggregate_head(
                     config,
@@ -1431,17 +1783,56 @@ impl Op<Fp> for GatOp {
                     self.spec.scales.s_a_dst_hidden[layer_idx][head_idx],
                     &destination_groups,
                     &mut assigned_tables,
-                )?;
+                ).map_err(|error| {
+                    log::error!(
+                        "GAT aggregate_head failed: phase=hidden layer={} head={} linear_coord={} error={:?}",
+                        layer_idx,
+                        head_idx,
+                        region.linear_coord(),
+                        error
+                    );
+                    error
+                })?;
+                println!(
+                    "EZKL_NATIVE_WITNESS stage=hidden_aggregate layer={} head={} output_unknown={}",
+                    layer_idx,
+                    head_idx,
+                    aggregated.any_unknowns()?
+                );
                 heads.push(aggregated);
             }
-            current = Self::interleave_heads(&heads, self.spec.graph.n, layer.d_head)?;
+            current = Self::interleave_heads(&heads, self.spec.graph.n, layer.d_head).map_err(|error| {
+                log::error!(
+                    "GAT hidden head interleave failed: layer={} heads={} channels={} linear_coord={} error={:?}",
+                    layer_idx,
+                    heads.len(),
+                    layer.d_head,
+                    region.linear_coord(),
+                    error
+                );
+                error
+            })?;
+            println!(
+                "EZKL_NATIVE_WITNESS stage=hidden_interleave layer={} output_unknown={}",
+                layer_idx,
+                current.any_unknowns()?
+            );
             current.set_scale(self.spec.scales.s_h[layer_idx + 1]);
             current_dim = layer.heads.len() * layer.d_head;
         }
         let mut output_heads = Vec::new();
         for (head_idx, _head) in self.spec.model.output_heads.iter().enumerate() {
             let bounds = self.bound_family(usize::MAX, head_idx, true)?;
-            let projection = layouts::identity(config, region, &[&weights[weight_idx]])?;
+            let projection = layouts::identity(config, region, &[&weights[weight_idx]])
+                .map_err(|error| {
+                    log::error!(
+                        "GAT output projection input assignment failed: head={} linear_coord={} error={:?}",
+                        head_idx,
+                        region.linear_coord(),
+                        error
+                    );
+                    error
+                })?;
             let attention_src = layouts::identity(config, region, &[&weights[weight_idx + 1]])?;
             let attention_dst = layouts::identity(config, region, &[&weights[weight_idx + 2]])?;
             let bias = layouts::identity(config, region, &[&weights[weight_idx + 3]])?;
@@ -1450,7 +1841,25 @@ impl Op<Fp> for GatOp {
             Self::require_scale(&attention_src, self.spec.scales.s_a_src_output[head_idx], "output source attention weight",)?;
             Self::require_scale(&attention_dst, self.spec.scales.s_a_dst_output[head_idx], "output destination attention weight",)?;
             Self::require_scale(&bias, self.spec.scales.s_b_output[head_idx], "output bias")?;
-            let mut projected = layouts::einsum(config, region, &[&current, &projection], "ij,jk->ik")?;
+            let mut projected = layouts::einsum(config, region, &[&current, &projection], "ij,jk->ik")
+                .map_err(|error| {
+                    log::error!(
+                        "GAT output projection einsum failed: head={} input_dims={:?} weight_dims={:?} linear_coord={} error={:?}",
+                        head_idx,
+                        current.dims(),
+                        projection.dims(),
+                        region.linear_coord(),
+                        error
+                    );
+                    error
+                    })?;
+            println!(
+                "EZKL_NATIVE_WITNESS stage=output_projection head={} input_unknown={} weight_unknown={} output_unknown={}",
+                head_idx,
+                current.any_unknowns()?,
+                projection.any_unknowns()?,
+                projected.any_unknowns()?
+            );
             projected.set_scale(self.spec.scales.s_y_prime[head_idx]);
             let aggregated = self.aggregate_head(
                 config,
@@ -1470,7 +1879,15 @@ impl Op<Fp> for GatOp {
                 self.spec.scales.s_a_dst_output[head_idx],
                 &destination_groups,
                 &mut assigned_tables,
-            )?;
+            ).map_err(|error| {
+                log::error!(
+                    "GAT aggregate_head failed: phase=output head={} linear_coord={} error={:?}",
+                    head_idx,
+                    region.linear_coord(),
+                    error
+                );
+                error
+            })?;
             let out_head_multiplier = scale_exponent_to_multiplier(self.spec.scales.s_out_head).map_err(|_| CircuitError::UnsupportedOp)?;
             let out_head_multiplier = i128::try_from(out_head_multiplier).map_err(|_| CircuitError::UnsupportedOp)?;
             let out_pre_multiplier = scale_exponent_to_multiplier(self.spec.scales.s_out_pre).map_err(|_| CircuitError::UnsupportedOp)?;
@@ -1478,7 +1895,17 @@ impl Op<Fp> for GatOp {
             let scale_const = Self::constant_i128(&vec![out_head_multiplier; aggregated.len()], aggregated.dims(),)?;
             let aligned_dividend = layouts::pairwise(config, region, &[&aggregated, &scale_const], BaseOp::Mult)?;
             let divisor = Self::constant_i128(&[out_pre_multiplier], &[1])?;
-            let mut aligned = self.signed_round_div_layout(config, region, &aligned_dividend, &divisor, Some(bounds),)?;
+            let mut aligned = self
+                .signed_round_div_layout(config, region, &aligned_dividend, &divisor, Some(bounds))
+                .map_err(|error| {
+                    log::error!(
+                        "GAT output head scale recovery failed: head={} linear_coord={} error={:?}",
+                        head_idx,
+                        region.linear_coord(),
+                        error
+                    );
+                    error
+                })?;
             aligned.set_scale(self.spec.scales.s_out_head);
             let mut bias_repeated =
                 Self::append_tensors(&(0..self.spec.graph.n).map(|_| bias.clone()).collect::<Vec<_>>(), &[self.spec.graph.n, self.spec.model.classes],)?;
@@ -1579,6 +2006,11 @@ mod flat_slice_tests {
 mod segmented_batch_tests {
     use super::*;
     use crate::circuit::region::{RegionCtx, RegionSettings};
+    use halo2_proofs::{
+        circuit::{Layouter, SimpleFloorPlanner},
+        dev::MockProver,
+        plonk::{Circuit, ConstraintSystem, Error},
+    };
 
     fn dummy_layout() -> (BaseConfig<Fp>, RegionCtx<'static, Fp>) {
         (
@@ -1609,6 +2041,294 @@ mod segmented_batch_tests {
     fn refresh_table_registry(spec: &mut CanonicalGat) {
         spec.tables.max_relu.refresh_digest().unwrap();
         spec.tables.refresh_digest().unwrap();
+    }
+
+    const MOCK_CHUNK_K: usize = 12;
+    const MOCK_CHUNK_CAPACITY: usize = 4096;
+    const MOCK_CHUNK_GROUPS: [(usize, usize, usize); 3] = [(0, 0, 2), (1, 2, 5), (2, 5, 7)];
+    const MOCK_FIELD_PRODUCTS: [i128; 14] = [1, -3, 2, 4, -1, 5, 7, 8, -4, 2, 6, -2, 3, 9];
+    const MOCK_NUMERATOR_PRODUCTS: [i128; 14] = [2, 1, 3, -1, 3, 4, 5, 2, 2, 0, 9, -1, 6, -1];
+    const MOCK_FIELD_ENDPOINTS: [i128; 6] = [3, 1, 2, 15, 9, 7];
+    const MOCK_NUMERATOR_ENDPOINTS: [i128; 6] = [5, 0, 10, 6, 15, -2];
+    const MOCK_ROUNDED_QUOTIENT: [i128; 6] = [3, 0, 3, 2, 3, 0];
+
+    #[derive(Clone, Default)]
+    struct ChunkPrefixMockParams;
+
+    #[derive(Clone)]
+    struct ChunkPrefixMockCircuit {
+        chunk_rows: usize,
+        tamper_carry: bool,
+        tamper_quotient: bool,
+        check_rounding: bool,
+        check_expected_quotient: bool,
+    }
+
+    impl Circuit<Fp> for ChunkPrefixMockCircuit {
+        type Config = BaseConfig<Fp>;
+        type FloorPlanner = SimpleFloorPlanner;
+        type Params = ChunkPrefixMockParams;
+
+        fn without_witnesses(&self) -> Self {
+            self.clone()
+        }
+
+        fn configure(meta: &mut ConstraintSystem<Fp>) -> Self::Config {
+            let input = crate::tensor::VarTensor::new_advice(
+                meta,
+                MOCK_CHUNK_K,
+                2,
+                MOCK_CHUNK_CAPACITY,
+            );
+            let index = crate::tensor::VarTensor::new_advice(
+                meta,
+                MOCK_CHUNK_K,
+                2,
+                MOCK_CHUNK_CAPACITY,
+            );
+            let output = crate::tensor::VarTensor::new_advice(
+                meta,
+                MOCK_CHUNK_K,
+                2,
+                MOCK_CHUNK_CAPACITY,
+            );
+            crate::tensor::VarTensor::constant_cols(meta, MOCK_CHUNK_K, 8, false);
+            let mut config = BaseConfig::configure(
+                meta,
+                &[input.clone(), index.clone()],
+                &output,
+                crate::circuit::ops::chip::CheckMode::SAFE,
+            );
+            for range in [(-20, 20), (-1, 1), (0, 1), (0, 20), (1, 5), (0, 255)] {
+                config
+                    .configure_range_check(meta, &input, &index, range, MOCK_CHUNK_K)
+                    .unwrap();
+            }
+            config
+        }
+
+        fn synthesize(
+            &self,
+            mut config: Self::Config,
+            mut layouter: impl Layouter<Fp>,
+        ) -> Result<(), Error> {
+            config
+                .layout_range_checks(&mut layouter)
+                .map_err(|error| {
+                    eprintln!("chunk mock range-table layout failed: {error:?}");
+                    Error::Synthesis
+                })?;
+            layouter.assign_region(
+                || "chunked GAT prefix and canonical rounding",
+                |region| {
+                    let settings = RegionSettings::new(true, false, 256, 4);
+                    let mut region = RegionCtx::new_with_settings(region, 0, 2, settings);
+                    let field_values = constant_i128_tensor(&MOCK_FIELD_PRODUCTS, &[7, 2]);
+                    let numerator_values = constant_i128_tensor(&MOCK_NUMERATOR_PRODUCTS, &[7, 2]);
+                    let field_endpoints = chunked_prefix_endpoints(
+                        &config,
+                        &mut region,
+                        &field_values,
+                        self.chunk_rows,
+                        self.tamper_carry,
+                    )
+                    .map_err(|error| {
+                        eprintln!("chunk mock field recurrence failed: {error:?}");
+                        Error::Synthesis
+                    })?;
+                    let numerator_endpoints = chunked_prefix_endpoints(
+                        &config,
+                        &mut region,
+                        &numerator_values,
+                        self.chunk_rows,
+                        false,
+                    )
+                    .map_err(|error| {
+                        eprintln!("chunk mock numerator recurrence failed: {error:?}");
+                        Error::Synthesis
+                    })?;
+                    let expected_field = constant_i128_tensor(&MOCK_FIELD_ENDPOINTS, &[3, 2]);
+                    let expected_numerator =
+                        constant_i128_tensor(&MOCK_NUMERATOR_ENDPOINTS, &[3, 2]);
+                    layouts::enforce_equality(
+                        &config,
+                        &mut region,
+                        &[&field_endpoints, &expected_field],
+                    )
+                    .map_err(|_| Error::Synthesis)?;
+                    layouts::enforce_equality(
+                        &config,
+                        &mut region,
+                        &[&numerator_endpoints, &expected_numerator],
+                    )
+                    .map_err(|_| Error::Synthesis)?;
+
+                    if !self.check_rounding {
+                        return Ok(());
+                    }
+
+                    let divisor = constant_i128_tensor(&[2, 3, 5], &[3]);
+                    let bounds = BoundFamily {
+                        max_dividend_abs: 20,
+                        max_aux_abs: 20,
+                        max_divisor: 5,
+                        max_aggregation_num: 20,
+                        ..BoundFamily::default()
+                    };
+                    let op = GatOp {
+                        spec: CanonicalGat::default(),
+                        rounding: RoundingMode::NearestTiesAway,
+                    };
+                    let quotient = op
+                        .signed_round_div_layout_mode(
+                            &config,
+                            &mut region,
+                            &numerator_endpoints,
+                            &divisor,
+                            RoundingMode::NearestTiesAway,
+                            Some(&bounds),
+                        )
+                        .map_err(|error| {
+                            eprintln!("chunk mock signed division failed: {error:?}");
+                            Error::Synthesis
+                        })?;
+                    if !self.check_expected_quotient {
+                        return Ok(());
+                    }
+                    let mut expected_quotient = MOCK_ROUNDED_QUOTIENT;
+                    if self.tamper_quotient {
+                        expected_quotient[0] = expected_quotient[0]
+                            .checked_add(1)
+                            .ok_or(Error::Synthesis)?;
+                    }
+                    let expected_quotient = constant_i128_tensor(&expected_quotient, &[3, 2]);
+                    layouts::enforce_equality(
+                        &config,
+                        &mut region,
+                        &[&quotient, &expected_quotient],
+                    )
+                    .map_err(|_| Error::Synthesis)?;
+                    Ok(())
+                },
+            )
+        }
+    }
+
+    fn constant_i128_tensor(values: &[i128], dims: &[usize]) -> ValTensor<Fp> {
+        let values = values
+            .iter()
+            .map(|value| ValType::Constant(integer_rep_to_felt(*value)))
+            .collect::<Vec<_>>();
+        Tensor::new(Some(&values), dims).unwrap().into()
+    }
+
+    fn chunked_prefix_endpoints(
+        config: &BaseConfig<Fp>,
+        region: &mut RegionCtx<Fp>,
+        values: &ValTensor<Fp>,
+        chunk_rows: usize,
+        tamper_carry: bool,
+    ) -> Result<ValTensor<Fp>, CircuitError> {
+        let edge_count = 7;
+        let channels = 2;
+        if chunk_rows == 0 || values.dims() != [edge_count, channels] {
+            return Err(CircuitError::DimMismatch(
+                "mock GAT chunk fixture has an invalid shape or chunk size".into(),
+            ));
+        }
+        let mut carry_cells = Vec::new();
+        let mut carry_witness = Vec::new();
+        let mut next_group = 0;
+        let mut endpoint_values = Vec::with_capacity(MOCK_FIELD_ENDPOINTS.len());
+        for chunk_start in (0..edge_count).step_by(chunk_rows) {
+            if tamper_carry && chunk_start == chunk_rows {
+                let wrong_carry = constant_i128_tensor(&[99, -99], &[channels]);
+            let assigned = region
+                .assign(&config.custom_gates.inputs[1], &wrong_carry)
+                .map_err(|error| {
+                    eprintln!("chunk mock injected carry assignment failed: {error:?}");
+                    error
+                })?;
+                region.increment(channels);
+                carry_cells = assigned.get_inner_tensor()?.iter().cloned().collect();
+            }
+            let chunk_end = (chunk_start + chunk_rows).min(edge_count);
+            let chunk = GatOp::flatten_slice(
+                values,
+                chunk_start * channels,
+                chunk_end * channels,
+                &[chunk_end - chunk_start, channels],
+            )?;
+            let (prefix, next_carry_cells, next_carry_witness) = GatOp::segmented_prefix_chunk(
+                config,
+                region,
+                &chunk,
+                &MOCK_CHUNK_GROUPS,
+                chunk_start,
+                edge_count,
+                channels,
+                &carry_cells,
+                &carry_witness,
+                false,
+            )?;
+            GatOp::append_chunk_endpoints(
+                &prefix,
+                &MOCK_CHUNK_GROUPS,
+                chunk_start,
+                chunk_end,
+                channels,
+                &mut next_group,
+                &mut endpoint_values,
+            )?;
+            carry_cells = next_carry_cells;
+            carry_witness = next_carry_witness;
+        }
+        if next_group != MOCK_CHUNK_GROUPS.len() || endpoint_values.len() != MOCK_FIELD_ENDPOINTS.len() {
+            return Err(CircuitError::DimMismatch(
+                "mock GAT chunk fixture did not emit every destination endpoint".into(),
+            ));
+        }
+        let mut endpoints: ValTensor<Fp> =
+            Tensor::new(Some(&endpoint_values), &[MOCK_CHUNK_GROUPS.len(), channels])?.into();
+        drop(endpoint_values);
+        endpoints.set_scale(values.scale());
+        Ok(endpoints)
+    }
+
+    #[test]
+    fn chunked_prefix_mockprover_checks_carries_endpoints_and_rounding() {
+        for chunk_rows in [2, 3] {
+            let circuit = ChunkPrefixMockCircuit {
+                chunk_rows,
+                tamper_carry: false,
+                tamper_quotient: false,
+                check_rounding: chunk_rows == 3,
+                check_expected_quotient: chunk_rows == 3,
+            };
+            let prover = MockProver::run(MOCK_CHUNK_K as u32, &circuit, vec![]).unwrap();
+            let verification = prover.verify();
+            assert!(verification.is_ok(), "valid chunk size {chunk_rows} failed: {verification:?}");
+        }
+
+        let bad_carry = ChunkPrefixMockCircuit {
+            chunk_rows: 3,
+            tamper_carry: true,
+            tamper_quotient: false,
+            check_rounding: false,
+            check_expected_quotient: false,
+        };
+        let prover = MockProver::run(MOCK_CHUNK_K as u32, &bad_carry, vec![]).unwrap();
+        assert!(prover.verify().is_err(), "a wrong cross-chunk carry must violate constrained endpoints");
+
+        let bad_quotient = ChunkPrefixMockCircuit {
+            chunk_rows: 3,
+            tamper_carry: false,
+            tamper_quotient: true,
+            check_rounding: true,
+            check_expected_quotient: true,
+        };
+        let prover = MockProver::run(MOCK_CHUNK_K as u32, &bad_quotient, vec![]).unwrap();
+        assert!(prover.verify().is_err(), "a quotient that violates the canonical rounded relation must be rejected");
     }
 
     #[test]
@@ -1654,6 +2374,71 @@ mod segmented_batch_tests {
         let endpoints = GatOp::destination_group_endpoints(&prefix, &groups, 5, 2).unwrap();
         assert_eq!(endpoints.dims(), &[3, 2]);
         assert_eq!(integers(&endpoints), vec![3, 1, -1, 5, 3, 10]);
+    }
+
+    #[test]
+    fn chunked_prefix_matches_dense_reference_across_groups_and_carries() {
+        let groups = [(0, 0, 3), (1, 3, 4), (2, 4, 7)];
+        let values = GatOp::value_i128(
+            &[1, -3, 2, 4, -1, 5, 7, 8, -4, 2, 6, -2, 3, 9],
+            &[7, 2],
+        )
+        .unwrap();
+        let (config, mut dense_region) = dummy_layout();
+        let dense = GatOp::segmented_prefix(&config, &mut dense_region, &values, &groups, 7, 2)
+            .unwrap();
+        let dense_endpoints = GatOp::destination_group_endpoints(&dense, &groups, 7, 2).unwrap();
+
+        let (config, mut chunk_region) = dummy_layout();
+        let mut carry_cells = Vec::new();
+        let mut carry_witness = Vec::new();
+        let mut next_group = 0;
+        let mut endpoint_values = Vec::new();
+        let mut chunk_values = Vec::new();
+        for chunk_start in (0..7).step_by(2) {
+            let chunk_end = (chunk_start + 2).min(7);
+            let chunk_edges = chunk_end - chunk_start;
+            let chunk = GatOp::flatten_slice(
+                &values,
+                chunk_start * 2,
+                chunk_end * 2,
+                &[chunk_edges, 2],
+            )
+            .unwrap();
+            let (prefix, next_carry_cells, next_carry_witness) = GatOp::segmented_prefix_chunk(
+                &config,
+                &mut chunk_region,
+                &chunk,
+                &groups,
+                chunk_start,
+                7,
+                2,
+                &carry_cells,
+                &carry_witness,
+                false,
+            )
+            .unwrap();
+            chunk_values.extend(integers(&prefix));
+            GatOp::append_chunk_endpoints(
+                &prefix,
+                &groups,
+                chunk_start,
+                chunk_end,
+                2,
+                &mut next_group,
+                &mut endpoint_values,
+            )
+            .unwrap();
+            carry_cells = next_carry_cells;
+            carry_witness = next_carry_witness;
+        }
+
+        assert_eq!(chunk_values, integers(&dense));
+        let chunk_endpoints: ValTensor<Fp> = Tensor::new(Some(&endpoint_values), &[3, 2])
+            .unwrap()
+            .into();
+        assert_eq!(integers(&chunk_endpoints), integers(&dense_endpoints));
+        assert_eq!(next_group, groups.len());
     }
 
     #[test]

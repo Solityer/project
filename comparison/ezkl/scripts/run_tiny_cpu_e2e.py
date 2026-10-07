@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one bounded, native ezkl/Halo2 tiny CPU E2E cell.
+"""Run one bounded, native ezkl/Halo2 tiny CPU/GPU E2E cell.
 
 The script is intentionally self-contained at the orchestration boundary.  It
 stages a temporary baseline-local checkout, creates a two-node/four-edge
@@ -39,10 +39,10 @@ DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 TINY_DATASET = "cora"
 TINY_NODE_COUNT = 2
 TINY_FEATURE_DIM = 1
-TINY_HIDDEN_HEAD_COUNTS = (1, 1)
+TINY_HIDDEN_HEAD_COUNTS = (2, 2)
 TINY_HEAD_DIM = 1
-TINY_OUTPUT_HEADS = 1
-TINY_CLASSES = 1
+TINY_OUTPUT_HEADS = 2
+TINY_CLASSES = 2
 TINY_HIDDEN_LAYERS = len(TINY_HIDDEN_HEAD_COUNTS)
 TINY_LAYER_COUNT = TINY_HIDDEN_LAYERS + 1
 TINY_HIDDEN_INPUT_DIMS = (TINY_FEATURE_DIM,) + tuple(TINY_HIDDEN_HEAD_COUNTS[layer] * TINY_HEAD_DIM for layer in range(TINY_HIDDEN_LAYERS - 1))
@@ -222,10 +222,9 @@ def matrix_widths(value: str, label: str) -> tuple[int, ...]:
 def assert_formal_matrix_shapes(chain: str, source_scale: Path) -> None:
     """Keep tiny layer count aligned with the formal scale-chain schema.
 
-    The tiny fixture intentionally uses one head per hidden layer, so its
-    matrix widths are smaller than the formal eight-head checkpoint.  Only
-    the layer-family count is shared here; the per-head widths are closed by
-    the tiny architecture checks below.
+    The tiny fixture uses two heads per hidden layer, so its matrix widths
+    are smaller than the formal eight-head checkpoint. Only the layer-family
+    count is shared here; the per-head widths are closed below.
     """
 
     formal_manifest = source_scale.parent.parent / "checkpoints/cora_gat/manifest.json"
@@ -660,16 +659,64 @@ def create_tiny_resources(root: Path) -> None:
         write_tiny_config(root, dataset, preprocess)
 
 
+def seed_tiny_resource_manifest(root: Path) -> None:
+    """Create a fixture-local manifest with the official resource validator.
+
+    The fixture owns its generated canonical inputs, so it first needs a
+    baseline-local manifest to let the ordinary validator authenticate those
+    bytes. Preserve only the already-recorded source origin identities; no Git
+    command is run and the manifest never leaves this temporary fixture.
+    """
+
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    source_root = Path(__file__).resolve().parents[1]
+    origin_path = source_root / "resources/resource_manifest.json"
+    if origin_path.is_symlink() or not origin_path.is_file():
+        raise TinyE2EError(f"missing official origin resource manifest: {origin_path}")
+    origin = json.loads(origin_path.read_text())
+    snapshot = origin.get("source_snapshot")
+    if not isinstance(snapshot, dict) or set(snapshot) != {"root", "git_commit", "git_tree"}:
+        raise TinyE2EError("official origin resource manifest has no exact source snapshot")
+    local_snapshot = {"root": str(root.resolve()), "git_commit": snapshot["git_commit"], "git_tree": snapshot["git_tree"]}
+    staged_validator = root / "scripts/validate_resources.py"
+    if staged_validator.is_symlink() or not staged_validator.is_file():
+        raise TinyE2EError("staged official resource validator is missing or symlinked")
+    spec = spec_from_file_location("tiny_fixture_validate_resources", staged_validator)
+    if spec is None or spec.loader is None:
+        raise TinyE2EError("cannot load the staged official resource validator")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest, _ = module.build_manifest(root, local_snapshot)
+    module.atomic_manifest_write(root / "resources/resource_manifest.json", manifest)
+
+
 def source_tree_hash(root: Path) -> str:
     paths: list[Path] = []
-    for relative in ("src", "gat_adapter", ".cargo"):
+    excluded_parts = {"target", "build", ".git", "__pycache__"}
+    excluded_binding = "vendor/icicle/wrappers/rust/icicle-cuda-runtime/src/bindings.rs"
+    for relative in ("src", "gat_adapter", ".cargo", "vendor"):
         directory = root / relative
         if directory.is_dir():
-            paths.extend(path for path in directory.rglob("*") if path.is_file() and not path.is_symlink())
+            paths.extend(
+                path for path in directory.rglob("*")
+                if path.is_file() and not path.is_symlink()
+                and not excluded_parts.intersection(path.relative_to(directory).parts)
+                and path.relative_to(root).as_posix() != excluded_binding
+            )
     for relative in ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain"):
         path = root / relative
         if path.is_file() and not path.is_symlink():
             paths.append(path)
+    scripts = root / "scripts"
+    if scripts.is_dir():
+        paths.extend(
+            path for path in scripts.iterdir()
+            if path.is_file() and not path.is_symlink() and path.suffix in {".py", ".sh"}
+        )
+    setup_script = root / "setup-gpu.sh"
+    if setup_script.is_file() and not setup_script.is_symlink():
+        paths.append(setup_script)
     digest = hashlib.sha256()
     for path in sorted(set(paths), key=lambda item: tuple(item.relative_to(root).parts)):
         relative = path.relative_to(root).as_posix().encode()
@@ -687,40 +734,67 @@ def copy_tree_item(source: Path, destination: Path) -> None:
         shutil.copy2(source, destination)
 
 
-def stage_baseline(root: Path) -> None:
+def stage_source_snapshot(source_root: Path, root: Path) -> None:
+    """Stage exactly the official source-tree hash inputs, read-only by use."""
+
+    excluded_parts = {"target", "build", ".git", "__pycache__"}
+    excluded_binding = "vendor/icicle/wrappers/rust/icicle-cuda-runtime/src/bindings.rs"
+    source_files: list[Path] = []
+    for relative in ("src", "gat_adapter", ".cargo", "vendor"):
+        directory = source_root / relative
+        if directory.is_dir():
+            source_files.extend(
+                path for path in directory.rglob("*")
+                if path.is_file() and not path.is_symlink()
+                and not excluded_parts.intersection(path.relative_to(directory).parts)
+                and path.relative_to(source_root).as_posix() != excluded_binding
+            )
+    source_files.extend(
+        path for path in (source_root / name for name in ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain"))
+        if path.is_file() and not path.is_symlink()
+    )
+    scripts = source_root / "scripts"
+    if scripts.is_dir():
+        source_files.extend(path for path in scripts.iterdir() if path.is_file() and not path.is_symlink() and path.suffix in {".py", ".sh"})
+    setup_script = source_root / "setup-gpu.sh"
+    if setup_script.is_file() and not setup_script.is_symlink():
+        source_files.append(setup_script)
+    for source in sorted(set(source_files), key=lambda path: tuple(path.relative_to(source_root).parts)):
+        destination = root / source.relative_to(source_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copy2(source, destination)
+
+
+def stage_baseline(root: Path, backend: str) -> Path:
     source_root = Path(__file__).resolve().parents[1]
-    for relative in ("src", "gat_adapter", ".cargo"):
-        source = source_root / relative
-        if source.is_dir():
-            copy_tree_item(source, root / relative)
-    for relative in ("Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain"):
-        source = source_root / relative
-        if source.is_file():
-            copy_tree_item(source, root / relative)
-    binary = source_root / "target/release/ezkl"
+    stage_source_snapshot(source_root, root)
+    binary_relative = Path("target/release/ezkl") if backend == "cpu" else Path("target/gpu/release/ezkl")
+    binary = source_root / binary_relative
     if not binary.is_file() or binary.is_symlink():
-        raise TinyE2EError(f"missing already-built official binary: {binary}")
-    copy_tree_item(binary, root / "target/release/ezkl")
-    (root / "target/release/ezkl").chmod(0o755)
-    for relative in (
-        "formal_common.py",
-        "validate_resources.py",
-        "generate_gat_resources.py",
-        "produce_public_statement.py",
-        "run_single_dataset.py",
-        "collect_results.py",
-        "validate_final.py",
-    ):
-        copy_tree_item(source_root / "scripts" / relative, root / "scripts" / relative)
+        raise TinyE2EError(f"missing already-built official {backend} binary: {binary}")
+    copy_tree_item(binary, root / binary_relative)
+    staged_binary = root / binary_relative
+    staged_binary.chmod(0o755)
     copy_tree_item(
         source_root / "artifacts/gat_adapter/formal_cli.json",
         root / "artifacts/gat_adapter/formal_cli.json",
     )
-    copy_tree_item(
-        source_root / "artifacts/build/cpu/build_receipt.json",
-        root / "artifacts/build/cpu/build_receipt.json",
-    )
+    if backend == "cpu":
+        copy_tree_item(
+            source_root / "artifacts/build/cpu/build_receipt.json",
+            root / "artifacts/build/cpu/build_receipt.json",
+        )
+    else:
+        # The GPU binary validates the manifest and source it was linked
+        # against at runtime. Stage those exact authenticated inputs beside
+        # the tiny fixture; do not manufacture a new build receipt for the
+        # fixture's modified resource manifest.
+        copy_tree_item(source_root / "artifacts/build/icicle-cuda", root / "artifacts/build/icicle-cuda")
     create_tiny_resources(root)
+    return staged_binary
 
 
 def run_stage(
@@ -852,8 +926,10 @@ def create_tiny_workspace() -> Path:
     return root
 
 
-def copy_manifest_and_update_receipt(root: Path) -> None:
+def copy_manifest_and_update_receipt(root: Path, backend: str) -> None:
     manifest = root / "resources/resource_manifest.json"
+    if backend == "gpu":
+        return
     receipt_path = root / "artifacts/build/cpu/build_receipt.json"
     receipt = json.loads(receipt_path.read_text())
     receipt["binary_sha256"] = sha256(root / "target/release/ezkl")
@@ -862,39 +938,106 @@ def copy_manifest_and_update_receipt(root: Path) -> None:
     write_json(receipt_path, receipt)
 
 
-def formal_native_srs_hashes() -> tuple[int, dict[int, str]]:
-    """Return the smallest usable k and hashes from the formal native table.
+def stage_trusted_full_srs(source_root: Path, root: Path) -> tuple[Path, str, str, int]:
+    """Copy the authenticated shared maximum-domain SRS into the fixture.
 
-    ``formal_common.native_srs_contract`` parses the embedded Rust hash table
-    and rejects gaps or malformed entries.  k=1/k=2 are intentionally below
-    the formal SRS floor for this fixture, so they are never attempted; every
-    candidate that remains is still required to be present in that table.
+    The native formal loader authenticates the full trusted k26 file and
+    downsizes its in-memory parameters to the tiny circuit's requested domain.
+    Calling ``get-srs`` for a smaller k would create a different trust object
+    and cannot satisfy that loader contract.
     """
 
-    from formal_common import native_srs_contract
+    scripts_path = str(source_root / "scripts")
+    if scripts_path not in sys.path:
+        sys.path.insert(0, scripts_path)
+    from formal_common import native_srs_contract, validate_native_srs_manifest
 
-    _url, _max_logrows, hashes = native_srs_contract()
-    candidates = sorted(logrows for logrows in hashes if logrows > 2)
-    if not candidates:
-        raise TinyE2EError("formal native SRS hash table has no usable k above 2")
-    return candidates[0], hashes
+    manifest = validate_native_srs_manifest()
+    _url, max_logrows, hashes = native_srs_contract()
+    entry = manifest["entries"][TINY_DATASET]
+    expected_sha256 = hashes.get(max_logrows)
+    if (
+        max_logrows != manifest["max_logrows"]
+        or entry["logrows"] != max_logrows
+        or entry["sha256"] != expected_sha256
+        or entry["trusted"] is not True
+        or entry["reduced"] is not False
+        or entry["generated"] is not False
+    ):
+        raise TinyE2EError("official shared SRS is not the authenticated native maximum-domain entry")
+    source = source_root / entry["path"]
+    destination = root / entry["path"]
+    manifest_source = source_root / "resources/native_srs/srs_manifest.json"
+    manifest_destination = root / "resources/native_srs/srs_manifest.json"
+    if source.is_symlink() or not source.is_file() or source.stat().st_size != entry["size"]:
+        raise TinyE2EError("official trusted maximum-domain SRS file is missing or has the wrong size")
+    if manifest_source.is_symlink() or not manifest_source.is_file():
+        raise TinyE2EError("official native SRS manifest is missing or symlinked")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source_before = source.stat()
+    copied_bytes = 0
+    digest = hashlib.sha256()
+    destination_created = False
+    manifest_created = False
+    try:
+        with source.open("rb") as source_file, destination.open("xb") as destination_file:
+            destination_created = True
+            while True:
+                block = source_file.read(4 * 1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+                destination_file.write(block)
+                copied_bytes += len(block)
+            destination_file.flush()
+            os.fsync(destination_file.fileno())
+            source_after = os.fstat(source_file.fileno())
+        source_path_after = source.stat()
+        source_identity_before = (source_before.st_dev, source_before.st_ino, source_before.st_size, source_before.st_mtime_ns)
+        source_identity_after = (source_after.st_dev, source_after.st_ino, source_after.st_size, source_after.st_mtime_ns)
+        source_identity_path_after = (
+            source_path_after.st_dev,
+            source_path_after.st_ino,
+            source_path_after.st_size,
+            source_path_after.st_mtime_ns,
+        )
+        if source_identity_before != source_identity_after or source_identity_after != source_identity_path_after:
+            raise TinyE2EError("official SRS source changed while the fixture copy was being staged")
+        if copied_bytes != entry["size"] or digest.hexdigest() != expected_sha256:
+            raise TinyE2EError("copied SRS bytes do not match the authenticated native maximum-domain digest")
+        if destination.stat().st_size != entry["size"]:
+            raise TinyE2EError("staged trusted SRS copy has an unexpected size")
+        with manifest_source.open("rb") as source_manifest, manifest_destination.open("xb") as copied_manifest:
+            manifest_created = True
+            shutil.copyfileobj(source_manifest, copied_manifest, length=64 * 1024)
+            copied_manifest.flush()
+            os.fsync(copied_manifest.fileno())
+        if sha256(manifest_destination) != sha256(manifest_source):
+            raise TinyE2EError("staged SRS manifest bytes do not match the official source manifest")
+    except BaseException:
+        if destination_created:
+            destination.unlink(missing_ok=True)
+        if manifest_created:
+            manifest_destination.unlink(missing_ok=True)
+        raise
+    return destination, expected_sha256, entry["srs_id"], max_logrows
 
 
-def update_tiny_srs_config(root: Path, path: Path) -> None:
-    digest = sha256(path)
+def update_tiny_srs_config(root: Path, path: Path, srs_id: str, digest: str) -> None:
     for dataset in DATASETS:
         config = root / "resources/canonical/configs" / f"{dataset}_secure.cfg"
         update_cfg(
             config,
             {
-                "srs_id": "official_ezkl_native_tiny_srs",
+                "srs_id": srs_id,
                 "srs_path": relative(root, path),
                 "trusted_srs_sha256": digest,
             },
         )
 
 
-def build_chain_commands(root: Path, output: Path, binary: Path, srs: Path) -> dict[str, list[str]]:
+def build_chain_commands(root: Path, output: Path, binary: Path, srs: Path, backend: str) -> dict[str, list[str]]:
     """Mirror run_single_dataset.py's official command construction exactly."""
 
     py = sys.executable
@@ -926,6 +1069,7 @@ def build_chain_commands(root: Path, output: Path, binary: Path, srs: Path) -> d
             out,
             "--srs-path",
             srs_rel,
+            *( ["--gpu"] if backend == "gpu" else [] ),
         ],
         "producer": [
             py,
@@ -967,6 +1111,7 @@ def build_chain_commands(root: Path, output: Path, binary: Path, srs: Path) -> d
             public_output,
             "--producer-manifest",
             producer_manifest,
+            *( ["--gpu"] if backend == "gpu" else [] ),
         ],
         "witness": [
             b,
@@ -981,6 +1126,7 @@ def build_chain_commands(root: Path, output: Path, binary: Path, srs: Path) -> d
             statement,
             "--output",
             witness,
+            *( ["--gpu"] if backend == "gpu" else [] ),
         ],
         "prove": [
             b,
@@ -1024,9 +1170,14 @@ def build_chain_commands(root: Path, output: Path, binary: Path, srs: Path) -> d
     return commands
 
 
-def make_result(root: Path, output: Path, binary: Path, srs: Path, timings: dict[str, float]) -> None:
+def make_result(root: Path, output: Path, binary: Path, srs: Path, timings: dict[str, float], backend: str) -> None:
     from formal_common import canonical_json_digest as formal_canonical_json_digest
-    from formal_common import load_json, validate_gpu_evidence
+    from formal_common import (
+        load_json,
+        validate_gpu_evidence,
+        validate_native_proof_metrics,
+        validate_native_verify_metrics,
+    )
 
     statement = output / "statement.json"
     public_output = output / "public_output.json"
@@ -1037,7 +1188,11 @@ def make_result(root: Path, output: Path, binary: Path, srs: Path, timings: dict
     pk = output / "pk.key"
     artifact = load_json(output / "artifact_manifest.json", "artifact")
     core = load_json(output / "core_run_manifest.json", "core")
-    evidence = validate_gpu_evidence(output / "gpu_evidence.json", backend="cpu")
+    evidence = validate_gpu_evidence(output / "gpu_evidence.json", backend=backend)
+    proof_metrics_path = output / "native_proof_metrics.json"
+    verify_metrics_path = output / "native_verify_metrics.json"
+    proof_metrics = validate_native_proof_metrics(proof_metrics_path, proof_sha256=sha256(proof))
+    verify_metrics = validate_native_verify_metrics(verify_metrics_path, proof_sha256=sha256(proof))
     proof_doc = load_json(proof, "proof")
     instances = proof_doc.get("instances")
     if not isinstance(instances, list) or not instances:
@@ -1047,7 +1202,7 @@ def make_result(root: Path, output: Path, binary: Path, srs: Path, timings: dict
         "schema_version": 1,
         "status": "VERIFY_OK",
         "dataset": TINY_DATASET,
-        "backend": "cpu",
+        "backend": backend,
         "proof_scope": "full_gat",
         "privacy_policy": "model_and_trace_hidden",
         "public_statement_mode": "external",
@@ -1065,6 +1220,21 @@ def make_result(root: Path, output: Path, binary: Path, srs: Path, timings: dict
         "pk_sha256": sha256(pk),
         "proof_sha256": sha256(proof),
         "proof_size_bytes": proof.stat().st_size,
+        "commitment_time_ms": proof_metrics["commitment_time_ms"],
+        "prove_time_ms": proof_metrics["prove_time_ms"],
+        "verify_time_ms": verify_metrics["verify_time_ms"],
+        "commitment_metric": {
+            "operation": proof_metrics["operation"],
+            "included_in": proof_metrics["included_in"],
+            "path": relative(root, proof_metrics_path),
+            "sha256": sha256(proof_metrics_path),
+        },
+        "verify_metric": {
+            "operation": verify_metrics["operation"],
+            "included_in": verify_metrics["included_in"],
+            "path": relative(root, verify_metrics_path),
+            "sha256": sha256(verify_metrics_path),
+        },
         "binary_sha256": sha256(binary),
         "source_tree_sha256": source_tree_hash(root),
         "resource_manifest_sha256": sha256(root / "resources/resource_manifest.json"),
@@ -1120,13 +1290,13 @@ def mutate_json(path: Path, key: str) -> bytes:
     return original
 
 
-def negative_collector_cell(root: Path, output: Path, mutation: str, timeout: float, deadline: float, env: dict[str, str]) -> None:
+def negative_collector_cell(root: Path, output: Path, mutation: str, backend: str, timeout: float, deadline: float, env: dict[str, str]) -> None:
     result_path = output / "result.json"
     original = result_path.read_bytes()
     try:
         value = json.loads(original)
-        if mutation == "gpu":
-            value["backend"] = "gpu"
+        if mutation == "backend":
+            value["backend"] = "gpu" if backend == "cpu" else "cpu"
         elif mutation == "fallback":
             value["gpu_evidence"]["cpu_fallback"] = True
         elif mutation == "stale":
@@ -1148,7 +1318,7 @@ def negative_collector_cell(root: Path, output: Path, mutation: str, timeout: fl
                 "--datasets",
                 TINY_DATASET,
                 "--local-backends",
-                "cpu",
+                backend,
             ],
             root=root,
             log_dir=output / "logs",
@@ -1163,6 +1333,7 @@ def negative_collector_cell(root: Path, output: Path, mutation: str, timeout: fl
 
 def parse_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backend", choices=("cpu", "gpu"), default="cpu")
     parser.add_argument("--stage-timeout", type=float, default=DEFAULT_STAGE_TIMEOUT)
     parser.add_argument("--overall-timeout", type=float, default=DEFAULT_OVERALL_TIMEOUT)
     parser.add_argument("--max-srs-logrows", type=int, default=DEFAULT_MAX_SRS_LOGROWS)
@@ -1178,9 +1349,9 @@ def parse_args() -> argparse.ArgumentParser:
 
 def print_plan() -> None:
     print("tiny fixture: mktemp baseline root; two nodes, four edges, nonzero checkpoint tensors")
-    print("official chain: get-srs(k<=18) -> gat-prepare setup -> external producer -> gat-prepare final -> gat-witness -> prove -> verify")
-    print("post-chain: statement/Y/producer-manifest tamper rejection -> CPU collector/final -> GPU/fallback/stale/missing rejection")
-    print("local CPU collector: --datasets cora --local-backends cpu; tiny validation uses the internal artifact validator; formal entry collects five dataset results")
+    print("official chain: authenticate/copy full trusted SRS -> gat-prepare setup with native downsize -> external producer -> gat-prepare final -> gat-witness -> prove -> verify")
+    print("post-chain: statement/Y/producer-manifest tamper rejection -> backend-local collector/final -> opposite-backend/fallback/stale/missing rejection")
+    print("local collector: --datasets cora --local-backends cpu|gpu; formal entry collects five dataset results")
 
 
 def main(args: argparse.Namespace) -> int:
@@ -1194,20 +1365,72 @@ def main(args: argparse.Namespace) -> int:
 
     started = time.monotonic()
     deadline = started + args.overall_timeout
+    backend = args.backend
+    source_root = Path(__file__).resolve().parents[1]
+    gpu_environment: dict[str, Any] | None = None
+    if backend == "gpu":
+        sys.path.insert(0, str(source_root / "scripts"))
+        from formal_common import native_backend_identity
+        from run_hybrid_formal import _formal_gpu_environment, reusable_build
+
+        runtime, selected, build_environment, gpu_identity = _formal_gpu_environment("0" * 32)
+        official_binary = source_root / "target/gpu/release/ezkl"
+        if not reusable_build(official_binary, "gpu", runtime, build_environment):
+            raise TinyE2EError("formal GPU build receipt is stale or does not authenticate the current binary/source/DSO")
+        identity = native_backend_identity()
+        gpu_environment = {
+            "selected_cuda_device": selected,
+            "gpu_identity": gpu_identity,
+            "native_backend_manifest_sha256": identity["native_backend_manifest_sha256"],
+            "cuda_architecture": identity["cuda_architecture"],
+        }
     temp_root = create_tiny_workspace()
     success = False
     print(f"[tiny-e2e] temporary baseline: {temp_root}", flush=True)
     try:
-        stage_baseline(temp_root)
+        binary = stage_baseline(temp_root, backend)
+        staged_source_sha256 = source_tree_hash(temp_root)
+        origin_source_sha256 = source_tree_hash(source_root)
+        if staged_source_sha256 != origin_source_sha256:
+            raise TinyE2EError(
+                "staged temporary source files do not match the official source-tree content identity"
+            )
+        print(f"[tiny-e2e] staged source identity PASS: {staged_source_sha256}", flush=True)
         create_log = temp_root / "logs/tiny-bootstrap"
         create_log.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
+        for name in (
+            "ENABLE_ICICLE_GPU",
+            "EZKL_GAT_BACKEND",
+            "ICICLE_SMALL_K",
+            "ICICLE_SMALL_K_FFT",
+            "ICICLE_BACKEND_INSTALL_DIR",
+            "ICICLE_NATIVE_LIB_DIR",
+            "ICICLE_NATIVE_MANIFEST_SHA256",
+            "CUDA_ARCH",
+            "EZKL_FORMAL_SESSION_ID",
+            "EZKL_FORMAL_BUILD_RECEIPT_SHA256",
+            "EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256",
+            "EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID",
+            "EZKL_FORMAL_SELECTED_CUDA_DEVICE",
+        ):
+            env.pop(name, None)
         env.update({
             "EZKL_WORKING_DIR": ".",
-            "EZKL_GAT_BACKEND": "cpu",
+            "EZKL_GAT_BACKEND": backend,
             "EZKL_ALLOW_TINY_FIXTURE": "1",
         })
-        binary = temp_root / "target/release/ezkl"
+        if backend == "gpu":
+            assert gpu_environment is not None
+            gpu_root = temp_root / "artifacts/build/icicle-cuda"
+            env.update({
+                "ICICLE_BACKEND_INSTALL_DIR": str(gpu_root),
+                "ICICLE_NATIVE_LIB_DIR": str(gpu_root / "lib"),
+                "ICICLE_NATIVE_MANIFEST_SHA256": gpu_environment["native_backend_manifest_sha256"],
+                "CUDA_ARCH": str(gpu_environment["cuda_architecture"]).removeprefix("sm_"),
+                "ICICLE_DEVICE_ID": str(gpu_environment["selected_cuda_device"]["logical_device_id"]),
+                "EZKL_GAT_REQUIRE_GPU_EVIDENCE": "1",
+            })
         generate = [sys.executable, "scripts/generate_gat_resources.py"]
         for dataset in DATASETS:
             generate.extend(("--dataset", dataset))
@@ -1220,6 +1443,7 @@ def main(args: argparse.Namespace) -> int:
             timeout=args.stage_timeout,
             overall_deadline=deadline,
         )
+        seed_tiny_resource_manifest(temp_root)
         run_stage(
             "validate-tiny-resources",
             [sys.executable, "scripts/validate_resources.py", "--write-manifest", "--require-complete"],
@@ -1229,74 +1453,14 @@ def main(args: argparse.Namespace) -> int:
             timeout=args.stage_timeout,
             overall_deadline=deadline,
         )
-        copy_manifest_and_update_receipt(temp_root)
+        copy_manifest_and_update_receipt(temp_root, backend)
 
-        min_srs_logrows, native_srs_hashes = formal_native_srs_hashes()
-        max_srs_logrows = min(args.max_srs_logrows, max(native_srs_hashes))
-        if max_srs_logrows < min_srs_logrows:
-            raise TinyE2EError(f"no authenticated native SRS candidate in {min_srs_logrows}..{args.max_srs_logrows}")
-        chosen_srs: Path | None = None
-        chosen_srs_sha256: str | None = None
-        setup_output: Path | None = None
-        for logrows in range(min_srs_logrows, max_srs_logrows + 1):
-            if time.monotonic() >= deadline:
-                raise TinyE2EError("get-srs/setup candidate search: overall timeout expired")
-            candidate = temp_root / f"resources/native_srs/tiny_k{logrows}.srs"
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-            setup = temp_root / f"runs/tiny/cora/cpu-k{logrows}"
-            command = [
-                relative(temp_root, binary),
-                "get-srs",
-                "--srs-path",
-                relative(temp_root, candidate),
-                "--logrows",
-                str(logrows),
-            ]
-            try:
-                run_stage(
-                    f"get-srs-k{logrows}",
-                    command,
-                    root=temp_root,
-                    log_dir=create_log,
-                    env=env,
-                    timeout=args.stage_timeout,
-                    overall_deadline=deadline,
-                )
-            except TinyE2EError as exc:
-                print(f"[tiny-e2e] get-srs-k{logrows}: candidate rejected: {exc}", flush=True)
-                continue
-            expected_srs_sha256 = native_srs_hashes.get(logrows)
-            if expected_srs_sha256 is None:
-                raise TinyE2EError(f"get-srs-k{logrows}: candidate is not in the formal native hash table")
-            if sha256(candidate) != expected_srs_sha256:
-                raise TinyE2EError(f"get-srs-k{logrows}: bytes do not match the formal native embedded SHA-256")
-            setup.mkdir(parents=True, exist_ok=False)
-            commands = build_chain_commands(temp_root, setup, binary, candidate)
-            try:
-                _, setup_elapsed, _ = run_stage(
-                    f"initial-prepare-k{logrows}",
-                    commands["initial_prepare"],
-                    root=temp_root,
-                    log_dir=setup / "logs",
-                    env={
-                        **env, "EZKL_GAT_RUN_DIR": str(setup)
-                    },
-                    timeout=args.stage_timeout,
-                    overall_deadline=deadline,
-                )
-            except TinyE2EError as exc:
-                print(f"[tiny-e2e] initial-prepare-k{logrows}: candidate rejected: {exc}", flush=True)
-                shutil.rmtree(setup, ignore_errors=True)
-                continue
-            chosen_srs, chosen_srs_sha256, setup_output = candidate, expected_srs_sha256, setup
-            initial_setup_ms = setup_elapsed * 1000.0
-            break
-        if chosen_srs is None or chosen_srs_sha256 is None or setup_output is None:
-            raise TinyE2EError(
-                f"initial prepare blocked: no feasible authenticated native SRS logrows in {min_srs_logrows}..{max_srs_logrows}; k26 was not attempted"
-            )
-
-        update_tiny_srs_config(temp_root, chosen_srs)
+        chosen_srs, chosen_srs_sha256, chosen_srs_id, trusted_source_k = stage_trusted_full_srs(
+            source_root,
+            temp_root,
+        )
+        update_tiny_srs_config(temp_root, chosen_srs, chosen_srs_id, chosen_srs_sha256)
+        seed_tiny_resource_manifest(temp_root)
         run_stage(
             "refresh-tiny-resource-manifest",
             [sys.executable, "scripts/validate_resources.py", "--write-manifest", "--require-complete"],
@@ -1306,36 +1470,40 @@ def main(args: argparse.Namespace) -> int:
             timeout=args.stage_timeout,
             overall_deadline=deadline,
         )
-        if sha256(chosen_srs) != chosen_srs_sha256:
-            raise TinyE2EError("get-srs-cache-reuse: cached bytes no longer match the formal native SHA-256")
-        copy_manifest_and_update_receipt(temp_root)
-        run_stage(
-            "get-srs-cache-reuse",
-            [
-                relative(temp_root, binary),
-                "get-srs",
-                "--srs-path",
-                relative(temp_root, chosen_srs),
-                "--logrows",
-                str(int(chosen_srs.stem.removeprefix("tiny_k"))),
-            ],
+        copy_manifest_and_update_receipt(temp_root, backend)
+        setup_output = temp_root / f"runs/tiny/cora/{backend}"
+        setup_output.mkdir(parents=True, exist_ok=False)
+        commands = build_chain_commands(temp_root, setup_output, binary, chosen_srs, backend)
+        _, initial_setup_elapsed, _ = run_stage(
+            "initial-prepare",
+            commands["initial_prepare"],
             root=temp_root,
-            log_dir=create_log,
-            env=env,
+            log_dir=setup_output / "logs",
+            env={**env, "EZKL_GAT_RUN_DIR": str(setup_output), **({"ENABLE_ICICLE_GPU": "1"} if backend == "gpu" else {})},
             timeout=args.stage_timeout,
             overall_deadline=deadline,
         )
-        commands = build_chain_commands(temp_root, setup_output, binary, chosen_srs)
+        settings_doc = json.loads((setup_output / "settings.json").read_text())
+        run_args = settings_doc.get("run_args")
+        if not isinstance(run_args, dict) or not isinstance(run_args.get("logrows"), int):
+            raise TinyE2EError("tiny setup emitted no native target logrows in settings.json")
+        target_logrows = run_args["logrows"]
+        if target_logrows < 1 or target_logrows > args.max_srs_logrows or target_logrows >= trusted_source_k:
+            raise TinyE2EError(
+                f"tiny circuit target k={target_logrows} exceeds the requested bound or is not below trusted source k={trusted_source_k}"
+            )
+        initial_setup_ms = initial_setup_elapsed * 1000.0
         timings: dict[str, float] = {}
         for phase in ("producer", "final_prepare", "witness", "prove", "verify"):
+            phase_env = {**env, "EZKL_GAT_RUN_DIR": str(setup_output)}
+            if backend == "gpu" and phase == "prove":
+                phase_env["ENABLE_ICICLE_GPU"] = "1"
             _, elapsed, _ = run_stage(
                 phase,
                 commands[phase],
                 root=temp_root,
                 log_dir=setup_output / "logs",
-                env={
-                    **env, "EZKL_GAT_RUN_DIR": str(setup_output)
-                },
+                env=phase_env,
                 timeout=args.stage_timeout,
                 overall_deadline=deadline,
             )
@@ -1346,11 +1514,11 @@ def main(args: argparse.Namespace) -> int:
             raise TinyE2EError("tiny producer emitted an all-zero public Y")
         if not (setup_output / "artifact_manifest.json").is_file():
             raise TinyE2EError("final prepare did not emit artifact_manifest.json")
-        final_output = temp_root / "runs/tiny/cora/cpu"
+        final_output = temp_root / f"runs/tiny/cora/{backend}"
         final_output.parent.mkdir(parents=True, exist_ok=True)
         setup_output.rename(final_output)
         setup_output = final_output
-        commands = build_chain_commands(temp_root, setup_output, binary, chosen_srs)
+        commands = build_chain_commands(temp_root, setup_output, binary, chosen_srs, backend)
         make_result(
             temp_root, setup_output, binary, chosen_srs, {
                 "initial_prepare": initial_setup_ms,
@@ -1358,7 +1526,7 @@ def main(args: argparse.Namespace) -> int:
                 "witness": timings["witness"],
                 "prove": timings["prove"],
                 "verify": timings["verify"],
-            }
+            }, backend
         )
 
         original_statement = mutate_json(setup_output / "statement.json", "statement_digest")
@@ -1411,7 +1579,7 @@ def main(args: argparse.Namespace) -> int:
             (setup_output / "producer_manifest.json").write_bytes(original_producer)
 
         run_stage(
-            "collect-tiny-cpu",
+            f"collect-tiny-{backend}",
             [
                 sys.executable,
                 "scripts/collect_results.py",
@@ -1422,7 +1590,7 @@ def main(args: argparse.Namespace) -> int:
                 "--datasets",
                 TINY_DATASET,
                 "--local-backends",
-                "cpu",
+                backend,
             ],
             root=temp_root,
             log_dir=setup_output / "logs",
@@ -1431,14 +1599,14 @@ def main(args: argparse.Namespace) -> int:
             overall_deadline=deadline,
         )
         run_stage(
-            "validate-tiny-cpu",
+            f"validate-tiny-{backend}",
             [
                 sys.executable,
                 "-c",
                 "import sys; from pathlib import Path; sys.path.insert(0, 'scripts'); "
                 "from validate_final import validate_matrix; "
                 "sys.exit(validate_matrix(Path('results/tiny_matrix.json'), "
-                "selected_datasets=('cora',), selected_backends=('cpu',)))",
+                f"selected_datasets=('cora',), selected_backends=('{backend}',)))",
             ],
             root=temp_root,
             log_dir=setup_output / "logs",
@@ -1446,10 +1614,10 @@ def main(args: argparse.Namespace) -> int:
             timeout=args.stage_timeout,
             overall_deadline=deadline,
         )
-        for mutation in ("gpu", "fallback", "stale", "missing"):
-            negative_collector_cell(temp_root, setup_output, mutation, args.stage_timeout, deadline, env)
+        for mutation in ("backend", "fallback", "stale", "missing"):
+            negative_collector_cell(temp_root, setup_output, mutation, backend, args.stage_timeout, deadline, env)
         success = True
-        print(f"[tiny-e2e] PASS: native tiny CPU E2E completed in {time.monotonic() - started:.3f}s", flush=True)
+        print(f"[tiny-e2e] PASS: native tiny {backend.upper()} E2E completed in {time.monotonic() - started:.3f}s", flush=True)
         return 0
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError, TinyE2EError) as exc:
         print(f"[tiny-e2e] BLOCKED/FAIL: {exc}", file=sys.stderr, flush=True)

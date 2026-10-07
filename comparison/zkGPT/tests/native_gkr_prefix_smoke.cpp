@@ -23,6 +23,9 @@ void dense_round_equivalence() {
     constexpr std::uint64_t logical = 9;
     zkgpt::NativeVector<linear_poly> prefix_mult(logical), prefix_values(logical);
     zkgpt::NativeVector<linear_poly> prefix_fold_mult, prefix_fold_values;
+    zkgpt::native_gkr::PackedAffinePrefixArena packed_mult, packed_values;
+    packed_mult.initialize_scalars(logical);
+    packed_values.initialize_scalars(logical);
     zkgpt::NativeVector<linear_poly> dense_mult(domain), dense_values(domain);
     zkgpt::NativeVector<linear_poly> dense_fold_mult, dense_fold_values;
     F claim = F_ZERO;
@@ -31,6 +34,8 @@ void dense_round_equivalence() {
         const F v(static_cast<int>(index * 5 + 2));
         prefix_mult[index] = linear_poly(m);
         prefix_values[index] = linear_poly(v);
+        packed_mult.set_scalar(index, m);
+        packed_values.set_scalar(index, v);
         dense_mult[index] = linear_poly(m);
         dense_values[index] = linear_poly(v);
         claim += m * v;
@@ -46,10 +51,18 @@ void dense_round_equivalence() {
         const quadratic_poly dense_poly = zkgpt::native_gkr::fold_prefix_product_round(
             dense_mult, dense_values, dense_fold_mult, dense_fold_values,
             dense_extent, previous_random);
+        const quadratic_poly packed_poly = zkgpt::native_gkr::fold_prefix_product_round_packed(
+            packed_mult, packed_values, prefix_extent, previous_random);
         require_equal(prefix_poly, dense_poly,
                       "prefix fold polynomial differs from dense zero-padded reference");
+        require_equal(packed_poly, dense_poly,
+                      "packed affine fold polynomial differs from dense zero-padded reference");
         require(prefix_poly.eval(F_ZERO) + prefix_poly.eval(F_ONE) == claim,
                 "sumcheck round endpoints do not sum to the prior claim");
+        if (round == 0) {
+            require(packed_mult.first_slope() != F_ZERO && packed_values.first_slope() != F_ZERO,
+                    "packed affine fold failed to preserve nonzero slopes");
+        }
 
         const F challenge(static_cast<int>(round + 2));
         claim = prefix_poly.eval(challenge);
@@ -67,6 +80,96 @@ void dense_round_equivalence() {
                        prefix_values[0].eval(previous_random);
     require(terminal == claim,
             "prefix terminal does not equal the final challenged claim");
+    require(packed_mult.first_value(previous_random) * packed_values.first_value(previous_random) == claim,
+            "packed prefix terminal does not equal the final challenged claim");
+    require(packed_mult.affine_mode() && packed_values.affine_mode(),
+            "packed prefix did not enter affine mode after folding");
+}
+
+void asymmetric_lanes_and_chunk_boundary() {
+    constexpr std::uint64_t domain = 128;
+    constexpr std::uint64_t lane_extents[] = {0U, 1U, 3U, 9U};
+    constexpr unsigned rounds = 7U;
+    F previous_random = F_ZERO;
+    std::vector<zkgpt::native_gkr::PackedAffinePrefixArena> packed_mult(4U), packed_values(4U);
+    std::vector<zkgpt::NativeVector<linear_poly>> dense_mult(4U), dense_values(4U),
+        dense_fold_mult(4U), dense_fold_values(4U);
+    std::uint64_t active[4] = {0U, 1U, 3U, 9U};
+    F claims[4] = {F_ZERO, F_ZERO, F_ZERO, F_ZERO};
+    for (std::size_t lane = 0U; lane < 4U; ++lane) {
+        packed_mult[lane].initialize_scalars(active[lane]);
+        packed_values[lane].initialize_scalars(active[lane]);
+        dense_mult[lane].resize(static_cast<std::size_t>(active[lane]));
+        dense_values[lane].resize(static_cast<std::size_t>(active[lane]));
+        for (std::uint64_t index = 0U; index < active[lane]; ++index) {
+            const F mult(static_cast<int>(2U + lane * 7U + index * 5U));
+            const F value(static_cast<int>(3U + lane * 11U + index * 9U));
+            packed_mult[lane].set_scalar(index, mult);
+            packed_values[lane].set_scalar(index, value);
+            dense_mult[lane][index] = linear_poly(mult);
+            dense_values[lane][index] = linear_poly(value);
+            claims[lane] += mult * value;
+        }
+    }
+
+    for (unsigned round = 0U; round < rounds; ++round) {
+        for (std::size_t lane = 0U; lane < 4U; ++lane) {
+            const quadratic_poly packed = zkgpt::native_gkr::fold_prefix_product_round_packed(
+                packed_mult[lane], packed_values[lane], active[lane], previous_random);
+            const quadratic_poly dense = zkgpt::native_gkr::fold_prefix_product_round(
+                dense_mult[lane], dense_values[lane], dense_fold_mult[lane],
+                dense_fold_values[lane], active[lane], previous_random);
+            require_equal(packed, dense, "asymmetric packed lane differs from dense reference");
+            require(packed.eval(F_ZERO) + packed.eval(F_ONE) == claims[lane],
+                    "asymmetric packed lane changed its sumcheck claim");
+            claims[lane] = packed.eval(F(static_cast<int>(round + 13U)));
+            dense_mult[lane].swap(dense_fold_mult[lane]);
+            dense_values[lane].swap(dense_fold_values[lane]);
+            active[lane] = active[lane] / 2U + active[lane] % 2U;
+        }
+        previous_random = F(static_cast<int>(round + 13U));
+    }
+    require(domain == (std::uint64_t(1) << rounds), "asymmetric test common domain changed");
+    for (std::size_t lane = 0U; lane < 4U; ++lane) {
+        const F packed_terminal = packed_mult[lane].first_value(previous_random) *
+                                  packed_values[lane].first_value(previous_random);
+        const F dense_terminal = dense_mult[lane].empty() ? F_ZERO :
+            dense_mult[lane][0].eval(previous_random) * dense_values[lane][0].eval(previous_random);
+        require(packed_terminal == claims[lane] && packed_terminal == dense_terminal,
+                "asymmetric packed lane terminal differs from dense zero-padding");
+    }
+
+    constexpr std::uint64_t logical = (std::uint64_t(1) << 17U) + 1U;
+    constexpr std::uint64_t fold_extent = logical / 2U + logical % 2U;
+    zkgpt::native_gkr::PackedAffinePrefixArena packed_mult_boundary, packed_values_boundary;
+    packed_mult_boundary.initialize_scalars(logical);
+    packed_values_boundary.initialize_scalars(logical);
+    zkgpt::NativeVector<linear_poly> dense_mult_boundary(static_cast<std::size_t>(logical));
+    zkgpt::NativeVector<linear_poly> dense_values_boundary(static_cast<std::size_t>(logical));
+    zkgpt::NativeVector<linear_poly> dense_fold_mult_boundary, dense_fold_values_boundary;
+    F boundary_claim = F_ZERO;
+    for (std::uint64_t index = 0U; index < logical; ++index) {
+        const F mult(static_cast<int>((index % 97U) + 1U));
+        const F value(static_cast<int>((index % 89U) + 3U));
+        packed_mult_boundary.set_scalar(index, mult);
+        packed_values_boundary.set_scalar(index, value);
+        dense_mult_boundary[index] = linear_poly(mult);
+        dense_values_boundary[index] = linear_poly(value);
+        boundary_claim += mult * value;
+    }
+    const F boundary_challenge(19);
+    const quadratic_poly packed_boundary = zkgpt::native_gkr::fold_prefix_product_round_packed(
+        packed_mult_boundary, packed_values_boundary, logical, boundary_challenge);
+    const quadratic_poly dense_boundary = zkgpt::native_gkr::fold_prefix_product_round(
+        dense_mult_boundary, dense_values_boundary, dense_fold_mult_boundary,
+        dense_fold_values_boundary, logical, boundary_challenge);
+    require_equal(packed_boundary, dense_boundary,
+                  "packed fold crossing its bounded scratch chunk differs from dense reference");
+    require(packed_boundary.eval(F_ZERO) + packed_boundary.eval(F_ONE) == boundary_claim,
+            "chunk-boundary packed fold changed its sumcheck claim");
+    require(fold_extent == packed_values_boundary.logical_extent() &&
+                packed_values_boundary.capacity() == logical + 1U,
+            "packed chunk-boundary fold lost its odd-padded in-place arena extent");
 }
 
 void virtual_37_bit_domain() {
@@ -91,9 +194,16 @@ void virtual_37_bit_domain() {
     constexpr std::uint64_t logical = 3;
     zkgpt::NativeVector<linear_poly> mult(logical), values(logical), folded_mult,
         folded_values;
+    zkgpt::native_gkr::PackedAffinePrefixArena packed_mult, packed_values;
+    packed_mult.initialize_scalars(logical);
+    packed_values.initialize_scalars(logical);
     for (std::uint64_t index = 0; index < logical; ++index) {
-        mult[index] = linear_poly(F(static_cast<int>(index + 4)));
-        values[index] = linear_poly(F(static_cast<int>(index * 2 + 1)));
+        const F mult_value(static_cast<int>(index + 4));
+        const F value(static_cast<int>(index * 2 + 1));
+        mult[index] = linear_poly(mult_value);
+        values[index] = linear_poly(value);
+        packed_mult.set_scalar(index, mult_value);
+        packed_values.set_scalar(index, value);
     }
     std::vector<linear_poly> reference_mult(logical), reference_values(logical);
     for (std::uint64_t index = 0; index < logical; ++index) {
@@ -112,6 +222,9 @@ void virtual_37_bit_domain() {
             zkgpt::native_gkr::fold_prefix_product_round(
                 mult, values, folded_mult, folded_values, active_extent,
                 previous_random);
+        const quadratic_poly packed_polynomial =
+            zkgpt::native_gkr::fold_prefix_product_round_packed(
+                packed_mult, packed_values, active_extent, previous_random);
         quadratic_poly dense_reference;
         dense_reference.clear();
         const std::uint64_t reference_fold_extent = reference_mult.size() / 2 + reference_mult.size() % 2;
@@ -124,10 +237,14 @@ void virtual_37_bit_domain() {
             dense_reference = dense_reference + linear_poly(mult_one - mult_zero, mult_zero) * linear_poly(value_one - value_zero, value_zero);
         }
         require_equal(polynomial, dense_reference, "37-bit virtual fold differs from independent dense-support reference");
+        require_equal(packed_polynomial, dense_reference,
+                      "37-bit packed fold differs from independent dense-support reference");
         require(polynomial.eval(F_ZERO) + polynomial.eval(F_ONE) == claim,
                 "37-round prefix fold changed the sumcheck claim");
         const F challenge(round + 3);
         claim = polynomial.eval(challenge);
+        require(packed_polynomial.eval(challenge) == claim,
+                "37-bit packed fold changed the challenged claim");
         for (std::uint64_t pair = 0; pair < reference_fold_extent; ++pair) {
             const std::uint64_t even = pair * 2, odd = even + 1;
             const F mult_zero = reference_mult[even].eval(previous_random);
@@ -151,6 +268,8 @@ void virtual_37_bit_domain() {
             "37-bit prefix fold terminal differs from the challenged claim");
     require(reference_mult[0].eval(previous_random) * reference_values[0].eval(previous_random) == claim,
             "37-bit virtual terminal differs from independent dense-support reference");
+    require(packed_mult.first_value(previous_random) * packed_values.first_value(previous_random) == claim,
+            "37-bit packed terminal differs from the challenged claim");
 }
 
 void empty_lane_zero_terminal() {
@@ -159,6 +278,16 @@ void empty_lane_zero_terminal() {
     require(polynomial.eval(F_ZERO).isZero() && polynomial.eval(F_ONE).isZero(), "empty lane contributed to a sumcheck round");
     require(folded_mult.size() == 1 && folded_values.size() == 1, "empty lane lacks its zero terminal slot");
     require(folded_mult[0].eval(F(11)).isZero() && folded_values[0].eval(F(13)).isZero(), "empty lane terminal slot is nonzero");
+    zkgpt::native_gkr::PackedAffinePrefixArena packed_mult, packed_values;
+    packed_mult.initialize_scalars(0U);
+    packed_values.initialize_scalars(0U);
+    const quadratic_poly packed = zkgpt::native_gkr::fold_prefix_product_round_packed(
+        packed_mult, packed_values, 0U, F(7));
+    require(packed.eval(F_ZERO).isZero() && packed.eval(F_ONE).isZero(),
+            "packed empty lane contributed to a sumcheck round");
+    require(packed_mult.capacity() == 2U && packed_values.capacity() == 2U &&
+                packed_mult.first_value(F(11)).isZero() && packed_values.first_value(F(13)).isZero(),
+            "packed empty lane does not preserve its zero sentinel");
 }
 
 } // namespace
@@ -166,6 +295,7 @@ void empty_lane_zero_terminal() {
 int main() {
     initPairing(mcl::BN_SNARK1);
     dense_round_equivalence();
+    asymmetric_lanes_and_chunk_boundary();
     virtual_37_bit_domain();
     empty_lane_zero_terminal();
     std::cout << "NATIVE_GKR_PREFIX_OK rounds=37 logical=3 full_domain=2^37 Fr_bytes=" << sizeof(F) << " linear_poly_bytes=" << sizeof(linear_poly) << "\n";

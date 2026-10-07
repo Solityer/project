@@ -93,6 +93,45 @@ layeredCircuit make_fconn_then_ordinary_circuit() {
     return circuit;
 }
 
+layeredCircuit make_axis_padded_fconn_binding_circuit() {
+    layeredCircuit circuit;
+    circuit.init(0, 3);
+
+    circuit.circuit[0].ty = layerType::INPUT;
+    circuit.circuit[0].size = 64;
+    circuit.circuit[0].zero_start_id = 64;
+    circuit.circuit[0].bit_length = 6;
+
+    circuit.circuit[1].ty = layerType::FCONN;
+    circuit.circuit[1].size = 32; // 5 rows padded to 8, 3 columns padded to 4.
+    circuit.circuit[1].zero_start_id = 32;
+    circuit.circuit[1].bit_length = 5;
+    circuit.circuit[1].need_phase2 = true;
+    circuit.circuit[1].native_relation_id = "masked-layered-gkr/fconn-axis-padded";
+    circuit.circuit[1].native_family_id = "masked-layered-gkr/axis-padded-family";
+    circuit.circuit[1].native_rows = 5;
+    circuit.circuit[1].native_inner = 2;
+    circuit.circuit[1].native_cols = 3;
+    circuit.circuit[1].native_lhs_offset = 0;
+    circuit.circuit[1].native_rhs_offset = 16;
+    circuit.circuit[1].native_output_offset = 32;
+
+    circuit.circuit[2].ty = layerType::ADD_BIAS;
+    circuit.circuit[2].size = 15;
+    circuit.circuit[2].zero_start_id = 15;
+    circuit.circuit[2].bit_length = 4;
+    circuit.circuit[2].reserve_gate_arrays(30, 0);
+    circuit.circuit[2].reserve_coefficients(2);
+    for (std::size_t index = 0; index < 15; ++index) {
+        const std::size_t row = index / 3;
+        const std::size_t col = index % 3;
+        circuit.circuit[2].add_unary(index, row * 4 + col, 1, 1);
+        circuit.circuit[2].add_unary(index, 32 + index, 0, -1);
+    }
+    circuit.initSubset();
+    return circuit;
+}
+
 layeredCircuit make_ordinary_phase2_circuit() {
     layeredCircuit circuit;
     circuit.init(0, 3);
@@ -210,6 +249,51 @@ NativeLayeredGkrWitness make_witness() {
     matmul.left = {Fr(3), Fr(5)};
     matmul.right = {Fr(2), Fr(1), Fr(4), Fr(3)};
     witness.matmuls.push_back(matmul);
+    return witness;
+}
+
+NativeLayeredGkrWitness make_axis_padded_fconn_witness() {
+    NativeLayeredGkrWitness witness;
+    zkgpt::NativeFieldVector input(64, Fr(0));
+    const std::vector<std::int64_t> left_values{1, 2, 2, 1, 3, 1, 1, 3, 2, 2};
+    const std::vector<std::int64_t> right_row_major{2, 4, 1, 3, 1, 2};
+    for (std::size_t index = 0; index < left_values.size(); ++index)
+        input[index] = Fr(left_values[index]);
+    for (std::size_t index = 0; index < right_row_major.size(); ++index)
+        input[16 + index] = Fr(right_row_major[index]);
+
+    // The 5x2 times 2x3 product is kept in canonical logical row-major Aux.
+    const std::vector<std::int64_t> output_values{
+        8, 6, 5, 7, 9, 4, 9, 13, 5, 11, 7, 7, 10, 10, 6};
+    for (std::size_t index = 0; index < output_values.size(); ++index)
+        input[32 + index] = Fr(output_values[index]);
+
+    zkgpt::NativeFieldVector fconn_output(32, Fr(0));
+    for (std::size_t row = 0; row < 5; ++row)
+        for (std::size_t col = 0; col < 3; ++col)
+            fconn_output[row * 4 + col] = Fr(output_values[row * 3 + col]);
+    witness.layer_values = {std::move(input), std::move(fconn_output),
+                            zkgpt::NativeFieldVector(15, Fr(0))};
+
+    NativeGkrMatmulWitness matmul;
+    matmul.shape = {5, 2, 3};
+    matmul.shape.relation_id = "masked-layered-gkr/fconn-axis-padded";
+    matmul.shape.family_id = "masked-layered-gkr/axis-padded-family";
+    matmul.shape.lhs_offset = 0;
+    matmul.shape.rhs_offset = 16;
+    matmul.shape.output_offset = 32;
+    matmul.shape.input_segment_domain = 16;
+    matmul.shape.lhs_segment = "X_pub";
+    matmul.shape.rhs_segment = "W";
+    matmul.shape.lhs_segment_offset = 0;
+    matmul.shape.rhs_segment_offset = 0;
+    matmul.shape.input_segment_logical_lengths = {10, 6, 15, 0};
+    matmul.shape.output_segment = "Aux";
+    matmul.shape.output_segment_offset = 0;
+    matmul.left = {Fr(1), Fr(2), Fr(2), Fr(1), Fr(3), Fr(1), Fr(1), Fr(3), Fr(2), Fr(2)};
+    // Padded RHS is column-major by (term, column), with a zero fourth column.
+    matmul.right = {Fr(2), Fr(3), Fr(4), Fr(1), Fr(1), Fr(2), Fr(0), Fr(0)};
+    witness.matmuls.push_back(std::move(matmul));
     return witness;
 }
 
@@ -417,6 +501,45 @@ int main() {
     assert(!verify_masked_gkr_transcript(
         fconn_then_ordinary_session, fconn_then_ordinary,
         wrong_fconn_output_view, fconn_then_ordinary_descriptors, &reason));
+
+    // A 5x3 logical product has a 15-element flattening, but its native
+    // row/column MLE domain is 8x4=32. Bind each padded row back to the
+    // corresponding logical Aux coordinate and prove the whole chain.
+    const layeredCircuit axis_padded_fconn =
+        make_axis_padded_fconn_binding_circuit();
+    NativeLayeredGkrWitness axis_padded_witness =
+        make_axis_padded_fconn_witness();
+    const std::vector<NativeGkrMatmulShape> axis_padded_descriptors{
+        axis_padded_witness.matmuls.front().shape};
+    assert(axis_padded_fconn.circuit[1].size == 32);
+    assert(axis_padded_fconn.circuit[2].size == 15);
+    assert(validate_native_gkr_point_domains(
+        axis_padded_fconn, axis_padded_descriptors, 64, &reason));
+    const std::vector<Fr> axis_padded_output(15, Fr(0));
+    const zkgpt::NativeFieldView axis_padded_output_view =
+        zkgpt::NativeFieldView::from_vector(axis_padded_output);
+    NativeProofSession axis_padded_session(
+        "masked-layered-gkr-axis-padded-fconn-v1", statement_fixture());
+    if (!prove_masked_gkr_transcript(
+            axis_padded_session, axis_padded_fconn, axis_padded_witness,
+            axis_padded_output_view, &reason) ||
+        !verify_masked_gkr_transcript(
+            axis_padded_session, axis_padded_fconn, axis_padded_output_view,
+            axis_padded_descriptors, &reason)) {
+        std::cerr << "axis-padded 5x3 FCONN proof/verification failed: "
+                  << reason << '\n';
+        return 14;
+    }
+    const std::string axis_padded_wire =
+        "/tmp/zkgpt-native-masked-layered-gkr-axis-padded.smoke";
+    assert(axis_padded_session.write(axis_padded_wire, &reason));
+    NativeProofSession axis_padded_fresh;
+    assert(NativeProofSession::read(axis_padded_wire, axis_padded_fresh,
+                                    &reason));
+    assert(verify_masked_gkr_transcript(
+        axis_padded_fresh, axis_padded_fconn, axis_padded_output_view,
+        axis_padded_descriptors, &reason));
+    std::remove(axis_padded_wire.c_str());
 
     NativeProofSession fresh("masked-layered-gkr-smoke-v1", statement_fixture());
     assert(prove_masked_gkr_transcript(fresh, circuit, witness, output_view, &reason));

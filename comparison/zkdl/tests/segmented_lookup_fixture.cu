@@ -1,16 +1,20 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "../zkrelation-proof.cuh"
 #include "../gat_adapter/gat_native_resources.hpp"
+#include "../gat_adapter/gat_native_resources.cu"
 
 namespace zkdl_gat::relation::fixture {
 
@@ -36,6 +40,94 @@ std::string hex_digest(const std::array<zkdl::byte, 32U> &digest) {
         text.push_back(kHex[value & 0x0fU]);
     }
     return text;
+}
+
+std::string trim_config_text(const std::string &value) {
+    std::size_t begin = 0U;
+    while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin]))) ++begin;
+    std::size_t end = value.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1U]))) --end;
+    return value.substr(begin, end - begin);
+}
+
+std::string quote_config_text(const std::string &value) {
+    std::string result;
+    result.reserve(value.size() + 2U);
+    result.push_back('"');
+    for (const unsigned char byte : value) {
+        if (byte == '"' || byte == '\\') {
+            result.push_back('\\');
+            result.push_back(static_cast<char>(byte));
+        } else if (byte == '\n') {
+            result += "\\n";
+        } else if (byte == '\r') {
+            result += "\\r";
+        } else if (byte == '\t') {
+            result += "\\t";
+        } else {
+            result.push_back(static_cast<char>(byte));
+        }
+    }
+    result.push_back('"');
+    return result;
+}
+
+bool load_authenticated_test_config(const std::filesystem::path &path,
+                                    Config *config, std::string *error) {
+    if (config == nullptr) {
+        if (error) *error = "test config output is null";
+        return false;
+    }
+    std::ifstream input(path);
+    if (!input) {
+        if (error) *error = "cannot read authenticated SRS test config: " + path.string();
+        return false;
+    }
+    std::map<std::string, std::string> values;
+    std::string line;
+    while (std::getline(input, line)) {
+        const std::size_t comment = line.find('#');
+        if (comment != std::string::npos) line.resize(comment);
+        const std::string normalized = trim_config_text(line);
+        if (normalized.empty()) continue;
+        const std::size_t separator = normalized.find('=');
+        if (separator == std::string::npos) {
+            if (error) *error = "malformed authenticated SRS test config line";
+            return false;
+        }
+        const std::string key = trim_config_text(normalized.substr(0U, separator));
+        const std::string value = trim_config_text(normalized.substr(separator + 1U));
+        if (key.empty() || value.empty() || !values.emplace(key, value).second) {
+            if (error) *error = "duplicate or empty authenticated SRS test config key/value";
+            return false;
+        }
+    }
+    for (const char *key : {"srs_path", "srs_manifest_digest", "srs_id", "srs_type", "chunking_rule"}) {
+        if (values.find(key) == values.end()) {
+            if (error) *error = std::string("authenticated SRS test config lacks ") + key;
+            return false;
+        }
+    }
+    std::string canonical = "{";
+    bool first = true;
+    for (const auto &entry : values) {
+        if (entry.first == "srs_manifest_digest" || entry.first == "verifier_registry_digest" ||
+            entry.first == "model_blinder_sidecar_digest") continue;
+        if (!first) canonical.push_back(',');
+        first = false;
+        canonical += quote_config_text(entry.first) + ":" + quote_config_text(entry.second);
+    }
+    canonical.push_back('}');
+    config->baseline_root = std::filesystem::current_path();
+    config->config_path = std::filesystem::absolute(path).lexically_normal();
+    config->srs_path = values.at("srs_path");
+    config->srs_manifest_digest = values.at("srs_manifest_digest");
+    config->srs_id = values.at("srs_id");
+    config->srs_type = values.at("srs_type");
+    config->chunking_rule = values.at("chunking_rule");
+    config->config_binding_digest = hex_digest(zkdl::sha256(
+        std::vector<zkdl::byte>(canonical.begin(), canonical.end())));
+    return true;
 }
 
 bool write_authenticated_resource_fixture(const std::filesystem::path &root, std::string *error) {
@@ -197,6 +289,179 @@ bool relation_artifact_roundtrip(const std::vector<zkdl::CpuG1Point> &generators
     return true;
 }
 
+bool small_shared_segment_terminal_fixture() {
+    constexpr std::uint32_t kDomain = 8U;
+    constexpr std::uint32_t kSharedSegment = 4U;
+    constexpr std::uint32_t kBasis = 8U;
+    std::vector<zkdl::CpuG1Point> generators;
+    generators.reserve(kBasis);
+    for (std::uint32_t index = 0U; index < kBasis; ++index)
+        generators.push_back(zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(),
+                                               zkdl::fr_from_u32(index + 2U)));
+    const auto h = zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), zkdl::fr_from_u32(101U));
+    const auto u = zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), zkdl::fr_from_u32(103U));
+
+    std::vector<FrWire> values;
+    values.reserve(kDomain);
+    for (std::uint32_t index = 0U; index < kDomain; ++index)
+        values.push_back(zkdl::fr_from_u32(index + 1U));
+    SegmentedTensorProvider provider(
+        kDomain, kSharedSegment,
+        [&values](std::uint64_t offset, std::uint32_t count,
+                  std::vector<FrWire> &output, std::string *read_error) {
+            if (offset > values.size() || count > values.size() - offset) {
+                if (read_error) *read_error = "fixture range is outside the tensor";
+                return false;
+            }
+            output.assign(values.begin() + static_cast<std::ptrdiff_t>(offset),
+                          values.begin() + static_cast<std::ptrdiff_t>(offset + count));
+            return true;
+        });
+    if (provider.logical_domain() != kDomain || provider.segment_size() != kSharedSegment ||
+        provider.segment_count() != 2U)
+        return fixture_fail("shared-small-layout", "small provider does not match the declared two-segment layout");
+    ZkRelationSegmentLayout layout;
+    std::string error;
+    if (!zktr_segment_layout_for_size(kDomain, generators.size(), kSharedSegment, layout, &error) ||
+        layout.segment_count != 2U || layout.segment_size != kSharedSegment)
+        return fixture_fail("shared-small-layout", "canonical shared-S layout was rejected", &error);
+    if (zktr_segment_layout_for_size(kDomain, generators.size(), 3U, layout, &error))
+        return fixture_fail("shared-small-negative", "non-power-of-two shared segment was accepted", &error);
+    fixture_pass("shared-small-layout", "logical domain 8 uses canonical shared segment size 4 across two segments");
+
+    RelationStatement statement;
+    statement.statement_digest = zkdl::sha256(std::vector<zkdl::byte>{'s'});
+    statement.model_digest = zkdl::sha256(std::vector<zkdl::byte>{'m'});
+    statement.table_digest = zkdl::sha256(std::vector<zkdl::byte>{'t'});
+    statement.ledger_digest = zkdl::sha256(std::vector<zkdl::byte>{'l'});
+    statement.srs_digest = zkdl::sha256(std::vector<zkdl::byte>{'p'});
+    statement.registry_digest = zkdl::sha256(std::vector<zkdl::byte>{'r'});
+    const FrWire tensor_blinder = zkdl::fr_from_u32(193U);
+    CommitmentWire wire;
+    SegmentCommitmentMaterial material;
+    if (!zktr_build_segment_commitment_material(
+            "fixture/small-shared", 3U, provider, generators, h, u,
+            tensor_blinder, statement, wire, material, &error, nullptr,
+            kSharedSegment) ||
+        wire.segment_size != kSharedSegment || wire.segment_count != 2U ||
+        wire.segment_commitments.size() != 2U)
+        return fixture_fail("shared-small-commitment", "small shared-S commitment failed", &error);
+    const std::vector<CommitmentWire> commitment_wires{wire};
+    statement.segment_commitments_digest =
+        relation_commitment_vector_digest(statement, commitment_wires);
+
+    SegmentedTensorProvider natural_provider;
+    if (!SegmentedTensorProvider::from_values(values, generators.size(), natural_provider, &error))
+        return fixture_fail("shared-small-negative", "natural provider setup failed", &error);
+    CommitmentWire rejected_wire;
+    SegmentCommitmentMaterial rejected_material;
+    error.clear();
+    if (zktr_build_segment_commitment_material(
+            "fixture/small-shared-mismatch", 3U, natural_provider, generators,
+            h, u, tensor_blinder, statement, rejected_wire, rejected_material,
+            &error, nullptr, kSharedSegment) ||
+        error.find("authenticated shared layout") == std::string::npos)
+        return fixture_fail("shared-small-negative", "natural provider was not rejected for the shared-S layout", &error);
+    fixture_pass("shared-small-commitment", "both segments committed using the declared common S");
+
+    ConstraintDescriptor descriptor;
+    descriptor.id = "fixture/small-shared-terminal";
+    descriptor.degree = 1U;
+    descriptor.terms.push_back(Monomial{zkdl::fr_from_u32(1U), {0U}});
+    std::vector<FrWire> point{zkdl::fr_from_u32(2U), zkdl::fr_from_u32(3U),
+                              zkdl::fr_from_u32(5U)};
+    FrWire expected_value{};
+    if (!provider.evaluate_mle(point, expected_value, &error))
+        return fixture_fail("shared-small-terminal", "small shared-S MLE evaluation failed", &error);
+    const FrWire external_blinder = zkdl::fr_from_u32(197U);
+    const auto external_commitment = zkdl::cpu_pedersen_scalar_commit(
+        expected_value, external_blinder, h, u);
+    const std::vector<zkdl::CpuG1Point> canonical_commitments{
+        zkdl::cpu_g1_from_native(wire.commitment)};
+    const std::vector<FrWire> tensor_blinders{tensor_blinder};
+    const std::vector<std::uint32_t> commitment_indices{0U};
+    const std::vector<SegmentedTensorProvider> terminal_providers{provider};
+    const std::vector<SegmentCommitmentMaterial> terminal_materials{material};
+    const std::string context = "fixture.small-shared-terminal";
+    zkdl::Transcript prover_transcript(context);
+    ZkTerminalRelationProverResult terminal;
+    if (!prove_zk_terminal_relation_segmented(
+            descriptor, terminal_providers, canonical_commitments, tensor_blinders,
+            commitment_indices, point, generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            external_blinder, FrWire{}, context, prover_transcript, terminal,
+            &error, &terminal_materials, kSharedSegment))
+        return fixture_fail("shared-small-prove", "small shared-S terminal proof failed", &error);
+    if (terminal.proof.terminal_segment_openings.size() != 1U ||
+        terminal.proof.terminal_segment_openings.front().size() != 2U)
+        return fixture_fail("shared-small-prove", "terminal proof omitted a shared-S segment opening");
+    std::vector<zkdl::byte> encoded;
+    zkdl::serialize_zk_terminal_relation(terminal.proof, encoded);
+    zkdl::ZkTerminalRelationProof fresh;
+    if (!zkdl::deserialize_zk_terminal_relation(encoded, fresh, &error))
+        return fixture_fail("shared-small-wire", "canonical shared-S proof wire roundtrip failed", &error);
+    zkdl::Transcript verifier_transcript(context);
+    ZkTerminalRelationVerifierResult verified;
+    if (!verify_zk_terminal_relation(
+            fresh, descriptor, canonical_commitments, commitment_indices, point,
+            generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, verifier_transcript, verified, &error,
+            &commitment_wires, kSharedSegment))
+        return fixture_fail("shared-small-independent-verify", "fresh shared-S verifier rejected valid wire", &error);
+    fixture_pass("shared-small-independent-verify", "canonical shared-S terminal proof survived fresh serialization and independent verification");
+
+    zkdl::ZkTerminalRelationProof tampered = fresh;
+    const auto xi = zkdl::cpu_g1_from_native(
+        tampered.terminal_segment_openings[0][0].xi);
+    const auto changed_xi = zkdl::cpu_g1_to_native(zkdl::cpu_g1_add(xi, h));
+    tampered.terminal_segment_openings[0][0].xi = changed_xi;
+    tampered.terminal_openings[0].xi = changed_xi;
+    zkdl::Transcript tamper_transcript(context);
+    error.clear();
+    if (verify_zk_terminal_relation(
+            tampered, descriptor, canonical_commitments, commitment_indices,
+            point, generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, tamper_transcript, verified, &error,
+            &commitment_wires, kSharedSegment))
+        return fixture_fail("shared-small-tamper", "tampered shared-S segment opening was accepted");
+    fixture_pass("shared-small-tamper", "mutated first-segment Hyrax commitment rejected");
+
+    tampered = fresh;
+    const auto aggregate_commitment = zkdl::cpu_g1_from_native(
+        tampered.terminal_commitments[0]);
+    tampered.terminal_commitments[0] = zkdl::cpu_g1_to_native(
+        zkdl::cpu_g1_add(aggregate_commitment, h));
+    zkdl::Transcript aggregate_tamper_transcript(context);
+    error.clear();
+    if (verify_zk_terminal_relation(
+            tampered, descriptor, canonical_commitments, commitment_indices,
+            point, generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, aggregate_tamper_transcript, verified, &error,
+            &commitment_wires, kSharedSegment))
+        return fixture_fail("shared-small-tamper", "tampered aggregate terminal commitment was accepted");
+    fixture_pass("shared-small-tamper", "aggregate terminal commitment must match all weighted segment taus");
+
+    tampered = fresh;
+    const auto second_segment_tau = zkdl::cpu_g1_from_native(
+        tampered.terminal_segment_openings[0][1].tau);
+    tampered.terminal_segment_openings[0][1].tau = zkdl::cpu_g1_to_native(
+        zkdl::cpu_g1_add(second_segment_tau, h));
+    zkdl::Transcript segment_tau_tamper_transcript(context);
+    error.clear();
+    if (verify_zk_terminal_relation(
+            tampered, descriptor, canonical_commitments, commitment_indices,
+            point, generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, segment_tau_tamper_transcript, verified, &error,
+            &commitment_wires, kSharedSegment))
+        return fixture_fail("shared-small-tamper", "tampered second-segment tau opening was accepted");
+    fixture_pass("shared-small-tamper", "mutated nonzero-index segment tau rejected by fresh verifier");
+    return true;
+}
+
 bool basis8_logical32_four_segment_tamper_fixture() {
     std::vector<zkdl::CpuG1Point> generators;
     generators.reserve(8U);
@@ -286,10 +551,177 @@ bool basis8_logical32_four_segment_tamper_fixture() {
     return true;
 }
 
+bool authenticated_shared_segment_proof_fixture(const std::filesystem::path &config_path) {
+    std::string error;
+    Config config;
+    if (!load_authenticated_test_config(config_path, &config, &error))
+        return fixture_fail("authenticated-srs-config", "cannot load official Cora SRS identity", &error);
+    AuthenticatedSrsResource srs;
+    if (!load_authenticated_srs(config, &srs, &error) || !srs.authenticated ||
+        srs.basis_domain != (1U << 18U) || srs.generators.size() != srs.basis_domain ||
+        srs.blinding_generator.size() != 48U || srs.u_generator.size() != 48U) {
+        return fixture_fail("authenticated-srs", "official Cora SRS did not authenticate the expected basis", &error);
+    }
+    fixture_pass("authenticated-srs", "official Cora manifest and complete generator basis authenticated");
+
+    std::vector<zkdl::CpuG1Point> generators;
+    generators.reserve(srs.generators.size());
+    for (std::size_t index = 0U; index < srs.generators.size(); ++index) {
+        if (srs.generators[index].size() != 48U)
+            return fixture_fail("authenticated-basis", "authenticated generator has the wrong encoding width", &error);
+        std::array<zkdl::byte, 48U> encoded{};
+        std::copy(srs.generators[index].begin(), srs.generators[index].end(), encoded.begin());
+        G1Jacobian_t native{};
+        if (!zkdl_g1_wire::decode(encoded, native, &error))
+            return fixture_fail("authenticated-basis", "authenticated generator failed canonical decode", &error);
+        const auto point = zkdl::cpu_g1_from_native(native);
+        if (point.is_zero())
+            return fixture_fail("authenticated-basis", "authenticated SRS contains a zero generator", &error);
+        generators.push_back(point);
+    }
+    std::array<zkdl::byte, 48U> h_encoded{}, u_encoded{};
+    std::copy(srs.blinding_generator.begin(), srs.blinding_generator.end(), h_encoded.begin());
+    std::copy(srs.u_generator.begin(), srs.u_generator.end(), u_encoded.begin());
+    G1Jacobian_t h_native{}, u_native{};
+    if (!zkdl_g1_wire::decode(h_encoded, h_native, &error) ||
+        !zkdl_g1_wire::decode(u_encoded, u_native, &error))
+        return fixture_fail("authenticated-basis", "authenticated H/U failed canonical decode", &error);
+    const auto h = zkdl::cpu_g1_from_native(h_native);
+    const auto u = zkdl::cpu_g1_from_native(u_native);
+
+    constexpr std::uint32_t kDomain = 1U << 15U;
+    constexpr std::uint32_t kSharedSegment = 1U << 14U;
+    ZkRelationSegmentLayout layout;
+    if (!zktr_segment_layout_for_size(kDomain, generators.size(), kSharedSegment,
+                                      layout, &error) ||
+        layout.segment_count != 2U || layout.segment_size != kSharedSegment)
+        return fixture_fail("shared-layout", "authenticated two-segment layout was rejected", &error);
+    if (zktr_segment_layout_for_size(kDomain, generators.size(), 12288U, layout, &error))
+        return fixture_fail("shared-layout-negative", "non-power-of-two shared segment was accepted", &error);
+    error.clear();
+    if (zktr_segment_layout_for_size(kDomain, generators.size(), 1U << 19U, layout, &error))
+        return fixture_fail("shared-layout-negative", "segment larger than authenticated basis was accepted", &error);
+
+    std::vector<FrWire> values;
+    values.reserve(kDomain);
+    for (std::uint32_t index = 0U; index < kDomain; ++index)
+        values.push_back(zkdl::fr_from_u32((index % 251U) + 1U));
+    SegmentedTensorProvider provider(
+        kDomain, kSharedSegment,
+        [&values](std::uint64_t offset, std::uint32_t count,
+                  std::vector<FrWire> &output, std::string *read_error) {
+            if (offset > values.size() || count > values.size() - offset) {
+                if (read_error) *read_error = "fixture range is outside the tensor";
+                return false;
+            }
+            output.assign(values.begin() + static_cast<std::ptrdiff_t>(offset),
+                           values.begin() + static_cast<std::ptrdiff_t>(offset + count));
+            return true;
+        });
+    SegmentedTensorProvider natural_provider;
+    if (!SegmentedTensorProvider::from_values(values, generators.size(), natural_provider, &error) ||
+        natural_provider.segment_size() != kDomain || natural_provider.segment_count() != 1U)
+        return fixture_fail("provider-partition-negative", "natural provider fixture shape is invalid", &error);
+    RelationStatement statement;
+    statement.statement_digest = zkdl::sha256(std::vector<zkdl::byte>{'s'});
+    statement.model_digest = zkdl::sha256(std::vector<zkdl::byte>{'m'});
+    statement.table_digest = zkdl::sha256(std::vector<zkdl::byte>{'t'});
+    statement.ledger_digest = zkdl::sha256(std::vector<zkdl::byte>{'l'});
+    statement.registry_digest = zkdl::sha256(std::vector<zkdl::byte>{'r'});
+    statement.srs_digest = srs.manifest_digest;
+    const FrWire tensor_blinder = zkdl::fr_from_u32(193U);
+    CommitmentWire rejected_wire;
+    SegmentCommitmentMaterial rejected_material;
+    error.clear();
+    if (zktr_build_segment_commitment_material(
+            "fixture/shared-segment-mismatch", 3U, natural_provider,
+            generators, h, u, tensor_blinder, statement, rejected_wire,
+            rejected_material, &error, nullptr, kSharedSegment) ||
+        error.find("authenticated shared layout") == std::string::npos)
+        return fixture_fail("provider-partition-negative", "provider partition mismatch was not rejected explicitly", &error);
+    fixture_pass("provider-partition-negative", "natural 32768 provider rejected for authenticated 16384x2 layout");
+
+    CommitmentWire wire;
+    SegmentCommitmentMaterial material;
+    if (!zktr_build_segment_commitment_material(
+            "fixture/authenticated-cora-shared-segment", 3U, provider,
+            generators, h, u, tensor_blinder, statement, wire, material,
+            &error, nullptr, kSharedSegment) ||
+        wire.segment_size != kSharedSegment || wire.segment_count != 2U ||
+        wire.segment_commitments.size() != 2U)
+        return fixture_fail("shared-commitment", "authenticated two-segment commitment failed", &error);
+    std::vector<CommitmentWire> commitment_wires{wire};
+    statement.segment_commitments_digest =
+        relation_commitment_vector_digest(statement, commitment_wires);
+    fixture_pass("shared-commitment", "authenticated Cora prefix basis committed as two ordered 16384-point segments");
+
+    ConstraintDescriptor descriptor;
+    descriptor.id = "fixture/shared-segment-terminal";
+    descriptor.degree = 1U;
+    descriptor.terms.push_back(Monomial{zkdl::fr_from_u32(1U), {0U}});
+    std::vector<FrWire> point;
+    point.reserve(15U);
+    for (std::uint32_t index = 0U; index < 15U; ++index)
+        point.push_back(zkdl::fr_from_u32(index + 2U));
+    FrWire expected_value{};
+    if (!provider.evaluate_mle(point, expected_value, &error))
+        return fixture_fail("segmented-mle", "shared two-segment MLE evaluation failed", &error);
+    FrWire external_blinder = zkdl::cpu_fresh_csprng_scalar();
+    while (zkdl::fr_compare(external_blinder, FrWire{}) == 0)
+        external_blinder = zkdl::cpu_fresh_csprng_scalar();
+    const auto external_commitment = zkdl::cpu_pedersen_scalar_commit(
+        expected_value, external_blinder, h, u);
+    const std::vector<zkdl::CpuG1Point> canonical_commitments{
+        zkdl::cpu_g1_from_native(wire.commitment)};
+    const std::vector<FrWire> tensor_blinders{tensor_blinder};
+    const std::vector<std::uint32_t> commitment_indices{0U};
+    const std::vector<SegmentedTensorProvider> terminal_providers{provider};
+    const std::vector<SegmentCommitmentMaterial> terminal_materials{material};
+    const std::string context = "fixture.authenticated-shared-segment-terminal";
+    zkdl::Transcript prover_transcript(context);
+    ZkTerminalRelationProverResult terminal;
+    if (!prove_zk_terminal_relation_segmented(
+            descriptor, terminal_providers, canonical_commitments, tensor_blinders,
+            commitment_indices, point, generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            external_blinder, FrWire{}, context, prover_transcript, terminal,
+            &error, &terminal_materials,
+            kSharedSegment))
+        return fixture_fail("segmented-opening-prove", "native terminal relation failed on shared layout", &error);
+    if (terminal.proof.terminal_segment_openings.size() != 1U ||
+        terminal.proof.terminal_segment_openings.front().size() != 2U)
+        return fixture_fail("segmented-opening-shape", "terminal relation did not emit both segment openings", &error);
+    std::vector<zkdl::byte> encoded_terminal;
+    zkdl::serialize_zk_terminal_relation(terminal.proof, encoded_terminal);
+    zkdl::ZkTerminalRelationProof fresh_terminal;
+    if (!zkdl::deserialize_zk_terminal_relation(encoded_terminal, fresh_terminal, &error))
+        return fixture_fail("segmented-opening-wire", "terminal opening did not survive canonical wire roundtrip", &error);
+    zkdl::Transcript verifier_transcript(context);
+    ZkTerminalRelationVerifierResult verified;
+    if (!verify_zk_terminal_relation(
+            fresh_terminal, descriptor, canonical_commitments, commitment_indices,
+            point, generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, verifier_transcript, verified, &error,
+            &commitment_wires, kSharedSegment))
+        return fixture_fail("segmented-opening-independent-verify", "fresh verifier rejected the serialized two-segment opening", &error);
+    fixture_pass("segmented-opening-independent-verify", "serialized two-segment MLE opening verified against authenticated Cora SRS and commitment wire");
+    std::cerr << "segmented_fixture stage=collector/final status=NOT_RUN reason=bounded native proof fixture; official comparison collector remains external\n";
+    return true;
 }
 
-int main() {
+}
+
+int main(int argc, char **argv) {
     try {
+        if (argc == 3 && std::string(argv[1]) == "--authenticated-srs-config") {
+            return zkdl_gat::relation::fixture::authenticated_shared_segment_proof_fixture(argv[2]) ? 0 : 1;
+        }
+        if (argc != 1) {
+            std::cerr << "usage: segmented_lookup_fixture [--authenticated-srs-config CONFIG]\n";
+            return 2;
+        }
+        if (!zkdl_gat::relation::fixture::small_shared_segment_terminal_fixture()) return 1;
         if (!zkdl_gat::relation::fixture::basis8_logical32_four_segment_tamper_fixture()) return 1;
         return 0;
     } catch (const std::exception &exception) {

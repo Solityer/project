@@ -74,7 +74,8 @@ where
 
             let poly_batch = &poly_batch - eval_batch;
             let witness_poly = Polynomial {
-                values: kate_division(&poly_batch.values, z),
+                values: kate_division(&poly_batch[..], z),
+                mapped: None,
                 _marker: PhantomData,
             };
             let w = self

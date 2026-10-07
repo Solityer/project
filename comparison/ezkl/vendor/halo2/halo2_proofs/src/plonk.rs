@@ -22,10 +22,10 @@ use crate::SerdeFormat;
 
 mod assigned;
 mod circuit;
+pub mod commitment_timing;
 mod error;
 mod evaluation;
 mod keygen;
-pub mod commitment_timing;
 #[cfg(not(feature = "mv-lookup"))]
 mod lookup;
 #[cfg(feature = "mv-lookup")]
@@ -33,6 +33,8 @@ mod mv_lookup;
 pub mod permutation;
 mod shuffle;
 mod vanishing;
+
+use circuit::SelectorBitmap;
 
 mod prover;
 mod verifier;
@@ -47,6 +49,8 @@ pub use verifier::*;
 use evaluation::Evaluator;
 use std::io;
 
+const NATIVE_PK_MAGIC: &[u8; 8] = b"EZKLPK\0\x02";
+
 /// This is a verifying key which allows for the verification of proofs for a
 /// particular circuit.
 #[derive(Clone, Debug)]
@@ -59,7 +63,7 @@ pub struct VerifyingKey<C: CurveAffine> {
     cs_degree: usize,
     /// The representative of this `VerifyingKey` in transcripts.
     transcript_repr: C::Scalar,
-    selectors: Vec<Vec<bool>>,
+    selectors: Vec<SelectorBitmap>,
     /// Whether selector compression is turned on or not.
     compress_selectors: bool,
 }
@@ -99,10 +103,7 @@ where
         }
         // write self.selectors
         for selector in &self.selectors {
-            // since `selector` is filled with `bool`, we pack them 8 at a time into bytes and then write
-            for bits in selector.chunks(8) {
-                writer.write_all(&[crate::helpers::pack(bits)])?;
-            }
+            writer.write_all(selector.as_bytes())?;
         }
         Ok(())
     }
@@ -170,18 +171,10 @@ where
 
         let (cs, selectors) = if compress_selectors {
             // read selectors
-            let selectors: Vec<Vec<bool>> = vec![vec![false; 1 << k]; cs.num_selectors]
-                .into_iter()
-                .map(|mut selector| {
-                    let mut selector_bytes = vec![0u8; (selector.len() + 7) / 8];
-                    reader.read_exact(&mut selector_bytes)?;
-                    for (bits, byte) in selector.chunks_mut(8).zip(selector_bytes) {
-                        crate::helpers::unpack(byte, bits);
-                    }
-                    Ok(selector)
-                })
+            let selectors: Vec<SelectorBitmap> = (0..cs.num_selectors)
+                .map(|_| SelectorBitmap::read_activation(reader, 1usize << k))
                 .collect::<io::Result<_>>()?;
-            let (cs, _) = cs.compress_selectors(selectors.clone(), false);
+            let (cs, _, _) = cs.compress_selector_bitmaps(&selectors);
             (cs, selectors)
         } else {
             // we still need to replace selectors with fixed Expressions in `cs`
@@ -229,12 +222,11 @@ impl<C: CurveAffine> VerifyingKey<C> {
     {
         10 + (self.fixed_commitments.len() * C::byte_length(format))
             + self.permutation.bytes_length(format)
-            + self.selectors.len()
-                * (self
-                    .selectors
-                    .first()
-                    .map(|selector| (selector.len() + 7) / 8)
-                    .unwrap_or(0))
+            + self
+                .selectors
+                .iter()
+                .map(|selector| selector.as_bytes().len())
+                .sum::<usize>()
     }
 
     fn from_parts(
@@ -242,7 +234,7 @@ impl<C: CurveAffine> VerifyingKey<C> {
         fixed_commitments: Vec<C>,
         permutation: permutation::VerifyingKey<C>,
         cs: ConstraintSystem<C::Scalar>,
-        selectors: Vec<Vec<bool>>,
+        selectors: Vec<SelectorBitmap>,
         compress_selectors: bool,
     ) -> Self
     where
@@ -345,7 +337,6 @@ pub struct ProvingKey<C: CurveAffine> {
     l_active_row: Polynomial<C::Scalar, ExtendedLagrangeCoeff>,
     fixed_values: Vec<Polynomial<C::Scalar, LagrangeCoeff>>,
     fixed_polys: Vec<Polynomial<C::Scalar, Coeff>>,
-    fixed_cosets: Vec<Polynomial<C::Scalar, ExtendedLagrangeCoeff>>,
     permutation: permutation::ProvingKey<C>,
     ev: Evaluator<C>,
 }
@@ -366,11 +357,11 @@ where
     {
         let scalar_len = C::Scalar::default().to_repr().as_ref().len();
         self.vk.bytes_length(format)
+            + NATIVE_PK_MAGIC.len()
             + 12
             + scalar_len * (self.l0.len() + self.l_last.len() + self.l_active_row.len())
             + polynomial_slice_byte_length(&self.fixed_values)
             + polynomial_slice_byte_length(&self.fixed_polys)
-            + polynomial_slice_byte_length(&self.fixed_cosets)
             + self.permutation.bytes_length()
     }
 }
@@ -390,13 +381,13 @@ where
     /// WITHOUT performing the expensive Montgomery reduction.
     /// Does so by first writing the verifying key and then serializing the rest of the data (in the form of field polynomials)
     pub fn write<W: io::Write>(&self, writer: &mut W, format: SerdeFormat) -> io::Result<()> {
+        writer.write_all(NATIVE_PK_MAGIC)?;
         self.vk.write(writer, format)?;
         self.l0.write(writer, format)?;
         self.l_last.write(writer, format)?;
         self.l_active_row.write(writer, format)?;
         write_polynomial_slice(&self.fixed_values, writer, format)?;
         write_polynomial_slice(&self.fixed_polys, writer, format)?;
-        write_polynomial_slice(&self.fixed_cosets, writer, format)?;
         self.permutation.write(writer, format)?;
         Ok(())
     }
@@ -417,6 +408,14 @@ where
         format: SerdeFormat,
         #[cfg(feature = "circuit-params")] params: ConcreteCircuit::Params,
     ) -> io::Result<Self> {
+        let mut magic = [0u8; NATIVE_PK_MAGIC.len()];
+        reader.read_exact(&mut magic)?;
+        if &magic != NATIVE_PK_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported or legacy native proving key format",
+            ));
+        }
         let vk = VerifyingKey::<C>::read::<R, ConcreteCircuit>(
             reader,
             format,
@@ -428,8 +427,12 @@ where
         let l_active_row = Polynomial::read(reader, format)?;
         let fixed_values = read_polynomial_vec(reader, format)?;
         let fixed_polys = read_polynomial_vec(reader, format)?;
-        let fixed_cosets = read_polynomial_vec(reader, format)?;
-        let permutation = permutation::ProvingKey::read(reader, format)?;
+        let permutation = permutation::ProvingKey::read(
+            reader,
+            format,
+            &vk.domain,
+            &vk.cs.permutation().get_columns(),
+        )?;
         let ev = Evaluator::new(vk.cs());
         Ok(Self {
             vk,
@@ -438,7 +441,6 @@ where
             l_active_row,
             fixed_values,
             fixed_polys,
-            fixed_cosets,
             permutation,
             ev,
         })
@@ -463,6 +465,60 @@ where
             #[cfg(feature = "circuit-params")]
             params,
         )
+    }
+}
+
+#[cfg(test)]
+mod native_pk_format_tests {
+    use super::{Circuit, ConstraintSystem, ProvingKey, SerdeFormat};
+    use crate::{
+        circuit::{Layouter, SimpleFloorPlanner},
+        halo2curves::bn256::{Fr, G1Affine},
+    };
+    use std::io::Cursor;
+
+    struct LegacyFormatCircuit;
+
+    impl Circuit<Fr> for LegacyFormatCircuit {
+        type Config = ();
+        type FloorPlanner = SimpleFloorPlanner;
+        #[cfg(feature = "circuit-params")]
+        type Params = ();
+
+        fn without_witnesses(&self) -> Self {
+            Self
+        }
+
+        fn configure(_meta: &mut ConstraintSystem<Fr>) -> Self::Config {}
+
+        fn synthesize(
+            &self,
+            _config: Self::Config,
+            _layouter: impl Layouter<Fr>,
+        ) -> Result<(), super::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn legacy_proving_key_version_is_rejected_before_payload_decode() {
+        let mut reader = Cursor::new(b"EZKLPK\0\x01".to_vec());
+        #[cfg(feature = "circuit-params")]
+        let result = ProvingKey::<G1Affine>::read::<_, LegacyFormatCircuit>(
+            &mut reader,
+            SerdeFormat::RawBytes,
+            (),
+        );
+        #[cfg(not(feature = "circuit-params"))]
+        let result = ProvingKey::<G1Affine>::read::<_, LegacyFormatCircuit>(
+            &mut reader,
+            SerdeFormat::RawBytes,
+        );
+        let error = result.expect_err("legacy native proving key version must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error
+            .to_string()
+            .contains("unsupported or legacy native proving key format"));
     }
 }
 

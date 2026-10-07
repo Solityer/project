@@ -1,4 +1,4 @@
-use ff::{Field, FromUniformBytes, WithSmallOrderMulGroup};
+use ff::{BatchInvert, Field, FromUniformBytes, PrimeField, WithSmallOrderMulGroup};
 use group::Curve;
 use instant::Instant;
 use rand_core::RngCore;
@@ -6,6 +6,7 @@ use rustc_hash::FxBuildHasher;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 use std::collections::BTreeSet;
+use std::io::{self, BufRead, Read};
 use std::iter;
 use std::ops::RangeTo;
 
@@ -29,6 +30,7 @@ use super::mv_lookup as lookup;
 #[cfg(feature = "mv-lookup")]
 use maybe_rayon::iter::{IntoParallelIterator, IntoParallelRefIterator};
 
+use crate::transcript::{EncodedChallenge, TranscriptWrite};
 use crate::{
     arithmetic::{eval_polynomial, CurveAffine},
     circuit::Value,
@@ -38,11 +40,256 @@ use crate::{
         Basis, Coeff, LagrangeCoeff, Polynomial, ProverQuery,
     },
 };
-use crate::{
-    poly::batch_invert_assigned,
-    transcript::{EncodedChallenge, TranscriptWrite},
-};
 use group::prime::PrimeCurveAffine;
+
+const ASSIGNED_EVENT_BATCH_SIZE: usize = 8192;
+
+struct AssignedEvent<F: PrimeField> {
+    row: usize,
+    value: Assigned<F>,
+}
+
+/// Holds only assigned cells, rather than a full `N`-element `Assigned<F>`
+/// vector for each advice column. Records are private canonical field bytes
+/// and retain assignment order so repeated writes preserve last-write-wins.
+struct AssignedEventColumn<F: PrimeField> {
+    log: Option<crate::poly::SpillLog>,
+    record: Vec<u8>,
+    event_count: u64,
+    _marker: std::marker::PhantomData<F>,
+}
+
+impl<F: PrimeField> AssignedEventColumn<F> {
+    fn new() -> Self {
+        let repr_len = F::Repr::default().as_ref().len();
+        Self {
+            log: None,
+            record: vec![0; 9 + 2 * repr_len],
+            event_count: 0,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    fn push(&mut self, row: usize, value: Assigned<F>) -> io::Result<()> {
+        let row = u64::try_from(row).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "advice row exceeds spill format",
+            )
+        })?;
+        let (tag, numerator, denominator) = match value {
+            Assigned::Zero => (0, F::ZERO, F::ZERO),
+            Assigned::Trivial(numerator) => (1, numerator, F::ZERO),
+            Assigned::Rational(numerator, denominator) => (2, numerator, denominator),
+        };
+        self.record[..8].copy_from_slice(&row.to_le_bytes());
+        self.record[8] = tag;
+        let repr_len = F::Repr::default().as_ref().len();
+        let numerator_repr = numerator.to_repr();
+        let denominator_repr = denominator.to_repr();
+        self.record[9..9 + repr_len].copy_from_slice(numerator_repr.as_ref());
+        self.record[9 + repr_len..].copy_from_slice(denominator_repr.as_ref());
+        if self.log.is_none() {
+            self.log = Some(crate::poly::native_spill_log()?);
+        }
+        self.log
+            .as_mut()
+            .expect("assigned event log was initialized")
+            .append(&self.record)?;
+        self.event_count = self.event_count.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "advice event count overflow")
+        })?;
+        Ok(())
+    }
+
+    fn into_lagrange(mut self, domain_len: usize) -> io::Result<Polynomial<F, LagrangeCoeff>> {
+        let Some(mut log) = self.log.take() else {
+            return Polynomial::mapped_filled(domain_len, F::ZERO);
+        };
+        let repr_len = F::Repr::default().as_ref().len();
+        let record_len = self.record.len();
+        let expected_bytes = self
+            .event_count
+            .checked_mul(record_len as u64)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "advice event byte length overflow",
+                )
+            })?;
+        if log.bytes_written() != expected_bytes || record_len != 9 + 2 * repr_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "advice event log length does not match its authenticated in-memory count",
+            ));
+        }
+
+        let mut latest = Polynomial::<u64, LagrangeCoeff>::mapped_filled(domain_len, 0)?;
+        {
+            let mut reader = log.reader()?;
+            let mut remaining = self.event_count;
+            let mut first_index = 0u64;
+            while remaining > 0 {
+                let count = usize::try_from(remaining.min(ASSIGNED_EVENT_BATCH_SIZE as u64))
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "advice batch length overflow")
+                    })?;
+                let byte_len = count.checked_mul(record_len).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "advice batch byte length overflow",
+                    )
+                })?;
+                let mut buffer = vec![0u8; byte_len];
+                reader.read_exact(&mut buffer)?;
+                for (offset, record) in buffer.chunks_exact(record_len).enumerate() {
+                    let row = usize::try_from(u64::from_le_bytes(
+                        record[..8]
+                            .try_into()
+                            .expect("fixed advice event row width"),
+                    ))
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "advice row exceeds host index")
+                    })?;
+                    if row >= domain_len {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "advice event row exceeds native polynomial domain",
+                        ));
+                    }
+                    latest[row] = first_index
+                        .checked_add(offset as u64)
+                        .and_then(|index| index.checked_add(1))
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "advice event index overflow",
+                            )
+                        })?;
+                }
+                first_index = first_index.checked_add(count as u64).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "advice event index overflow")
+                })?;
+                remaining -= count as u64;
+            }
+            if reader.fill_buf()?.len() != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "advice event log has trailing bytes",
+                ));
+            }
+        }
+
+        let mut values = Polynomial::<F, LagrangeCoeff>::mapped_filled(domain_len, F::ZERO)?;
+        {
+            let mut reader = log.reader()?;
+            let mut remaining = self.event_count;
+            let mut first_index = 0u64;
+            while remaining > 0 {
+                let count = usize::try_from(remaining.min(ASSIGNED_EVENT_BATCH_SIZE as u64))
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "advice batch length overflow")
+                    })?;
+                let byte_len = count.checked_mul(record_len).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "advice batch byte length overflow",
+                    )
+                })?;
+                let mut buffer = vec![0u8; byte_len];
+                reader.read_exact(&mut buffer)?;
+                let events = buffer
+                    .chunks_exact(record_len)
+                    .map(decode_assigned_event::<F>)
+                    .collect::<io::Result<Vec<_>>>()?;
+                let mut inverse_denominators = events
+                    .iter()
+                    .map(|event| event.value.denominator())
+                    .collect::<Vec<_>>();
+                inverse_denominators
+                    .iter_mut()
+                    .filter_map(Option::as_mut)
+                    .batch_invert();
+                for (offset, (event, inverse)) in
+                    events.iter().zip(inverse_denominators).enumerate()
+                {
+                    let event_index = first_index
+                        .checked_add(offset as u64)
+                        .and_then(|index| index.checked_add(1))
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "advice event index overflow",
+                            )
+                        })?;
+                    if latest[event.row] == event_index {
+                        values[event.row] = event.value.numerator() * inverse.unwrap_or(F::ONE);
+                    }
+                }
+                first_index = first_index.checked_add(count as u64).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "advice event index overflow")
+                })?;
+                remaining -= count as u64;
+            }
+            if reader.fill_buf()?.len() != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "advice event log has trailing bytes",
+                ));
+            }
+        }
+        drop(log);
+        Ok(values)
+    }
+}
+
+fn decode_assigned_event<F: PrimeField>(record: &[u8]) -> io::Result<AssignedEvent<F>> {
+    let repr_len = F::Repr::default().as_ref().len();
+    if record.len() != 9 + 2 * repr_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "advice event has an invalid record width",
+        ));
+    }
+    let row = usize::try_from(u64::from_le_bytes(
+        record[..8]
+            .try_into()
+            .expect("fixed advice event row width"),
+    ))
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "advice row exceeds host index"))?;
+    let mut numerator_repr = F::Repr::default();
+    numerator_repr
+        .as_mut()
+        .copy_from_slice(&record[9..9 + repr_len]);
+    let numerator = Option::<F>::from(F::from_repr(numerator_repr)).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "advice numerator is not a field encoding",
+        )
+    })?;
+    let mut denominator_repr = F::Repr::default();
+    denominator_repr
+        .as_mut()
+        .copy_from_slice(&record[9 + repr_len..]);
+    let denominator = Option::<F>::from(F::from_repr(denominator_repr)).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "advice denominator is not a field encoding",
+        )
+    })?;
+    let value = match record[8] {
+        0 if numerator == F::ZERO && denominator == F::ZERO => Assigned::Zero,
+        1 if denominator == F::ZERO => Assigned::Trivial(numerator),
+        2 => Assigned::Rational(numerator, denominator),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "advice event has an invalid variant tag",
+            ))
+        }
+    };
+    Ok(AssignedEvent { row, value })
+}
 
 /// This creates a proof for the provided `circuit` when given the public
 /// parameters `params` and the proving key [`ProvingKey`] that was
@@ -65,7 +312,7 @@ pub fn create_proof<
     transcript: &mut T,
 ) -> Result<(), Error>
 where
-    Scheme::Scalar: WithSmallOrderMulGroup<3> + FromUniformBytes<64>,
+    Scheme::Scalar: PrimeField + WithSmallOrderMulGroup<3> + FromUniformBytes<64>,
     Scheme::ParamsProver: Send + Sync,
 {
     #[cfg(feature = "counter")]
@@ -135,16 +382,14 @@ where
                 let instance_commitments_projective: Vec<_> = instance_values
                     .iter()
                     .map(|poly| {
-                        let _commitment_timer =
-                            crate::plonk::commitment_timing::instance_guard();
+                        let _commitment_timer = crate::plonk::commitment_timing::instance_guard();
                         params.commit_lagrange(poly, Blind::default())
                     })
                     .collect();
                 let mut instance_commitments =
                     vec![Scheme::Curve::identity(); instance_commitments_projective.len()];
                 {
-                    let _commitment_timer =
-                        crate::plonk::commitment_timing::normalization_guard();
+                    let _commitment_timer = crate::plonk::commitment_timing::normalization_guard();
                     <Scheme::Curve as CurveAffine>::CurveExt::batch_normalize(
                         &instance_commitments_projective,
                         &mut instance_commitments,
@@ -180,10 +425,10 @@ where
         pub advice_blinds: Vec<Blind<C::Scalar>>,
     }
 
-    struct WitnessCollection<'a, F: Field> {
+    struct WitnessCollection<'a, F: PrimeField> {
         k: u32,
         current_phase: sealed::Phase,
-        advice: Vec<Polynomial<Assigned<F>, LagrangeCoeff>>,
+        advice: Vec<AssignedEventColumn<F>>,
         unblinded_advice: HashSet<usize>,
         challenges: &'a HashMap<usize, F>,
         instances: &'a [&'a [F]],
@@ -191,7 +436,7 @@ where
         _marker: std::marker::PhantomData<F>,
     }
 
-    impl<'a, F: Field> Assignment<F> for WitnessCollection<'a, F> {
+    impl<'a, F: PrimeField> Assignment<F> for WitnessCollection<'a, F> {
         fn enter_region<NR, N>(&mut self, _: N)
         where
             NR: Into<String>,
@@ -247,8 +492,32 @@ where
             A: FnOnce() -> AR,
             AR: Into<String>,
         {
-            // Ignore assignment of advice column in different phase than current one.
-            if self.current_phase != column.column_type().phase {
+            let target_phase = column.column_type().phase;
+            if target_phase > self.current_phase {
+                // A future-phase value can depend on challenges that have not
+                // been sampled yet. Preserve the original phase boundary by
+                // not evaluating its callback during earlier phases.
+                return Ok(());
+            }
+
+            if target_phase < self.current_phase {
+                // Re-synthesis in a later phase must still populate the
+                // AssignedCell returned by Region, so downstream host-side
+                // witness calculations can read this earlier-phase value.
+                // Earlier-phase events are not part of this phase's witness.
+                let value = to().into_field();
+                if row == 0 {
+                    let mut witness_known = false;
+                    let _ = value.as_ref().map(|_| witness_known = true);
+                    println!(
+                        "EZKL_NATIVE_PHASE_ASSIGN current_phase={:?} target_phase={:?} column={} row={} witness_known={} persisted=false",
+                        self.current_phase,
+                        target_phase,
+                        column.index(),
+                        row,
+                        witness_known,
+                    );
+                }
                 return Ok(());
             }
 
@@ -256,11 +525,24 @@ where
                 return Err(Error::not_enough_rows_available(self.k));
             }
 
-            *self
-                .advice
+            let value = to().into_field();
+            let mut witness_known = false;
+            let _ = value.as_ref().map(|_| witness_known = true);
+            if !witness_known {
+                println!(
+                    "EZKL_NATIVE_PHASE_ASSIGN current_phase={:?} target_phase={:?} column={} row={} witness_known=false persisted=false",
+                    self.current_phase,
+                    target_phase,
+                    column.index(),
+                    row,
+                );
+            }
+
+            self.advice
                 .get_mut(column.index())
-                .and_then(|v| v.get_mut(row))
-                .ok_or(Error::BoundsFailure)? = to().into_field().assign()?;
+                .ok_or(Error::BoundsFailure)?
+                .push(row, value.assign()?)
+                .map_err(Error::NativeStorage)?;
 
             Ok(())
         }
@@ -329,7 +611,9 @@ where
     let (advice, challenges) = {
         let mut advice = vec![
             AdviceSingle::<Scheme::Curve, LagrangeCoeff> {
-                advice_polys: vec![domain.empty_lagrange(); meta.num_advice_columns],
+                advice_polys: (0..meta.num_advice_columns)
+                    .map(|_| Polynomial::from_vec(Vec::new()))
+                    .collect(),
                 advice_blinds: vec![Blind::default(); meta.num_advice_columns],
             };
             instances.len()
@@ -365,7 +649,9 @@ where
                 let mut witness = WitnessCollection {
                     k: params.k(),
                     current_phase,
-                    advice: vec![domain.empty_lagrange_assigned(); meta.num_advice_columns],
+                    advice: (0..meta.num_advice_columns)
+                        .map(|_| AssignedEventColumn::<Scheme::Scalar>::new())
+                        .collect(),
                     unblinded_advice: HashSet::from_iter(meta.unblinded_advice_columns.clone()),
                     instances,
                     challenges: &challenges,
@@ -387,24 +673,16 @@ where
                 )?;
 
                 let _start = Instant::now();
-                let mut advice_values = batch_invert_assigned::<Scheme::Scalar>(
-                    witness
-                        .advice
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(column_index, advice)| {
-                            if column_indices.contains(&column_index) {
-                                Some(advice)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                );
-
-                let _start = Instant::now();
-                // Add blinding factors to advice columns
-                for (column_index, advice_values) in column_indices.iter().zip(&mut advice_values) {
+                // Convert one assigned column at a time. The assigned backing
+                // is released as soon as its field polynomial has been built.
+                for column_index in &column_indices {
+                    let assigned = std::mem::replace(
+                        &mut witness.advice[*column_index],
+                        AssignedEventColumn::<Scheme::Scalar>::new(),
+                    );
+                    let mut advice_values = assigned
+                        .into_lagrange(params.n() as usize)
+                        .map_err(Error::NativeStorage)?;
                     if !witness.unblinded_advice.contains(column_index) {
                         for cell in &mut advice_values[unusable_rows_start..] {
                             *cell = Scheme::Scalar::random(&mut rng);
@@ -414,6 +692,7 @@ where
                             *cell = Blind::default().0;
                         }
                     }
+                    advice.advice_polys[*column_index] = advice_values;
                 }
 
                 let _start = Instant::now();
@@ -428,13 +707,13 @@ where
                         }
                     })
                     .collect();
-                let advice_commitments_projective: Vec<_> = advice_values
+                let advice_commitments_projective: Vec<_> = column_indices
                     .iter()
                     .zip(blinds.iter())
-                    .map(|(poly, blind)| {
+                    .map(|(column_index, blind)| {
+                        let poly = &advice.advice_polys[*column_index];
                         if current_phase == initial_advice_phase {
-                            let _commitment_timer =
-                                crate::plonk::commitment_timing::advice_guard();
+                            let _commitment_timer = crate::plonk::commitment_timing::advice_guard();
                             params.commit_lagrange(poly, *blind)
                         } else {
                             params.commit_lagrange(poly, *blind)
@@ -444,8 +723,7 @@ where
                 let mut advice_commitments =
                     vec![Scheme::Curve::identity(); advice_commitments_projective.len()];
                 if current_phase == initial_advice_phase {
-                    let _commitment_timer =
-                        crate::plonk::commitment_timing::normalization_guard();
+                    let _commitment_timer = crate::plonk::commitment_timing::normalization_guard();
                     <Scheme::Curve as CurveAffine>::CurveExt::batch_normalize(
                         &advice_commitments_projective,
                         &mut advice_commitments,
@@ -463,10 +741,7 @@ where
                 for commitment in &advice_commitments {
                     transcript.write_point(*commitment)?;
                 }
-                for ((column_index, advice_values), blind) in
-                    column_indices.iter().zip(advice_values).zip(blinds)
-                {
-                    advice.advice_polys[*column_index] = advice_values;
+                for (column_index, blind) in column_indices.iter().zip(blinds) {
                     advice.advice_blinds[*column_index] = blind;
                 }
             }
@@ -733,7 +1008,7 @@ where
         &lookups,
         &shuffles,
         &permutations,
-    );
+    )?;
     log::trace!("H(X) evaluation: {:?}", start.elapsed());
 
     // Construct the vanishing argument's h(X) commitments
@@ -998,9 +1273,153 @@ fn test_create_proof() {
 }
 
 #[test]
+fn packed_selector_count_vk_roundtrip_and_proof_verify() {
+    use crate::{
+        circuit::{Layouter, SimpleFloorPlanner, Value},
+        plonk::{
+            census_native_shape, count_compressed_selector_columns, keygen_pk, keygen_vk, verify_proof, Advice,
+            Circuit, Column, ConstraintSystem, Error, Selector,
+        },
+        poly::{
+            kzg::{
+                commitment::{KZGCommitmentScheme, ParamsKZG},
+                multiopen::{ProverSHPLONK, VerifierSHPLONK},
+                strategy::SingleStrategy,
+            },
+            Rotation as PolyRotation,
+        },
+        transcript::{
+            Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer, TranscriptWriterBuffer,
+        },
+        SerdeFormat,
+    };
+    use ff::Field;
+    use halo2curves::bn256::{Bn256, Fr, G1Affine};
+    use rand_core::OsRng;
+
+    #[derive(Clone, Copy)]
+    struct SelectorCircuit;
+
+    #[derive(Clone)]
+    struct Config {
+        advice: Column<Advice>,
+        first: Selector,
+        second: Selector,
+    }
+
+    impl Circuit<Fr> for SelectorCircuit {
+        type Config = Config;
+        type FloorPlanner = SimpleFloorPlanner;
+        #[cfg(feature = "circuit-params")]
+        type Params = ();
+
+        fn without_witnesses(&self) -> Self {
+            *self
+        }
+
+        fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+            let advice = meta.advice_column();
+            meta.enable_equality(advice);
+            let first = meta.selector();
+            let second = meta.selector();
+            meta.create_gate("two disjoint selector activations", |meta| {
+                let value = meta.query_advice(advice, PolyRotation::cur());
+                vec![
+                    meta.query_selector(first) * value.clone(),
+                    meta.query_selector(second) * value,
+                ]
+            });
+            Config {
+                advice,
+                first,
+                second,
+            }
+        }
+
+        fn synthesize(
+            &self,
+            config: Self::Config,
+            mut layouter: impl Layouter<Fr>,
+        ) -> Result<(), Error> {
+            layouter.assign_region(
+                || "two selector rows",
+                |mut region| {
+                    let first = region.assign_advice(
+                        || "first row value",
+                        config.advice,
+                        0,
+                        || Value::known(Fr::ZERO),
+                    )?;
+                    let second = region.assign_advice(
+                        || "second row value",
+                        config.advice,
+                        1,
+                        || Value::known(Fr::ZERO),
+                    )?;
+                    region.constrain_equal(first.cell(), second.cell())?;
+                    config.first.enable(&mut region, 0)?;
+                    config.second.enable(&mut region, 1)?;
+                    Ok(())
+                },
+            )?;
+            Ok(())
+        }
+    }
+
+    let circuit = SelectorCircuit;
+    let params: ParamsKZG<Bn256> = ParamsKZG::setup(3, OsRng);
+    let census = census_native_shape::<G1Affine, _>(3, &circuit).expect("native shape census");
+    assert_eq!(census.selector_fixed_column_count, 1);
+    assert_eq!(census.permutation_copy_call_count, 1);
+    let selector_columns =
+        count_compressed_selector_columns::<G1Affine, _>(3, &circuit).expect("selector census");
+    assert_eq!(selector_columns, 1);
+
+    let vk = keygen_vk(&params, &circuit).expect("keygen_vk should succeed");
+    assert_eq!(vk.fixed_commitments.len(), selector_columns);
+    let vk_bytes = vk.to_bytes(SerdeFormat::RawBytes);
+    assert_eq!(
+        &vk_bytes[vk_bytes.len() - 2..],
+        &[0b0000_0001, 0b0000_0010],
+        "selector wire bits retain the legacy little-endian packing"
+    );
+    let decoded_vk =
+        super::VerifyingKey::<G1Affine>::from_bytes::<SelectorCircuit>(
+            &vk_bytes,
+            SerdeFormat::RawBytes,
+        )
+        .expect("packed selector VK should roundtrip");
+    assert_eq!(decoded_vk.transcript_repr(), vk.transcript_repr());
+
+    let pk = keygen_pk(&params, vk, &circuit).expect("keygen_pk should succeed");
+    let mut writer = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+    create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
+        &params,
+        &pk,
+        &[circuit],
+        &[&[]],
+        OsRng,
+        &mut writer,
+    )
+    .expect("packed selector proof should be created");
+    let proof = writer.finalize();
+
+    let mut reader = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
+    verify_proof::<KZGCommitmentScheme<_>, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
+        &params,
+        &decoded_vk,
+        SingleStrategy::new(&params),
+        &[&[]],
+        &mut reader,
+        params.n(),
+    )
+    .expect("proof should verify with the VK loaded from packed selector bytes");
+}
+
+#[test]
 fn initial_advice_commitment_phase_is_phase_zero_only() {
-    use halo2curves::bn256::Fr;
     use super::circuit::sealed::SealedPhase;
+    use halo2curves::bn256::Fr;
 
     let mut cs = ConstraintSystem::<Fr>::default();
     cs.advice_column_in::<super::circuit::FirstPhase>(super::circuit::FirstPhase);
@@ -1016,4 +1435,213 @@ fn initial_advice_commitment_phase_is_phase_zero_only() {
     assert_eq!(initial_advice_phase, super::circuit::FirstPhase.to_sealed());
     assert_ne!(challenge_dependent_phase, initial_advice_phase);
     assert!(phases.next().is_none());
+}
+
+#[test]
+fn earlier_phase_values_feed_later_phase_without_evaluating_future_callbacks() {
+    use crate::{
+        circuit::{Layouter, SimpleFloorPlanner, Value},
+        plonk::{
+            keygen_pk, keygen_vk, verify_proof, Advice, Circuit, Column, ConstraintSystem, Error,
+            Expression, FirstPhase, SecondPhase, Selector, ThirdPhase,
+        },
+        poly::{
+            kzg::{
+                commitment::{KZGCommitmentScheme, ParamsKZG},
+                multiopen::{ProverSHPLONK, VerifierSHPLONK},
+                strategy::SingleStrategy,
+            },
+            Rotation as PolyRotation,
+        },
+        transcript::{
+            Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer, TranscriptWriterBuffer,
+        },
+    };
+    use ff::Field;
+    use halo2curves::bn256::{Bn256, Fr};
+    use rand_core::OsRng;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FUTURE_PHASE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Clone, Copy)]
+    struct MultiPhaseCircuit;
+
+    #[derive(Clone)]
+    struct Config {
+        early: Column<Advice>,
+        late: Column<Advice>,
+        future: Column<Advice>,
+        q_late: Selector,
+    }
+
+    impl Circuit<Fr> for MultiPhaseCircuit {
+        type Config = Config;
+        type FloorPlanner = SimpleFloorPlanner;
+        #[cfg(feature = "circuit-params")]
+        type Params = ();
+
+        fn without_witnesses(&self) -> Self {
+            *self
+        }
+
+        fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+            let early = meta.advice_column_in::<FirstPhase>(FirstPhase);
+            let late = meta.advice_column_in::<SecondPhase>(SecondPhase);
+            let future = meta.advice_column_in::<ThirdPhase>(ThirdPhase);
+            let q_late = meta.selector();
+            meta.create_gate("later phase consumes earlier value", |meta| {
+                let q = meta.query_selector(q_late);
+                let early = meta.query_advice(early, PolyRotation::cur());
+                let late = meta.query_advice(late, PolyRotation::cur());
+                vec![q * (late - early - Expression::Constant(Fr::ONE))]
+            });
+            Config {
+                early,
+                late,
+                future,
+                q_late,
+            }
+        }
+
+        fn synthesize(
+            &self,
+            config: Self::Config,
+            mut layouter: impl Layouter<Fr>,
+        ) -> Result<(), Error> {
+            layouter.assign_region(
+                || "phase-aware witness propagation",
+                |mut region| {
+                    let early = region.assign_advice(
+                        || "early phase input",
+                        config.early,
+                        0,
+                        || Value::known(Fr::from(5)),
+                    )?;
+                    let _late = region.assign_advice(
+                        || "late phase derived value",
+                        config.late,
+                        0,
+                        || early.value().map(|value| *value + Fr::ONE),
+                    )?;
+                    let _future = region.assign_advice(
+                        || "future phase value",
+                        config.future,
+                        0,
+                        || {
+                            FUTURE_PHASE_CALLBACKS.fetch_add(1, Ordering::SeqCst);
+                            Value::known(Fr::from(9))
+                        },
+                    )?;
+                    config.q_late.enable(&mut region, 0)?;
+                    Ok(())
+                },
+            )?;
+            Ok(())
+        }
+    }
+
+    let params: ParamsKZG<Bn256> = ParamsKZG::setup(3, OsRng);
+    let vk = keygen_vk(&params, &MultiPhaseCircuit).expect("keygen_vk should succeed");
+    let pk = keygen_pk(&params, vk, &MultiPhaseCircuit).expect("keygen_pk should succeed");
+
+    FUTURE_PHASE_CALLBACKS.store(0, Ordering::SeqCst);
+    let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+    create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
+        &params,
+        &pk,
+        &[MultiPhaseCircuit],
+        &[&[]],
+        OsRng,
+        &mut transcript,
+    )
+    .expect("later-phase operation must receive the retained earlier-phase value");
+    assert_eq!(
+        FUTURE_PHASE_CALLBACKS.load(Ordering::SeqCst),
+        1,
+        "future-phase callback must run only in its declared phase"
+    );
+    let proof = transcript.finalize();
+
+    let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
+    verify_proof::<KZGCommitmentScheme<_>, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
+        &params,
+        pk.get_vk(),
+        SingleStrategy::new(&params),
+        &[&[]],
+        &mut transcript,
+        params.n(),
+    )
+    .expect("multi-phase proof should verify");
+}
+
+#[cfg(test)]
+mod assigned_event_tests {
+    use super::{Assigned, AssignedEventColumn};
+    use crate::poly::native_spill_scope;
+    use ff::Field;
+    use halo2curves::bn256::Fr;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn assigned_events_preserve_zero_rational_and_last_write() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "halo2-assigned-events-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&base).expect("create test scratch parent");
+        let spill = native_spill_scope(&base).expect("create scoped spill directory");
+
+        let mut assigned = AssignedEventColumn::<Fr>::new();
+        assigned.push(1, Assigned::Zero).expect("append zero event");
+        assigned
+            .push(2, Assigned::Trivial(Fr::from(9)))
+            .expect("append initial duplicate value");
+        assigned
+            .push(2, Assigned::Rational(Fr::from(20), Fr::from(4)))
+            .expect("append rational duplicate value");
+        assigned
+            .push(3, Assigned::Rational(Fr::from(7), Fr::ZERO))
+            .expect("append zero-denominator rational");
+        assigned
+            .push(4, Assigned::Rational(Fr::from(21), Fr::from(3)))
+            .expect("append rational value");
+
+        let values = assigned.into_lagrange(6).expect("decode assigned events");
+        let expected = [
+            Fr::ZERO,
+            Fr::ZERO,
+            Fr::from(5),
+            Fr::ZERO,
+            Fr::from(7),
+            Fr::ZERO,
+        ];
+        assert!(values
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| *actual == expected));
+
+        let empty = AssignedEventColumn::<Fr>::new()
+            .into_lagrange(4)
+            .expect("empty advice column remains zero");
+        assert!(empty.iter().all(|value| *value == Fr::ZERO));
+
+        let mut out_of_domain = AssignedEventColumn::<Fr>::new();
+        out_of_domain
+            .push(4, Assigned::Trivial(Fr::ONE))
+            .expect("append out-of-domain event for conversion check");
+        assert!(out_of_domain.into_lagrange(4).is_err());
+
+        let unknown = crate::circuit::Value::<Fr>::unknown().into_field().assign();
+        assert!(matches!(unknown, Err(crate::plonk::Error::Synthesis)));
+
+        drop(empty);
+        drop(values);
+        drop(spill);
+        std::fs::remove_dir_all(base).expect("remove test scratch parent");
+    }
 }

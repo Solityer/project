@@ -367,11 +367,12 @@ def _shared_graph_identity(native: dict[str, dict[str, Any]]) -> dict[str, Any]:
 
 
 def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any],
-                       native: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                       native: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
     # Sizes and typed source payloads come from the production native
     # RelationPlan/OperationDescriptor model.  The native producer has already
     # checked every nested body against the exact consumer's parser limit.
     datasets: dict[str, dict[str, Any]] = {}
+    native_capacity_diagnostics: dict[str, Any] = {}
     mib = 1 << 20
     cell_log_limit = 16 * mib
     finalization_bytes = 0
@@ -380,6 +381,13 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         audit = input_report["resource_prerequisites"]
         admission = native[dataset]
         srs_bytes = int(audit["srs_plan"]["estimated_materialized_bytes"])
+        srs_plan = audit["srs_plan"]
+        basis_domain = srs_plan.get("basis_domain")
+        frame_bytes = srs_plan.get("frame_bytes")
+        if (type(basis_domain) is not int or basis_domain != (1 << 18) or
+                type(frame_bytes) is not int or frame_bytes != 40 + basis_domain * 48 or
+                srs_bytes < frame_bytes + 2 * (40 + 48)):
+            raise PhaseError(f"resource audit has an invalid source-bound SRS setup plan for {dataset}")
         family_bytes = int(admission["private_family_storage_upper_bound_bytes"])
         sorted_bytes = int(admission["sorted_lookup_scratch_upper_bound_bytes"])
         tensor_count = int(admission["checkpoint_tensor_count"])
@@ -387,6 +395,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         operation_count = int(admission["operation_count"])
         lookup_count = int(admission["sorted_lookup_query_count"])
         typed_fields = (
+            "native_operation_descriptor_bytes",
             "native_operation_descriptor_max_bytes",
             "native_sumcheck_body_max_bytes",
             "native_terminal_relation_body_max_bytes",
@@ -415,8 +424,9 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             if type(admission.get(field)) is not int or admission[field] < 0:
                 raise PhaseError(f"native admission lacks a nonnegative source-typed metric {field} for {dataset}")
         proof_bytes = int(admission["native_proof_wire_bytes_upper_bound"])
-        if proof_bytes == 0:
-            raise PhaseError(f"native admission returned an empty proof-wire upper bound for {dataset}")
+        operation_descriptor_bytes = int(admission["native_operation_descriptor_bytes"])
+        if proof_bytes == 0 or operation_descriptor_bytes > proof_bytes:
+            raise PhaseError(f"native admission returned an invalid proof/descriptor wire bound for {dataset}")
         nodes = int(admission["nodes"])
         edges = int(admission["edges"])
         graphs = int(admission["graphs"])
@@ -460,32 +470,85 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         route_scratch = int(admission["native_route_sumcheck_live_peak_bytes_upper_bound"])
         descriptor_resident = int(admission["native_operation_descriptor_resident_bytes_upper_bound"])
         sorting_workspace = max_merge_rows * 256 + 8 * mib
-        # A retained typed Proof and serialization buffer coexist.  The
-        # source-wire payload is multiplied by the native/wire point ratio
-        # (Jacobian G1 is at most 3x its 48-byte canonical encoding) plus the
-        # whole serialized byte vector; vector/object headers remain covered
-        # by the descriptor and fixed phase allowances below.
-        proof_object_and_wire = proof_bytes * 4
+        # CPU G1 MSM uses BLST Pippenger in fixed 16,384-point chunks.  The
+        # affine-point array, scalar-pointer array, and BLST scratch are
+        # source-bounded by cpu_g1_msm_workspace_bound_bytes(); the native
+        # helper fails closed if that linked-library bound exceeds this
+        # 16-MiB profile allowance.  Count it in each phase that executes G1
+        # arithmetic, including independent verification.
+        cpu_g1_msm_workspace = 16 * mib
+        # A retained typed Proof and serialization buffer coexist.  For
+        # non-descriptor proof payloads, the source-wire payload is multiplied
+        # by the native/wire point ratio (Jacobian G1 is at most 3x its
+        # 48-byte canonical encoding) plus the serialized byte vector.  The
+        # operation descriptor payload is already accounted for separately by
+        # the native three-copy descriptor bound; retain its one serialized
+        # proof copy here and do not charge it again as three Jacobian copies.
+        proof_object_and_wire = (proof_bytes - operation_descriptor_bytes) * 4 + operation_descriptor_bytes
         srs_memory = srs_bytes * 4
         model_and_graph = graph_memory + model_elements * 8
-        phase_peak_bytes = {
+        native_phase_peak_bytes = {
             "forward": model_and_graph + forward_peak,
             "sorted_lookup": model_and_graph + trace_payload + sorting_workspace + descriptor_resident,
-            "prove": (model_and_graph + trace_payload + descriptor_resident + route_scratch +
-                      sorting_workspace + proof_object_and_wire + srs_memory + 256 * mib),
-            "serialize": (model_and_graph + trace_payload + descriptor_resident +
+            "prove": (model_and_graph + descriptor_resident + route_scratch +
+                      sorting_workspace + proof_object_and_wire + srs_memory +
+                      cpu_g1_msm_workspace + 256 * mib),
+            "serialize": (model_and_graph + descriptor_resident +
                           proof_object_and_wire + srs_memory + 256 * mib),
             "fresh_independent_verify": (model_and_graph + descriptor_resident +
-                                          proof_object_and_wire + srs_memory + 256 * mib),
+                                          proof_object_and_wire + srs_memory +
+                                          cpu_g1_msm_workspace + 256 * mib),
         }
-        host_peak = max(phase_peak_bytes.values())
+        # Native setup materializes one 48-byte G1 wire per G/H/U point in
+        # std::set<Wire>, then uses two 1024-point blst batches.  The 512-byte
+        # per-point allowance bounds the set node, allocator bookkeeping, and
+        # wire; the bounded batch and fixed reserve cover the actual projective,
+        # affine, scalar, stream, and process buffers.  The independent native
+        # SRS exporter writes two decimal coordinates per point to captured
+        # stdout; Python simultaneously holds that text, the parsed JSON tree,
+        # and its converted tuple/int list, so charge 2048 bytes per generator.
+        # Registry serialization and model-side conversion remain live in this
+        # setup phase and are bounded by their authenticated source sizes.
+        srs_point_count = basis_domain + 2
+        setup_generation_peak = srs_point_count * 512 + 1024 * 8192 + 256 * mib
+        setup_decode_registration_peak = (
+            basis_domain * 2048 + srs_bytes * 4 + model_elements * 64 +
+            registration_bytes + sidecar_bytes + manifest_bytes + 256 * mib
+        )
+        setup_peak = max(setup_generation_peak, setup_decode_registration_peak)
+        witness_peak = max(native_phase_peak_bytes["forward"], native_phase_peak_bytes["sorted_lookup"])
+        # Tensor commitments are constructed inside the native relation prove
+        # call; its complete live-memory envelope is therefore also the
+        # source-derived commitment-phase upper bound.
+        commitment_peak = native_phase_peak_bytes["prove"]
+        common_phase_peak_bytes = {
+            "setup": setup_peak,
+            "witness": witness_peak,
+            "commitment": commitment_peak,
+            "prove": native_phase_peak_bytes["prove"],
+            "verify": native_phase_peak_bytes["fresh_independent_verify"],
+        }
+        host_peak = max(common_phase_peak_bytes.values())
         datasets[dataset] = {
             "additional_disk_peak_bytes": additional,
             "cell_retained_artifact_bytes_upper_bound": retained,
             "host_peak_bytes": host_peak,
-            "phase_peak_bytes": phase_peak_bytes,
             "device_peak_bytes": 0,
-            "phase_coverage": ["forward", "sorted_lookup", "commitment", "prove", "serialize", "fresh_independent_verify"],
+            "phase_coverage": ["setup", "witness", "commitment", "prove", "verify"],
+        }
+        native_capacity_diagnostics[dataset] = {
+            "srs_basis_domain": basis_domain,
+            "srs_point_count": srs_point_count,
+            "srs_materialized_bytes_upper_bound": srs_bytes,
+            "phase_peak_bytes": {
+                **native_phase_peak_bytes,
+                "setup_native_srs_generation": setup_generation_peak,
+                "setup_srs_decode_and_registry": setup_decode_registration_peak,
+                "setup": setup_peak,
+                "witness": witness_peak,
+                "commitment": commitment_peak,
+                "verify": native_phase_peak_bytes["fresh_independent_verify"],
+            },
         }
         finalization_bytes += receipt_bytes + 1 * mib
     existing_bytes = 0
@@ -495,7 +558,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         if path.is_file():
             existing_bytes += path.stat().st_size
     device = os.stat(session, follow_symlinks=False).st_dev
-    return {
+    profile = {
         "schema": "comparison-baseline-capacity-profile-v2",
         "baseline": "zkdl",
         "session_id": session_id,
@@ -510,6 +573,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         },
         "datasets": datasets,
     }
+    return profile, native_capacity_diagnostics
 
 
 def prepare(session: Path, session_id: str) -> None:
@@ -558,7 +622,7 @@ def prepare(session: Path, session_id: str) -> None:
             raise PhaseError(f"native production relation admission rejected {dataset}")
         native[dataset] = result
 
-    profile = _admission_profile(session, session_id, report, native)
+    profile, native_capacity_diagnostics = _admission_profile(session, session_id, report, native)
     graph_identity = _shared_graph_identity(native)
     phase_receipt = {
         "schema": "zkDL_formal_prepare_receipt_v1",
@@ -569,6 +633,7 @@ def prepare(session: Path, session_id: str) -> None:
         "build_manifest_path": build_manifest.relative_to(ROOT).as_posix(),
         "build_manifest_sha256": sha256_file(build_manifest),
         "native_admissions": native,
+        "native_capacity_diagnostics": native_capacity_diagnostics,
         "shared_graph_identity": graph_identity,
         "shared_capacity_profile": profile,
     }

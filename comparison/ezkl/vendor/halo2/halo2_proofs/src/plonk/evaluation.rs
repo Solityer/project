@@ -1,5 +1,3 @@
-use crate::multicore;
-
 use crate::plonk::{permutation, Any, ProvingKey};
 
 #[cfg(feature = "mv-lookup")]
@@ -11,14 +9,14 @@ use crate::plonk::lookup;
 use crate::poly::Basis;
 use crate::{
     arithmetic::{parallelize, CurveAffine},
-    poly::{Coeff, ExtendedLagrangeCoeff, Polynomial, Rotation},
+    poly::{Coeff, EvaluationDomain, ExtendedLagrangeCoeff, Polynomial, Rotation},
 };
 
 use group::ff::{Field, PrimeField, WithSmallOrderMulGroup};
 #[cfg(feature = "mv-lookup")]
-use maybe_rayon::iter::IndexedParallelIterator;
-use maybe_rayon::iter::IntoParallelRefIterator;
-use maybe_rayon::iter::ParallelIterator;
+use maybe_rayon::iter::{IndexedParallelIterator, ParallelIterator};
+use std::collections::BTreeSet;
+use std::io;
 
 use super::{shuffle, ConstraintSystem, Expression};
 
@@ -26,7 +24,7 @@ use super::{shuffle, ConstraintSystem, Expression};
 use ff::BatchInvert;
 
 #[cfg(feature = "mv-lookup")]
-use maybe_rayon::iter::IntoParallelRefMutIterator;
+use maybe_rayon::slice::ParallelSliceMut;
 
 /// Return the index in the polynomial of size `isize` after rotation `rot`.
 fn get_rotation_idx(idx: usize, rot: i32, rot_scale: i32, isize: i32) -> usize {
@@ -184,8 +182,9 @@ impl Calculation {
 /// Evaluator
 #[derive(Clone, Default, Debug)]
 pub struct Evaluator<C: CurveAffine> {
-    ///  Custom gates evalution
-    pub custom_gates: GraphEvaluator<C>,
+    /// Custom gate constraints, kept in native gate/polynomial order so the
+    /// prover can evaluate and release one constraint group's cosets at a time.
+    pub custom_gates: Vec<GraphEvaluator<C>>,
     ///  Lookups evalution
     #[cfg(feature = "mv-lookup")]
     pub lookups: Vec<(Vec<GraphEvaluator<C>>, GraphEvaluator<C>)>,
@@ -226,25 +225,120 @@ pub struct CalculationInfo {
     pub target: usize,
 }
 
+#[derive(Default)]
+struct ColumnDependencies {
+    fixed: BTreeSet<usize>,
+    advice: BTreeSet<usize>,
+    instance: BTreeSet<usize>,
+}
+
+impl ColumnDependencies {
+    fn add(&mut self, source: &ValueSource) {
+        match source {
+            ValueSource::Fixed(column, _) => {
+                self.fixed.insert(*column);
+            }
+            ValueSource::Advice(column, _) => {
+                self.advice.insert(*column);
+            }
+            ValueSource::Instance(column, _) => {
+                self.instance.insert(*column);
+            }
+            _ => {}
+        }
+    }
+
+    fn extend(&mut self, other: &Self) {
+        self.fixed.extend(other.fixed.iter().copied());
+        self.advice.extend(other.advice.iter().copied());
+        self.instance.extend(other.instance.iter().copied());
+    }
+}
+
+/// Reconstruct only the cosets referenced by the active native constraint
+/// group. Unused entries are zero-length sentinels; graph dependency discovery
+/// guarantees that evaluation never indexes one of them.
+fn load_cosets<F: WithSmallOrderMulGroup<3>>(
+    domain: &EvaluationDomain<F>,
+    polys: &[Polynomial<F, Coeff>],
+    columns: &BTreeSet<usize>,
+) -> io::Result<Vec<Polynomial<F, ExtendedLagrangeCoeff>>> {
+    let mut cosets = (0..polys.len())
+        .map(|_| Polynomial::from_vec(Vec::new()))
+        .collect::<Vec<_>>();
+    for &column in columns {
+        let poly = polys.get(column).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "constraint references an absent polynomial",
+            )
+        })?;
+        cosets[column] = domain.coeff_to_extended_spilled(poly)?;
+    }
+    Ok(cosets)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_graph_group<C: CurveAffine>(
+    graph: &GraphEvaluator<C>,
+    pk: &ProvingKey<C>,
+    advice_polys: &[Polynomial<C::ScalarExt, Coeff>],
+    instance_polys: &[Polynomial<C::ScalarExt, Coeff>],
+    challenges: &[C::ScalarExt],
+    values: &mut Polynomial<C::ScalarExt, ExtendedLagrangeCoeff>,
+    y: C::ScalarExt,
+    beta: C::ScalarExt,
+    gamma: C::ScalarExt,
+    theta: C::ScalarExt,
+    rot_scale: i32,
+    isize: i32,
+) -> io::Result<()> {
+    let dependencies = graph.column_dependencies();
+    let domain = &pk.vk.domain;
+    let fixed = load_cosets(domain, &pk.fixed_polys, &dependencies.fixed)?;
+    let advice = load_cosets(domain, advice_polys, &dependencies.advice)?;
+    let instance = load_cosets(domain, instance_polys, &dependencies.instance)?;
+    parallelize(&mut values[..], |h, start| {
+        let mut data = graph.instance();
+        for (offset, value) in h.iter_mut().enumerate() {
+            let idx = start + offset;
+            let contribution = graph.evaluate(
+                &mut data,
+                &fixed,
+                &advice,
+                &instance,
+                challenges,
+                &beta,
+                &gamma,
+                &theta,
+                &y,
+                &C::ScalarExt::ZERO,
+                idx,
+                rot_scale,
+                isize,
+            );
+            *value = *value * y + contribution;
+        }
+    });
+    Ok(())
+}
+
 impl<C: CurveAffine> Evaluator<C> {
     /// Creates a new evaluation structure
     pub fn new(cs: &ConstraintSystem<C::ScalarExt>) -> Self {
         let mut ev = Evaluator::default();
 
         // Custom gates
-        let mut parts = Vec::new();
+        let mut custom_gates = Vec::new();
         for gate in cs.gates.iter() {
-            parts.extend(
-                gate.polynomials()
-                    .iter()
-                    .map(|poly| ev.custom_gates.add_expression(poly)),
-            );
+            for poly in gate.polynomials() {
+                let mut graph = GraphEvaluator::default();
+                let root = graph.add_expression(poly);
+                graph.add_calculation(Calculation::Store(root));
+                custom_gates.push(graph);
+            }
         }
-        ev.custom_gates.add_calculation(Calculation::Horner(
-            ValueSource::PreviousValue(),
-            parts,
-            ValueSource::Y(),
-        ));
+        ev.custom_gates = custom_gates;
 
         // Lookups
         #[cfg(feature = "mv-lookup")]
@@ -366,7 +460,10 @@ impl<C: CurveAffine> Evaluator<C> {
         ev
     }
 
-    /// Evaluate h poly
+    /// Evaluate the native quotient polynomial a constraint group at a time.
+    /// The Horner order remains gate -> permutation -> lookup -> shuffle, while
+    /// each group's extended-domain inputs are reconstructed in mapped storage
+    /// and released before the next group starts.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::plonk) fn evaluate_h(
         &self,
@@ -381,402 +478,328 @@ impl<C: CurveAffine> Evaluator<C> {
         lookups: &[Vec<lookup::prover::Committed<C>>],
         shuffles: &[Vec<shuffle::prover::Committed<C>>],
         permutations: &[permutation::prover::Committed<C>],
-    ) -> Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> {
-        let start = instant::Instant::now();
+    ) -> Result<Polynomial<C::ScalarExt, ExtendedLagrangeCoeff>, super::Error> {
         let domain = &pk.vk.domain;
         let size = domain.extended_len();
         let rot_scale = 1 << (domain.extended_k() - domain.k());
-        let fixed = &pk.fixed_cosets[..];
-        let extended_omega = domain.get_extended_omega();
         let isize = size as i32;
         let one = C::ScalarExt::ONE;
         let l0 = &pk.l0;
         let l_last = &pk.l_last;
         let l_active_row = &pk.l_active_row;
         let p = &pk.vk.cs.permutation;
-        log::trace!(" - Initialization: {:?}", start.elapsed());
+        let extended_omega = domain.get_extended_omega();
+        let mut values: Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> =
+            Polynomial::mapped_filled(size, C::ScalarExt::ZERO)
+                .map_err(super::Error::NativeStorage)?;
 
-        let start = instant::Instant::now();
-        // Calculate the advice and instance cosets
-        let advice: Vec<Vec<Polynomial<C::Scalar, ExtendedLagrangeCoeff>>> = advice_polys
+        for (((advice, instance), lookup_sets), (shuffle_sets, permutation)) in advice_polys
             .iter()
-            .map(|advice_polys| {
-                advice_polys
-                    .par_iter()
-                    .map(|poly| domain.coeff_to_extended(poly))
-                    .collect()
-            })
-            .collect();
-        log::trace!(" - Advice cosets: {:?}", start.elapsed());
-
-        let start = instant::Instant::now();
-        let instance: Vec<Vec<Polynomial<C::Scalar, ExtendedLagrangeCoeff>>> = instance_polys
-            .iter()
-            .map(|instance_polys| {
-                instance_polys
-                    .par_iter()
-                    .map(|poly| domain.coeff_to_extended(poly))
-                    .collect()
-            })
-            .collect();
-        log::trace!(" - Instance cosets: {:?}", start.elapsed());
-
-        let mut values = domain.empty_extended();
-
-        // Core expression evaluations
-
-        let start = instant::Instant::now();
-        let num_threads = multicore::current_num_threads();
-        for ((((advice, instance), lookups), shuffles), permutation) in advice
-            .iter()
-            .zip(instance.iter())
+            .zip(instance_polys.iter())
             .zip(lookups.iter())
-            .zip(shuffles.iter())
-            .zip(permutations.iter())
+            .zip(shuffles.iter().zip(permutations.iter()))
         {
-            // Custom gates
+            // Custom gate polynomials are folded in their existing native order.
+            for graph in &self.custom_gates {
+                evaluate_graph_group(
+                    graph,
+                    pk,
+                    advice,
+                    instance,
+                    challenges,
+                    &mut values,
+                    y,
+                    beta,
+                    gamma,
+                    theta,
+                    rot_scale,
+                    isize,
+                )?;
+            }
 
-            multicore::scope(|scope| {
-                let chunk_size = (size + num_threads - 1) / num_threads;
-                for (thread_idx, values) in values.chunks_mut(chunk_size).enumerate() {
-                    let start = thread_idx * chunk_size;
-                    scope.spawn(move |_| {
-                        let mut eval_data = self.custom_gates.instance();
-                        for (i, value) in values.iter_mut().enumerate() {
-                            let idx = start + i;
-                            *value = self.custom_gates.evaluate(
-                                &mut eval_data,
-                                fixed,
-                                advice,
-                                instance,
+            // Permutation boundary and copy constraints.
+            let sets = &permutation.sets;
+            if !sets.is_empty() {
+                let chunk_len = pk.vk.cs.degree() - 2;
+                let column_groups = p.columns.chunks(chunk_len).collect::<Vec<_>>();
+                if sets.len() != column_groups.len() {
+                    return Err(super::Error::NativeStorage(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "permutation product set count does not match circuit columns",
+                    )));
+                }
+                let last_rotation = Rotation(-((pk.vk.cs.blinding_factors() + 1) as i32));
+
+                let first_z = domain
+                    .coeff_to_extended_spilled(&sets[0].permutation_product_poly)
+                    .map_err(super::Error::NativeStorage)?;
+                parallelize(&mut values[..], |h, start| {
+                    for (offset, value) in h.iter_mut().enumerate() {
+                        let idx = start + offset;
+                        *value = *value * y + ((one - first_z[idx]) * l0[idx]);
+                    }
+                });
+                drop(first_z);
+
+                let last_z = domain
+                    .coeff_to_extended_spilled(&sets.last().unwrap().permutation_product_poly)
+                    .map_err(super::Error::NativeStorage)?;
+                parallelize(&mut values[..], |h, start| {
+                    for (offset, value) in h.iter_mut().enumerate() {
+                        let idx = start + offset;
+                        let z = last_z[idx];
+                        *value = *value * y + ((z.square() - z) * l_last[idx]);
+                    }
+                });
+                drop(last_z);
+
+                if sets.len() > 1 {
+                    let mut previous_z = domain
+                        .coeff_to_extended_spilled(&sets[0].permutation_product_poly)
+                        .map_err(super::Error::NativeStorage)?;
+                    for set in sets.iter().skip(1) {
+                        let current_z = domain
+                            .coeff_to_extended_spilled(&set.permutation_product_poly)
+                            .map_err(super::Error::NativeStorage)?;
+                        parallelize(&mut values[..], |h, start| {
+                            for (offset, value) in h.iter_mut().enumerate() {
+                                let idx = start + offset;
+                                let r_last =
+                                    get_rotation_idx(idx, last_rotation.0, rot_scale, isize);
+                                *value =
+                                    *value * y + ((current_z[idx] - previous_z[r_last]) * l0[idx]);
+                            }
+                        });
+                        previous_z = current_z;
+                    }
+                }
+
+                // One set at a time, and one source/sigma pair at a time. The
+                // running products are mapped arrays; no all-column coset bank
+                // or all-set product coset bank is retained.
+                let mut column_index = 0usize;
+                for (set, columns) in sets.iter().zip(column_groups.into_iter()) {
+                    let z = domain
+                        .coeff_to_extended_spilled(&set.permutation_product_poly)
+                        .map_err(super::Error::NativeStorage)?;
+                    let mut left: Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> =
+                        Polynomial::mapped_filled(size, C::ScalarExt::ONE)
+                            .map_err(super::Error::NativeStorage)?;
+                    let mut right: Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> =
+                        Polynomial::mapped_filled(size, C::ScalarExt::ONE)
+                            .map_err(super::Error::NativeStorage)?;
+                    parallelize(&mut left[..], |out, start| {
+                        for (offset, value) in out.iter_mut().enumerate() {
+                            let idx = start + offset;
+                            let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
+                            *value = z[r_next];
+                        }
+                    });
+                    parallelize(&mut right[..], |out, start| {
+                        out.copy_from_slice(&z[start..start + out.len()]);
+                    });
+                    drop(z);
+
+                    let mut delta_power = C::ScalarExt::ONE;
+                    for column in columns {
+                        let source = match column.column_type() {
+                            Any::Advice(_) => &advice[column.index()],
+                            Any::Fixed => &pk.fixed_polys[column.index()],
+                            Any::Instance => &instance[column.index()],
+                        };
+                        let source_coset = domain
+                            .coeff_to_extended_spilled(source)
+                            .map_err(super::Error::NativeStorage)?;
+                        let sigma_poly =
+                            pk.permutation.polys().get(column_index).ok_or_else(|| {
+                                super::Error::NativeStorage(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "permutation sigma polynomial is missing",
+                                ))
+                            })?;
+                        let sigma_coset = domain
+                            .coeff_to_extended_spilled(sigma_poly)
+                            .map_err(super::Error::NativeStorage)?;
+
+                        parallelize(&mut left[..], |out, start| {
+                            for (offset, value) in out.iter_mut().enumerate() {
+                                let idx = start + offset;
+                                *value *= source_coset[idx] + beta * sigma_coset[idx] + gamma;
+                            }
+                        });
+                        let delta_start = beta * C::ScalarExt::ZETA * delta_power;
+                        parallelize(&mut right[..], |out, start| {
+                            let mut beta_term =
+                                delta_start * extended_omega.pow_vartime([start as u64]);
+                            for (offset, value) in out.iter_mut().enumerate() {
+                                let idx = start + offset;
+                                *value *= source_coset[idx] + beta_term + gamma;
+                                beta_term *= &extended_omega;
+                            }
+                        });
+                        delta_power *= &C::ScalarExt::DELTA;
+                        column_index += 1;
+                        drop(sigma_coset);
+                        drop(source_coset);
+                    }
+
+                    parallelize(&mut values[..], |h, start| {
+                        for (offset, value) in h.iter_mut().enumerate() {
+                            let idx = start + offset;
+                            *value = *value * y + ((left[idx] - right[idx]) * l_active_row[idx]);
+                        }
+                    });
+                    drop(left);
+                    drop(right);
+                }
+            }
+
+            #[cfg(feature = "mv-lookup")]
+            for (lookup_index, lookup) in lookup_sets.iter().enumerate() {
+                let (input_graphs, table_graph) = &self.lookups[lookup_index];
+                if input_graphs.is_empty() {
+                    return Err(super::Error::NativeStorage(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "multi-lookup argument has no input expressions",
+                    )));
+                }
+                let mut dependencies = ColumnDependencies::default();
+                for graph in input_graphs.iter().chain(std::iter::once(table_graph)) {
+                    dependencies.extend(&graph.column_dependencies());
+                }
+                let fixed = load_cosets(domain, &pk.fixed_polys, &dependencies.fixed)
+                    .map_err(super::Error::NativeStorage)?;
+                let advice_cosets = load_cosets(domain, advice, &dependencies.advice)
+                    .map_err(super::Error::NativeStorage)?;
+                let instance_cosets = load_cosets(domain, instance, &dependencies.instance)
+                    .map_err(super::Error::NativeStorage)?;
+                let phi_coset = domain
+                    .coeff_to_extended_spilled(&lookup.phi_poly)
+                    .map_err(super::Error::NativeStorage)?;
+                let m_coset = domain
+                    .coeff_to_extended_spilled(&lookup.m_poly)
+                    .map_err(super::Error::NativeStorage)?;
+                const LOOKUP_ROW_CHUNK: usize = 4096;
+                (&mut values[..])
+                    .par_chunks_mut(LOOKUP_ROW_CHUNK)
+                    .enumerate()
+                    .for_each(|(chunk_index, h)| {
+                        let start = chunk_index * LOOKUP_ROW_CHUNK;
+                        let mut input_data = input_graphs
+                            .iter()
+                            .map(GraphEvaluator::instance)
+                            .collect::<Vec<_>>();
+                        let mut inverse_values = Vec::with_capacity(h.len() * input_graphs.len());
+                        for offset in 0..h.len() {
+                            let idx = start + offset;
+                            for (graph, data) in input_graphs.iter().zip(input_data.iter_mut()) {
+                                inverse_values.push(graph.evaluate(
+                                    data,
+                                    &fixed,
+                                    &advice_cosets,
+                                    &instance_cosets,
+                                    challenges,
+                                    &beta,
+                                    &gamma,
+                                    &theta,
+                                    &y,
+                                    &C::ScalarExt::ZERO,
+                                    idx,
+                                    rot_scale,
+                                    isize,
+                                ));
+                            }
+                        }
+                        inverse_values.batch_invert();
+
+                        let mut input_data = input_graphs
+                            .iter()
+                            .map(GraphEvaluator::instance)
+                            .collect::<Vec<_>>();
+                        let mut table_data = table_graph.instance();
+                        for (offset, h_value) in h.iter_mut().enumerate() {
+                            let idx = start + offset;
+                            let mut inputs_product = C::ScalarExt::ONE;
+                            for (graph, data) in input_graphs.iter().zip(input_data.iter_mut()) {
+                                inputs_product *= graph.evaluate(
+                                    data,
+                                    &fixed,
+                                    &advice_cosets,
+                                    &instance_cosets,
+                                    challenges,
+                                    &beta,
+                                    &gamma,
+                                    &theta,
+                                    &y,
+                                    &C::ScalarExt::ZERO,
+                                    idx,
+                                    rot_scale,
+                                    isize,
+                                );
+                            }
+                            let inverse_sum = inverse_values
+                                [offset * input_graphs.len()..(offset + 1) * input_graphs.len()]
+                                .iter()
+                                .fold(C::ScalarExt::ZERO, |sum, inverse| sum + inverse);
+                            let table_value = table_graph.evaluate(
+                                &mut table_data,
+                                &fixed,
+                                &advice_cosets,
+                                &instance_cosets,
                                 challenges,
                                 &beta,
                                 &gamma,
                                 &theta,
                                 &y,
-                                value,
+                                &C::ScalarExt::ZERO,
                                 idx,
                                 rot_scale,
                                 isize,
                             );
+                            let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
+                            let lhs =
+                                table_value * inputs_product * (phi_coset[r_next] - phi_coset[idx]);
+                            let rhs = inputs_product * (table_value * inverse_sum - m_coset[idx]);
+                            *h_value = *h_value * y + l0[idx] * phi_coset[idx];
+                            *h_value = *h_value * y + l_last[idx] * phi_coset[idx];
+                            *h_value = *h_value * y + (lhs - rhs) * l_active_row[idx];
                         }
                     });
-                }
-            });
-            log::trace!(" - Custom gates: {:?}", start.elapsed());
-
-            // Permutations
-            let start = instant::Instant::now();
-            let sets = &permutation.sets;
-            if !sets.is_empty() {
-                let blinding_factors = pk.vk.cs.blinding_factors();
-                let last_rotation = Rotation(-((blinding_factors + 1) as i32));
-                let chunk_len = pk.vk.cs.degree() - 2;
-                let delta_start = beta * &C::Scalar::ZETA;
-
-                let first_set = sets.first().unwrap();
-                let last_set = sets.last().unwrap();
-
-                // Permutation constraints
-                parallelize(&mut values, |values, start| {
-                    let mut beta_term = extended_omega.pow_vartime([start as u64, 0, 0, 0]);
-                    for (i, value) in values.iter_mut().enumerate() {
-                        let idx = start + i;
-                        let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
-                        let r_last = get_rotation_idx(idx, last_rotation.0, rot_scale, isize);
-
-                        // Enforce only for the first set.
-                        // l_0(X) * (1 - z_0(X)) = 0
-                        *value = *value * y
-                            + ((one - first_set.permutation_product_coset[idx]) * l0[idx]);
-                        // Enforce only for the last set.
-                        // l_last(X) * (z_l(X)^2 - z_l(X)) = 0
-                        *value = *value * y
-                            + ((last_set.permutation_product_coset[idx]
-                                * last_set.permutation_product_coset[idx]
-                                - last_set.permutation_product_coset[idx])
-                                * l_last[idx]);
-                        // Except for the first set, enforce.
-                        // l_0(X) * (z_i(X) - z_{i-1}(\omega^(last) X)) = 0
-                        for (set_idx, set) in sets.iter().enumerate() {
-                            if set_idx != 0 {
-                                *value = *value * y
-                                    + ((set.permutation_product_coset[idx]
-                                        - permutation.sets[set_idx - 1].permutation_product_coset
-                                            [r_last])
-                                        * l0[idx]);
-                            }
-                        }
-                        // And for all the sets we enforce:
-                        // (1 - (l_last(X) + l_blind(X))) * (
-                        //   z_i(\omega X) \prod_j (p(X) + \beta s_j(X) + \gamma)
-                        // - z_i(X) \prod_j (p(X) + \delta^j \beta X + \gamma)
-                        // )
-                        let mut current_delta = delta_start * beta_term;
-                        for ((set, columns), cosets) in sets
-                            .iter()
-                            .zip(p.columns.chunks(chunk_len))
-                            .zip(pk.permutation.cosets.chunks(chunk_len))
-                        {
-                            let mut left = set.permutation_product_coset[r_next];
-                            for (values, permutation) in columns
-                                .iter()
-                                .map(|&column| match column.column_type() {
-                                    Any::Advice(_) => &advice[column.index()],
-                                    Any::Fixed => &fixed[column.index()],
-                                    Any::Instance => &instance[column.index()],
-                                })
-                                .zip(cosets.iter())
-                            {
-                                left *= values[idx] + beta * permutation[idx] + gamma;
-                            }
-
-                            let mut right = set.permutation_product_coset[idx];
-                            for values in columns.iter().map(|&column| match column.column_type() {
-                                Any::Advice(_) => &advice[column.index()],
-                                Any::Fixed => &fixed[column.index()],
-                                Any::Instance => &instance[column.index()],
-                            }) {
-                                right *= values[idx] + current_delta + gamma;
-                                current_delta *= &C::Scalar::DELTA;
-                            }
-
-                            *value = *value * y + ((left - right) * l_active_row[idx]);
-                        }
-                        beta_term *= &extended_omega;
-                    }
-                });
+                drop(m_coset);
+                drop(phi_coset);
+                drop(instance_cosets);
+                drop(advice_cosets);
+                drop(fixed);
             }
-            log::trace!(" - Permutations: {:?}", start.elapsed());
-
-            let start = instant::Instant::now();
-            // For lookups, compute inputs_inv_sum = ∑ 1 / (f_i(X) + α)
-            // The outer vector has capacity self.lookups.len()
-            // The middle vector has capacity domain.extended_len()
-            // The inner vector has capacity
-            log::trace!("num lookups: {}", lookups.len());
-
-            #[cfg(feature = "mv-lookup")]
-            let inputs_inv_sum_cosets: Vec<_> = lookups
-                .par_iter()
-                .enumerate()
-                .map(|(n, lookup)| {
-                    let (inputs_lookup_evaluator, _) = &self.lookups[n];
-                    let mut inputs_eval_data: Vec<_> = inputs_lookup_evaluator
-                        .iter()
-                        .map(|input_lookup_evaluator| input_lookup_evaluator.instance())
-                        .collect();
-
-                    let mut inputs_values_for_extended_domain: Vec<C::Scalar> =
-                        Vec::with_capacity(self.lookups[n].0.len() * domain.extended_len());
-                    for idx in 0..domain.extended_len() {
-                        // For each compressed input column, evaluate at ω^i and add beta
-                        // This is a vector of length self.lookups[n].0.len()
-                        let inputs_values: Vec<C::ScalarExt> = inputs_lookup_evaluator
-                            .par_iter()
-                            .zip(inputs_eval_data.par_iter_mut())
-                            .map(|(input_lookup_evaluator, input_eval_data)| {
-                                input_lookup_evaluator.evaluate(
-                                    input_eval_data,
-                                    fixed,
-                                    advice,
-                                    instance,
-                                    challenges,
-                                    &beta,
-                                    &gamma,
-                                    &theta,
-                                    &y,
-                                    &C::ScalarExt::ZERO,
-                                    idx,
-                                    rot_scale,
-                                    isize,
-                                )
-                            })
-                            .collect();
-
-                        inputs_values_for_extended_domain.extend_from_slice(&inputs_values);
-                    }
-
-                    inputs_values_for_extended_domain.batch_invert();
-
-                    // The outer vector has capacity domain.extended_len()
-                    // The inner vector has capacity self.lookups[n].0.len()
-                    let inputs_inv_sums: Vec<Vec<_>> = inputs_values_for_extended_domain
-                        .chunks_exact(self.lookups[n].0.len())
-                        .map(|c| c.to_vec())
-                        .collect();
-
-                    (
-                        inputs_inv_sums,
-                        domain.coeff_to_extended(&lookup.phi_poly),
-                        domain.coeff_to_extended(&lookup.m_poly),
-                    )
-                })
-                .collect();
-            #[cfg(feature = "mv-lookup")]
-            log::trace!(" - Lookups inv sum: {:?}", start.elapsed());
-
-            #[cfg(feature = "mv-lookup")]
-            let start = instant::Instant::now();
-            // Lookups
-            #[cfg(feature = "mv-lookup")]
-            parallelize(&mut values, |values, start| {
-                for (n, _lookup) in lookups.iter().enumerate() {
-                    // Polynomials required for this lookup.
-                    // Calculated here so these only have to be kept in memory for the short time
-                    // they are actually needed.
-
-                    let (inputs_inv_sum, phi_coset, m_coset) = &inputs_inv_sum_cosets[n];
-
-                    // Lookup constraints
-                    /*
-                        φ_i(X) = f_i(X) + α
-                        τ(X) = t(X) + α
-                        LHS = τ(X) * Π(φ_i(X)) * (ϕ(gX) - ϕ(X))
-                        RHS = τ(X) * Π(φ_i(X)) * (∑ 1/(φ_i(X)) - m(X) / τ(X))))
-                            = (τ(X) * Π(φ_i(X)) * ∑ 1/(φ_i(X))) - Π(φ_i(X)) * m(X)
-                            = Π(φ_i(X)) * (τ(X) * ∑ 1/(φ_i(X)) - m(X))
-                    */
-
-                    let (inputs_lookup_evaluator, table_lookup_evaluator) = &self.lookups[n];
-                    let mut inputs_eval_data: Vec<_> = inputs_lookup_evaluator
-                        .iter()
-                        .map(|input_lookup_evaluator| input_lookup_evaluator.instance())
-                        .collect();
-
-                    let mut table_eval_data = table_lookup_evaluator.instance();
-
-                    for (i, value) in values.iter_mut().enumerate() {
-                        let idx = start + i;
-
-                        // f_i(X) + α for i in expressions
-                        let inputs_value: Vec<C::ScalarExt> = inputs_lookup_evaluator
-                            .iter()
-                            .zip(inputs_eval_data.iter_mut())
-                            .map(|(input_lookup_evaluator, input_eval_data)| {
-                                input_lookup_evaluator.evaluate(
-                                    input_eval_data,
-                                    fixed,
-                                    advice,
-                                    instance,
-                                    challenges,
-                                    &beta,
-                                    &gamma,
-                                    &theta,
-                                    &y,
-                                    &C::ScalarExt::ZERO,
-                                    idx,
-                                    rot_scale,
-                                    isize,
-                                )
-                            })
-                            .collect();
-
-                        // Π(φ_i(X))
-                        let inputs_prod: C::Scalar = inputs_value
-                            .iter()
-                            .fold(C::Scalar::ONE, |acc, input| acc * input);
-
-                        // f_i(X) + α at ω^idx
-                        let fi_inverses = &inputs_inv_sum[idx];
-                        let inputs_inv_sum = fi_inverses
-                            .iter()
-                            .fold(C::Scalar::ZERO, |acc, input| acc + input);
-
-                        // t(X) + α
-                        let table_value = table_lookup_evaluator.evaluate(
-                            &mut table_eval_data,
-                            fixed,
-                            advice,
-                            instance,
-                            challenges,
-                            &beta,
-                            &gamma,
-                            &theta,
-                            &y,
-                            &C::ScalarExt::ZERO,
-                            idx,
-                            rot_scale,
-                            isize,
-                        );
-
-                        let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
-
-                        let lhs = {
-                            // τ(X) * Π(φ_i(X)) * (ϕ(gX) - ϕ(X))
-                            table_value * inputs_prod * (phi_coset[r_next] - phi_coset[idx])
-                        };
-
-                        let rhs = {
-                            //   τ(X) * Π(φ_i(X)) * (∑ 1/(φ_i(X)) - m(X) / τ(X))))
-                            // = (τ(X) * Π(φ_i(X)) * ∑ 1/(φ_i(X))) - Π(φ_i(X)) * m(X)
-                            // = Π(φ_i(X)) * (τ(X) * ∑ 1/(φ_i(X)) - m(X))
-                            inputs_prod * (table_value * inputs_inv_sum - m_coset[idx])
-                        };
-
-                        // phi[0] = 0
-                        *value = *value * y + l0[idx] * phi_coset[idx];
-
-                        // phi[u] = 0
-                        *value = *value * y + l_last[idx] * phi_coset[idx];
-
-                        // q(X) = LHS - RHS mod zH(X)
-                        *value = *value * y + (lhs - rhs) * l_active_row[idx];
-                    }
-                }
-            });
-
-            // delete the cosets
-            #[cfg(feature = "mv-lookup")]
-            drop(inputs_inv_sum_cosets);
-
-            #[cfg(all(not(feature = "mv-lookup"), feature = "precompute-coset"))]
-            let mut cosets: Vec<_> = {
-                let domain = &pk.vk.domain;
-                lookups
-                    .par_iter()
-                    .map(|lookup| {
-                        (
-                            domain.coeff_to_extended(lookup.product_poly.clone()),
-                            domain.coeff_to_extended(lookup.permuted_input_poly.clone()),
-                            domain.coeff_to_extended(lookup.permuted_table_poly.clone()),
-                        )
-                    })
-                    .collect()
-            };
 
             #[cfg(not(feature = "mv-lookup"))]
-            // Lookups
-            for (n, lookup) in lookups.iter().enumerate() {
-                // Polynomials required for this lookup.
-                // Calculated here so these only have to be kept in memory for the short time
-                // they are actually needed.
-
-                #[cfg(feature = "precompute-coset")]
-                let (product_coset, permuted_input_coset, permuted_table_coset) = &cosets.remove(0);
-
-                #[cfg(not(feature = "precompute-coset"))]
-                let (product_coset, permuted_input_coset, permuted_table_coset) = {
-                    let product_coset = pk.vk.domain.coeff_to_extended(&lookup.product_poly);
-                    let permuted_input_coset =
-                        pk.vk.domain.coeff_to_extended(&lookup.permuted_input_poly);
-                    let permuted_table_coset =
-                        pk.vk.domain.coeff_to_extended(&lookup.permuted_table_poly);
-                    (product_coset, permuted_input_coset, permuted_table_coset)
-                };
-
-                // Lookup constraints
-                parallelize(&mut values, |values, start| {
-                    let lookup_evaluator = &self.lookups[n];
-                    let mut eval_data = lookup_evaluator.instance();
-                    for (i, value) in values.iter_mut().enumerate() {
-                        let idx = start + i;
-
-                        let table_value = lookup_evaluator.evaluate(
-                            &mut eval_data,
-                            fixed,
-                            advice,
-                            instance,
+            for (lookup_index, lookup) in lookup_sets.iter().enumerate() {
+                let graph = &self.lookups[lookup_index];
+                let dependencies = graph.column_dependencies();
+                let fixed = load_cosets(domain, &pk.fixed_polys, &dependencies.fixed)
+                    .map_err(super::Error::NativeStorage)?;
+                let advice_cosets = load_cosets(domain, advice, &dependencies.advice)
+                    .map_err(super::Error::NativeStorage)?;
+                let instance_cosets = load_cosets(domain, instance, &dependencies.instance)
+                    .map_err(super::Error::NativeStorage)?;
+                let product_coset = domain
+                    .coeff_to_extended_spilled(&lookup.product_poly)
+                    .map_err(super::Error::NativeStorage)?;
+                let input_coset = domain
+                    .coeff_to_extended_spilled(&lookup.permuted_input_poly)
+                    .map_err(super::Error::NativeStorage)?;
+                let table_coset = domain
+                    .coeff_to_extended_spilled(&lookup.permuted_table_poly)
+                    .map_err(super::Error::NativeStorage)?;
+                parallelize(&mut values[..], |h, start| {
+                    let mut data = graph.instance();
+                    for (offset, h_value) in h.iter_mut().enumerate() {
+                        let idx = start + offset;
+                        let table_value = graph.evaluate(
+                            &mut data,
+                            &fixed,
+                            &advice_cosets,
+                            &instance_cosets,
                             challenges,
                             &beta,
                             &gamma,
@@ -787,64 +810,51 @@ impl<C: CurveAffine> Evaluator<C> {
                             rot_scale,
                             isize,
                         );
-
                         let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
                         let r_prev = get_rotation_idx(idx, -1, rot_scale, isize);
-
-                        let a_minus_s = permuted_input_coset[idx] - permuted_table_coset[idx];
-                        // l_0(X) * (1 - z(X)) = 0
-                        *value = *value * y + ((one - product_coset[idx]) * l0[idx]);
-                        // l_last(X) * (z(X)^2 - z(X)) = 0
-                        *value = *value * y
-                            + ((product_coset[idx] * product_coset[idx] - product_coset[idx])
-                                * l_last[idx]);
-                        // (1 - (l_last(X) + l_blind(X))) * (
-                        //   z(\omega X) (a'(X) + \beta) (s'(X) + \gamma)
-                        //   - z(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + \beta)
-                        //          (\theta^{m-1} s_0(X) + ... + s_{m-1}(X) + \gamma)
-                        // ) = 0
-                        *value = *value * y
+                        let input_minus_table = input_coset[idx] - table_coset[idx];
+                        *h_value = *h_value * y + ((one - product_coset[idx]) * l0[idx]);
+                        *h_value = *h_value * y
+                            + ((product_coset[idx].square() - product_coset[idx]) * l_last[idx]);
+                        *h_value = *h_value * y
                             + ((product_coset[r_next]
-                                * (permuted_input_coset[idx] + beta)
-                                * (permuted_table_coset[idx] + gamma)
+                                * (input_coset[idx] + beta)
+                                * (table_coset[idx] + gamma)
                                 - product_coset[idx] * table_value)
                                 * l_active_row[idx]);
-                        // Check that the first values in the permuted input expression and permuted
-                        // fixed expression are the same.
-                        // l_0(X) * (a'(X) - s'(X)) = 0
-                        *value = *value * y + (a_minus_s * l0[idx]);
-                        // Check that each value in the permuted lookup input expression is either
-                        // equal to the value above it, or the value at the same index in the
-                        // permuted table expression.
-                        // (1 - (l_last + l_blind)) * (a′(X) − s′(X))⋅(a′(X) − a′(\omega^{-1} X)) = 0
-                        *value = *value * y
-                            + (a_minus_s
-                                * (permuted_input_coset[idx] - permuted_input_coset[r_prev])
+                        *h_value = *h_value * y + (input_minus_table * l0[idx]);
+                        *h_value = *h_value * y
+                            + (input_minus_table
+                                * (input_coset[idx] - input_coset[r_prev])
                                 * l_active_row[idx]);
                     }
                 });
             }
-            log::trace!(" - Lookups constraints: {:?}", start.elapsed());
 
-            // Shuffle constraints
-            let start = instant::Instant::now();
-            for (n, shuffle) in shuffles.iter().enumerate() {
-                let product_coset = pk.vk.domain.coeff_to_extended(&shuffle.product_poly);
-
-                // Shuffle constraints
-                parallelize(&mut values, |values, start| {
-                    let input_evaluator = &self.shuffles[2 * n];
-                    let shuffle_evaluator = &self.shuffles[2 * n + 1];
-                    let mut eval_data_input = shuffle_evaluator.instance();
-                    let mut eval_data_shuffle = shuffle_evaluator.instance();
-                    for (i, value) in values.iter_mut().enumerate() {
-                        let idx = start + i;
-
-                        let input_value = input_evaluator.evaluate(
-                            &mut eval_data_input,
-                            fixed,
-                            advice,
-                            instance,
+            for (shuffle_index, shuffle) in shuffle_sets.iter().enumerate() {
+                let input_graph = &self.shuffles[2 * shuffle_index];
+                let shuffle_graph = &self.shuffles[2 * shuffle_index + 1];
+                let mut dependencies = input_graph.column_dependencies();
+                dependencies.extend(&shuffle_graph.column_dependencies());
+                let fixed = load_cosets(domain, &pk.fixed_polys, &dependencies.fixed)
+                    .map_err(super::Error::NativeStorage)?;
+                let advice_cosets = load_cosets(domain, advice, &dependencies.advice)
+                    .map_err(super::Error::NativeStorage)?;
+                let instance_cosets = load_cosets(domain, instance, &dependencies.instance)
+                    .map_err(super::Error::NativeStorage)?;
+                let product_coset = domain
+                    .coeff_to_extended_spilled(&shuffle.product_poly)
+                    .map_err(super::Error::NativeStorage)?;
+                parallelize(&mut values[..], |h, start| {
+                    let mut input_data = input_graph.instance();
+                    let mut shuffle_data = shuffle_graph.instance();
+                    for (offset, h_value) in h.iter_mut().enumerate() {
+                        let idx = start + offset;
+                        let input_value = input_graph.evaluate(
+                            &mut input_data,
+                            &fixed,
+                            &advice_cosets,
+                            &instance_cosets,
                             challenges,
                             &beta,
                             &gamma,
@@ -855,12 +865,11 @@ impl<C: CurveAffine> Evaluator<C> {
                             rot_scale,
                             isize,
                         );
-
-                        let shuffle_value = shuffle_evaluator.evaluate(
-                            &mut eval_data_shuffle,
-                            fixed,
-                            advice,
-                            instance,
+                        let shuffle_value = shuffle_graph.evaluate(
+                            &mut shuffle_data,
+                            &fixed,
+                            &advice_cosets,
+                            &instance_cosets,
                             challenges,
                             &beta,
                             &gamma,
@@ -871,26 +880,24 @@ impl<C: CurveAffine> Evaluator<C> {
                             rot_scale,
                             isize,
                         );
-
                         let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
-
-                        // l_0(X) * (1 - z(X)) = 0
-                        *value = *value * y + ((one - product_coset[idx]) * l0[idx]);
-                        // l_last(X) * (z(X)^2 - z(X)) = 0
-                        *value = *value * y
-                            + ((product_coset[idx] * product_coset[idx] - product_coset[idx])
-                                * l_last[idx]);
-                        // (1 - (l_last(X) + l_blind(X))) * (z(\omega X) (s(X) + \gamma) - z(X) (a(X) + \gamma)) = 0
-                        *value = *value * y
+                        *h_value = *h_value * y + ((one - product_coset[idx]) * l0[idx]);
+                        *h_value = *h_value * y
+                            + ((product_coset[idx].square() - product_coset[idx]) * l_last[idx]);
+                        *h_value = *h_value * y
                             + l_active_row[idx]
                                 * (product_coset[r_next] * shuffle_value
-                                    - product_coset[idx] * input_value)
+                                    - product_coset[idx] * input_value);
                     }
                 });
+                drop(product_coset);
+                drop(instance_cosets);
+                drop(advice_cosets);
+                drop(fixed);
             }
-            log::trace!(" - Shuffle constraints: {:?}", start.elapsed());
         }
-        values
+
+        Ok(values)
     }
 }
 
@@ -911,6 +918,30 @@ impl<C: CurveAffine> Default for GraphEvaluator<C> {
 }
 
 impl<C: CurveAffine> GraphEvaluator<C> {
+    fn column_dependencies(&self) -> ColumnDependencies {
+        let mut dependencies = ColumnDependencies::default();
+        for calc in &self.calculations {
+            match &calc.calculation {
+                Calculation::Add(a, b) | Calculation::Sub(a, b) | Calculation::Mul(a, b) => {
+                    dependencies.add(a);
+                    dependencies.add(b);
+                }
+                Calculation::Square(value)
+                | Calculation::Double(value)
+                | Calculation::Negate(value)
+                | Calculation::Store(value) => dependencies.add(value),
+                Calculation::Horner(start, parts, factor) => {
+                    dependencies.add(start);
+                    dependencies.add(factor);
+                    for part in parts {
+                        dependencies.add(part);
+                    }
+                }
+            }
+        }
+        dependencies
+    }
+
     /// Adds a rotation
     fn add_rotation(&mut self, rotation: &Rotation) -> usize {
         let position = self.rotations.iter().position(|&c| c == rotation.0);

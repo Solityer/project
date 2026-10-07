@@ -91,6 +91,54 @@ inline bool parse_relation_u32_suffix(const std::string& text,
     return true;
 }
 
+struct ZkRelationSegmentLayout {
+    std::uint32_t logical_domain = 0U;
+    std::uint32_t basis_domain = 0U;
+    std::uint32_t segment_count = 0U;
+    std::uint32_t segment_size = 0U;
+};
+
+inline bool zktr_segment_layout_for_size(std::uint64_t logical_domain,
+                                         std::size_t basis_size,
+                                         std::uint32_t shared_segment_size,
+                                         ZkRelationSegmentLayout& layout,
+                                         std::string* error = nullptr) {
+    if (logical_domain == 0U ||
+        logical_domain > (std::uint64_t(1U) << kMaxRelationPointBits) ||
+        logical_domain > std::numeric_limits<std::uint32_t>::max() ||
+        (logical_domain & (logical_domain - 1U)) != 0U ||
+        basis_size == 0U || basis_size > (1U << 18U) ||
+        (basis_size & (basis_size - 1U)) != 0U ||
+        shared_segment_size == 0U ||
+        (shared_segment_size & (shared_segment_size - 1U)) != 0U ||
+        shared_segment_size > basis_size ||
+        shared_segment_size > logical_domain ||
+        logical_domain % shared_segment_size != 0U ||
+        logical_domain / shared_segment_size > kMaxRelationSegments) {
+        if (error) *error = "invalid authenticated shared segment layout";
+        return false;
+    }
+    layout.logical_domain = static_cast<std::uint32_t>(logical_domain);
+    layout.basis_domain = shared_segment_size;
+    layout.segment_size = shared_segment_size;
+    layout.segment_count = static_cast<std::uint32_t>(logical_domain / shared_segment_size);
+    return true;
+}
+
+inline bool zktr_segment_layout(std::uint64_t logical_domain,
+                                std::size_t basis_size,
+                                ZkRelationSegmentLayout& layout,
+                                std::string* error = nullptr) {
+    const std::uint32_t natural_size =
+        logical_domain > std::numeric_limits<std::uint32_t>::max() ||
+                basis_size > std::numeric_limits<std::uint32_t>::max()
+            ? 0U
+            : static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                  logical_domain, static_cast<std::uint64_t>(basis_size)));
+    return zktr_segment_layout_for_size(logical_domain, basis_size, natural_size,
+                                        layout, error);
+}
+
 /*
  * A relation witness is logically a power-of-two MLE, but the authenticated
  * IPA basis is intentionally bounded.  This provider is the seam between
@@ -3743,7 +3791,8 @@ inline bool zksc_validate_provider_inputs(
     const std::vector<zkdl::CpuG1Point>& generators,
     const zkdl::CpuG1Point& blinding_generator, const zkdl::CpuG1Point& u_generator,
     const FrWire& initial_claim, const RelationStatement& statement,
-    const std::string& operation_context, std::string* error) {
+    const std::string& operation_context, std::string* error,
+    std::uint32_t shared_segment_size = 0U) {
     if (!descriptor.valid(error) || descriptor.degree != degree || degree == 0U ||
         degree > 8U || providers.empty() || domain_size == 0U ||
         (domain_size & (domain_size - 1U)) != 0U ||
@@ -3754,14 +3803,17 @@ inline bool zksc_validate_provider_inputs(
         if (error && error->empty()) *error = "invalid segmented ZkSumcheck prover inputs";
         return false;
     }
-    std::uint32_t expected_size = 0U, expected_count = 0U;
-    if (!SegmentedTensorProvider::shape(domain_size, generators.size(), expected_size,
-                                        expected_count, error)) return false;
+    ZkRelationSegmentLayout expected_layout;
+    const bool layout_valid = shared_segment_size == 0U
+        ? zktr_segment_layout(domain_size, generators.size(), expected_layout, error)
+        : zktr_segment_layout_for_size(domain_size, generators.size(),
+                                       shared_segment_size, expected_layout, error);
+    if (!layout_valid) return false;
     for (const auto& provider : providers) {
         if (!provider.valid(error) || provider.logical_domain() != domain_size ||
-            provider.segment_size() != expected_size ||
-            provider.segment_count() != expected_count) {
-            if (error && error->empty()) *error = "segmented ZkSumcheck provider/domain mismatch";
+            provider.segment_size() != expected_layout.segment_size ||
+            provider.segment_count() != expected_layout.segment_count) {
+            if (error) *error = "segmented ZkSumcheck provider/shared-layout mismatch";
             return false;
         }
     }
@@ -3895,12 +3947,13 @@ inline bool prove_zk_sumcheck_segmented(
     const zkdl::CpuG1Point& blinding_generator, const zkdl::CpuG1Point& u_generator,
     const FrWire& initial_claim, const RelationStatement& statement,
     const std::string& operation_context, zkdl::Transcript& parent_transcript,
-    ZkSumcheckProverResult& result, std::string* error = nullptr) {
+    ZkSumcheckProverResult& result, std::string* error = nullptr,
+    std::uint32_t shared_segment_size = 0U) {
     try {
         if (!zksc_validate_provider_inputs(
                 descriptor, tensor_providers, degree, domain_size, generators,
                 blinding_generator, u_generator, initial_claim, statement,
-                operation_context, error)) return false;
+                operation_context, error, shared_segment_size)) return false;
         const std::uint32_t bits = log2_exact(domain_size);
         if (bits == std::numeric_limits<std::uint32_t>::max() ||
             bits == 0U || bits > zkdl::ZkSumcheckProof::kMaxRounds) {
@@ -4076,7 +4129,8 @@ inline bool verify_zk_sumcheck(
     const zkdl::CpuG1Point& blinding_generator, const zkdl::CpuG1Point& u_generator,
     const FrWire& initial_claim, const RelationStatement& statement,
     const std::string& operation_context, zkdl::Transcript& parent_transcript,
-    ZkSumcheckVerifierResult& result, std::string* error = nullptr) {
+    ZkSumcheckVerifierResult& result, std::string* error = nullptr,
+    std::uint32_t shared_segment_size = 0U) {
     try {
         if (!descriptor.valid(error) || proof.label != operation_context ||
             proof.degree != degree || proof.domain_size != domain_size ||
@@ -4086,13 +4140,14 @@ inline bool verify_zk_sumcheck(
             if (error && error->empty()) *error = "invalid ZkSumcheck verifier inputs";
             return false;
         }
-        std::uint32_t expected_segment_size = 0U, expected_segment_count = 0U;
-        if (!SegmentedTensorProvider::shape(
-                domain_size, generators.size(), expected_segment_size,
-                expected_segment_count, error) ||
-            proof.segment_size != expected_segment_size ||
-            proof.segment_count != expected_segment_count) {
-            if (error && error->empty()) *error = "ZkSumcheck segmented layout mismatch";
+        ZkRelationSegmentLayout expected_layout;
+        const bool layout_valid = shared_segment_size == 0U
+            ? zktr_segment_layout(domain_size, generators.size(), expected_layout, error)
+            : zktr_segment_layout_for_size(domain_size, generators.size(),
+                                           shared_segment_size, expected_layout, error);
+        if (!layout_valid || proof.segment_size != expected_layout.segment_size ||
+            proof.segment_count != expected_layout.segment_count) {
+            if (error && error->empty()) *error = "ZkSumcheck shared segment layout mismatch";
             return false;
         }
         const auto strict_external = [&](const G1Jacobian_t& wire,
@@ -4289,43 +4344,6 @@ inline bool zktr_all_statement_digests_valid(const RelationStatement& statement,
     return true;
 }
 
-struct ZkRelationSegmentLayout {
-    std::uint32_t logical_domain = 0U;
-    std::uint32_t basis_domain = 0U;
-    std::uint32_t segment_count = 0U;
-    std::uint32_t segment_size = 0U;
-};
-
-inline bool zktr_segment_layout(std::uint64_t logical_domain,
-                                std::size_t basis_size,
-                                ZkRelationSegmentLayout& layout,
-                                std::string* error = nullptr) {
-    if (logical_domain == 0U || logical_domain > (std::uint64_t(1U) << kMaxRelationPointBits) ||
-        basis_size == 0U || basis_size > (1U << 18U) ||
-        (basis_size & (basis_size - 1U)) != 0U ||
-        logical_domain > std::numeric_limits<std::uint32_t>::max() ||
-        (logical_domain & (logical_domain - 1U)) != 0U) {
-        if (error) *error = "invalid segmented relation logical/basis domain";
-        return false;
-    }
-    const std::uint64_t segment_size = std::min<std::uint64_t>(logical_domain, basis_size);
-    if (logical_domain % segment_size != 0U ||
-        logical_domain / segment_size > kMaxRelationSegments) {
-        if (error) *error = "segmented relation domain is not covered by a power-of-two basis";
-        return false;
-    }
-    if (!checked_relation_u32(logical_domain, layout.logical_domain,
-                              "relation logical domain", error) ||
-        !checked_relation_u32(segment_size, layout.basis_domain,
-                              "relation basis domain", error) ||
-        !checked_relation_u32(segment_size, layout.segment_size,
-                              "relation segment size", error) ||
-        !checked_relation_u32(logical_domain / segment_size,
-                              layout.segment_count, "relation segment count", error))
-        return false;
-    return true;
-}
-
 struct SegmentCommitmentMaterial {
     std::vector<FrWire> blinders;
     std::vector<zkdl::CpuG1Point> commitments;
@@ -4384,16 +4402,25 @@ inline bool zktr_build_segment_commitment_material(
     const zkdl::CpuG1Point& u_generator, const FrWire& tensor_blinder,
     const RelationStatement& statement, CommitmentWire& commitment,
     SegmentCommitmentMaterial& material, std::string* error = nullptr,
-    double* commitment_crypto_time_seconds = nullptr) {
+    double* commitment_crypto_time_seconds = nullptr,
+    std::uint32_t shared_segment_size = 0U) {
     try {
         double commitment_crypto_seconds = 0.0;
         ZkRelationSegmentLayout layout;
+        const bool layout_valid = shared_segment_size == 0U
+            ? zktr_segment_layout(provider.logical_domain(), generators.size(), layout, error)
+            : zktr_segment_layout_for_size(provider.logical_domain(), generators.size(),
+                                           shared_segment_size, layout, error);
         if (tensor_id.empty() || visibility == 0U ||
-            !provider.valid(error) ||
-            !zktr_segment_layout(provider.logical_domain(), generators.size(), layout, error) ||
+            !provider.valid(error) || !layout_valid)
+            return false;
+        if (provider.logical_domain() != layout.logical_domain ||
             provider.segment_size() != layout.segment_size ||
-            provider.segment_count() != layout.segment_count ||
-            !zkdl::fr_canonical(tensor_blinder) ||
+            provider.segment_count() != layout.segment_count) {
+            if (error) *error = "segment commitment provider differs from authenticated shared layout";
+            return false;
+        }
+        if (!zkdl::fr_canonical(tensor_blinder) ||
             !zkdl::cpu_pedersen_basis_valid(
                 std::vector<zkdl::CpuG1Point>(generators.begin(),
                                                generators.begin() + layout.segment_size),
@@ -4503,14 +4530,24 @@ inline bool zktr_commitment_wire_from_material(
     const zkdl::CpuG1Point& blinding_generator,
     const zkdl::CpuG1Point& u_generator, const RelationStatement& statement,
     const SegmentCommitmentMaterial& material, CommitmentWire& commitment,
-    std::string* error = nullptr) {
+    std::string* error = nullptr,
+    std::uint32_t shared_segment_size = 0U) {
     try {
         ZkRelationSegmentLayout layout;
+        const bool layout_valid = shared_segment_size == 0U
+            ? zktr_segment_layout(provider.logical_domain(), generators.size(), layout, error)
+            : zktr_segment_layout_for_size(provider.logical_domain(), generators.size(),
+                                           shared_segment_size, layout, error);
         if (tensor_id.empty() || visibility == 0U || !provider.valid(error) ||
-            !zktr_segment_layout(provider.logical_domain(), generators.size(), layout, error) ||
+            !layout_valid)
+            return false;
+        if (provider.logical_domain() != layout.logical_domain ||
             provider.segment_size() != layout.segment_size ||
-            provider.segment_count() != layout.segment_count ||
-            material.blinders.size() != layout.segment_count ||
+            provider.segment_count() != layout.segment_count) {
+            if (error) *error = "segment commitment replay provider differs from authenticated shared layout";
+            return false;
+        }
+        if (material.blinders.size() != layout.segment_count ||
             material.commitments.size() != layout.segment_count ||
             !zkdl::cpu_pedersen_basis_valid(
                 std::vector<zkdl::CpuG1Point>(generators.begin(),
@@ -4687,7 +4724,8 @@ inline bool zktr_validate_common_inputs(
     const zkdl::CpuG1Point& u_generator,
     const RelationStatement& statement,
     const std::string& operation_context,
-    std::string* error = nullptr) {
+    std::string* error = nullptr,
+    std::uint32_t shared_segment_size = 0U) {
     if (!descriptor.valid(error) || tensor_providers.empty() ||
         tensor_providers.size() != canonical_commitments.size() ||
         tensor_providers.size() != tensor_blinders.size() ||
@@ -4700,7 +4738,11 @@ inline bool zktr_validate_common_inputs(
     }
     const std::uint64_t domain64 = std::uint64_t(1U) << evaluation_point.size();
     ZkRelationSegmentLayout layout;
-    if (!zktr_segment_layout(domain64, generators.size(), layout, error)) return false;
+    const bool layout_valid = shared_segment_size == 0U
+        ? zktr_segment_layout(domain64, generators.size(), layout, error)
+        : zktr_segment_layout_for_size(domain64, generators.size(),
+                                       shared_segment_size, layout, error);
+    if (!layout_valid) return false;
     const std::vector<zkdl::CpuG1Point> validation_generators(
         generators.begin(), generators.begin() + layout.basis_domain);
     if (!zkdl::cpu_pedersen_basis_valid(
@@ -4716,7 +4758,7 @@ inline bool zktr_validate_common_inputs(
             tensor_providers[index].segment_count() != layout.segment_count ||
             !zkdl::fr_canonical(tensor_blinders[index]) ||
             !zkdl::cpu_pedersen_strict_g1(canonical_commitments[index], error)) {
-            if (error && error->empty()) *error = "invalid canonical terminal tensor input";
+            if (error) *error = "invalid canonical terminal tensor input or shared segment layout";
             return false;
         }
         for (std::uint32_t segment = 0U; segment < layout.segment_count; ++segment) {
@@ -4769,7 +4811,8 @@ inline bool zktr_validate_public_inputs(
     const zkdl::CpuG1Point& blinding_generator,
     const zkdl::CpuG1Point& u_generator,
     const RelationStatement& statement, const std::string& operation_context,
-    std::string* error = nullptr) {
+    std::string* error = nullptr,
+    std::uint32_t shared_segment_size = 0U) {
     if (!descriptor.valid(error) || tensor_count == 0U ||
         tensor_count != canonical_commitments.size() ||
         tensor_count != commitment_indices.size() ||
@@ -4781,8 +4824,11 @@ inline bool zktr_validate_public_inputs(
     }
     const std::uint64_t domain64 = std::uint64_t(1U) << evaluation_point.size();
     ZkRelationSegmentLayout layout;
-    if (!zktr_segment_layout(domain64, generators.size(), layout, error))
-        return false;
+    const bool layout_valid = shared_segment_size == 0U
+        ? zktr_segment_layout(domain64, generators.size(), layout, error)
+        : zktr_segment_layout_for_size(domain64, generators.size(),
+                                       shared_segment_size, layout, error);
+    if (!layout_valid) return false;
     const std::vector<zkdl::CpuG1Point> validation_generators(
         generators.begin(), generators.begin() + layout.basis_domain);
     if (
@@ -5037,13 +5083,15 @@ inline bool prove_zk_terminal_relation_segmented(
     zkdl::Transcript& parent_transcript,
     ZkTerminalRelationProverResult& result,
     std::string* error = nullptr,
-    const std::vector<SegmentCommitmentMaterial>* segment_materials = nullptr) {
+    const std::vector<SegmentCommitmentMaterial>* segment_materials = nullptr,
+    std::uint32_t shared_segment_size = 0U) {
     try {
         if (!zktr_link_kind_valid(link_kind) ||
             !zktr_validate_common_inputs(
                 descriptor, tensor_providers, canonical_commitments, tensor_blinders,
                 commitment_indices, evaluation_point, generators, blinding_generator,
-                u_generator, statement, operation_context, error) ||
+                u_generator, statement, operation_context, error,
+                shared_segment_size) ||
             !zkdl::fr_canonical(expected_public_value)) {
             if (error && error->empty()) *error = "invalid terminal relation prover inputs";
             return false;
@@ -5089,11 +5137,19 @@ inline bool prove_zk_terminal_relation_segmented(
         for (std::size_t tensor_index = 0U;
              tensor_index < tensor_providers.size(); ++tensor_index) {
             ZkRelationSegmentLayout layout;
-            if (!zktr_segment_layout(tensor_providers[tensor_index].logical_domain(),
-                                     generators.size(), layout, error) ||
+            const bool layout_valid = shared_segment_size == 0U
+                ? zktr_segment_layout(tensor_providers[tensor_index].logical_domain(),
+                                      generators.size(), layout, error)
+                : zktr_segment_layout_for_size(
+                      tensor_providers[tensor_index].logical_domain(),
+                      generators.size(), shared_segment_size, layout, error);
+            if (!layout_valid ||
                 tensor_providers[tensor_index].segment_size() != layout.segment_size ||
-                tensor_providers[tensor_index].segment_count() != layout.segment_count)
+                tensor_providers[tensor_index].segment_count() != layout.segment_count) {
+                if (error && error->empty())
+                    *error = "terminal provider differs from authenticated shared segment layout";
                 return false;
+            }
             const std::vector<FrWire> low_point =
                 zktr_segment_point(evaluation_point, layout.segment_size);
             const std::vector<zkdl::CpuG1Point> segment_generators(
@@ -5351,13 +5407,15 @@ inline bool verify_zk_terminal_relation(
     zkdl::Transcript& parent_transcript,
     ZkTerminalRelationVerifierResult& result,
     std::string* error = nullptr,
-    const std::vector<CommitmentWire>* commitment_wires = nullptr) {
+    const std::vector<CommitmentWire>* commitment_wires = nullptr,
+    std::uint32_t shared_segment_size = 0U) {
     try {
         if (!zktr_link_kind_valid(link_kind) ||
             !zktr_validate_public_inputs(
                 descriptor, canonical_commitments.size(), canonical_commitments,
                 commitment_indices, evaluation_point, generators, blinding_generator,
-                u_generator, statement, operation_context, error) ||
+                u_generator, statement, operation_context, error,
+                shared_segment_size) ||
             !zkdl::fr_canonical(expected_public_value) ||
             proof.claim_link_kind != link_kind ||
             !zkdl::zk_terminal_relation_shape_valid(proof, error)) {
@@ -5439,8 +5497,17 @@ inline bool verify_zk_terminal_relation(
             const auto& segment_openings = proof.terminal_segment_openings[tensor_index];
             const auto& first_opening = segment_openings.front();
             ZkRelationSegmentLayout layout;
-            if (!zktr_segment_layout(first_opening.logical_domain, generators.size(), layout, error) ||
-                segment_openings.size() != layout.segment_count) return false;
+            const bool layout_valid = shared_segment_size == 0U
+                ? zktr_segment_layout(first_opening.logical_domain, generators.size(),
+                                      layout, error)
+                : zktr_segment_layout_for_size(first_opening.logical_domain,
+                                               generators.size(),
+                                               shared_segment_size, layout, error);
+            if (!layout_valid || segment_openings.size() != layout.segment_count) {
+                if (error && error->empty())
+                    *error = "terminal opening count differs from authenticated shared segment layout";
+                return false;
+            }
             const CommitmentWire* statement_commitment = nullptr;
             if (commitment_wires != nullptr) {
                 if (commitment_indices[tensor_index] >= commitment_wires->size()) {
@@ -8896,7 +8963,8 @@ inline bool prove_authenticated_sorted_lookup(
                 if (!zktr_commitment_wire_from_material(
                         "sorted_lookup/material-check", 3U, provider, generators,
                         blinding_generator, u_generator, statement,
-                        outer_materials[index], checked, error) ||
+                        outer_materials[index], checked, error,
+                        descriptor.segment_size) ||
                     !zkdl::cpu_g1_equal(
                         zkdl::cpu_g1_from_native(checked.commitment),
                         outer_commitments[index]))
@@ -8912,7 +8980,8 @@ inline bool prove_authenticated_sorted_lookup(
                 if (!zktr_build_segment_commitment_material(
                         "sorted_lookup/internal/" + tag, 3U, provider, generators,
                         blinding_generator, u_generator, blinder, statement,
-                        internal_wire, internal_material, error)) return false;
+                        internal_wire, internal_material, error, nullptr,
+                        descriptor.segment_size)) return false;
                 const auto commitment = zkdl::cpu_g1_from_native(internal_wire.commitment);
                 state = State{commitment, blinder,
                               std::numeric_limits<std::uint32_t>::max(),
@@ -8972,6 +9041,18 @@ inline bool prove_authenticated_sorted_lookup(
                                       const std::vector<SegmentedTensorProvider>& relation_providers,
                                       const std::vector<ConstraintDescriptor>& pieces) mutable {
             if (tags.empty() || tags.size() != relation_providers.size()) return false;
+            ZkRelationSegmentLayout relation_layout;
+            if (!zktr_segment_layout_for_size(
+                    relation_providers.front().logical_domain(), generators.size(),
+                    descriptor.segment_size, relation_layout, error)) return false;
+            for (const auto& provider : relation_providers)
+                if (!provider.valid(error) ||
+                    provider.logical_domain() != relation_layout.logical_domain ||
+                    provider.segment_size() != relation_layout.segment_size ||
+                    provider.segment_count() != relation_layout.segment_count) {
+                    if (error) *error = "sorted-lookup relation provider differs from authenticated shared layout";
+                    return false;
+                }
             std::vector<zkdl::CpuG1Point> canonical;
             std::vector<FrWire> blinders;
             std::vector<std::uint32_t> indices, outer_indices;
@@ -9006,7 +9087,7 @@ inline bool prove_authenticated_sorted_lookup(
                     weighted, weighted_providers, weighted.degree,
                     relation_providers.front().logical_domain(), generators,
                     blinding_generator, u_generator, FrWire{}, statement, context,
-                    transcript, sumcheck, error)) return false;
+                    transcript, sumcheck, error, descriptor.segment_size)) return false;
             std::vector<FrWire> point;
             for (const auto& challenge : sumcheck.challenges)
                 point.push_back(zkdl::fr_wire(challenge));
@@ -9019,7 +9100,8 @@ inline bool prove_authenticated_sorted_lookup(
                     zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
                     zkdl::cpu_g1_from_native(sumcheck.proof.final_claim_commitment),
                     sumcheck.final_q_blinder, FrWire{}, context, transcript,
-                    terminal, error, &terminal_materials)) return false;
+                    terminal, error, &terminal_materials,
+                    descriptor.segment_size)) return false;
             zkdl::AuthenticatedSortedLookupRelationProof wire;
             wire.kind = static_cast<zkdl::AuthenticatedSortedLookupRelationKind>(kind);
             wire.logical_domain = relation_providers.front().logical_domain();
@@ -9585,7 +9667,16 @@ inline bool verify_authenticated_sorted_lookup(
                 if (index >= wire.terminal_relation.terminal_segment_openings.size()) return false;
                 const auto& openings = wire.terminal_relation.terminal_segment_openings[index];
                 ZkRelationSegmentLayout public_layout;
-                if (!zktr_segment_layout(wire.logical_domain, generators.size(), public_layout, error) || openings.size() != public_layout.segment_count) return false;
+                if (wire.segment_size != descriptor.segment_size ||
+                    !zktr_segment_layout_for_size(
+                        wire.logical_domain, generators.size(),
+                        descriptor.segment_size, public_layout, error) ||
+                    wire.segment_count != public_layout.segment_count ||
+                    openings.size() != public_layout.segment_count) {
+                    if (error && error->empty())
+                        *error = "sorted-lookup relation wire differs from authenticated shared layout";
+                    return false;
+                }
                 std::vector<zkdl::CpuG1Point> fixed_segments;
                 for (std::size_t segment = 0U; segment < openings.size(); ++segment) {
                     if (openings[segment].segment_index != segment || openings[segment].logical_domain != wire.logical_domain || openings[segment].logical_offset != segment * static_cast<std::uint64_t>(public_layout.segment_size) || openings[segment].padded_length != public_layout.segment_size) return false;
@@ -9616,7 +9707,8 @@ inline bool verify_authenticated_sorted_lookup(
             if (!verify_zk_sumcheck(
                     wire.sumcheck, weighted, weighted.degree, wire.logical_domain,
                     generators, blinding_generator, u_generator, FrWire{}, statement,
-                    context, transcript, sumcheck, error)) return false;
+                    context, transcript, sumcheck, error,
+                    descriptor.segment_size)) return false;
             std::vector<FrWire> point;
             for (const auto& challenge : sumcheck.challenges)
                 point.push_back(zkdl::fr_wire(challenge));
@@ -9670,7 +9762,8 @@ inline bool verify_authenticated_sorted_lookup(
                     generators, blinding_generator, u_generator, statement,
                     zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
                     zkdl::cpu_g1_from_native(sumcheck.final_claim_commitment), FrWire{},
-                    context, transcript, terminal, error)) return false;
+                    context, transcript, terminal, error, nullptr,
+                    descriptor.segment_size)) return false;
             std::vector<byte> encoded;
             serialize_authenticated_sorted_lookup_relation(wire, encoded);
             transcript.absorb(context + ".proof", encoded);

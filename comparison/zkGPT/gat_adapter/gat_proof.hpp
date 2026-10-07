@@ -18,6 +18,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unordered_map>
+#include <iterator>
 
 namespace zkgpt {
 namespace gat {
@@ -36,6 +38,125 @@ struct InputLayout {
     std::size_t n_in = 0;
     std::vector<InputSegment> segments;
     std::string selector = "00:X_pub,01:W,10:Aux,11:L_qry";
+};
+
+// Residual targets come from a small canonical alphabet. Store one checked
+// byte ID per logical target while retaining the full Int dictionary for the
+// unchanged ordered 8-byte digest and wire reconstruction.
+class PackedResidualTargets {
+  public:
+    static constexpr std::size_t kMaximumDistinctTargets = 17U;
+    static constexpr std::size_t kMaximumDictionaryBuckets = 53U;
+
+    class const_iterator {
+      public:
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = Int;
+        using difference_type = std::ptrdiff_t;
+        using pointer = void;
+        using reference = Int;
+        const_iterator() = default;
+        const_iterator(const PackedResidualTargets* owner, std::size_t index) : owner_(owner), index_(index) {}
+        Int operator*() const { return owner_->at(index_); }
+        const_iterator& operator++() { ++index_; return *this; }
+        const_iterator operator++(int) { const_iterator copy = *this; ++*this; return copy; }
+        bool operator==(const const_iterator& other) const { return owner_ == other.owner_ && index_ == other.index_; }
+        bool operator!=(const const_iterator& other) const { return !(*this == other); }
+      private:
+        const PackedResidualTargets* owner_ = nullptr;
+        std::size_t index_ = 0;
+    };
+
+    void reserve(std::size_t count) {
+        codes_.reserve(count);
+        if (count != 0U && codes_.capacity() != count)
+            throw std::length_error("packed residual target capacity differs from its exact source count");
+        reserve_dictionary();
+    }
+    void push_back(Int value) {
+        if (frozen_) throw std::logic_error("cannot append to frozen packed residual targets");
+        const std::size_t code = dictionary_code(value);
+        if (code > std::numeric_limits<u8>::max())
+            throw std::length_error("residual target dictionary ID exceeds u8");
+        codes_.push_back(static_cast<u8>(code));
+    }
+    void resize(std::size_t count) {
+        if (frozen_) throw std::logic_error("cannot resize frozen packed residual targets");
+        codes_.resize(count, dictionary_code(Int(0)));
+    }
+    void set(std::size_t index, Int value) {
+        if (frozen_ || index >= codes_.size()) throw std::out_of_range("packed residual target assignment is invalid");
+        const std::size_t code = dictionary_code(value);
+        codes_[index] = static_cast<u8>(code);
+    }
+    Int at(std::size_t index) const {
+        if (index >= codes_.size()) throw std::out_of_range("packed residual target index exceeds logical size");
+        const std::size_t code = codes_[index];
+        if (code >= dictionary_.size()) throw std::logic_error("packed residual target ID exceeds its canonical dictionary");
+        return dictionary_[code];
+    }
+    Int operator[](std::size_t index) const { return at(index); }
+    std::size_t size() const noexcept { return codes_.size(); }
+    std::size_t capacity() const noexcept { return codes_.capacity(); }
+    bool empty() const noexcept { return codes_.empty(); }
+    std::size_t dictionary_size() const noexcept { return dictionary_.size(); }
+    std::size_t mapped_bytes() const noexcept { return codes_.capacity() * sizeof(u8); }
+    std::uint64_t dictionary_heap_bytes() const noexcept {
+        const std::uint64_t vector_bytes = dictionary_.capacity() * sizeof(Int);
+        const std::uint64_t bucket_bytes = index_.bucket_count() * sizeof(void*);
+        const std::uint64_t node_bytes = index_.size() *
+            (sizeof(std::pair<const Int, u8>) + 2U * sizeof(void*) + sizeof(std::size_t));
+        return vector_bytes + bucket_bytes + node_bytes;
+    }
+    static constexpr std::uint64_t dictionary_heap_upper_bound() noexcept {
+        using DictionaryEntry = std::pair<const Int, u8>;
+        return kMaximumDistinctTargets * sizeof(Int) +
+            kMaximumDictionaryBuckets * sizeof(void*) +
+            kMaximumDistinctTargets * (sizeof(DictionaryEntry) + 2U * sizeof(void*) + sizeof(std::size_t));
+    }
+    void freeze() {
+        std::unordered_map<Int, u8>().swap(index_);
+        frozen_ = true;
+    }
+    void swap(PackedResidualTargets& other) noexcept {
+        codes_.swap(other.codes_);
+        dictionary_.swap(other.dictionary_);
+        index_.swap(other.index_);
+        std::swap(frozen_, other.frozen_);
+        std::swap(dictionary_reserved_, other.dictionary_reserved_);
+    }
+    const_iterator begin() const { return const_iterator(this, 0U); }
+    const_iterator end() const { return const_iterator(this, size()); }
+
+  private:
+    void reserve_dictionary() {
+        if (dictionary_reserved_) return;
+        dictionary_.reserve(kMaximumDistinctTargets);
+        index_.reserve(kMaximumDistinctTargets);
+        if (dictionary_.capacity() > kMaximumDistinctTargets ||
+            index_.bucket_count() > kMaximumDictionaryBuckets)
+            throw std::length_error("residual target dictionary allocation exceeds its checked host bound");
+        dictionary_reserved_ = true;
+    }
+    u8 dictionary_code(Int value) {
+        if (frozen_) throw std::logic_error("cannot extend frozen packed residual target dictionary");
+        reserve_dictionary();
+        const auto found = index_.find(value);
+        if (found != index_.end()) return found->second;
+        if (dictionary_.size() >= kMaximumDistinctTargets)
+            throw std::length_error("residual target alphabet exceeds its checked 17-value bound");
+        const u8 code = static_cast<u8>(dictionary_.size());
+        dictionary_.push_back(value);
+        index_.emplace(value, code);
+        if (index_.bucket_count() > kMaximumDictionaryBuckets)
+            throw std::length_error("residual target dictionary rehash exceeded its checked host bound");
+        return code;
+    }
+    zkgpt::NativeVector<u8> codes_;
+    std::vector<Int> dictionary_;
+    std::unordered_map<Int, u8> index_;
+    bool frozen_ = false;
+    bool dictionary_reserved_ = false;
 };
 
 class SegmentedInputOracle {
@@ -122,7 +243,7 @@ struct FconnClaimLink {
     std::size_t cols = 0;
     std::string lhs_point_rule = "fconn/lhs/row-major-mle-v1";
     std::string rhs_point_rule = "fconn/rhs/column-major-padded-mle-v1";
-    std::string output_point_rule = "fconn/output/row-major-mle-v1";
+    std::string output_point_rule = "fconn/output/row-major-axis-padded-mle-v1";
     std::string source_rule = "canonical_input_oracle";
 };
 
@@ -434,7 +555,7 @@ struct GatCircuitPlan {
 
     std::size_t public_output_coordinates = 0;
     std::size_t residual_coordinates = 0;
-    mutable zkgpt::NativeVector<Int> residual_targets;
+    mutable PackedResidualTargets residual_targets;
     std::string residual_target_digest;
     std::vector<std::array<unsigned, 5>> division_range_bits;
     bool official_layered = false;

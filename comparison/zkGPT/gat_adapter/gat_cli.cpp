@@ -1142,12 +1142,12 @@ int main(int argc, char** argv) {
                     point_shape_bitmap_bytes > zkgpt::native_storage::heap_limit
                         ? point_shape_bitmap_bytes : 0;
                 if (heap_bitmap_bytes > std::numeric_limits<std::uint64_t>::max() -
-                                            report.estimated_native_heap_bytes_upper_bound ||
-                    point_shape_bitmap_bytes > std::numeric_limits<std::uint64_t>::max() -
-                                                     report.estimated_peak_host_memory_bytes)
+                                            report.estimated_native_heap_bytes_upper_bound)
                     throw std::overflow_error("GKR shape-admission capacity bound overflows u64");
                 report.estimated_native_heap_bytes_upper_bound += heap_bitmap_bytes;
-                report.estimated_peak_host_memory_bytes += point_shape_bitmap_bytes;
+                // inspect_gat_capacity has already bounded shape admission as
+                // its own phase and combined it with proof/forward peaks using
+                // max. The bitmap is not retained into those later phases.
                 report.native_mapped_phase_breakdown.emplace_back(
                     "shape_admission", mapped_bitmap_bytes);
                 report.native_mapped_phase_breakdown.emplace_back(

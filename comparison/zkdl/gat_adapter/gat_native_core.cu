@@ -2900,7 +2900,8 @@ bool sorted_lookup_build_prover_context(const Config &config, const StaticTables
             double commitment_crypto_seconds = 0.0;
             const bool commitment_built = relation::zktr_build_segment_commitment_material(
                 tensor_id, 3U, provider, context.ipa_generators, context.ipa_blinding_generator,
-                context.ipa_u_generator, blinder, relation_statement, wire, material, error, &commitment_crypto_seconds);
+                context.ipa_u_generator, blinder, relation_statement, wire, material,
+                error, &commitment_crypto_seconds, descriptor.segment_size);
             if (!commitment_built) return false;
             const auto point_conversion_start = std::chrono::steady_clock::now();
             const zkdl::CpuG1Point commitment = zkdl::cpu_g1_from_native(wire.commitment);
@@ -2919,7 +2920,10 @@ bool sorted_lookup_build_prover_context(const Config &config, const StaticTables
                 }
                 *outer_commitment_file_io_seconds += provider_io_delta;
             }
-            if (commitment.is_zero()) return false;
+            if (commitment.is_zero()) {
+                if (error) *error = "sorted-lookup outer commitment handle is zero after shared-segment construction";
+                return false;
+            }
             zkdl::AuthenticatedSortedLookupCommitmentRef ref;
             ref.role = role;
             ref.column_index = column;

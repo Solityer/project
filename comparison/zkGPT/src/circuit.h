@@ -16,9 +16,30 @@ using std::endl;
 using std::vector;
 
 struct NativeCoefficientId {
-    u32 value;
-    explicit NativeCoefficientId(u32 raw) : value(raw) {}
+    u8 value;
+    explicit NativeCoefficientId(u8 raw) : value(raw) {}
 };
+
+// The official formal GKR indices are below 2^40. Preserve u64 logical
+// access while storing that authenticated range in five checked bytes.
+struct PackedU40 {
+    u8 bytes[5]{};
+    static constexpr u64 maximum = (u64(1) << 40U) - 1U;
+
+    PackedU40() = default;
+    PackedU40(u64 value) { *this = value; }
+    PackedU40& operator=(u64 value) {
+        if (value > maximum) throw std::length_error("native GKR index exceeds checked 40-bit storage");
+        for (unsigned i = 0U; i < 5U; ++i) bytes[i] = static_cast<u8>(value >> (8U * i));
+        return *this;
+    }
+    operator u64() const noexcept {
+        u64 value = 0;
+        for (unsigned i = 0U; i < 5U; ++i) value |= static_cast<u64>(bytes[i]) << (8U * i);
+        return value;
+    }
+};
+static_assert(sizeof(PackedU40) == 5, "native GKR compact index must occupy five bytes");
 
 struct NativeCoefficientHash {
     std::size_t operator()(ll value) const noexcept {
@@ -30,8 +51,9 @@ struct NativeCoefficientHash {
     }
 };
 
+#pragma pack(push, 1)
 struct uniGate {
-    u64 g, u;
+    PackedU40 g, u;
     u8 lu;
     NativeCoefficientId coefficient_id;
     uniGate(u64 _g, u64 _u, u8 _lu, NativeCoefficientId _coefficient_id) :
@@ -41,7 +63,7 @@ struct uniGate {
 
 struct binGate 
 {
-    u64 g, u, v;
+    PackedU40 g, u, v;
     u8  l;
     NativeCoefficientId coefficient_id;
     binGate(u64 _g, u64 _u, u64 _v, NativeCoefficientId _coefficient_id, u8 _l):
@@ -51,9 +73,10 @@ struct binGate
     [[nodiscard]] u8 getLayerIdU(u8 layer_id) const { return !l ? 0 : layer_id - 1; }
     [[nodiscard]] u8 getLayerIdV(u8 layer_id) const { return !(l & 1) ? 0 : layer_id - 1; }
 };
+#pragma pack(pop)
 
-static_assert(sizeof(uniGate) == 24, "native unary gates must use a 32-bit coefficient ID");
-static_assert(sizeof(binGate) == 32, "native binary gates must use a 32-bit coefficient ID");
+static_assert(sizeof(uniGate) == 12, "native unary gates must use the checked compact record");
+static_assert(sizeof(binGate) == 17, "native binary gates must use the checked compact record");
 
 enum class layerType {
     INPUT, FFT, IFFT, ADD_BIAS, RELU, Sqr, OPT_AVG_POOL, MAX_POOL, AVG_POOL, DOT_PROD, PADDING, FCONN,  LAYER_NORM_1, LAYER_NORM_2 ,LAYER_NORM_3,GELU_1,GELU_2,GELU_3,MHA_QK,SOFTMAX_1,SOFTMAX_2,SOFTMAX_3,PLACE_HOLDER
@@ -76,7 +99,9 @@ public:
 	zkgpt::NativeVector<binGate> bin_gates;
     zkgpt::NativeVector<ll> coefficient_pool;
 
-    zkgpt::NativeVector<u64> ori_id_u, ori_id_v;
+    zkgpt::NativeVector<PackedU40> ori_id_u, ori_id_v;
+    zkgpt::NativeVector<u32> wide_uni_coefficient_ids, wide_bin_coefficient_ids;
+    bool wide_coefficient_format = false;
     i8 fft_bit_length;
 
     std::string native_relation_id;
@@ -112,7 +137,7 @@ public:
     void release_native_proof_backing() noexcept;
     bool native_metadata_matches(const layer& other) const noexcept;
     void restore_native_proof_backing(layer&& canonical_backing);
-    NativeCoefficientId intern_coefficient(ll value);
+    u32 intern_coefficient(ll value);
     void add_unary(u64 g, u64 u, u8 lu, ll value);
     void add_binary(u64 g, u64 u, u64 v, ll value, u8 l);
     ll coefficient(NativeCoefficientId id) const;
@@ -122,7 +147,7 @@ public:
     static std::uint64_t coefficient_storage_bytes_for(std::size_t distinct_count);
 
 private:
-    using CoefficientLookup = std::unordered_map<ll, NativeCoefficientId, NativeCoefficientHash>;
+    using CoefficientLookup = std::unordered_map<ll, u32, NativeCoefficientHash>;
     CoefficientLookup coefficient_lookup_;
 };
 

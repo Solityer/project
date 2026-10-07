@@ -22,6 +22,8 @@ pub enum Error {
     Opening,
     /// Transcript error
     Transcript(io::Error),
+    /// Native prover scratch storage could not be allocated or accessed.
+    NativeStorage(io::Error),
     /// `k` is too small for the given circuit.
     NotEnoughRowsAvailable {
         /// The current value of `k` being used.
@@ -64,6 +66,7 @@ impl fmt::Display for Error {
             Error::BoundsFailure => write!(f, "An out-of-bounds index was passed to the backend"),
             Error::Opening => write!(f, "Multi-opening proof was invalid"),
             Error::Transcript(e) => write!(f, "Transcript error: {e}"),
+            Error::NativeStorage(e) => write!(f, "Native polynomial storage error: {e}"),
             Error::NotEnoughRowsAvailable { current_k } => write!(
                 f,
                 "k = {current_k} is too small for the given circuit. Try using a larger value of k",
@@ -87,7 +90,7 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            Error::Transcript(e) => Some(e),
+            Error::Transcript(e) | Error::NativeStorage(e) => Some(e),
             _ => None,
         }
     }

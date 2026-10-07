@@ -5,8 +5,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace zkgpt::native_gkr {
@@ -135,6 +139,248 @@ inline quadratic_poly fold_prefix_product_round(
         folded_values[static_cast<std::size_t>(pair)] = fold_prefix_linear(values, logical_extent, pair, previous_random);
         result = result + folded_mult[static_cast<std::size_t>(pair)] * folded_values[static_cast<std::size_t>(pair)];
     }
+    return result;
+}
+
+// GKR prefix values start as scalars and become affine polynomials after the
+// first challenge. Keep that mode transition in one compact native arena:
+// scalar entries occupy one field each, then each folded entry occupies its
+// (a,b) coefficients in adjacent fields. Since the first fold writes exactly
+// into the source pair and later folds compact toward lower indices, one
+// ascending bounded chunk at a time is safe without a full-domain fold buffer.
+class PackedAffinePrefixArena {
+    NativeVector<F> fields_;
+    std::uint64_t logical_extent_ = 0;
+    bool affine_ = false;
+
+    static std::size_t required_capacity(std::uint64_t logical_extent) {
+        if (logical_extent == std::numeric_limits<std::uint64_t>::max())
+            throw std::length_error("packed GKR prefix extent overflows its paired capacity");
+        const std::uint64_t paired = logical_extent + (logical_extent & 1U);
+        const std::uint64_t required = std::max<std::uint64_t>(2U, paired);
+        return checked_extent(required, "packed GKR prefix arena");
+    }
+
+public:
+    void initialize_scalars(std::uint64_t logical_extent, const F& initial_value = F_ZERO) {
+        if (!fields_.empty() || fields_.capacity() != 0U)
+            throw std::logic_error("packed GKR prefix arena must be released before initialization");
+        const std::size_t capacity = required_capacity(logical_extent);
+        fields_.reserve(capacity);
+        if (fields_.capacity() != capacity)
+            throw std::logic_error("packed GKR prefix arena capacity differs from its source bound");
+        fields_.resize(capacity);
+        std::fill(fields_.begin(), fields_.end(), F_ZERO);
+        logical_extent_ = logical_extent;
+        affine_ = false;
+        for (std::uint64_t index = 0U; index < logical_extent_; ++index)
+            fields_[static_cast<std::size_t>(index)] = initial_value;
+    }
+
+    std::uint64_t logical_extent() const { return logical_extent_; }
+    bool affine_mode() const { return affine_; }
+    std::size_t capacity() const { return fields_.capacity(); }
+    std::size_t capacity_bytes() const {
+        if (fields_.capacity() > std::numeric_limits<std::size_t>::max() / sizeof(F))
+            throw std::overflow_error("packed GKR prefix byte count overflows");
+        return fields_.capacity() * sizeof(F);
+    }
+
+    F first_slope() const {
+        if (logical_extent_ == 0U || !affine_) return F_ZERO;
+        return fields_[0U];
+    }
+
+    void set_scalar(std::uint64_t index, const F& value) {
+        if (affine_ || index >= logical_extent_)
+            throw std::out_of_range("packed GKR scalar assignment is outside its active prefix");
+        fields_[static_cast<std::size_t>(index)] = value;
+    }
+
+    void add_scalar(std::uint64_t index, const F& value) {
+        if (affine_ || index >= logical_extent_)
+            throw std::out_of_range("packed GKR scalar accumulation is outside its active prefix");
+        fields_[static_cast<std::size_t>(index)] += value;
+    }
+
+    F coordinate_value(std::uint64_t index, const F& point) const {
+        if (index >= logical_extent_)
+            throw std::out_of_range("packed GKR coordinate is outside its active prefix");
+        if (!affine_) return fields_[static_cast<std::size_t>(index)];
+        const std::size_t offset = checked_extent(index * 2U, "packed GKR affine coordinate");
+        const F& slope = fields_[offset];
+        const F& intercept = fields_[offset + 1U];
+        return slope.isZero() ? intercept : slope * point + intercept;
+    }
+
+    F first_value(const F& point) const {
+        return logical_extent_ == 0U ? F_ZERO : coordinate_value(0U, point);
+    }
+
+    F first_constant() const {
+        if (logical_extent_ == 0U) return F_ZERO;
+        return affine_ ? fields_[1U] : fields_[0U];
+    }
+
+    void evaluate_first_in_place(const F& point) {
+        if (logical_extent_ == 0U) return;
+        const F value = coordinate_value(0U, point);
+        if (affine_) {
+            fields_[0U].clear();
+            fields_[1U] = value;
+        } else {
+            fields_[0U] = value;
+        }
+    }
+
+    void store_folded(std::uint64_t index, const linear_poly& value) {
+        if (index >= (logical_extent_ / 2U + logical_extent_ % 2U))
+            throw std::out_of_range("packed GKR folded output is outside its active prefix");
+        const std::size_t offset = checked_extent(index * 2U, "packed GKR folded output");
+        if (offset + 1U >= fields_.size())
+            throw std::out_of_range("packed GKR folded output exceeds its reserved arena");
+        fields_[offset] = value.a;
+        fields_[offset + 1U] = value.b;
+    }
+
+    void finish_fold(std::uint64_t folded_extent) {
+        if (folded_extent != logical_extent_ / 2U + logical_extent_ % 2U)
+            throw std::logic_error("packed GKR folded extent differs from the source prefix");
+        logical_extent_ = folded_extent;
+        affine_ = true;
+    }
+
+    void release() {
+        NativeVector<F>().swap(fields_);
+        logical_extent_ = 0U;
+        affine_ = false;
+    }
+};
+
+class PrefixChunkBarrier {
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    const std::size_t participants_;
+    std::size_t waiting_ = 0U;
+    std::size_t generation_ = 0U;
+
+public:
+    explicit PrefixChunkBarrier(std::size_t participants) : participants_(participants) {}
+
+    void wait() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const std::size_t generation = generation_;
+        if (++waiting_ == participants_) {
+            waiting_ = 0U;
+            ++generation_;
+            lock.unlock();
+            condition_.notify_all();
+            return;
+        }
+        condition_.wait(lock, [this, generation] { return generation_ != generation; });
+    }
+};
+
+inline quadratic_poly fold_prefix_product_round_packed(
+    PackedAffinePrefixArena& mult,
+    PackedAffinePrefixArena& values,
+    std::uint64_t logical_extent,
+    const F& previous_random) {
+    if (logical_extent != mult.logical_extent() || logical_extent != values.logical_extent())
+        throw std::logic_error("packed GKR value and multiplier prefixes have different extents");
+    const std::uint64_t folded_extent = logical_extent / 2U + logical_extent % 2U;
+    quadratic_poly result;
+    result.clear();
+    if (folded_extent == 0U) return result;
+
+    constexpr std::uint64_t kChunkPairs = 1U << 16U;
+    constexpr std::size_t kMaxWorkers = 32U;
+    const std::size_t scratch_size = checked_extent(std::min<std::uint64_t>(folded_extent, kChunkPairs),
+                                                    "packed GKR bounded fold scratch");
+    std::vector<linear_poly> folded_values(scratch_size);
+    std::vector<linear_poly> folded_mult(scratch_size);
+    const std::size_t workers = folded_extent < (1U << 15U)
+        ? 1U
+        : std::min<std::size_t>(kMaxWorkers, scratch_size);
+    std::vector<quadratic_poly> partials(workers);
+    auto barrier = std::make_unique<PrefixChunkBarrier>(workers);
+
+    const auto worker = [&](std::size_t worker_id) {
+        for (std::uint64_t chunk_start = 0U; chunk_start < folded_extent;) {
+            const std::uint64_t chunk_count = std::min<std::uint64_t>(kChunkPairs, folded_extent - chunk_start);
+            const std::uint64_t begin = chunk_start + (chunk_count * worker_id) / workers;
+            const std::uint64_t end = chunk_start + (chunk_count * (worker_id + 1U)) / workers;
+            quadratic_poly chunk_sum;
+            chunk_sum.clear();
+            for (std::uint64_t index = begin; index < end; ++index) {
+                const std::uint64_t even = index * 2U;
+                const std::uint64_t odd = even + 1U;
+                const F value_zero = values.coordinate_value(even, previous_random);
+                const F value_one = odd < logical_extent
+                    ? values.coordinate_value(odd, previous_random)
+                    : F_ZERO;
+                const F mult_zero = mult.coordinate_value(even, previous_random);
+                const F mult_one = odd < logical_extent
+                    ? mult.coordinate_value(odd, previous_random)
+                    : F_ZERO;
+                const std::size_t local = checked_extent(index - chunk_start, "packed GKR scratch index");
+                folded_values[local] = linear_poly(value_one - value_zero, value_zero);
+                folded_mult[local] = linear_poly(mult_one - mult_zero, mult_zero);
+                chunk_sum = chunk_sum + folded_mult[local] * folded_values[local];
+            }
+            partials[worker_id] = partials[worker_id] + chunk_sum;
+            barrier->wait();
+            for (std::uint64_t index = begin; index < end; ++index) {
+                const std::size_t local = checked_extent(index - chunk_start, "packed GKR scratch copy index");
+                values.store_folded(index, folded_values[local]);
+                mult.store_folded(index, folded_mult[local]);
+            }
+            barrier->wait();
+            chunk_start += chunk_count;
+        }
+    };
+
+    if (workers == 1U) {
+        worker(0U);
+    } else {
+        std::vector<std::thread> threads;
+        threads.reserve(workers - 1U);
+        std::mutex start_mutex;
+        std::condition_variable start_condition;
+        bool start = false;
+        bool cancel = false;
+        try {
+            for (std::size_t worker_id = 1U; worker_id < workers; ++worker_id) {
+                threads.emplace_back([&, worker_id] {
+                    {
+                        std::unique_lock<std::mutex> lock(start_mutex);
+                        start_condition.wait(lock, [&] { return start || cancel; });
+                        if (cancel) return;
+                    }
+                    worker(worker_id);
+                });
+            }
+        } catch (...) {
+            {
+                std::lock_guard<std::mutex> lock(start_mutex);
+                cancel = true;
+            }
+            start_condition.notify_all();
+            for (auto& thread : threads) if (thread.joinable()) thread.join();
+            throw;
+        }
+        {
+            std::lock_guard<std::mutex> lock(start_mutex);
+            start = true;
+        }
+        start_condition.notify_all();
+        worker(0U);
+        for (auto& thread : threads) thread.join();
+    }
+
+    for (const auto& partial : partials) result = result + partial;
+    values.finish_fold(folded_extent);
+    mult.finish_fold(folded_extent);
     return result;
 }
 

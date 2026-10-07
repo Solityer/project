@@ -4,27 +4,69 @@
 #include <algorithm>
 #include <limits>
 
+namespace {
+
+template <class Gate>
+std::size_t checked_gate_offset(const Gate& gate, const zkgpt::NativeVector<Gate>& gates) {
+    if (gates.empty()) throw std::logic_error("native coefficient lookup has no matching gate storage");
+    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(gates.data());
+    const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(&gate);
+    const std::size_t bytes = gates.size() * sizeof(Gate);
+    if (address < base || address - base >= bytes || (address - base) % sizeof(Gate) != 0U)
+        throw std::logic_error("native coefficient lookup gate is not owned by its layer");
+    return static_cast<std::size_t>((address - base) / sizeof(Gate));
+}
+
+void reserve_exact(zkgpt::NativeVector<u32>& values, std::size_t count, const char* name) {
+    values.reserve(count);
+    if (count != 0U && values.capacity() != count)
+        throw std::length_error(std::string(name) + " capacity differs from its exact gate count");
+}
+
+}  // namespace
+
 void layer::reserve_gate_arrays(std::size_t unary_count, std::size_t binary_count) {
     uni_gates.reserve(unary_count);
     bin_gates.reserve(binary_count);
+    if ((unary_count != 0 && uni_gates.capacity() != unary_count) ||
+        (binary_count != 0 && bin_gates.capacity() != binary_count))
+        throw std::length_error("native layer gate reservation differs from its exact source bound");
+    if (wide_coefficient_format) {
+        reserve_exact(wide_uni_coefficient_ids, unary_count, "wide unary coefficient IDs");
+        reserve_exact(wide_bin_coefficient_ids, binary_count, "wide binary coefficient IDs");
+    }
 }
 
 void layer::reserve_coefficients(std::size_t distinct_count) {
     if (static_cast<unsigned __int128>(distinct_count) > static_cast<unsigned __int128>(std::numeric_limits<u32>::max()) + 1)
         throw std::length_error("native layer coefficient pool exceeds u32 IDs");
+    const bool needs_wide_ids = distinct_count > 256U;
+    if (needs_wide_ids != wide_coefficient_format) {
+        if (!uni_gates.empty() || !bin_gates.empty() || !wide_uni_coefficient_ids.empty() ||
+            !wide_bin_coefficient_ids.empty())
+            throw std::logic_error("native coefficient ID format must be selected before gate emission");
+        wide_coefficient_format = needs_wide_ids;
+    }
     coefficient_pool.reserve(distinct_count);
     coefficient_lookup_.reserve(distinct_count);
+    if (wide_coefficient_format) {
+        reserve_exact(wide_uni_coefficient_ids, uni_gates.capacity(), "wide unary coefficient IDs");
+        reserve_exact(wide_bin_coefficient_ids, bin_gates.capacity(), "wide binary coefficient IDs");
+    }
 }
 
 void layer::release_native_proof_backing() noexcept {
     zkgpt::NativeVector<uniGate>().swap(uni_gates);
     zkgpt::NativeVector<binGate>().swap(bin_gates);
     zkgpt::NativeVector<ll>().swap(coefficient_pool);
-    zkgpt::NativeVector<u64>().swap(ori_id_u);
-    zkgpt::NativeVector<u64>().swap(ori_id_v);
+    zkgpt::NativeVector<u32>().swap(wide_uni_coefficient_ids);
+    zkgpt::NativeVector<u32>().swap(wide_bin_coefficient_ids);
+    zkgpt::NativeVector<PackedU40>().swap(ori_id_u);
+    zkgpt::NativeVector<PackedU40>().swap(ori_id_v);
     std::vector<pair<u64, u64>>().swap(uni_interval);
     std::vector<pair<u64, u64>>().swap(bin_interval);
     CoefficientLookup().swap(coefficient_lookup_);
+    wide_coefficient_format = false;
 }
 
 bool layer::native_metadata_matches(const layer& other) const noexcept {
@@ -37,7 +79,8 @@ bool layer::native_metadata_matches(const layer& other) const noexcept {
            native_relation_id == other.native_relation_id && native_family_id == other.native_family_id &&
            native_rows == other.native_rows && native_inner == other.native_inner && native_cols == other.native_cols &&
            native_lhs_offset == other.native_lhs_offset && native_rhs_offset == other.native_rhs_offset &&
-           native_output_offset == other.native_output_offset;
+           native_output_offset == other.native_output_offset &&
+           wide_coefficient_format == other.wide_coefficient_format;
 }
 
 void layer::restore_native_proof_backing(layer&& canonical_backing) {
@@ -46,6 +89,9 @@ void layer::restore_native_proof_backing(layer&& canonical_backing) {
     uni_gates = std::move(canonical_backing.uni_gates);
     bin_gates = std::move(canonical_backing.bin_gates);
     coefficient_pool = std::move(canonical_backing.coefficient_pool);
+    wide_uni_coefficient_ids = std::move(canonical_backing.wide_uni_coefficient_ids);
+    wide_bin_coefficient_ids = std::move(canonical_backing.wide_bin_coefficient_ids);
+    wide_coefficient_format = canonical_backing.wide_coefficient_format;
     ori_id_u = std::move(canonical_backing.ori_id_u);
     ori_id_v = std::move(canonical_backing.ori_id_v);
     uni_interval = std::move(canonical_backing.uni_interval);
@@ -53,20 +99,22 @@ void layer::restore_native_proof_backing(layer&& canonical_backing) {
     coefficient_lookup_ = std::move(canonical_backing.coefficient_lookup_);
 }
 
-NativeCoefficientId layer::intern_coefficient(ll value) {
+u32 layer::intern_coefficient(ll value) {
     const auto found = coefficient_lookup_.find(value);
     if (found != coefficient_lookup_.end()) {
-        if (found->second.value >= coefficient_pool.size() || coefficient_pool[found->second.value] != value)
+        if (found->second >= coefficient_pool.size() || coefficient_pool[found->second] != value)
             throw std::logic_error("native layer coefficient lookup is inconsistent");
         return found->second;
     }
     if (coefficient_pool.size() > std::numeric_limits<u32>::max()) throw std::length_error("native layer coefficient pool exceeds u32 IDs");
-    const NativeCoefficientId id(static_cast<u32>(coefficient_pool.size()));
-    const auto inserted = coefficient_lookup_.emplace(value, id);
+    const u32 logical_id = static_cast<u32>(coefficient_pool.size());
+    if (!wide_coefficient_format && logical_id > std::numeric_limits<u8>::max())
+        throw std::length_error("native layer needs the explicitly selected wide coefficient ID format");
+    const auto inserted = coefficient_lookup_.emplace(value, logical_id);
     if (!inserted.second) throw std::logic_error("native layer coefficient lookup insertion raced");
     try { coefficient_pool.push_back(value); }
     catch (...) { coefficient_lookup_.erase(inserted.first); throw; }
-    return id;
+    return logical_id;
 }
 
 ll layer::coefficient(NativeCoefficientId id) const {
@@ -74,17 +122,54 @@ ll layer::coefficient(NativeCoefficientId id) const {
     return coefficient_pool[id.value];
 }
 
-ll layer::coefficient(const uniGate& gate) const { return coefficient(gate.coefficient_id); }
-ll layer::coefficient(const binGate& gate) const { return coefficient(gate.coefficient_id); }
+ll layer::coefficient(const uniGate& gate) const {
+    if (!wide_coefficient_format) return coefficient(gate.coefficient_id);
+    const std::size_t index = checked_gate_offset(gate, uni_gates);
+    if (index >= wide_uni_coefficient_ids.size()) throw std::out_of_range("wide unary coefficient ID is missing");
+    if (wide_uni_coefficient_ids[index] >= coefficient_pool.size())
+        throw std::out_of_range("wide unary coefficient ID exceeds layer pool");
+    return coefficient_pool[wide_uni_coefficient_ids[index]];
+}
 
-void layer::add_unary(u64 g, u64 u, u8 lu, ll value) { uni_gates.emplace_back(g, u, lu, intern_coefficient(value)); }
-void layer::add_binary(u64 g, u64 u, u64 v, ll value, u8 l) { bin_gates.emplace_back(g, u, v, intern_coefficient(value), l); }
+ll layer::coefficient(const binGate& gate) const {
+    if (!wide_coefficient_format) return coefficient(gate.coefficient_id);
+    const std::size_t index = checked_gate_offset(gate, bin_gates);
+    if (index >= wide_bin_coefficient_ids.size()) throw std::out_of_range("wide binary coefficient ID is missing");
+    if (wide_bin_coefficient_ids[index] >= coefficient_pool.size())
+        throw std::out_of_range("wide binary coefficient ID exceeds layer pool");
+    return coefficient_pool[wide_bin_coefficient_ids[index]];
+}
+
+void layer::add_unary(u64 g, u64 u, u8 lu, ll value) {
+    const u32 logical_id = intern_coefficient(value);
+    if (!wide_coefficient_format && logical_id > std::numeric_limits<u8>::max())
+        throw std::length_error("native layer needs the explicitly selected wide coefficient ID format");
+    uni_gates.emplace_back(g, u, lu, NativeCoefficientId(static_cast<u8>(wide_coefficient_format ? 0U : logical_id)));
+    if (wide_coefficient_format) {
+        if (wide_uni_coefficient_ids.size() >= wide_uni_coefficient_ids.capacity())
+            throw std::length_error("wide unary coefficient IDs exceeded the reserved gate count");
+        wide_uni_coefficient_ids.push_back(logical_id);
+    }
+}
+
+void layer::add_binary(u64 g, u64 u, u64 v, ll value, u8 l) {
+    const u32 logical_id = intern_coefficient(value);
+    if (!wide_coefficient_format && logical_id > std::numeric_limits<u8>::max())
+        throw std::length_error("native layer needs the explicitly selected wide coefficient ID format");
+    bin_gates.emplace_back(g, u, v, NativeCoefficientId(static_cast<u8>(wide_coefficient_format ? 0U : logical_id)), l);
+    if (wide_coefficient_format) {
+        if (wide_bin_coefficient_ids.size() >= wide_bin_coefficient_ids.capacity())
+            throw std::length_error("wide binary coefficient IDs exceeded the reserved gate count");
+        wide_bin_coefficient_ids.push_back(logical_id);
+    }
+}
 
 std::uint64_t layer::coefficient_storage_bytes() const {
     const unsigned __int128 buckets = static_cast<unsigned __int128>(coefficient_lookup_.bucket_count()) * sizeof(void*);
     const unsigned __int128 nodes = static_cast<unsigned __int128>(coefficient_lookup_.size()) * (sizeof(CoefficientLookup::value_type) + 2 * sizeof(void*) + sizeof(std::size_t));
     const unsigned __int128 pool = static_cast<unsigned __int128>(coefficient_pool.capacity()) * sizeof(ll);
-    const unsigned __int128 total = pool + buckets + nodes;
+    const unsigned __int128 wide_ids = static_cast<unsigned __int128>(wide_uni_coefficient_ids.capacity() + wide_bin_coefficient_ids.capacity()) * sizeof(u32);
+    const unsigned __int128 total = pool + buckets + nodes + wide_ids;
     if (total > std::numeric_limits<std::uint64_t>::max()) throw std::overflow_error("native layer coefficient storage estimate exceeds u64");
     return static_cast<std::uint64_t>(total);
 }
@@ -126,6 +211,8 @@ void layeredCircuit::initSubset()
     // Reuse one zeroed bitmap for all lanes. Each enumeration clears its words
     // before returning, so only one packed source-support allocation is live.
     zkgpt::NativeVector<std::uint64_t> source_seen(bitmap_word_count, 0);
+    if (source_seen.capacity() != bitmap_word_count)
+        throw std::length_error("native GKR source bitmap capacity differs from its exact support bound");
     const auto support_index_for_coordinate = [&support_ranges, &support_prefix](u64 coordinate) -> std::size_t {
         const auto after = std::upper_bound(support_ranges.begin(), support_ranges.end(), coordinate,
             [](u64 value, const auto& range) { return value < range.first; });
@@ -155,7 +242,7 @@ void layeredCircuit::initSubset()
             if (coordinate >= domain) throw std::out_of_range("native GKR input index exceeds its source-layer domain");
             return domain;
         };
-        const auto make_subset_map = [&](std::size_t source_layer, const auto& visit_coordinates) {
+        const auto make_subset_map = [&](std::size_t source_layer, const auto& visit_coordinates, auto& coordinates) {
             const std::size_t domain = circuit.at(source_layer).size;
             if (source_layer != 0 || source_seen.size() != static_cast<std::size_t>(support_entries / 64 + (support_entries % 64 != 0)))
                 throw std::logic_error("native GKR source-map bitmap does not match its logical source support");
@@ -169,9 +256,10 @@ void layeredCircuit::initSubset()
                 std::uint64_t& word = source_seen[index >> 6];
                 if ((word & mask) == 0) { word |= mask; ++unique_count; }
             });
-            if (unique_count == 0) return zkgpt::NativeVector<u64>{};
-            zkgpt::NativeVector<u64> coordinates;
+            if (unique_count == 0) return;
             coordinates.reserve(unique_count);
+            if (coordinates.capacity() != unique_count)
+                throw std::length_error("native GKR source map capacity differs from its exact unique count");
             for (std::size_t word_index = 0; word_index < source_seen.size(); ++word_index) {
                 std::uint64_t word = source_seen[word_index];
                 while (word != 0) {
@@ -185,11 +273,9 @@ void layeredCircuit::initSubset()
             }
             if (coordinates.size() != unique_count)
                 throw std::logic_error("native GKR source bitmap unique count changed during enumeration");
-            return coordinates;
         };
-        auto finish_map = [](auto&& map, auto& original, u64& count) {
+        auto finish_map = [](auto& map, u64& count) {
             count = map.size();
-            original = std::move(map);
         };
         auto subset_index = [](const auto& sorted_coordinates, u64 coordinate) {
             const auto found = std::lower_bound(sorted_coordinates.begin(), sorted_coordinates.end(), coordinate);
@@ -200,7 +286,7 @@ void layeredCircuit::initSubset()
             const auto source_layer_for_unary = [i](const uniGate& gate) -> std::size_t {
                 return gate.lu == 0 ? 0 : static_cast<std::size_t>(i - 1);
             };
-            auto subset_uidx = make_subset_map(0, [&](const auto& add) {
+            make_subset_map(0, [&](const auto& add) {
                 for (const auto& gate : cur.uni_gates) {
                     if (source_layer_for_unary(gate) == 0) add(source_layer_for_unary(gate), gate.u);
                     has_pre_layer_u |= gate.lu != 0;
@@ -212,8 +298,8 @@ void layeredCircuit::initSubset()
                     has_pre_layer_u |= source_layer != 0;
                     has_pre_layer_v |= gate.getLayerIdV(i) != 0;
                 }
-            });
-            finish_map(std::move(subset_uidx), cur.ori_id_u, cur.size_u[0]);
+            }, cur.ori_id_u);
+            finish_map(cur.ori_id_u, cur.size_u[0]);
             for (auto& gate : cur.uni_gates) {
                 if (!gate.lu) gate.u = subset_index(cur.ori_id_u, gate.u);
             }
@@ -222,13 +308,13 @@ void layeredCircuit::initSubset()
             }
         }
         {
-            auto subset_vidx = make_subset_map(0, [&](const auto& add) {
+            make_subset_map(0, [&](const auto& add) {
                 for (const auto& gate : cur.bin_gates) {
                     const std::size_t source_layer = gate.getLayerIdV(i);
                     if (source_layer == 0) add(source_layer, gate.v);
                 }
-            });
-            finish_map(std::move(subset_vidx), cur.ori_id_v, cur.size_v[0]);
+            }, cur.ori_id_v);
+            finish_map(cur.ori_id_v, cur.size_v[0]);
             for (auto& gate : cur.bin_gates) if (!gate.getLayerIdV(i)) gate.v = subset_index(cur.ori_id_v, gate.v);
         }
         cur.bit_length_u[0] = ceilPow2BitLength(cur.size_u[0]);

@@ -53,8 +53,13 @@ impl Assembly {
     }
 
     fn cell_id(&self, column: usize, row: usize) -> usize {
-        assert!(column < self.columns.len() && row < self.col_len, "permutation cell is outside its declared shape");
-        column.checked_mul(self.col_len).and_then(|base| base.checked_add(row))
+        assert!(
+            column < self.columns.len() && row < self.col_len,
+            "permutation cell is outside its declared shape"
+        );
+        column
+            .checked_mul(self.col_len)
+            .and_then(|base| base.checked_add(row))
             .expect("permutation cell identifier overflow")
     }
 
@@ -135,7 +140,12 @@ impl Assembly {
             std::mem::swap(&mut left_size, &mut right_size);
         }
 
-        self.sizes.insert(left_cycle, left_size.checked_add(right_size).expect("permutation cycle size overflow"));
+        self.sizes.insert(
+            left_cycle,
+            left_size
+                .checked_add(right_size)
+                .expect("permutation cycle size overflow"),
+        );
         self.sizes.remove(&right_cycle);
         let mut i = right_cycle;
         loop {
@@ -165,17 +175,22 @@ impl Assembly {
 
     pub(crate) fn build_pk<'params, C: CurveAffine, P: Params<'params, C>>(
         self,
-        params: &P,
+        _params: &P,
         domain: &EvaluationDomain<C::Scalar>,
         p: &Argument,
-    ) -> ProvingKey<C> {
-        let Assembly { mapping, col_len, .. } = self;
-        build_pk(params, domain, p, move |i, j| {
-            let cell = i.checked_mul(col_len).and_then(|base| base.checked_add(j))
-                .expect("permutation cell identifier overflow");
-            let successor = mapping.get(&cell).copied().unwrap_or(cell);
-            (successor / col_len, successor % col_len)
-        })
+    ) -> Result<ProvingKey<C>, Error> {
+        let Assembly {
+            columns, mapping, ..
+        } = self;
+        if columns != p.get_columns() {
+            return Err(Error::Synthesis);
+        }
+        let mut successors = mapping
+            .into_iter()
+            .map(|(source, target)| (source as u64, target as u64))
+            .collect::<Vec<_>>();
+        successors.sort_unstable_by_key(|entry| entry.0);
+        ProvingKey::from_successors(domain.get_n(), columns, successors).map_err(Error::Transcript)
     }
 
     /// Returns columns that participate in the permutation argument.
@@ -188,7 +203,9 @@ impl Assembly {
         &self,
     ) -> impl Iterator<Item = impl IndexedParallelIterator<Item = (usize, usize)> + '_> {
         (0..self.columns.len()).map(move |column| {
-            (0..self.col_len).into_par_iter().map(move |row| self.mapping_at_idx(column, row))
+            (0..self.col_len)
+                .into_par_iter()
+                .map(move |row| self.mapping_at_idx(column, row))
         })
     }
 }
@@ -343,12 +360,36 @@ impl Assembly {
 
     pub(crate) fn build_pk<'params, C: CurveAffine, P: Params<'params, C>>(
         mut self,
-        params: &P,
+        _params: &P,
         domain: &EvaluationDomain<C::Scalar>,
         p: &Argument,
-    ) -> ProvingKey<C> {
+    ) -> Result<ProvingKey<C>, Error> {
         self.build_ordered_mapping();
-        build_pk(params, domain, p, move |i, j| self.mapping_at_idx(i, j))
+        if self.columns != p.get_columns() {
+            return Err(Error::Synthesis);
+        }
+        let mut successors = Vec::new();
+        for cycle in &self.ordered_cycles {
+            if cycle.len() < 2 {
+                continue;
+            }
+            let members = cycle.iter().copied().collect::<Vec<_>>();
+            for (index, &(column, row)) in members.iter().enumerate() {
+                let (next_column, next_row) = members[(index + 1) % members.len()];
+                let source = (column as u64)
+                    .checked_mul(self.col_len as u64)
+                    .and_then(|base| base.checked_add(row as u64))
+                    .ok_or(Error::BoundsFailure)?;
+                let target = (next_column as u64)
+                    .checked_mul(self.col_len as u64)
+                    .and_then(|base| base.checked_add(next_row as u64))
+                    .ok_or(Error::BoundsFailure)?;
+                successors.push((source, target));
+            }
+        }
+        successors.sort_unstable_by_key(|entry| entry.0);
+        ProvingKey::from_successors(domain.get_n(), p.columns.clone(), successors)
+            .map_err(Error::Transcript)
     }
 
     /// Returns columns that participate in the permutation argument.
@@ -365,89 +406,6 @@ impl Assembly {
                 .into_par_iter()
                 .map(move |j| self.mapping_at_idx(i, j))
         })
-    }
-}
-
-pub(crate) fn build_pk<'params, C: CurveAffine, P: Params<'params, C>>(
-    params: &P,
-    domain: &EvaluationDomain<C::Scalar>,
-    p: &Argument,
-    mapping: impl Fn(usize, usize) -> (usize, usize) + Sync,
-) -> ProvingKey<C> {
-    // Compute [omega^0, omega^1, ..., omega^{params.n - 1}]
-    let mut omega_powers = vec![C::Scalar::ZERO; params.n() as usize];
-    {
-        let omega = domain.get_omega();
-        parallelize(&mut omega_powers, |o, start| {
-            let mut cur = omega.pow_vartime([start as u64]);
-            for v in o.iter_mut() {
-                *v = cur;
-                cur *= &omega;
-            }
-        })
-    }
-
-    // Compute [omega_powers * \delta^0, omega_powers * \delta^1, ..., omega_powers * \delta^m]
-    let mut deltaomega = vec![omega_powers; p.columns.len()];
-    {
-        parallelize(&mut deltaomega, |o, start| {
-            let mut cur = C::Scalar::DELTA.pow_vartime([start as u64]);
-            for omega_powers in o.iter_mut() {
-                for v in omega_powers {
-                    *v *= &cur;
-                }
-                cur *= &C::Scalar::DELTA;
-            }
-        });
-    }
-
-    // Compute permutation polynomials, convert to coset form.
-    let mut permutations = vec![domain.empty_lagrange(); p.columns.len()];
-    {
-        parallelize(&mut permutations, |o, start| {
-            for (x, permutation_poly) in o.iter_mut().enumerate() {
-                let i = start + x;
-                for (j, p) in permutation_poly.iter_mut().enumerate() {
-                    let (permuted_i, permuted_j) = mapping(i, j);
-                    *p = deltaomega[permuted_i][permuted_j];
-                }
-            }
-        });
-    }
-
-    // The permutation polynomials no longer need the copy mapping or the
-    // delta-scaled roots. Releasing these full-domain temporaries before the
-    // coefficient and extended-domain vectors are allocated lowers the
-    // key-generation peak without changing any polynomial values.
-    drop(mapping);
-    drop(deltaomega);
-
-    let mut polys = vec![domain.empty_coeff(); p.columns.len()];
-    {
-        parallelize(&mut polys, |o, start| {
-            for (x, poly) in o.iter_mut().enumerate() {
-                let i = start + x;
-                let permutation_poly = permutations[i].clone();
-                *poly = domain.lagrange_to_coeff(permutation_poly);
-            }
-        });
-    }
-
-    let mut cosets = vec![domain.empty_extended(); p.columns.len()];
-    {
-        parallelize(&mut cosets, |o, start| {
-            for (x, coset) in o.iter_mut().enumerate() {
-                let i = start + x;
-                let poly = polys[i].clone();
-                *coset = domain.coeff_to_extended(&poly);
-            }
-        });
-    }
-
-    ProvingKey {
-        permutations,
-        polys,
-        cosets,
     }
 }
 
@@ -502,10 +460,7 @@ mod sparse_assembly_tests {
     use crate::{
         halo2curves::bn256::{Bn256, Fr},
         plonk::{permutation::Argument, Any, Column},
-        poly::{
-            kzg::commitment::ParamsKZG,
-            EvaluationDomain,
-        },
+        poly::{kzg::commitment::ParamsKZG, EvaluationDomain},
     };
     use ff::{Field, PrimeField};
     use rand_core::OsRng;
@@ -513,9 +468,13 @@ mod sparse_assembly_tests {
     #[test]
     fn touched_sparse_successors_match_dense_assembly_and_vk_commitments() {
         let n = 8usize;
-        let columns = (0..3).map(|i| Column::new(i, Any::advice())).collect::<Vec<_>>();
+        let columns = (0..3)
+            .map(|i| Column::new(i, Any::advice()))
+            .collect::<Vec<_>>();
         let mut argument = Argument::new();
-        for column in &columns { argument.add_column(*column); }
+        for column in &columns {
+            argument.add_column(*column);
+        }
 
         let mut sparse = Assembly::new(n, &argument);
         let mut dense_mapping = (0..columns.len())
@@ -537,20 +496,27 @@ mod sparse_assembly_tests {
         ];
 
         for (left_col, left_row, right_col, right_row) in operations {
-            sparse.copy(columns[left_col], left_row, columns[right_col], right_row).unwrap();
+            sparse
+                .copy(columns[left_col], left_row, columns[right_col], right_row)
+                .unwrap();
 
             let mut left_cycle = dense_aux[left_col][left_row];
             let mut right_cycle = dense_aux[right_col][right_row];
             if left_cycle != right_cycle {
-                if dense_sizes[left_cycle.0][left_cycle.1] < dense_sizes[right_cycle.0][right_cycle.1] {
+                if dense_sizes[left_cycle.0][left_cycle.1]
+                    < dense_sizes[right_cycle.0][right_cycle.1]
+                {
                     std::mem::swap(&mut left_cycle, &mut right_cycle);
                 }
-                dense_sizes[left_cycle.0][left_cycle.1] += dense_sizes[right_cycle.0][right_cycle.1];
+                dense_sizes[left_cycle.0][left_cycle.1] +=
+                    dense_sizes[right_cycle.0][right_cycle.1];
                 let mut cell = right_cycle;
                 loop {
                     dense_aux[cell.0][cell.1] = left_cycle;
                     cell = dense_mapping[cell.0][cell.1];
-                    if cell == right_cycle { break; }
+                    if cell == right_cycle {
+                        break;
+                    }
                 }
                 let next = dense_mapping[left_col][left_row];
                 dense_mapping[left_col][left_row] = dense_mapping[right_col][right_row];
@@ -562,16 +528,32 @@ mod sparse_assembly_tests {
             for column in 0..columns.len() {
                 for row in 0..n {
                     let sparse_target = sparse.mapping_at_idx(column, row);
-                    assert_eq!(sparse_target, dense_mapping[column][row], "successor mismatch after copy operation");
+                    assert_eq!(
+                        sparse_target, dense_mapping[column][row],
+                        "successor mismatch after copy operation"
+                    );
                     let sparse_cell = sparse.cell_id(column, row);
                     let sparse_root = sparse.representative(sparse_cell);
                     let dense_root = dense_aux[column][row];
-                    assert_eq!(sparse.cell_at(sparse_root), dense_root, "cycle representative mismatch after copy operation");
-                    assert_eq!(sparse.cycle_size(sparse_root), dense_sizes[dense_root.0][dense_root.1], "cycle size mismatch after copy operation");
-                    let sparse_sigma = delta.pow_vartime([sparse_target.0 as u64]) * omega.pow_vartime([sparse_target.1 as u64]);
+                    assert_eq!(
+                        sparse.cell_at(sparse_root),
+                        dense_root,
+                        "cycle representative mismatch after copy operation"
+                    );
+                    assert_eq!(
+                        sparse.cycle_size(sparse_root),
+                        dense_sizes[dense_root.0][dense_root.1],
+                        "cycle size mismatch after copy operation"
+                    );
+                    let sparse_sigma = delta.pow_vartime([sparse_target.0 as u64])
+                        * omega.pow_vartime([sparse_target.1 as u64]);
                     let dense_target = dense_mapping[column][row];
-                    let dense_sigma = delta.pow_vartime([dense_target.0 as u64]) * omega.pow_vartime([dense_target.1 as u64]);
-                    assert_eq!(sparse_sigma, dense_sigma, "sigma value mismatch after copy operation");
+                    let dense_sigma = delta.pow_vartime([dense_target.0 as u64])
+                        * omega.pow_vartime([dense_target.1 as u64]);
+                    assert_eq!(
+                        sparse_sigma, dense_sigma,
+                        "sigma value mismatch after copy operation"
+                    );
                 }
             }
         }
@@ -579,7 +561,13 @@ mod sparse_assembly_tests {
         let params = ParamsKZG::<Bn256>::setup(3, OsRng);
         let domain = EvaluationDomain::<Fr>::new(3, 3);
         let sparse_vk = sparse.build_vk(&params, &domain, &argument);
-        let dense_vk = build_vk(&params, &domain, &argument, move |column, row| dense_mapping[column][row]);
-        assert_eq!(sparse_vk.commitments(), dense_vk.commitments(), "verification-key sigma commitments differ");
+        let dense_vk = build_vk(&params, &domain, &argument, move |column, row| {
+            dense_mapping[column][row]
+        });
+        assert_eq!(
+            sparse_vk.commitments(),
+            dense_vk.commitments(),
+            "verification-key sigma commitments differ"
+        );
     }
 }

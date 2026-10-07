@@ -1932,7 +1932,9 @@ bool prove_round(NativeMaskedSumcheckProverState& state, const std::vector<F>& u
         return false;
     }
     if (state.unmasked_running != unmasked_poly[0] + unmasked_poly[1]) {
-        set_reason(reason, "unmasked Sumcheck claim transition failed");
+        set_reason(reason, state.label +
+                             ": unmasked Sumcheck claim transition failed at round " +
+                             std::to_string(round));
         return false;
     }
     std::vector<F> mask(state.degree + 1);

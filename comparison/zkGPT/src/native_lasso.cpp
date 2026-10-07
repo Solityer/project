@@ -1600,6 +1600,8 @@ WeightedBooleanityFold append_weighted_booleanity_t2(NativeMaskedSumcheckProver&
     if (family.table.size() != 2 || beta.size() != query_bits + 1) throw std::invalid_argument("native Lasso T2 Booleanity dimensions are invalid");
     zkgpt::NativeFieldVector column_one;
     column_one.resize(static_cast<std::size_t>(queries));
+    if (column_one.capacity() != static_cast<std::size_t>(queries))
+        throw std::length_error("native Lasso T2 column witness capacity differs from its exact query count");
     for (std::uint64_t query = 0; query < queries; ++query) {
         const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(query) : family.selected_table_rows[static_cast<std::size_t>(query)];
         if (selected >= 2) throw std::invalid_argument("native Lasso T2 selected column is invalid");

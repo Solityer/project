@@ -3630,9 +3630,10 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             write_u128(stream, x);
             write_u128(stream, y);
             write_u64(stream, prefix);
-            stream.put(static_cast<char>(active));
-            stream.put(static_cast<char>(marker));
-            stream.put(static_cast<char>(source));
+            const std::array<char, 3U> flags{{
+                static_cast<char>(active), static_cast<char>(marker),
+                static_cast<char>(source)}};
+            append_bytes(stream, flags.data(), flags.size());
         };
         const auto write_zero = [&](std::ofstream &stream, BN_CTX *context) { write_record(stream, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, context); };
         const auto scratch_dir = config.run_root / "scratch" / "sorted_lookup";
@@ -4265,6 +4266,12 @@ std::string canonical_public_field_digest(const Matrix &matrix) {
     return sha256_bytes(encoded.data(), encoded.size());
 }
 
+std::string canonical_public_field_digest(const Matrix &matrix, const TensorFamily &family) {
+    const auto padded = native_embed_zero_padded(family, native_matrix_values(matrix));
+    const auto encoded = native_encode_public_field_vector(padded);
+    return sha256_bytes(encoded.data(), encoded.size());
+}
+
 PublicStatement make_statement(const Config &config, const Graph &graph, const ModelBundle &model, const StaticTables &tables, const RelationPlan &relation,
                                const GatTrace &trace) {
     PublicStatement statement;
@@ -4277,7 +4284,12 @@ PublicStatement make_statement(const Config &config, const Graph &graph, const M
     statement.topology_id = digest_graph(graph);
     statement.feature_id = digest_matrix(graph.feature_values);
     statement.output_id = digest_matrix(trace.logits);
-    statement.public_output_digest = canonical_public_field_digest(trace.logits);
+    const auto public_output_family = std::find_if(relation.tensor_families.begin(), relation.tensor_families.end(),
+                                                   [](const TensorFamily &family) { return family.id == "public_Y"; });
+    if (public_output_family == relation.tensor_families.end()) fail("RelationPlan has no public_Y family");
+    statement.public_output_digest = trace.logits.values.empty()
+                                         ? canonical_public_field_digest(trace.logits)
+                                         : canonical_public_field_digest(trace.logits, *public_output_family);
     statement.relation_registry_digest = relation.registry_digest;
     statement.relation_terminal_claims_digest = relation.terminal_claims_digest;
     statement.relation_mapping_digest = relation.mapping_digest;
@@ -5192,7 +5204,11 @@ int verify_only(const Config &config, const CliOptions &options) {
 
         const auto public_output_path = local_path(directory, statement.public_output_path, "public_output_path");
         const auto public_output = read_public_output(public_output_path, statement.nodes, statement.classes);
-        if (statement.output_id != digest_matrix(public_output) || canonical_public_field_digest(public_output) != statement.public_output_digest) {
+        const auto public_output_family = std::find_if(relation.tensor_families.begin(), relation.tensor_families.end(),
+                                                       [](const TensorFamily &family) { return family.id == "public_Y"; });
+        if (public_output_family == relation.tensor_families.end()) fail("RelationPlan has no public_Y family");
+        if (statement.output_id != digest_matrix(public_output) ||
+            canonical_public_field_digest(public_output, *public_output_family) != statement.public_output_digest) {
             fail("public output shape or digest does not match the public statement");
         }
         if (backend == Backend::Gpu && !envelope.gpu_kernel_executed) { fail("BLOCKED: GPU proof envelope does not attest CUDA execution"); }

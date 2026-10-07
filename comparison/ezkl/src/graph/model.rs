@@ -1403,7 +1403,11 @@ impl Model {
                 let outputs = self
                     .layout_nodes(&mut config, &mut thread_safe_region, &mut results)
                     .map_err(|e| {
-                        error!("{}", e);
+                        error!(
+                            "graph model layout_nodes failed: node_cursor={} error={:?}",
+                            thread_safe_region.linear_coord(),
+                            e
+                        );
                         halo2_proofs::plonk::Error::Synthesis
                     })?;
 
@@ -1441,7 +1445,11 @@ impl Model {
                         })
                         .collect::<Result<Vec<_>, GraphError>>();
                     res.map_err(|e| {
-                        error!("{}", e);
+                        error!(
+                            "graph output binding failed: node_cursor={} error={:?}",
+                            thread_safe_region.linear_coord(),
+                            e
+                        );
                         halo2_proofs::plonk::Error::Synthesis
                     })?;
                 }
@@ -1551,7 +1559,13 @@ impl Model {
                             .base
                             .layout(region, &values.iter().collect_vec(), n.opkind.clone_dyn())
                             .map_err(|e| {
-                                error!("{}", e);
+                                error!(
+                                    "graph node layout failed: node_index={} op={} linear_coord={} error={:?}",
+                                    idx,
+                                    node.as_str(),
+                                    region.linear_coord(),
+                                    e
+                                );
                                 halo2_proofs::plonk::Error::Synthesis
                             })?
                     };

@@ -121,7 +121,6 @@ pub fn unpack(byte: u8, bits: &mut [bool]) {
     }
 }
 
-#[cfg(not(feature = "parallel-poly-read"))]
 /// Reads a vector of polynomials from buffer
 pub(crate) fn read_polynomial_vec<R: io::Read, F: SerdePrimeField, B>(
     reader: &mut R,
@@ -131,35 +130,6 @@ pub(crate) fn read_polynomial_vec<R: io::Read, F: SerdePrimeField, B>(
     reader.read_exact(&mut len)?;
     let len = u32::from_be_bytes(len);
 
-    let poly_lens: Result<Vec<_>, _> = (0..len)
-        .map(|_| {
-            let mut poly_len = [0u8; 4];
-            reader.read_exact(&mut poly_len)?;
-            Ok::<_, std::io::Error>(u32::from_be_bytes(poly_len))
-        })
-        .collect();
-
-    let _poly_lens = poly_lens?;
-
-    (0..len)
-        .map(|_| Polynomial::<F, B>::read(reader, format))
-        .collect::<io::Result<Vec<_>>>()
-}
-
-#[cfg(feature = "parallel-poly-read")]
-/// Reads a vector of polynomials from buffer
-pub(crate) fn read_polynomial_vec<R: io::Read, F: SerdePrimeField, B: std::marker::Send>(
-    reader: &mut R,
-    format: SerdeFormat,
-) -> io::Result<Vec<Polynomial<F, B>>> {
-    use maybe_rayon::iter::IntoParallelIterator;
-    use maybe_rayon::iter::ParallelIterator;
-
-    let mut len = [0u8; 4];
-    reader.read_exact(&mut len)?;
-    let len = u32::from_be_bytes(len);
-
-    // Read all polynomial lengths first
     let mut poly_lens = Vec::with_capacity(len as usize);
     for _ in 0..len {
         let mut poly_len = [0u8; 4];
@@ -167,23 +137,22 @@ pub(crate) fn read_polynomial_vec<R: io::Read, F: SerdePrimeField, B: std::marke
         poly_lens.push(u32::from_be_bytes(poly_len));
     }
 
-    // Pre-read all polynomial data into separate buffers
-    let mut poly_buffers = Vec::with_capacity(len as usize);
-    for &poly_len in &poly_lens {
-        let repr_len = F::default().to_repr().as_ref().len();
-        // sum of all the Field elements AND also the prepended u32 bytes
-        let buffer_size = repr_len * poly_len as usize + std::mem::size_of::<u32>();
-        let mut buffer = vec![0u8; buffer_size];
-        reader.read_exact(&mut buffer)?;
-        poly_buffers.push(buffer);
-    }
-
-    // Process buffers in parallel
-    poly_buffers
-        .into_par_iter()
-        .map(|buffer| {
-            let mut cursor = std::io::Cursor::new(buffer);
-            Polynomial::<F, B>::read_serial(&mut cursor, format)
+    poly_lens
+        .into_iter()
+        .map(|expected_len| {
+            // `write_polynomial_slice` includes each polynomial's length again
+            // immediately before its values. Check it against the slice header
+            // and stream this column directly into its bounded spill builder.
+            let mut serialized_len = [0u8; 4];
+            reader.read_exact(&mut serialized_len)?;
+            let serialized_len = u32::from_be_bytes(serialized_len);
+            if serialized_len != expected_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "polynomial length does not match vector header",
+                ));
+            }
+            Polynomial::<F, B>::read_with_len(reader, format, expected_len)
         })
         .collect::<io::Result<Vec<_>>>()
 }
@@ -211,4 +180,66 @@ pub(crate) fn polynomial_slice_byte_length<F: PrimeField, B>(slice: &[Polynomial
     let field_len = F::default().to_repr().as_ref().len();
     4 + 4 * slice.len()
         + slice.len() * (4 + field_len * slice.first().map(|poly| poly.len()).unwrap_or(0))
+}
+
+#[cfg(test)]
+mod polynomial_vector_reader_tests {
+    use super::{read_polynomial_vec, write_polynomial_slice};
+    use crate::poly::{native_spill_scope, Coeff, Polynomial};
+    use crate::SerdeFormat;
+    use halo2curves::bn256::Fr;
+
+    fn scratch_base(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "halo2-poly-vector-reader-{}-{label}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn polynomial_vector_stream_roundtrip_and_rejects_length_mismatch() {
+        let base = scratch_base("roundtrip");
+        std::fs::create_dir(&base).expect("create test scratch parent");
+        let spill = native_spill_scope(&base).expect("create scoped spill");
+
+        let source = vec![
+            Polynomial::<Fr, Coeff>::from_vec(vec![Fr::from(2), Fr::from(3)]),
+            Polynomial::<Fr, Coeff>::from_vec(vec![Fr::from(7)]),
+        ];
+        let mut encoded = Vec::new();
+        write_polynomial_slice(&source, &mut encoded, SerdeFormat::RawBytes)
+            .expect("serialize polynomial vector");
+        let decoded = read_polynomial_vec::<_, Fr, Coeff>(
+            &mut std::io::Cursor::new(&encoded),
+            SerdeFormat::RawBytes,
+        )
+        .expect("stream polynomial vector");
+        assert_eq!(decoded.len(), source.len());
+        for (actual, expected) in decoded.iter().zip(&source) {
+            assert_eq!(actual.num_coeffs(), expected.num_coeffs());
+            assert!(actual
+                .iter()
+                .zip(expected.iter())
+                .all(|(actual, expected)| actual == expected));
+        }
+
+        let mut malformed = encoded;
+        // Two vector entries have two header lengths, followed by the first
+        // polynomial's repeated length field.
+        malformed[12..16].copy_from_slice(&3u32.to_be_bytes());
+        let error = read_polynomial_vec::<_, Fr, Coeff>(
+            &mut std::io::Cursor::new(&malformed),
+            SerdeFormat::RawBytes,
+        )
+        .expect_err("mismatched duplicate polynomial length must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+
+        drop(decoded);
+        drop(spill);
+        std::fs::remove_dir_all(base).expect("remove test scratch parent");
+    }
 }

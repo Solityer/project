@@ -48,7 +48,7 @@ use halo2_proofs::SerdeFormat;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use halo2_solidity_verifier;
 use halo2curves::bn256::{Bn256, Fr, G1Affine};
-use halo2curves::ff::{FromUniformBytes, WithSmallOrderMulGroup};
+use halo2curves::ff::{FromUniformBytes, PrimeField, WithSmallOrderMulGroup};
 use halo2curves::serde::SerdeObject;
 use indicatif::{ProgressBar, ProgressStyle};
 use instant::Instant;
@@ -1913,7 +1913,6 @@ fn resolved_circuit_ref(
 }
 
 fn copy_external_file(source: &Path, destination: &Path) -> Result<(), EZKLError> {
-    let bytes = std::fs::read(source)?;
     if source != destination {
         if let Ok(metadata) = std::fs::symlink_metadata(destination) {
             if metadata.file_type().is_symlink() {
@@ -1924,11 +1923,22 @@ fn copy_external_file(source: &Path, destination: &Path) -> Result<(), EZKLError
                 .into());
             }
         }
-        std::fs::write(destination, &bytes)?;
-    }
-    let rebound = std::fs::read(destination)?;
-    if rebound != bytes {
-        return Err(format!("external artifact copy changed: {}", destination.display()).into());
+
+        let source_size = std::fs::metadata(source)?.len();
+        let source_digest = get_file_hash(source)?;
+        std::fs::copy(source, destination)?;
+        let destination_size = std::fs::metadata(destination)?.len();
+        let destination_digest = get_file_hash(destination)?;
+        if destination_size != source_size || destination_digest != source_digest {
+            return Err(format!(
+                "external artifact copy changed: {}",
+                destination.display()
+            )
+            .into());
+        }
+    } else {
+        // Keep the same-path case fail-closed on unreadable or missing inputs.
+        get_file_hash(source)?;
     }
     Ok(())
 }
@@ -2324,6 +2334,50 @@ fn gat_prepare_admission(
     );
     let cs = configure_canonical_constraint_system(&circuit);
     let logrows = settings.run_args.logrows;
+    let selector_count_started = Instant::now();
+    println!(
+        "EZKL_NATIVE_PHASE START stage=count_compressed_selector_columns dataset={} k={} domain={}",
+        loaded.dataset,
+        logrows,
+        1u64 << logrows,
+    );
+    let shape_census = plonk::census_native_shape::<G1Affine, _>(logrows, &circuit)?;
+    let selector_fixed_column_count = shape_census.selector_fixed_column_count;
+    let fixed_column_count_post_compression = cs
+        .num_fixed_columns()
+        .checked_add(selector_fixed_column_count)
+        .ok_or_else(|| "post-compression fixed-column count overflow".to_string())?;
+    let permutation_cells = (cs.num_permutation_columns() as u64)
+        .checked_mul(1u64.checked_shl(logrows).ok_or_else(|| "native GAT domain size overflow".to_string())?)
+        .ok_or_else(|| "native permutation cell count overflow".to_string())?;
+    let copy_successor_upper = shape_census
+        .permutation_copy_call_count
+        .checked_mul(2)
+        .ok_or_else(|| "native permutation copy successor bound overflow".to_string())?;
+    let permutation_successor_entry_count_upper = permutation_cells.min(copy_successor_upper);
+    let selector_activation_bitmap_bytes = u128::from(cs.num_selectors() as u64)
+        .checked_mul((u128::from(1u64 << logrows) + 7) / 8)
+        .ok_or_else(|| "selector activation bitmap byte count overflow".to_string())?;
+    let fixed_polynomial_read_chunk_fields_upper = 16 * 1024usize;
+    let serialized_fr_bytes = Fr::default().to_repr().as_ref().len();
+    let fixed_polynomial_read_raw_chunk_bytes_upper =
+        fixed_polynomial_read_chunk_fields_upper * serialized_fr_bytes;
+    let fixed_polynomial_read_decoded_chunk_bytes_upper =
+        fixed_polynomial_read_chunk_fields_upper * std::mem::size_of::<Fr>();
+    let fixed_polynomial_read_heap_scratch_bytes_upper =
+        fixed_polynomial_read_raw_chunk_bytes_upper
+            + fixed_polynomial_read_decoded_chunk_bytes_upper;
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=count_compressed_selector_columns dataset={} elapsed_ms={:.3} selectors={} selector_fixed_columns={} fixed_post_compression={} copy_calls={} successor_entries_upper={} activation_bitmap_bytes={}",
+        loaded.dataset,
+        selector_count_started.elapsed().as_secs_f64() * 1000.0,
+        cs.num_selectors(),
+        selector_fixed_column_count,
+        fixed_column_count_post_compression,
+        shape_census.permutation_copy_call_count,
+        permutation_successor_entry_count_upper,
+        selector_activation_bitmap_bytes,
+    );
     let domain_size = 1u64
         .checked_shl(logrows)
         .ok_or_else(|| format!("invalid native GAT logrows for admission: {}", logrows))?;
@@ -2336,7 +2390,10 @@ fn gat_prepare_admission(
         .checked_sub(1)
         .ok_or_else(|| "native GAT constraint degree is below two".to_string())?;
     let quotient_extent = domain_size
-        .checked_mul(u64::try_from(quotient_degree)?)
+        .checked_mul(
+            u64::try_from(quotient_degree)
+                .map_err(|_| "native GAT quotient degree exceeds the supported size")?,
+        )
         .ok_or_else(|| "native GAT extended proof domain overflow".to_string())?;
     let proof_domain_size = quotient_extent
         .checked_next_power_of_two()
@@ -2345,7 +2402,7 @@ fn gat_prepare_admission(
     let device_capacity = halo2_proofs::icicle::device_capacity_identity()
         .map_err(|error| format!("native GAT CUDA memory identity failed: {}", error))?;
     let memory_model = serde_json::json!({
-        "schema": "ezkl-halo2-memory-model-v1",
+        "schema": "ezkl-halo2-memory-model-v2",
         "proof_logrows": proof_logrows,
         "proof_domain_size": proof_domain_size,
         "advice_column_phase_ids": cs.advice_column_phase(),
@@ -2358,6 +2415,12 @@ fn gat_prepare_admission(
         "cuda_uuid": device_capacity.0,
         "cuda_free_bytes_at_admission": device_capacity.1,
         "cuda_total_memory_bytes": device_capacity.2,
+        "selector_activation_bitmap_bytes": selector_activation_bitmap_bytes,
+        "fixed_polynomial_read_mode": "streamed_one_polynomial_chunked_v1",
+        "fixed_polynomial_read_chunk_fields_upper": fixed_polynomial_read_chunk_fields_upper,
+        "fixed_polynomial_read_raw_chunk_bytes_upper": fixed_polynomial_read_raw_chunk_bytes_upper,
+        "fixed_polynomial_read_decoded_chunk_bytes_upper": fixed_polynomial_read_decoded_chunk_bytes_upper,
+        "fixed_polynomial_read_heap_scratch_bytes_upper": fixed_polynomial_read_heap_scratch_bytes_upper,
     });
     println!(
         "EZKL_NATIVE_PHASE DONE stage=configure_constraint_system dataset={} elapsed_ms={:.3} advice={} fixed={} instance={} selectors={} lookups={} shuffles={} permutation_columns={} blinding_factors={}",
@@ -2378,7 +2441,7 @@ fn gat_prepare_admission(
     let compiled_circuit_sha256 = get_file_hash(&compiled_path)?;
     let relation_identity = native_admission_relation_identity(&loaded)?;
     let admission = serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "relation_id": "R_GAT-ezkl",
         "dataset": loaded.dataset,
         "model_arch_id": loaded.spec.model.model_arch_id,
@@ -2401,6 +2464,10 @@ fn gat_prepare_admission(
         "constraint_system": {
             "degree": degree,
             "num_fixed_columns": cs.num_fixed_columns(),
+            "selector_fixed_column_count": selector_fixed_column_count,
+            "fixed_column_count_post_compression": fixed_column_count_post_compression,
+            "permutation_copy_call_count": shape_census.permutation_copy_call_count,
+            "permutation_successor_entry_count_upper": permutation_successor_entry_count_upper,
             "num_advice_columns": cs.num_advice_columns(),
             "num_instance_columns": cs.num_instance_columns(),
             "num_selectors": cs.num_selectors(),
@@ -2466,7 +2533,7 @@ fn native_admission_relation_identity(loaded: &crate::gat_adapter::LoadedGat) ->
 fn load_native_admission_circuit(
     loaded: &crate::gat_adapter::LoadedGat,
     admission_dir: &Path,
-) -> Result<GraphCircuit, EZKLError> {
+) -> Result<(GraphCircuit, usize), EZKLError> {
     let admission_path = admission_dir.join("admission.json");
     let settings_path = admission_dir.join("settings.json");
     let compiled_path = admission_dir.join("compiled.circuit");
@@ -2479,7 +2546,7 @@ fn load_native_admission_circuit(
     }
     let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
     let expected_relation_identity = native_admission_relation_identity(loaded)?;
-    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(2)
+    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(3)
         || admission.get("relation_id").and_then(JsonValue::as_str) != Some("R_GAT-ezkl")
         || admission.get("dataset").and_then(JsonValue::as_str) != Some(loaded.dataset.as_str())
         || admission.get("resource_manifest_sha256").and_then(JsonValue::as_str)
@@ -2502,6 +2569,91 @@ fn load_native_admission_circuit(
         return Err("native admission settings disagree with the compiled circuit".into());
     }
     assert_native_gat_identity(&circuit, &loaded.spec)?;
+    let current_cs = configure_canonical_constraint_system(&circuit);
+    let admission_cs = admission
+        .get("constraint_system")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| "native admission has no constraint-system counts".to_string())?;
+    let admission_count = |name: &str| -> Result<usize, EZKLError> {
+        let value = admission_cs
+            .get(name)
+            .and_then(JsonValue::as_u64)
+            .ok_or_else(|| format!("native admission {} is missing or invalid", name))?;
+        usize::try_from(value)
+            .map_err(|_| format!("native admission {} exceeds host index width", name).into())
+    };
+    let precompression_fixed = admission_count("num_fixed_columns")?;
+    let selector_fixed = admission_count("selector_fixed_column_count")?;
+    let fixed_post_compression = admission_count("fixed_column_count_post_compression")?;
+    let permutation_copy_call_count = admission_count("permutation_copy_call_count")?;
+    let permutation_successor_entry_count_upper =
+        admission_count("permutation_successor_entry_count_upper")?;
+    if fixed_post_compression
+        != precompression_fixed
+            .checked_add(selector_fixed)
+            .ok_or_else(|| "native admission fixed-column count overflow".to_string())?
+    {
+        return Err("native admission post-compression fixed-column count is inconsistent".into());
+    }
+    let admitted_permutation_cells = (current_cs.num_permutation_columns() as u128)
+        .checked_mul(1u128 << settings.run_args.logrows)
+        .ok_or_else(|| "native admission permutation cell count overflow".to_string())?;
+    let admitted_copy_bound = (permutation_copy_call_count as u128)
+        .checked_mul(2)
+        .ok_or_else(|| "native admission permutation copy bound overflow".to_string())?;
+    let expected_successor_entry_count_upper =
+        admitted_permutation_cells.min(admitted_copy_bound);
+    if permutation_successor_entry_count_upper as u128 != expected_successor_entry_count_upper {
+        return Err("native admission compact permutation successor bound is inconsistent".into());
+    }
+    for (name, current) in [
+        ("degree", current_cs.degree()),
+        ("num_fixed_columns", current_cs.num_fixed_columns()),
+        ("num_advice_columns", current_cs.num_advice_columns()),
+        ("num_instance_columns", current_cs.num_instance_columns()),
+        ("num_selectors", current_cs.num_selectors()),
+        ("num_lookup_arguments", current_cs.lookups().len()),
+        ("num_shuffle_arguments", current_cs.shuffles().len()),
+        ("num_permutation_columns", current_cs.num_permutation_columns()),
+        ("num_blinding_factors", current_cs.blinding_factors()),
+    ] {
+        if admission_count(name)? != current {
+            return Err(format!("native admission {} disagrees with the current constraint system", name).into());
+        }
+    }
+    let memory_model = admission
+        .get("native_memory_model")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| "native admission has no memory model".to_string())?;
+    if memory_model.get("schema").and_then(JsonValue::as_str)
+        != Some("ezkl-halo2-memory-model-v2")
+        || memory_model.get("fixed_polynomial_read_mode").and_then(JsonValue::as_str)
+            != Some("streamed_one_polynomial_chunked_v1")
+    {
+        return Err("native admission memory model version or polynomial reader mode is unsupported".into());
+    }
+    let n = 1u128
+        .checked_shl(settings.run_args.logrows)
+        .ok_or_else(|| "native admission domain size overflow".to_string())?;
+    let expected_selector_bitmap_bytes = (current_cs.num_selectors() as u128)
+        .checked_mul((n + 7) / 8)
+        .ok_or_else(|| "native admission selector bitmap size overflow".to_string())?;
+    let chunk_fields = 16 * 1024usize;
+    let serialized_fr_bytes = Fr::default().to_repr().as_ref().len();
+    let raw_chunk_bytes = chunk_fields * serialized_fr_bytes;
+    let decoded_chunk_bytes = chunk_fields * std::mem::size_of::<Fr>();
+    let read_heap_bytes = raw_chunk_bytes + decoded_chunk_bytes;
+    for (name, expected) in [
+        ("selector_activation_bitmap_bytes", expected_selector_bitmap_bytes),
+        ("fixed_polynomial_read_chunk_fields_upper", chunk_fields as u128),
+        ("fixed_polynomial_read_raw_chunk_bytes_upper", raw_chunk_bytes as u128),
+        ("fixed_polynomial_read_decoded_chunk_bytes_upper", decoded_chunk_bytes as u128),
+        ("fixed_polynomial_read_heap_scratch_bytes_upper", read_heap_bytes as u128),
+    ] {
+        if memory_model.get(name).and_then(JsonValue::as_u64) != u64::try_from(expected).ok() {
+            return Err(format!("native admission {} disagrees with the source memory bound", name).into());
+        }
+    }
     let run_args = &settings.run_args;
     if !run_args.input_visibility.is_public()
         || !run_args.output_visibility.is_public()
@@ -2539,7 +2691,7 @@ fn load_native_admission_circuit(
             return Err(format!("native admission {} disagrees with its authenticated settings", key).into());
         }
     }
-    Ok(circuit)
+    Ok((circuit, fixed_post_compression))
 }
 
 fn gat_prepare_setup(
@@ -2578,16 +2730,16 @@ fn gat_prepare_setup(
     }
     let settings_path = output_dir.join("settings.json");
     let compiled_path = output_dir.join("compiled.circuit");
-    let circuit = if let Some(admission_dir) = admission_dir.as_deref() {
-        let circuit = load_native_admission_circuit(&loaded, admission_dir)?;
+    let (circuit, admitted_fixed_columns) = if let Some(admission_dir) = admission_dir.as_deref() {
+        let (circuit, fixed_columns) = load_native_admission_circuit(&loaded, admission_dir)?;
         std::fs::copy(admission_dir.join("settings.json"), &settings_path)?;
         std::fs::copy(admission_dir.join("compiled.circuit"), &compiled_path)?;
-        circuit
+        (circuit, Some(fixed_columns))
     } else {
         let circuit = build_canonical_gat_circuit(&loaded)?;
         circuit.settings().save(&settings_path)?;
         circuit.save(compiled_path.clone())?;
-        circuit
+        (circuit, None)
     };
     let pk_path = output_dir.join("pk.key");
     let vk_path = output_dir.join("vk.key");
@@ -2596,7 +2748,11 @@ fn gat_prepare_setup(
         circuit.settings().run_args.logrows,
         &srs_sha256,
     )?;
+    let _native_spill = halo2_proofs::poly::native_spill_scope(&output_dir)?;
     let pk = create_keys::<KZGCommitmentScheme<Bn256>, GraphCircuit>(&circuit, &params, false)?;
+    if admitted_fixed_columns.is_some_and(|expected| pk.get_vk().fixed_commitments().len() != expected) {
+        return Err("native proving-key fixed columns disagree with the admitted selector compression".into());
+    }
     save_vk::<G1Affine>(&vk_path, pk.get_vk())?;
     save_pk::<G1Affine>(&pk_path, &pk)?;
     write_generated_metadata(&loaded.spec, &output_dir).map_err(EZKLError::from)?;
@@ -3457,6 +3613,10 @@ pub(crate) fn setup(
     let logrows = circuit.settings().run_args.logrows;
 
     let params = load_params_prover::<KZGCommitmentScheme<Bn256>>(srs_path, logrows)?;
+    let spill_parent = pk_path
+        .parent()
+        .ok_or_else(|| "proving key path has no parent directory for native scratch".to_string())?;
+    let _native_spill = halo2_proofs::poly::native_spill_scope(spill_parent)?;
     let pk = create_keys::<KZGCommitmentScheme<Bn256>, GraphCircuit>(
         &circuit,
         &params,
@@ -3500,6 +3660,11 @@ pub(crate) fn prove(
 
     let logrows = circuit_settings.run_args.logrows;
     // creates and verifies the proof
+
+    let spill_parent = pk_path
+        .parent()
+        .ok_or_else(|| "proving key path has no parent directory for native scratch".to_string())?;
+    let _native_spill = halo2_proofs::poly::native_spill_scope(spill_parent)?;
 
     let pk = load_pk::<KZGCommitmentScheme<Bn256>, GraphCircuit>(pk_path, circuit.params())?;
 

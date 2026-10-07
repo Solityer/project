@@ -1130,6 +1130,8 @@ G1 masked_provider_commit(const zkgpt::NativeVector<G1> &generators, std::uint64
     const std::size_t chunk_size = static_cast<std::size_t>(
         std::min(count, chunk_limit));
     zkgpt::NativeFieldVector scalars(chunk_size);
+    if (scalars.capacity() != chunk_size)
+        throw std::length_error("Hyrax commitment scalar capacity differs from its exact chunk size");
     G1 result;
     result.clear();
     for (std::uint64_t offset = 0; offset < count; offset += chunk_limit) {
@@ -1146,6 +1148,8 @@ PreparedMaskedView prepare_masked_view(const HyraxMleBasisView &view) {
     const std::size_t active = static_cast<std::size_t>(view.active_domain);
     PreparedMaskedView prepared{zkgpt::NativeVector<G1>(active),
                                 zkgpt::NativeFieldVector(active), {}};
+    if (prepared.generators.capacity() != active || prepared.coefficients.capacity() != active)
+        throw std::length_error("Hyrax masked-view capacity differs from its exact active domain");
     zkgpt::native_for_each_equality_weight(view.point, active, [&prepared](std::size_t index, const Fr &coefficient) { prepared.coefficients[index] = coefficient; });
     zkgpt::NativeStreamingDigest digest("zkgpt-hyrax-masked-canonical-generator-set-v2");
     digest.u64(view.full_domain);
@@ -1498,6 +1502,8 @@ static bool open_masked_mle_provider_impl(
         }
 
         zkgpt::NativeFieldVector random_response(active);
+        if (random_response.capacity() != active)
+            throw std::length_error("Hyrax masked response capacity differs from its exact active domain");
         for (Fr &value : random_response) value.setByCSPRNG();
         Fr random_rho, random_mu;
         random_rho.setByCSPRNG();
@@ -2071,6 +2077,8 @@ HyraxTensorShape validate_tensor_view(const HyraxTensorMleView &view, const std:
 zkgpt::NativeVector<G1> tensor_column_generators(const HyraxTensorMleView &view) {
     const G1 H = derive_pedersen_blinding_generator(view.basis_id);
     zkgpt::NativeVector<G1> generators(static_cast<std::size_t>(view.columns));
+    if (generators.capacity() != static_cast<std::size_t>(view.columns))
+        throw std::length_error("Hyrax tensor generator capacity differs from its exact column count");
     for (std::uint64_t column = 0; column < view.columns; ++column) {
         const G1 generator = view.column_generators.at(column);
         if (!valid_point(generator, true) || generator == H) throw std::invalid_argument("Hyrax tensor canonical column generator is invalid");
@@ -2141,6 +2149,8 @@ zkgpt::NativeFieldVector tensor_row_weights(const std::vector<Fr> &full_point, c
     Fr high_zero_factor(1);
     for (std::size_t bit = shape.active_bits; bit < full_point.size(); ++bit) high_zero_factor *= Fr(1) - full_point[bit];
     zkgpt::NativeFieldVector weights(static_cast<std::size_t>(rows));
+    if (weights.capacity() != static_cast<std::size_t>(rows))
+        throw std::length_error("Hyrax tensor row-weight capacity differs from its exact row count");
     zkgpt::native_for_each_equality_weight(row_point, static_cast<std::size_t>(rows), [&weights, &high_zero_factor](std::size_t row, const Fr &weight) {
         weights[row] = high_zero_factor * weight;
     });
@@ -2157,6 +2167,8 @@ HyraxTensorFoldedColumn tensor_fold_prover(const HyraxTensorMleView &view, const
     folded.commitment.clear();
     folded.blinding = Fr(0);
     folded.values.resize(static_cast<std::size_t>(view.columns));
+    if (folded.values.capacity() != static_cast<std::size_t>(view.columns))
+        throw std::length_error("Hyrax tensor fold capacity differs from its exact column count");
     for (Fr &value : folded.values) value = Fr(0);
     const G1 H = derive_pedersen_blinding_generator(view.basis_id);
     for (std::uint64_t row = 0; row < view.rows; ++row) {
