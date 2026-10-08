@@ -28,7 +28,6 @@ from common import (
     assert_fresh_files,
     atomic_write_json,
     atomic_write_text,
-    baseline_root,
     binary_fingerprint,
     build_binary,
     cleanup_run_outputs,
@@ -39,12 +38,10 @@ from common import (
     FORMAL_BACKENDS,
     load_json,
     paper_metrics,
-    invalidate_results,
     run_logged,
     run_captured,
     local_path,
     derive_run_nonce,
-    formal_preflight_path,
     require_formal_session,
     runtime_source_sha256,
     relative_path,
@@ -378,32 +375,9 @@ def validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resourc
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args(list(argv))
-    root = baseline_root()
-    try:
-        invalidate_results(root)
-        session_id, session, session_manifest_sha256 = require_formal_session(root)
-        backend_tuple = FORMAL_BACKENDS
-        require_manifest(root, "resource_manifest.json", "zkgpt-gat-resource-manifest-v1")
-        resource_manifest_digest = sha256_file(root / "results" / "resource_manifest.json")
-        preflight_path = formal_preflight_path(root, session_id)
-        preflight = load_json(preflight_path, "formal preflight")
-        if not isinstance(preflight, dict) or preflight.get("schema") != PREFLIGHT_SCHEMA:
-            raise ChainError("formal preflight schema is missing or unsupported")
-        for backend in backend_tuple:
-            validate_preflight_binding(root, preflight, resource_manifest_digest, backend,
-                                       session_id, session, session_manifest_sha256)
-    except (ChainError, OSError, ValueError) as exc:
-        print(f"EXPERIMENT_BLOCKED: {exc}", file=sys.stderr)
-        return 2
-    for dataset in DATASETS:
-        for backend in backend_tuple:
-            try:
-                run_cell(root, dataset, backend, preflight, resource_manifest_digest,
-                         session_id, session, session_manifest_sha256, preflight_path)
-            except (ChainError, OSError, ValueError) as exc:
-                print(f"CELL_FAILED: {dataset}: {exc}", file=sys.stderr)
-                return 2
-    return 0
+    print("Direct zkGPT cell execution is private to scripts/run_formal.py; "
+          "use that local formal entrypoint.", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import hashlib
-import fcntl
-import hmac
 import json
 import math
 import os
@@ -21,6 +19,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NoReturn
+from process_guardian import check_guardian_health, finish_guarded_process, run_guarded_capture, spawn_guarded_process, terminate_guarded_process_locally
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "resources" / "resource_manifest.json"
@@ -111,126 +110,6 @@ class ContractError(RuntimeError):
 
 def abort(message: str) -> NoReturn:
     raise ContractError(message)
-
-
-def validate_root_owned_phase(
-    session_dir: Path,
-    session_id: str,
-    phase: str,
-    dataset: str | None = None,
-    *,
-    consume_token: bool = False,
-) -> None:
-    """Require a live root-runner lease for every hidden baseline phase."""
-    if phase not in {"prepare", "cell", "finalize"}:
-        abort("internal formal phase is invalid")
-    if (phase == "cell") != (dataset is not None):
-        abort("internal formal phase dataset binding is invalid")
-    if not FORMAL_SESSION_ID.fullmatch(session_id):
-        abort("internal formal session id is malformed")
-
-    token = os.environ.get("COMPARISON_FORMAL_OWNER_TOKEN", "")
-    if not HEX64.fullmatch(token):
-        abort("internal formal phase requires an authenticated root-owner token")
-    lock_fd_text = os.environ.get("COMPARISON_FORMAL_ROOT_LOCK_FD", "")
-    if not lock_fd_text.isdigit():
-        abort("internal formal phase requires the inherited root lock descriptor")
-    lock_fd = int(lock_fd_text)
-
-    root_session = session_dir.parent
-    comparison_root = ROOT.parent
-    expected_session_dir = comparison_root / "runs" / "formal" / session_id
-    try:
-        if session_dir.resolve(strict=False) != expected_session_dir / "ezkl":
-            abort("internal EZKL session path does not match its root owner session")
-        state_path = expected_session_dir / "state.json"
-        state = load_json(state_path, "root formal session ownership state")
-    except OSError as exc:
-        abort(f"cannot inspect root formal owner state: {exc}")
-    if (root_session != expected_session_dir or state.get("schema") != "comparison-formal-session-v1"
-            or state.get("session_id") != session_id or state.get("status") != "RUNNING"):
-        abort("root formal owner session is absent, stale, or mismatched")
-
-    expected_stage = (f"prepare:ezkl" if phase == "prepare" else
-                      f"cell:ezkl:{dataset}" if phase == "cell" else "finalize:ezkl")
-    if state.get("stage") != expected_stage:
-        abort("root formal owner stage does not authorize this baseline phase")
-    expected_token_sha = state.get("internal_owner_token_sha256")
-    if (not isinstance(expected_token_sha, str)
-            or not hmac.compare_digest(hashlib.sha256(token.encode("ascii")).hexdigest(), expected_token_sha)):
-        abort("internal formal phase owner token does not match the root session")
-
-    lock = state.get("lock")
-    if not isinstance(lock, dict):
-        abort("root formal session has no lock owner identity")
-    owner_pid = lock.get("pid")
-    owner_boot_id = lock.get("boot_id")
-    owner_start_ticks = lock.get("start_ticks")
-    if (isinstance(owner_pid, bool) or not isinstance(owner_pid, int) or owner_pid <= 0
-            or not isinstance(owner_boot_id, str) or not re.fullmatch(r"[0-9a-f-]{36}", owner_boot_id)
-            or not isinstance(owner_start_ticks, str) or not owner_start_ticks.isdigit()):
-        abort("root formal lock owner identity is malformed")
-    try:
-        current_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
-        owner_stat = Path(f"/proc/{owner_pid}/stat").read_text(encoding="ascii")
-        owner_tail = owner_stat[owner_stat.rfind(")") + 2:].split()
-        owner_cmd = [part for part in Path(f"/proc/{owner_pid}/cmdline").read_bytes().split(b"\0") if part]
-        supervisor = state.get("owned_stage")
-        if not isinstance(supervisor, dict):
-            abort("root formal phase has no registered stage supervisor")
-        supervisor_pid = supervisor.get("pid")
-        supervisor_stat = Path(f"/proc/{supervisor_pid}/stat").read_text(encoding="ascii")
-        supervisor_tail = supervisor_stat[supervisor_stat.rfind(")") + 2:].split()
-        supervisor_cmd = [part for part in Path(f"/proc/{supervisor_pid}/cmdline").read_bytes().split(b"\0") if part]
-        supervisor_env = Path(f"/proc/{supervisor_pid}/environ").read_bytes().split(b"\0")
-    except (OSError, IndexError, TypeError, ValueError) as exc:
-        abort(f"root formal owner or stage supervisor is unavailable: {exc}")
-    owner_script = Path(os.fsdecode(owner_cmd[1])).resolve() if len(owner_cmd) > 1 else Path("/")
-    supervisor_script = Path(os.fsdecode(supervisor_cmd[1])).resolve() if len(supervisor_cmd) > 1 else Path("/")
-    owner_sha = hashlib.sha256(token.encode("ascii")).hexdigest()
-    env_session = f"COMPARISON_FORMAL_SESSION_ID={session_id}".encode("ascii")
-    ownership_checks = {
-        "root_boot_id": current_boot_id == owner_boot_id,
-        "root_start_ticks": len(owner_tail) > 19 and owner_tail[19] == owner_start_ticks,
-        "root_script": owner_script == (comparison_root / "formal_runner.py").resolve(),
-        "root_worker_argv": (b"--_worker" in owner_cmd and session_id.encode("ascii") in owner_cmd
-                             and b"--_lock-fd" in owner_cmd),
-        "supervisor_kind": supervisor.get("kind") == "stage-supervisor",
-        "supervisor_stage": supervisor.get("stage") == expected_stage,
-        "supervisor_session": supervisor.get("session_id") == session_id,
-        "supervisor_boot_id": supervisor.get("boot_id") == current_boot_id,
-        "supervisor_token_binding": supervisor.get("owner_token_sha256") == owner_sha,
-        "supervisor_root_binding": supervisor.get("root_owner") == lock,
-        "supervisor_pid": (not isinstance(supervisor_pid, bool) and isinstance(supervisor_pid, int)
-                           and supervisor_pid > 0),
-        "supervisor_parent": len(supervisor_tail) > 19 and supervisor_tail[1] == str(owner_pid),
-        "supervisor_start_ticks": (len(supervisor_tail) > 19
-                                   and supervisor_tail[19] == supervisor.get("start_ticks")),
-        "supervisor_script": supervisor_script == (comparison_root / "formal_runner.py").resolve(),
-        "supervisor_argv": (b"--_stage-supervisor" in supervisor_cmd
-                            and any(session_id.encode("ascii") in arg for arg in supervisor_cmd)),
-        "phase_parent": os.getppid() == supervisor_pid,
-        "supervisor_session_env": env_session in supervisor_env,
-    }
-    failed_checks = [name for name, passed in ownership_checks.items() if not passed]
-    if failed_checks:
-        abort("baseline phase was not launched under its authenticated root stage supervisor: "
-              + ",".join(failed_checks))
-
-    lock_path = comparison_root / "runs" / ".formal.lock"
-    if lock_path.is_symlink():
-        abort("root formal global lock path is aliased")
-    try:
-        inherited = os.fstat(lock_fd)
-        current = lock_path.stat(follow_symlinks=False)
-        if not (os.path.samefile(f"/proc/self/fd/{lock_fd}", lock_path)
-                and inherited.st_dev == current.st_dev and inherited.st_ino == current.st_ino):
-            abort("inherited root lock descriptor does not name the formal global lock")
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (OSError, ValueError) as exc:
-        abort(f"cannot validate the inherited root formal lock: {exc}")
-    if consume_token:
-        os.environ.pop("COMPARISON_FORMAL_OWNER_TOKEN", None)
 
 
 def sha256(path: Path) -> str:
@@ -422,14 +301,11 @@ def _resolve_executable(name: str) -> str:
 
 def _tool_output(path: str, *args: str, timeout_seconds: int = 10) -> str:
     try:
-        result = subprocess.run(
+        result = run_guarded_capture(
             [path, *args],
             cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            env=os.environ.copy(),
             timeout=timeout_seconds,
-            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         abort(f"cannot identify formal tool {path} within {timeout_seconds}s: {exc}")
@@ -440,17 +316,15 @@ def _tool_output(path: str, *args: str, timeout_seconds: int = 10) -> str:
 
 def _gpu_inventory(nvidia_smi: str) -> list[dict[str, Any]]:
     try:
-        probe = subprocess.run(
+        probe = run_guarded_capture(
             [
                 nvidia_smi,
                 "--query-gpu=index,uuid,name,driver_version,compute_cap",
                 "--format=csv,noheader,nounits",
             ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            cwd=ROOT,
+            env=os.environ.copy(),
             timeout=10,
-            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         abort(f"CUDA device probe failed within 10s: {exc}")
@@ -573,14 +447,11 @@ def validate_formal_python_environment() -> dict[str, Any]:
     cxx_path = _resolve_executable("c++")
     make_path = _resolve_executable("make")
     try:
-        active = subprocess.run(
+        active = run_guarded_capture(
             [rustup_path, "show", "active-toolchain"],
             cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            env=os.environ.copy(),
             timeout=10,
-            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         abort(f"cannot identify the active Rust toolchain within 10s: {exc}")
@@ -759,9 +630,17 @@ def validate_resources() -> None:
     require_file(validator, "resource validator")
     timeout_seconds = 900
     print(f"[ezkl-formal] resource validation started (bounded timeout={timeout_seconds}s)", flush=True)
-    process = subprocess.Popen([sys.executable, "-u", str(validator), "--require-complete"], cwd=ROOT, start_new_session=(os.name == "posix"))
+    process = spawn_guarded_process([sys.executable, "-u", str(validator), "--require-complete"], cwd=ROOT)
+    deadline = time.monotonic() + timeout_seconds
     try:
-        returncode = process.wait(timeout=timeout_seconds)
+        while True:
+            try:
+                returncode = process.wait(timeout=min(5.0, max(0.1, deadline - time.monotonic())))
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    raise
+                check_guardian_health()
     except subprocess.TimeoutExpired:
         _stop_process(process)
         abort(f"resource validation timed out after {timeout_seconds}s; validator process group was terminated")
@@ -769,12 +648,21 @@ def validate_resources() -> None:
         print("[ezkl-formal] interrupted during resource validation; terminating validator process group", file=sys.stderr, flush=True)
         _stop_process(process)
         raise
+    except BaseException:
+        _stop_process(process)
+        raise
+    terminated_leftovers = finish_guarded_process(process)
     if returncode != 0:
         abort(f"resource manifest validation failed with exit code {returncode}")
+    if terminated_leftovers:
+        abort("resource validator left descendants after exiting; the process group was cleaned")
     print("[ezkl-formal] resource validation completed", flush=True)
 
 
 def _stop_process(process: subprocess.Popen[Any]) -> None:
+    if getattr(process, "_ezkl_process_group", None) is not None:
+        terminate_guarded_process_locally(process)
+        return
     if process.poll() is not None:
         return
     try:

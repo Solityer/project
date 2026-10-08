@@ -760,6 +760,8 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("gkr_subset_sort_scratch_bytes_upper_bound", report.gkr_subset_sort_scratch_bytes_upper_bound);
     number("gkr_subset_bitmap_scratch_bytes_upper_bound", report.gkr_subset_bitmap_scratch_bytes_upper_bound);
     number("gkr_point_shape_bitmap_scratch_bytes", report.gkr_point_shape_bitmap_scratch_bytes);
+    number("gkr_point_shape_touched_index_scratch_bytes_upper_bound",
+           report.gkr_point_shape_touched_index_scratch_bytes_upper_bound);
     number("gkr_point_shape_layer_count", report.gkr_point_shape_layer_count);
     number("gkr_point_shape_fconn_count", report.gkr_point_shape_fconn_count);
     json_string(out, "gkr_point_shape_digest", report.gkr_point_shape_digest);
@@ -1128,7 +1130,9 @@ int main(int argc, char** argv) {
             const std::uint64_t point_shape_bitmap_bytes = report.gkr_point_shape_bitmap_scratch_bytes;
             std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset << " stage=gkr_point_shape status="
                       << (point_shape_ready ? "PASS" : "BLOCKED") << " layers=" << report.gkr_point_shape_layer_count
-                      << " fconn=" << report.gkr_point_shape_fconn_count << " bitmap_bytes=" << point_shape_bitmap_bytes;
+                      << " fconn=" << report.gkr_point_shape_fconn_count << " bitmap_bytes=" << point_shape_bitmap_bytes
+                      << " touched_index_bytes_upper="
+                      << report.gkr_point_shape_touched_index_scratch_bytes_upper_bound;
             if (!point_shape_ready) std::cerr << " reason=" << report.reason;
             std::cerr << '\n' << std::flush;
             if (!point_shape_ready) {
@@ -1141,23 +1145,41 @@ int main(int argc, char** argv) {
                 const std::uint64_t mapped_bitmap_bytes =
                     point_shape_bitmap_bytes > zkgpt::native_storage::heap_limit
                         ? point_shape_bitmap_bytes : 0;
-                if (heap_bitmap_bytes > std::numeric_limits<std::uint64_t>::max() -
-                                            report.estimated_native_heap_bytes_upper_bound)
+                const std::uint64_t touched_index_bytes =
+                    report.gkr_point_shape_touched_index_scratch_bytes_upper_bound;
+                const std::uint64_t heap_touched_index_bytes =
+                    touched_index_bytes <= zkgpt::native_storage::heap_limit
+                        ? touched_index_bytes : 0;
+                const std::uint64_t mapped_touched_index_bytes =
+                    touched_index_bytes > zkgpt::native_storage::heap_limit
+                        ? touched_index_bytes : 0;
+                if (heap_touched_index_bytes > std::numeric_limits<std::uint64_t>::max() -
+                                                   heap_bitmap_bytes)
+                    throw std::overflow_error("GKR shape-admission heap capacity bound overflows u64");
+                const std::uint64_t shape_heap_bytes = heap_bitmap_bytes + heap_touched_index_bytes;
+                if (shape_heap_bytes > std::numeric_limits<std::uint64_t>::max() -
+                                           report.estimated_native_heap_bytes_upper_bound)
                     throw std::overflow_error("GKR shape-admission capacity bound overflows u64");
-                report.estimated_native_heap_bytes_upper_bound += heap_bitmap_bytes;
+                if (mapped_touched_index_bytes > std::numeric_limits<std::uint64_t>::max() -
+                                                     mapped_bitmap_bytes)
+                    throw std::overflow_error("GKR shape-admission mapped capacity bound overflows u64");
+                const std::uint64_t shape_mapped_bytes = mapped_bitmap_bytes + mapped_touched_index_bytes;
+                report.estimated_native_heap_bytes_upper_bound += shape_heap_bytes;
                 // inspect_gat_capacity has already bounded shape admission as
-                // its own phase and combined it with proof/forward peaks using
-                // max. The bitmap is not retained into those later phases.
+                // its own host phase and combined it with proof/forward peaks
+                // using max. These mapped files are not retained into later phases.
                 report.native_mapped_phase_breakdown.emplace_back(
-                    "shape_admission", mapped_bitmap_bytes);
+                    "shape_admission", shape_mapped_bytes);
                 report.native_mapped_phase_breakdown.emplace_back(
                     "component:shape_admission_bitmap", mapped_bitmap_bytes);
+                report.native_mapped_phase_breakdown.emplace_back(
+                    "component:shape_admission_touched_indices", mapped_touched_index_bytes);
                 report.estimated_native_mapped_bytes_upper_bound = std::max(
                     report.estimated_native_mapped_bytes_upper_bound,
-                    mapped_bitmap_bytes);
+                    shape_mapped_bytes);
                 report.estimated_native_scratch_bytes = std::max(
                     report.estimated_native_scratch_bytes,
-                    mapped_bitmap_bytes);
+                    shape_mapped_bytes);
             }
             shape_model = Model{};
             if (point_shape_ready && report.forward_admission_peak_host_memory_bytes_upper_bound <= resource_snapshot.host_headroom_bytes) {

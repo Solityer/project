@@ -11,6 +11,7 @@ namespace gatzk::util
 {
 
     std::string canonical_input_preprocess_id(std::string_view dataset);
+    bool is_supported_protocol_variant(std::string_view variant) noexcept;
 
     struct HiddenLayerProfile
     {
@@ -49,6 +50,7 @@ namespace gatzk::util
     struct AppConfig
     {
         std::string dataset;
+        std::string protocol_variant = "zkgat";
         std::string data_root = "data";
         std::string cache_root = "data/cache";
         std::string export_dir = "runs/default";

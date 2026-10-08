@@ -363,7 +363,7 @@ where
             let instance_values = instance
                 .iter()
                 .map(|values| {
-                    let mut poly = domain.empty_lagrange();
+                    let mut poly = Polynomial::<Scheme::Scalar, LagrangeCoeff>::mapped_filled(params.n() as usize, Scheme::Scalar::ZERO).map_err(Error::NativeStorage)?;
                     assert_eq!(poly.len(), params.n() as usize);
                     if values.len() > (poly.len() - (meta.blinding_factors() + 1)) {
                         return Err(Error::InstanceTooLarge);
@@ -405,11 +405,12 @@ where
 
             let instance_polys: Vec<_> = instance_values
                 .iter()
-                .map(|poly| {
-                    let lagrange_vec = domain.lagrange_from_vec(poly.to_vec());
-                    domain.lagrange_to_coeff(lagrange_vec)
+                .map(|poly| -> Result<_, Error> {
+                    let mut lagrange_poly = Polynomial::<Scheme::Scalar, LagrangeCoeff>::mapped_filled(poly.len(), Scheme::Scalar::ZERO).map_err(Error::NativeStorage)?;
+                    lagrange_poly.copy_from_slice(&poly[..]);
+                    Ok(domain.lagrange_to_coeff(lagrange_poly))
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             Ok(InstanceSingle {
                 instance_values,
@@ -1210,21 +1211,21 @@ where
 fn test_create_proof() {
     use crate::{
         circuit::SimpleFloorPlanner,
-        plonk::{keygen_pk, keygen_vk},
+        plonk::{keygen_pk, keygen_vk, Column, Instance},
         poly::kzg::{
             commitment::{KZGCommitmentScheme, ParamsKZG},
             multiopen::ProverSHPLONK,
         },
         transcript::{Blake2bWrite, Challenge255, TranscriptWriterBuffer},
     };
-    use halo2curves::bn256::Bn256;
+    use halo2curves::bn256::{Bn256, Fr};
     use rand_core::OsRng;
 
     #[derive(Clone, Copy)]
     struct MyCircuit;
 
     impl<F: Field> Circuit<F> for MyCircuit {
-        type Config = ();
+        type Config = Column<Instance>;
         type FloorPlanner = SimpleFloorPlanner;
         #[cfg(feature = "circuit-params")]
         type Params = ();
@@ -1233,7 +1234,9 @@ fn test_create_proof() {
             *self
         }
 
-        fn configure(_meta: &mut ConstraintSystem<F>) -> Self::Config {}
+        fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
+            meta.instance_column()
+        }
 
         fn synthesize(
             &self,
@@ -1261,11 +1264,12 @@ fn test_create_proof() {
     assert!(matches!(proof.unwrap_err(), Error::InvalidInstances));
 
     // Create proof with correct number of instances
+    let public = [Fr::from(7)];
     create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
         &params,
         &pk,
         &[MyCircuit, MyCircuit],
-        &[&[], &[]],
+        &[&[&public[..]], &[&public[..]]],
         OsRng,
         &mut transcript,
     )
@@ -1383,12 +1387,11 @@ fn packed_selector_count_vk_roundtrip_and_proof_verify() {
         &[0b0000_0001, 0b0000_0010],
         "selector wire bits retain the legacy little-endian packing"
     );
-    let decoded_vk =
-        super::VerifyingKey::<G1Affine>::from_bytes::<SelectorCircuit>(
-            &vk_bytes,
-            SerdeFormat::RawBytes,
-        )
-        .expect("packed selector VK should roundtrip");
+    #[cfg(feature = "circuit-params")]
+    let decoded_vk = super::VerifyingKey::<G1Affine>::from_bytes::<SelectorCircuit>(&vk_bytes, SerdeFormat::RawBytes, ());
+    #[cfg(not(feature = "circuit-params"))]
+    let decoded_vk = super::VerifyingKey::<G1Affine>::from_bytes::<SelectorCircuit>(&vk_bytes, SerdeFormat::RawBytes);
+    let decoded_vk = decoded_vk.expect("packed selector VK should roundtrip");
     assert_eq!(decoded_vk.transcript_repr(), vk.transcript_repr());
 
     let pk = keygen_pk(&params, vk, &circuit).expect("keygen_pk should succeed");

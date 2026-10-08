@@ -118,6 +118,7 @@ namespace gatzk::protocol
     struct VerifierConfig
     {
         std::string dataset;
+        std::string protocol_variant = "zkgat";
         std::string task_type = "transductive_node_classification";
         std::string report_unit = "node";
         std::string batching_rule = "whole_graph_single";

@@ -21,6 +21,11 @@ namespace gatzk::util
         throw std::runtime_error("unsupported formal dataset for input preprocessing: " + std::string(dataset));
     }
 
+    bool is_supported_protocol_variant(std::string_view variant) noexcept
+    {
+        return variant == "zkgat" || variant == "wo_feature_folding" || variant == "wo_shared_neighborhood";
+    }
+
     namespace
     {
 
@@ -388,6 +393,7 @@ namespace gatzk::util
                 "output_mode",
                 "privacy_policy",
                 "proof_task",
+                "protocol_variant",
                 "verifier_registry_path",
                 "verifier_registry_digest",
             };
@@ -413,6 +419,10 @@ namespace gatzk::util
         }
         void validate_config(const AppConfig &config)
         {
+            if (!is_supported_protocol_variant(config.protocol_variant))
+            {
+                throw std::runtime_error("formal config protocol_variant must be one of: zkgat, wo_feature_folding, wo_shared_neighborhood");
+            }
             if (config.dataset.empty())
             {
                 throw std::runtime_error("formal config must set dataset explicitly");
@@ -712,6 +722,8 @@ namespace gatzk::util
         config.project_root = canonical_scale_chain_path.parent_path().parent_path().string();
         if (entries.contains("dataset"))
             config.dataset = entries["dataset"];
+        if (entries.contains("protocol_variant"))
+            config.protocol_variant = entries["protocol_variant"];
         if (entries.contains("data_root"))
             config.data_root = entries["data_root"];
         if (entries.contains("cache_root"))

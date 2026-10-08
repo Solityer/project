@@ -164,3 +164,14 @@ if(GATZK_BUILD_CORE_EXECUTION_REGRESSION)
     target_link_libraries(gatzk_core_execution_regression PRIVATE gatzkml)
     target_compile_definitions(gatzk_core_execution_regression PRIVATE GATZK_EXECUTION_TEST_ROOT="${PROJECT_SOURCE_DIR}/tests/.core_execution")
 endif()
+
+option(GATZK_BUILD_PROTOCOL_VARIANT_REGRESSION "Build isolated protocol-variant proof regression" OFF)
+if(GATZK_BUILD_PROTOCOL_VARIANT_REGRESSION)
+    add_executable(gatzk_protocol_variant_regression EXCLUDE_FROM_ALL tests/protocol_variant_regression.cpp)
+    target_link_libraries(gatzk_protocol_variant_regression PRIVATE gatzkml)
+    target_compile_definitions(
+        gatzk_protocol_variant_regression
+        PRIVATE GATZK_PROTOCOL_VARIANT_TEST_ROOT="${PROJECT_SOURCE_DIR}"
+                GATZK_PROTOCOL_VARIANT_TEST_SRS_SETUP="$<TARGET_FILE:gatzk_srs_setup>")
+    add_dependencies(gatzk_protocol_variant_regression gatzk_srs_setup)
+endif()

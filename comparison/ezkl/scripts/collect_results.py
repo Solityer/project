@@ -466,6 +466,18 @@ def check_pair_consistency(cells: list[dict[str, Any]]) -> None:
                 abort(f"CPU/GPU relation mismatch for {dataset}: field={field}")
 
 
+def build_matrix_document(cells: list[dict[str, Any]], *, datasets: tuple[str, ...], source_sha256: str, resource_sha256: str, collected_at_utc: str, formal_session_id: str | None, backends: tuple[str, ...] | None) -> dict[str, Any]:
+    document = {"schema_version": 1, "baseline": "ezkl", "collection_status": "COLLECTED_PENDING_FINAL_VALIDATION", "relation_id": CANONICAL_RELATION, "datasets": list(datasets), "cell_count": len(cells), "source_tree_sha256": source_sha256, "resource_manifest_sha256": resource_sha256, "collected_at_utc": collected_at_utc, "cells": cells}
+    if formal_session_id is not None:
+        document["formal_session_id"] = formal_session_id
+    else:
+        if backends is None:
+            abort("local matrix construction requires explicit backends")
+        document["backends"] = list(backends)
+        document["pair_consistency_checked"] = set(backends) == set(BACKENDS)
+    return document
+
+
 def main(args: argparse.Namespace) -> int:
     selected_datasets = tuple(args.datasets)
     if len(set(selected_datasets)) != len(selected_datasets):
@@ -505,23 +517,7 @@ def main(args: argparse.Namespace) -> int:
         abort("collector did not obtain the requested result cells")
     check_pair_consistency(cells)
     output.parent.mkdir(parents=True, exist_ok=True)
-    document = {
-        "schema_version": 1,
-        "baseline": "ezkl",
-        "collection_status": "COLLECTED_PENDING_FINAL_VALIDATION",
-        "relation_id": CANONICAL_RELATION,
-        "datasets": list(selected_datasets),
-        "cell_count": len(cells),
-        "source_tree_sha256": source_tree_hash(),
-        "resource_manifest_sha256": resource_manifest_hash(),
-        "collected_at_utc": datetime.now(timezone.utc).isoformat(),
-        "cells": cells,
-    }
-    if formal:
-        document["formal_session_id"] = args.session_id
-    else:
-        document["backends"] = list(selected_backends)
-        document["pair_consistency_checked"] = set(selected_backends) == set(BACKENDS)
+    document = build_matrix_document(cells, datasets=selected_datasets, source_sha256=source_tree_hash(), resource_sha256=resource_manifest_hash(), collected_at_utc=datetime.now(timezone.utc).isoformat(), formal_session_id=args.session_id if formal else None, backends=None if formal else selected_backends)
     output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
     mode = "formal dataset results" if formal else "local-only results"
     print(f"collected {len(cells)} verified {mode} into {output.relative_to(ROOT)}; final validation remains required")

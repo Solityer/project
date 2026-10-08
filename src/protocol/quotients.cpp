@@ -25,6 +25,15 @@ namespace gatzk::protocol
         std::array<std::vector<algebra::FieldElement>, 5> betas;
     };
 
+    struct FeatureCopyRouteEvaluationConstants
+    {
+        FeatureCopyRouteRelationMeta relation;
+        algebra::FieldElement beta;
+        algebra::FieldElement eta;
+    };
+
+    using FeatureCopyRoutesByHead = std::vector<std::vector<std::vector<FeatureCopyRouteEvaluationConstants>>>;
+
     struct HiddenHeadEvaluationConstants
     {
         std::size_t layer_index = 0;
@@ -52,6 +61,10 @@ namespace gatzk::protocol
         algebra::FieldElement eta_elu;
         algebra::FieldElement beta_t;
         algebra::FieldElement eta_t;
+        algebra::FieldElement beta_t_den;
+        algebra::FieldElement eta_t_den;
+        algebra::FieldElement beta_t_agg;
+        algebra::FieldElement eta_t_agg;
     };
 
     struct OutputHeadEvaluationConstants
@@ -90,6 +103,10 @@ namespace gatzk::protocol
         algebra::FieldElement eta_exp;
         algebra::FieldElement beta_t;
         algebra::FieldElement eta_t;
+        algebra::FieldElement beta_t_den;
+        algebra::FieldElement eta_t_den;
+        algebra::FieldElement beta_t_agg;
+        algebra::FieldElement eta_t_agg;
         algebra::FieldElement beta_view;
         algebra::FieldElement eta_view;
         algebra::FieldElement gamma;
@@ -103,6 +120,7 @@ namespace gatzk::protocol
         SignedDivisionEvaluationConstants average_division;
 
         std::vector<BindingRelationMeta> binding_metadata;
+        FeatureCopyRoutesByHead feature_copy_routes;
         std::vector<std::vector<HiddenHeadEvaluationConstants>> hidden_head_constants;
         std::vector<OutputHeadEvaluationConstants> output_heads;
     };
@@ -133,6 +151,7 @@ namespace gatzk::protocol
         algebra::FieldElement alpha_quot;
 
         std::vector<BindingRelationMeta> binding_metadata;
+        FeatureCopyRoutesByHead feature_copy_routes;
         std::vector<MatrixFoldPlan> matrix_fold_plans;
         std::vector<FlatMatrixPlan> flat_matrix_plans;
         std::vector<BroadcastFlatPlan> broadcast_flat_plans;
@@ -143,6 +162,46 @@ namespace gatzk::protocol
 
         using algebra::FieldElement;
         using Clock = std::chrono::steady_clock;
+
+        FeatureCopyRoutesByHead
+        bind_feature_copy_route_challenges(const ProtocolContext &context, const std::map<std::string, FieldElement> &challenges)
+        {
+            if (context.config.protocol_variant != "wo_feature_folding")
+                return {};
+            const auto routes = build_feature_copy_route_metadata(context);
+            FeatureCopyRoutesByHead bound(context.model.hidden_layers.size());
+            std::unordered_map<std::string, std::vector<const FeatureCopyRouteRelationMeta *>> routes_by_source_matrix;
+            routes_by_source_matrix.reserve(routes.size());
+            for (const auto &route : routes)
+                routes_by_source_matrix[route.source_matrix_object].push_back(&route);
+
+            std::size_t bound_count = 0;
+            for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
+            {
+                bound[layer_index].resize(context.model.hidden_layers[layer_index].heads.size());
+                for (std::size_t local_head_index = 0; local_head_index < context.model.hidden_layers[layer_index].heads.size(); ++local_head_index)
+                {
+                    const auto source_matrix = hidden_head_prefix(layer_index, local_head_index) + "_H_prime";
+                    auto &head_routes = bound[layer_index][local_head_index];
+                    if (const auto found = routes_by_source_matrix.find(source_matrix); found != routes_by_source_matrix.end())
+                    {
+                        head_routes.reserve(found->second.size());
+                        for (const auto *route : found->second)
+                        {
+                            head_routes.push_back(FeatureCopyRouteEvaluationConstants{
+                                .relation = *route,
+                                .beta = challenges.at(route->beta_challenge_label),
+                                .eta = challenges.at(route->eta_challenge_label),
+                            });
+                            ++bound_count;
+                        }
+                    }
+                }
+            }
+            if (bound_count != routes.size())
+                throw std::runtime_error("feature-copy quotient route registry does not map to hidden layers and heads");
+            return bound;
+        }
 
         double elapsed_ms(const Clock::time_point &start, const Clock::time_point &end)
         {
@@ -366,7 +425,8 @@ namespace gatzk::protocol
                 if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv" || name == "Y_prime_star" || name == "Table_src" ||
                     name == "m_src" || name == "J_src_node" || name == "R_src_node" || name == "Y_star" || name == "T" || name == "Table_dst" ||
                     name == "m_dst" || name == "J_dst_node" || name == "R_dst_node" || name == "Table_t" || name == "m_t" || name == "J_t_node" ||
-                    name == "R_t_node")
+                    name == "R_t_node" || name == "Table_t_den" || name == "m_t_den" || name == "J_t_den_node" || name == "R_t_den_node" ||
+                    name == "Table_t_agg" || name == "m_t_agg" || name == "J_t_agg_node" || name == "R_t_agg_node")
                 {
                     return std::string("N");
                 }
@@ -377,7 +437,9 @@ namespace gatzk::protocol
                     name == "C_max" || name == "Table_R" || name == "Query_R" || name == "m_R" || name == "R_R" || name == "Sum_edge" || name == "inv_edge" ||
                     name == "alpha" || name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp" || name == "Y_prime_star_edge" ||
                     name == "widehat_y_star" || name == "w" || name == "T_edge" || name == "PSQ" || name == "Y_star_edge" || name == "Query_dst" ||
-                    name == "J_dst_edge" || name == "R_dst" || name == "Query_t" || name == "J_t_edge" || name == "R_t")
+                    name == "J_dst_edge" || name == "R_dst" || name == "Query_t" || name == "J_t_edge" || name == "R_t" || name == "PSQ_den" ||
+                    name == "Query_t_den" || name == "J_t_den_edge" || name == "R_t_den" || name == "PSQ_agg" || name == "Query_t_agg" ||
+                    name == "J_t_agg_edge" || name == "R_t_agg")
                 {
                     return std::string("edge");
                 }
@@ -385,6 +447,13 @@ namespace gatzk::protocol
             if (const auto suffix = hidden_head_suffix(label); suffix.has_value())
             {
                 const auto &name = *suffix;
+                if (name.rfind("FeatureRoute_r", 0) == 0)
+                {
+                    if (name.ends_with("_H_edge") || name.ends_with("_Query") || name.ends_with("_J_edge") || name.ends_with("_R_edge"))
+                        return std::string("edge");
+                    if (name.ends_with("_Table") || name.ends_with("_m") || name.ends_with("_J_node") || name.ends_with("_R_node"))
+                        return std::string("N");
+                }
                 if (name == "H_prime" || name == "H_agg_pre" || name == "H_agg")
                     return std::string("coef");
                 if (name == "ScoreMask_src" || name == "ScoreMask_dst")
@@ -410,7 +479,8 @@ namespace gatzk::protocol
                 if (name == "E_src" || name == "E_dst" || name == "M" || name == "Sum" || name == "inv" || name == "H_star" || name == "Table_src" ||
                     name == "m_src" || name == "J_src_node" || name == "R_src_node" || name == "H_agg_pre_star" || name == "T_psq" || name == "H_agg_star" ||
                     name == "Table_dst" || name == "m_dst" || name == "J_dst_node" || name == "R_dst_node" || name == "Table_t" || name == "m_t" ||
-                    name == "J_t_node" || name == "R_t_node")
+                    name == "J_t_node" || name == "R_t_node" || name == "Table_t_den" || name == "m_t_den" || name == "J_t_den_node" ||
+                    name == "R_t_den_node" || name == "Table_t_agg" || name == "m_t_agg" || name == "J_t_agg_node" || name == "R_t_agg_node")
                 {
                     return std::string("N");
                 }
@@ -422,7 +492,8 @@ namespace gatzk::protocol
                     name == "Table_exp" || name == "Query_exp" || name == "m_exp" || name == "R_exp" || name == "Table_ELU" || name == "Query_ELU" ||
                     name == "m_ELU" || name == "R_ELU" || name == "widehat_v_pre_star" || name == "w_psq" || name == "T_psq_edge" || name == "PSQ" ||
                     name == "H_agg_star_edge" || name == "Query_dst" || name == "J_dst_edge" || name == "R_dst" || name == "Query_t" || name == "J_t_edge" ||
-                    name == "R_t")
+                    name == "R_t" || name == "PSQ_den" || name == "Query_t_den" || name == "J_t_den_edge" || name == "R_t_den" || name == "PSQ_agg" ||
+                    name == "Query_t_agg" || name == "J_t_agg_edge" || name == "R_t_agg")
                 {
                     return std::string("edge");
                 }
@@ -1107,6 +1178,7 @@ namespace gatzk::protocol
         plan->y_out = challenges.at("y_out");
 
         plan->binding_metadata = build_binding_relation_metadata(context);
+        plan->feature_copy_routes = bind_feature_copy_route_challenges(context, challenges);
         plan->hidden_head_constants.resize(context.model.hidden_layers.size());
         for (std::size_t layer_index = 0; layer_index < context.model.hidden_layers.size(); ++layer_index)
         {
@@ -1142,8 +1214,18 @@ namespace gatzk::protocol
                 constants.eta_exp = challenges.at(challenge("eta_exp_h"));
                 constants.beta_elu = challenges.at(challenge("beta_ELU_h"));
                 constants.eta_elu = challenges.at(challenge("eta_ELU_h"));
-                constants.beta_t = challenges.at(challenge("beta_t_h"));
-                constants.eta_t = challenges.at(challenge("eta_t_h"));
+                if (context.config.protocol_variant == "wo_shared_neighborhood")
+                {
+                    constants.beta_t_den = challenges.at(challenge("beta_t_den_h"));
+                    constants.eta_t_den = challenges.at(challenge("eta_t_den_h"));
+                    constants.beta_t_agg = challenges.at(challenge("beta_t_agg_h"));
+                    constants.eta_t_agg = challenges.at(challenge("eta_t_agg_h"));
+                }
+                else
+                {
+                    constants.beta_t = challenges.at(challenge("beta_t_h"));
+                    constants.eta_t = challenges.at(challenge("eta_t_h"));
+                }
                 layer_constants.push_back(std::move(constants));
             }
         }
@@ -1177,8 +1259,18 @@ namespace gatzk::protocol
             constants.beta_r = challenges.at(output_challenge_name("beta_R_out", head_index));
             constants.beta_exp = challenges.at(output_challenge_name("beta_exp_out", head_index));
             constants.eta_exp = challenges.at(output_challenge_name("eta_exp_out", head_index));
-            constants.beta_t = challenges.at(output_challenge_name("beta_t_out", head_index));
-            constants.eta_t = challenges.at(output_challenge_name("eta_t_out", head_index));
+            if (context.config.protocol_variant == "wo_shared_neighborhood")
+            {
+                constants.beta_t_den = challenges.at(output_challenge_name("beta_t_den_out", head_index));
+                constants.eta_t_den = challenges.at(output_challenge_name("eta_t_den_out", head_index));
+                constants.beta_t_agg = challenges.at(output_challenge_name("beta_t_agg_out", head_index));
+                constants.eta_t_agg = challenges.at(output_challenge_name("eta_t_agg_out", head_index));
+            }
+            else
+            {
+                constants.beta_t = challenges.at(output_challenge_name("beta_t_out", head_index));
+                constants.eta_t = challenges.at(output_challenge_name("eta_t_out", head_index));
+            }
             constants.beta_view = challenges.at(output_bias_view_beta_label(head_index));
             constants.eta_view = challenges.at(output_bias_view_eta_label(head_index));
             constants.gamma = challenges.at(output_bias_basis_gamma_label(head_index));
@@ -1543,6 +1635,9 @@ namespace gatzk::protocol
         const auto q_edge_next = eval_omega("P_Q_edge_valid");
         const auto q_new_next = eval_omega("P_Q_grp_new_edge");
         const auto q_end = eval_z("P_Q_grp_end_edge");
+        const FeatureCopyRoutesByHead local_feature_copy_routes =
+            evaluation_plan == nullptr ? bind_feature_copy_route_challenges(context, challenges) : FeatureCopyRoutesByHead{};
+        const auto &feature_copy_routes = evaluation_plan != nullptr ? evaluation_plan->feature_copy_routes : local_feature_copy_routes;
         const auto src_z = eval_z("P_src");
         const auto dst_z = eval_z("P_dst");
         const auto q_tbl_l_z = eval_z("P_Q_tbl_L");
@@ -1694,6 +1789,7 @@ namespace gatzk::protocol
                 const auto eta_dst_cu = planned != nullptr ? planned->eta_dst_cu : eta_dst_sq * eta_dst;
                 const auto eta_dst_4 = planned != nullptr ? planned->eta_dst_4 : eta_dst_cu * eta_dst;
                 const auto eta_dst_5 = planned != nullptr ? planned->eta_dst_5 : eta_dst_4 * eta_dst;
+                const bool feature_folding = context.config.protocol_variant != "wo_feature_folding";
                 const auto beta_l = planned != nullptr ? planned->beta_l : challenges.at(challenge("beta_L_h"));
                 const auto eta_l = planned != nullptr ? planned->eta_l : challenges.at(challenge("eta_L_h"));
                 const auto beta_r = planned != nullptr ? planned->beta_r : challenges.at(challenge("beta_R_h"));
@@ -1702,8 +1798,13 @@ namespace gatzk::protocol
                 const auto beta_elu = planned != nullptr ? planned->beta_elu : challenges.at(challenge("beta_ELU_h"));
                 const auto eta_elu = planned != nullptr ? planned->eta_elu : challenges.at(challenge("eta_ELU_h"));
                 const auto q_qry_elu_z = eval_z(planned != nullptr ? planned->elu_query_selector : hidden_q_nd_h_selector_label(layer_index));
-                const auto beta_t = planned != nullptr ? planned->beta_t : challenges.at(challenge("beta_t_h"));
-                const auto eta_t = planned != nullptr ? planned->eta_t : challenges.at(challenge("eta_t_h"));
+                const bool shared_neighborhood = context.config.protocol_variant == "wo_shared_neighborhood";
+                const auto beta_t = shared_neighborhood ? (planned != nullptr ? planned->beta_t_den : challenges.at(challenge("beta_t_den_h")))
+                                                        : (planned != nullptr ? planned->beta_t : challenges.at(challenge("beta_t_h")));
+                const auto eta_t = shared_neighborhood ? (planned != nullptr ? planned->eta_t_den : challenges.at(challenge("eta_t_den_h")))
+                                                        : (planned != nullptr ? planned->eta_t : challenges.at(challenge("eta_t_h")));
+                const auto beta_t_agg = shared_neighborhood ? (planned != nullptr ? planned->beta_t_agg : challenges.at(challenge("beta_t_agg_h"))) : FieldElement::zero();
+                const auto eta_t_agg = shared_neighborhood ? (planned != nullptr ? planned->eta_t_agg : challenges.at(challenge("eta_t_agg_h"))) : FieldElement::zero();
 
                 auto z_head = [&](std::string_view suffix) { return eval_z(prefix + std::string(suffix)); };
                 auto omega_head = [&](std::string_view suffix) { return eval_omega(prefix + std::string(suffix)); };
@@ -1713,7 +1814,7 @@ namespace gatzk::protocol
                 const auto query_src_z = z_head("Query_src");
                 const auto e_src_edge_z = z_head("E_src_edge");
                 const auto e_dst_edge_z = z_head("E_dst_edge");
-                const auto h_src_star_edge_z = z_head("H_src_star_edge");
+                const auto h_src_star_edge_z = feature_folding ? z_head("H_src_star_edge") : Scalar(FieldElement::zero());
                 const auto s_z = z_head("S");
                 const auto table_l_z = z_head("Table_L");
                 const auto query_l_z = z_head("Query_L");
@@ -1734,14 +1835,6 @@ namespace gatzk::protocol
                 const auto table_exp_z = z_head("Table_exp");
                 const auto query_exp_z = z_head("Query_exp");
                 const auto m_exp_z = z_head("m_exp");
-                const auto psq_z = z_head("PSQ");
-                const auto psq_omega = omega_head("PSQ");
-                const auto w_psq_z = z_head("w_psq");
-                const auto w_psq_omega = omega_head("w_psq");
-                const auto t_psq_edge_z = z_head("T_psq_edge");
-                const auto r_t_z = z_head("R_t");
-                const auto r_t_omega = omega_head("R_t");
-                const auto query_t_z = z_head("Query_t");
                 const auto table_elu_z = z_head("Table_ELU");
                 const auto query_elu_z = z_head("Query_ELU");
                 const auto m_elu_z = z_head("m_ELU");
@@ -1762,8 +1855,31 @@ namespace gatzk::protocol
                 acc.add(first * r_src_z);
                 acc.add(q_edge * ((query_src_z + beta_src) * z_head("J_src_edge") - one));
                 acc.add(not_last * route_edge_step(r_src_omega, r_src_z, query_src_z, beta_src, q_edge));
-                acc.add(query_src_z - (src_z + eta_src * e_src_edge_z + eta_src_sq * h_src_star_edge_z));
+                if (feature_folding)
+                    acc.add(query_src_z - (src_z + eta_src * e_src_edge_z + eta_src_sq * h_src_star_edge_z));
+                else
+                    acc.add(query_src_z - (src_z + eta_src * e_src_edge_z));
                 acc.add(zero_on_unselected(q_edge, query_src_z));
+
+                if (!feature_copy_routes.empty())
+                {
+                    for (const auto &route_constants : feature_copy_routes.at(layer_index).at(local_head_index))
+                    {
+                        const auto &route = route_constants.relation;
+                        const auto query = eval_z(route.query_object);
+                        const auto inverse = eval_z(route.edge_inverse_object);
+                        const auto accumulator = eval_z(route.edge_accumulator_object);
+                        const auto accumulator_next = eval_omega(route.edge_accumulator_object);
+                        const auto edge_index = eval_z(route.edge_index_object);
+                        const auto edge_value = eval_z(route.edge_value_object);
+                        acc.add(first * accumulator);
+                        acc.add(q_edge * ((query + route_constants.beta) * inverse - one));
+                        acc.add((one - q_edge) * inverse);
+                        acc.add(not_last * route_edge_step(accumulator_next, accumulator, query, route_constants.beta, q_edge));
+                        acc.add(query - (edge_index + route_constants.eta * edge_value));
+                        acc.add(zero_on_unselected(q_edge, query));
+                    }
+                }
 
                 acc.add(q_edge * (s_z - e_src_edge_z - e_dst_edge_z));
                 add_logup_constraints(prefix, "L", q_tbl_l_z, q_qry_l_z, beta_l);
@@ -1797,14 +1913,53 @@ namespace gatzk::protocol
                 acc.add(zero_on_unselected(q_tbl_exp_z, m_exp_z));
                 acc.add(zero_on_unselected(q_qry_exp_z, query_exp_z));
 
-                acc.add(first * (psq_z - q_edge * w_psq_z));
-                acc.add(psq_step(psq_omega, psq_z, w_psq_omega, q_edge_next, q_new_next));
-                acc.add(q_end * (psq_z - t_psq_edge_z));
-                acc.add(first * r_t_z);
-                acc.add(q_edge * ((query_t_z + beta_t) * z_head("J_t_edge") - one));
-                acc.add(not_last * route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t, q_edge));
-                acc.add(query_t_z - (dst_z + eta_t * t_psq_edge_z));
-                acc.add(zero_on_unselected(q_edge, query_t_z));
+                if (shared_neighborhood)
+                {
+                    for (const auto &route : {std::pair<std::string_view, std::pair<FieldElement, FieldElement>>{
+                                                  "den", {eta_t, beta_t}},
+                                              {"agg", {eta_t_agg, beta_t_agg}}})
+                    {
+                        const auto route_name = route.first;
+                        const auto route_eta = route.second.first;
+                        const auto route_beta = route.second.second;
+                        const auto psq_current = z_head(std::string("PSQ_") + std::string(route_name));
+                        const auto psq_next = omega_head(std::string("PSQ_") + std::string(route_name));
+                        const auto route_source = z_head(route_name == "den" ? "U" : "widehat_v_pre_star");
+                        const auto route_source_next = omega_head(route_name == "den" ? "U" : "widehat_v_pre_star");
+                        const auto route_target = z_head(route_name == "den" ? "Sum_edge" : "H_agg_pre_star_edge");
+                        const auto query = z_head(std::string("Query_t_") + std::string(route_name));
+                        const auto inverse = z_head(std::string("J_t_") + std::string(route_name) + "_edge");
+                        const auto accumulator = z_head(std::string("R_t_") + std::string(route_name));
+                        const auto accumulator_next = omega_head(std::string("R_t_") + std::string(route_name));
+                        acc.add(first * (psq_current - q_edge * route_source));
+                        acc.add(psq_step(psq_next, psq_current, route_source_next, q_edge_next, q_new_next));
+                        acc.add(q_end * (psq_current - route_target));
+                        acc.add(first * accumulator);
+                        acc.add(q_edge * ((query + route_beta) * inverse - one));
+                        acc.add(not_last * route_edge_step(accumulator_next, accumulator, query, route_beta, q_edge));
+                        acc.add(query - (dst_z + route_eta * route_target));
+                        acc.add(zero_on_unselected(q_edge, query));
+                    }
+                }
+                else
+                {
+                    const auto psq_z = z_head("PSQ");
+                    const auto psq_omega = omega_head("PSQ");
+                    const auto w_psq_z = z_head("w_psq");
+                    const auto w_psq_omega = omega_head("w_psq");
+                    const auto t_psq_edge_z = z_head("T_psq_edge");
+                    const auto r_t_z = z_head("R_t");
+                    const auto r_t_omega = omega_head("R_t");
+                    const auto query_t_z = z_head("Query_t");
+                    acc.add(first * (psq_z - q_edge * w_psq_z));
+                    acc.add(psq_step(psq_omega, psq_z, w_psq_omega, q_edge_next, q_new_next));
+                    acc.add(q_end * (psq_z - t_psq_edge_z));
+                    acc.add(first * r_t_z);
+                    acc.add(q_edge * ((query_t_z + beta_t) * z_head("J_t_edge") - one));
+                    acc.add(not_last * route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t, q_edge));
+                    acc.add(query_t_z - (dst_z + eta_t * t_psq_edge_z));
+                    acc.add(zero_on_unselected(q_edge, query_t_z));
+                }
 
                 add_logup_constraints(prefix, "ELU", q_tbl_elu_z, q_qry_elu_z, beta_elu);
                 acc.add(table_elu_z - (t_elu_x_z + eta_elu * t_elu_y_z));
@@ -1852,8 +2007,19 @@ namespace gatzk::protocol
             const auto beta_r_out = planned != nullptr ? planned->beta_r : challenges.at(output_challenge_name("beta_R_out", head_index));
             const auto beta_exp_out = planned != nullptr ? planned->beta_exp : challenges.at(output_challenge_name("beta_exp_out", head_index));
             const auto eta_exp_out = planned != nullptr ? planned->eta_exp : challenges.at(output_challenge_name("eta_exp_out", head_index));
-            const auto beta_t_out = planned != nullptr ? planned->beta_t : challenges.at(output_challenge_name("beta_t_out", head_index));
-            const auto eta_t_out = planned != nullptr ? planned->eta_t : challenges.at(output_challenge_name("eta_t_out", head_index));
+            const bool shared_neighborhood = context.config.protocol_variant == "wo_shared_neighborhood";
+            const auto beta_t_out = shared_neighborhood
+                                        ? (planned != nullptr ? planned->beta_t_den : challenges.at(output_challenge_name("beta_t_den_out", head_index)))
+                                        : (planned != nullptr ? planned->beta_t : challenges.at(output_challenge_name("beta_t_out", head_index)));
+            const auto eta_t_out = shared_neighborhood
+                                       ? (planned != nullptr ? planned->eta_t_den : challenges.at(output_challenge_name("eta_t_den_out", head_index)))
+                                       : (planned != nullptr ? planned->eta_t : challenges.at(output_challenge_name("eta_t_out", head_index)));
+            const auto beta_t_agg_out = shared_neighborhood
+                                            ? (planned != nullptr ? planned->beta_t_agg : challenges.at(output_challenge_name("beta_t_agg_out", head_index)))
+                                            : FieldElement::zero();
+            const auto eta_t_agg_out = shared_neighborhood
+                                           ? (planned != nullptr ? planned->eta_t_agg : challenges.at(output_challenge_name("eta_t_agg_out", head_index)))
+                                           : FieldElement::zero();
 
             auto z_out = [&](std::string_view suffix) { return eval_z(prefix + std::string(suffix)); };
             auto omega_out = [&](std::string_view suffix) { return eval_omega(prefix + std::string(suffix)); };
@@ -1883,14 +2049,6 @@ namespace gatzk::protocol
             const auto table_exp_z = z_out("Table_exp");
             const auto query_exp_z = z_out("Query_exp");
             const auto m_exp_z = z_out("m_exp");
-            const auto psq_z = z_out("PSQ");
-            const auto psq_omega = omega_out("PSQ");
-            const auto w_z = z_out("w");
-            const auto w_omega = omega_out("w");
-            const auto t_edge_z = z_out("T_edge");
-            const auto r_t_z = z_out("R_t");
-            const auto r_t_omega = omega_out("R_t");
-            const auto query_t_z = z_out("Query_t");
             const auto r_dst_z = z_out("R_dst");
             const auto r_dst_omega = omega_out("R_dst");
             const auto query_dst_z = z_out("Query_dst");
@@ -1935,14 +2093,55 @@ namespace gatzk::protocol
             acc.add(zero_on_unselected(q_tbl_exp_z, m_exp_z));
             acc.add(zero_on_unselected(q_qry_exp_z, query_exp_z));
 
-            acc.add(first * (psq_z - q_edge * w_z));
-            acc.add(psq_step(psq_omega, psq_z, w_omega, q_edge_next, q_new_next));
-            acc.add(q_end * (psq_z - t_edge_z));
-            acc.add(first * r_t_z);
-            acc.add(q_edge * ((query_t_z + beta_t_out) * z_out("J_t_edge") - one));
-            acc.add(not_last * route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t_out, q_edge));
-            acc.add(query_t_z - (dst_z + eta_t_out * t_edge_z));
-            acc.add(zero_on_unselected(q_edge, query_t_z));
+            if (shared_neighborhood)
+            {
+                for (const auto &route : {std::pair<std::string_view, std::pair<FieldElement, FieldElement>>{
+                                              "den", {eta_t_out, beta_t_out}},
+                                          {"agg", {eta_t_agg_out, beta_t_agg_out}}})
+                {
+                    const auto route_name = route.first;
+                    const auto route_eta = route.second.first;
+                    const auto route_beta = route.second.second;
+                    const auto psq_current = z_out(std::string("PSQ_") + std::string(route_name));
+                    const auto psq_next = omega_out(std::string("PSQ_") + std::string(route_name));
+                    const auto source_label = route_name == "den" ? "U" : "widehat_y_star";
+                    const auto target_label = route_name == "den" ? "Sum_edge" : "Y_star_edge";
+                    const auto route_source = z_out(source_label);
+                    const auto route_source_next = omega_out(source_label);
+                    const auto route_target = z_out(target_label);
+                    const auto query = z_out(std::string("Query_t_") + std::string(route_name));
+                    const auto inverse = z_out(std::string("J_t_") + std::string(route_name) + "_edge");
+                    const auto accumulator = z_out(std::string("R_t_") + std::string(route_name));
+                    const auto accumulator_next = omega_out(std::string("R_t_") + std::string(route_name));
+                    acc.add(first * (psq_current - q_edge * route_source));
+                    acc.add(psq_step(psq_next, psq_current, route_source_next, q_edge_next, q_new_next));
+                    acc.add(q_end * (psq_current - route_target));
+                    acc.add(first * accumulator);
+                    acc.add(q_edge * ((query + route_beta) * inverse - one));
+                    acc.add(not_last * route_edge_step(accumulator_next, accumulator, query, route_beta, q_edge));
+                    acc.add(query - (dst_z + route_eta * route_target));
+                    acc.add(zero_on_unselected(q_edge, query));
+                }
+            }
+            else
+            {
+                const auto psq_z = z_out("PSQ");
+                const auto psq_omega = omega_out("PSQ");
+                const auto w_z = z_out("w");
+                const auto w_omega = omega_out("w");
+                const auto t_edge_z = z_out("T_edge");
+                const auto r_t_z = z_out("R_t");
+                const auto r_t_omega = omega_out("R_t");
+                const auto query_t_z = z_out("Query_t");
+                acc.add(first * (psq_z - q_edge * w_z));
+                acc.add(psq_step(psq_omega, psq_z, w_omega, q_edge_next, q_new_next));
+                acc.add(q_end * (psq_z - t_edge_z));
+                acc.add(first * r_t_z);
+                acc.add(q_edge * ((query_t_z + beta_t_out) * z_out("J_t_edge") - one));
+                acc.add(not_last * route_edge_step(r_t_omega, r_t_z, query_t_z, beta_t_out, q_edge));
+                acc.add(query_t_z - (dst_z + eta_t_out * t_edge_z));
+                acc.add(zero_on_unselected(q_edge, query_t_z));
+            }
 
             acc.add(first * r_dst_z);
             acc.add(q_edge * ((query_dst_z + beta_dst_out) * z_out("J_dst_edge") - one));
@@ -2231,6 +2430,7 @@ namespace gatzk::protocol
         plan->alpha_quot = challenges.at("alpha_quot");
 
         plan->binding_metadata = build_binding_relation_metadata(context);
+        plan->feature_copy_routes = bind_feature_copy_route_challenges(context, challenges);
 
         for (const auto &binding : plan->binding_metadata)
         {
@@ -2353,11 +2553,12 @@ namespace gatzk::protocol
 
                 const auto eta_dst = challenges.at(challenge("eta_dst_h"));
 
-                const auto beta_t = challenges.at(challenge("beta_t_h"));
-
-                const auto eta_t = challenges.at(challenge("eta_t_h"));
-
-                const auto lambda_psq = challenges.at(challenge("lambda_psq_h"));
+                const bool shared_neighborhood = context.config.protocol_variant == "wo_shared_neighborhood";
+                const auto beta_t = shared_neighborhood ? challenges.at(challenge("beta_t_den_h")) : challenges.at(challenge("beta_t_h"));
+                const auto eta_t = shared_neighborhood ? challenges.at(challenge("eta_t_den_h")) : challenges.at(challenge("eta_t_h"));
+                const auto beta_t_agg = shared_neighborhood ? challenges.at(challenge("beta_t_agg_h")) : FieldElement::zero();
+                const auto eta_t_agg = shared_neighborhood ? challenges.at(challenge("eta_t_agg_h")) : FieldElement::zero();
+                const auto lambda_psq = shared_neighborhood ? FieldElement::zero() : challenges.at(challenge("lambda_psq_h"));
 
                 const auto eta_src_sq = eta_src * eta_src;
 
@@ -2368,6 +2569,7 @@ namespace gatzk::protocol
                 const auto eta_dst_4 = eta_dst_cu * eta_dst;
 
                 const auto eta_dst_5 = eta_dst_4 * eta_dst;
+                const bool feature_folding = context.config.protocol_variant != "wo_feature_folding";
 
                 acc.add(first * eval(prefix + "R_src_node", z));
 
@@ -2383,24 +2585,73 @@ namespace gatzk::protocol
                 acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z),
                                                    beta_dst, q_n, eval(prefix + "m_dst", z)));
 
-                acc.add(first * eval(prefix + "R_t_node", z));
-
-                acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t) * eval(prefix + "J_t_node", z) - FieldElement::one()));
-
-                acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t, q_n,
-                                                   eval(prefix + "m_t", z)));
+                if (shared_neighborhood)
+                {
+                    for (const auto &route : {std::pair<std::string_view, std::pair<FieldElement, FieldElement>>{
+                                                  "den", {eta_t, beta_t}},
+                                              {"agg", {eta_t_agg, beta_t_agg}}})
+                    {
+                        const auto route_name = route.first;
+                        const auto route_eta = route.second.first;
+                        const auto route_beta = route.second.second;
+                        const auto table = eval(prefix + "Table_t_" + std::string(route_name), z);
+                        const auto multiplicity = eval(prefix + "m_t_" + std::string(route_name), z);
+                        const auto inverse = eval(prefix + "J_t_" + std::string(route_name) + "_node", z);
+                        const auto accumulator = eval(prefix + "R_t_" + std::string(route_name) + "_node", z);
+                        const auto accumulator_next = eval(prefix + "R_t_" + std::string(route_name) + "_node", omega_z);
+                        const auto target = eval(prefix + (route_name == "den" ? "Sum" : "H_agg_pre_star"), z);
+                        acc.add(first * accumulator);
+                        acc.add(q_n * ((table + route_beta) * inverse - FieldElement::one()));
+                        acc.add(not_last * route_node_step(accumulator_next, accumulator, table, route_beta, q_n, multiplicity));
+                        acc.add(table - (eval("P_I", z) + route_eta * target));
+                        acc.add(zero_on_unselected(q_n, table));
+                        acc.add(zero_on_unselected(q_n, multiplicity));
+                    }
+                }
+                else
+                {
+                    acc.add(first * eval(prefix + "R_t_node", z));
+                    acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t) * eval(prefix + "J_t_node", z) - FieldElement::one()));
+                    acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t, q_n,
+                                                       eval(prefix + "m_t", z)));
+                }
 
                 acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
 
-                acc.add(q_n * (eval(prefix + "T_psq", z) - eval(prefix + "Sum", z) - lambda_psq * eval(prefix + "H_agg_pre_star", z)));
+                if (!shared_neighborhood)
+                    acc.add(q_n * (eval(prefix + "T_psq", z) - eval(prefix + "Sum", z) - lambda_psq * eval(prefix + "H_agg_pre_star", z)));
 
-                acc.add(eval(prefix + "Table_src", z) - (eval("P_I", z) + eta_src * eval(prefix + "E_src", z) + eta_src_sq * eval(prefix + "H_star", z)));
+                if (feature_folding)
+                    acc.add(eval(prefix + "Table_src", z) -
+                            (eval("P_I", z) + eta_src * eval(prefix + "E_src", z) + eta_src_sq * eval(prefix + "H_star", z)));
+                else
+                    acc.add(eval(prefix + "Table_src", z) - (eval("P_I", z) + eta_src * eval(prefix + "E_src", z)));
+
+                if (!plan.feature_copy_routes.empty())
+                {
+                    for (const auto &route_constants : plan.feature_copy_routes.at(layer_index).at(local_head_index))
+                    {
+                        const auto &route = route_constants.relation;
+                        const auto table = eval(route.table_object, z);
+                        const auto multiplicity = eval(route.multiplicity_object, z);
+                        const auto inverse = eval(route.node_inverse_object, z);
+                        const auto accumulator = eval(route.node_accumulator_object, z);
+                        const auto accumulator_next = eval(route.node_accumulator_object, omega_z);
+                        acc.add(first * accumulator);
+                        acc.add(q_n * ((table + route_constants.beta) * inverse - FieldElement::one()));
+                        acc.add((FieldElement::one() - q_n) * inverse);
+                        acc.add(not_last * route_node_step(accumulator_next, accumulator, table, route_constants.beta, q_n, multiplicity));
+                        acc.add(table - (eval(route.node_index_object, z) + route_constants.eta * eval(route.source_column_object, z)));
+                        acc.add(zero_on_unselected(q_n, table));
+                    }
+                }
 
                 acc.add(eval(prefix + "Table_dst", z) -
                         (eval("P_I", z) + eta_dst * eval(prefix + "E_dst", z) + eta_dst_sq * eval(prefix + "M", z) + eta_dst_cu * eval(prefix + "Sum", z) +
                          eta_dst_4 * eval(prefix + "inv", z) + eta_dst_5 * eval(prefix + "H_agg_star", z)));
 
-                acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t * eval(prefix + "T_psq", z)));
+                if (!shared_neighborhood)
+                    acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t * eval(prefix + "T_psq", z)));
 
                 acc.add(zero_on_unselected(q_n, eval(prefix + "E_src", z)));
 
@@ -2426,11 +2677,12 @@ namespace gatzk::protocol
 
                 acc.add(zero_on_unselected(q_n, eval(prefix + "m_dst", z)));
 
-                acc.add(zero_on_unselected(q_n, eval(prefix + "T_psq", z)));
-
-                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
-
-                acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
+                if (!shared_neighborhood)
+                {
+                    acc.add(zero_on_unselected(q_n, eval(prefix + "T_psq", z)));
+                    acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
+                    acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
+                }
             }
         }
 
@@ -2446,11 +2698,14 @@ namespace gatzk::protocol
 
             const auto eta_dst_out = challenges.at(output_challenge_name("eta_dst_out", head_index));
 
-            const auto beta_t_out = challenges.at(output_challenge_name("beta_t_out", head_index));
-
-            const auto eta_t_out = challenges.at(output_challenge_name("eta_t_out", head_index));
-
-            const auto lambda_out = challenges.at(output_challenge_name("lambda_out", head_index));
+            const bool shared_neighborhood = context.config.protocol_variant == "wo_shared_neighborhood";
+            const auto beta_t_out = shared_neighborhood ? challenges.at(output_challenge_name("beta_t_den_out", head_index))
+                                                        : challenges.at(output_challenge_name("beta_t_out", head_index));
+            const auto eta_t_out = shared_neighborhood ? challenges.at(output_challenge_name("eta_t_den_out", head_index))
+                                                       : challenges.at(output_challenge_name("eta_t_out", head_index));
+            const auto beta_t_agg_out = shared_neighborhood ? challenges.at(output_challenge_name("beta_t_agg_out", head_index)) : FieldElement::zero();
+            const auto eta_t_agg_out = shared_neighborhood ? challenges.at(output_challenge_name("eta_t_agg_out", head_index)) : FieldElement::zero();
+            const auto lambda_out = shared_neighborhood ? FieldElement::zero() : challenges.at(output_challenge_name("lambda_out", head_index));
 
             const auto eta_dst_out_sq = eta_dst_out * eta_dst_out;
 
@@ -2474,16 +2729,41 @@ namespace gatzk::protocol
             acc.add(not_last * route_node_step(eval(prefix + "R_dst_node", omega_z), eval(prefix + "R_dst_node", z), eval(prefix + "Table_dst", z),
                                                beta_dst_out, q_n, eval(prefix + "m_dst", z)));
 
-            acc.add(first * eval(prefix + "R_t_node", z));
-
-            acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t_out) * eval(prefix + "J_t_node", z) - FieldElement::one()));
-
-            acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t_out, q_n,
-                                               eval(prefix + "m_t", z)));
+            if (shared_neighborhood)
+            {
+                for (const auto &route : {std::pair<std::string_view, std::pair<FieldElement, FieldElement>>{
+                                              "den", {eta_t_out, beta_t_out}},
+                                          {"agg", {eta_t_agg_out, beta_t_agg_out}}})
+                {
+                    const auto route_name = route.first;
+                    const auto route_eta = route.second.first;
+                    const auto route_beta = route.second.second;
+                    const auto table = eval(prefix + "Table_t_" + std::string(route_name), z);
+                    const auto multiplicity = eval(prefix + "m_t_" + std::string(route_name), z);
+                    const auto inverse = eval(prefix + "J_t_" + std::string(route_name) + "_node", z);
+                    const auto accumulator = eval(prefix + "R_t_" + std::string(route_name) + "_node", z);
+                    const auto accumulator_next = eval(prefix + "R_t_" + std::string(route_name) + "_node", omega_z);
+                    const auto target = eval(prefix + (route_name == "den" ? "Sum" : "Y_star"), z);
+                    acc.add(first * accumulator);
+                    acc.add(q_n * ((table + route_beta) * inverse - FieldElement::one()));
+                    acc.add(not_last * route_node_step(accumulator_next, accumulator, table, route_beta, q_n, multiplicity));
+                    acc.add(table - (eval("P_I", z) + route_eta * target));
+                    acc.add(zero_on_unselected(q_n, table));
+                    acc.add(zero_on_unselected(q_n, multiplicity));
+                }
+            }
+            else
+            {
+                acc.add(first * eval(prefix + "R_t_node", z));
+                acc.add(q_n * ((eval(prefix + "Table_t", z) + beta_t_out) * eval(prefix + "J_t_node", z) - FieldElement::one()));
+                acc.add(not_last * route_node_step(eval(prefix + "R_t_node", omega_z), eval(prefix + "R_t_node", z), eval(prefix + "Table_t", z), beta_t_out, q_n,
+                                                   eval(prefix + "m_t", z)));
+            }
 
             acc.add(q_n * (eval(prefix + "Sum", z) * eval(prefix + "inv", z) - FieldElement::one()));
 
-            acc.add(q_n * (eval(prefix + "T", z) - eval(prefix + "Sum", z) - lambda_out * eval(prefix + "Y_star", z)));
+            if (!shared_neighborhood)
+                acc.add(q_n * (eval(prefix + "T", z) - eval(prefix + "Sum", z) - lambda_out * eval(prefix + "Y_star", z)));
 
             acc.add(eval(prefix + "Table_src", z) - (eval("P_I", z) + eta_src_out * eval(prefix + "E_src", z)));
 
@@ -2491,7 +2771,8 @@ namespace gatzk::protocol
                     (eval("P_I", z) + eta_dst_out * eval(prefix + "E_dst", z) + eta_dst_out_sq * eval(prefix + "M", z) +
                      eta_dst_out_cu * eval(prefix + "Sum", z) + eta_dst_out_4 * eval(prefix + "inv", z) + eta_dst_out_5 * eval(prefix + "Y_star", z)));
 
-            acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t_out * eval(prefix + "T", z)));
+            if (!shared_neighborhood)
+                acc.add(eval(prefix + "Table_t", z) - (eval("P_I", z) + eta_t_out * eval(prefix + "T", z)));
 
             for (const auto *suffix : {
                      "E_src",
@@ -2501,16 +2782,19 @@ namespace gatzk::protocol
                      "inv",
                      "Y_prime_star",
                      "Y_star",
-                     "T",
                      "Table_src",
                      "m_src",
                      "Table_dst",
                      "m_dst",
-                     "Table_t",
-                     "m_t",
                  })
             {
                 acc.add(zero_on_unselected(q_n, eval(prefix + suffix, z)));
+            }
+            if (!shared_neighborhood)
+            {
+                acc.add(zero_on_unselected(q_n, eval(prefix + "T", z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "Table_t", z)));
+                acc.add(zero_on_unselected(q_n, eval(prefix + "m_t", z)));
             }
         }
 

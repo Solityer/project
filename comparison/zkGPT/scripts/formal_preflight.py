@@ -8,6 +8,7 @@ results. Development proof closure is checked independently under tests/.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from common import (
     config_with_auth,
     file_fingerprint,
     formal_backend_capability,
+    formal_child_environment,
     load_json,
     invalidate_results,
     relative_path,
@@ -46,7 +48,7 @@ CAPACITY_SCHEMA = "zkgpt-gat-capacity-v6"
 CAPACITY_U64_MAX = (1 << 64) - 1
 CAPACITY_SHAPE_FIELDS = ("num_nodes", "num_edges", "num_features", "num_classes", "graph_count", "model_layers", "model_output_heads", "model_classes", "model_input_dim", "model_hidden_dim", "n_raw", "n_in")
 CAPACITY_INTEGER_FIELDS = ("explicit_gate_count", "max_materialized_gate_bytes", "max_materialized_vector_bytes", "context_recipe_bytes_bound", "context_payload_bytes_bound", "lasso_logical_domain_entries", "lasso_private_selected_row_workspace_peak_bytes", "lasso_heap_workspace_peak_bytes", "hyrax_active_domain_workspace_entries", "hyrax_active_domain_workspace_bytes", "hyrax_l_qry_tensor_columns", "hyrax_l_qry_tensor_workspace_bytes", "hyrax_aux_tensor_workspace_bytes", "hyrax_folded_columns_workspace_bytes", "hyrax_tensor_retained_workspace_bytes", "hyrax_tensor_opening_transient_peak_workspace_bytes", "hyrax_tensor_combined_peak_workspace_bytes", "hyrax_w_mle_workspace_bytes", "borrowed_trace_bytes_upper_bound", "lasso_table_and_index_bytes_upper_bound", "gkr_layer_count_upper_bound", "gkr_fconn_layer_count_upper_bound", "gkr_input_source_count_upper_bound", "gkr_message_count_upper_bound", "gkr_wire_bytes_upper_bound", "gkr_prefix_workspace_bytes_upper_bound", "l_query_zero_interval_count_upper_bound", "estimated_native_scratch_bytes", "estimated_peak_host_memory_bytes", "estimated_native_heap_bytes_upper_bound", "estimated_native_mapped_bytes_upper_bound", "max_materialized_fr_bytes", "max_materialized_g1_bytes", "flattened_input_domain_entries", "flattened_input_domain_limit_u64", "disk_requirement_bytes_upper_bound", "proof_message_count_upper_bound", "maximum_transcript_field_entries_upper_bound", "total_transcript_field_entries_upper_bound", "maximum_message_string_bytes_upper_bound", "proof_artifact_wire_bytes_upper_bound", "artifact_disk_bytes_upper_bound", "host_memory_limit_bytes", "native_scratch_available_bytes", "coordinate_domain_limit_u64", "proof_message_count_limit", "maximum_message_string_bytes_limit", "proof_artifact_wire_limit_bytes", "artifact_disk_available_bytes", "shared_scratch_artifact_available_bytes", "retained_relation_witness_entries", "retained_relation_witness_bytes_upper_bound", "relation_public_output_entries", "relation_public_output_bytes_upper_bound", "relation_residual_entries", "relation_residual_bytes_upper_bound", "retained_layer_witness_entries_upper_bound", "retained_layer_witness_bytes_upper_bound", "evaluated_layer_witness_entries_upper_bound", "evaluated_layer_witness_bytes_upper_bound", "native_gkr_witness_heap_bytes_upper_bound", "native_gkr_witness_mapped_bytes_upper_bound", "relation_gate_unary_entries", "relation_gate_binary_entries", "relation_gate_output_entries", "max_single_gate_array_bytes_upper_bound", "max_single_relation_builder_array_bytes_upper_bound", "gkr_subset_source_map_bytes_upper_bound", "gkr_subset_sort_scratch_bytes_upper_bound", "gkr_subset_bitmap_scratch_bytes_upper_bound", "gkr_subset_source_support_entries_upper_bound", "native_transcript_heap_bytes_upper_bound", "transcript_content_bytes_upper_bound", "transcript_wire_bytes_upper_bound", "transcript_prefix_bytes_upper_bound", "maximum_challenge_suffix_bytes_upper_bound", "transcript_metadata_bytes_upper_bound", "zero_tail_certificate_count_upper_bound", "l_query_zero_interval_message_count_upper_bound")
-CAPACITY_INTEGER_FIELDS += ("gkr_point_shape_bitmap_scratch_bytes", "gkr_point_shape_layer_count", "gkr_point_shape_fconn_count")
+CAPACITY_INTEGER_FIELDS += ("gkr_point_shape_bitmap_scratch_bytes", "gkr_point_shape_touched_index_scratch_bytes_upper_bound", "gkr_point_shape_layer_count", "gkr_point_shape_fconn_count")
 CAPACITY_INTEGER_FIELDS += ("forward_admission_peak_host_memory_bytes_upper_bound",)
 LASSO_PROFILE_U64_FIELDS = ("padded_queries", "table_domain", "full_domain", "rows", "columns", "private_witness_entries", "private_witness_element_bytes", "private_witness_bytes", "row_blinding_bytes", "row_commitment_bytes", "column_generator_bytes", "row_fold_weights_bytes", "row_fold_values_bytes", "onehot_query_bytes", "t2_column_one_bytes", "onehot_heap_peak_bytes", "masked_opening_generator_bytes", "masked_opening_coefficient_bytes", "masked_opening_response_bytes", "row_ledger_retained_bytes", "commit_peak_bytes", "booleanity_peak_bytes", "row_fold_peak_bytes", "opening_peak_bytes", "family_peak_bytes", "row_commitment_chunk_count", "booleanity_rounds", "onehot_rounds", "lookup_rounds", "hyrax_matrix_masked_openings", "hyrax_l_qry_tensor_openings")
 LASSO_FAMILY_IDS = ("lrelu", "exp", "elu", "range")
@@ -71,6 +73,29 @@ def capacity_mul(left: int, right: int, key: str, dataset: str) -> int:
     if left and right > CAPACITY_U64_MAX // left:
         raise ChainError(f"capacity uint64 product overflows {key} for {dataset}")
     return left * right
+
+
+def _validate_shape_admission_capacity(payload: Mapping[str, Any], dataset: str) -> None:
+    source_support_entries = payload["gkr_subset_source_support_entries_upper_bound"]
+    bitmap_bytes = payload["gkr_point_shape_bitmap_scratch_bytes"]
+    touched_bytes = payload["gkr_point_shape_touched_index_scratch_bytes_upper_bound"]
+    source_words = source_support_entries // 64 + (1 if source_support_entries % 64 else 0)
+    expected_bitmap_bytes = capacity_mul(2, capacity_mul(source_words, 8, "GKR point-shape bitmap", dataset), "GKR point-shape bitmap", dataset)
+    expected_touched_bytes = capacity_mul(capacity_mul(2, source_words, "GKR point-shape touched words", dataset), ctypes.sizeof(ctypes.c_size_t), "GKR point-shape touched indices", dataset)
+    if bitmap_bytes != expected_bitmap_bytes:
+        raise ChainError(f"capacity GKR point-shape bitmap does not match exact logical source support for {dataset}")
+    if touched_bytes != expected_touched_bytes:
+        raise ChainError(f"capacity GKR point-shape touched-index bound does not match exact logical source support for {dataset}")
+    shape_host_bytes = capacity_add((bitmap_bytes, touched_bytes), "GKR point-shape host allocation", dataset)
+    if payload["estimated_peak_host_memory_bytes"] < shape_host_bytes:
+        raise ChainError(f"capacity host-memory bound omits native GKR point-shape admission for {dataset}")
+    breakdown = payload["native_mapped_phase_breakdown"]
+    native_heap_limit = 8 << 20
+    expected_bitmap_mapped = bitmap_bytes if bitmap_bytes > native_heap_limit else 0
+    expected_touched_mapped = touched_bytes if touched_bytes > native_heap_limit else 0
+    expected_shape_mapped = capacity_add((expected_bitmap_mapped, expected_touched_mapped), "GKR point-shape mapped allocations", dataset)
+    if breakdown["shape_admission"] != expected_shape_mapped or breakdown["component:shape_admission_bitmap"] != expected_bitmap_mapped or breakdown["component:shape_admission_touched_indices"] != expected_touched_mapped:
+        raise ChainError(f"capacity shape-admission allocation classes are inconsistent for {dataset}")
 
 
 def reject_nonfinite_json_constant(value: str) -> None:
@@ -145,11 +170,6 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
     expected_bitmap_bytes = ((source_support_entries + 63) // 64) * 8
     if payload["gkr_subset_bitmap_scratch_bytes_upper_bound"] != expected_bitmap_bytes or payload["gkr_subset_sort_scratch_bytes_upper_bound"] != 0:
         raise ChainError(f"capacity source-map bitmap/sort scratch bound is inconsistent for {dataset}")
-    expected_point_bitmap_bytes = capacity_mul(2, expected_bitmap_bytes, "GKR point-shape bitmap", dataset)
-    if payload["gkr_point_shape_bitmap_scratch_bytes"] != expected_point_bitmap_bytes:
-        raise ChainError(f"capacity GKR point-shape bitmap does not match exact logical source support for {dataset}")
-    if payload["estimated_peak_host_memory_bytes"] < payload["gkr_point_shape_bitmap_scratch_bytes"]:
-        raise ChainError(f"capacity host-memory bound omits native GKR point-shape admission for {dataset}")
     forward_admission_peak = capacity_u64(payload["forward_admission_peak_host_memory_bytes_upper_bound"],
                                           "forward_admission_peak_host_memory_bytes_upper_bound", dataset, positive=True)
     if payload["estimated_peak_host_memory_bytes"] < forward_admission_peak:
@@ -160,17 +180,13 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
         raise ChainError(f"capacity source-map bound exceeds logical source support for {dataset}")
     breakdown = payload.get("native_mapped_phase_breakdown")
     phase_keys = ("gate_plan", "plan_restore", "gkr_validation", "gkr_proving", "lasso_tensor", "input_opening", "shape_admission")
-    component_keys = ("component:proof_persistent", "component:gate_arrays", "component:source_maps", "component:residual_targets", "component:layer_values", "component:input_segments", "component:input_oracle_fold", "component:fconn_fold", "component:fconn_source_weights", "component:gkr_prefix", "component:lasso_persistent", "component:tensor_retained", "component:lasso_transient", "component:tensor_opening", "component:w_mle", "component:source_bitmap", "component:shape_admission_bitmap")
+    component_keys = ("component:proof_persistent", "component:gate_arrays", "component:source_maps", "component:residual_targets", "component:layer_values", "component:input_segments", "component:input_oracle_fold", "component:fconn_fold", "component:fconn_source_weights", "component:gkr_prefix", "component:lasso_persistent", "component:tensor_retained", "component:lasso_transient", "component:tensor_opening", "component:w_mle", "component:source_bitmap", "component:shape_admission_bitmap", "component:shape_admission_touched_indices")
     if not isinstance(breakdown, dict) or set(breakdown) != set(phase_keys + component_keys):
         raise ChainError(f"capacity native mapped phase breakdown is incomplete for {dataset}")
     phase_bytes = {key: capacity_u64(breakdown.get(key), f"native_mapped_phase_breakdown.{key}", dataset) for key in phase_keys}
     for key in component_keys:
         capacity_u64(breakdown.get(key), f"native_mapped_phase_breakdown.{key}", dataset)
-    native_heap_limit = 8 << 20
-    expected_shape_mapped = payload["gkr_point_shape_bitmap_scratch_bytes"] if payload["gkr_point_shape_bitmap_scratch_bytes"] > native_heap_limit else 0
-    if (phase_bytes["shape_admission"] != expected_shape_mapped or
-            breakdown["component:shape_admission_bitmap"] != expected_shape_mapped):
-        raise ChainError(f"capacity shape-admission bitmap allocation class is inconsistent for {dataset}")
+    _validate_shape_admission_capacity(payload, dataset)
     if max(phase_bytes.values()) != payload["estimated_native_mapped_bytes_upper_bound"] or payload["estimated_native_scratch_bytes"] != max(phase_bytes.values()):
         raise ChainError(f"capacity native scratch does not match the live phase maximum for {dataset}")
     profiles = payload.get("lasso_workspace_profile")
@@ -580,7 +596,7 @@ def check_source(root: Path) -> List[str]:
 
 def check_capabilities(root: Path, backend: str, executable: Path) -> Dict[str, Any]:
     completed = subprocess.run([str(executable), "--capabilities"], cwd=str(root),
-                               text=True, capture_output=True, check=False)
+                               text=True, capture_output=True, env=formal_child_environment(), check=False)
     if completed.returncode != 0:
         raise ChainError(f"{backend} verifier capabilities failed with {completed.returncode}")
     try:
@@ -603,7 +619,7 @@ def run_capacity(root: Path, dataset: str, backend: str) -> Dict[str, Any]:
     completed = subprocess.run(
         [str(prover), "--capacity-only", "--dataset", dataset, "--backend", backend,
          "--baseline-root", str(root), "--config", relative_path(root, config_path, "dataset config")],
-        cwd=str(root), text=True, stdout=subprocess.PIPE, check=False,
+        cwd=str(root), text=True, stdout=subprocess.PIPE, env=formal_child_environment(), check=False,
     )
     try:
         payload = json.loads(completed.stdout, parse_constant=reject_nonfinite_json_constant, parse_float=reject_floating_json_number, parse_int=parse_capacity_integer)

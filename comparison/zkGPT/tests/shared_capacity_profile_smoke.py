@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep zkGPT's shared capacity receipt aligned with the strict root schema."""
+"""Check zkGPT's local source-bound capacity receipt and remaining-only gate."""
 
 from __future__ import annotations
 
@@ -35,25 +35,39 @@ def main() -> int:
         expected_profile_keys = {
             "schema", "baseline", "session_id", "fs_device_id",
             "preexisting_baseline_artifact_bytes", "finalization_disk_bytes_upper_bound",
-            "bound_methods", "datasets", "memory_accounting_kind", "device",
+            "finalization_host_bytes_upper_bound", "bound_methods", "datasets",
+            "memory_accounting_kind", "device",
         }
         if set(profile) != expected_profile_keys:
-            raise AssertionError("zkGPT shared capacity receipt differs from root profile-v2 fields")
-        if (profile["schema"] != "comparison-baseline-capacity-profile-v2" or
-                profile["memory_accounting_kind"] != "host-only" or profile["device"] is not None):
-            raise AssertionError("zkGPT shared capacity receipt has the wrong CPU memory identity")
+            raise AssertionError("zkGPT local capacity receipt has an unexpected schema")
+        if (profile["schema"] != run_formal.LOCAL_CAPACITY_PROFILE_SCHEMA or
+                profile["baseline"] != "zkgpt" or
+                profile["memory_accounting_kind"] != "host-only" or profile["device"] is not None or
+                profile["preexisting_baseline_artifact_bytes"] != 0):
+            raise AssertionError("zkGPT local capacity receipt has the wrong CPU/local identity")
         expected_cell_keys = {
             "additional_disk_peak_bytes", "cell_retained_artifact_bytes_upper_bound",
             "host_peak_bytes", "device_peak_bytes", "phase_coverage",
         }
         if set(profile["datasets"]) != set(run_formal.DATASETS):
-            raise AssertionError("zkGPT capacity receipt does not name exactly five datasets")
+            raise AssertionError("zkGPT local capacity receipt does not name exactly five datasets")
         for cell in profile["datasets"].values():
             if set(cell) != expected_cell_keys or cell["device_peak_bytes"] != 0:
-                raise AssertionError("zkGPT capacity cell differs from root's exact five-key CPU schema")
+                raise AssertionError("zkGPT local capacity cell has an unexpected CPU schema")
             if set(cell["phase_coverage"]) != {"setup", "witness", "commitment", "prove", "verify"}:
                 raise AssertionError("zkGPT capacity cell omits a canonical phase")
-    print("shared_capacity_profile_smoke status=PASS schema=v2 datasets=5")
+        all_host, all_disk = run_formal._capacity_requirements(profile, run_formal.DATASETS)
+        remaining_host, remaining_disk = run_formal._capacity_requirements(
+            profile, run_formal.DATASETS[1:])
+        first_retained = profile["datasets"][run_formal.DATASETS[0]][
+            "cell_retained_artifact_bytes_upper_bound"]
+        if all_host != remaining_host or all_disk - remaining_disk != first_retained:
+            raise AssertionError("capacity gate did not reserve only remaining retained output")
+        final_host, final_disk = run_formal._capacity_requirements(profile, [])
+        if (final_host != profile["finalization_host_bytes_upper_bound"] or
+                final_disk != profile["finalization_disk_bytes_upper_bound"]):
+            raise AssertionError("finalization gate does not use its local source-derived bounds")
+    print("local_capacity_profile_smoke status=PASS schema=v1 datasets=5")
     return 0
 
 

@@ -7,6 +7,7 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 use rustc_hash::FxHashMap as HashMap;
 use std::iter;
+use std::io;
 
 use super::Argument;
 use crate::{
@@ -115,13 +116,26 @@ impl<C: CurveAffine> Committed<C> {
         let h_poly = domain.divide_by_vanishing_poly(h_poly);
 
         // Obtain final h(X) polynomial
-        let h_poly = domain.extended_to_coeff(h_poly);
+        let h_poly = domain.extended_to_coeff_spilled(h_poly).map_err(Error::NativeStorage)?;
 
         // Split h(X) up into pieces
-        let h_pieces = h_poly
-            .chunks_exact(params.n() as usize)
-            .map(|v| domain.coeff_from_vec(v.to_vec()))
-            .collect::<Vec<_>>();
+        let invalid_layout = || Error::NativeStorage(io::Error::new(io::ErrorKind::InvalidData, "quotient piece layout overflows or does not match its polynomial"));
+        let h_piece_len = usize::try_from(params.n()).map_err(|_| invalid_layout())?;
+        let h_piece_count = domain.get_quotient_poly_degree();
+        let expected_len = h_piece_len.checked_mul(h_piece_count).ok_or_else(invalid_layout)?;
+        if expected_len != h_poly.len() {
+            return Err(invalid_layout());
+        }
+        let h_pieces = (0..h_piece_count)
+            .map(|index| {
+                let start = index.checked_mul(h_piece_len).ok_or_else(|| invalid_layout())?;
+                let end = start.checked_add(h_piece_len).ok_or_else(|| invalid_layout())?;
+                let source = h_poly.get(start..end).ok_or_else(|| invalid_layout())?;
+                let mut h_piece = Polynomial::<C::Scalar, Coeff>::mapped_filled(h_piece_len, C::Scalar::ZERO).map_err(Error::NativeStorage)?;
+                h_piece.copy_from_slice(source);
+                Ok(h_piece)
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         drop(h_poly);
         let h_blinds: Vec<_> = h_pieces
             .iter()

@@ -1,5 +1,0 @@
-===== BUILD / RESOURCE / PREFLIGHT =====
-start_time=2026-10-05T10:28:50+08:00
-
-[ezkl-formal] started fresh formal session 08ced7c0ffba4a9db4c859fee54424d9; prior active outputs are archived
-formal prerequisite failed: formal command has unsupported environment overrides that can change identity: LD_PRELOAD

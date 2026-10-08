@@ -391,8 +391,7 @@ void family_indices(const std::string& id, bool& output, std::size_t& layer, std
     if ((!output && (layer >= 2 || head >= 8)) || (output && head >= 2)) { throw std::invalid_argument("bound family index is outside the canonical model"); }
 }
 
-BoundFamily make_bound_family(const std::string& id, const Graph& graph, const Tensor2D& input, const Model& model, const QuantConfig& quant,
-                              const StaticTables& tables, const AttentionTrace& trace, const AttentionScales& scales) {
+BoundFamily make_bound_family(const std::string& id, const Graph& graph, Wide input_abs, const Model& model, const QuantConfig& quant, const StaticTables& tables, const AttentionTrace& trace, const AttentionScales& scales) {
     BoundFamily family;
     family.id = id;
     family.input_dim = static_cast<Wide>(trace.input_dim);
@@ -425,8 +424,7 @@ BoundFamily make_bound_family(const std::string& id, const Graph& graph, const T
     weight_abs = std::max<Wide>(1, model_abs);
     attention_abs = weight_abs;
     family.model_abs = model_abs;
-    family.input_abs = 0;
-    for (Int value : input.values) family.input_abs = std::max(family.input_abs, abs_wide(value));
+    family.input_abs = input_abs;
     family.weight_abs = weight_abs;
     family.attention_abs = attention_abs;
     family.source_score_abs = std::max(max_abs_values(trace.source_score), max_abs_values(trace.destination_score));
@@ -661,8 +659,19 @@ std::pair<Wide, Wide> admission_table_abs_bounds(const std::vector<TablePoint>& 
     return {input, output};
 }
 
-void require_admission_tuple(Int x, Int y, const std::vector<TablePoint>& points, const char* family) {
-    const auto bounds = admission_table_abs_bounds(points, family);
+struct AdmissionTableAbsBounds {
+    std::pair<Wide, Wide> lrelu;
+    std::pair<Wide, Wide> exp;
+    std::pair<Wide, Wide> elu;
+};
+
+Wide admission_tensor_abs_bound(const Tensor2D& input) {
+    Wide bound = 0;
+    for (Int value : input.values) bound = std::max(bound, abs_wide(value));
+    return bound;
+}
+
+void require_admission_tuple(Int x, Int y, const std::pair<Wide, Wide>& bounds, const char* family) {
     const unsigned x_bits = admission_bit_width(2 * bounds.first);
     const unsigned y_bits = admission_bit_width(2 * bounds.second);
     require_admission_range_value(static_cast<Wide>(x) + bounds.first, x_bits, family);
@@ -679,10 +688,7 @@ void require_admission_division(const DivisionWitness& witness, const std::array
         require_admission_range_value(ranged[index], profile[index], family);
 }
 
-BoundFamily admission_family_base(const std::string& id, const Tensor2D& input, const Model& model,
-                                  const QuantConfig& quant, const StaticTables& tables, std::size_t layer,
-                                  std::size_t head, bool output_head, std::size_t output_dim,
-                                  std::size_t maximum_degree) {
+BoundFamily admission_family_base(const std::string& id, const Tensor2D& input, const Model& model, const QuantConfig& quant, const StaticTables& tables, std::size_t layer, std::size_t head, bool output_head, std::size_t output_dim, std::size_t maximum_degree, Wide family_input_abs) {
     BoundFamily family;
     family.id = id;
     family.input_dim = static_cast<Wide>(input.cols);
@@ -703,7 +709,7 @@ BoundFamily admission_family_base(const std::string& id, const Tensor2D& input, 
     family.model_abs = model_abs;
     family.weight_abs = std::max<Wide>(1, model_abs);
     family.attention_abs = family.weight_abs;
-    for (Int value : input.values) family.input_abs = std::max(family.input_abs, abs_wide(value));
+    family.input_abs = family_input_abs;
     family.table_input_abs = std::max({abs_wide(tables.lrelu_min), abs_wide(tables.lrelu_max), abs_wide(tables.exp_min), abs_wide(tables.exp_max)});
     for (const TablePoint& point : tables.lrelu) family.table_output_abs = std::max(family.table_output_abs, abs_wide(point.y));
     for (const TablePoint& point : tables.exp) family.table_output_abs = std::max(family.table_output_abs, abs_wide(point.y));
@@ -737,13 +743,7 @@ void observe_admission_division(BoundFamily& family, const DivisionWitness& divi
     family.delta_aux_abs = std::max(family.delta_aux_abs, abs_wide(division.delta));
 }
 
-BoundFamily compute_attention_admission(const Graph& graph, const Tensor2D& input, const Tensor2D& family_input,
-                                       const Model& model, const QuantConfig& quant, const StaticTables& tables,
-                                       std::size_t layer, std::size_t head, bool output_head,
-                                       const AttentionScales& scales,
-                                       const std::vector<std::array<unsigned, 5>>& division_profiles,
-                                       std::size_t profile_index, Tensor2D* concatenated,
-                                       std::size_t concat_offset, std::vector<Int>* output_recovered) {
+BoundFamily compute_attention_admission(const Graph& graph, const Tensor2D& input, const Tensor2D& family_input, const Model& model, const QuantConfig& quant, const StaticTables& tables, const std::vector<std::pair<std::size_t, std::size_t>>& ranges, std::size_t maximum_degree, const AdmissionTableAbsBounds& table_bounds, Wide family_input_abs, std::size_t layer, std::size_t head, bool output_head, const AttentionScales& scales, const std::vector<std::array<unsigned, 5>>& division_profiles, std::size_t profile_index, Tensor2D* concatenated, std::size_t concat_offset, std::vector<Int>* output_recovered) {
     const std::size_t input_dim = input.cols;
     const Tensor* seq = nullptr;
     const Tensor* attn_src = nullptr;
@@ -773,9 +773,6 @@ BoundFamily compute_attention_admission(const Graph& graph, const Tensor2D& inpu
             throw std::invalid_argument("GAT admission hidden-layer sink is malformed");
     }
 
-    const auto ranges = incoming_ranges(graph);
-    std::size_t maximum_degree = 0;
-    for (const auto& range : ranges) maximum_degree = std::max(maximum_degree, range.second - range.first);
     if (maximum_degree == 0) throw std::invalid_argument("canonical GAT admission has an empty destination group");
     std::vector<Int> projection(graph.num_nodes * output_dim, 0);
     std::vector<Int> source_score(graph.num_nodes, 0);
@@ -784,7 +781,7 @@ BoundFamily compute_attention_admission(const Graph& graph, const Tensor2D& inpu
     std::vector<Int> group_sum(graph.num_nodes, 0);
     std::vector<Int> edge_workspace(maximum_degree, 0);
     const std::string id = output_head ? output_family(head) : hidden_family(layer, head);
-    BoundFamily family = admission_family_base(id, family_input, model, quant, tables, layer, head, output_head, output_dim, maximum_degree);
+    BoundFamily family = admission_family_base(id, family_input, model, quant, tables, layer, head, output_head, output_dim, maximum_degree, family_input_abs);
     family.input_dim = static_cast<Wide>(input_dim);
     bool relation_ok = true;
     const auto& profile = division_profiles[profile_index];
@@ -828,7 +825,7 @@ BoundFamily compute_attention_admission(const Graph& graph, const Tensor2D& inpu
             const std::size_t destination = static_cast<std::size_t>(graph.dst[edge]);
             const Int raw = checked_int(static_cast<Wide>(source_score[source]) + destination_score[destination], "GAT admission raw score");
             const Int leaky = tables.lookup_lrelu(raw);
-            require_admission_tuple(raw, leaky, tables.lrelu, "LeakyReLU");
+            require_admission_tuple(raw, leaky, table_bounds.lrelu, "LeakyReLU");
             family.score_abs = std::max(family.score_abs, abs_wide(raw));
             family.score_abs = std::max(family.score_abs, abs_wide(leaky));
             edge_workspace[local] = leaky;
@@ -843,11 +840,10 @@ BoundFamily compute_attention_admission(const Graph& graph, const Tensor2D& inpu
             const std::size_t local = edge - range.first;
             const Int delta = checked_int(static_cast<Wide>(group_max[node]) - edge_workspace[local], "GAT admission softmax delta");
             if (delta < 0) relation_ok = false;
-            const auto lrelu_bounds = admission_table_abs_bounds(tables.lrelu, "LeakyReLU");
-            require_admission_range_value(delta, admission_bit_width(2 * lrelu_bounds.second), "softmax delta");
+            require_admission_range_value(delta, admission_bit_width(2 * table_bounds.lrelu.second), "softmax delta");
             family.delta_abs = std::max(family.delta_abs, abs_wide(delta));
             const Int exp = tables.lookup_exp(delta);
-            require_admission_tuple(delta, exp, tables.exp, "ExpMap");
+            require_admission_tuple(delta, exp, table_bounds.exp, "ExpMap");
             family.exp_abs = std::max(family.exp_abs, abs_wide(exp));
             edge_workspace[local] = exp;
             sum = checked_int(static_cast<Wide>(sum) + exp, "GAT admission softmax denominator");
@@ -888,7 +884,7 @@ BoundFamily compute_attention_admission(const Graph& graph, const Tensor2D& inpu
                 !(field_aggregate * Field(sum) - field_numerator).isZero())
                 relation_ok = false;
             const Int activated = output_head ? recovered.value : tables.lookup_elu(recovered.value);
-            if (!output_head) require_admission_tuple(recovered.value, activated, tables.elu, "ELU");
+            if (!output_head) require_admission_tuple(recovered.value, activated, table_bounds.elu, "ELU");
             family.elu_input_abs = std::max(family.elu_input_abs, abs_wide(recovered.value));
             if (output_head) (*output_recovered)[node * output_dim + col] = activated;
             else concatenated->at(node, concat_offset + col) = activated;
@@ -915,6 +911,11 @@ bool run_forward_admission_impl(const Graph& graph, const Tensor2D& features, co
     IntegerBoundLedger ledger;
     const StaticTables tables = StaticTables::build(quant);
     if (!tables.authenticate()) throw std::invalid_argument("canonical GAT static table authentication failed");
+    const AdmissionTableAbsBounds table_bounds{admission_table_abs_bounds(tables.lrelu, "LeakyReLU"), admission_table_abs_bounds(tables.exp, "ExpMap"), admission_table_abs_bounds(tables.elu, "ELU")};
+    const auto ranges = incoming_ranges(graph);
+    std::size_t maximum_degree = 0;
+    for (const auto& range : ranges) maximum_degree = std::max(maximum_degree, range.second - range.first);
+    if (maximum_degree == 0) throw std::invalid_argument("canonical GAT admission has an empty destination group");
     ledger.backend = "BN254";
     ledger.table_id = tables.table_id;
     ledger.field_modulus = Field::getModulo();
@@ -933,12 +934,12 @@ bool run_forward_admission_impl(const Graph& graph, const Tensor2D& features, co
         const std::size_t output_dim = model.tensor(hidden_family(layer, 0) + "/seq/kernel").shape.dims.at(2);
         const std::size_t hidden_heads = model.hidden_heads();
         Tensor2D next(graph.num_nodes, output_dim * hidden_heads);
+        const Wide layer_input_abs = admission_tensor_abs_bound(*current);
         for (std::size_t head = 0; head < hidden_heads; ++head) {
             const AttentionScales scales{quant.s_hprime_hidden[layer][head], quant.s_a_src_hidden[layer][head],
                                          quant.s_a_dst_hidden[layer][head], quant.s_agg_pre[layer], quant.s_agg[layer]};
             if (progress != nullptr) progress("hidden_head", layer, head, false);
-            ledger.add(compute_attention_admission(graph, *current, features, model, quant, tables, layer, head, false,
-                                                   scales, division_profiles, profile_index++, &next, head * output_dim, nullptr));
+            ledger.add(compute_attention_admission(graph, *current, *current, model, quant, tables, ranges, maximum_degree, table_bounds, layer_input_abs, layer, head, false, scales, division_profiles, profile_index++, &next, head * output_dim, nullptr));
             if (progress != nullptr) progress("hidden_head", layer, head, true);
         }
         current_owned = std::make_unique<Tensor2D>(std::move(next));
@@ -947,14 +948,14 @@ bool run_forward_admission_impl(const Graph& graph, const Tensor2D& features, co
 
     const std::size_t classes = model.classes();
     const std::size_t output_coordinates = graph.num_nodes * classes;
+    const Wide output_family_input_abs = admission_tensor_abs_bound(*current);
     std::vector<Int> head_sum(output_coordinates, 0);
     for (std::size_t head = 0; head < model.manifest.output_heads; ++head) {
         const AttentionScales scales{quant.s_yprime_output[head], quant.s_a_src_output[head], quant.s_a_dst_output[head],
                                      quant.s_out_pre, quant.s_out_head};
         std::vector<Int> recovered;
         if (progress != nullptr) progress("output_head", 0, head, false);
-        ledger.add(compute_attention_admission(graph, *current, *current, model, quant, tables, 0, head, true,
-                                               scales, division_profiles, profile_index++, nullptr, 0, &recovered));
+        ledger.add(compute_attention_admission(graph, *current, *current, model, quant, tables, ranges, maximum_degree, table_bounds, output_family_input_abs, 0, head, true, scales, division_profiles, profile_index++, nullptr, 0, &recovered));
         const Tensor& bias = model.tensor(output_family(head) + "/output_bias");
         if (bias.shape.dims.size() != 1 || bias.shape.dims[0] != classes || bias.values.size() != classes)
             throw std::invalid_argument("output bias shape mismatch during admission");
@@ -1307,17 +1308,20 @@ ForwardResult run_forward(const Graph& graph, const Tensor2D& features, const Mo
     result.trace.ledger.exp_max = result.trace.tables.exp_max;
     result.trace.ledger.elu_min = result.trace.tables.elu_min;
     result.trace.ledger.elu_max = result.trace.tables.elu_max;
-    for (const HiddenLayerTrace& hidden : result.trace.hidden_layers)
+    const Tensor2D* layer_input = &features;
+    for (const HiddenLayerTrace& hidden : result.trace.hidden_layers) {
+        const Wide layer_input_abs = admission_tensor_abs_bound(*layer_input);
         for (std::size_t head = 0; head < hidden.heads.size(); ++head) {
             const AttentionScales scales{quant.s_hprime_hidden[hidden.layer][head], quant.s_a_src_hidden[hidden.layer][head],
                                          quant.s_a_dst_hidden[hidden.layer][head], quant.s_agg_pre[hidden.layer], quant.s_agg[hidden.layer]};
-            result.trace.ledger.add(
-                make_bound_family(hidden_family(hidden.layer, head), graph, features, model, quant, result.trace.tables, hidden.heads[head], scales));
+            result.trace.ledger.add(make_bound_family(hidden_family(hidden.layer, head), graph, layer_input_abs, model, quant, result.trace.tables, hidden.heads[head], scales));
         }
+        layer_input = &hidden.concatenated;
+    }
+    const Wide output_input_abs = admission_tensor_abs_bound(current);
     for (std::size_t head = 0; head < result.trace.output_heads.size(); ++head) {
         const AttentionScales scales{quant.s_yprime_output[head], quant.s_a_src_output[head], quant.s_a_dst_output[head], quant.s_out_pre, quant.s_out_head};
-        result.trace.ledger.add(
-            make_bound_family(output_family(head), graph, current, model, quant, result.trace.tables, result.trace.output_heads[head].attention, scales));
+        result.trace.ledger.add(make_bound_family(output_family(head), graph, output_input_abs, model, quant, result.trace.tables, result.trace.output_heads[head].attention, scales));
     }
     result.trace.relation_ok = result.trace.tables.authenticate() && result.trace.ledger.validate();
     for (const HiddenLayerTrace& hidden : result.trace.hidden_layers)
@@ -1413,19 +1417,21 @@ bool validate_relation(const Graph& graph, const Tensor2D& features, const Model
         expected.trace.ledger.exp_max = expected.trace.tables.exp_max;
         expected.trace.ledger.elu_min = expected.trace.tables.elu_min;
         expected.trace.ledger.elu_max = expected.trace.tables.elu_max;
+        const Tensor2D* layer_input = &features;
         for (const HiddenLayerTrace& hidden : expected.trace.hidden_layers) {
+            const Wide layer_input_abs = admission_tensor_abs_bound(*layer_input);
             for (std::size_t head = 0; head < hidden.heads.size(); ++head) {
                 const AttentionScales scales{quant.s_hprime_hidden[hidden.layer][head], quant.s_a_src_hidden[hidden.layer][head],
                                              quant.s_a_dst_hidden[hidden.layer][head], quant.s_agg_pre[hidden.layer], quant.s_agg[hidden.layer]};
-                expected.trace.ledger.add(
-                    make_bound_family(hidden_family(hidden.layer, head), graph, features, model, quant, expected.trace.tables, hidden.heads[head], scales));
+                expected.trace.ledger.add(make_bound_family(hidden_family(hidden.layer, head), graph, layer_input_abs, model, quant, expected.trace.tables, hidden.heads[head], scales));
             }
+            layer_input = &hidden.concatenated;
         }
+        const Wide output_input_abs = admission_tensor_abs_bound(current);
         for (std::size_t head = 0; head < expected.trace.output_heads.size(); ++head) {
             const AttentionScales scales{quant.s_yprime_output[head], quant.s_a_src_output[head], quant.s_a_dst_output[head], quant.s_out_pre,
                                          quant.s_out_head};
-            expected.trace.ledger.add(make_bound_family(output_family(head), graph, current, model, quant, expected.trace.tables,
-                                                        expected.trace.output_heads[head].attention, scales));
+            expected.trace.ledger.add(make_bound_family(output_family(head), graph, output_input_abs, model, quant, expected.trace.tables, expected.trace.output_heads[head].attention, scales));
         }
         expected.trace.relation_ok = expected.trace.tables.authenticate() && expected.trace.ledger.validate();
         for (const HiddenLayerTrace& hidden : expected.trace.hidden_layers) {

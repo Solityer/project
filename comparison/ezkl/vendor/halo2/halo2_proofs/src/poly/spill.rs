@@ -39,6 +39,11 @@ impl<F> MappedValues<F> {
         // from this mapping can remain live while this exclusive slice exists.
         unsafe { std::slice::from_raw_parts_mut(self.mapping.as_mut_ptr().cast::<F>(), self.len) }
     }
+
+    pub(super) fn truncate(&mut self, len: usize) {
+        assert!(len <= self.len);
+        self.len = len;
+    }
 }
 
 // MmapMut exposes writes only through `&mut self`; shared access to a

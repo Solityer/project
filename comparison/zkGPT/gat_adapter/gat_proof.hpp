@@ -420,6 +420,7 @@ struct GatCapacityReport {
     std::uint64_t gkr_subset_sort_scratch_bytes_upper_bound = 0;
     std::uint64_t gkr_subset_bitmap_scratch_bytes_upper_bound = 0;
     std::uint64_t gkr_point_shape_bitmap_scratch_bytes = 0;
+    std::uint64_t gkr_point_shape_touched_index_scratch_bytes_upper_bound = 0;
     std::uint64_t gkr_point_shape_layer_count = 0;
     std::uint64_t gkr_point_shape_fconn_count = 0;
     std::string gkr_point_shape_digest;
@@ -488,6 +489,7 @@ struct GatPointDomainAdmission {
     std::uint64_t layer_count = 0;
     std::uint64_t fconn_count = 0;
     std::uint64_t bitmap_bytes = 0;
+    std::uint64_t touched_index_bytes_upper_bound = 0;
 };
 
 GatPointDomainAdmission inspect_gat_point_domain_admission(const Graph& graph, const Model& model, const QuantConfig& quant);
@@ -521,6 +523,7 @@ struct GatCircuitPlan {
     std::string gkr_point_shape_digest;
     std::vector<GatGkrLayerShapeProfile> gkr_layer_shape_profile;
     std::uint64_t gkr_point_shape_bitmap_bytes = 0;
+    std::uint64_t gkr_point_shape_touched_index_bytes_upper_bound = 0;
     bool virtual_sparse = false;
     std::string model_arch_id;
     CanonicalModelShape model_shape;

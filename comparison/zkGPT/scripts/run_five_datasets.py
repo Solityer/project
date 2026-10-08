@@ -1,25 +1,19 @@
 #!/usr/bin/env python3
-"""Run the fixed five-dataset formal path inside an active official session."""
+"""Compatibility command redirected to the sole zkGPT formal entrypoint."""
 
 from __future__ import annotations
 
 import argparse
 import sys
-from typing import List
+from typing import Sequence
 
-from common import ChainError, baseline_root, require_formal_session
-from gat_zkgpt_experiment import main as run_formal_cells
+from run_formal import main as run_official
 
 
-def main(argv: List[str]) -> int:
+def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(argv)
-    try:
-        require_formal_session(baseline_root())
-    except ChainError as exc:
-        print(f"EXPERIMENT_BLOCKED: {exc}", file=sys.stderr)
-        return 2
-    return run_formal_cells([])
+    parser.parse_args(list(argv))
+    return run_official([])
 
 
 if __name__ == "__main__":

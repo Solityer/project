@@ -37,6 +37,11 @@ from test_scripts_schema import ProductionContractTests  # noqa: E402
 
 def _run_selected_contract_tests() -> None:
     names = (
+        "test_formal_child_environment_rejects_loader_overrides",
+        "test_formal_run_lock_fd_can_be_passed_to_owned_child",
+        "test_native_runtime_provenance_binds_same_local_mcl",
+        "test_runtime_provenance_ignores_path_shadow_ldd",
+        "test_build_provenance_rejects_missing_or_changed_mcl_identity",
         "test_result_schema_rejects_missing_privacy_field",
         "test_result_schema_rejects_unsupported_schema",
         "test_final_validator_rejects_noncanonical_cell_without_io",

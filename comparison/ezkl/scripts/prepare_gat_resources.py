@@ -19,7 +19,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+from process_guardian import check_guardian_health, finish_guarded_process, spawn_guarded_process, terminate_guarded_process_locally
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
@@ -42,9 +44,17 @@ def parser() -> argparse.ArgumentParser:
 
 def run(command: list[str], label: str, *, timeout_seconds: int = 21600) -> None:
     print(f"[ezkl-prepare] {label}: {' '.join(command)} (timeout={timeout_seconds}s)", flush=True)
-    process = subprocess.Popen(command, cwd=ROOT, start_new_session=(os.name == "posix"))
+    process = spawn_guarded_process(command, cwd=ROOT)
+    deadline = time.monotonic() + timeout_seconds
     try:
-        returncode = process.wait(timeout=timeout_seconds)
+        while True:
+            try:
+                returncode = process.wait(timeout=min(5.0, max(0.1, deadline - time.monotonic())))
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    raise
+                check_guardian_health()
     except subprocess.TimeoutExpired as exc:
         _stop_process(process)
         raise RuntimeError(f"{label} timed out after {timeout_seconds}s; child process group was terminated") from exc
@@ -52,11 +62,17 @@ def run(command: list[str], label: str, *, timeout_seconds: int = 21600) -> None
         print(f"[ezkl-prepare] interrupted during {label}; terminating child process group", file=sys.stderr, flush=True)
         _stop_process(process)
         raise
+    terminated_leftovers = finish_guarded_process(process)
     if returncode != 0:
         raise RuntimeError(f"{label} failed with exit code {returncode}")
+    if terminated_leftovers:
+        raise RuntimeError(f"{label} left descendants after its leader exited; process group was cleaned")
 
 
 def _stop_process(process: subprocess.Popen[object]) -> None:
+    if getattr(process, "_ezkl_process_group", None) is not None:
+        terminate_guarded_process_locally(process)
+        return
     if process.poll() is not None:
         return
     try:
@@ -147,7 +163,7 @@ def main(args: argparse.Namespace) -> int:
     if not args.commit_manifest and not args.formal_auto:
         print("PREPARE/BLOCKED: exact five-dataset resource preparation was not run")
         print("rerun with: python3 scripts/prepare_gat_resources.py --commit-manifest")
-        print("native official SRS is provisioned by run_formal_matrix.py --execute-formal")
+        print("native official SRS is provisioned by python3 scripts/run_formal_matrix.py --execute-formal")
         return 2
 
     from formal_common import resource_file_identities_for_paths
@@ -174,7 +190,7 @@ def main(args: argparse.Namespace) -> int:
         _restore_files(backups)
         raise
     print("authenticated five-dataset ezkl GAT tables/ledgers and resource manifest")
-    print("native official SRS will be provisioned by scripts/run_formal_matrix.py --execute-formal")
+    print("native official SRS will be provisioned by python3 scripts/run_formal_matrix.py --execute-formal")
     return 0
 
 

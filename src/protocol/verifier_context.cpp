@@ -670,6 +670,7 @@ namespace gatzk::protocol
         {
             VerifierConfig out;
             out.dataset = config.dataset;
+            out.protocol_variant = config.protocol_variant;
             out.task_type = config.task_type;
             out.report_unit = config.report_unit;
             out.batching_rule = config.batching_rule;
@@ -1343,6 +1344,8 @@ namespace gatzk::protocol
 
         bool validate_registry_shape(const VerifierContext &context)
         {
+            if (!util::is_supported_protocol_variant(context.config.protocol_variant))
+                return false;
             if (context.config.range_bits < 1 || context.config.range_bits > 62)
                 return false;
             if (context.config.srs_type != "trusted_srs" || context.config.privacy_policy != "model_and_trace_hidden" ||
@@ -2044,6 +2047,7 @@ namespace gatzk::protocol
             ProtocolContext out;
             out.verifier_shape_only = true;
             out.config.dataset = verifier_context.config.dataset;
+            out.config.protocol_variant = verifier_context.config.protocol_variant;
             out.config.task_type = verifier_context.config.task_type;
             out.config.report_unit = verifier_context.config.report_unit;
             out.config.batching_rule = verifier_context.config.batching_rule;

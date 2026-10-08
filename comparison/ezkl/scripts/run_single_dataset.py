@@ -21,6 +21,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from process_guardian import check_guardian_health, finish_guarded_process, spawn_guarded_process, terminate_guarded_process_locally
 
 from formal_common import (
     AuthenticatedFormalContext,
@@ -114,6 +115,9 @@ def _raise_on_sigterm(signum: int, frame: object) -> None:
 
 
 def _terminate_native_process_group(process: subprocess.Popen[object]) -> None:
+    if getattr(process, "_ezkl_process_group", None) is not None:
+        terminate_guarded_process_locally(process)
+        return
     if os.name == "posix":
         try:
             os.killpg(process.pid, 15)
@@ -153,7 +157,7 @@ def run_command(command: list[str], log_path: Path, *, phase: str, env: dict[str
     process: subprocess.Popen[object] | None = None
     reader: threading.Thread | None = None
     try:
-        process = subprocess.Popen(
+        process = spawn_guarded_process(
             command,
             cwd=ROOT,
             env=env,
@@ -161,7 +165,6 @@ def run_command(command: list[str], log_path: Path, *, phase: str, env: dict[str
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=1,
-            start_new_session=(os.name == "posix"),
         )
         if process.stdout is None:
             abort(f"{phase} subprocess has no output stream")
@@ -179,11 +182,14 @@ def run_command(command: list[str], log_path: Path, *, phase: str, env: dict[str
         with log_path.open("w") as log:
             while True:
                 try:
-                    line = output_queue.get(timeout=20)
+                    line = output_queue.get(timeout=5)
                 except queue.Empty:
+                    check_guardian_health()
                     elapsed_seconds = int(time.monotonic() - start)
                     print(f"[ezkl-formal] {phase} still running ({elapsed_seconds}s); live log: {log_path}", flush=True)
                     continue
+                if time.monotonic() - start >= 5:
+                    check_guardian_health()
                 if line is None:
                     break
                 sys.stdout.write(line)
@@ -194,6 +200,7 @@ def run_command(command: list[str], log_path: Path, *, phase: str, env: dict[str
         if reader.is_alive():
             abort(f"{phase} output stream did not close after its leader exited")
         returncode = process.wait()
+        terminated_leftovers = finish_guarded_process(process)
     except BaseException:
         if process is not None:
             print(f"[ezkl-formal] stopping {phase} process group after interruption or runner failure", file=sys.stderr, flush=True)
@@ -206,6 +213,8 @@ def run_command(command: list[str], log_path: Path, *, phase: str, env: dict[str
     elapsed = (time.monotonic() - start) * 1000.0
     if returncode != 0:
         abort(f"{phase} failed with exit code {returncode}; see {log_path}")
+    if terminated_leftovers:
+        abort(f"{phase} left descendants after its leader exited; the process group was cleaned")
     return elapsed
 
 

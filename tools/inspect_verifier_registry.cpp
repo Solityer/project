@@ -162,11 +162,14 @@ int main(int argc, char **argv)
         emit_string("artifact_sha256", file_digest, &first);
         emit_string("registry_digest", verifier_context.authenticated_registry_digest, &first);
         emit_string("registry_id", registry.registry_id, &first);
+        emit_string("protocol_variant", verifier_context.config.protocol_variant, &first);
+        emit_string("dataset", verifier_context.dataset.name, &first);
         emit_string("model_arch_id", registry.model_arch_id, &first);
         emit_string("model_param_id", registry.model_param_id, &first);
         emit_string("quant_cfg_id", registry.quant_cfg_id, &first);
         emit_string("static_table_id", registry.static_table_id, &first);
         emit_string("srs_id", registry.srs_id, &first);
+        emit_size("srs_degree_bound", verifier_context.srs.degree_bound, &first);
         emit_string("protocol_schema_id", registry.protocol_schema_id, &first);
         emit_string("instance_schema_hash", registry.instance_schema_hash, &first);
         emit_string("srs_manifest_hash", registry.srs_manifest_hash, &first);

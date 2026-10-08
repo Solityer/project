@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The production entry for five full-dataset EZKL/Halo2 results."""
+"""The baseline-local production entry for five EZKL/Halo2 dataset results."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def restart_without_inherited_preload() -> None:
-    """Start a clean interpreter before formal environment validation."""
+    """Start a clean interpreter before importing or launching formal code."""
     if not os.environ.get("LD_PRELOAD"):
         return
     clean_environment = dict(os.environ)
@@ -21,66 +21,41 @@ def restart_without_inherited_preload() -> None:
 
 restart_without_inherited_preload()
 
-from formal_common import (
-    ROOT,
-    ContractError,
-    abort,
-    local_path,
-    print_error,
-    validate_root_owned_phase,
-)
+from formal_common import ContractError, ROOT, abort, print_error  # noqa: E402
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--execute-formal", action="store_true")
     result.add_argument("--dry-run", action="store_true")
+    result.add_argument("--preflight-only", action="store_true", help="authenticate prerequisites without setup or proof")
     result.add_argument("--binary", default="target/gpu/release/ezkl")
     result.add_argument("--output-root", default="runs/formal")
     result.add_argument("--matrix", default="results/formal_matrix.json")
-    result.add_argument("--internal-phase", choices=("prepare", "cell", "finalize"), help=argparse.SUPPRESS)
-    result.add_argument("--session-dir", help=argparse.SUPPRESS)
-    result.add_argument("--dataset", help=argparse.SUPPRESS)
     result.add_argument("--_ld-preload-cleared", action="store_true", help=argparse.SUPPRESS)
     return result
 
 
 def main(args: argparse.Namespace) -> int:
-    if args.execute_formal and args.dry_run:
-        abort("--dry-run cannot be combined with --execute-formal")
-    internal_options = (args.internal_phase is not None, args.session_dir is not None, args.dataset is not None)
-    if any(internal_options) and not (all(internal_options[:2]) and (args.dataset is not None or args.internal_phase != "cell")):
-        abort("internal formal phases require --internal-phase and --session-dir; --dataset is required only for cell")
-    if any(internal_options) and not args.execute_formal:
-        abort("internal formal phases require --execute-formal")
-    if args.internal_phase == "cell" and args.dataset is None:
-        abort("internal cell phase requires --dataset")
-    if args.internal_phase != "cell" and args.dataset is not None:
-        abort("--dataset is valid only for internal cell phase")
-    if args.execute_formal and args.internal_phase is None:
-        abort("direct EZKL full-matrix execution is disabled; use ./comparison/run_formal.sh")
-    if args.internal_phase is not None:
-        session_dir = Path(args.session_dir)
-        session_id = session_dir.parent.name
-        validate_root_owned_phase(session_dir, session_id, args.internal_phase, args.dataset)
+    if args.dry_run and (args.execute_formal or args.preflight_only):
+        abort("--dry-run cannot be combined with --execute-formal or --preflight-only")
     command = [
         sys.executable,
-        "scripts/run_hybrid_formal.py",
+        str(ROOT / "scripts" / "run_hybrid_formal.py"),
         "--binary",
         args.binary,
         "--output-root",
         args.output_root,
         "--matrix",
         args.matrix,
+        "--_from-ezkl-entry",
     ]
-    if args.internal_phase is not None:
-        command.extend(["--internal-phase", args.internal_phase, "--session-dir", args.session_dir])
-        if args.dataset is not None:
-            command.extend(["--dataset", args.dataset])
-    if not args.execute_formal:
-        print("ezkl formal entry point: no setup/prove/verify was run")
-        print("run the repository's single official comparison command:")
-        print("./comparison/run_formal.sh")
+    if args.preflight_only:
+        command.append("--preflight-only")
+    if not args.execute_formal and not args.preflight_only:
+        print("five-dataset EZKL/Halo2 formal chain: no setup/prove/verify was run")
+        print("the EZKL-local production command is:")
+        print("python3 scripts/run_formal_matrix.py --execute-formal")
         return 0
     os.chdir(ROOT)
     os.execv(sys.executable, command)

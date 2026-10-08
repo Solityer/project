@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Internal phase adapter for the comparison-level formal runner."""
+"""Internal phase adapter for the baseline-local zkDL formal runner."""
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import hmac
 import json
@@ -23,6 +24,9 @@ DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 SESSION_RE = re.compile(r"formal_([0-9a-f]{32})\Z")
 ACTIVE_PGID: int | None = None
 INTERRUPTED: int | None = None
+ACTIVE_SESSION_STATE: Path | None = None
+ACTIVE_SESSION_ID: str | None = None
+ACTIVE_SESSION_STAGE: str | None = None
 
 
 class PhaseError(RuntimeError):
@@ -66,15 +70,61 @@ def _group_exists(pgid: int) -> bool:
 def _signal_handler(signum: int, _frame: object) -> None:
     global INTERRUPTED
     INTERRUPTED = signum
+    _mark_active_session_interrupted(signum)
     pgid = ACTIVE_PGID
     if pgid is not None:
         _terminate_group(pgid)
     raise KeyboardInterrupt(f"formal phase interrupted by signal {signum}")
 
 
+def _mark_active_session_interrupted(signum: int) -> None:
+    path = ACTIVE_SESSION_STATE
+    session_id = ACTIVE_SESSION_ID
+    if path is None or session_id is None:
+        return
+    try:
+        if path.is_symlink() or not path.is_file():
+            return
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(state, dict) or state.get("schema") != "zkdl_formal_runner_state_v1" or
+                state.get("session_id") != session_id or state.get("status") != "RUNNING"):
+            return
+        state["interrupted_stage"] = state.get("stage", ACTIVE_SESSION_STAGE or "unknown")
+        state["status"] = "INTERRUPTED"
+        state["stage"] = "interrupted"
+        state["failure"] = f"formal phase received termination signal {signum}"
+        state["finished_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        state["updated_at_utc"] = state["finished_at_utc"]
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.interrupt.tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(state, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        # The next baseline-local invocation will convert an ownerless RUNNING
+        # state to INTERRUPTED; never let signal cleanup mask process teardown.
+        return
+
+
+def _install_parent_death_signal(owner_pid: int, owner_start_ticks: int) -> None:
+    """Stop this phase if its local lifecycle owner disappears unexpectedly."""
+    if os.getppid() != owner_pid or _proc_start_ticks(owner_pid) != owner_start_ticks:
+        raise PhaseError("zkDL formal runner owner changed before parent-death protection was installed")
+    libc = ctypes.CDLL(None, use_errno=True)
+    # Linux PR_SET_PDEATHSIG: SIGTERM invokes the ordinary local process-group
+    # cleanup path below, even if the runner itself was killed with SIGKILL.
+    if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise PhaseError(f"cannot install zkDL phase parent-death protection: errno={error}")
+    if os.getppid() != owner_pid or _proc_start_ticks(owner_pid) != owner_start_ticks:
+        raise PhaseError("zkDL formal runner owner exited while parent-death protection was installed")
+
+
 def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = False,
          env: dict[str, str] | None = None, max_log_bytes: int | None = None,
-         capture_output: bool = False) -> str:
+         capture_output: bool = False, pass_fds: tuple[int, ...] = ()) -> str:
     """Run one owned process group; preserve its exit status and drain logs."""
     global ACTIVE_PGID
     log_stream = None
@@ -100,6 +150,7 @@ def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = 
             stderr=subprocess.STDOUT,
             start_new_session=True,
             bufsize=0,
+            pass_fds=pass_fds,
         )
     except OSError as exc:
         if log_stream is not None:
@@ -216,99 +267,85 @@ def _proc_parent_pid(pid: int) -> int:
         raise PhaseError("formal owner parent identity is malformed") from exc
 
 
-def _validate_root_owner(session_id: str, phase: str, dataset: str | None) -> None:
-    """Authorize only a live phase child of the lock-owning root stage supervisor."""
-    token = os.environ.get("COMPARISON_FORMAL_OWNER_TOKEN", "")
-    lock_fd_text = os.environ.get("COMPARISON_FORMAL_ROOT_LOCK_FD", "")
+def _validate_local_owner(session: Path, session_id: str, phase: str, dataset: str | None) -> None:
+    """Authorize only a live phase child of the zkDL-local lock-owning runner."""
+    global ACTIVE_SESSION_STATE, ACTIVE_SESSION_ID, ACTIVE_SESSION_STAGE
+    token = os.environ.get("ZKDL_FORMAL_OWNER_TOKEN", "")
+    lock_fd_text = os.environ.get("ZKDL_FORMAL_LOCK_FD", "")
     if re.fullmatch(r"[0-9a-f]{64}", token) is None or not lock_fd_text.isascii() or not lock_fd_text.isdecimal():
-        raise PhaseError("zkDL phases require the live comparison runner owner lease")
+        raise PhaseError("zkDL phases require the live baseline-local formal runner owner lease")
     try:
         lock_fd = int(lock_fd_text)
         if lock_fd < 3:
             raise ValueError
         inherited_lock = os.fstat(lock_fd)
     except (OSError, ValueError) as exc:
-        raise PhaseError("comparison runner lock descriptor is missing") from exc
+        raise PhaseError("zkDL formal runner lock descriptor is missing") from exc
 
-    lock_path = ROOT.parent / "runs" / ".formal.lock"
+    lock_path = ROOT / "runs" / ".formal.lock"
     try:
         if lock_path.is_symlink():
-            raise PhaseError("comparison runner lock path is a symlink")
+            raise PhaseError("zkDL formal runner lock path is a symlink")
         expected_lock = lock_path.stat(follow_symlinks=False)
     except OSError as exc:
-        raise PhaseError("comparison runner lock path is unavailable") from exc
+        raise PhaseError("zkDL formal runner lock path is unavailable") from exc
     if not stat.S_ISREG(expected_lock.st_mode) or (inherited_lock.st_dev, inherited_lock.st_ino) != (expected_lock.st_dev, expected_lock.st_ino):
-        raise PhaseError("inherited descriptor is not the comparison runner lock")
+        raise PhaseError("inherited descriptor is not the zkDL-local formal runner lock")
 
-    root_session = ROOT.parent / "runs" / "formal" / session_id / "state.json"
-    if root_session.is_symlink() or not root_session.is_file():
-        raise PhaseError("comparison runner session state is missing")
+    state_path = session / "state.json"
+    if state_path.is_symlink() or not state_path.is_file():
+        raise PhaseError("zkDL-local formal runner session state is missing")
     try:
-        state = json.loads(root_session.read_text(encoding="utf-8"))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise PhaseError("comparison runner session state is unreadable") from exc
-    if not isinstance(state, dict) or state.get("session_id") != session_id or state.get("status") != "RUNNING":
-        raise PhaseError("comparison runner session identity/status mismatch")
+        raise PhaseError("zkDL-local formal runner session state is unreadable") from exc
+    if (not isinstance(state, dict) or state.get("schema") != "zkdl_formal_runner_state_v1" or
+            state.get("baseline") != "zkdl" or state.get("session_id") != session_id or state.get("status") != "RUNNING"):
+        raise PhaseError("zkDL-local formal runner session identity/status mismatch")
 
-    expected_stage = (f"prepare:zkdl" if phase == "prepare" else
-                      f"cell:zkdl:{dataset}" if phase == "cell" else
-                      "baseline-finalize")
+    expected_stage = "prepare" if phase == "prepare" else f"cell:{dataset}" if phase == "cell" else "finalize"
     if state.get("stage") != expected_stage:
-        raise PhaseError("comparison runner stage does not authorize this zkDL phase")
+        raise PhaseError("zkDL-local formal runner stage does not authorize this phase")
     stored_token_digest = state.get("internal_owner_token_sha256")
     actual_token_digest = hashlib.sha256(token.encode("ascii")).hexdigest()
     if not isinstance(stored_token_digest, str) or re.fullmatch(r"[0-9a-f]{64}", stored_token_digest) is None or not hmac.compare_digest(
             stored_token_digest, actual_token_digest):
-        raise PhaseError("comparison runner owner token does not match the active session")
+        raise PhaseError("zkDL-local formal runner owner token does not match the active session")
 
-    lease = state.get("lock")
-    stage = state.get("owned_stage")
-    if not isinstance(lease, dict) or not isinstance(stage, dict) or stage.get("kind") != "stage-supervisor":
-        raise PhaseError("comparison runner root or stage-supervisor process lease is missing")
-    root_pid = lease.get("pid")
-    root_boot_id = lease.get("boot_id")
-    root_start_ticks = lease.get("start_ticks")
-    supervisor_pid = stage.get("pid")
-    supervisor_pgid = stage.get("pgid")
-    supervisor_boot_id = stage.get("boot_id")
-    supervisor_start_ticks = stage.get("start_ticks")
-    root_owner = stage.get("root_owner")
-    stage_token_digest = stage.get("owner_token_sha256")
-    valid_root_ticks = isinstance(root_start_ticks, str) and re.fullmatch(r"[1-9][0-9]*", root_start_ticks) is not None
-    valid_supervisor_ticks = isinstance(supervisor_start_ticks, str) and re.fullmatch(r"[1-9][0-9]*", supervisor_start_ticks) is not None
-    if (not isinstance(root_pid, int) or isinstance(root_pid, bool) or root_pid <= 0 or
-            not isinstance(root_boot_id, str) or re.fullmatch(r"[0-9a-fA-F-]{36}", root_boot_id) is None or
-            not valid_root_ticks or
-            not isinstance(supervisor_pid, int) or isinstance(supervisor_pid, bool) or supervisor_pid <= 0 or
-            not isinstance(supervisor_pgid, int) or isinstance(supervisor_pgid, bool) or supervisor_pgid <= 0 or
-            not isinstance(supervisor_boot_id, str) or re.fullmatch(r"[0-9a-fA-F-]{36}", supervisor_boot_id) is None or
-            not valid_supervisor_ticks or
-            not isinstance(root_owner, dict) or root_owner.get("pid") != root_pid or
-            root_owner.get("boot_id") != root_boot_id or root_owner.get("start_ticks") != root_start_ticks or
-            stage.get("stage") != expected_stage or stage.get("session_id") != session_id or
-            not isinstance(stage_token_digest, str) or re.fullmatch(r"[0-9a-f]{64}", stage_token_digest) is None or
-            not hmac.compare_digest(stage_token_digest, actual_token_digest)):
-        raise PhaseError("comparison runner stage-supervisor lease is malformed or mismatched")
+    owner = state.get("owner")
+    lock = state.get("lock")
+    if not isinstance(owner, dict) or not isinstance(lock, dict):
+        raise PhaseError("zkDL-local formal runner owner or lock lease is missing")
+    owner_pid = owner.get("pid")
+    owner_boot_id = owner.get("boot_id")
+    owner_start_ticks = owner.get("start_ticks")
+    if (not isinstance(owner_pid, int) or isinstance(owner_pid, bool) or owner_pid <= 0 or
+            not isinstance(owner_boot_id, str) or re.fullmatch(r"[0-9a-fA-F-]{36}", owner_boot_id) is None or
+            not isinstance(owner_start_ticks, str) or re.fullmatch(r"[1-9][0-9]*", owner_start_ticks) is None or
+            lock.get("device") != expected_lock.st_dev or lock.get("inode") != expected_lock.st_ino):
+        raise PhaseError("zkDL-local formal runner owner or lock lease is malformed")
     try:
         live_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
     except OSError as exc:
-        raise PhaseError("cannot validate comparison runner boot identity") from exc
-    if (live_boot_id != root_boot_id or live_boot_id != supervisor_boot_id or
-            _proc_start_ticks(root_pid) != int(root_start_ticks) or
-            _proc_start_ticks(supervisor_pid) != int(supervisor_start_ticks) or
-            _proc_parent_pid(supervisor_pid) != root_pid or os.getppid() != supervisor_pid or
-            os.getpgid(supervisor_pid) != supervisor_pgid):
-        raise PhaseError("zkDL phase is not a live child of the recorded comparison stage supervisor")
+        raise PhaseError("cannot validate zkDL-local formal runner boot identity") from exc
+    if (live_boot_id != owner_boot_id or _proc_start_ticks(owner_pid) != int(owner_start_ticks) or
+            _proc_parent_pid(os.getpid()) != owner_pid or os.getppid() != owner_pid):
+        raise PhaseError("zkDL phase is not a live child of the recorded baseline-local owner")
     try:
-        supervisor_cmdline = Path(f"/proc/{supervisor_pid}/cmdline").read_bytes().split(b"\0")
+        owner_cmdline = Path(f"/proc/{owner_pid}/cmdline").read_bytes().split(b"\0")
     except OSError as exc:
-        raise PhaseError("comparison stage-supervisor command identity is unavailable") from exc
-    if not any(b"formal_runner.py" in arg for arg in supervisor_cmdline) or not any(
-            arg == b"--_stage-supervisor" for arg in supervisor_cmdline):
-        raise PhaseError("comparison stage-supervisor command identity mismatch")
+        raise PhaseError("zkDL-local formal runner command identity is unavailable") from exc
+    if not any(b"formal_runner.py" in arg for arg in owner_cmdline):
+        raise PhaseError("zkDL-local formal runner command identity mismatch")
 
-    # The token only authenticates this adapter entry.  Never pass it to build,
-    # setup, or native prover descendants through their inherited environment.
+    ACTIVE_SESSION_STATE = state_path
+    ACTIVE_SESSION_ID = session_id
+    ACTIVE_SESSION_STAGE = expected_stage
+    _install_parent_death_signal(owner_pid, int(owner_start_ticks))
+
+    # The token only authenticates this adapter entry; never pass it to native descendants.
+    os.environ.pop("ZKDL_FORMAL_OWNER_TOKEN", None)
+    os.environ.pop("ZKDL_FORMAL_LOCK_FD", None)
     os.environ.pop("COMPARISON_FORMAL_OWNER_TOKEN", None)
     os.environ.pop("COMPARISON_FORMAL_ROOT_LOCK_FD", None)
 
@@ -321,7 +358,7 @@ def _build_manifest(session: Path) -> Path:
     return session / "build_manifest.json"
 
 
-def _shared_graph_identity(native: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _graph_identity(native: dict[str, dict[str, Any]]) -> dict[str, Any]:
     if set(native) != set(DATASETS):
         raise PhaseError("native admissions do not contain the complete canonical dataset set")
     datasets: dict[str, dict[str, Any]] = {}
@@ -363,7 +400,7 @@ def _shared_graph_identity(native: dict[str, dict[str, Any]]) -> dict[str, Any]:
             "input_preprocess_id": preprocess,
             "batching_rule": batching,
         }
-    return {"schema": "comparison-canonical-graph-set-v1", "datasets": datasets}
+    return {"schema": "zkdl_canonical_graph_set_v1", "datasets": datasets}
 
 
 def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any],
@@ -559,12 +596,18 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             existing_bytes += path.stat().st_size
     device = os.stat(session, follow_symlinks=False).st_dev
     profile = {
-        "schema": "comparison-baseline-capacity-profile-v2",
+        "schema": "zkdl_formal_capacity_profile_v1",
         "baseline": "zkdl",
         "session_id": session_id,
         "fs_device_id": int(device),
         "preexisting_baseline_artifact_bytes": existing_bytes,
         "finalization_disk_bytes_upper_bound": finalization_bytes,
+        # Finalization parses one dataset's public asset metadata at a time.
+        # Reuse the largest already source-derived per-cell host envelope as
+        # its conservative live host gate instead of inventing a Python-heap
+        # multiplier that is not represented by native admission evidence.
+        "finalization_host_peak_bytes_upper_bound": max(item["host_peak_bytes"] for item in datasets.values()),
+        "backend": "cpu",
         "memory_accounting_kind": "host-only",
         "device": None,
         "bound_methods": {
@@ -577,9 +620,19 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
 
 
 def prepare(session: Path, session_id: str) -> None:
-    if session.exists():
-        raise PhaseError(f"zkDL session already exists; root coordinator must provide a fresh path: {session}")
-    session.mkdir(parents=True, exist_ok=False)
+    if session.is_symlink() or not session.is_dir():
+        raise PhaseError(f"zkDL session must be created by the baseline-local formal runner: {session}")
+    entries = list(session.iterdir())
+    if len(entries) != 1 or entries[0].name != "state.json" or entries[0].is_symlink() or not entries[0].is_file():
+        raise PhaseError("zkDL formal prepare refuses a session containing artifacts before local ownership is established")
+    try:
+        state = json.loads(entries[0].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PhaseError("zkDL formal runner session state is unreadable before prepare") from exc
+    if (not isinstance(state, dict) or state.get("schema") != "zkdl_formal_runner_state_v1" or
+            state.get("baseline") != "zkdl" or state.get("session_id") != session_id or
+            state.get("status") != "RUNNING" or state.get("stage") != "prepare"):
+        raise PhaseError("zkDL formal runner session state is not fresh for prepare")
     (session / "logs").mkdir()
     (session / "phase").mkdir()
     admission_log = session / "logs" / "admission.log"
@@ -623,7 +676,7 @@ def prepare(session: Path, session_id: str) -> None:
         native[dataset] = result
 
     profile, native_capacity_diagnostics = _admission_profile(session, session_id, report, native)
-    graph_identity = _shared_graph_identity(native)
+    graph_identity = _graph_identity(native)
     phase_receipt = {
         "schema": "zkDL_formal_prepare_receipt_v1",
         "baseline": "zkdl",
@@ -634,8 +687,8 @@ def prepare(session: Path, session_id: str) -> None:
         "build_manifest_sha256": sha256_file(build_manifest),
         "native_admissions": native,
         "native_capacity_diagnostics": native_capacity_diagnostics,
-        "shared_graph_identity": graph_identity,
-        "shared_capacity_profile": profile,
+        "graph_identity": graph_identity,
+        "capacity_profile": profile,
     }
     receipt_path = session / "phase" / "prepare.json"
     receipt_path.write_text(json.dumps(phase_receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -651,8 +704,8 @@ def prepare(session: Path, session_id: str) -> None:
         "source_digest": phase_receipt["source_digest"],
         "prepare_receipt_path": receipt_path.relative_to(ROOT).as_posix(),
         "prepare_receipt_sha256": sha256_file(receipt_path),
-        "shared_graph_identity": graph_identity,
-        "shared_capacity_profile": profile,
+        "graph_identity": graph_identity,
+        "capacity_profile": profile,
     }
     print(json.dumps(marker, sort_keys=True, separators=(",", ":")), flush=True)
 
@@ -817,7 +870,7 @@ def main() -> int:
     if (args.internal_phase == "cell") != (args.dataset is not None):
         parser.error("--dataset is required only for cell phase")
     session, session_id = _session_path(args.session_dir)
-    _validate_root_owner(session_id, args.internal_phase, args.dataset)
+    _validate_local_owner(session, session_id, args.internal_phase, args.dataset)
     if args.internal_phase == "prepare":
         prepare(session, session_id)
     elif args.internal_phase == "cell":

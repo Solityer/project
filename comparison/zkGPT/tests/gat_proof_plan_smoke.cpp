@@ -271,14 +271,17 @@ int main() {
         return 13;
     }
     const GatPointDomainAdmission shape = inspect_gat_point_domain_admission(graph, model, quant);
+    const GatCapacityReport capacity = inspect_gat_capacity(graph, model, quant);
     const auto materialized_fconn_count = static_cast<std::uint64_t>(std::count_if(
         plan.circuit.circuit.begin(), plan.circuit.circuit.end(),
         [](const layer& current) { return current.ty == layerType::FCONN; }));
+    const std::uint64_t expected_shape_touch_index_bytes =
+        2 * ((capacity.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::size_t);
     if (!shape.ready || shape.reason.size() != 0 || shape.digest != plan.gkr_point_shape_digest ||
         shape.layer_count != plan.circuit.circuit.size() || shape.fconn_count != materialized_fconn_count ||
-        shape.bitmap_bytes == 0)
+        shape.bitmap_bytes == 0 ||
+        shape.touched_index_bytes_upper_bound != expected_shape_touch_index_bytes)
         return 3;
-    const GatCapacityReport capacity = inspect_gat_capacity(graph, model, quant);
     std::uint64_t expected_gate_count = 0;
     std::uint64_t expected_input_sources = 0;
     bool previous_lane_active = true;
@@ -308,6 +311,8 @@ int main() {
         capacity.gkr_point_shape_digest != shape.digest ||
         capacity.gkr_point_shape_layer_count != plan.circuit.circuit.size() ||
         capacity.gkr_point_shape_fconn_count != materialized_fconn_count ||
+        capacity.gkr_point_shape_touched_index_scratch_bytes_upper_bound !=
+            expected_shape_touch_index_bytes ||
         capacity.gkr_layer_count_upper_bound != plan.circuit.circuit.size() ||
         capacity.gkr_fconn_layer_count_upper_bound != materialized_fconn_count ||
         capacity.explicit_gate_count != expected_gate_count ||
@@ -324,6 +329,30 @@ int main() {
     features.values = {3, 7, 11, 13, 17, 19, 23, 29};
     const ForwardResult retained = run_forward(graph, features, model, quant);
     if (!retained.trace.relation_ok || !validate_relation(graph, features, model, quant, retained)) return 4;
+    const auto max_abs = [](const std::vector<Int>& values) {
+        Wide maximum = 0;
+        for (Int value : values) maximum = std::max(maximum, value < 0 ? -Wide(value) : Wide(value));
+        return maximum;
+    };
+    const Wide raw_features_abs = max_abs(features.values);
+    const Wide hidden_layer_zero_abs = max_abs(retained.trace.hidden_layers.at(0).concatenated.values);
+    auto layer_one_family = std::find_if(retained.trace.ledger.families.begin(), retained.trace.ledger.families.end(),
+                                         [](const BoundFamily& family) { return family.id == "hidden/layer1/head0"; });
+    if (raw_features_abs == hidden_layer_zero_abs || layer_one_family == retained.trace.ledger.families.end() ||
+        layer_one_family->input_abs != hidden_layer_zero_abs) {
+        std::cerr << "hidden-layer admission bound does not use its current input tensor\n";
+        return 14;
+    }
+    ForwardResult tampered_layer_bound = retained;
+    auto tampered_layer_one_family = std::find_if(tampered_layer_bound.trace.ledger.families.begin(),
+                                                  tampered_layer_bound.trace.ledger.families.end(),
+                                                  [](const BoundFamily& family) { return family.id == "hidden/layer1/head0"; });
+    if (tampered_layer_one_family == tampered_layer_bound.trace.ledger.families.end()) return 15;
+    tampered_layer_one_family->input_abs = raw_features_abs;
+    if (validate_relation(graph, features, model, quant, tampered_layer_bound)) {
+        std::cerr << "relation validator accepted a raw-feature bound for a hidden layer input\n";
+        return 16;
+    }
     const GatCircuitWitness witness = build_gat_circuit_witness(plan, graph, features, model, quant, retained);
     std::string witness_reason;
     if (!witness.relation_ok || witness.public_output.size() != plan.public_output_coordinates + plan.residual_coordinates ||

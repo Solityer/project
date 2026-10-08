@@ -991,6 +991,12 @@ struct QueryCounts {
     std::size_t range = 0;
 };
 
+struct StaticLookupBounds {
+    std::pair<Int, Int> lrelu;
+    std::pair<Int, Int> exp;
+    std::pair<Int, Int> elu;
+};
+
 unsigned nonnegative_bit_width(Wide bound) {
     if (bound < 0) throw std::invalid_argument("negative public range bound");
     unsigned bits = 1;
@@ -999,14 +1005,16 @@ unsigned nonnegative_bit_width(Wide bound) {
 }
 
 std::pair<Int, Int> lookup_rectangle(const std::vector<TablePoint>& points);
+StaticLookupBounds static_lookup_bounds(const StaticTables& tables);
+const std::vector<TablePoint>& table_points_for(const StaticTables& tables, const std::string& family);
+const std::pair<Int, Int>& table_bounds_for(const StaticLookupBounds& bounds, const std::string& family);
 
-std::vector<std::array<unsigned, 5>> canonical_division_range_bits(const Graph& graph, const Model& model, const QuantConfig& quant) {
-    const StaticTables tables = StaticTables::build(quant);
+std::vector<std::array<unsigned, 5>> canonical_division_range_bits(const Graph& graph, const Model& model, const QuantConfig& quant, const StaticLookupBounds& bounds) {
     std::vector<std::size_t> degrees(graph.num_nodes, 0);
     for (Int destination : graph.dst) ++degrees.at(static_cast<std::size_t>(destination));
     const std::size_t degree_bound = *std::max_element(degrees.begin(), degrees.end());
-    const Wide exp_bound = lookup_rectangle(tables.exp).second;
-    const Wide hidden_q_bound = lookup_rectangle(tables.elu).first;
+    const Wide exp_bound = bounds.exp.second;
+    const Wide hidden_q_bound = bounds.elu.first;
     const auto profile = [](Wide d, Wide q, bool hidden) { const unsigned db = nonnegative_bit_width(d), rb = nonnegative_bit_width(2 * d - 1); return std::array<unsigned, 5>{{hidden ? nonnegative_bit_width(d * (q + 1)) : 63, hidden ? nonnegative_bit_width(q) : 63, rb, rb, db}}; };
     std::vector<std::array<unsigned, 5>> result;
     for (std::size_t layer = 0; layer < 2; ++layer) for (std::size_t head = 0; head < model.hidden_heads(); ++head) result.push_back(profile(static_cast<Wide>(degree_bound) * exp_bound * quant.s_hprime_hidden[layer][head], hidden_q_bound, true));
@@ -1015,12 +1023,18 @@ std::vector<std::array<unsigned, 5>> canonical_division_range_bits(const Graph& 
     return result;
 }
 
-QueryCounts canonical_query_counts(const Graph& graph, const Model& model, const QuantConfig& quant) {
-    QueryCounts result;
+std::vector<std::array<unsigned, 5>> canonical_division_range_bits(const Graph& graph, const Model& model, const QuantConfig& quant) {
     const StaticTables tables = StaticTables::build(quant);
-    const auto lr = lookup_rectangle(tables.lrelu), ex = lookup_rectangle(tables.exp), el = lookup_rectangle(tables.elu);
+    return canonical_division_range_bits(graph, model, quant, static_lookup_bounds(tables));
+}
+
+QueryCounts canonical_query_counts(const Graph& graph, const Model& model, const QuantConfig& quant, const StaticLookupBounds& bounds) {
+    QueryCounts result;
+    const auto& lr = bounds.lrelu;
+    const auto& ex = bounds.exp;
+    const auto& el = bounds.elu;
     const auto tuple_bits = [](const std::pair<Int, Int>& b) { return 2 * (nonnegative_bit_width(2 * static_cast<Wide>(b.first)) + nonnegative_bit_width(2 * static_cast<Wide>(b.second))); };
-    const auto profiles = canonical_division_range_bits(graph, model, quant);
+    const auto profiles = canonical_division_range_bits(graph, model, quant, bounds);
     std::size_t profile_index = 0;
     const auto division_bits = [](const std::array<unsigned, 5>& profile) { return std::accumulate(profile.begin(), profile.end(), std::size_t(0)); };
     const auto add_attention = [&](std::size_t dim, bool hidden) {
@@ -1036,6 +1050,11 @@ QueryCounts canonical_query_counts(const Graph& graph, const Model& model, const
     for (std::size_t head = 0; head < model.manifest.output_heads; ++head) { add_attention(model.classes(), false); result.range = checked_add(result.range, checked_mul(graph.num_nodes * model.classes(), division_bits(profiles.at(profile_index++)), "alignment range bits"), "canonical range queries"); }
     result.range = checked_add(result.range, checked_mul(graph.num_nodes * model.classes(), division_bits(profiles.at(profile_index)), "average range bits"), "canonical range queries");
     return result;
+}
+
+QueryCounts canonical_query_counts(const Graph& graph, const Model& model, const QuantConfig& quant) {
+    const StaticTables tables = StaticTables::build(quant);
+    return canonical_query_counts(graph, model, quant, static_lookup_bounds(tables));
 }
 
 std::size_t canonical_query_size(const Graph& graph, const Model& model, const QuantConfig& quant) {
@@ -1448,12 +1467,28 @@ class GkrPointShapeCollector {
         if (word_count_ > std::numeric_limits<std::size_t>::max() / 2)
             throw std::length_error("shape-only GKR dual-lane bitmap exceeds native size_t");
         seen_.resize(word_count_ * 2);
-        std::fill(seen_.begin(), seen_.end(), 0);
         bitmap_bytes_ = static_cast<std::uint64_t>(seen_.size()) * sizeof(std::uint64_t);
         if (prefixes_.empty()) prefixes_.push_back(0);
+        touched_index_capacity_ = seen_.size();
+        if (touched_index_capacity_ > std::numeric_limits<std::size_t>::max() / sizeof(std::size_t))
+            throw std::length_error("shape-only GKR touched-index capacity exceeds native size_t");
+        touched_index_bytes_upper_bound_ =
+            static_cast<std::uint64_t>(touched_index_capacity_) * sizeof(std::size_t);
+        if (touched_index_capacity_ != 0)
+            touched_indices_ = touched_index_allocator_.allocate(touched_index_capacity_);
     }
 
+    ~GkrPointShapeCollector() {
+        if (touched_indices_ != nullptr)
+            touched_index_allocator_.deallocate(touched_indices_, touched_index_capacity_);
+    }
+    GkrPointShapeCollector(const GkrPointShapeCollector&) = delete;
+    GkrPointShapeCollector& operator=(const GkrPointShapeCollector&) = delete;
+
     std::uint64_t bitmap_bytes() const noexcept { return bitmap_bytes_; }
+    std::uint64_t touched_index_bytes_upper_bound() const noexcept {
+        return touched_index_bytes_upper_bound_;
+    }
     const std::vector<GatGkrLayerShapeProfile>& layer_shapes() const noexcept { return layer_shapes_; }
 
     void append_unary(std::size_t output, std::size_t input, std::uint8_t lu) {
@@ -1628,7 +1663,7 @@ class GkrPointShapeCollector {
                 const std::uint64_t mask = take == 64
                     ? ~std::uint64_t(0)
                     : ((std::uint64_t(1) << take) - 1) << first_bit;
-                seen_[plane + word] |= mask;
+                mark_seen(plane + word, mask);
                 support += take;
             }
             coordinate = part_end;
@@ -1653,19 +1688,38 @@ class GkrPointShapeCollector {
         }
         const std::size_t index = support_index(static_cast<std::uint64_t>(coordinate));
         const std::size_t plane = lane * word_count_;
-        seen_[plane + (index >> 6)] |= std::uint64_t(1) << (index & 63);
+        mark_seen(plane + (index >> 6), std::uint64_t(1) << (index & 63));
+    }
+
+    void mark_seen(std::size_t absolute_word, std::uint64_t mask) {
+        if (absolute_word >= seen_.size() || mask == 0)
+            throw std::out_of_range("shape-only GKR bitmap word is invalid");
+        if (seen_[absolute_word] == 0) {
+            if (touched_index_count_ >= touched_index_capacity_ || touched_indices_ == nullptr)
+                throw std::length_error("shape-only GKR touched-index storage exceeded its exact word bound");
+            touched_indices_[touched_index_count_++] = absolute_word;
+        }
+        seen_[absolute_word] |= mask;
     }
 
     std::uint64_t count_lane(std::size_t lane) const {
         std::uint64_t count = 0;
-        const std::size_t plane = lane * word_count_;
-        for (std::size_t index = 0; index < word_count_; ++index)
-            count += static_cast<std::uint64_t>(__builtin_popcountll(seen_[plane + index]));
+        if (lane > 1)
+            throw std::out_of_range("shape-only GKR lane index is invalid");
+        const std::size_t lane_begin = lane * word_count_;
+        const std::size_t lane_end = lane_begin + word_count_;
+        for (std::size_t offset = 0; offset < touched_index_count_; ++offset) {
+            const std::size_t absolute_word = touched_indices_[offset];
+            if (absolute_word < lane_begin || absolute_word >= lane_end) continue;
+            count += static_cast<std::uint64_t>(__builtin_popcountll(seen_[absolute_word]));
+        }
         return count;
     }
 
     void clear_lanes() {
-        std::fill(seen_.begin(), seen_.end(), 0);
+        for (std::size_t offset = 0; offset < touched_index_count_; ++offset)
+            seen_[touched_indices_[offset]] = 0;
+        touched_index_count_ = 0;
     }
 
     void reset_layer_counters() {
@@ -1688,6 +1742,11 @@ class GkrPointShapeCollector {
     std::size_t unary_count_ = 0;
     std::size_t binary_count_ = 0;
     std::size_t maximum_output_ = 0;
+    zkgpt::NativeScratchAllocator<std::size_t> touched_index_allocator_;
+    std::size_t* touched_indices_ = nullptr;
+    std::size_t touched_index_capacity_ = 0;
+    std::size_t touched_index_count_ = 0;
+    std::uint64_t touched_index_bytes_upper_bound_ = 0;
     bool has_pre_layer_u_ = false;
     bool has_pre_layer_v_ = false;
     bool has_v_operand_ = false;
@@ -2018,7 +2077,7 @@ struct RelationLayerBuilder {
     std::size_t add_unary(std::size_t input, ll coefficient = 1) { return add_residual({{input, coefficient}}, {}); }
 };
 
-std::size_t relation_coefficient_candidate_count(const QuantConfig& quant, const StaticTables& tables) {
+std::size_t relation_coefficient_candidate_count(const QuantConfig& quant, const StaticLookupBounds& bounds) {
     std::set<ll> candidates{0, 1, -1, 2, -2};
     for (unsigned bit = 0; bit < 63; ++bit) candidates.insert(static_cast<ll>(std::uint64_t(1) << bit));
     const auto add_signed_pair = [&candidates](Int value) {
@@ -2054,15 +2113,14 @@ std::size_t relation_coefficient_candidate_count(const QuantConfig& quant, const
     add_signed_pair(quant.static_elu_max);
     add_signed_pair(quant.lrelu_slope_num);
     add_signed_pair(quant.lrelu_slope_den);
-    const auto add_lookup_base = [&add_signed_pair](const std::vector<TablePoint>& points) {
-        const Int by = lookup_rectangle(points).second;
+    const auto add_lookup_base = [&add_signed_pair](Int by) {
         const Wide base = 2 * static_cast<Wide>(by) + 1;
         if (base > std::numeric_limits<Int>::max()) throw std::overflow_error("lookup coefficient base exceeds the integer coefficient domain");
         add_signed_pair(static_cast<Int>(base));
     };
-    add_lookup_base(tables.lrelu);
-    add_lookup_base(tables.exp);
-    add_lookup_base(tables.elu);
+    add_lookup_base(bounds.lrelu.second);
+    add_lookup_base(bounds.exp.second);
+    add_lookup_base(bounds.elu.second);
     return candidates.size();
 }
 
@@ -2190,9 +2248,8 @@ void add_nonnegative_range_residuals(RelationLayerBuilder& builder, std::size_t 
     builder.add_residual(decomposition, {}, constant);
 }
 
-void add_lookup_tuple_residuals(RelationLayerBuilder& builder, std::size_t x, std::size_t y, std::size_t query, const std::vector<TablePoint>& points, std::size_t& range_cursor) {
-    Int bx = 0, by = 0;
-    for (const TablePoint& point : points) { bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x))); by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y))); }
+void add_lookup_tuple_residuals(RelationLayerBuilder& builder, std::size_t x, std::size_t y, std::size_t query, const std::pair<Int, Int>& bounds, std::size_t& range_cursor) {
+    const Int bx = bounds.first, by = bounds.second;
     const Wide wide_base = 2 * static_cast<Wide>(by) + 1, wide_shift = static_cast<Wide>(bx) * wide_base + by;
     if (wide_base > std::numeric_limits<Int>::max() || wide_shift > std::numeric_limits<Int>::max()) throw std::overflow_error("authenticated lookup packing exceeds the integer coefficient domain");
     const Int base = static_cast<Int>(wide_base), shift = static_cast<Int>(wide_shift);
@@ -2208,12 +2265,12 @@ void add_division_range_residuals(RelationLayerBuilder& builder, std::size_t off
     for (std::size_t index = 0; index < count; ++index) for (std::size_t item = 0; item < components.size(); ++item) add_nonnegative_range_residuals(builder, offset + index * 9 + components[item], 1, 0, range_cursor, profile[item]);
 }
 
-void add_attention_lookup_residuals(RelationLayerBuilder& builder, const Graph& graph, const AttentionCoordinates& a, bool hidden, const StaticTables& tables, std::size_t& lrelu_cursor, std::size_t& exp_cursor, std::size_t& elu_cursor, std::size_t& range_cursor, const std::array<unsigned, 5>& profile) {
-    for (std::size_t edge = 0; edge < graph.edges(); ++edge) add_lookup_tuple_residuals(builder, a.raw_score + edge, a.leaky_score + edge, lrelu_cursor++, tables.lrelu, range_cursor);
-    for (std::size_t edge = 0; edge < graph.edges(); ++edge) add_lookup_tuple_residuals(builder, a.delta + edge, a.exp + edge, exp_cursor++, tables.exp, range_cursor);
-    if (hidden) for (std::size_t index = 0; index < graph.num_nodes * a.output_dim; ++index) add_lookup_tuple_residuals(builder, a.recovered + index, a.activated + index, elu_cursor++, tables.elu, range_cursor);
+void add_attention_lookup_residuals(RelationLayerBuilder& builder, const Graph& graph, const AttentionCoordinates& a, bool hidden, const StaticLookupBounds& bounds, std::size_t& lrelu_cursor, std::size_t& exp_cursor, std::size_t& elu_cursor, std::size_t& range_cursor, const std::array<unsigned, 5>& profile) {
+    for (std::size_t edge = 0; edge < graph.edges(); ++edge) add_lookup_tuple_residuals(builder, a.raw_score + edge, a.leaky_score + edge, lrelu_cursor++, bounds.lrelu, range_cursor);
+    for (std::size_t edge = 0; edge < graph.edges(); ++edge) add_lookup_tuple_residuals(builder, a.delta + edge, a.exp + edge, exp_cursor++, bounds.exp, range_cursor);
+    if (hidden) for (std::size_t index = 0; index < graph.num_nodes * a.output_dim; ++index) add_lookup_tuple_residuals(builder, a.recovered + index, a.activated + index, elu_cursor++, bounds.elu, range_cursor);
     else for (std::size_t index = 0; index < graph.num_nodes * a.output_dim; ++index) builder.add_residual({{a.activated + index, 1}, {a.recovered + index, -1}}, {});
-    for (std::size_t edge = 0; edge < graph.edges(); ++edge) add_nonnegative_range_residuals(builder, a.delta + edge, 1, 0, range_cursor, nonnegative_bit_width(2 * static_cast<Wide>(lookup_rectangle(tables.lrelu).second)));
+    for (std::size_t edge = 0; edge < graph.edges(); ++edge) add_nonnegative_range_residuals(builder, a.delta + edge, 1, 0, range_cursor, nonnegative_bit_width(2 * static_cast<Wide>(bounds.lrelu.second)));
     add_division_range_residuals(builder, a.divisions, graph.num_nodes * a.output_dim, range_cursor, profile);
 }
 
@@ -3368,6 +3425,7 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
 
     const GatTrace* trace = forward == nullptr ? nullptr : &forward->trace;
     const StaticTables canonical_tables = StaticTables::build(quant);
+    const StaticLookupBounds canonical_lookup_bounds = static_lookup_bounds(canonical_tables);
     const QueryCounts query_counts = query_coordinates.counts;
     const auto add_lasso = [&plan](const std::string& family, const std::string& table, std::size_t real, std::size_t offset, std::size_t domain, Int padding) {
         LassoFamilyDescriptor descriptor;
@@ -3411,7 +3469,7 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
                              static_cast<std::size_t>(capacity.relation_residual_entries),
                              static_cast<std::size_t>(capacity.relation_gate_unary_entries),
                              static_cast<std::size_t>(capacity.relation_gate_binary_entries),
-                             relation_coefficient_candidate_count(quant, canonical_tables));
+                             relation_coefficient_candidate_count(quant, canonical_lookup_bounds));
     std::size_t bound_profile_index = 0;
     std::size_t bound_lrelu_cursor = query_coordinates.lrelu, bound_exp_cursor = query_coordinates.exp, bound_elu_cursor = query_coordinates.elu, bound_range_cursor = query_coordinates.range;
     const std::size_t public_output_coordinates = checked_mul(graph.num_nodes, classes, "public output coordinates");
@@ -3424,7 +3482,7 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
         for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
             const AttentionCoordinates& a = coordinates.hidden[layer_id][head];
             add_attention_residuals(relation_builder, graph, incoming, a, true, quant);
-            add_attention_lookup_residuals(relation_builder, graph, a, true, canonical_tables, bound_lrelu_cursor, bound_exp_cursor, bound_elu_cursor, bound_range_cursor, plan.division_range_bits.at(bound_profile_index++));
+            add_attention_lookup_residuals(relation_builder, graph, a, true, canonical_lookup_bounds, bound_lrelu_cursor, bound_exp_cursor, bound_elu_cursor, bound_range_cursor, plan.division_range_bits.at(bound_profile_index++));
             add_attention_recovery_residuals(relation_builder, graph, a, true, layer_id, head, quant);
         }
         for (std::size_t node = 0; node < graph.num_nodes; ++node) {
@@ -3450,7 +3508,7 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
         const AttentionCoordinates& a = coordinates.output[head];
         const std::size_t output_coordinates = checked_mul(graph.num_nodes, classes, "output relation coordinates");
         add_attention_residuals(relation_builder, graph, incoming, a, false, quant);
-        add_attention_lookup_residuals(relation_builder, graph, a, false, canonical_tables, bound_lrelu_cursor, bound_exp_cursor, bound_elu_cursor, bound_range_cursor, plan.division_range_bits.at(bound_profile_index++));
+        add_attention_lookup_residuals(relation_builder, graph, a, false, canonical_lookup_bounds, bound_lrelu_cursor, bound_exp_cursor, bound_elu_cursor, bound_range_cursor, plan.division_range_bits.at(bound_profile_index++));
         add_division_range_residuals(relation_builder, coordinates.output_alignment_divisions[head], output_coordinates, bound_range_cursor, plan.division_range_bits.at(bound_profile_index++));
         add_attention_recovery_residuals(relation_builder, graph, a, false, 0, head, quant);
         for (std::size_t index = 0; index < output_coordinates; ++index) {
@@ -3478,7 +3536,11 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
     if (bound_lrelu_cursor != query_coordinates.lrelu + query_counts.lrelu || bound_exp_cursor != query_coordinates.exp + query_counts.exp || bound_elu_cursor != query_coordinates.elu + query_counts.elu || bound_range_cursor != query_coordinates.range + query_counts.range) throw std::logic_error("canonical lookup/range binding does not cover the registered query coordinates");
     for (const LassoFamilyDescriptor& family : plan.lasso) {
         Fr padding(0);
-        if (family.family_id != "range/all") { const std::vector<TablePoint>& points = family.family_id == "function/lrelu" ? canonical_tables.lrelu : family.family_id == "function/exp" ? canonical_tables.exp : canonical_tables.elu; Int bx = 0, by = 0; for (const TablePoint& point : points) { bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x))); by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y))); } padding = Fr((points.front().x + bx) * (2 * by + 1) + points.front().y + by); }
+        if (family.family_id != "range/all") {
+            const std::vector<TablePoint>& points = table_points_for(canonical_tables, family.family_id);
+            const auto& bounds = table_bounds_for(canonical_lookup_bounds, family.family_id);
+            padding = Fr((points.front().x + bounds.first) * (2 * bounds.second + 1) + points.front().y + bounds.second);
+        }
         Int pad = 0; if (!padding.isZero()) pad = std::stoll(padding.getStr());
         for (std::size_t index = family.real_queries; index < family.padded_queries; ++index) relation_builder.add_residual({{family.query_offset + index, 1}}, {}, pad);
     }
@@ -3525,6 +3587,8 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
             plan.circuit, plan.matmuls, plan.input_layout);
         plan.gkr_layer_shape_profile = shape_collector->layer_shapes();
         plan.gkr_point_shape_bitmap_bytes = shape_collector->bitmap_bytes();
+        plan.gkr_point_shape_touched_index_bytes_upper_bound =
+            shape_collector->touched_index_bytes_upper_bound();
         return plan;
     }
 
@@ -4344,8 +4408,11 @@ std::pair<Int, Int> lookup_rectangle(const std::vector<TablePoint>& points) {
     return {bx, by};
 }
 
-void append_tuple_range_queries(std::vector<Fr>& values, Int x, Int y, const std::vector<TablePoint>& points) {
-    const auto bounds = lookup_rectangle(points);
+StaticLookupBounds static_lookup_bounds(const StaticTables& tables) {
+    return {lookup_rectangle(tables.lrelu), lookup_rectangle(tables.exp), lookup_rectangle(tables.elu)};
+}
+
+void append_tuple_range_queries(std::vector<Fr>& values, Int x, Int y, const std::pair<Int, Int>& bounds) {
     append_nonnegative_bits(values, static_cast<Wide>(x) + bounds.first, nonnegative_bit_width(2 * static_cast<Wide>(bounds.first)));
     append_nonnegative_bits(values, static_cast<Wide>(bounds.first) - x, nonnegative_bit_width(2 * static_cast<Wide>(bounds.first)));
     append_nonnegative_bits(values, static_cast<Wide>(y) + bounds.second, nonnegative_bit_width(2 * static_cast<Wide>(bounds.second)));
@@ -4357,20 +4424,20 @@ void append_division_range_queries(std::vector<Fr>& values, const DivisionWitnes
     for (std::size_t item = 0; item < values_to_range.size(); ++item) append_nonnegative_bits(values, values_to_range[item], profile[item]);
 }
 
-void append_range_attention_queries(std::vector<Fr>& values, const AttentionTrace& trace, bool hidden, const StaticTables& tables, const std::array<unsigned, 5>& profile) {
-    for (std::size_t index = 0; index < trace.raw_score.size(); ++index) append_tuple_range_queries(values, trace.raw_score[index], trace.leaky_score[index], tables.lrelu);
-    for (std::size_t index = 0; index < trace.delta.size(); ++index) append_tuple_range_queries(values, trace.delta[index], trace.exp[index], tables.exp);
-    if (hidden) for (std::size_t index = 0; index < trace.recovered.size(); ++index) append_tuple_range_queries(values, trace.recovered[index], trace.activated[index], tables.elu);
-    for (Int value : trace.delta) append_nonnegative_bits(values, value, nonnegative_bit_width(2 * static_cast<Wide>(lookup_rectangle(tables.lrelu).second)));
+void append_range_attention_queries(std::vector<Fr>& values, const AttentionTrace& trace, bool hidden, const StaticLookupBounds& bounds, const std::array<unsigned, 5>& profile) {
+    for (std::size_t index = 0; index < trace.raw_score.size(); ++index) append_tuple_range_queries(values, trace.raw_score[index], trace.leaky_score[index], bounds.lrelu);
+    for (std::size_t index = 0; index < trace.delta.size(); ++index) append_tuple_range_queries(values, trace.delta[index], trace.exp[index], bounds.exp);
+    if (hidden) for (std::size_t index = 0; index < trace.recovered.size(); ++index) append_tuple_range_queries(values, trace.recovered[index], trace.activated[index], bounds.elu);
+    for (Int value : trace.delta) append_nonnegative_bits(values, value, nonnegative_bit_width(2 * static_cast<Wide>(bounds.lrelu.second)));
     for (const DivisionWitness& division : trace.divisions) append_division_range_queries(values, division, profile);
 }
 
-std::vector<Fr> canonical_range_query_values(const GatCircuitPlan& plan, const ForwardResult& forward, const StaticTables& tables) {
+std::vector<Fr> canonical_range_query_values(const GatCircuitPlan& plan, const ForwardResult& forward, const StaticLookupBounds& bounds) {
     std::vector<Fr> values;
     std::size_t profile_index = 0;
-    for (const HiddenLayerTrace& layer : forward.trace.hidden_layers) for (const AttentionTrace& head : layer.heads) append_range_attention_queries(values, head, true, tables, plan.division_range_bits.at(profile_index++));
+    for (const HiddenLayerTrace& layer : forward.trace.hidden_layers) for (const AttentionTrace& head : layer.heads) append_range_attention_queries(values, head, true, bounds, plan.division_range_bits.at(profile_index++));
     for (const OutputHeadTrace& head : forward.trace.output_heads) {
-        append_range_attention_queries(values, head.attention, false, tables, plan.division_range_bits.at(profile_index++));
+        append_range_attention_queries(values, head.attention, false, bounds, plan.division_range_bits.at(profile_index++));
         const auto& profile = plan.division_range_bits.at(profile_index++);
         for (const DivisionWitness& division : head.alignment_divisions) append_division_range_queries(values, division, profile);
     }
@@ -4393,8 +4460,7 @@ void append_nonnegative_bits_indices(IndexVector& indices, Wide input,
 
 template <class IndexVector>
 void append_tuple_range_indices(IndexVector& indices, Int x, Int y,
-                                const std::vector<TablePoint>& points) {
-    const auto bounds = lookup_rectangle(points);
+                                const std::pair<Int, Int>& bounds) {
     append_nonnegative_bits_indices(indices, static_cast<Wide>(x) + bounds.first,
                                     nonnegative_bit_width(2 * static_cast<Wide>(bounds.first)));
     append_nonnegative_bits_indices(indices, static_cast<Wide>(bounds.first) - x,
@@ -4418,16 +4484,16 @@ void append_division_range_indices(IndexVector& indices,
 template <class IndexVector>
 void append_range_attention_indices(IndexVector& indices,
                                     const AttentionTrace& trace, bool hidden,
-                                    const StaticTables& tables,
+                                    const StaticLookupBounds& bounds,
                                     const std::array<unsigned, 5>& profile) {
     for (std::size_t index = 0; index < trace.raw_score.size(); ++index)
-        append_tuple_range_indices(indices, trace.raw_score[index], trace.leaky_score[index], tables.lrelu);
+        append_tuple_range_indices(indices, trace.raw_score[index], trace.leaky_score[index], bounds.lrelu);
     for (std::size_t index = 0; index < trace.delta.size(); ++index)
-        append_tuple_range_indices(indices, trace.delta[index], trace.exp[index], tables.exp);
+        append_tuple_range_indices(indices, trace.delta[index], trace.exp[index], bounds.exp);
     if (hidden)
         for (std::size_t index = 0; index < trace.recovered.size(); ++index)
-            append_tuple_range_indices(indices, trace.recovered[index], trace.activated[index], tables.elu);
-    const unsigned delta_width = nonnegative_bit_width(2 * static_cast<Wide>(lookup_rectangle(tables.lrelu).second));
+            append_tuple_range_indices(indices, trace.recovered[index], trace.activated[index], bounds.elu);
+    const unsigned delta_width = nonnegative_bit_width(2 * static_cast<Wide>(bounds.lrelu.second));
     for (Int value : trace.delta) append_nonnegative_bits_indices(indices, value, delta_width);
     for (const DivisionWitness& division : trace.divisions)
         append_division_range_indices(indices, division, profile);
@@ -4438,13 +4504,14 @@ void append_canonical_range_query_indices(IndexVector& indices,
                                           const GatCircuitPlan& plan,
                                           const ForwardResult& forward,
                                           const StaticTables& tables) {
+    const StaticLookupBounds bounds = static_lookup_bounds(tables);
     std::size_t profile_index = 0;
     for (const HiddenLayerTrace& layer : forward.trace.hidden_layers)
         for (const AttentionTrace& head : layer.heads)
-            append_range_attention_indices(indices, head, true, tables,
+            append_range_attention_indices(indices, head, true, bounds,
                                            plan.division_range_bits.at(profile_index++));
     for (const OutputHeadTrace& head : forward.trace.output_heads) {
-        append_range_attention_indices(indices, head.attention, false, tables,
+        append_range_attention_indices(indices, head.attention, false, bounds,
                                        plan.division_range_bits.at(profile_index++));
         const auto& profile = plan.division_range_bits.at(profile_index++);
         for (const DivisionWitness& division : head.alignment_divisions)
@@ -4512,10 +4579,9 @@ std::array<Int, 5> canonical_division_values(const DivisionWitness& division) {
 void append_canonical_range_tuple_block(
     std::vector<CanonicalRangeBitBlock>& blocks, std::uint64_t& cursor,
     const std::vector<Int>& x, const std::vector<Int>& y,
-    const std::vector<TablePoint>& table) {
+    const std::pair<Int, Int>& bounds) {
     if (x.size() != y.size())
         throw std::logic_error("canonical range tuple source dimensions differ");
-    const auto bounds = lookup_rectangle(table);
     const unsigned width_x = nonnegative_bit_width(2 * static_cast<Wide>(bounds.first));
     const unsigned width_y = nonnegative_bit_width(2 * static_cast<Wide>(bounds.second));
     const std::uint64_t bits_per_tuple = 2ULL * width_x + 2ULL * width_y;
@@ -4576,18 +4642,18 @@ void append_canonical_range_division_block(
 
 void append_canonical_range_attention_blocks(
     std::vector<CanonicalRangeBitBlock>& blocks, std::uint64_t& cursor,
-    const AttentionTrace& trace, bool hidden, const StaticTables& tables,
+    const AttentionTrace& trace, bool hidden, const StaticLookupBounds& bounds,
     const std::array<unsigned, 5>& profile) {
     append_canonical_range_tuple_block(blocks, cursor, trace.raw_score,
-                                       trace.leaky_score, tables.lrelu);
+                                       trace.leaky_score, bounds.lrelu);
     append_canonical_range_tuple_block(blocks, cursor, trace.delta,
-                                       trace.exp, tables.exp);
+                                       trace.exp, bounds.exp);
     if (hidden)
         append_canonical_range_tuple_block(blocks, cursor, trace.recovered,
-                                           trace.activated, tables.elu);
+                                           trace.activated, bounds.elu);
     append_canonical_range_vector_block(
         blocks, cursor, trace.delta,
-        nonnegative_bit_width(2 * static_cast<Wide>(lookup_rectangle(tables.lrelu).second)));
+        nonnegative_bit_width(2 * static_cast<Wide>(bounds.lrelu.second)));
     append_canonical_range_division_block(blocks, cursor, trace.divisions,
                                           profile);
 }
@@ -4690,8 +4756,16 @@ const std::vector<TablePoint>& table_points_for(const StaticTables& tables, cons
     throw std::invalid_argument("function table requested for non-function family");
 }
 
+const std::pair<Int, Int>& table_bounds_for(const StaticLookupBounds& bounds, const std::string& family) {
+    if (family == "function/lrelu") return bounds.lrelu;
+    if (family == "function/exp") return bounds.exp;
+    if (family == "function/elu") return bounds.elu;
+    throw std::invalid_argument("function bounds requested for non-function family");
+}
+
 LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan& plan, const ForwardResult& forward, const StaticTables& tables, const std::string& basis_label) {
     if (plan.input_layout.segments.size() != 4) throw std::invalid_argument("Lasso bundle requires canonical four-segment layout");
+    const StaticLookupBounds lookup_bounds = static_lookup_bounds(tables);
     const InputSegment& l_segment = plan.input_layout.segments.at(3);
     LassoAdapterBundle result;
     for (const LassoFamilyDescriptor& descriptor : plan.lasso) {
@@ -4720,11 +4794,11 @@ LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan& plan, const ForwardR
             for (const HiddenLayerTrace& layer : forward.trace.hidden_layers)
                 for (const AttentionTrace& head : layer.heads)
                     append_canonical_range_attention_blocks(
-                        blocks, cursor, head, true, tables,
+                        blocks, cursor, head, true, lookup_bounds,
                         plan.division_range_bits.at(profile_index++));
             for (const OutputHeadTrace& head : forward.trace.output_heads) {
                 append_canonical_range_attention_blocks(
-                    blocks, cursor, head.attention, false, tables,
+                    blocks, cursor, head.attention, false, lookup_bounds,
                     plan.division_range_bits.at(profile_index++));
                 append_canonical_range_division_block(
                     blocks, cursor, head.alignment_divisions,
@@ -4747,13 +4821,9 @@ LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan& plan, const ForwardR
             };
         } else {
             const std::vector<TablePoint>& points = table_points_for(tables, descriptor.family_id);
-            Int bx = 0, by = 0;
-            for (const TablePoint& point : points) {
-                bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x)));
-                by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y)));
-            }
+            const auto& bounds = table_bounds_for(lookup_bounds, descriptor.family_id);
             family.table.reserve(descriptor.table_domain);
-            for (const TablePoint& point : points) family.table.push_back(packed_table_value(point.x, point.y, bx, by));
+            for (const TablePoint& point : points) family.table.push_back(packed_table_value(point.x, point.y, bounds.first, bounds.second));
             if (family.table.empty()) throw std::invalid_argument("empty static Lasso table");
             while (family.table.size() < descriptor.table_domain) family.table.push_back(family.table.front());
             family.padding_index = 0;
@@ -4889,7 +4959,8 @@ LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan& plan, const ForwardR
 std::vector<NativeLassoChunkFamilyProver> build_lasso_chunk_families(const GatCircuitPlan& plan, const ForwardResult& forward, const StaticTables& tables) {
     std::map<std::string, std::vector<std::pair<Int, Int>>> function_queries;
     std::map<std::string, std::vector<Fr>> range_queries;
-    range_queries["range/all"] = canonical_range_query_values(plan, forward, tables);
+    const StaticLookupBounds lookup_bounds = static_lookup_bounds(tables);
+    range_queries["range/all"] = canonical_range_query_values(plan, forward, lookup_bounds);
     const auto append_attention = [&](const AttentionTrace& trace, bool hidden) {
         auto& lrelu = function_queries["function/lrelu"];
         auto& exp = function_queries["function/exp"];
@@ -4934,13 +5005,9 @@ std::vector<NativeLassoChunkFamilyProver> build_lasso_chunk_families(const GatCi
             family.padding_value = F(0);
         } else {
             const auto& points = table_for(descriptor.family_id);
-            Int bx = 0, by = 0;
-            for (const TablePoint& point : points) {
-                bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x)));
-                by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y)));
-            }
+            const auto& bounds = table_bounds_for(lookup_bounds, descriptor.family_id);
             table_values.reserve(descriptor.table_domain);
-            for (const TablePoint& point : points) table_values.push_back(packed_table_value(point.x, point.y, bx, by));
+            for (const TablePoint& point : points) table_values.push_back(packed_table_value(point.x, point.y, bounds.first, bounds.second));
             while (table_values.size() < descriptor.table_domain) table_values.push_back(table_values.front());
             family.padding_value = table_values.front();
         }
@@ -4950,13 +5017,8 @@ std::vector<NativeLassoChunkFamilyProver> build_lasso_chunk_families(const GatCi
             query_values = range_queries[descriptor.family_id];
         } else {
             const auto& pairs = function_queries[descriptor.family_id];
-            const auto& points = table_for(descriptor.family_id);
-            Int bx = 0, by = 0;
-            for (const TablePoint& point : points) {
-                bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x)));
-                by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y)));
-            }
-            for (const auto& pair : pairs) query_values.push_back(packed_table_value(pair.first, pair.second, bx, by));
+            const auto& bounds = table_bounds_for(lookup_bounds, descriptor.family_id);
+            for (const auto& pair : pairs) query_values.push_back(packed_table_value(pair.first, pair.second, bounds.first, bounds.second));
         }
         if (query_values.size() != family.logical_queries) throw std::invalid_argument("virtual Lasso query count mismatch");
         auto values = std::make_shared<std::vector<Fr>>(std::move(query_values));
@@ -4993,6 +5055,7 @@ std::vector<NativeLassoChunkFamilyProver> build_lasso_chunk_families(const GatCi
 
 std::vector<NativeLassoChunkFamilyPublic> build_lasso_chunk_public_families(const GatCircuitPlan& plan, const StaticTables& tables) {
     std::vector<NativeLassoChunkFamilyPublic> result;
+    const StaticLookupBounds lookup_bounds = static_lookup_bounds(tables);
     result.reserve(plan.lasso.size());
     for (const LassoFamilyDescriptor& descriptor : plan.lasso) {
         NativeLassoChunkFamilyPublic family;
@@ -5018,12 +5081,8 @@ std::vector<NativeLassoChunkFamilyPublic> build_lasso_chunk_public_families(cons
             else if (descriptor.family_id == "function/elu")
                 points = &tables.elu;
             if (points == nullptr || points->empty()) throw std::invalid_argument("public virtual Lasso table is empty");
-            Int bx = 0, by = 0;
-            for (const TablePoint& point : *points) {
-                bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x)));
-                by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y)));
-            }
-            for (const TablePoint& point : *points) family.table.push_back(packed_table_value(point.x, point.y, bx, by));
+            const auto& bounds = table_bounds_for(lookup_bounds, descriptor.family_id);
+            for (const TablePoint& point : *points) family.table.push_back(packed_table_value(point.x, point.y, bounds.first, bounds.second));
             while (family.table.size() < descriptor.table_domain) family.table.push_back(family.table.front());
             family.padding_value = family.table.front();
         }
@@ -5037,6 +5096,7 @@ std::vector<NativeLassoChunkFamilyPublic> build_lasso_chunk_public_families(cons
 std::vector<NativeLassoFamilyPublic> build_lasso_public_families(const GatCircuitPlan& plan, const StaticTables& tables, const std::string& basis_label,
                                                                  const std::vector<NativeLassoFamilyProver>* cached_families = nullptr) {
     if (plan.input_layout.segments.size() != 4) throw std::invalid_argument("public Lasso registry requires four segments");
+    const StaticLookupBounds lookup_bounds = static_lookup_bounds(tables);
     const InputSegment& l_segment = plan.input_layout.segments.at(3);
     std::vector<NativeLassoFamilyPublic> result;
     result.reserve(plan.lasso.size());
@@ -5055,13 +5115,9 @@ std::vector<NativeLassoFamilyPublic> build_lasso_public_families(const GatCircui
             family.padding_value = Fr(0);
         } else {
             const std::vector<TablePoint>& points = table_points_for(tables, descriptor.family_id);
-            Int bx = 0, by = 0;
-            for (const TablePoint& point : points) {
-                bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x)));
-                by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y)));
-            }
+            const auto& bounds = table_bounds_for(lookup_bounds, descriptor.family_id);
             family.table.reserve(descriptor.table_domain);
-            for (const TablePoint& point : points) family.table.push_back(packed_table_value(point.x, point.y, bx, by));
+            for (const TablePoint& point : points) family.table.push_back(packed_table_value(point.x, point.y, bounds.first, bounds.second));
             if (family.table.empty()) throw std::invalid_argument("empty public Lasso table");
             while (family.table.size() < descriptor.table_domain) family.table.push_back(family.table.front());
             family.padding_value = family.table.front();
@@ -5181,10 +5237,11 @@ std::vector<Fr> public_feature_segment(const GatCircuitPlan& plan, const Graph& 
 
 std::vector<Fr> canonical_l_query_values(const GatCircuitPlan& plan, const ForwardResult& forward, const StaticTables& tables) {
     if (plan.input_layout.segments.size() != 4) throw std::invalid_argument("canonical L_qry requires four input segments");
+    const StaticLookupBounds lookup_bounds = static_lookup_bounds(tables);
     const InputSegment& l_segment = plan.input_layout.segments.at(3);
     std::map<std::string, std::vector<std::pair<Int, Int>>> function_queries;
     std::map<std::string, std::vector<Fr>> range_queries;
-    range_queries["range/all"] = canonical_range_query_values(plan, forward, tables);
+    range_queries["range/all"] = canonical_range_query_values(plan, forward, lookup_bounds);
     const auto append_attention = [&](const AttentionTrace& trace, bool hidden) {
         auto& lrelu = function_queries["function/lrelu"];
         auto& exp = function_queries["function/exp"];
@@ -5213,13 +5270,9 @@ std::vector<Fr> canonical_l_query_values(const GatCircuitPlan& plan, const Forwa
             padding = Fr(0);
         } else {
             const auto& points = table_points_for(tables, descriptor.family_id);
-            Int bx = 0, by = 0;
-            for (const TablePoint& point : points) {
-                bx = std::max<Int>(bx, static_cast<Int>(abs_wide_adapter(point.x)));
-                by = std::max<Int>(by, static_cast<Int>(abs_wide_adapter(point.y)));
-            }
-            padding = packed_table_value(points.front().x, points.front().y, bx, by);
-            for (const auto& pair : function_queries[descriptor.family_id]) real_queries.push_back(packed_table_value(pair.first, pair.second, bx, by));
+            const auto& bounds = table_bounds_for(lookup_bounds, descriptor.family_id);
+            padding = packed_table_value(points.front().x, points.front().y, bounds.first, bounds.second);
+            for (const auto& pair : function_queries[descriptor.family_id]) real_queries.push_back(packed_table_value(pair.first, pair.second, bounds.first, bounds.second));
         }
         if (real_queries.size() != descriptor.real_queries) throw std::invalid_argument("canonical L_qry query count mismatch");
         for (std::size_t index = 0; index < descriptor.padded_queries; ++index) {
@@ -7271,7 +7324,8 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             throw std::overflow_error("sparse GKR working-set overflow");
 
         const StaticTables native_tables = StaticTables::build(quant);
-        const QueryCounts query_counts = canonical_query_counts(graph, model, quant);
+        const StaticLookupBounds native_lookup_bounds = static_lookup_bounds(native_tables);
+        const QueryCounts query_counts = canonical_query_counts(graph, model, quant, native_lookup_bounds);
         const std::array<std::size_t, 4> query_counts_ordered{{query_counts.lrelu, query_counts.exp, query_counts.elu, query_counts.range}};
         const std::array<std::size_t, 4> table_sizes{{native_tables.lrelu.size(), native_tables.exp.size(), native_tables.elu.size(), 2}};
         const std::array<const char*, 4> family_ids{{"lrelu", "exp", "elu", "range"}};
@@ -7498,9 +7552,9 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                      "division range unary gates"), umul(count, width_sum, "division range binary gates"));
         };
 
-        const auto lrelu_bounds = lookup_rectangle(native_tables.lrelu);
-        const auto exp_bounds = lookup_rectangle(native_tables.exp);
-        const auto elu_bounds = lookup_rectangle(native_tables.elu);
+        const auto& lrelu_bounds = native_lookup_bounds.lrelu;
+        const auto& exp_bounds = native_lookup_bounds.exp;
+        const auto& elu_bounds = native_lookup_bounds.elu;
         const std::uint64_t lrelu_x_width = nonnegative_bit_width(2 * static_cast<Wide>(lrelu_bounds.first));
         const std::uint64_t lrelu_y_width = nonnegative_bit_width(2 * static_cast<Wide>(lrelu_bounds.second));
         const std::uint64_t exp_x_width = nonnegative_bit_width(2 * static_cast<Wide>(exp_bounds.first));
@@ -7508,7 +7562,7 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t elu_x_width = nonnegative_bit_width(2 * static_cast<Wide>(elu_bounds.first));
         const std::uint64_t elu_y_width = nonnegative_bit_width(2 * static_cast<Wide>(elu_bounds.second));
         const std::uint64_t delta_width = nonnegative_bit_width(2 * static_cast<Wide>(lrelu_bounds.second));
-        const auto division_profiles = canonical_division_range_bits(graph, model, quant);
+        const auto division_profiles = canonical_division_range_bits(graph, model, quant, native_lookup_bounds);
         std::size_t relation_profile_index = 0;
         const auto add_attention_relation_group = [&](std::uint64_t dim, bool hidden,
                                                       const std::array<unsigned, 5>& profile) {
@@ -7643,6 +7697,8 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         report.gkr_point_shape_layer_count = static_cast<std::uint64_t>(layer_shapes.size());
         report.gkr_point_shape_fconn_count = fconn_layers;
         report.gkr_point_shape_bitmap_scratch_bytes = exact_shape_plan.gkr_point_shape_bitmap_bytes;
+        report.gkr_point_shape_touched_index_scratch_bytes_upper_bound =
+            exact_shape_plan.gkr_point_shape_touched_index_bytes_upper_bound;
         report.gkr_layer_count_upper_bound = static_cast<std::uint64_t>(layer_shapes.size());
         report.gkr_fconn_layer_count_upper_bound = fconn_layers;
         bool previous_lane_active = true;
@@ -8089,7 +8145,7 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t layer_array_count = std::max<std::uint64_t>(1, gkr_layers);
         const std::uint64_t direct_unary_gate_array_bytes = ubytes(maximum_unary_layer_gates, unary_gate_entry_bytes, "maximum direct unary gate array");
         const std::uint64_t direct_binary_gate_array_bytes = ubytes(maximum_binary_layer_gates, binary_gate_entry_bytes, "maximum direct binary gate array");
-        const std::size_t coefficient_candidates = relation_coefficient_candidate_count(quant, native_tables);
+        const std::size_t coefficient_candidates = relation_coefficient_candidate_count(quant, native_lookup_bounds);
         if (coefficient_candidates > std::numeric_limits<std::size_t>::max() / 2)
             throw std::length_error("native coefficient-pool capacity exceeds native size_t");
         // Context decoding may grow its small per-layer pool incrementally;
@@ -8457,11 +8513,15 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             uadd(model_bytes, std::max({forward_execution_peak, feature_decode_peak, forward_relation_validation_peak - graph_bytes - model_bytes}),
                 "forward admission model and workspaces"), "forward admission graph, model, and workspaces");
         report.forward_admission_peak_host_memory_bytes_upper_bound = admission_phase_host_bytes;
+        const std::uint64_t shape_admission_storage_bytes = uadd(
+            report.gkr_point_shape_bitmap_scratch_bytes,
+            report.gkr_point_shape_touched_index_scratch_bytes_upper_bound,
+            "shape-admission bitmap and touched-index storage");
         const std::uint64_t shape_admission_peak_host_bytes = uadd(graph_bytes,
             uadd(model_bytes,
-                uadd(report.gkr_point_shape_bitmap_scratch_bytes,
+                uadd(shape_admission_storage_bytes,
                     uadd(umul(layer_array_count, 4096, "shape-admission layer metadata"), 1ULL << 20,
-                         "shape-admission profile metadata"), "shape-admission bitmap and metadata"),
+                         "shape-admission profile metadata"), "shape-admission storage and metadata"),
                 "shape-admission model and workspaces"), "shape-admission graph and workspaces");
         report.estimated_peak_host_memory_bytes = std::max({proof_phase_host_bytes, admission_phase_host_bytes,
                                                              shape_admission_peak_host_bytes});
@@ -8518,8 +8578,10 @@ void finalize_gat_capacity_report(GatCapacityReport& report) {
         else if (report.gkr_subset_source_support_entries_upper_bound >
                      std::numeric_limits<std::uint64_t>::max() - 63 ||
                  report.gkr_point_shape_bitmap_scratch_bytes !=
-                     2 * ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::uint64_t))
-            report.reason = "native GKR point-domain bitmap does not match exact logical source support";
+                     2 * ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::uint64_t) ||
+                 report.gkr_point_shape_touched_index_scratch_bytes_upper_bound !=
+                     2 * ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::size_t))
+            report.reason = "native GKR point-domain scratch does not match exact logical source support";
         else if (report.flattened_input_domain_entries == 0 || report.flattened_input_domain_entries > report.flattened_input_domain_limit_u64 ||
                  report.input_layout.n_in > report.coordinate_domain_limit_u64)
             report.reason = "flattened input domain exceeds the checked u64 and MLE-coordinate limits";
@@ -8917,6 +8979,8 @@ GatPointDomainAdmission inspect_gat_point_domain_admission(
             plan.circuit.circuit.begin(), plan.circuit.circuit.end(),
             [](const layer& current) { return current.ty == layerType::FCONN; }));
         admission.bitmap_bytes = plan.gkr_point_shape_bitmap_bytes;
+        admission.touched_index_bytes_upper_bound =
+            plan.gkr_point_shape_touched_index_bytes_upper_bound;
     } catch (const std::exception& error) {
         admission.ready = false;
         admission.reason = error.what();

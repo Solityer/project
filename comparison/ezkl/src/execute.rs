@@ -2409,6 +2409,7 @@ fn gat_prepare_admission(
         "size_of_fr_bytes": std::mem::size_of::<Fr>(),
         "size_of_assigned_fr_bytes": std::mem::size_of::<plonk::Assigned<Fr>>(),
         "size_of_option_fr_bytes": std::mem::size_of::<Option<Fr>>(),
+        "size_of_batch_invert_entry_bytes": std::mem::size_of::<(Fr, &mut Fr)>(),
         "size_of_usize_bytes": std::mem::size_of::<usize>(),
         "size_of_usize_pair_bytes": std::mem::size_of::<(usize, usize)>(),
         "size_of_g1_affine_bytes": std::mem::size_of::<G1Affine>(),
@@ -2643,8 +2644,10 @@ fn load_native_admission_circuit(
     let raw_chunk_bytes = chunk_fields * serialized_fr_bytes;
     let decoded_chunk_bytes = chunk_fields * std::mem::size_of::<Fr>();
     let read_heap_bytes = raw_chunk_bytes + decoded_chunk_bytes;
+    let batch_invert_entry_bytes = std::mem::size_of::<(Fr, &mut Fr)>() as u128;
     for (name, expected) in [
         ("selector_activation_bitmap_bytes", expected_selector_bitmap_bytes),
+        ("size_of_batch_invert_entry_bytes", batch_invert_entry_bytes),
         ("fixed_polynomial_read_chunk_fields_upper", chunk_fields as u128),
         ("fixed_polynomial_read_raw_chunk_bytes_upper", raw_chunk_bytes as u128),
         ("fixed_polynomial_read_decoded_chunk_bytes_upper", decoded_chunk_bytes as u128),

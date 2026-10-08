@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <string>
 
+#include <curves/params/bn254.cuh>
+
 namespace {
 constexpr unsigned kScalarBits = 254;
 constexpr unsigned kC = 16;
@@ -20,8 +22,14 @@ constexpr unsigned kWindowCount = (kScalarBits + kC - 1) / kC;
 constexpr unsigned kM = kChunkScalars * kWindowCount;
 constexpr unsigned kB = (kWindowCount << kC) - kWindowCount;
 constexpr unsigned kHMax = kB;
-constexpr unsigned kLMax = 104206;
+constexpr unsigned kAverageBucketSize = kChunkScalars / (1U << kC);
+constexpr unsigned kBucketThreshold = 10U * kAverageBucketSize;
+constexpr unsigned kLMax = kM / (kBucketThreshold + 1U);
+constexpr unsigned kLargeBucketThreadsMax =
+    (kM + kAverageBucketSize - 1U) / kAverageBucketSize + kLMax;
 static_assert(kWindowCount == 16 && kM == 16777216 && kB == 1048560, "ICICLE MSM profile drift");
+static_assert(kAverageBucketSize == 16 && kBucketThreshold == 160 && kLMax == 104206,
+              "large-bucket bound no longer matches the pinned ICICLE MSM implementation");
 static_assert(kLMax <= kHMax && kHMax <= kB, "invalid conservative ICICLE MSM query bounds");
 struct Query { const char* name; std::uint64_t num_items; std::uint64_t scratch_bytes; };
 void check_cuda(cudaError_t status, const char* operation) {
@@ -35,6 +43,14 @@ std::uint64_t checked_size(size_t bytes, const char* name) {
 std::uint64_t checked_add(std::uint64_t a, std::uint64_t b) {
   if (b > std::numeric_limits<std::uint64_t>::max() - a) throw std::runtime_error("scratch byte sum overflows uint64");
   return a + b;
+}
+std::uint64_t checked_mul(std::uint64_t a, std::uint64_t b) {
+  if (a != 0 && b > std::numeric_limits<std::uint64_t>::max() / a)
+    throw std::runtime_error("workspace byte product overflows uint64");
+  return a * b;
+}
+std::uint64_t array_bytes(std::uint64_t count, std::uint64_t element_size) {
+  return checked_mul(count, element_size);
 }
 bool valid_sha256(const std::string& value) {
   if (value.size() != 64) return false;
@@ -50,6 +66,17 @@ std::string uuid_string(const cudaUUID_t& uuid) {
     result << std::setw(2) << static_cast<unsigned>(bytes[i]);
   }
   return result.str();
+}
+void print_memory_only(const std::string& session_id, const cudaDeviceProp& properties) {
+  size_t free_bytes = 0;
+  size_t total_bytes = 0;
+  check_cuda(cudaMemGetInfo(&free_bytes, &total_bytes), "cudaMemGetInfo");
+  std::cout << "{\"schema\":\"ezkl.icicle.device_memory_sample.v1\""
+            << ",\"session_id\":\"" << session_id << "\""
+            << ",\"device_uuid\":\"" << uuid_string(properties.uuid) << "\""
+            << ",\"free_memory_bytes\":" << static_cast<std::uint64_t>(free_bytes)
+            << ",\"total_memory_bytes\":" << static_cast<std::uint64_t>(total_bytes)
+            << ",\"integrated_device\":" << (properties.integrated ? "true" : "false") << "}\n";
 }
 Query query_sort_pairs(const char* name, unsigned count, cudaStream_t stream) {
   size_t bytes = 0;
@@ -86,17 +113,95 @@ Query query_inclusive_scan(const char* name, unsigned count, cudaStream_t stream
       static_cast<const unsigned*>(nullptr), static_cast<unsigned*>(nullptr), count, stream), name);
   return {name, count, checked_size(bytes, name)};
 }
+
+std::uint64_t device_workspace_upper_bound(std::uint64_t scalar_bytes,
+                                           std::uint64_t affine_bytes,
+                                           std::uint64_t projective_bytes,
+                                           std::uint64_t uint_bytes,
+                                           std::uint64_t scratch_bytes_sum) {
+  std::uint64_t total = 0;
+  const auto add = [&total](std::uint64_t bytes) { total = checked_add(total, bytes); };
+  // This sums source-sized array maxima across MSM phases. Several entries
+  // are not simultaneously live; summing them is intentionally conservative.
+  add(array_bytes(kChunkScalars, scalar_bytes));                         // uploaded scalars
+  add(array_bytes(kChunkScalars, affine_bytes));                         // uploaded points
+  add(array_bytes(4ULL * kM, uint_bytes));                               // input and sorted indices
+  add(array_bytes(kB + 1ULL, uint_bytes));                               // single bucket indices
+  add(array_bytes(kB + 1ULL, uint_bytes));                               // bucket sizes
+  add(array_bytes(kB + 1ULL, uint_bytes));                               // bucket offsets
+  add(array_bytes(kB, uint_bytes));                                      // sorted bucket sizes
+  add(array_bytes(kB, uint_bytes));                                      // sorted bucket offsets
+  add(array_bytes(kB, uint_bytes));                                      // sorted single bucket indices
+  add(4ULL * uint_bytes);                                                // scalar counters
+  add(array_bytes(kB + kWindowCount, projective_bytes));                // main buckets
+  add(array_bytes(kB + 1ULL, uint_bytes));                               // large bucket prefix sums
+  add(array_bytes(kLargeBucketThreadsMax, uint_bytes));                 // large bucket indices
+  add(array_bytes(kLargeBucketThreadsMax, projective_bytes));           // large bucket points
+
+  // The iterative reduction allocates one source array, two source-sized
+  // temporaries, and one target array per iteration. Compute the largest
+  // live iteration from the implementation's same bit/window recurrence.
+  std::uint64_t reduction_peak_elements = 0;
+  unsigned source_bits = kC;
+  unsigned source_windows = kWindowCount;
+  std::uint64_t source_count = kB + kWindowCount;
+  for (;;) {
+    const unsigned target_bits = (source_bits + 1U) >> 1U;
+    const unsigned target_windows = source_windows << 1U;
+    const std::uint64_t target_count =
+        static_cast<std::uint64_t>(target_windows) << target_bits;
+    std::uint64_t live = checked_add(checked_mul(3, source_count), target_count);
+    if (target_bits == 1U) {
+      const std::uint64_t final_results =
+          (static_cast<std::uint64_t>(kC) * source_windows < kScalarBits)
+              ? static_cast<std::uint64_t>(kC) * source_windows
+              : kScalarBits;
+      live = checked_add(live, final_results);
+    }
+    if (live > reduction_peak_elements) reduction_peak_elements = live;
+    if (target_bits == 1U) break;
+    source_bits = target_bits;
+    source_windows = target_windows;
+    source_count = target_count;
+  }
+  add(array_bytes(reduction_peak_elements, projective_bytes));
+  add(array_bytes(kWindowCount + kScalarBits + 1ULL, projective_bytes));  // reduction/final result buffers
+  add(scratch_bytes_sum);                                                // sum of all queried CUB temporaries
+  return total;
+}
 }
 
 int main(int argc, char** argv) {
   try {
-    if (argc != 5 || std::string(argv[1]) != "--icicle-source-tree-sha256" ||
-        std::string(argv[3]) != "--native-backend-manifest-sha256") {
-      throw std::runtime_error("usage: native_msm_workspace_query --icicle-source-tree-sha256 HEX --native-backend-manifest-sha256 HEX");
+    bool memory_only = false;
+    std::string session_id;
+    std::string source_sha256;
+    std::string manifest_sha256;
+    for (int i = 1; i < argc; ++i) {
+      const std::string arg(argv[i]);
+      if (arg == "--memory-only") {
+        memory_only = true;
+      } else if (arg == "--session-id" && i + 1 < argc) {
+        session_id = argv[++i];
+      } else if (arg == "--icicle-source-tree-sha256" && i + 1 < argc) {
+        source_sha256 = argv[++i];
+      } else if (arg == "--native-backend-manifest-sha256" && i + 1 < argc) {
+        manifest_sha256 = argv[++i];
+      } else {
+        throw std::runtime_error("unknown or incomplete argument: " + arg);
+      }
     }
-    const std::string source_sha256 = argv[2];
-    const std::string manifest_sha256 = argv[4];
-    if (!valid_sha256(source_sha256) || !valid_sha256(manifest_sha256)) throw std::runtime_error("source and manifest identities must be lowercase SHA-256 hex");
+    if (session_id.size() != 32) throw std::runtime_error("session id must be 32 lowercase hex characters");
+    for (char c : session_id)
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) throw std::runtime_error("invalid session id");
+    if (!memory_only && (argc != 7 || !valid_sha256(source_sha256) || !valid_sha256(manifest_sha256))) {
+      throw std::runtime_error("usage: native_msm_workspace_query --session-id HEX --icicle-source-tree-sha256 HEX --native-backend-manifest-sha256 HEX");
+    }
+    if (memory_only && (argc != 4 || !source_sha256.empty() || !manifest_sha256.empty())) {
+      throw std::runtime_error("usage: native_msm_workspace_query --memory-only --session-id HEX");
+    }
+    if (!memory_only && (!valid_sha256(source_sha256) || !valid_sha256(manifest_sha256)))
+      throw std::runtime_error("source and manifest identities must be lowercase SHA-256 hex");
     int device_count = 0;
     check_cuda(cudaGetDeviceCount(&device_count), "cudaGetDeviceCount");
     if (device_count < 1) throw std::runtime_error("no CUDA device is visible");
@@ -107,6 +212,10 @@ int main(int argc, char** argv) {
     cudaDeviceProp properties{};
     check_cuda(cudaGetDeviceProperties(&properties, selected_device), "cudaGetDeviceProperties");
     if (properties.totalGlobalMem == 0) throw std::runtime_error("CUDA device reported zero total memory");
+    if (memory_only) {
+      print_memory_only(session_id, properties);
+      return std::cout.good() ? 0 : 1;
+    }
     int runtime_version = 0;
     int driver_version = 0;
     check_cuda(cudaRuntimeGetVersion(&runtime_version), "cudaRuntimeGetVersion");
@@ -122,17 +231,29 @@ int main(int argc, char** argv) {
     };
     std::uint64_t total_scratch_bytes = 0;
     for (const Query& query : queries) total_scratch_bytes = checked_add(total_scratch_bytes, query.scratch_bytes);
+    const auto scalar_size = static_cast<std::uint64_t>(sizeof(bn254::scalar_t));
+    const auto affine_size = static_cast<std::uint64_t>(sizeof(bn254::affine_t));
+    const auto projective_size = static_cast<std::uint64_t>(sizeof(bn254::projective_t));
+    const auto uint_size = static_cast<std::uint64_t>(sizeof(unsigned));
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    check_cuda(cudaMemGetInfo(&free_bytes, &total_bytes), "cudaMemGetInfo");
+    const auto device_peak = device_workspace_upper_bound(
+        scalar_size, affine_size, projective_size, uint_size, total_scratch_bytes);
 #if defined(__CUDACC_VER_MAJOR__) && defined(__CUDACC_VER_MINOR__) && defined(__CUDACC_VER_BUILD__)
     const std::string toolkit_version = std::to_string(__CUDACC_VER_MAJOR__) + "." +
         std::to_string(__CUDACC_VER_MINOR__) + "." + std::to_string(__CUDACC_VER_BUILD__);
 #else
 #error CUDA compiler version macros are required for workspace identity
 #endif
-    std::cout << "{\"schema\":\"ezkl.icicle.cub_msm_workspace_query.v1\""
+    std::cout << "{\"schema\":\"ezkl.icicle.cub_msm_workspace_query.v2\""
+              << ",\"session_id\":\"" << session_id << "\""
               << ",\"icicle_source_tree_sha256\":\"" << source_sha256 << "\""
               << ",\"native_backend_manifest_sha256\":\"" << manifest_sha256 << "\""
               << ",\"device_uuid\":\"" << uuid_string(properties.uuid) << "\""
-              << ",\"total_memory_bytes\":" << static_cast<std::uint64_t>(properties.totalGlobalMem)
+              << ",\"free_memory_bytes\":" << static_cast<std::uint64_t>(free_bytes)
+              << ",\"total_memory_bytes\":" << static_cast<std::uint64_t>(total_bytes)
+              << ",\"integrated_device\":" << (properties.integrated ? "true" : "false")
               << ",\"scalar_bits\":" << kScalarBits << ",\"c\":" << kC
               << ",\"chunk_scalars\":" << kChunkScalars << ",\"window_count\":" << kWindowCount
               << ",\"M\":" << kM << ",\"B\":" << kB << ",\"H_max\":" << kHMax << ",\"L_max\":" << kLMax
@@ -140,6 +261,10 @@ int main(int argc, char** argv) {
               << ",\"cuda_toolkit_version\":\"" << toolkit_version << "\""
               << ",\"cub_version\":" << CUB_VERSION
               << ",\"device_compute_capability\":\"" << properties.major << "." << properties.minor << "\""
+              << ",\"native_type_sizes\":{\"scalar_bytes\":" << scalar_size
+              << ",\"affine_bytes\":" << affine_size << ",\"projective_bytes\":" << projective_size
+              << ",\"unsigned_bytes\":" << uint_size << "}"
+              << ",\"device_workspace_peak_bytes\":" << device_peak
               << ",\"queries\":[";
     for (size_t i = 0; i < sizeof(queries) / sizeof(queries[0]); ++i) {
       if (i) std::cout << ',';

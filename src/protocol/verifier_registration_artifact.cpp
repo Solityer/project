@@ -20,6 +20,7 @@ namespace gatzk::protocol
     namespace
     {
         constexpr std::string_view kMagic = "ZKGATVRA";
+        constexpr std::string_view kVariantExtensionMagic = "ZKPV";
         constexpr std::uint32_t kSectionCount = 12;
         constexpr std::size_t kFieldBytes = 32;
         constexpr std::size_t kMaxArtifactBytes = 2ULL << 30;
@@ -512,6 +513,13 @@ namespace gatzk::protocol
                               append_size(out, profile.head_dim);
                           });
             append_size_vector(out, config.d_in_profile);
+            if (config.protocol_variant != "zkgat")
+            {
+                append_bytes(out, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(kVariantExtensionMagic.data()),
+                                                                 kVariantExtensionMagic.size()));
+                append_u32(out, 1);
+                append_string(out, config.protocol_variant);
+            }
         }
 
         std::vector<std::uint64_t> read_u64_vector(Reader &reader)
@@ -579,6 +587,16 @@ namespace gatzk::protocol
                 reader, kMaxVectorEntries, [](Reader &inner)
                 { return util::HiddenLayerProfile{.head_count = inner.size("hidden-profile.head-count"), .head_dim = inner.size("hidden-profile.head-dim")}; });
             config.d_in_profile = read_size_vector(reader);
+            if (!reader.empty())
+            {
+                const auto extension_magic = reader.take(kVariantExtensionMagic.size(), "config.protocol-variant-extension.magic");
+                if (!std::equal(extension_magic.begin(), extension_magic.end(), kVariantExtensionMagic.begin()) ||
+                    reader.u32("config.protocol-variant-extension.version") != 1)
+                    throw std::runtime_error("unknown verifier registration config extension");
+                config.protocol_variant = reader.string("config.protocol_variant");
+                if (config.protocol_variant == "zkgat" || !util::is_supported_protocol_variant(config.protocol_variant))
+                    throw std::runtime_error("non-canonical verifier registration protocol_variant extension");
+            }
             return config;
         }
 

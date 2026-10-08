@@ -434,13 +434,11 @@ where
     }
 
     fn commit_lagrange(&self, poly: &Polynomial<E::Fr, LagrangeCoeff>, _: Blind<E::Fr>) -> E::G1 {
-        let mut scalars = Vec::with_capacity(poly.len());
-        scalars.extend(poly.iter());
         let bases = &self.g_lagrange;
-        let size = scalars.len();
+        let size = poly.len();
         assert!(bases.len() >= size);
 
-        best_multiexp(&scalars, &bases[0..size])
+        best_multiexp(&poly[..], &bases[0..size])
     }
 
     /// Writes params to a buffer.
@@ -479,13 +477,11 @@ where
     }
 
     fn commit(&self, poly: &Polynomial<E::Fr, Coeff>, _: Blind<E::Fr>) -> E::G1 {
-        let mut scalars = Vec::with_capacity(poly.len());
-        scalars.extend(poly.iter());
         let bases = &self.g;
-        let size = scalars.len();
+        let size = poly.len();
         assert!(bases.len() >= size);
 
-        best_multiexp(&scalars, &bases[0..size])
+        best_multiexp(&poly[..], &bases[0..size])
     }
 
     fn get_g(&self) -> &[E::G1Affine] {
@@ -498,6 +494,7 @@ mod test {
     use crate::poly::commitment::ParamsProver;
     use crate::poly::commitment::{Blind, Params};
     use crate::poly::kzg::commitment::ParamsKZG;
+    use crate::poly::{native_spill_scope, LagrangeCoeff, Polynomial};
     use ff::Field;
 
     #[test]
@@ -511,18 +508,36 @@ mod test {
 
         let params = ParamsKZG::<Bn256>::new(K);
         let domain = EvaluationDomain::new(1, K);
+        let base = std::env::temp_dir().join(format!(
+            "halo2-kzg-commit-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&base).unwrap();
+        let spill = native_spill_scope(&base).unwrap();
 
-        let mut a = domain.empty_lagrange();
+        let mut a = domain.empty_lagrange().spill().unwrap();
 
         for (i, a) in a.iter_mut().enumerate() {
             *a = Fr::from(i as u64);
         }
 
-        let b = domain.lagrange_to_coeff(a.clone());
+        let mut a_for_coeff = Polynomial::<Fr, LagrangeCoeff>::mapped_filled(a.len(), Fr::ZERO).unwrap();
+        a_for_coeff.copy_from_slice(&a[..]);
+        let b = domain.lagrange_to_coeff(a_for_coeff);
 
         let alpha = Blind(Fr::random(OsRng));
 
+        assert!(a.is_mapped() && b.is_mapped());
         assert_eq!(params.commit(&b, alpha), params.commit_lagrange(&a, alpha));
+        drop(b);
+        drop(a);
+        drop(spill);
+        assert_eq!(std::fs::read_dir(&base).unwrap().count(), 0);
+        std::fs::remove_dir(base).unwrap();
     }
 
     #[test]

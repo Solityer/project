@@ -69,6 +69,17 @@ class ChainError(RuntimeError):
     """A formal-chain error; callers must fail closed."""
 
 
+def formal_child_environment(extra_env: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+    child_env = os.environ.copy()
+    if extra_env:
+        child_env.update({str(key): str(value) for key, value in extra_env.items()})
+    for key in ("LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT"):
+        if child_env.get(key):
+            raise ChainError(f"formal execution refuses loader override environment variable {key}")
+        child_env.pop(key, None)
+    return child_env
+
+
 def formal_backend_capability(backend: str) -> Dict[str, Any]:
     if backend == "cpu":
         return {"supported": True, "status": "FORMAL_CPU_MASKED_FULL", "reason": ""}
@@ -178,7 +189,7 @@ def formal_run_lock(root: Path):
         stream.write(f"pid={os.getpid()} started_unix_ns={time.time_ns()}\n")
         stream.flush()
         os.fsync(stream.fileno())
-        yield
+        yield stream
     finally:
         try:
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
@@ -421,15 +432,14 @@ def run_logged(
     label: str, telemetry: Optional[Dict[str, Any]] = None,
     *, extra_env: Optional[Mapping[str, str]] = None,
     isolate_process_group: bool = False,
+    pass_fds: Sequence[int] = (),
 ) -> int:
     """Stream output and own/reap the command's process group when standalone."""
     install_process_signal_cleanup()
     ensure_directory(stdout_path.parent, "native log directory", root)
     for path in (stdout_path, stderr_path):
         local_path(root, relative_path(root, path, "native log"), "native log")
-    child_env = os.environ.copy()
-    if extra_env:
-        child_env.update({str(key): str(value) for key, value in extra_env.items()})
+    child_env = formal_child_environment(extra_env)
     inherited_owned_group = child_env.get("ZKGPT_OWNED_PROCESS_GROUP") == "1"
     owns_group = isolate_process_group or not inherited_owned_group
     if owns_group:
@@ -437,7 +447,7 @@ def run_logged(
     with stdout_path.open("w", encoding="utf-8") as stdout_log, stderr_path.open("w", encoding="utf-8") as stderr_log:
         process = subprocess.Popen(
             list(command), cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1, env=child_env, start_new_session=owns_group,
+            text=True, bufsize=1, env=child_env, start_new_session=owns_group, pass_fds=tuple(pass_fds),
         )
         owned_pgid = process.pid if owns_group else None
         if owned_pgid is not None:
@@ -491,9 +501,7 @@ def run_captured(
 ) -> subprocess.CompletedProcess[str]:
     """Run a small helper command with the same owned-group cleanup as run_logged."""
     install_process_signal_cleanup()
-    child_env = os.environ.copy()
-    if extra_env:
-        child_env.update({str(key): str(value) for key, value in extra_env.items()})
+    child_env = formal_child_environment(extra_env)
     inherited_owned_group = child_env.get("ZKGPT_OWNED_PROCESS_GROUP") == "1"
     owns_group = not inherited_owned_group
     if owns_group:
@@ -782,10 +790,47 @@ def source_tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _loaded_mcl_library(root: Path, backend: str, binary: Path, description: str) -> Dict[str, str]:
+    ldd = Path("/usr/bin/ldd")
+    if not ldd.is_file() or not os.access(ldd, os.X_OK):
+        raise ChainError("trusted system ldd is unavailable at /usr/bin/ldd")
+    completed = subprocess.run([str(ldd), str(binary)], cwd=str(root), text=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, env=formal_child_environment(), check=False)
+    if completed.returncode != 0:
+        raise ChainError(f"cannot inspect {description} dynamic loader resolution: {completed.stderr.strip()}")
+    matches = [match for line in completed.stdout.splitlines() if
+               (match := re.match(r"^libmcl\.so\.3\s+=>\s+(\S+)", line.strip()))]
+    if len(matches) != 1 or matches[0].group(1) == "not":
+        raise ChainError(f"{description} does not resolve exactly one local libmcl.so.3 dependency")
+    loaded_path = Path(matches[0].group(1))
+    if not loaded_path.is_absolute():
+        raise ChainError(f"{description} MCL loader path is not absolute")
+    try:
+        resolved_path = loaded_path.resolve(strict=True)
+        build_lib_dir = (root / "build" / backend / "lib").resolve(strict=True)
+        resolved_path.relative_to(build_lib_dir)
+        resolved_path.relative_to(root.resolve(strict=True))
+    except (OSError, ValueError) as exc:
+        raise ChainError(f"{description} resolves MCL outside its baseline-local build directory") from exc
+    require_regular(resolved_path, f"{description} loaded MCL library")
+    return {"loader_path": str(loaded_path.relative_to(root)), "resolved_path": str(resolved_path.relative_to(root)),
+            "sha256": sha256_file(resolved_path)}
+
+
+def native_runtime_libraries(root: Path, backend: str) -> Dict[str, Any]:
+    if backend not in BACKENDS:
+        raise ChainError(f"unknown backend: {backend}")
+    prover = _loaded_mcl_library(root, backend, build_binary(root, backend), f"{backend} prover")
+    verifier = _loaded_mcl_library(root, backend, verifier_binary(root, backend), f"{backend} verifier")
+    if prover["resolved_path"] != verifier["resolved_path"] or prover["sha256"] != verifier["sha256"]:
+        raise ChainError(f"{backend} prover and verifier resolve different MCL libraries")
+    return {"mcl": {"soname": "libmcl.so.3", "prover": prover, "verifier": verifier}}
+
+
 def write_build_provenance(root: Path, backend: str) -> None:
     prover = build_binary(root, backend)
     verifier = verifier_binary(root, backend)
-    payload = {"schema": "zkgpt-gat-build-v1", "backend": backend, "source_tree_sha256": source_tree_sha256(root), "prover_sha256": sha256_file(prover), "verifier_sha256": sha256_file(verifier)}
+    payload = {"schema": "zkgpt-gat-build-v2", "backend": backend, "source_tree_sha256": source_tree_sha256(root), "prover_sha256": sha256_file(prover), "verifier_sha256": sha256_file(verifier), "runtime_libraries": native_runtime_libraries(root, backend)}
     atomic_write_json(root / "build" / backend / "build_provenance.json", payload, root)
 
 
@@ -793,7 +838,7 @@ def verify_build_provenance(root: Path, backend: str) -> str:
     path = local_path(root, f"build/{backend}/build_provenance.json", "native build provenance")
     payload = load_json(path, "native build provenance")
     source_digest = source_tree_sha256(root)
-    expected = {"schema": "zkgpt-gat-build-v1", "backend": backend, "source_tree_sha256": source_digest, "prover_sha256": sha256_file(build_binary(root, backend)), "verifier_sha256": sha256_file(verifier_binary(root, backend))}
+    expected = {"schema": "zkgpt-gat-build-v2", "backend": backend, "source_tree_sha256": source_digest, "prover_sha256": sha256_file(build_binary(root, backend)), "verifier_sha256": sha256_file(verifier_binary(root, backend)), "runtime_libraries": native_runtime_libraries(root, backend)}
     if payload != expected:
         raise ChainError(f"native build source/binary provenance is stale; run ./build.sh --{backend}")
     return source_digest

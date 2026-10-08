@@ -204,6 +204,15 @@ impl<F, B> Polynomial<F, B> {
         self.as_slice().len()
     }
 
+    pub(crate) fn truncate(&mut self, len: usize) {
+        assert!(len <= self.len());
+        if let Some(mapped) = self.mapped.as_mut() {
+            mapped.truncate(len);
+        } else {
+            self.values.truncate(len);
+        }
+    }
+
     fn as_slice(&self) -> &[F] {
         self.mapped
             .as_ref()
@@ -420,7 +429,7 @@ impl<F: Field> Polynomial<Assigned<F>, LagrangeCoeff> {
         let mut inv_denoms = self.iter().map(|value| value.denominator()).collect::<Vec<_>>();
         inv_denoms
             .iter_mut()
-            .filter_map(Option::as_mut)
+            .map(|denominator| denominator.get_or_insert(F::ONE))
             .batch_invert();
         let mut values = Polynomial::mapped_filled(self.len(), F::ZERO)?;
         for (idx, (assigned, inv_denom)) in self.iter().zip(inv_denoms).enumerate() {
@@ -552,7 +561,7 @@ impl Rotation {
 
 #[cfg(test)]
 mod native_spill_tests {
-    use super::{native_spill_scope, Coeff, Polynomial};
+    use super::{batch_invert_assigned, native_spill_scope, Assigned, Coeff, LagrangeCoeff, Polynomial};
     use halo2curves::bn256::Fr;
 
     #[test]
@@ -577,6 +586,40 @@ mod native_spill_tests {
             clone[0] = Fr::from(11);
             assert_eq!(original[0], Fr::from(3));
             assert_eq!(clone[0], Fr::from(11));
+        }
+        assert_eq!(std::fs::read_dir(&base).unwrap().count(), 0);
+        std::fs::remove_dir(base).unwrap();
+    }
+
+    #[test]
+    fn spilled_assigned_inversion_matches_materialized_batch_inversion() {
+        let base = std::env::temp_dir().join(format!(
+            "halo2-spill-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&base).unwrap();
+        {
+            let _scope = native_spill_scope(&base).unwrap();
+            let assigned = vec![
+                Assigned::Zero,
+                Assigned::Trivial(Fr::from(9)),
+                Assigned::Rational(Fr::from(0), Fr::from(7)),
+                Assigned::Rational(Fr::from(11), Fr::from(0)),
+                Assigned::Rational(Fr::from(8), Fr::from(2)),
+                Assigned::Rational(Fr::from(5), Fr::from(3)),
+            ];
+            let materialized = batch_invert_assigned(vec![
+                Polynomial::<Assigned<Fr>, LagrangeCoeff>::from_vec(assigned.clone()),
+            ])
+            .remove(0);
+            let spilled = Polynomial::<Assigned<Fr>, LagrangeCoeff>::from_vec(assigned)
+                .invert_spilled()
+                .unwrap();
+            assert_eq!(materialized.as_slice(), spilled.as_slice());
         }
         assert_eq!(std::fs::read_dir(&base).unwrap().count(), 0);
         std::fs::remove_dir(base).unwrap();

@@ -319,6 +319,7 @@ int main(int argc, char **argv)
         };
 
         std::string config_path;
+        std::string protocol_variant_override;
         std::string benchmark_mode = "single";
         std::string compute_backend = "cpu";
         std::string export_tag;
@@ -343,6 +344,15 @@ int main(int argc, char **argv)
             if (arg == "--config")
             {
                 config_path = require_option_value(i, arg);
+            }
+            else if (arg == "--protocol-variant")
+            {
+                protocol_variant_override = require_option_value(i, arg);
+                if (protocol_variant_override != "zkgat" && protocol_variant_override != "wo_feature_folding" &&
+                    protocol_variant_override != "wo_shared_neighborhood")
+                {
+                    throw std::runtime_error("invalid value for --protocol-variant: expected zkgat, wo_feature_folding, or wo_shared_neighborhood");
+                }
             }
             else if (arg == "--benchmark-mode")
             {
@@ -459,7 +469,16 @@ int main(int argc, char **argv)
             return out.str();
         };
 
-        const auto loaded_config = gatzk::util::load_config(config_path);
+        auto loaded_config = gatzk::util::load_config(config_path);
+        if (!protocol_variant_override.empty())
+        {
+            loaded_config.protocol_variant = protocol_variant_override;
+        }
+        const auto protocol_variant = loaded_config.protocol_variant;
+        if (protocol_variant != "zkgat" && protocol_variant != "wo_feature_folding" && protocol_variant != "wo_shared_neighborhood")
+        {
+            throw std::runtime_error("config protocol_variant must be zkgat, wo_feature_folding, or wo_shared_neighborhood");
+        }
         const ExclusiveFormalRunLock formal_run_lock(std::filesystem::current_path() / "runs" / ".gatzk_run.lock");
         gatzk::util::TraceSpillLease::collect_stale(gatzk::util::TraceSpillLease::default_root());
         const auto absolute_config_path = std::filesystem::absolute(config_path).string();
@@ -517,6 +536,10 @@ int main(int argc, char **argv)
                 metrics.fft_backend_route = "plain_domain";
             }
             append_note(metrics, "benchmark_mode=" + mode_label);
+            if (run_config.protocol_variant != "zkgat")
+            {
+                append_note(metrics, "protocol_variant=" + run_config.protocol_variant);
+            }
             append_note(metrics, "benchmark_preparation=context_ready_single_run");
             append_note(metrics, "independent_reference_forward=separately_timed");
             append_note(metrics, "compute_backend=" + metrics.compute_backend_name);
@@ -779,7 +802,9 @@ int main(int argc, char **argv)
             if (log_benchmark)
             {
                 std::cout << "dataset=" << metrics.dataset << " config=" << config_path << " backend=" << console_backend_label(metrics)
-                          << " status=" << (final_accepted ? "VERIFY_OK" : "VERIFY_FAIL") << " commitment_time_ms=" << format_ms(metrics.commitment_time_ms)
+                          << (protocol_variant == "zkgat" ? std::string{} : " protocol_variant=" + protocol_variant)
+                          << " status=" << (final_accepted ? "VERIFY_OK" : "VERIFY_FAIL") << " commitment_time_ms="
+                          << format_ms(metrics.commitment_time_ms)
                           << " prove_time_ms=" << format_ms(metrics.prove_time_ms) << " verify_time_ms=" << format_ms(metrics.verify_time_ms)
                           << " proof_size_bytes=" << std::to_string(metrics.proof_size_bytes) << '\n';
             }

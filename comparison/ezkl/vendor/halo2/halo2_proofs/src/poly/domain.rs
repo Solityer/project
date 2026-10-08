@@ -498,6 +498,24 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
         values
     }
 
+    /// Converts an extended-domain polynomial to coefficient form while
+    /// retaining its mapped backing and truncating only its visible length.
+    pub(crate) fn extended_to_coeff_spilled(&self, mut a: Polynomial<F, ExtendedLagrangeCoeff>) -> io::Result<Polynomial<F, Coeff>> {
+        if a.len() != self.extended_len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "extended quotient length does not match the domain"));
+        }
+        let coefficient_len = self.n.checked_mul(self.quotient_poly_degree).and_then(|len| usize::try_from(len).ok()).filter(|len| *len <= a.len()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "quotient coefficient length overflows or exceeds the extended domain"))?;
+        self.ifft(
+            a.as_mut_slice(),
+            self.extended_omega_inv,
+            self.extended_k,
+            self.extended_ifft_divisor,
+        );
+        self.distribute_powers_zeta(a.as_mut_slice(), false);
+        a.truncate(coefficient_len);
+        Ok(a.into_basis())
+    }
+
     /// This takes us from the a list of lagrange-based polynomials with
     /// different degrees and gets their extended lagrange-based summation.
     pub fn lagrange_vecs_to_extended(
@@ -896,8 +914,7 @@ fn test_extended_parts_preserve_stride_rotations_and_quotient() {
 
     for rotation in [-9, -1, 1, 9] {
         let rotated = domain.rotate_extended(&full, Rotation(rotation));
-        let shift = ((rotation.unsigned_abs() as usize * stride) % domain.extended_len())
-            * usize::from(rotation >= 0);
+        let shift = (rotation.unsigned_abs() as usize * stride) % domain.extended_len();
         let right_shift = if rotation < 0 {
             domain.extended_len() - shift
         } else {
@@ -913,9 +930,51 @@ fn test_extended_parts_preserve_stride_rotations_and_quotient() {
     let parts_quotient = domain.divide_by_vanishing_poly(reconstructed.clone());
     assert_eq!(full_quotient.values, parts_quotient.values);
     assert_eq!(
-        domain.extended_to_coeff(full_quotient),
+        domain.extended_to_coeff(full_quotient.clone()),
         domain.extended_to_coeff(parts_quotient),
     );
+}
+
+#[test]
+fn test_extended_to_coeff_spilled_matches_native_transform() {
+    use crate::poly::native_spill_scope;
+    use halo2curves::pasta::pallas::Scalar;
+    use rand_core::OsRng;
+
+    let base = std::env::temp_dir().join(format!(
+        "halo2-domain-spill-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&base).unwrap();
+    let spill = native_spill_scope(&base).unwrap();
+    let domain = EvaluationDomain::<Scalar>::new(5, 4);
+    let mut poly = domain.empty_coeff();
+    for value in poly.iter_mut() {
+        *value = Scalar::random(OsRng);
+    }
+    let expected = domain.extended_to_coeff(domain.divide_by_vanishing_poly(domain.coeff_to_extended(&poly)));
+    let mapped_quotient = domain.divide_by_vanishing_poly(domain.coeff_to_extended_spilled(&poly).unwrap());
+    let actual = domain.extended_to_coeff_spilled(mapped_quotient).unwrap();
+    assert!(actual.is_mapped());
+    assert_eq!(actual.len(), expected.len());
+    assert_eq!(&actual[..], expected.as_slice());
+    let piece_len = 1usize << domain.k();
+    let mut reassembled = Vec::with_capacity(actual.len());
+    for index in 0..domain.get_quotient_poly_degree() {
+        let start = index * piece_len;
+        let mut piece = Polynomial::<Scalar, Coeff>::mapped_filled(piece_len, Scalar::ZERO).unwrap();
+        piece.copy_from_slice(&actual[start..start + piece_len]);
+        reassembled.extend_from_slice(&piece[..]);
+    }
+    assert_eq!(reassembled, expected);
+    drop(actual);
+    drop(spill);
+    assert_eq!(std::fs::read_dir(&base).unwrap().count(), 0);
+    std::fs::remove_dir(base).unwrap();
 }
 
 #[test]
