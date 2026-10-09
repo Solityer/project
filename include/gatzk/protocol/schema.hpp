@@ -17,31 +17,6 @@ namespace gatzk::protocol
     struct StaticTables;
     struct ProtocolCompilerArtifact;
     struct BindingRelationMeta;
-    struct FeatureCopyRouteRelationMeta
-    {
-        std::string relation_id;
-        std::size_t coordinate = 0;
-        std::string source_matrix_object;
-        std::string source_column_object;
-        std::string edge_value_object;
-        std::string node_index_object;
-        std::string edge_index_object;
-        std::string table_object;
-        std::string query_object;
-        std::string multiplicity_object;
-        std::string node_inverse_object;
-        std::string edge_inverse_object;
-        std::string node_accumulator_object;
-        std::string edge_accumulator_object;
-        std::string eta_challenge_label;
-        std::string beta_challenge_label;
-        std::string terminal_relation_id;
-        std::string node_domain;
-        std::string edge_domain;
-        std::size_t row_count = 0;
-        std::size_t edge_count = 0;
-        bool operator==(const FeatureCopyRouteRelationMeta &) const = default;
-    };
     struct KZGShiftRelationMeta;
     struct MetadataReference;
 
@@ -275,8 +250,6 @@ namespace gatzk::protocol
     ProtocolCompilerArtifact build_protocol_compiler_artifact(const ProtocolContext &context);
     std::vector<BindingRelationMeta> build_binding_relation_metadata(const ProtocolContext &context);
     std::vector<BindingRelationMeta> build_binding_relation_metadata(const ProtocolContext &context, const ProtocolCompilerArtifact &artifact);
-    std::vector<FeatureCopyRouteRelationMeta> build_feature_copy_route_metadata(const ProtocolContext &context);
-    std::string feature_copy_route_registry_entry(const FeatureCopyRouteRelationMeta &relation);
     std::vector<MatrixFoldBindingSpec> matrix_fold_binding_specs(const ProtocolContext &context);
 
     std::vector<FlatMatrixBindingSpec> flat_matrix_binding_specs(const ProtocolContext &context);
@@ -310,9 +283,6 @@ namespace gatzk::protocol
     std::string hidden_src_label(std::size_t layer_index, std::size_t local_head_index);
     std::string hidden_dst_label(std::size_t layer_index, std::size_t local_head_index);
     std::string hidden_challenge_name(std::string_view base, std::size_t layer_index, std::size_t local_head_index);
-    std::string hidden_feature_route_prefix(std::size_t layer_index, std::size_t local_head_index, std::size_t coordinate);
-    std::string hidden_feature_route_challenge_name(std::string_view base, std::size_t layer_index, std::size_t local_head_index,
-                                                    std::size_t coordinate);
     std::string hidden_q_in_selector_label(std::size_t layer_index);
     std::string hidden_q_d_h_selector_label(std::size_t layer_index);
     std::string hidden_q_cat_selector_label(std::size_t layer_index);

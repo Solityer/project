@@ -68,7 +68,8 @@ set(GATZK_SOURCES
     src/protocol/artifact_export.cpp src/protocol/internal/t_edge_descriptor.cpp src/protocol/prover.cpp src/protocol/proof_codec.cpp src/protocol/psq.cpp
     src/protocol/quotients.cpp src/protocol/schema.cpp src/protocol/schema_labels.cpp src/protocol/trace.cpp src/protocol/verifier.cpp
     src/protocol/verifier_context.cpp src/protocol/verifier_registration_artifact.cpp src/protocol/zkmap.cpp src/util/config.cpp src/util/logging.cpp
-    src/util/route2.cpp src/protocol/cuda_t_edge_stub.cpp src/protocol/cuda_t_fh_stub.cpp)
+    src/util/route2.cpp src/protocol/cuda_t_edge_stub.cpp src/protocol/cuda_t_fh_stub.cpp src/mechanism/runtime.cpp src/mechanism/route.cpp src/mechanism/codec.cpp
+    src/mechanism/feature_folding.cpp src/mechanism/shared_neighborhood.cpp)
 
 if(GATZK_ENABLE_CUDA_BACKEND)
     list(APPEND GATZK_SOURCES src/algebra/cuda_backend.cu src/algebra/cuda_ntt.cu src/crypto/cuda_msm.cu src/protocol/cuda_t_edge.cu src/protocol/cuda_t_fh.cu)
@@ -148,6 +149,9 @@ endif()
 add_executable(gatzk_run src/main.cpp)
 target_link_libraries(gatzk_run PRIVATE gatzkml)
 
+add_executable(gatzk_mechanism src/mechanism/main.cpp)
+target_link_libraries(gatzk_mechanism PRIVATE gatzkml)
+
 add_executable(gatzk_registry_register tools/register_verifier_registry.cpp)
 target_link_libraries(gatzk_registry_register PRIVATE gatzkml)
 
@@ -165,13 +169,19 @@ if(GATZK_BUILD_CORE_EXECUTION_REGRESSION)
     target_compile_definitions(gatzk_core_execution_regression PRIVATE GATZK_EXECUTION_TEST_ROOT="${PROJECT_SOURCE_DIR}/tests/.core_execution")
 endif()
 
-option(GATZK_BUILD_PROTOCOL_VARIANT_REGRESSION "Build isolated protocol-variant proof regression" OFF)
-if(GATZK_BUILD_PROTOCOL_VARIANT_REGRESSION)
-    add_executable(gatzk_protocol_variant_regression EXCLUDE_FROM_ALL tests/protocol_variant_regression.cpp)
-    target_link_libraries(gatzk_protocol_variant_regression PRIVATE gatzkml)
+option(GATZK_BUILD_DEFAULT_PROOF_REGRESSION "Build default-only independent proof regression" OFF)
+if(GATZK_BUILD_DEFAULT_PROOF_REGRESSION)
+    add_executable(gatzk_default_proof_regression EXCLUDE_FROM_ALL tests/default_proof_regression.cpp)
+    target_link_libraries(gatzk_default_proof_regression PRIVATE gatzkml)
     target_compile_definitions(
-        gatzk_protocol_variant_regression
-        PRIVATE GATZK_PROTOCOL_VARIANT_TEST_ROOT="${PROJECT_SOURCE_DIR}"
-                GATZK_PROTOCOL_VARIANT_TEST_SRS_SETUP="$<TARGET_FILE:gatzk_srs_setup>")
-    add_dependencies(gatzk_protocol_variant_regression gatzk_srs_setup)
+        gatzk_default_proof_regression
+        PRIVATE GATZK_DEFAULT_PROOF_TEST_ROOT="${PROJECT_SOURCE_DIR}"
+                GATZK_DEFAULT_PROOF_TEST_SRS_SETUP="$<TARGET_FILE:gatzk_srs_setup>")
+    add_dependencies(gatzk_default_proof_regression gatzk_srs_setup)
+endif()
+
+option(GATZK_BUILD_MECHANISM_SECURITY_REGRESSION "Build mechanism transcript security regression" OFF)
+if(GATZK_BUILD_MECHANISM_SECURITY_REGRESSION)
+    add_executable(gatzk_mechanism_security_regression EXCLUDE_FROM_ALL tests/mechanism_security_regression.cpp)
+    target_link_libraries(gatzk_mechanism_security_regression PRIVATE gatzkml)
 endif()

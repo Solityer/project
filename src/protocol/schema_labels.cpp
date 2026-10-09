@@ -54,17 +54,6 @@ namespace gatzk::protocol
         return std::string(base) + "_l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index);
     }
 
-    std::string hidden_feature_route_prefix(std::size_t layer_index, std::size_t local_head_index, std::size_t coordinate)
-    {
-        return hidden_head_prefix(layer_index, local_head_index) + "_FeatureRoute_r" + std::to_string(coordinate);
-    }
-
-    std::string hidden_feature_route_challenge_name(std::string_view base, std::size_t layer_index, std::size_t local_head_index,
-                                                    std::size_t coordinate)
-    {
-        return std::string(base) + "_l" + std::to_string(layer_index) + "_h" + std::to_string(local_head_index) + "_r" + std::to_string(coordinate);
-    }
-
     std::string hidden_q_in_selector_label(std::size_t layer_index) { return "P_Q_in_valid_l" + std::to_string(layer_index); }
 
     std::string hidden_q_d_h_selector_label(std::size_t layer_index) { return "P_Q_d_h_valid_l" + std::to_string(layer_index); }

@@ -6563,20 +6563,14 @@ namespace gatzk::protocol
                 const auto &h_agg_star_edge = compressed->h_agg_star_edge;
                 add_metric(metrics != nullptr ? &metrics->hidden_h_agg_star_trace_ms : nullptr, stage_start);
 
-                if (context.config.protocol_variant == "wo_feature_folding")
-                {
-                    add_dynamic_commitment_batch(trace, {shared_compact_column_spec(prefix + "H_star", compressed, h_star, domains.n)}, context.kzg,
-                                                 keep_trace_payloads, metrics);
-                }
-                else
-                {
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     shared_compact_column_spec(prefix + "H_star", compressed, h_star, domains.n),
-                                                     shared_compact_column_spec(prefix + "H_src_star_edge", compressed, h_star_edge, domains.edge),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                }
+
+                add_dynamic_commitment_batch(trace,
+                                             {
+                                                 shared_compact_column_spec(prefix + "H_star", compressed, h_star, domains.n),
+                                                 shared_compact_column_spec(prefix + "H_src_star_edge", compressed, h_star_edge, domains.edge),
+                                             },
+                                             context.kzg, keep_trace_payloads, metrics);
+
                 append_external_mask(prefix + "H_star", external_mask_label(prefix + "H_star"));
                 transcript.absorb_commitment(prefix + "H_star", trace.commitments.at(prefix + "H_star").point);
 
@@ -6617,92 +6611,54 @@ namespace gatzk::protocol
                     cached_binding_trace([&]() { return build_binding_trace(h_prime, domains.n, n_nodes, y_star_h, xi_powers, domains.d, head_dim); });
                 add_metric(metrics != nullptr ? &metrics->hidden_h_star_trace_ms : nullptr, stage_start);
 
-                const bool feature_folding = context.config.protocol_variant == "wo_feature_folding";
                 transcript.absorb_commitment(prefix + "E_src", trace.commitments.at(prefix + "E_src").point);
-                if (!feature_folding)
-                {
-                    transcript.absorb_commitment(prefix + "H_star", trace.commitments.at(prefix + "H_star").point);
-                    transcript.absorb_commitment(prefix + "H_src_star_edge", trace.commitments.at(prefix + "H_src_star_edge").point);
-                }
+
+                transcript.absorb_commitment(prefix + "H_star", trace.commitments.at(prefix + "H_star").point);
+                transcript.absorb_commitment(prefix + "H_src_star_edge", trace.commitments.at(prefix + "H_src_star_edge").point);
+
                 const auto eta_src = transcript.challenge(challenge("eta_src_h"));
                 trace.challenges[challenge("eta_src_h")] = eta_src;
-                const auto eta_src_powers = powers(eta_src, feature_folding ? 2 : 3);
+                const auto eta_src_powers = powers(eta_src, 3);
 
                 std::vector<FieldElement> src_table(n_nodes, FieldElement::zero());
                 std::vector<FieldElement> src_query(n_edges, FieldElement::zero());
-                if (feature_folding)
-                {
-                    parallel_for_ranges(n_nodes, 64,
-                                        [&](std::size_t begin, std::size_t end)
-                                        {
-                                            for (std::size_t i = begin; i < end; ++i)
-                                                src_table[i] = absolute_id_fields[i] + eta_src_powers[1] * e_src[i];
-                                        });
-                    parallel_for_ranges(n_edges, 128,
-                                        [&](std::size_t begin, std::size_t end)
-                                        {
-                                            for (std::size_t k = begin; k < end; ++k)
-                                                src_query[k] = edge_src_fields[k] + eta_src_powers[1] * e_src_edge[k];
-                                        });
-                }
-                else
-                {
-                    parallel_for_ranges(n_nodes, 64,
-                                        [&](std::size_t begin, std::size_t end)
-                                        {
-                                            for (std::size_t i = begin; i < end; ++i)
-                                                src_table[i] = absolute_id_fields[i] + eta_src_powers[1] * e_src[i] + eta_src_powers[2] * h_star[i];
-                                        });
-                    parallel_for_ranges(n_edges, 128,
-                                        [&](std::size_t begin, std::size_t end)
-                                        {
-                                            for (std::size_t k = begin; k < end; ++k)
-                                                src_query[k] = edge_src_fields[k] + eta_src_powers[1] * e_src_edge[k] + eta_src_powers[2] * h_star_edge[k];
-                                        });
-                }
+
+                parallel_for_ranges(n_nodes, 64,
+                                    [&](std::size_t begin, std::size_t end)
+                                    {
+                                        for (std::size_t i = begin; i < end; ++i)
+                                            src_table[i] = absolute_id_fields[i] + eta_src_powers[1] * e_src[i] + eta_src_powers[2] * h_star[i];
+                                    });
+                parallel_for_ranges(n_edges, 128,
+                                    [&](std::size_t begin, std::size_t end)
+                                    {
+                                        for (std::size_t k = begin; k < end; ++k)
+                                            src_query[k] = edge_src_fields[k] + eta_src_powers[1] * e_src_edge[k] + eta_src_powers[2] * h_star_edge[k];
+                                    });
+
                 auto src_table_padded = padded_column(src_table, domains.n->size);
                 auto src_query_padded = padded_column(src_query, domains.edge->size);
                 auto src_multiplicity_padded = padded_column(src_multiplicity_template, domains.n->size);
-                if (feature_folding)
-                {
-                    add_dynamic_commitment_batch(
-                        trace,
-                        {
-                            deferred_linear_column_spec(prefix + "Table_src", src_table_padded, domains.n,
-                                                        {
-                                                            linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
-                                                            linear_label_term(prefix + "E_src", eta_src_powers[1]),
-                                                        }),
-                            deferred_linear_column_spec(prefix + "Query_src", src_query_padded, domains.edge,
-                                                        {
-                                                            linear_commitment_term(context.public_commitments.at("P_src"), FieldElement::one()),
-                                                            linear_label_term(prefix + "E_src_edge", eta_src_powers[1]),
-                                                        }),
-                            column_spec(prefix + "m_src", src_multiplicity_padded, domains.n),
-                        },
-                        context.kzg, keep_trace_payloads, metrics);
-                }
-                else
-                {
-                    add_dynamic_commitment_batch(
-                        trace,
-                        {
-                            deferred_linear_column_spec(prefix + "Table_src", src_table_padded, domains.n,
-                                                        {
-                                                            linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
-                                                            linear_label_term(prefix + "E_src", eta_src_powers[1]),
-                                                            linear_label_term(prefix + "H_star", eta_src_powers[2]),
-                                                        }),
-                            deferred_linear_column_spec(prefix + "Query_src", src_query_padded, domains.edge,
-                                                        {
-                                                            linear_commitment_term(context.public_commitments.at("P_src"), FieldElement::one()),
-                                                            linear_label_term(prefix + "E_src_edge", eta_src_powers[1]),
-                                                            linear_label_term(prefix + "H_src_star_edge", eta_src_powers[2]),
-                                                        }),
-                            column_spec(prefix + "m_src", src_multiplicity_padded, domains.n),
-                        },
-                        context.kzg, keep_trace_payloads, metrics);
-                }
+
+                add_dynamic_commitment_batch(
+                    trace,
+                    {
+                        deferred_linear_column_spec(prefix + "Table_src", src_table_padded, domains.n,
+                                                    {
+                                                        linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
+                                                        linear_label_term(prefix + "E_src", eta_src_powers[1]),
+                                                        linear_label_term(prefix + "H_star", eta_src_powers[2]),
+                                                    }),
+                        deferred_linear_column_spec(prefix + "Query_src", src_query_padded, domains.edge,
+                                                    {
+                                                        linear_commitment_term(context.public_commitments.at("P_src"), FieldElement::one()),
+                                                        linear_label_term(prefix + "E_src_edge", eta_src_powers[1]),
+                                                        linear_label_term(prefix + "H_src_star_edge", eta_src_powers[2]),
+                                                    }),
+                        column_spec(prefix + "m_src", src_multiplicity_padded, domains.n),
+                    },
+                    context.kzg, keep_trace_payloads, metrics);
+
                 forward_artifacts->release_hidden_src_vectors(layer_index, local_head_index);
                 forward_artifacts->report_live_bytes("hidden-l" + std::to_string(layer_index) + "-h" + std::to_string(local_head_index) + "-src-committed");
                 for (const auto *suffix : {"Table_src", "Query_src", "m_src"})
@@ -6732,92 +6688,7 @@ namespace gatzk::protocol
                     transcript.absorb_commitment(label, trace.commitments.at(label).point);
                 }
 
-                if (feature_folding)
-                {
-                    src_route.reset();
-                    std::vector<FieldElement>().swap(src_table);
-                    std::vector<FieldElement>().swap(src_query);
-                    for (std::size_t coordinate = 0; coordinate < head_dim; ++coordinate)
-                    {
-                        const auto route_prefix = hidden_feature_route_prefix(layer_index, local_head_index, coordinate);
-                        const auto eta_label = hidden_feature_route_challenge_name("eta_src_feat_h", layer_index, local_head_index, coordinate);
-                        const auto beta_label = hidden_feature_route_challenge_name("beta_src_feat_h", layer_index, local_head_index, coordinate);
-                        std::vector<FieldElement> edge_feature_padded(domains.edge->size, FieldElement::zero());
-                        parallel_for_ranges(n_edges, 128,
-                                            [&](std::size_t begin, std::size_t end)
-                                            {
-                                                for (std::size_t edge_index = begin; edge_index < end; ++edge_index)
-                                                    edge_feature_padded[edge_index] = h_prime[edges[edge_index].src][coordinate];
-                                            });
-                        const auto edge_feature_label = route_prefix + "_H_edge";
-                        add_dynamic_commitment_batch(trace, {column_spec(edge_feature_label, edge_feature_padded, domains.edge)}, context.kzg,
-                                                     keep_trace_payloads, metrics);
-                        transcript.absorb_commitment(edge_feature_label, trace.commitments.at(edge_feature_label).point);
 
-                        const auto eta_feature = transcript.challenge(eta_label);
-                        trace.challenges[eta_label] = eta_feature;
-                        std::vector<FieldElement> feature_table(n_nodes, FieldElement::zero());
-                        std::vector<FieldElement> feature_query(n_edges, FieldElement::zero());
-                        parallel_for_ranges(n_nodes, 64,
-                                            [&](std::size_t begin, std::size_t end)
-                                            {
-                                                for (std::size_t node = begin; node < end; ++node)
-                                                    feature_table[node] = absolute_id_fields[node] + eta_feature * h_prime[node][coordinate];
-                                            });
-                        parallel_for_ranges(n_edges, 128,
-                                            [&](std::size_t begin, std::size_t end)
-                                            {
-                                                for (std::size_t edge_index = begin; edge_index < end; ++edge_index)
-                                                    feature_query[edge_index] = edge_src_fields[edge_index] + eta_feature * edge_feature_padded[edge_index];
-                                            });
-                        auto feature_table_padded = padded_column(feature_table, domains.n->size);
-                        auto feature_query_padded = padded_column(feature_query, domains.edge->size);
-                        auto feature_multiplicity_padded = padded_column(src_multiplicity_template, domains.n->size);
-                        std::vector<FieldElement>().swap(feature_table);
-                        std::vector<FieldElement>().swap(feature_query);
-                        std::vector<FieldElement>().swap(edge_feature_padded);
-                        const auto source_column = canonical_matrix_column_label(prefix + "H_prime", coordinate);
-                        add_dynamic_commitment_batch(
-                            trace,
-                            {
-                                deferred_linear_column_spec(route_prefix + "_Table", feature_table_padded, domains.n,
-                                                            {
-                                                                linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
-                                                                linear_label_term(source_column, eta_feature),
-                                                            }),
-                                deferred_linear_column_spec(route_prefix + "_Query", feature_query_padded, domains.edge,
-                                                            {
-                                                                linear_commitment_term(context.public_commitments.at("P_src"), FieldElement::one()),
-                                                                linear_label_term(edge_feature_label, eta_feature),
-                                                            }),
-                            },
-                            context.kzg, keep_trace_payloads, metrics);
-                        for (const auto *suffix : {"_Table", "_Query"})
-                        {
-                            const auto label = route_prefix + suffix;
-                            transcript.absorb_commitment(label, trace.commitments.at(label).point);
-                        }
-                        const auto beta_feature = transcript.challenge(beta_label);
-                        trace.challenges[beta_label] = beta_feature;
-                        auto route_trace = build_route_trace_from_padded(std::move(feature_table_padded), std::move(feature_query_padded),
-                                                                         std::move(feature_multiplicity_padded), n_nodes, n_edges, domains.n,
-                                                                         domains.edge, beta_feature);
-                        add_dynamic_commitment_batch(
-                            trace,
-                            {
-                                column_spec(route_prefix + "_J_node", route_trace.node_inverse, domains.n),
-                                column_spec(route_prefix + "_J_edge", route_trace.edge_inverse, domains.edge),
-                                column_spec(route_prefix + "_R_node", route_trace.node_acc, domains.n),
-                                column_spec(route_prefix + "_R_edge", route_trace.edge_acc, domains.edge),
-                            },
-                            context.kzg, keep_trace_payloads, metrics);
-                        for (const auto *suffix : {"_J_node", "_J_edge", "_R_node", "_R_edge"})
-                        {
-                            const auto label = route_prefix + suffix;
-                            transcript.absorb_commitment(label, trace.commitments.at(label).point);
-                        }
-                    }
-                }
 
                 transcript.absorb_commitment(prefix + "S", trace.commitments.at(prefix + "S").point);
                 transcript.absorb_commitment(prefix + "Z", trace.commitments.at(prefix + "Z").point);
@@ -7009,264 +6880,128 @@ namespace gatzk::protocol
                 stage_start = Clock::now();
                 const auto c_max = cached_state_vector([&]() { return build_max_counter_state(s_max, q_new, enable_single_graph_selector_shortcut); });
                 add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
-                if (context.config.protocol_variant == "wo_shared_neighborhood")
-                {
-                    stage_start = Clock::now();
-                    const auto u_padded = padded_column(u, domains.edge->size);
-                    const auto psq_den = cached_state_vector([&]() { return build_group_prefix_state(u_padded, q_new, enable_single_graph_selector_shortcut); });
-                    const auto psq_agg = cached_state_vector([&]() { return build_group_prefix_state(*widehat_v_pre_star, q_new, enable_single_graph_selector_shortcut); });
-                    add_metric(metrics != nullptr ? &metrics->hidden_softmax_chain_trace_ms : nullptr, stage_start);
-                    add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
-                    add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
 
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     shared_column_spec(prefix + "a_proj", proj_binding, proj_binding->a, domains.in),
-                                                     shared_column_spec(prefix + "b_proj", proj_binding, proj_binding->b, domains.in),
-                                                     shared_column_spec(prefix + "Acc_proj", proj_binding, proj_binding->acc, domains.in),
-                                                     shared_column_spec(prefix + "a_src", src_binding, src_binding->a, domains.d),
-                                                     shared_column_spec(prefix + "b_src", src_binding, src_binding->b, domains.d),
-                                                     shared_column_spec(prefix + "Acc_src", src_binding, src_binding->acc, domains.d),
-                                                     shared_column_spec(prefix + "a_dst", dst_binding, dst_binding->a, domains.d),
-                                                     shared_column_spec(prefix + "b_dst", dst_binding, dst_binding->b, domains.d),
-                                                     shared_column_spec(prefix + "Acc_dst", dst_binding, dst_binding->acc, domains.d),
-                                                     shared_column_spec(prefix + "a_star", star_binding, star_binding->a, domains.d),
-                                                     shared_column_spec(prefix + "b_star", star_binding, star_binding->b, domains.d),
-                                                     shared_column_spec(prefix + "Acc_star", star_binding, star_binding->acc, domains.d),
-                                                     column_spec(prefix + "s_max", std::move(s_max), domains.edge),
-                                                     column_spec(prefix + "C_max", c_max, domains.edge),
-                                                     shared_column_spec(prefix + "PSQ_den", psq_den, *psq_den, domains.edge),
-                                                     shared_column_spec(prefix + "PSQ_agg", psq_agg, *psq_agg, domains.edge),
-                                                     shared_compact_column_spec(prefix + "H_agg_star", compressed, h_agg_star, domains.n),
-                                                     shared_compact_column_spec(prefix + "H_agg_star_edge", compressed, h_agg_star_edge, domains.edge),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                    forward_artifacts->release_hidden_psq_vectors(layer_index, local_head_index);
-                    forward_artifacts->report_live_bytes("hidden-l" + std::to_string(layer_index) + "-h" + std::to_string(local_head_index) + "-psq-committed");
-                    append_external_mask(prefix + "H_agg_pre_star", external_mask_label(prefix + "H_agg_pre_star"));
-                    append_external_mask(prefix + "H_agg_star", external_mask_label(prefix + "H_agg_star"));
+            const auto lambda_psq = transcript.challenge(challenge("lambda_psq_h"));
 
-                    transcript.absorb_commitment(prefix + "PSQ_den", trace.commitments.at(prefix + "PSQ_den").point);
-                    const auto eta_t_den = transcript.challenge(challenge("eta_t_den_h"));
-                    trace.challenges[challenge("eta_t_den_h")] = eta_t_den;
-                    std::vector<FieldElement> t_den_table(n_nodes, FieldElement::zero());
-                    std::vector<FieldElement> t_den_query(n_edges, FieldElement::zero());
-                    for (std::size_t i = 0; i < n_nodes; ++i)
-                        t_den_table[i] = absolute_id_fields[i] + eta_t_den * sum[i];
-                    for (std::size_t k = 0; k < n_edges; ++k)
-                        t_den_query[k] = edge_dst_fields[k] + eta_t_den * sum_edge[k];
-                    auto t_den_table_padded = padded_column(t_den_table, domains.n->size);
-                    auto t_den_query_padded = padded_column(t_den_query, domains.edge->size);
-                    auto t_den_multiplicity_padded = padded_column(dst_multiplicity_template, domains.n->size);
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     deferred_linear_column_spec(prefix + "Table_t_den", t_den_table_padded, domains.n,
+            trace.challenges[challenge("lambda_psq_h")] = lambda_psq;
+
+            stage_start = Clock::now();
+
+            auto w_psq = build_weighted_sum(u, lambda_psq, *widehat_v_pre_star, domains.edge->size);
+            auto t_psq = std::make_shared<std::vector<FieldElement>>(n_nodes, FieldElement::zero());
+            for (std::size_t i = 0; i < n_nodes; ++i)
+            {
+                (*t_psq)[i] = sum[i] + lambda_psq * h_agg_pre_star[i];
+            }
+            const auto t_psq_edge = std::make_shared<std::vector<FieldElement>>(build_group_target(*t_psq, edges, domains.edge->size));
+            add_metric(metrics != nullptr ? &metrics->hidden_softmax_chain_trace_ms : nullptr, stage_start);
+            stage_start = Clock::now();
+            const auto psq = cached_state_vector([&]() { return build_group_prefix_state(w_psq, q_new, enable_single_graph_selector_shortcut); });
+            add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
+            add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
+
+            add_dynamic_commitment_batch(trace,
+                                         {
+                                             shared_column_spec(prefix + "a_proj", proj_binding, proj_binding->a, domains.in),
+                                             shared_column_spec(prefix + "b_proj", proj_binding, proj_binding->b, domains.in),
+                                             shared_column_spec(prefix + "Acc_proj", proj_binding, proj_binding->acc, domains.in),
+                                             shared_column_spec(prefix + "a_src", src_binding, src_binding->a, domains.d),
+                                             shared_column_spec(prefix + "b_src", src_binding, src_binding->b, domains.d),
+                                             shared_column_spec(prefix + "Acc_src", src_binding, src_binding->acc, domains.d),
+                                             shared_column_spec(prefix + "a_dst", dst_binding, dst_binding->a, domains.d),
+                                             shared_column_spec(prefix + "b_dst", dst_binding, dst_binding->b, domains.d),
+                                             shared_column_spec(prefix + "Acc_dst", dst_binding, dst_binding->acc, domains.d),
+                                             shared_column_spec(prefix + "a_star", star_binding, star_binding->a, domains.d),
+                                             shared_column_spec(prefix + "b_star", star_binding, star_binding->b, domains.d),
+                                             shared_column_spec(prefix + "Acc_star", star_binding, star_binding->acc, domains.d),
+                                             column_spec(prefix + "s_max", std::move(s_max), domains.edge),
+                                             column_spec(prefix + "C_max", c_max, domains.edge),
+                                             deferred_linear_column_spec(prefix + "w_psq", std::move(w_psq), domains.edge,
+                                                                         {
+                                                                             linear_label_term(prefix + "U", FieldElement::one()),
+                                                                             linear_label_term(prefix + "widehat_v_pre_star", lambda_psq),
+                                                                         }),
+                                             deferred_linear_compact_column_spec(prefix + "T_psq", t_psq, domains.n,
                                                                                  {
-                                                                                     linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
-                                                                                     linear_label_term(prefix + "Sum", eta_t_den),
+                                                                                     linear_label_term(prefix + "Sum", FieldElement::one()),
+                                                                                     linear_label_term(prefix + "H_agg_pre_star", lambda_psq),
                                                                                  }),
-                                                     deferred_linear_column_spec(prefix + "Query_t_den", t_den_query_padded, domains.edge,
+                                             deferred_linear_compact_column_spec(prefix + "T_psq_edge", t_psq_edge, domains.edge,
                                                                                  {
-                                                                                     linear_commitment_term(context.public_commitments.at("P_dst"), FieldElement::one()),
-                                                                                     linear_label_term(prefix + "Sum_edge", eta_t_den),
+                                                                                     linear_label_term(prefix + "Sum_edge", FieldElement::one()),
+                                                                                     linear_label_term(prefix + "H_agg_pre_star_edge", lambda_psq),
                                                                                  }),
-                                                     column_spec(prefix + "m_t_den", t_den_multiplicity_padded, domains.n),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                    for (const auto *suffix : {"Table_t_den", "Query_t_den", "m_t_den"})
-                        transcript.absorb_commitment(prefix + suffix, trace.commitments.at(prefix + suffix).point);
-                    const auto beta_t_den = transcript.challenge(challenge("beta_t_den_h"));
-                    trace.challenges[challenge("beta_t_den_h")] = beta_t_den;
-                    const auto t_den_route = cached_route_trace(
-                        [&]()
-                        {
-                            return build_route_trace_from_padded(std::move(t_den_table_padded), std::move(t_den_query_padded),
-                                                                 std::move(t_den_multiplicity_padded), n_nodes, n_edges, domains.n, domains.edge,
-                                                                 beta_t_den);
-                        });
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     shared_column_spec(prefix + "J_t_den_node", t_den_route, t_den_route->node_inverse, domains.n),
-                                                     shared_column_spec(prefix + "J_t_den_edge", t_den_route, t_den_route->edge_inverse, domains.edge),
-                                                     shared_column_spec(prefix + "R_t_den_node", t_den_route, t_den_route->node_acc, domains.n),
-                                                     shared_column_spec(prefix + "R_t_den", t_den_route, t_den_route->edge_acc, domains.edge),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                    for (const auto *suffix : {"J_t_den_node", "J_t_den_edge", "R_t_den_node", "R_t_den"})
-                        transcript.absorb_commitment(prefix + suffix, trace.commitments.at(prefix + suffix).point);
+                                             column_spec(prefix + "PSQ", psq, domains.edge),
+                                             shared_compact_column_spec(prefix + "H_agg_star", compressed, h_agg_star, domains.n),
+                                             shared_compact_column_spec(prefix + "H_agg_star_edge", compressed, h_agg_star_edge, domains.edge),
+                                         },
+                                         context.kzg, keep_trace_payloads, metrics);
+            forward_artifacts->release_hidden_psq_vectors(layer_index, local_head_index);
+            forward_artifacts->report_live_bytes("hidden-l" + std::to_string(layer_index) + "-h" + std::to_string(local_head_index) + "-psq-committed");
+            append_external_mask(prefix + "H_agg_pre_star", external_mask_label(prefix + "H_agg_pre_star"));
+            append_external_mask(prefix + "H_agg_star", external_mask_label(prefix + "H_agg_star"));
 
-                    transcript.absorb_commitment(prefix + "PSQ_agg", trace.commitments.at(prefix + "PSQ_agg").point);
-                    const auto eta_t_agg = transcript.challenge(challenge("eta_t_agg_h"));
-                    trace.challenges[challenge("eta_t_agg_h")] = eta_t_agg;
-                    std::vector<FieldElement> t_agg_table(n_nodes, FieldElement::zero());
-                    std::vector<FieldElement> t_agg_query(n_edges, FieldElement::zero());
-                    for (std::size_t i = 0; i < n_nodes; ++i)
-                        t_agg_table[i] = absolute_id_fields[i] + eta_t_agg * h_agg_pre_star[i];
-                    for (std::size_t k = 0; k < n_edges; ++k)
-                        t_agg_query[k] = edge_dst_fields[k] + eta_t_agg * h_agg_pre_star_edge[k];
-                    auto t_agg_table_padded = padded_column(t_agg_table, domains.n->size);
-                    auto t_agg_query_padded = padded_column(t_agg_query, domains.edge->size);
-                    auto t_agg_multiplicity_padded = padded_column(dst_multiplicity_template, domains.n->size);
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     deferred_linear_column_spec(prefix + "Table_t_agg", t_agg_table_padded, domains.n,
-                                                                                 {
-                                                                                     linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
-                                                                                     linear_label_term(prefix + "H_agg_pre_star", eta_t_agg),
-                                                                                 }),
-                                                     deferred_linear_column_spec(prefix + "Query_t_agg", t_agg_query_padded, domains.edge,
-                                                                                 {
-                                                                                     linear_commitment_term(context.public_commitments.at("P_dst"), FieldElement::one()),
-                                                                                     linear_label_term(prefix + "H_agg_pre_star_edge", eta_t_agg),
-                                                                                 }),
-                                                     column_spec(prefix + "m_t_agg", t_agg_multiplicity_padded, domains.n),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                    for (const auto *suffix : {"Table_t_agg", "Query_t_agg", "m_t_agg"})
-                        transcript.absorb_commitment(prefix + suffix, trace.commitments.at(prefix + suffix).point);
-                    const auto beta_t_agg = transcript.challenge(challenge("beta_t_agg_h"));
-                    trace.challenges[challenge("beta_t_agg_h")] = beta_t_agg;
-                    const auto t_agg_route = cached_route_trace(
-                        [&]()
-                        {
-                            return build_route_trace_from_padded(std::move(t_agg_table_padded), std::move(t_agg_query_padded),
-                                                                 std::move(t_agg_multiplicity_padded), n_nodes, n_edges, domains.n, domains.edge,
-                                                                 beta_t_agg);
-                        });
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     shared_column_spec(prefix + "J_t_agg_node", t_agg_route, t_agg_route->node_inverse, domains.n),
-                                                     shared_column_spec(prefix + "J_t_agg_edge", t_agg_route, t_agg_route->edge_inverse, domains.edge),
-                                                     shared_column_spec(prefix + "R_t_agg_node", t_agg_route, t_agg_route->node_acc, domains.n),
-                                                     shared_column_spec(prefix + "R_t_agg", t_agg_route, t_agg_route->edge_acc, domains.edge),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                    for (const auto *suffix : {"J_t_agg_node", "J_t_agg_edge", "R_t_agg_node", "R_t_agg"})
-                        transcript.absorb_commitment(prefix + suffix, trace.commitments.at(prefix + suffix).point);
-                }
-                else
+            transcript.absorb_commitment(prefix + "T_psq", trace.commitments.at(prefix + "T_psq").point);
+            transcript.absorb_commitment(prefix + "T_psq_edge", trace.commitments.at(prefix + "T_psq_edge").point);
+            const auto eta_t = transcript.challenge(challenge("eta_t_h"));
+            trace.challenges[challenge("eta_t_h")] = eta_t;
+            const auto eta_t_powers = powers(eta_t, 2);
+            std::vector<FieldElement> t_table(n_nodes, FieldElement::zero());
+            std::vector<FieldElement> t_query(n_edges, FieldElement::zero());
+            for (std::size_t i = 0; i < n_nodes; ++i)
+            {
+                t_table[i] = absolute_id_fields[i] + eta_t_powers[1] * (*t_psq)[i];
+            }
+            for (std::size_t k = 0; k < n_edges; ++k)
+            {
+                t_query[k] = edge_dst_fields[k] + eta_t_powers[1] * (*t_psq_edge)[k];
+            }
+            auto t_table_padded = padded_column(t_table, domains.n->size);
+            auto t_query_padded = padded_column(t_query, domains.edge->size);
+            auto t_multiplicity_padded = padded_column(dst_multiplicity_template, domains.n->size);
+            add_dynamic_commitment_batch(
+                trace,
                 {
-                const auto lambda_psq = transcript.challenge(challenge("lambda_psq_h"));
+                    deferred_linear_column_spec(prefix + "Table_t", t_table_padded, domains.n,
+                                                {
+                                                    linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
+                                                    linear_label_term(prefix + "T_psq", eta_t_powers[1]),
+                                                }),
+                    deferred_linear_column_spec(prefix + "Query_t", t_query_padded, domains.edge,
+                                                {
+                                                    linear_commitment_term(context.public_commitments.at("P_dst"), FieldElement::one()),
+                                                    linear_label_term(prefix + "T_psq_edge", eta_t_powers[1]),
+                                                }),
+                    column_spec(prefix + "m_t", t_multiplicity_padded, domains.n),
+                },
+                context.kzg, keep_trace_payloads, metrics);
+            for (const auto *suffix : {"Table_t", "Query_t", "m_t"})
+            {
+                const auto label = prefix + suffix;
+                transcript.absorb_commitment(label, trace.commitments.at(label).point);
+            }
+            const auto beta_t = transcript.challenge(challenge("beta_t_h"));
+            trace.challenges[challenge("beta_t_h")] = beta_t;
+            const auto t_route = cached_route_trace(
+                [&]()
+                {
+                    return build_route_trace_from_padded(std::move(t_table_padded), std::move(t_query_padded), std::move(t_multiplicity_padded), n_nodes,
+                                                         n_edges, domains.n, domains.edge, beta_t);
+                });
+            add_dynamic_commitment_batch(trace,
+                                         {
+                                             shared_column_spec(prefix + "J_t_node", t_route, t_route->node_inverse, domains.n),
+                                             shared_column_spec(prefix + "J_t_edge", t_route, t_route->edge_inverse, domains.edge),
+                                             shared_column_spec(prefix + "R_t_node", t_route, t_route->node_acc, domains.n),
+                                             shared_column_spec(prefix + "R_t", t_route, t_route->edge_acc, domains.edge),
+                                         },
+                                         context.kzg, keep_trace_payloads, metrics);
+            for (const auto *suffix : {"J_t_node", "J_t_edge", "R_t_node", "R_t"})
+            {
+                const auto label = prefix + suffix;
+                transcript.absorb_commitment(label, trace.commitments.at(label).point);
+            }
 
-                trace.challenges[challenge("lambda_psq_h")] = lambda_psq;
-
-                stage_start = Clock::now();
-
-                auto w_psq = build_weighted_sum(u, lambda_psq, *widehat_v_pre_star, domains.edge->size);
-                auto t_psq = std::make_shared<std::vector<FieldElement>>(n_nodes, FieldElement::zero());
-                for (std::size_t i = 0; i < n_nodes; ++i)
-                {
-                    (*t_psq)[i] = sum[i] + lambda_psq * h_agg_pre_star[i];
-                }
-                const auto t_psq_edge = std::make_shared<std::vector<FieldElement>>(build_group_target(*t_psq, edges, domains.edge->size));
-                add_metric(metrics != nullptr ? &metrics->hidden_softmax_chain_trace_ms : nullptr, stage_start);
-                stage_start = Clock::now();
-                const auto psq = cached_state_vector([&]() { return build_group_prefix_state(w_psq, q_new, enable_single_graph_selector_shortcut); });
-                add_metric(metrics != nullptr ? &metrics->psq_trace_ms : nullptr, stage_start);
-                add_metric(metrics != nullptr ? &metrics->state_machine_trace_ms : nullptr, stage_start);
-
-                add_dynamic_commitment_batch(trace,
-                                             {
-                                                 shared_column_spec(prefix + "a_proj", proj_binding, proj_binding->a, domains.in),
-                                                 shared_column_spec(prefix + "b_proj", proj_binding, proj_binding->b, domains.in),
-                                                 shared_column_spec(prefix + "Acc_proj", proj_binding, proj_binding->acc, domains.in),
-                                                 shared_column_spec(prefix + "a_src", src_binding, src_binding->a, domains.d),
-                                                 shared_column_spec(prefix + "b_src", src_binding, src_binding->b, domains.d),
-                                                 shared_column_spec(prefix + "Acc_src", src_binding, src_binding->acc, domains.d),
-                                                 shared_column_spec(prefix + "a_dst", dst_binding, dst_binding->a, domains.d),
-                                                 shared_column_spec(prefix + "b_dst", dst_binding, dst_binding->b, domains.d),
-                                                 shared_column_spec(prefix + "Acc_dst", dst_binding, dst_binding->acc, domains.d),
-                                                 shared_column_spec(prefix + "a_star", star_binding, star_binding->a, domains.d),
-                                                 shared_column_spec(prefix + "b_star", star_binding, star_binding->b, domains.d),
-                                                 shared_column_spec(prefix + "Acc_star", star_binding, star_binding->acc, domains.d),
-                                                 column_spec(prefix + "s_max", std::move(s_max), domains.edge),
-                                                 column_spec(prefix + "C_max", c_max, domains.edge),
-                                                 deferred_linear_column_spec(prefix + "w_psq", std::move(w_psq), domains.edge,
-                                                                             {
-                                                                                 linear_label_term(prefix + "U", FieldElement::one()),
-                                                                                 linear_label_term(prefix + "widehat_v_pre_star", lambda_psq),
-                                                                             }),
-                                                 deferred_linear_compact_column_spec(prefix + "T_psq", t_psq, domains.n,
-                                                                                     {
-                                                                                         linear_label_term(prefix + "Sum", FieldElement::one()),
-                                                                                         linear_label_term(prefix + "H_agg_pre_star", lambda_psq),
-                                                                                     }),
-                                                 deferred_linear_compact_column_spec(prefix + "T_psq_edge", t_psq_edge, domains.edge,
-                                                                                     {
-                                                                                         linear_label_term(prefix + "Sum_edge", FieldElement::one()),
-                                                                                         linear_label_term(prefix + "H_agg_pre_star_edge", lambda_psq),
-                                                                                     }),
-                                                 column_spec(prefix + "PSQ", psq, domains.edge),
-                                                 shared_compact_column_spec(prefix + "H_agg_star", compressed, h_agg_star, domains.n),
-                                                 shared_compact_column_spec(prefix + "H_agg_star_edge", compressed, h_agg_star_edge, domains.edge),
-                                             },
-                                             context.kzg, keep_trace_payloads, metrics);
-                forward_artifacts->release_hidden_psq_vectors(layer_index, local_head_index);
-                forward_artifacts->report_live_bytes("hidden-l" + std::to_string(layer_index) + "-h" + std::to_string(local_head_index) + "-psq-committed");
-                append_external_mask(prefix + "H_agg_pre_star", external_mask_label(prefix + "H_agg_pre_star"));
-                append_external_mask(prefix + "H_agg_star", external_mask_label(prefix + "H_agg_star"));
-
-                transcript.absorb_commitment(prefix + "T_psq", trace.commitments.at(prefix + "T_psq").point);
-                transcript.absorb_commitment(prefix + "T_psq_edge", trace.commitments.at(prefix + "T_psq_edge").point);
-                const auto eta_t = transcript.challenge(challenge("eta_t_h"));
-                trace.challenges[challenge("eta_t_h")] = eta_t;
-                const auto eta_t_powers = powers(eta_t, 2);
-                std::vector<FieldElement> t_table(n_nodes, FieldElement::zero());
-                std::vector<FieldElement> t_query(n_edges, FieldElement::zero());
-                for (std::size_t i = 0; i < n_nodes; ++i)
-                {
-                    t_table[i] = absolute_id_fields[i] + eta_t_powers[1] * (*t_psq)[i];
-                }
-                for (std::size_t k = 0; k < n_edges; ++k)
-                {
-                    t_query[k] = edge_dst_fields[k] + eta_t_powers[1] * (*t_psq_edge)[k];
-                }
-                auto t_table_padded = padded_column(t_table, domains.n->size);
-                auto t_query_padded = padded_column(t_query, domains.edge->size);
-                auto t_multiplicity_padded = padded_column(dst_multiplicity_template, domains.n->size);
-                add_dynamic_commitment_batch(
-                    trace,
-                    {
-                        deferred_linear_column_spec(prefix + "Table_t", t_table_padded, domains.n,
-                                                    {
-                                                        linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
-                                                        linear_label_term(prefix + "T_psq", eta_t_powers[1]),
-                                                    }),
-                        deferred_linear_column_spec(prefix + "Query_t", t_query_padded, domains.edge,
-                                                    {
-                                                        linear_commitment_term(context.public_commitments.at("P_dst"), FieldElement::one()),
-                                                        linear_label_term(prefix + "T_psq_edge", eta_t_powers[1]),
-                                                    }),
-                        column_spec(prefix + "m_t", t_multiplicity_padded, domains.n),
-                    },
-                    context.kzg, keep_trace_payloads, metrics);
-                for (const auto *suffix : {"Table_t", "Query_t", "m_t"})
-                {
-                    const auto label = prefix + suffix;
-                    transcript.absorb_commitment(label, trace.commitments.at(label).point);
-                }
-                const auto beta_t = transcript.challenge(challenge("beta_t_h"));
-                trace.challenges[challenge("beta_t_h")] = beta_t;
-                const auto t_route = cached_route_trace(
-                    [&]()
-                    {
-                        return build_route_trace_from_padded(std::move(t_table_padded), std::move(t_query_padded), std::move(t_multiplicity_padded), n_nodes,
-                                                             n_edges, domains.n, domains.edge, beta_t);
-                    });
-                add_dynamic_commitment_batch(trace,
-                                             {
-                                                 shared_column_spec(prefix + "J_t_node", t_route, t_route->node_inverse, domains.n),
-                                                 shared_column_spec(prefix + "J_t_edge", t_route, t_route->edge_inverse, domains.edge),
-                                                 shared_column_spec(prefix + "R_t_node", t_route, t_route->node_acc, domains.n),
-                                                 shared_column_spec(prefix + "R_t", t_route, t_route->edge_acc, domains.edge),
-                                             },
-                                             context.kzg, keep_trace_payloads, metrics);
-                for (const auto *suffix : {"J_t_node", "J_t_edge", "R_t_node", "R_t"})
-                {
-                    const auto label = prefix + suffix;
-                    transcript.absorb_commitment(label, trace.commitments.at(label).point);
-                }
-                }
 
                 std::vector<FieldElement> sum_flat(domains.edge->size, FieldElement::zero());
                 std::vector<FieldElement> agg_pre_flat(domains.edge->size, FieldElement::zero());
@@ -7975,250 +7710,118 @@ namespace gatzk::protocol
                     transcript.absorb_commitment(label, trace.commitments.at(label).point);
                 }
 
-                if (context.config.protocol_variant == "wo_shared_neighborhood")
-                {
-                    const auto out_u_padded = padded_column(out_u, domains.edge->size);
-                    const auto psq_out_den = cached_state_vector([&]() { return build_group_prefix_state(out_u_padded, q_new, enable_single_graph_selector_shortcut); });
-                    const auto psq_out_agg = cached_state_vector([&]() { return build_group_prefix_state(*widehat_y_star, q_new, enable_single_graph_selector_shortcut); });
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     column_spec(prefix + "s_max", std::move(out_s_max), domains.edge),
-                                                     column_spec(prefix + "C_max", out_c_max, domains.edge),
-                                                     column_spec(prefix + "PSQ_den", psq_out_den, domains.edge),
-                                                     column_spec(prefix + "PSQ_agg", psq_out_agg, domains.edge),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                    forward_artifacts->release_output_psq_vectors(head_index);
-                    forward_artifacts->report_live_bytes("output-h" + std::to_string(head_index) + "-psq-committed");
-                    append_external_mask(prefix + "Y_star", external_mask_label(prefix + "Y_star"));
 
-                    transcript.absorb_commitment(prefix + "PSQ_den", trace.commitments.at(prefix + "PSQ_den").point);
-                    const auto eta_t_den_out = transcript.challenge(output_challenge_name("eta_t_den_out", head_index));
-                    trace.challenges[output_challenge_name("eta_t_den_out", head_index)] = eta_t_den_out;
-                    std::vector<FieldElement> out_t_den_table(n_nodes, FieldElement::zero());
-                    std::vector<FieldElement> out_t_den_query(n_edges, FieldElement::zero());
-                    parallel_for_ranges(n_nodes, 64,
-                                        [&](std::size_t begin, std::size_t end)
-                                        {
-                                            for (std::size_t i = begin; i < end; ++i)
-                                                out_t_den_table[i] = absolute_id_fields[i] + eta_t_den_out * out_sum[i];
-                                        });
-                    parallel_for_ranges(n_edges, 128,
-                                        [&](std::size_t begin, std::size_t end)
-                                        {
-                                            for (std::size_t k = begin; k < end; ++k)
-                                                out_t_den_query[k] = edge_dst_fields[k] + eta_t_den_out * out_sum_edge[k];
-                                        });
-                    auto out_t_den_table_padded = padded_column(out_t_den_table, domains.n->size);
-                    auto out_t_den_query_padded = padded_column(out_t_den_query, domains.edge->size);
-                    auto out_t_den_multiplicity_padded = padded_column(dst_multiplicity_template, domains.n->size);
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     deferred_linear_column_spec(prefix + "Table_t_den", out_t_den_table_padded, domains.n,
-                                                                                 {
-                                                                                     linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
-                                                                                     linear_label_term(prefix + "Sum", eta_t_den_out),
-                                                                                 }),
-                                                     deferred_linear_column_spec(prefix + "Query_t_den", out_t_den_query_padded, domains.edge,
-                                                                                 {
-                                                                                     linear_commitment_term(context.public_commitments.at("P_dst"), FieldElement::one()),
-                                                                                     linear_label_term(prefix + "Sum_edge", eta_t_den_out),
-                                                                                 }),
-                                                     column_spec(prefix + "m_t_den", out_t_den_multiplicity_padded, domains.n),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                    for (const auto *suffix : {"Table_t_den", "Query_t_den", "m_t_den"})
-                        transcript.absorb_commitment(prefix + suffix, trace.commitments.at(prefix + suffix).point);
-                    const auto beta_t_den_out = transcript.challenge(output_challenge_name("beta_t_den_out", head_index));
-                    trace.challenges[output_challenge_name("beta_t_den_out", head_index)] = beta_t_den_out;
-                    const auto out_t_den_route = cached_route_trace(
-                        [&]()
-                        {
-                            return build_route_trace_from_padded(std::move(out_t_den_table_padded), std::move(out_t_den_query_padded),
-                                                                 std::move(out_t_den_multiplicity_padded), n_nodes, n_edges, domains.n, domains.edge,
-                                                                 beta_t_den_out);
-                        });
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     shared_column_spec(prefix + "J_t_den_node", out_t_den_route, out_t_den_route->node_inverse, domains.n),
-                                                     shared_column_spec(prefix + "J_t_den_edge", out_t_den_route, out_t_den_route->edge_inverse, domains.edge),
-                                                     shared_column_spec(prefix + "R_t_den_node", out_t_den_route, out_t_den_route->node_acc, domains.n),
-                                                     shared_column_spec(prefix + "R_t_den", out_t_den_route, out_t_den_route->edge_acc, domains.edge),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                    for (const auto *suffix : {"J_t_den_node", "J_t_den_edge", "R_t_den_node", "R_t_den"})
-                        transcript.absorb_commitment(prefix + suffix, trace.commitments.at(prefix + suffix).point);
+            const auto lambda_out = transcript.challenge(output_challenge_name("lambda_out", head_index));
 
-                    transcript.absorb_commitment(prefix + "PSQ_agg", trace.commitments.at(prefix + "PSQ_agg").point);
-                    const auto eta_t_agg_out = transcript.challenge(output_challenge_name("eta_t_agg_out", head_index));
-                    trace.challenges[output_challenge_name("eta_t_agg_out", head_index)] = eta_t_agg_out;
-                    std::vector<FieldElement> out_t_agg_table(n_nodes, FieldElement::zero());
-                    std::vector<FieldElement> out_t_agg_query(n_edges, FieldElement::zero());
-                    parallel_for_ranges(n_nodes, 64,
-                                        [&](std::size_t begin, std::size_t end)
-                                        {
-                                            for (std::size_t i = begin; i < end; ++i)
-                                                out_t_agg_table[i] = absolute_id_fields[i] + eta_t_agg_out * y_star[i];
-                                        });
-                    parallel_for_ranges(n_edges, 128,
-                                        [&](std::size_t begin, std::size_t end)
-                                        {
-                                            for (std::size_t k = begin; k < end; ++k)
-                                                out_t_agg_query[k] = edge_dst_fields[k] + eta_t_agg_out * y_star_edge[k];
-                                        });
-                    auto out_t_agg_table_padded = padded_column(out_t_agg_table, domains.n->size);
-                    auto out_t_agg_query_padded = padded_column(out_t_agg_query, domains.edge->size);
-                    auto out_t_agg_multiplicity_padded = padded_column(dst_multiplicity_template, domains.n->size);
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     deferred_linear_column_spec(prefix + "Table_t_agg", out_t_agg_table_padded, domains.n,
-                                                                                 {
-                                                                                     linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
-                                                                                     linear_label_term(prefix + "Y_star", eta_t_agg_out),
-                                                                                 }),
-                                                     deferred_linear_column_spec(prefix + "Query_t_agg", out_t_agg_query_padded, domains.edge,
-                                                                                 {
-                                                                                     linear_commitment_term(context.public_commitments.at("P_dst"), FieldElement::one()),
-                                                                                     linear_label_term(prefix + "Y_star_edge", eta_t_agg_out),
-                                                                                 }),
-                                                     column_spec(prefix + "m_t_agg", out_t_agg_multiplicity_padded, domains.n),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                    for (const auto *suffix : {"Table_t_agg", "Query_t_agg", "m_t_agg"})
-                        transcript.absorb_commitment(prefix + suffix, trace.commitments.at(prefix + suffix).point);
-                    const auto beta_t_agg_out = transcript.challenge(output_challenge_name("beta_t_agg_out", head_index));
-                    trace.challenges[output_challenge_name("beta_t_agg_out", head_index)] = beta_t_agg_out;
-                    const auto out_t_agg_route = cached_route_trace(
-                        [&]()
-                        {
-                            return build_route_trace_from_padded(std::move(out_t_agg_table_padded), std::move(out_t_agg_query_padded),
-                                                                 std::move(out_t_agg_multiplicity_padded), n_nodes, n_edges, domains.n, domains.edge,
-                                                                 beta_t_agg_out);
-                        });
-                    add_dynamic_commitment_batch(trace,
-                                                 {
-                                                     shared_column_spec(prefix + "J_t_agg_node", out_t_agg_route, out_t_agg_route->node_inverse, domains.n),
-                                                     shared_column_spec(prefix + "J_t_agg_edge", out_t_agg_route, out_t_agg_route->edge_inverse, domains.edge),
-                                                     shared_column_spec(prefix + "R_t_agg_node", out_t_agg_route, out_t_agg_route->node_acc, domains.n),
-                                                     shared_column_spec(prefix + "R_t_agg", out_t_agg_route, out_t_agg_route->edge_acc, domains.edge),
-                                                 },
-                                                 context.kzg, keep_trace_payloads, metrics);
-                    for (const auto *suffix : {"J_t_agg_node", "J_t_agg_edge", "R_t_agg_node", "R_t_agg"})
-                        transcript.absorb_commitment(prefix + suffix, trace.commitments.at(prefix + suffix).point);
-                }
-                else
-                {
-                const auto lambda_out = transcript.challenge(output_challenge_name("lambda_out", head_index));
+            trace.challenges[output_challenge_name("lambda_out", head_index)] = lambda_out;
 
-                trace.challenges[output_challenge_name("lambda_out", head_index)] = lambda_out;
-
-                auto w_out = build_weighted_sum(out_u, lambda_out, *widehat_y_star, domains.edge->size);
-                auto t_out = std::make_shared<std::vector<FieldElement>>(n_nodes, FieldElement::zero());
-                parallel_for_ranges(n_nodes, 64,
-                                    [&](std::size_t begin, std::size_t end)
+            auto w_out = build_weighted_sum(out_u, lambda_out, *widehat_y_star, domains.edge->size);
+            auto t_out = std::make_shared<std::vector<FieldElement>>(n_nodes, FieldElement::zero());
+            parallel_for_ranges(n_nodes, 64,
+                                [&](std::size_t begin, std::size_t end)
+                                {
+                                    for (std::size_t i = begin; i < end; ++i)
                                     {
-                                        for (std::size_t i = begin; i < end; ++i)
-                                        {
-                                            (*t_out)[i] = out_sum[i] + lambda_out * y_star[i];
-                                        }
-                                    });
-                const auto t_out_edge = std::make_shared<std::vector<FieldElement>>(build_group_target(*t_out, edges, domains.edge->size));
-                const auto psq_out = cached_state_vector([&]() { return build_group_prefix_state(w_out, q_new, enable_single_graph_selector_shortcut); });
-                add_dynamic_commitment_batch(trace,
-                                             {
-                                                 column_spec(prefix + "s_max", std::move(out_s_max), domains.edge),
-                                                 column_spec(prefix + "C_max", out_c_max, domains.edge),
-                                                 deferred_linear_column_spec(prefix + "w", std::move(w_out), domains.edge,
-                                                                             {
-                                                                                 linear_label_term(prefix + "U", FieldElement::one()),
-                                                                                 linear_label_term(prefix + "widehat_y_star", lambda_out),
-                                                                             }),
-                                                 deferred_linear_compact_column_spec(prefix + "T", t_out, domains.n,
-                                                                                     {
-                                                                                         linear_label_term(prefix + "Sum", FieldElement::one()),
-                                                                                         linear_label_term(prefix + "Y_star", lambda_out),
-                                                                                     }),
-                                                 deferred_linear_compact_column_spec(prefix + "T_edge", t_out_edge, domains.edge,
-                                                                                     {
-                                                                                         linear_label_term(prefix + "Sum_edge", FieldElement::one()),
-                                                                                         linear_label_term(prefix + "Y_star_edge", lambda_out),
-                                                                                     }),
-                                                 column_spec(prefix + "PSQ", psq_out, domains.edge),
-                                             },
-                                             context.kzg, keep_trace_payloads, metrics);
-                forward_artifacts->release_output_psq_vectors(head_index);
-                forward_artifacts->report_live_bytes("output-h" + std::to_string(head_index) + "-psq-committed");
-                append_external_mask(prefix + "Y_star", external_mask_label(prefix + "Y_star"));
+                                        (*t_out)[i] = out_sum[i] + lambda_out * y_star[i];
+                                    }
+                                });
+            const auto t_out_edge = std::make_shared<std::vector<FieldElement>>(build_group_target(*t_out, edges, domains.edge->size));
+            const auto psq_out = cached_state_vector([&]() { return build_group_prefix_state(w_out, q_new, enable_single_graph_selector_shortcut); });
+            add_dynamic_commitment_batch(trace,
+                                         {
+                                             column_spec(prefix + "s_max", std::move(out_s_max), domains.edge),
+                                             column_spec(prefix + "C_max", out_c_max, domains.edge),
+                                             deferred_linear_column_spec(prefix + "w", std::move(w_out), domains.edge,
+                                                                         {
+                                                                             linear_label_term(prefix + "U", FieldElement::one()),
+                                                                             linear_label_term(prefix + "widehat_y_star", lambda_out),
+                                                                         }),
+                                             deferred_linear_compact_column_spec(prefix + "T", t_out, domains.n,
+                                                                                 {
+                                                                                     linear_label_term(prefix + "Sum", FieldElement::one()),
+                                                                                     linear_label_term(prefix + "Y_star", lambda_out),
+                                                                                 }),
+                                             deferred_linear_compact_column_spec(prefix + "T_edge", t_out_edge, domains.edge,
+                                                                                 {
+                                                                                     linear_label_term(prefix + "Sum_edge", FieldElement::one()),
+                                                                                     linear_label_term(prefix + "Y_star_edge", lambda_out),
+                                                                                 }),
+                                             column_spec(prefix + "PSQ", psq_out, domains.edge),
+                                         },
+                                         context.kzg, keep_trace_payloads, metrics);
+            forward_artifacts->release_output_psq_vectors(head_index);
+            forward_artifacts->report_live_bytes("output-h" + std::to_string(head_index) + "-psq-committed");
+            append_external_mask(prefix + "Y_star", external_mask_label(prefix + "Y_star"));
 
-                transcript.absorb_commitment(prefix + "T", trace.commitments.at(prefix + "T").point);
-                transcript.absorb_commitment(prefix + "T_edge", trace.commitments.at(prefix + "T_edge").point);
-                const auto eta_t_out = transcript.challenge(output_challenge_name("eta_t_out", head_index));
-                trace.challenges[output_challenge_name("eta_t_out", head_index)] = eta_t_out;
-                const auto eta_t_out_powers = powers(eta_t_out, 2);
-                std::vector<FieldElement> out_t_table(n_nodes, FieldElement::zero());
-                std::vector<FieldElement> out_t_query(n_edges, FieldElement::zero());
-                parallel_for_ranges(n_nodes, 64,
-                                    [&](std::size_t begin, std::size_t end)
+            transcript.absorb_commitment(prefix + "T", trace.commitments.at(prefix + "T").point);
+            transcript.absorb_commitment(prefix + "T_edge", trace.commitments.at(prefix + "T_edge").point);
+            const auto eta_t_out = transcript.challenge(output_challenge_name("eta_t_out", head_index));
+            trace.challenges[output_challenge_name("eta_t_out", head_index)] = eta_t_out;
+            const auto eta_t_out_powers = powers(eta_t_out, 2);
+            std::vector<FieldElement> out_t_table(n_nodes, FieldElement::zero());
+            std::vector<FieldElement> out_t_query(n_edges, FieldElement::zero());
+            parallel_for_ranges(n_nodes, 64,
+                                [&](std::size_t begin, std::size_t end)
+                                {
+                                    for (std::size_t i = begin; i < end; ++i)
                                     {
-                                        for (std::size_t i = begin; i < end; ++i)
-                                        {
-                                            out_t_table[i] = absolute_id_fields[i] + eta_t_out_powers[1] * (*t_out)[i];
-                                        }
-                                    });
-                parallel_for_ranges(n_edges, 128,
-                                    [&](std::size_t begin, std::size_t end)
+                                        out_t_table[i] = absolute_id_fields[i] + eta_t_out_powers[1] * (*t_out)[i];
+                                    }
+                                });
+            parallel_for_ranges(n_edges, 128,
+                                [&](std::size_t begin, std::size_t end)
+                                {
+                                    for (std::size_t k = begin; k < end; ++k)
                                     {
-                                        for (std::size_t k = begin; k < end; ++k)
-                                        {
-                                            out_t_query[k] = edge_dst_fields[k] + eta_t_out_powers[1] * (*t_out_edge)[k];
-                                        }
-                                    });
-                auto out_t_table_padded = padded_column(out_t_table, domains.n->size);
-                auto out_t_query_padded = padded_column(out_t_query, domains.edge->size);
-                auto out_t_multiplicity_padded = padded_column(dst_multiplicity_template, domains.n->size);
-                add_dynamic_commitment_batch(
-                    trace,
-                    {
-                        deferred_linear_column_spec(prefix + "Table_t", out_t_table_padded, domains.n,
-                                                    {
-                                                        linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
-                                                        linear_label_term(prefix + "T", eta_t_out_powers[1]),
-                                                    }),
-                        deferred_linear_column_spec(prefix + "Query_t", out_t_query_padded, domains.edge,
-                                                    {
-                                                        linear_commitment_term(context.public_commitments.at("P_dst"), FieldElement::one()),
-                                                        linear_label_term(prefix + "T_edge", eta_t_out_powers[1]),
-                                                    }),
-                        column_spec(prefix + "m_t", out_t_multiplicity_padded, domains.n),
-                    },
-                    context.kzg, keep_trace_payloads, metrics);
-                for (const auto *suffix : {"Table_t", "Query_t", "m_t"})
+                                        out_t_query[k] = edge_dst_fields[k] + eta_t_out_powers[1] * (*t_out_edge)[k];
+                                    }
+                                });
+            auto out_t_table_padded = padded_column(out_t_table, domains.n->size);
+            auto out_t_query_padded = padded_column(out_t_query, domains.edge->size);
+            auto out_t_multiplicity_padded = padded_column(dst_multiplicity_template, domains.n->size);
+            add_dynamic_commitment_batch(
+                trace,
                 {
-                    const auto label = prefix + suffix;
-                    transcript.absorb_commitment(label, trace.commitments.at(label).point);
-                }
-                const auto beta_t_out = transcript.challenge(output_challenge_name("beta_t_out", head_index));
-                trace.challenges[output_challenge_name("beta_t_out", head_index)] = beta_t_out;
-                const auto out_t_route = cached_route_trace(
-                    [&]()
-                    {
-                        return build_route_trace_from_padded(std::move(out_t_table_padded), std::move(out_t_query_padded), std::move(out_t_multiplicity_padded),
-                                                             n_nodes, n_edges, domains.n, domains.edge, beta_t_out);
-                    });
-                add_dynamic_commitment_batch(trace,
-                                             {
-                                                 shared_column_spec(prefix + "J_t_node", out_t_route, out_t_route->node_inverse, domains.n),
-                                                 shared_column_spec(prefix + "J_t_edge", out_t_route, out_t_route->edge_inverse, domains.edge),
-                                                 shared_column_spec(prefix + "R_t_node", out_t_route, out_t_route->node_acc, domains.n),
-                                                 shared_column_spec(prefix + "R_t", out_t_route, out_t_route->edge_acc, domains.edge),
-                                             },
-                                             context.kzg, keep_trace_payloads, metrics);
-                for (const auto *suffix : {"J_t_node", "J_t_edge", "R_t_node", "R_t"})
+                    deferred_linear_column_spec(prefix + "Table_t", out_t_table_padded, domains.n,
+                                                {
+                                                    linear_commitment_term(context.public_commitments.at("P_I"), FieldElement::one()),
+                                                    linear_label_term(prefix + "T", eta_t_out_powers[1]),
+                                                }),
+                    deferred_linear_column_spec(prefix + "Query_t", out_t_query_padded, domains.edge,
+                                                {
+                                                    linear_commitment_term(context.public_commitments.at("P_dst"), FieldElement::one()),
+                                                    linear_label_term(prefix + "T_edge", eta_t_out_powers[1]),
+                                                }),
+                    column_spec(prefix + "m_t", out_t_multiplicity_padded, domains.n),
+                },
+                context.kzg, keep_trace_payloads, metrics);
+            for (const auto *suffix : {"Table_t", "Query_t", "m_t"})
+            {
+                const auto label = prefix + suffix;
+                transcript.absorb_commitment(label, trace.commitments.at(label).point);
+            }
+            const auto beta_t_out = transcript.challenge(output_challenge_name("beta_t_out", head_index));
+            trace.challenges[output_challenge_name("beta_t_out", head_index)] = beta_t_out;
+            const auto out_t_route = cached_route_trace(
+                [&]()
                 {
-                    const auto label = prefix + suffix;
-                    transcript.absorb_commitment(label, trace.commitments.at(label).point);
-                }
-                }
+                    return build_route_trace_from_padded(std::move(out_t_table_padded), std::move(out_t_query_padded), std::move(out_t_multiplicity_padded),
+                                                         n_nodes, n_edges, domains.n, domains.edge, beta_t_out);
+                });
+            add_dynamic_commitment_batch(trace,
+                                         {
+                                             shared_column_spec(prefix + "J_t_node", out_t_route, out_t_route->node_inverse, domains.n),
+                                             shared_column_spec(prefix + "J_t_edge", out_t_route, out_t_route->edge_inverse, domains.edge),
+                                             shared_column_spec(prefix + "R_t_node", out_t_route, out_t_route->node_acc, domains.n),
+                                             shared_column_spec(prefix + "R_t", out_t_route, out_t_route->edge_acc, domains.edge),
+                                         },
+                                         context.kzg, keep_trace_payloads, metrics);
+            for (const auto *suffix : {"J_t_node", "J_t_edge", "R_t_node", "R_t"})
+            {
+                const auto label = prefix + suffix;
+                transcript.absorb_commitment(label, trace.commitments.at(label).point);
+            }
+
                 transcript.absorb_commitment(y_label, trace.commitments.at(y_label).point);
                 transcript.absorb_commitment(prefix + "Y_star", trace.commitments.at(prefix + "Y_star").point);
                 transcript.absorb_commitment(external_mask_label(prefix + "Y_star"), trace.commitments.at(external_mask_label(prefix + "Y_star")).point);

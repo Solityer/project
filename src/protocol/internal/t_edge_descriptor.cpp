@@ -160,7 +160,7 @@ namespace gatzk::protocol::internal
             const auto eta_src = challenge(hidden ? "eta_src_h" : "eta_src_out");
             add("P_src", FieldElement::one());
             add(prefix + "E_src_edge", eta_src);
-            if (hidden && shape.hidden_source_feature_folding)
+            if (hidden)
             {
                 add(prefix + "H_src_star_edge", eta_src * eta_src);
             }

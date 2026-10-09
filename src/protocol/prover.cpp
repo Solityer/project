@@ -1185,7 +1185,6 @@ namespace gatzk::protocol
             const auto append_u64 = [&](std::string_view label, std::uint64_t value) { append(label, std::to_string(value)); };
             append("project_root", config.project_root);
             append("dataset", config.dataset);
-            append("protocol_variant", config.protocol_variant);
             append("data_root", config.data_root);
             append("cache_root", config.cache_root);
             append("checkpoint_bundle", config.checkpoint_bundle);
@@ -1250,7 +1249,7 @@ namespace gatzk::protocol
         std::string execution_context_key(const util::AppConfig &config)
         {
             std::ostringstream stream;
-            stream << "zkgat:execution-context|" << config.protocol_variant << '|' << config.project_root << '|' << config.dataset << '|' << config.num_classes << '|'
+            stream << "zkgat:execution-context|" << config.project_root << '|' << config.dataset << '|' << config.num_classes << '|'
                    << config.range_bits << '|'
                    << config.seed << '|' << config.layer_count << '|' << config.K_out << '|' << config.batch_graphs << '|' << config.batching_rule << '|'
                    << config.srs_id << '|' << config.srs_type << '|' << config.quant_cfg_id << '|' << config.input_preprocess_id << '|'
@@ -5297,7 +5296,6 @@ namespace gatzk::protocol
                     t_edge_descriptor_shape_.hidden_head_counts.push_back(layer.heads.size());
                 }
                 t_edge_descriptor_shape_.output_head_count = context_.model.output_layer.heads.size();
-                t_edge_descriptor_shape_.hidden_source_feature_folding = context_.config.protocol_variant != "wo_feature_folding";
                 if (rotation_step_ == 0 || target_size_ % domain_->size != 0)
                 {
                     throw std::runtime_error("invalid quotient coset/domain size for " + label_);
@@ -10305,20 +10303,6 @@ namespace gatzk::protocol
                 "w_psq",      "T_psq_edge", "R_t",        "Query_t",    "R_ELU",           "Table_ELU", "Query_ELU", "m_ELU",   "H_agg_pre_flat",
                 "H_agg_flat", "R_dst",      "Query_dst",  "Sum_edge",   "H_agg_star_edge",
             };
-            const std::vector<std::string> shared_hidden_suffixes = {
-                "R_src", "Query_src", "E_src_edge", "E_dst_edge", "H_src_star_edge", "S", "R_L", "Table_L", "Query_L", "m_L", "Z", "Delta",
-                "M_edge", "s_max", "C_max", "R_R", "Table_R", "Query_R", "m_R", "alpha", "U", "inv_edge", "R_exp", "Table_exp", "Query_exp",
-                "m_exp", "PSQ_den", "PSQ_agg", "Query_t_den", "J_t_den_edge", "R_t_den", "Query_t_agg", "J_t_agg_edge", "R_t_agg",
-                "widehat_v_pre_star", "H_agg_pre_star_edge", "R_ELU", "Table_ELU", "Query_ELU", "m_ELU", "H_agg_pre_flat", "H_agg_flat", "R_dst",
-                "Query_dst", "Sum_edge", "H_agg_star_edge",
-            };
-            const std::vector<std::string> feature_hidden_suffixes = {
-                "R_src",      "Query_src",  "E_src_edge", "E_dst_edge", "S",         "R_L",       "Table_L", "Query_L", "m_L",    "Z",
-                "Delta",      "M_edge",     "s_max",      "C_max",      "R_R",       "Table_R",   "Query_R", "m_R",     "alpha",  "U",
-                "inv_edge",   "R_exp",      "Table_exp",  "Query_exp",  "m_exp",     "PSQ",       "w_psq",   "T_psq_edge", "R_t", "Query_t",
-                "R_ELU",       "Table_ELU",  "Query_ELU",  "m_ELU",      "H_agg_pre_flat", "H_agg_flat", "R_dst", "Query_dst", "Sum_edge",
-                "H_agg_star_edge",
-            };
             const std::vector<std::string> division_suffixes = {
                 "Div_Active", "Div_X", "Div_D", "Div_Y", "Div_Sigma", "Div_Zero", "Div_A", "Div_A_inv", "Div_D_inv", "Div_Q", "Div_R", "Div_Delta",
             };
@@ -10341,19 +10325,7 @@ namespace gatzk::protocol
                 for (std::size_t head_index = 0; head_index < context.model.hidden_layers[layer_index].heads.size(); ++head_index)
                 {
                     const auto prefix = hidden_head_prefix(layer_index, head_index) + "_";
-                    const auto &selected_hidden_suffixes = context.config.protocol_variant == "wo_shared_neighborhood"
-                                                               ? shared_hidden_suffixes
-                                                               : (context.config.protocol_variant == "wo_feature_folding" ? feature_hidden_suffixes : hidden_suffixes);
-                    append_prefixed(prefix, selected_hidden_suffixes);
-                    if (context.config.protocol_variant == "wo_feature_folding")
-                    {
-                        for (std::size_t coordinate = 0; coordinate < context.model.hidden_layers[layer_index].shape.head_dim; ++coordinate)
-                        {
-                            const auto route_prefix = hidden_feature_route_prefix(layer_index, head_index, coordinate);
-                            for (const auto *suffix : {"_H_edge", "_Query", "_J_edge", "_R_edge"})
-                                append_label(route_prefix + suffix);
-                        }
-                    }
+                    append_prefixed(prefix, hidden_suffixes);
                     append_prefixed(prefix, division_suffixes);
                     append_division_range_dependencies(prefix + "Div_");
                     append_label(hidden_q_nd_h_selector_label(layer_index));
@@ -10365,16 +10337,9 @@ namespace gatzk::protocol
                 "inv_edge", "R_exp",     "Table_exp",  "Query_exp",   "m_exp",      "PSQ",       "w",       "T_edge",  "R_t",    "Query_t",
                 "R_dst",    "Query_dst", "Sum_edge",   "Y_star_edge", "Y_pre_flat", "Bias_flat", "Y_flat",  "Bind_a",  "Bind_b", "Bind_Acc",
             };
-            const std::vector<std::string> shared_output_suffixes = {
-                "R_src", "Query_src", "E_src_edge", "E_dst_edge", "S", "R_L", "Table_L", "Query_L", "m_L", "Z", "Delta", "M_edge", "s_max",
-                "C_max", "R_R", "Table_R", "Query_R", "m_R", "alpha", "U", "inv_edge", "R_exp", "Table_exp", "Query_exp", "m_exp", "PSQ_den",
-                "PSQ_agg", "Query_t_den", "J_t_den_edge", "R_t_den", "Query_t_agg", "J_t_agg_edge", "R_t_agg", "widehat_y_star", "R_dst",
-                "Query_dst", "Sum_edge", "Y_star_edge", "Y_pre_flat", "Bias_flat", "Y_flat", "Bind_a", "Bind_b", "Bind_Acc",
-            };
             for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
             {
-                append_prefixed(output_head_prefix(head_index) + "_",
-                                context.config.protocol_variant == "wo_shared_neighborhood" ? shared_output_suffixes : output_suffixes);
+                append_prefixed(output_head_prefix(head_index) + "_", output_suffixes);
                 append_prefixed(output_head_prefix(head_index) + "_", division_suffixes);
                 append_division_range_dependencies(output_head_prefix(head_index) + "_Div_");
                 append_label("P_Q_div_out" + std::to_string(head_index));
@@ -10725,8 +10690,6 @@ namespace gatzk::protocol
 
     ProtocolContext build_context(const util::AppConfig &config, RunMetrics *metrics, bool retain_static_context_for_reuse)
     {
-        if (!util::is_supported_protocol_variant(config.protocol_variant))
-            throw std::runtime_error("unsupported protocol_variant: " + config.protocol_variant);
         auto canonical_config = config;
         canonical_config.quantization =
             util::canonical_quantization_scale_chain(config.quant_cfg_id, config.hidden_profile, config.K_out,

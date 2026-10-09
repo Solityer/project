@@ -162,7 +162,7 @@ int main(int argc, char **argv)
         emit_string("artifact_sha256", file_digest, &first);
         emit_string("registry_digest", verifier_context.authenticated_registry_digest, &first);
         emit_string("registry_id", registry.registry_id, &first);
-        emit_string("protocol_variant", verifier_context.config.protocol_variant, &first);
+        emit_string("protocol_name", "zkgat", &first);
         emit_string("dataset", verifier_context.dataset.name, &first);
         emit_string("model_arch_id", registry.model_arch_id, &first);
         emit_string("model_param_id", registry.model_param_id, &first);

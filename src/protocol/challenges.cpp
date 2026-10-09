@@ -104,8 +104,7 @@ namespace gatzk::protocol
             return out.str();
         }
 
-        void append_attention_head_dynamic_labels(std::vector<std::string> &labels, const std::string &prefix, bool shared_neighborhood,
-                                                  bool feature_folding, std::size_t head_dim)
+        void append_attention_head_dynamic_labels(std::vector<std::string> &labels, const std::string &prefix)
         {
             auto push = [&](const std::string &suffix) { labels.push_back(prefix + "_" + suffix); };
             push("H_prime");
@@ -129,8 +128,7 @@ namespace gatzk::protocol
             push("Acc_star");
             push("E_src_edge");
             push("E_dst_edge");
-            if (!feature_folding)
-                push("H_src_star_edge");
+            push("H_src_star_edge");
             push("Table_src");
             push("Query_src");
             push("m_src");
@@ -138,15 +136,6 @@ namespace gatzk::protocol
             push("J_src_edge");
             push("R_src_node");
             push("R_src");
-            if (feature_folding)
-            {
-                for (std::size_t coordinate = 0; coordinate < head_dim; ++coordinate)
-                {
-                    const auto route_prefix = prefix + "_FeatureRoute_r" + std::to_string(coordinate);
-                    for (const auto *suffix : {"_H_edge", "_Table", "_Query", "_J_node", "_J_edge", "_R_node", "_R_edge"})
-                        labels.push_back(route_prefix + suffix);
-                }
-            }
             push("S");
             push("Z");
             push("Table_L");
@@ -194,27 +183,17 @@ namespace gatzk::protocol
             push("H_agg_pre_star_ExternalMask");
             push("H_agg_pre_star_edge");
             push("widehat_v_pre_star");
-            if (shared_neighborhood)
-            {
-                for (const auto *suffix : {"PSQ_den", "Table_t_den", "Query_t_den", "m_t_den", "J_t_den_node", "J_t_den_edge", "R_t_den_node",
-                                           "R_t_den", "PSQ_agg", "Table_t_agg", "Query_t_agg", "m_t_agg", "J_t_agg_node", "J_t_agg_edge",
-                                           "R_t_agg_node", "R_t_agg"})
-                    push(suffix);
-            }
-            else
-            {
-                push("w_psq");
-                push("T_psq");
-                push("T_psq_edge");
-                push("Table_t");
-                push("Query_t");
-                push("m_t");
-                push("J_t_node");
-                push("J_t_edge");
-                push("R_t_node");
-                push("R_t");
-                push("PSQ");
-            }
+            push("w_psq");
+            push("T_psq");
+            push("T_psq_edge");
+            push("Table_t");
+            push("Query_t");
+            push("m_t");
+            push("J_t_node");
+            push("J_t_edge");
+            push("R_t_node");
+            push("R_t");
+            push("PSQ");
             push("H_agg");
             push("H_agg_star");
             push("H_agg_star_ExternalMask");
@@ -246,7 +225,7 @@ namespace gatzk::protocol
         }
 
         void append_output_head_dynamic_labels(std::vector<std::string> &labels, const std::string &prefix, const std::string &y_lin_label,
-                                               const std::string &y_label, bool shared_neighborhood)
+                                               const std::string &y_label)
         {
             labels.push_back(prefix + "_Y_prime");
             labels.push_back(prefix + "_a_proj");
@@ -306,27 +285,17 @@ namespace gatzk::protocol
             labels.push_back(prefix + "_J_qry_exp");
             labels.push_back(prefix + "_R_exp");
             labels.push_back(prefix + "_widehat_y_star");
-            if (shared_neighborhood)
-            {
-                for (const auto *suffix : {"PSQ_den", "Table_t_den", "Query_t_den", "m_t_den", "J_t_den_node", "J_t_den_edge", "R_t_den_node",
-                                           "R_t_den", "PSQ_agg", "Table_t_agg", "Query_t_agg", "m_t_agg", "J_t_agg_node", "J_t_agg_edge",
-                                           "R_t_agg_node", "R_t_agg"})
-                    labels.push_back(prefix + "_" + suffix);
-            }
-            else
-            {
-                labels.push_back(prefix + "_w");
-                labels.push_back(prefix + "_T");
-                labels.push_back(prefix + "_T_edge");
-                labels.push_back(prefix + "_Table_t");
-                labels.push_back(prefix + "_Query_t");
-                labels.push_back(prefix + "_m_t");
-                labels.push_back(prefix + "_J_t_node");
-                labels.push_back(prefix + "_J_t_edge");
-                labels.push_back(prefix + "_R_t_node");
-                labels.push_back(prefix + "_R_t");
-                labels.push_back(prefix + "_PSQ");
-            }
+            labels.push_back(prefix + "_w");
+            labels.push_back(prefix + "_T");
+            labels.push_back(prefix + "_T_edge");
+            labels.push_back(prefix + "_Table_t");
+            labels.push_back(prefix + "_Query_t");
+            labels.push_back(prefix + "_m_t");
+            labels.push_back(prefix + "_J_t_node");
+            labels.push_back(prefix + "_J_t_edge");
+            labels.push_back(prefix + "_R_t_node");
+            labels.push_back(prefix + "_R_t");
+            labels.push_back(prefix + "_PSQ");
             labels.push_back(y_lin_label);
             labels.push_back(y_label);
             labels.push_back(prefix + "_Y_star");
@@ -375,9 +344,7 @@ namespace gatzk::protocol
     PublicMetadata canonical_public_metadata(const ProtocolContext &context)
     {
         PublicMetadata metadata;
-        if (!util::is_supported_protocol_variant(context.config.protocol_variant))
-            throw std::runtime_error("unsupported protocol_variant in public metadata");
-        metadata.protocol_name = context.config.protocol_variant;
+        metadata.protocol_name = "zkgat";
         metadata.proof_nonce.clear();
         metadata.proof_task = context.config.proof_task;
         metadata.srs_id = context.kzg.manifest.srs_id;
@@ -812,9 +779,7 @@ namespace gatzk::protocol
             for (std::size_t head_index = 0; head_index < layer.heads.size(); ++head_index)
             {
                 const auto prefix = hidden_head_prefix(layer_index, head_index);
-                append_attention_head_dynamic_labels(labels, prefix, context.config.protocol_variant == "wo_shared_neighborhood",
-                                                     context.config.protocol_variant == "wo_feature_folding",
-                                                     context.model.hidden_layers[layer_index].shape.head_dim);
+                append_attention_head_dynamic_labels(labels, prefix);
                 append_signed_division_labels(labels, prefix + "_Div_", context.config.range_bits);
                 labels.push_back(hidden_model_binding_blinder_label(layer_index, head_index, "proj"));
                 labels.push_back(hidden_model_binding_blinder_label(layer_index, head_index, "src"));
@@ -825,8 +790,7 @@ namespace gatzk::protocol
         }
         for (std::size_t head_index = 0; head_index < context.model.output_layer.heads.size(); ++head_index)
         {
-            append_output_head_dynamic_labels(labels, output_head_prefix(head_index), output_y_lin_label(head_index), output_y_label(head_index),
-                                             context.config.protocol_variant == "wo_shared_neighborhood");
+            append_output_head_dynamic_labels(labels, output_head_prefix(head_index), output_y_lin_label(head_index), output_y_label(head_index));
             append_signed_division_labels(labels, output_head_prefix(head_index) + "_Div_", context.config.range_bits);
             labels.push_back(output_model_binding_blinder_label(head_index, "proj"));
             labels.push_back(output_model_binding_blinder_label(head_index, "src"));
@@ -1098,11 +1062,8 @@ namespace gatzk::protocol
                 out[challenge("y_star_h")] = transcript.challenge(challenge("y_star_h"));
 
                 absorb(transcript, prefix + "_E_src", dynamic_commitments);
-                if (context.config.protocol_variant != "wo_feature_folding")
-                {
-                    absorb(transcript, prefix + "_H_star", dynamic_commitments);
-                    absorb(transcript, prefix + "_H_src_star_edge", dynamic_commitments);
-                }
+                absorb(transcript, prefix + "_H_star", dynamic_commitments);
+                absorb(transcript, prefix + "_H_src_star_edge", dynamic_commitments);
                 out[challenge("eta_src_h")] = transcript.challenge(challenge("eta_src_h"));
                 absorb(transcript, prefix + "_Table_src", dynamic_commitments);
                 absorb(transcript, prefix + "_Query_src", dynamic_commitments);
@@ -1112,23 +1073,6 @@ namespace gatzk::protocol
                 absorb(transcript, prefix + "_J_src_edge", dynamic_commitments);
                 absorb(transcript, prefix + "_R_src_node", dynamic_commitments);
                 absorb(transcript, prefix + "_R_src", dynamic_commitments);
-                if (context.config.protocol_variant == "wo_feature_folding")
-                {
-                    for (std::size_t coordinate = 0; coordinate < context.model.hidden_layers[layer_index].shape.head_dim; ++coordinate)
-                    {
-                        const auto route_prefix = hidden_feature_route_prefix(layer_index, head_index, coordinate);
-                        const auto route_challenge = [&](std::string_view base)
-                        { return hidden_feature_route_challenge_name(base, layer_index, head_index, coordinate); };
-                        absorb(transcript, route_prefix + "_H_edge", dynamic_commitments);
-                        out[route_challenge("eta_src_feat_h")] = transcript.challenge(route_challenge("eta_src_feat_h"));
-                        for (const auto *suffix : {"_Table", "_Query"})
-                            absorb(transcript, route_prefix + suffix, dynamic_commitments);
-                        out[route_challenge("beta_src_feat_h")] = transcript.challenge(route_challenge("beta_src_feat_h"));
-                        for (const auto *suffix : {"_J_node", "_J_edge", "_R_node", "_R_edge"})
-                            absorb(transcript, route_prefix + suffix, dynamic_commitments);
-                    }
-                }
-
                 absorb(transcript, prefix + "_S", dynamic_commitments);
                 absorb(transcript, prefix + "_Z", dynamic_commitments);
                 absorb_static(transcript, context, "V_T_L_x");
@@ -1178,39 +1122,18 @@ namespace gatzk::protocol
                     absorb(transcript, prefix + suffix, dynamic_commitments);
                 }
 
-                if (context.config.protocol_variant == "wo_shared_neighborhood")
-                {
-                    absorb(transcript, prefix + "_PSQ_den", dynamic_commitments);
-                    out[challenge("eta_t_den_h")] = transcript.challenge(challenge("eta_t_den_h"));
-                    for (const auto *suffix : {"_Table_t_den", "_Query_t_den", "_m_t_den"})
-                        absorb(transcript, prefix + suffix, dynamic_commitments);
-                    out[challenge("beta_t_den_h")] = transcript.challenge(challenge("beta_t_den_h"));
-                    for (const auto *suffix : {"_J_t_den_node", "_J_t_den_edge", "_R_t_den_node", "_R_t_den"})
-                        absorb(transcript, prefix + suffix, dynamic_commitments);
-
-                    absorb(transcript, prefix + "_PSQ_agg", dynamic_commitments);
-                    out[challenge("eta_t_agg_h")] = transcript.challenge(challenge("eta_t_agg_h"));
-                    for (const auto *suffix : {"_Table_t_agg", "_Query_t_agg", "_m_t_agg"})
-                        absorb(transcript, prefix + suffix, dynamic_commitments);
-                    out[challenge("beta_t_agg_h")] = transcript.challenge(challenge("beta_t_agg_h"));
-                    for (const auto *suffix : {"_J_t_agg_node", "_J_t_agg_edge", "_R_t_agg_node", "_R_t_agg"})
-                        absorb(transcript, prefix + suffix, dynamic_commitments);
-                }
-                else
-                {
-                    out[challenge("lambda_psq_h")] = transcript.challenge(challenge("lambda_psq_h"));
-                    absorb(transcript, prefix + "_T_psq", dynamic_commitments);
-                    absorb(transcript, prefix + "_T_psq_edge", dynamic_commitments);
-                    out[challenge("eta_t_h")] = transcript.challenge(challenge("eta_t_h"));
-                    absorb(transcript, prefix + "_Table_t", dynamic_commitments);
-                    absorb(transcript, prefix + "_Query_t", dynamic_commitments);
-                    absorb(transcript, prefix + "_m_t", dynamic_commitments);
-                    out[challenge("beta_t_h")] = transcript.challenge(challenge("beta_t_h"));
-                    absorb(transcript, prefix + "_J_t_node", dynamic_commitments);
-                    absorb(transcript, prefix + "_J_t_edge", dynamic_commitments);
-                    absorb(transcript, prefix + "_R_t_node", dynamic_commitments);
-                    absorb(transcript, prefix + "_R_t", dynamic_commitments);
-                }
+                out[challenge("lambda_psq_h")] = transcript.challenge(challenge("lambda_psq_h"));
+                absorb(transcript, prefix + "_T_psq", dynamic_commitments);
+                absorb(transcript, prefix + "_T_psq_edge", dynamic_commitments);
+                out[challenge("eta_t_h")] = transcript.challenge(challenge("eta_t_h"));
+                absorb(transcript, prefix + "_Table_t", dynamic_commitments);
+                absorb(transcript, prefix + "_Query_t", dynamic_commitments);
+                absorb(transcript, prefix + "_m_t", dynamic_commitments);
+                out[challenge("beta_t_h")] = transcript.challenge(challenge("beta_t_h"));
+                absorb(transcript, prefix + "_J_t_node", dynamic_commitments);
+                absorb(transcript, prefix + "_J_t_edge", dynamic_commitments);
+                absorb(transcript, prefix + "_R_t_node", dynamic_commitments);
+                absorb(transcript, prefix + "_R_t", dynamic_commitments);
 
                 absorb(transcript, prefix + "_H_agg_pre", dynamic_commitments);
                 absorb(transcript, prefix + "_H_agg_pre_star", dynamic_commitments);
@@ -1360,43 +1283,18 @@ namespace gatzk::protocol
                 absorb(transcript, prefix + suffix, dynamic_commitments);
             }
 
-            if (context.config.protocol_variant == "wo_shared_neighborhood")
-            {
-                absorb(transcript, prefix + "_PSQ_den", dynamic_commitments);
-                out[output_challenge_name("eta_t_den_out", head_index)] =
-                    transcript.challenge(output_challenge_name("eta_t_den_out", head_index));
-                for (const auto *suffix : {"_Table_t_den", "_Query_t_den", "_m_t_den"})
-                    absorb(transcript, prefix + suffix, dynamic_commitments);
-                out[output_challenge_name("beta_t_den_out", head_index)] =
-                    transcript.challenge(output_challenge_name("beta_t_den_out", head_index));
-                for (const auto *suffix : {"_J_t_den_node", "_J_t_den_edge", "_R_t_den_node", "_R_t_den"})
-                    absorb(transcript, prefix + suffix, dynamic_commitments);
-
-                absorb(transcript, prefix + "_PSQ_agg", dynamic_commitments);
-                out[output_challenge_name("eta_t_agg_out", head_index)] =
-                    transcript.challenge(output_challenge_name("eta_t_agg_out", head_index));
-                for (const auto *suffix : {"_Table_t_agg", "_Query_t_agg", "_m_t_agg"})
-                    absorb(transcript, prefix + suffix, dynamic_commitments);
-                out[output_challenge_name("beta_t_agg_out", head_index)] =
-                    transcript.challenge(output_challenge_name("beta_t_agg_out", head_index));
-                for (const auto *suffix : {"_J_t_agg_node", "_J_t_agg_edge", "_R_t_agg_node", "_R_t_agg"})
-                    absorb(transcript, prefix + suffix, dynamic_commitments);
-            }
-            else
-            {
-                out[output_challenge_name("lambda_out", head_index)] = transcript.challenge(output_challenge_name("lambda_out", head_index));
-                absorb(transcript, prefix + "_T", dynamic_commitments);
-                absorb(transcript, prefix + "_T_edge", dynamic_commitments);
-                out[output_challenge_name("eta_t_out", head_index)] = transcript.challenge(output_challenge_name("eta_t_out", head_index));
-                absorb(transcript, prefix + "_Table_t", dynamic_commitments);
-                absorb(transcript, prefix + "_Query_t", dynamic_commitments);
-                absorb(transcript, prefix + "_m_t", dynamic_commitments);
-                out[output_challenge_name("beta_t_out", head_index)] = transcript.challenge(output_challenge_name("beta_t_out", head_index));
-                absorb(transcript, prefix + "_J_t_node", dynamic_commitments);
-                absorb(transcript, prefix + "_J_t_edge", dynamic_commitments);
-                absorb(transcript, prefix + "_R_t_node", dynamic_commitments);
-                absorb(transcript, prefix + "_R_t", dynamic_commitments);
-            }
+            out[output_challenge_name("lambda_out", head_index)] = transcript.challenge(output_challenge_name("lambda_out", head_index));
+            absorb(transcript, prefix + "_T", dynamic_commitments);
+            absorb(transcript, prefix + "_T_edge", dynamic_commitments);
+            out[output_challenge_name("eta_t_out", head_index)] = transcript.challenge(output_challenge_name("eta_t_out", head_index));
+            absorb(transcript, prefix + "_Table_t", dynamic_commitments);
+            absorb(transcript, prefix + "_Query_t", dynamic_commitments);
+            absorb(transcript, prefix + "_m_t", dynamic_commitments);
+            out[output_challenge_name("beta_t_out", head_index)] = transcript.challenge(output_challenge_name("beta_t_out", head_index));
+            absorb(transcript, prefix + "_J_t_node", dynamic_commitments);
+            absorb(transcript, prefix + "_J_t_edge", dynamic_commitments);
+            absorb(transcript, prefix + "_R_t_node", dynamic_commitments);
+            absorb(transcript, prefix + "_R_t", dynamic_commitments);
             absorb(transcript, y_label, dynamic_commitments);
             absorb(transcript, prefix + "_Y_star", dynamic_commitments);
             absorb(transcript, external_mask_label(prefix + "_Y_star"), dynamic_commitments);

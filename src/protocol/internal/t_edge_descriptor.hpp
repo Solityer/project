@@ -17,7 +17,6 @@ namespace gatzk::protocol::internal
     {
         std::vector<std::size_t> hidden_head_counts;
         std::size_t output_head_count = 0;
-        bool hidden_source_feature_folding = true;
     };
 
     struct TEdgeDerivedLinearSource

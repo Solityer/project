@@ -1506,26 +1506,7 @@ namespace gatzk::protocol
                 };
                 append_route_terminal("src", "src");
                 append_route_terminal("dst", "dst");
-                if (context.config.protocol_variant == "wo_shared_neighborhood")
-                {
-                    append_route_terminal("t_den", "t_den");
-                    append_route_terminal("t_agg", "t_agg");
-                }
-                else
-                {
-                    append_route_terminal("t", "t");
-                }
-                if (context.config.protocol_variant == "wo_feature_folding")
-                {
-                    for (std::size_t coordinate = 0; coordinate < width; ++coordinate)
-                    {
-                        const auto route_prefix = hidden_feature_route_prefix(layer, head, coordinate);
-                        meta.route_terminal_relations.push_back(route_terminal_relation(
-                            "route-terminal:hidden:l" + std::to_string(layer) + ":h" + std::to_string(head) + ":feature:r" +
-                                std::to_string(coordinate),
-                            route_prefix + "_R_node", route_prefix + "_R_edge"));
-                    }
-                }
+                append_route_terminal("t", "t");
                 out.push_back(std::move(meta));
             }
             BindingRelationMeta concat_meta{
@@ -1575,15 +1556,7 @@ namespace gatzk::protocol
             };
             append_route_terminal("src", "src");
             append_route_terminal("dst", "dst");
-            if (context.config.protocol_variant == "wo_shared_neighborhood")
-            {
-                append_route_terminal("t_den", "t_den");
-                append_route_terminal("t_agg", "t_agg");
-            }
-            else
-            {
-                append_route_terminal("t", "t");
-            }
+            append_route_terminal("t", "t");
             const auto prefix = output_bias_view_prefix(head);
             const std::vector<std::string> logup_order = {
                 output_bias_view_label(head, "Table_can"), output_bias_view_label(head, "Query"), output_bias_view_label(head, "m_can"),
@@ -1797,53 +1770,6 @@ namespace gatzk::protocol
         }
 
         return out;
-    }
-
-    std::vector<FeatureCopyRouteRelationMeta> build_feature_copy_route_metadata(const ProtocolContext &context)
-    {
-        std::vector<FeatureCopyRouteRelationMeta> routes;
-        if (context.config.protocol_variant != "wo_feature_folding")
-            return routes;
-
-        for (std::size_t layer = 0; layer < context.model.hidden_layers.size(); ++layer)
-        {
-            const auto &hidden_layer = context.model.hidden_layers[layer];
-            for (std::size_t head = 0; head < hidden_layer.heads.size(); ++head)
-            {
-                const auto matrix = hidden_head_prefix(layer, head) + "_H_prime";
-                for (std::size_t coordinate = 0; coordinate < hidden_layer.shape.head_dim; ++coordinate)
-                {
-                    const auto route_prefix = hidden_feature_route_prefix(layer, head, coordinate);
-                    const auto feature_relation = "feature-copy:hidden:l" + std::to_string(layer) + ":h" + std::to_string(head) + ":r" +
-                                                 std::to_string(coordinate);
-                    routes.push_back(FeatureCopyRouteRelationMeta{
-                        .relation_id = feature_relation,
-                        .coordinate = coordinate,
-                        .source_matrix_object = matrix,
-                        .source_column_object = canonical_matrix_column_label(matrix, coordinate),
-                        .edge_value_object = route_prefix + "_H_edge",
-                        .node_index_object = "P_I",
-                        .edge_index_object = "P_src",
-                        .table_object = route_prefix + "_Table",
-                        .query_object = route_prefix + "_Query",
-                        .multiplicity_object = hidden_head_prefix(layer, head) + "_m_src",
-                        .node_inverse_object = route_prefix + "_J_node",
-                        .edge_inverse_object = route_prefix + "_J_edge",
-                        .node_accumulator_object = route_prefix + "_R_node",
-                        .edge_accumulator_object = route_prefix + "_R_edge",
-                        .eta_challenge_label = hidden_feature_route_challenge_name("eta_src_feat_h", layer, head, coordinate),
-                        .beta_challenge_label = hidden_feature_route_challenge_name("beta_src_feat_h", layer, head, coordinate),
-                        .terminal_relation_id = "route-terminal:hidden:l" + std::to_string(layer) + ":h" + std::to_string(head) + ":feature:r" +
-                                                std::to_string(coordinate),
-                        .node_domain = context.domains.n->name,
-                        .edge_domain = context.domains.edge->name,
-                        .row_count = context.local.num_nodes,
-                        .edge_count = context.local.edges.size(),
-                    });
-                }
-            }
-        }
-        return routes;
     }
 
     std::string opening_group_reference(const ProtocolContext &context, const std::map<std::string, algebra::FieldElement> &challenges,
@@ -2111,44 +2037,8 @@ namespace gatzk::protocol
             for (const auto *role : {"src", "dst"})
                 add(prefix + "_R_" + role + "_RouteShifted", "coef", "Pi_bind.Com_rel", "Commitment", "FixedDegreeZeroPad",
                     PolynomialVisibility::PrivateWitness, true, true, false);
-            if (context.config.protocol_variant == "wo_shared_neighborhood")
-            {
-                for (const auto *role : {"t_den", "t_agg"})
-                    add(prefix + "_R_" + role + "_RouteShifted", "coef", "Pi_bind.Com_rel", "Commitment", "FixedDegreeZeroPad",
-                        PolynomialVisibility::PrivateWitness, true, true, false);
-            }
-            else
-            {
-                add(prefix + "_R_t_RouteShifted", "coef", "Pi_bind.Com_rel", "Commitment", "FixedDegreeZeroPad", PolynomialVisibility::PrivateWitness, true,
-                    true, false);
-            }
-            if (context.config.protocol_variant == "wo_feature_folding")
-            {
-                const auto layer = [&]() -> std::optional<std::size_t>
-                {
-                    for (std::size_t candidate = 0; candidate < context.model.hidden_layers.size(); ++candidate)
-                        for (std::size_t head = 0; head < context.model.hidden_layers[candidate].heads.size(); ++head)
-                            if (prefix == hidden_head_prefix(candidate, head))
-                                return candidate;
-                    return std::nullopt;
-                }();
-                if (layer.has_value())
-                {
-                    std::size_t head_index = 0;
-                    for (; head_index < context.model.hidden_layers[*layer].heads.size(); ++head_index)
-                        if (prefix == hidden_head_prefix(*layer, head_index))
-                            break;
-                    if (head_index >= context.model.hidden_layers[*layer].heads.size())
-                        throw std::runtime_error("feature route terminal shift owner disappeared");
-                    const auto width = context.model.hidden_layers[*layer].shape.head_dim;
-                    for (std::size_t coordinate = 0; coordinate < width; ++coordinate)
-                    {
-                        const auto route_prefix = hidden_feature_route_prefix(*layer, head_index, coordinate);
-                        add(route_prefix + "_R_edge_RouteShifted", "coef", "Pi_bind.Com_rel", "Commitment", "FixedDegreeZeroPad",
-                            PolynomialVisibility::PrivateWitness, true, true, false);
-                    }
-                }
-            }
+            add(prefix + "_R_t_RouteShifted", "coef", "Pi_bind.Com_rel", "Commitment", "FixedDegreeZeroPad", PolynomialVisibility::PrivateWitness, true,
+                true, false);
         };
         for (std::size_t layer = 0; layer < context.model.hidden_layers.size(); ++layer)
             for (std::size_t head = 0; head < context.model.hidden_layers[layer].heads.size(); ++head)
@@ -2466,23 +2356,6 @@ namespace gatzk::protocol
             append_canonical_string(protocol_bytes, artifact.shift_algorithm_spec);
             artifact.protocol_canonical_bytes = std::move(protocol_bytes);
         }
-    }
-
-    std::string feature_copy_route_registry_entry(const FeatureCopyRouteRelationMeta &relation)
-    {
-        std::string out;
-        append_canonical_string(out, "feature-copy-route:v1");
-        append_canonical_string(out, relation.relation_id);
-        append_canonical_string(out, std::to_string(relation.coordinate));
-        for (const auto *value : {&relation.source_matrix_object, &relation.source_column_object, &relation.edge_value_object,
-                                  &relation.node_index_object, &relation.edge_index_object, &relation.table_object, &relation.query_object,
-                                  &relation.multiplicity_object, &relation.node_inverse_object, &relation.edge_inverse_object,
-                                  &relation.node_accumulator_object, &relation.edge_accumulator_object, &relation.eta_challenge_label,
-                                  &relation.beta_challenge_label, &relation.terminal_relation_id, &relation.node_domain, &relation.edge_domain})
-            append_canonical_string(out, *value);
-        append_canonical_string(out, std::to_string(relation.row_count));
-        append_canonical_string(out, std::to_string(relation.edge_count));
-        return out;
     }
 
     std::string protocol_template_canonical_bytes()
@@ -3306,7 +3179,6 @@ namespace gatzk::protocol
             }
         };
 
-        const auto feature_copy_routes = build_feature_copy_route_metadata(context);
         for (const auto &layer : context.model.hidden_layers)
         {
             for (std::size_t local_head = 0; local_head < layer.shape.head_count; ++local_head)
@@ -3333,34 +3205,19 @@ namespace gatzk::protocol
                 }
                 add_route("hidden:" + suffix + ":src-route", hidden_challenge_name("eta_src_h", layer_index, local_head),
                           hidden_challenge_name("beta_src_h", layer_index, local_head),
-                          context.config.protocol_variant == "wo_feature_folding" ? 2 : 3, stage);
-                for (const auto &route : feature_copy_routes)
-                {
-                    if (route.relation_id.rfind("feature-copy:hidden:l" + std::to_string(layer_index) + ":h" + std::to_string(local_head) + ":", 0) == 0)
-                    {
-                        add_route(route.relation_id, route.eta_challenge_label, route.beta_challenge_label, 2, stage);
-                    }
-                }
+                          3, stage);
                 add_pair_lookup("hidden:" + suffix + ":lrelu", hidden_challenge_name("eta_L_h", layer_index, local_head),
                                 hidden_challenge_name("beta_L_h", layer_index, local_head), context.tables.lrelu.size(), context.local.edges.size(), stage);
                 add_logup_endpoint("hidden:" + suffix + ":range", hidden_challenge_name("beta_R_h", layer_index, local_head), stage,
                                    checked_add(context.tables.range.size(), context.local.edges.size(), "hidden-range-denominators"));
                 add_pair_lookup("hidden:" + suffix + ":exp", hidden_challenge_name("eta_exp_h", layer_index, local_head),
                                 hidden_challenge_name("beta_exp_h", layer_index, local_head), context.tables.exp.size(), context.local.edges.size(), stage);
-                if (context.config.protocol_variant == "wo_shared_neighborhood")
-                {
-                    add_route("hidden:" + suffix + ":denominator-route", hidden_challenge_name("eta_t_den_h", layer_index, local_head),
-                              hidden_challenge_name("beta_t_den_h", layer_index, local_head), 2, stage);
-                    add_route("hidden:" + suffix + ":aggregate-route", hidden_challenge_name("eta_t_agg_h", layer_index, local_head),
-                              hidden_challenge_name("beta_t_agg_h", layer_index, local_head), 2, stage);
-                }
-                else
-                {
-                    add_tuple_compression("hidden:" + suffix + ":psq-fold", hidden_challenge_name("lambda_psq_h", layer_index, local_head), stage, 2,
-                                          std::max<std::size_t>(1, route_denominators));
-                    add_route("hidden:" + suffix + ":target-route", hidden_challenge_name("eta_t_h", layer_index, local_head),
-                              hidden_challenge_name("beta_t_h", layer_index, local_head), 2, stage);
-                }
+
+                add_tuple_compression("hidden:" + suffix + ":psq-fold", hidden_challenge_name("lambda_psq_h", layer_index, local_head), stage, 2,
+                                      std::max<std::size_t>(1, route_denominators));
+                add_route("hidden:" + suffix + ":target-route", hidden_challenge_name("eta_t_h", layer_index, local_head),
+                          hidden_challenge_name("beta_t_h", layer_index, local_head), 2, stage);
+
                 const auto hidden_value_rows = checked_mul(context.local.num_nodes, head_dim, "hidden-value-rows");
                 add_pair_lookup("hidden:" + suffix + ":elu", hidden_challenge_name("eta_ELU_h", layer_index, local_head),
                                 hidden_challenge_name("beta_ELU_h", layer_index, local_head), context.tables.elu.size(), hidden_value_rows, stage);
@@ -3400,17 +3257,11 @@ namespace gatzk::protocol
                                checked_add(context.tables.range.size(), context.local.edges.size(), "output-range-denominators"));
             add_pair_lookup("output:" + suffix + ":exp", out_challenge("eta_exp_out"), out_challenge("beta_exp_out"), context.tables.exp.size(),
                             context.local.edges.size(), stage);
-            if (context.config.protocol_variant == "wo_shared_neighborhood")
-            {
-                add_route("output:" + suffix + ":denominator-route", out_challenge("eta_t_den_out"), out_challenge("beta_t_den_out"), 2, stage);
-                add_route("output:" + suffix + ":aggregate-route", out_challenge("eta_t_agg_out"), out_challenge("beta_t_agg_out"), 2, stage);
-            }
-            else
-            {
-                add_tuple_compression("output:" + suffix + ":psq-fold", out_challenge("lambda_out"), stage, 2,
-                                      std::max<std::size_t>(1, route_denominators));
-                add_route("output:" + suffix + ":target-route", out_challenge("eta_t_out"), out_challenge("beta_t_out"), 2, stage);
-            }
+
+            add_tuple_compression("output:" + suffix + ":psq-fold", out_challenge("lambda_out"), stage, 2,
+                                  std::max<std::size_t>(1, route_denominators));
+            add_route("output:" + suffix + ":target-route", out_challenge("eta_t_out"), out_challenge("beta_t_out"), 2, stage);
+
             add_route("output:" + suffix + ":dst-route", out_challenge("eta_dst_out"), out_challenge("beta_dst_out"), 6, stage);
             add_signed_division_ranges(output_head_prefix(head) + "_Div_", checked_mul(context.local.num_nodes, class_count, "output-value-rows"), stage);
         }
@@ -3600,9 +3451,6 @@ namespace gatzk::protocol
 
         for (const auto &meta : build_binding_relation_metadata(context, artifact))
             artifact.binding_relation_registry.push_back(binding_relation_string(meta));
-        for (const auto &relation : build_feature_copy_route_metadata(context))
-            artifact.binding_relation_registry.push_back(feature_copy_route_registry_entry(relation));
-
         artifact.instance_canonical_bytes = protocol_instance_canonical_bytes(artifact);
         return artifact;
     }
@@ -3896,8 +3744,6 @@ namespace gatzk::protocol
                 std::vector<std::string> expected_bindings;
                 for (const auto &meta : build_binding_relation_metadata(context, artifact))
                     expected_bindings.push_back(binding_relation_string(meta));
-                for (const auto &relation : build_feature_copy_route_metadata(context))
-                    expected_bindings.push_back(feature_copy_route_registry_entry(relation));
                 if (artifact.binding_relation_registry != expected_bindings)
                     return fail("verifier registration binding registry does not match the current public shape");
             }

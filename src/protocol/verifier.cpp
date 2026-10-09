@@ -2080,8 +2080,7 @@ namespace gatzk::protocol
         {
             return false;
         }
-        if (!util::is_supported_protocol_variant(context.config.protocol_variant) ||
-            proof.public_metadata.protocol_name != context.config.protocol_variant || proof.public_metadata.proof_task != "node_classification_full_gat" ||
+        if (proof.public_metadata.protocol_name != "zkgat" || proof.public_metadata.proof_task != "node_classification_full_gat" ||
             proof.public_metadata.srs_type != "trusted_srs" || proof.public_metadata.privacy_policy != "model_and_trace_hidden" ||
             proof.public_metadata.input_privacy != "public_graph_public_features" || proof.public_metadata.output_mode != "public_logits" ||
             proof.public_metadata.opening_mode != "point_grouped_batch_opening" || proof.public_metadata.binding_mode != "zk_subproof_for_crpc")
