@@ -554,7 +554,8 @@ if name == "gatzk_registry_register":
     if "verifier_registry_digest" in cfg:
         raise SystemExit("mock candidate config inherited a stale registry digest")
     project = pathlib.Path.cwd()
-    srs_manifest = json.loads((project / cfg["srs_path"] / "srs_manifest.json").read_text(encoding="utf-8"))
+    srs_manifest_bytes = (project / cfg["srs_path"] / "srs_manifest.json").read_bytes()
+    srs_manifest = json.loads(srs_manifest_bytes)
     identity = "|".join((cfg["protocol_variant"], cfg["dataset"], cfg["model_arch_id"], cfg["srs_id"]))
     digest = lambda value: hashlib.sha256(value.encode()).hexdigest()
     artifact = {
@@ -572,7 +573,7 @@ if name == "gatzk_registry_register":
         "public_input_digest": digest("public-input|" + identity),
         "topology_digest": digest("topology|" + identity),
         "srs_id": cfg["srs_id"],
-        "srs_manifest_hash": srs_manifest["manifest_hash"],
+        "srs_manifest_hash": hashlib.sha256(srs_manifest_bytes).hexdigest(),
         "srs_degree_bound": srs_manifest["degree_bound"],
         "security_budget_passed": True,
     }
@@ -843,6 +844,34 @@ def wait_for(predicate, timeout: float = 30.0, message: str = "condition not rea
             return
         time.sleep(0.025)
     raise AssertionError(message)
+
+
+def process_is_running(pid: int) -> bool:
+    stat_path = pathlib.Path("/proc") / str(pid) / "stat"
+    try:
+        stat = stat_path.read_bytes().decode("ascii", errors="replace")
+        state_fields = stat[stat.rfind(")") + 2 :].split()
+        if state_fields and state_fields[0] in {"Z", "X"}:
+            return False
+    except FileNotFoundError:
+        return False
+    except (OSError, IndexError):
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def wait_for_process_exit(pid: int, timeout: float = 10.0) -> None:
+    wait_for(
+        lambda: not process_is_running(pid),
+        timeout=timeout,
+        message=f"detached worker process {pid} did not exit",
+    )
 
 
 def read_until(process: subprocess.Popen[bytes], token: bytes, timeout: float = 5.0) -> bytes:
@@ -1241,12 +1270,17 @@ class GpuAblationEntrypointMockTest(unittest.TestCase):
             self.assertEqual((failed["command_rc"], failed["logger_rc"], failed["validation_rc"]), (17, 31, None))
             self.assertEqual(failed["metrics"], {})
             self.assertNotIn("evidence_path", failed)
-            self.assertNotIn("proof_path", failed)
+            self.assertEqual(failed["proof_path"], "results/unverified/proof.bin")
+            self.assertNotIn("verification_status", failed)
+            with (session_root / "successes.csv").open(encoding="utf-8", newline="") as stream:
+                self.assertEqual(list(csv.DictReader(stream)), [])
+            self.assertEqual((session_root / "successes.jsonl").read_text(encoding="utf-8"), "")
             self.assertEqual(matrix["pending"], 4)
             for dataset in DATASETS[1:]:
                 pending = matrix["cells"][ONE_VARIANT + "/" + dataset]
                 self.assertEqual(pending["status"], "pending")
                 self.assertIn("before the cell was attempted", pending["reason"])
+                self.assertFalse((session_root / "logs" / f"{ONE_VARIANT}_{dataset}.log").exists())
 
     def test_worker_failure_with_all_success_cells_remains_session_failure(self) -> None:
         with mock_workspace() as workspace:
@@ -1539,6 +1573,16 @@ class GpuAblationEntrypointMockTest(unittest.TestCase):
     def test_detached_background_survives_parent_hup_and_exposes_live_views(self) -> None:
         target = ONE_VARIANT + "/cora"
         with mock_workspace(gate_target=target) as workspace:
+            worker_pids: list[int] = []
+
+            def record_worker_pid(summary: dict) -> None:
+                try:
+                    worker_pid = int(summary["worker_pid"])
+                except (KeyError, TypeError, ValueError):
+                    return
+                if worker_pid not in worker_pids:
+                    worker_pids.append(worker_pid)
+
             launcher_log = workspace.root / "launcher.log"
             parent_returned = workspace.root / "parent-returned"
             outer = (
@@ -1561,10 +1605,18 @@ class GpuAblationEntrypointMockTest(unittest.TestCase):
             )
             try:
                 wait_for(parent_returned.exists, timeout=15, message="background launcher did not return")
-                wait_for(pathlib.Path(env["MOCK_RUN_STARTED"]).exists, timeout=25, message="detached first cell did not start")
+                wait_for(
+                    lambda: workspace.latest_file.is_file()
+                    and (workspace.session() / "matrix_summary.json").is_file(),
+                    timeout=15,
+                    message="detached worker summary did not initialize",
+                )
                 session_id = workspace.latest_session_id()
                 session = workspace.session()
                 self.assertRegex(session_id, r"^[A-Za-z0-9_.-]+$")
+                initial_summary = workspace.summary()
+                record_worker_pid(initial_summary)
+                wait_for(pathlib.Path(env["MOCK_RUN_STARTED"]).exists, timeout=25, message="detached first cell did not start")
                 summary = workspace.summary()
                 self.assertEqual(summary["status"], "running")
                 self.assertEqual(summary["current_cell"]["variant"], ONE_VARIANT)
@@ -1612,21 +1664,34 @@ class GpuAblationEntrypointMockTest(unittest.TestCase):
                 self.assertEqual(finished["status"], "complete")
                 self.assertEqual(finished["succeeded"], 5)
                 self.assertEqual(len(workspace.call_records(workspace.run_calls)), 5)
+                wait_for_process_exit(worker_pids[-1])
 
                 second = workspace.command("--background", "--protocol-variant", ONE_VARIANT, "--backend", "gpu")
                 self.assertEqual(second.returncode, 0, second.stdout)
                 second_id = workspace.latest_session_id()
+                second_initial_summary = workspace.summary()
+                record_worker_pid(second_initial_summary)
                 self.assertNotEqual(session_id, second_id)
                 second_summary = self._assert_finished(workspace, timeout=30)
+                record_worker_pid(second_summary)
                 self.assertEqual(second_summary["session_id"], second_id)
                 self.assertEqual(workspace.latest_file.read_text(encoding="utf-8").strip(), second_id)
                 self.assertFalse((workspace.latest_file.parent / "latest.tmp").exists())
+                wait_for_process_exit(worker_pids[-1])
             finally:
                 pathlib.Path(env["MOCK_RUN_RELEASE"]).write_text("continue\n", encoding="utf-8")
                 if launcher.poll() is None:
                     os.killpg(launcher.pid, signal.SIGTERM)
                     launcher.wait(timeout=5)
                 launcher_log_stream.close()
+                try:
+                    if workspace.latest_file.is_file():
+                        record_worker_pid(workspace.summary())
+                except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    pass
+                for worker_pid in worker_pids:
+                    if process_is_running(worker_pid):
+                        wait_for_process_exit(worker_pid)
 
     def test_manifest_report_source_metrics_and_proof_size_reject_bad_values(self) -> None:
         target = ONE_VARIANT + "/cora"

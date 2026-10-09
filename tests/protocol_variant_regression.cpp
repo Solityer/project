@@ -24,6 +24,7 @@
 #include <openssl/sha.h>
 
 #include "gatzk/algebra/polynomial.hpp"
+#include "gatzk/algebra/vector_ops.hpp"
 #include "gatzk/crypto/curve.hpp"
 #include "gatzk/crypto/kzg.hpp"
 #include "gatzk/protocol/proof_codec.hpp"
@@ -1176,21 +1177,69 @@ namespace
                               return 0;
                           });
 
+            const bool all_cuda_only = std::getenv("GATZK_PROTOCOL_VARIANT_TEST_ALL_CUDA_ONLY") != nullptr;
             const bool feature_cuda_only = std::getenv("GATZK_PROTOCOL_VARIANT_TEST_FEATURE_CUDA_ONLY") != nullptr;
             const bool feature_cpu_only = std::getenv("GATZK_PROTOCOL_VARIANT_TEST_FEATURE_CPU_ONLY") != nullptr;
-            if (feature_cuda_only || feature_cpu_only)
+            if (all_cuda_only || feature_cuda_only || feature_cpu_only)
             {
                 const auto previous_route = util::route2_options();
-                if (feature_cuda_only)
+                if (all_cuda_only || feature_cuda_only)
                 {
                     require(std::getenv("GATZK_RUN_PROGRESS") != nullptr,
-                            "CUDA-only Feature test requires progress logging so device-resident t_edge start/done evidence is captured");
+                            "CUDA-only protocol variant test requires progress logging so CUDA route evidence is captured");
+                    require(algebra::cuda_backend_build_enabled() && algebra::cuda_backend_available() && algebra::cuda_field_hotspots_available(),
+                            "CUDA-only protocol variant test requires a built and available CUDA runtime/device");
+                    const auto device_summary = algebra::cuda_device_summary();
+                    require(device_summary.find("cuda_runtime=true") != std::string::npos &&
+                                device_summary.find("cuda_device=unavailable") == std::string::npos &&
+                                device_summary.find("cuda_device=unknown") == std::string::npos,
+                            "CUDA-only protocol variant test could not identify the active CUDA device: " + device_summary);
+                    std::cerr << "[protocol-variant-test] CUDA_DEVICE_IDENTITY " << device_summary << "\n";
                     auto cuda_route = previous_route;
                     cuda_route.cuda_field_hotspots = true;
                     util::set_route2_options(cuda_route);
                 }
                 try
                 {
+                    if (all_cuda_only)
+                    {
+                        const auto route_activity = [](const algebra::CudaExecutionStats &stats)
+                        {
+                            return stats.ntt_calls + stats.intt_calls + stats.quotient_calls + stats.t_edge_calls + stats.t_fh_calls +
+                                   stats.opening_fold_calls + stats.msm_single_calls + stats.msm_batch_calls;
+                        };
+                        const std::array<std::pair<VariantFixture *, std::string_view>, 3> fixtures = {
+                            std::pair<VariantFixture *, std::string_view>{&zkgat, "zkgat"},
+                            std::pair<VariantFixture *, std::string_view>{&shared, "wo_shared_neighborhood"},
+                            std::pair<VariantFixture *, std::string_view>{&feature, "wo_feature_folding"},
+                        };
+                        for (const auto &[fixture, label_view] : fixtures)
+                        {
+                            const std::string label(label_view);
+                            const auto kernels_before = algebra::cuda_kernel_invocation_count();
+                            const auto route_before = route_activity(algebra::cuda_execution_stats_snapshot());
+                            std::optional<std::size_t> alternate_feature_coordinate;
+                            const auto proof = prove_roundtrip(
+                                *fixture, temp_root / (label + "_cuda.proof"), label + "_cuda",
+                                fixture == &feature
+                                    ? std::function<void(const protocol::TraceArtifacts &)>([&](const auto &trace)
+                                      { alternate_feature_coordinate = validate_feature_coordinate_source_tuple_mismatch(feature.prover, trace); })
+                                    : std::function<void(const protocol::TraceArtifacts &)>{});
+                            const auto kernels_after = algebra::cuda_kernel_invocation_count();
+                            const auto route_after = route_activity(algebra::cuda_execution_stats_snapshot());
+                            require(kernels_after > kernels_before,
+                                    "CUDA-only proof did not launch a counted CUDA kernel for " + label);
+                            require(route_after > route_before,
+                                    "CUDA-only proof did not record a CUDA protocol route for " + label);
+                            std::cerr << "[protocol-variant-test] CUDA_SHORT_PROOF_VERIFY_OK variant=" << label
+                                      << " requested_backend=cuda_hotspots independent_registry_verify=1 kernels_delta="
+                                      << (kernels_after - kernels_before) << " route_calls_delta=" << (route_after - route_before)
+                                      << " registry_sha256=" << fixture->registry_digest << " proof_bytes=" << proof.size() << "\n";
+                        }
+                        util::set_route2_options(previous_route);
+                    }
+                    else
+                    {
                     std::optional<std::size_t> alternate_feature_coordinate;
                     const auto feature_proof = prove_roundtrip(feature,
                                                                temp_root / (feature_cuda_only ? "wo_feature_folding_cuda.proof" : "wo_feature_folding_cpu.proof"),
@@ -1215,6 +1264,7 @@ namespace
                         std::cerr << "[protocol-variant-test] NATIVE_FEATURE_CPU_REGRESSION_OK alternate_coordinate="
                                   << (alternate_feature_coordinate.has_value() ? std::to_string(*alternate_feature_coordinate) : "none") << "\n";
                     }
+                    }
                 }
                 catch (...)
                 {
@@ -1226,6 +1276,8 @@ namespace
                                   check_default_cora_identity_snapshot(project_root);
                                   return 0;
                               });
+                if (all_cuda_only)
+                    std::cerr << "[protocol-variant-test] NATIVE_ALL_VARIANT_CUDA_SHORT_REGRESSION_OK artifacts=" << temp_root.string() << "\n";
                 if (!keep_artifacts)
                     std::filesystem::remove_all(temp_root);
                 return 0;

@@ -972,8 +972,18 @@ def check_registry(args: argparse.Namespace) -> None:
     srs_manifest = load_json(srs_manifest_path, "configured SRS manifest")
     require(srs_manifest.get("srs_id") == config.get("srs_id") == inspection.get("srs_id"),
             "registry inspection SRS id differs from the canonical config and SRS manifest")
-    require(srs_manifest.get("manifest_hash") == inspection.get("srs_manifest_hash"),
-            "registry inspection SRS manifest hash differs from the configured SRS")
+    try:
+        raw_srs_manifest = srs_manifest_path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"cannot read configured SRS manifest bytes: {exc}") from exc
+    manifest_hash_marker = b'  "manifest_hash"'
+    manifest_hash_position = raw_srs_manifest.rfind(manifest_hash_marker)
+    require(manifest_hash_position >= 0,
+            "configured SRS manifest is missing its canonical manifest_hash field")
+    require(hashlib.sha256(raw_srs_manifest[:manifest_hash_position]).hexdigest() == srs_manifest.get("manifest_hash"),
+            "configured SRS manifest canonical hash field is invalid")
+    require(hashlib.sha256(raw_srs_manifest).hexdigest() == inspection.get("srs_manifest_hash"),
+            "registry inspection SRS manifest full-file hash differs from the configured SRS")
     require(srs_manifest.get("protocol_schema_id") == inspection.get("protocol_schema_id"),
             "registry inspection changed the static protocol schema bound by the configured SRS")
     if "srs_degree_bound" in inspection:
