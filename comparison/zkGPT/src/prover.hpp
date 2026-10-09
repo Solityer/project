@@ -43,7 +43,9 @@ public:
     void sumcheckInitPhase1(const F &relu_rou_0);
     void sumcheckInitPhase2();
     std::size_t sumcheck_storage_capacity_bytes() const;
+    std::uint64_t sumcheck_storage_physical_bytes() const;
     void release_sumcheck_storage();
+    void sumcheckApplyChallenge(const F &challenge);
 
     cubic_poly sumcheckDotProdUpdate1(const F &previous_random);
     quadratic_poly sumcheckUpdate1(const F &previous_random);

@@ -20,18 +20,47 @@ use group::{
 };
 use rustc_hash::FxHashMap as HashMap;
 
-use maybe_rayon::prelude::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use maybe_rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     iter,
     ops::{Mul, MulAssign},
+    sync::Arc,
 };
 
 #[derive(Debug)]
 pub(in crate::plonk) struct Prepared<C: CurveAffine> {
     compressed_inputs_expressions: Vec<Polynomial<C::Scalar, LagrangeCoeff>>,
-    compressed_table_expression: Polynomial<C::Scalar, LagrangeCoeff>,
+    compressed_table_expression: Arc<Polynomial<C::Scalar, LagrangeCoeff>>,
     m_values: Polynomial<C::Scalar, LagrangeCoeff>,
     pub(in crate::plonk) commitment: C,
+}
+
+/// Per-lookup table work shared only by arguments with identical table
+/// expressions in the same proof instance and challenge scope.
+pub(in crate::plonk) struct PreparedTable<C: CurveAffine> {
+    compressed_expression: Arc<Polynomial<C::Scalar, LagrangeCoeff>>,
+    index: Arc<HashMap<Vec<u8>, usize>>,
+}
+
+impl<C: CurveAffine> PreparedTable<C> {
+    pub(in crate::plonk) fn membership_map_shape(&self) -> (usize, usize) {
+        (self.index.len(), self.index.capacity())
+    }
+}
+
+fn insert_table_membership(index: &mut HashMap<Vec<u8>, usize>, representation: &[u8], row: usize, cardinality_upper: usize) -> Result<(), Error> {
+    if let Some(previous_index) = index.get_mut(representation) {
+        *previous_index = row;
+    } else {
+        if index.len() >= cardinality_upper {
+            return Err(Error::NativeStorage(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("native mv-lookup table cardinality exceeded admitted bound {}", cardinality_upper),
+            )));
+        }
+        index.insert(representation.to_owned(), row);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -78,6 +107,64 @@ pub(in crate::plonk) struct Evaluated<C: CurveAffine> {
 }
 
 impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
+    pub(in crate::plonk) fn prepare_table<'a, 'params: 'a, C, P: Params<'params, C>>(
+        &self,
+        vk: &VerifyingKey<C>,
+        params: &P,
+        domain: &EvaluationDomain<C::Scalar>,
+        theta: ChallengeTheta<C>,
+        advice_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
+        fixed_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
+        instance_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
+        challenges: &'a [C::Scalar],
+        cardinality_upper: usize,
+    ) -> Result<PreparedTable<C>, Error>
+    where
+        C: CurveAffine<ScalarExt = F>,
+    {
+        let n = params.n() as usize;
+        let compressed_expression = self
+            .table_expressions
+            .iter()
+            .map(|expression| {
+                vk.domain.lagrange_from_vec(evaluate(
+                    expression,
+                    n,
+                    1,
+                    fixed_values,
+                    advice_values,
+                    instance_values,
+                    challenges,
+                ))
+            })
+            .fold(domain.empty_lagrange(), |acc, expression| {
+                acc * *theta + &expression
+            })
+            .spill()
+            .map_err(Error::NativeStorage)?;
+
+        let blinding_factors = vk.cs.blinding_factors();
+        let chunk_size = n - blinding_factors - 1;
+        if cardinality_upper == 0 {
+            return Err(Error::NativeStorage(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "native mv-lookup table cardinality bound is zero",
+            )));
+        }
+        let mut index = HashMap::default();
+        for (i, &x) in compressed_expression.iter().take(chunk_size).enumerate() {
+            let representation = x.to_repr();
+            // Preserve the original sequential collect() behavior (the last
+            // row wins) without allocating a Vec key for repeated values.
+            insert_table_membership(&mut index, representation.as_ref(), i, cardinality_upper)?;
+        }
+
+        Ok(PreparedTable {
+            compressed_expression: Arc::new(compressed_expression),
+            index: Arc::new(index),
+        })
+    }
+
     pub(in crate::plonk) fn prepare<'a, 'params: 'a, C, P: Params<'params, C>>(
         &self,
         vk: &VerifyingKey<C>,
@@ -88,6 +175,8 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
         fixed_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
         instance_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
         challenges: &'a [C::Scalar],
+        table: &PreparedTable<C>,
+        argument_index: usize,
     ) -> Result<Prepared<C>, Error>
     where
         C: CurveAffine<ScalarExt = F>,
@@ -119,54 +208,58 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
         // Get values of input expressions involved in the lookup and compress them
         let compressed_inputs_expressions: Vec<_> = self
             .inputs_expressions
-            .par_iter()
-            .map(|input_expressions| compress_expressions(input_expressions))
-            .collect();
+            .iter()
+            .map(|input_expressions| {
+                compress_expressions(input_expressions)
+                    .spill()
+                    .map_err(Error::NativeStorage)
+            })
+            .collect::<Result<_, _>>()?;
         log::trace!("compressed_inputs_expressions {:?}", start.elapsed());
 
-        // Get values of table expressions involved in the lookup and compress them
-        let start = instant::Instant::now();
-        let compressed_table_expression = compress_expressions(&self.table_expressions);
-        log::trace!("compressed_table_expression {:?}", start.elapsed());
-
+        // The exact table expressions and their challenge scope were prepared
+        // once for this proof instance by the caller. Keep the existing byte
+        // representation for membership checks.
+        let compressed_table_expression = Arc::clone(&table.compressed_expression);
+        let table_index_value_mapping = &table.index;
         let blinding_factors = vk.cs.blinding_factors();
-
         let chunk_size = n - blinding_factors - 1;
-
-        // compute m(X)
-        let start = instant::Instant::now();
-        let table_index_value_mapping: HashMap<Vec<u8>, usize> = compressed_table_expression
-            .par_iter()
-            .take(chunk_size)
-            .enumerate()
-            .map(|(i, &x)| (x.to_repr().as_ref().to_owned(), i))
-            .collect();
-        log::trace!("table_index_value_mapping {:?}", start.elapsed());
 
         let start = instant::Instant::now();
         let m_values: Vec<F> = {
-            use std::sync::atomic::{AtomicU64, Ordering};
+            use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
             let m_values: Vec<AtomicU64> = (0..params.n()).map(|_| AtomicU64::new(0)).collect();
+            let first_out_of_range_row = AtomicUsize::new(usize::MAX);
 
             compressed_inputs_expressions
                 .par_iter()
                 .for_each(|compressed_input_expression| {
                     compressed_input_expression
                         .iter()
+                        .enumerate()
                         .take(chunk_size)
-                        .for_each(|fi| {
-                            let index = match table_index_value_mapping
-                                .get(&fi.to_repr().as_ref().to_owned())
-                            {
+                        .for_each(|(row, fi)| {
+                            let representation = fi.to_repr();
+                            let index = match table_index_value_mapping.get(representation.as_ref()) {
                                 Some(value) => value,
                                 None => {
-                                    log::error!("value is OOR of lookup");
+                                    first_out_of_range_row.fetch_min(row, Ordering::Relaxed);
                                     return;
                                 }
                             };
                             m_values[*index].fetch_add(1, Ordering::Relaxed);
                         });
                 });
+            let first_out_of_range_row = first_out_of_range_row.load(Ordering::Relaxed);
+            if first_out_of_range_row != usize::MAX {
+                return Err(Error::NativeStorage(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "native mv-lookup argument {} has an out-of-range query at row {} of {} active rows",
+                        argument_index, first_out_of_range_row, chunk_size
+                    ),
+                )));
+            }
 
             m_values
                 .par_iter()
@@ -174,7 +267,11 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
                 .collect()
         };
         log::trace!("m_values {:?}", start.elapsed());
-        let m_values = vk.domain.lagrange_from_vec(m_values);
+        let m_values = vk
+            .domain
+            .lagrange_from_vec(m_values)
+            .spill()
+            .map_err(Error::NativeStorage)?;
 
         #[cfg(feature = "sanity-checks")]
         {
@@ -232,6 +329,28 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
             m_values,
             commitment: m_commitment,
         })
+    }
+}
+
+#[cfg(test)]
+mod native_table_map_tests {
+    use super::{insert_table_membership, HashMap};
+
+    #[test]
+    fn duplicate_table_rows_keep_the_last_native_index() {
+        let mut index = HashMap::default();
+        insert_table_membership(&mut index, &[1, 2], 0, 2).unwrap();
+        insert_table_membership(&mut index, &[3, 4], 1, 2).unwrap();
+        insert_table_membership(&mut index, &[1, 2], 7, 2).unwrap();
+        assert_eq!(index.len(), 2);
+        assert_eq!(index.get(&[1, 2][..]), Some(&7));
+    }
+
+    #[test]
+    fn table_membership_rejects_cardinality_overflow() {
+        let mut index = HashMap::default();
+        insert_table_membership(&mut index, &[1], 0, 1).unwrap();
+        assert!(insert_table_membership(&mut index, &[2], 1, 1).is_err());
     }
 }
 
@@ -315,6 +434,11 @@ impl<C: CurveAffine> Prepared<C> {
                 *log_derivative_diff = *fi - *mi * *ti;
             }
         });
+        // The grand-sum difference owns the values needed after this point.
+        // Release both dense accumulators before constructing the next dense
+        // polynomial so the spill conversion does not overlap them.
+        drop(inputs_log_derivatives);
+        drop(table_log_derivatives);
 
         log::trace!(" - log_derivatives_diff {:?}", start.elapsed());
 
@@ -341,7 +465,14 @@ impl<C: CurveAffine> Prepared<C> {
             .chain(phi_blinds.into_iter().map(|&x| x))
             .collect::<Vec<_>>();
         assert_eq!(phi.len(), params.n() as usize);
-        let phi = vk.domain.lagrange_from_vec(phi);
+        // The coefficient conversion below is in-place. Spill immediately so
+        // every committed lookup does not retain one dense N-element phi Vec
+        // on the host heap for the lifetime of the opening phase.
+        let phi = vk
+            .domain
+            .lagrange_from_vec(phi)
+            .spill()
+            .map_err(Error::NativeStorage)?;
 
         log::trace!(" - phi {:?}", start.elapsed());
 

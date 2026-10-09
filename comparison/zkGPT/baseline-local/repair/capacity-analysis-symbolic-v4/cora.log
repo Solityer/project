@@ -1,0 +1,9 @@
+CAPACITY_STAGE_BEGIN dataset=cora stage=resource_snapshot
+CAPACITY_STAGE_END dataset=cora stage=resource_snapshot host_headroom_bytes=34581700608 shared_disk_available_bytes=1643138801664 same_filesystem=true
+CAPACITY_STAGE_BEGIN dataset=cora stage=canonical_graph_load
+CAPACITY_STAGE_END dataset=cora stage=canonical_graph_load nodes=2708 edges=13264 features=1433 graphs=1
+CAPACITY_STAGE_BEGIN dataset=cora stage=shape_estimate
+CAPACITY_STAGE_END dataset=cora stage=shape_estimate host_peak_upper_bytes=9922527722 disk_peak_upper_bytes=0 artifact_bytes_upper=361271566
+CAPACITY_STAGE_BEGIN dataset=cora stage=gkr_point_shape
+CAPACITY_STAGE_END dataset=cora stage=gkr_point_shape status=ANALYSIS_UPPER_BOUND exact=false layers=113 fconn=54 bitmap_bytes=0 touched_index_bytes_upper=0 reason=analysis-only symbolic profile; per-gate point source census and point digest were intentionally omitted
+CAPACITY_PROFILE_ONLY dataset=cora status=ANALYSIS_ONLY symbolic_profile_complete=true native_point_shape=NOT_ENUMERATED forward_admission=NOT_RUN host_peak_upper_bytes=9922527722 disk_peak_upper_bytes=16654876834

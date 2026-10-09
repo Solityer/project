@@ -48,6 +48,30 @@ std::size_t prover::sumcheck_storage_capacity_bytes() const {
     return bytes;
 }
 
+std::uint64_t prover::sumcheck_storage_physical_bytes() const {
+    std::uint64_t bytes = 0U;
+    const auto add_physical = [&bytes](const auto& values) {
+        if (values.capacity() > std::numeric_limits<std::size_t>::max() / sizeof(typename std::decay_t<decltype(values)>::value_type))
+            throw std::overflow_error("native GKR physical storage byte count overflows");
+        const std::size_t virtual_bytes = values.capacity() * sizeof(typename std::decay_t<decltype(values)>::value_type);
+        const std::uint64_t current = zkgpt::native_storage::physical_bytes(values.data(), virtual_bytes);
+        if (current > std::numeric_limits<std::uint64_t>::max() - bytes) throw std::overflow_error("native GKR physical storage byte count overflows");
+        bytes += current;
+    };
+    for (unsigned lane = 0; lane < 2; ++lane) {
+        add_physical(V_mult[lane]);
+        add_physical(mult_array[lane]);
+        add_physical(tmp_V_mult[lane]);
+        add_physical(tmp_mult_array[lane]);
+        const std::uint64_t value_bytes = native_value_prefix[lane].physical_bytes();
+        const std::uint64_t mult_bytes = native_mult_prefix[lane].physical_bytes();
+        if (value_bytes > std::numeric_limits<std::uint64_t>::max() - bytes || mult_bytes > std::numeric_limits<std::uint64_t>::max() - bytes - value_bytes)
+            throw std::overflow_error("native GKR physical storage byte count overflows");
+        bytes += value_bytes + mult_bytes;
+    }
+    return bytes;
+}
+
 void prover::release_sumcheck_storage() {
     for (unsigned lane = 0; lane < 2; ++lane) {
         zkgpt::NativeVector<linear_poly>().swap(V_mult[lane]);
@@ -57,6 +81,11 @@ void prover::release_sumcheck_storage() {
         native_value_prefix[lane].release();
         native_mult_prefix[lane].release();
     }
+}
+
+void prover::sumcheckApplyChallenge(const F &challenge) {
+    for (unsigned lane = 0; lane < 2; ++lane) native_mult_prefix[lane].apply_challenge(challenge);
+    for (unsigned lane = 0; lane < 2; ++lane) native_value_prefix[lane].apply_challenge(challenge);
 }
 
 /**
@@ -165,27 +194,19 @@ void prover::sumcheckInitPhase1(const F &relu_rou_0)
     }
     for (unsigned lane = 0; lane < 2; ++lane) {
         const std::size_t active_extent = zkgpt::native_gkr::checked_extent(total_size[lane], "native GKR phase1 active prefix");
-        native_value_prefix[lane].initialize_scalars(active_extent);
         native_mult_prefix[lane].initialize_scalars(active_extent);
+        const unsigned dep = lane == 0U ? 0U : static_cast<unsigned>(sumcheck_id - 1U);
+        const layer* source_layer = &cur;
+        native_value_prefix[lane].initialize_source_view(active_extent, zkgpt::NativeFieldView::borrowed(
+            active_extent, source_layer, [this, dep, source_layer](std::size_t index) {
+                return getCirValue(static_cast<u8>(dep), source_layer->ori_id_u, static_cast<u64>(index));
+            }));
     }
     timer useless_t;
     useless_t.start();
     relu_rou = relu_rou_0;
     add_term.clear();
     
-    for (int b = 0; b < 2; ++b)
-        for (u64 u = 0; u < total_size[b]; ++u)
-            native_mult_prefix[b].set_scalar(u, F_ZERO);
-    
-    
-        for (int b = 0; b < 2; ++b) 
-        {
-            auto dep = !b ? 0 : sumcheck_id - 1;
-            for (u64 u = 0; u < total_size[b]; ++u) 
-            {
-                native_value_prefix[b].set_scalar(u, getCirValue(dep, cur.ori_id_u, u));
-            }
-        }
     useless_t.stop();
     throw_time[sumcheck_id].push_back(useless_t.elapse_sec());
     prove_timer.start();
@@ -319,17 +340,17 @@ void prover::sumcheckInitPhase2()
     }
     for (unsigned lane = 0; lane < 2; ++lane) {
         const std::size_t active_extent = zkgpt::native_gkr::checked_extent(total_size[lane], "native GKR phase2 active prefix");
-        native_value_prefix[lane].initialize_scalars(active_extent);
         native_mult_prefix[lane].initialize_scalars(active_extent);
+        const unsigned dep = lane == 0U ? 0U : static_cast<unsigned>(sumcheck_id - 1U);
+        const layer* source_layer = &cur;
+        native_value_prefix[lane].initialize_source_view(active_extent, zkgpt::NativeFieldView::borrowed(
+            active_extent, source_layer, [this, dep, source_layer](std::size_t index) {
+                return getCirValue(static_cast<u8>(dep), source_layer->ori_id_v, static_cast<u64>(index));
+            }));
     }
 
 
     add_term.clear();
-    for (int b = 0; b < 2; ++b) 
-    {
-        for (u64 v = 0; v < total_size[b]; ++v)
-            native_mult_prefix[b].set_scalar(v, F_ZERO);
-    }
     useless_time.stop();
     throw_time[sumcheck_id].push_back(useless_time.elapse_sec());
     prove_timer.start();
@@ -337,15 +358,6 @@ void prover::sumcheckInitPhase2()
                                                        std::max<int>(0, cur.bit_length), alpha, beta);
     const zkgpt::native_gkr::EqualityWeightProvider beta_u(
         r_u.at(sumcheck_id), cur.max_bl_u, F_ONE);
-    for (int b = 0; b < 2; ++b) 
-    {
-        auto dep = !b ? 0 : sumcheck_id - 1;
-        for (u64 v = 0; v < total_size[b]; ++v) 
-        {
-            native_value_prefix[b].set_scalar(v, getCirValue(dep, cur.ori_id_v, v));
-        }
-    }
-    
     if(cur.uni_interval.size()>=2)
     {
         const int thd=32;

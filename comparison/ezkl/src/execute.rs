@@ -48,6 +48,8 @@ use halo2_proofs::SerdeFormat;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use halo2_solidity_verifier;
 use halo2curves::bn256::{Bn256, Fr, G1Affine};
+#[cfg(any(feature = "gpu-accelerated", test))]
+use halo2curves::ff::Field;
 use halo2curves::ff::{FromUniformBytes, PrimeField, WithSmallOrderMulGroup};
 use halo2curves::serde::SerdeObject;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -2304,9 +2306,153 @@ fn build_canonical_gat_circuit(
 fn configure_canonical_constraint_system(circuit: &GraphCircuit) -> plonk::ConstraintSystem<Fr> {
     let mut cs = plonk::ConstraintSystem::<Fr>::default();
     let _config = GraphCircuit::configure_with_params(&mut cs, circuit.params());
-    #[cfg(feature = "mv-lookup")]
+    // halo2_proofs enables mv-lookup directly in Cargo.toml. The parent
+    // ezkl feature named mv-lookup is not part of the official formal-gpu
+    // feature set, so cfg(feature = "mv-lookup") silently skipped converting
+    // lookup trackers into the exact chunked arguments consumed by the native
+    // prover. Always use the dependency's configured native path here.
     let cs = cs.chunk_lookups();
     cs
+}
+
+#[cfg(any(feature = "gpu-accelerated", test))]
+struct NativeMvLookupShape {
+    argument_count: u64,
+    query_polynomial_count: u64,
+    max_query_polynomials_per_argument: u64,
+    table_cardinality_upper_bounds: Vec<u64>,
+}
+
+#[cfg(feature = "gpu-accelerated")]
+fn shape_scalar_elements(shapes: &[Vec<usize>]) -> Result<u64, EZKLError> {
+    shapes.iter().try_fold(0u64, |total, shape| {
+        let elements = shape.iter().try_fold(1u64, |count, dimension| {
+            count
+                .checked_mul(u64::try_from(*dimension).map_err(|_| {
+                    "native GAT witness shape dimension exceeds u64".to_string()
+                })?)
+                .ok_or_else(|| "native GAT witness shape element count overflow".to_string())
+        })?;
+        total
+            .checked_add(elements)
+            .ok_or_else(|| "native GAT witness scalar count overflow".to_string().into())
+    })
+}
+
+#[cfg(any(feature = "gpu-accelerated", test))]
+fn selector_advice_product(
+    expression: &plonk::Expression<Fr>,
+) -> Option<usize> {
+    let plonk::Expression::Product(left, right) = expression else {
+        return None;
+    };
+    match (&**left, &**right) {
+        (plonk::Expression::Selector(selector), plonk::Expression::Advice(_))
+        | (plonk::Expression::Advice(_), plonk::Expression::Selector(selector)) => {
+            Some(selector.index())
+        }
+        _ => None,
+    }
+}
+
+#[cfg(any(feature = "gpu-accelerated", test))]
+fn table_expression_cardinality_upper(
+    table: &[plonk::Expression<Fr>],
+    census: &plonk::NativeShapeCensus,
+    domain_size: u64,
+) -> Result<u64, EZKLError> {
+    if table.len() >= 2
+        && matches!(&table[0], plonk::Expression::Constant(value) if *value == Fr::ONE)
+    {
+        let mut table_selector = None;
+        let dynamic_table = table[1..].iter().all(|expression| {
+            let Some(selector) = selector_advice_product(expression) else {
+                return false;
+            };
+            match table_selector {
+                Some(previous) => previous == selector,
+                None => {
+                    table_selector = Some(selector);
+                    true
+                }
+            }
+        });
+        if dynamic_table {
+            let selector = table_selector
+                .ok_or_else(|| "native mv-lookup dynamic table has no activation selector".to_string())?;
+            let active_rows = *census
+                .selector_activation_counts
+                .get(selector)
+                .ok_or_else(|| "native mv-lookup table selector is outside the shape census".to_string())?;
+            return Ok(active_rows.saturating_add(1).min(domain_size));
+        }
+    }
+
+    let mut populated_rows_upper = 0u64;
+    let mut fixed_columns = 0usize;
+    for expression in table {
+        match expression {
+            plonk::Expression::Constant(_) => {}
+            plonk::Expression::Fixed(query) => {
+                fixed_columns += 1;
+                // Distinct rows in a tuple of multiple independently filled
+                // fixed columns cannot be bounded by the sum of each column's
+                // assignment callback count. Fall back to the full domain for
+                // those unsupported tuple forms instead of under-admitting a
+                // table map.
+                if fixed_columns > 1 {
+                    return Ok(domain_size);
+                }
+                let count = *census
+                    .fixed_value_assignment_counts
+                    .get(query.column_index())
+                    .ok_or_else(|| "native mv-lookup fixed table column is outside the shape census".to_string())?;
+                populated_rows_upper = populated_rows_upper
+                    .checked_add(count)
+                    .ok_or_else(|| "native mv-lookup fixed table row bound overflow".to_string())?;
+            }
+            _ => return Ok(domain_size),
+        }
+    }
+    Ok(populated_rows_upper.saturating_add(1).min(domain_size))
+}
+
+#[cfg(any(feature = "gpu-accelerated", test))]
+fn native_mv_lookup_shape(
+    cs: &plonk::ConstraintSystem<Fr>,
+    census: &plonk::NativeShapeCensus,
+    domain_size: u64,
+) -> Result<NativeMvLookupShape, EZKLError> {
+    let argument_count = u64::try_from(cs.lookups().len())
+        .map_err(|_| "native mv-lookup argument count exceeds u64".to_string())?;
+    let mut query_polynomial_count = 0u64;
+    let mut max_query_polynomials_per_argument = 0u64;
+    let mut table_groups: Vec<(Vec<plonk::Expression<Fr>>, u64)> = Vec::new();
+    for lookup in cs.lookups() {
+        let input_count = u64::try_from(lookup.input_expressions().len())
+            .map_err(|_| "native mv-lookup query polynomial count exceeds u64".to_string())?;
+        if input_count == 0 {
+            return Err("native mv-lookup argument has no query polynomials".into());
+        }
+        query_polynomial_count = query_polynomial_count
+            .checked_add(input_count)
+            .ok_or_else(|| "native mv-lookup query polynomial count overflow".to_string())?;
+        max_query_polynomials_per_argument = max_query_polynomials_per_argument.max(input_count);
+        let table = lookup.table_expressions();
+        if !table_groups.iter().any(|(expressions, _)| expressions == table) {
+            let bound = table_expression_cardinality_upper(table, census, domain_size)?;
+            if bound == 0 || bound > domain_size {
+                return Err("native mv-lookup table cardinality bound is out of domain".into());
+            }
+            table_groups.push((table.clone(), bound));
+        }
+    }
+    Ok(NativeMvLookupShape {
+        argument_count,
+        query_polynomial_count,
+        max_query_polynomials_per_argument,
+        table_cardinality_upper_bounds: table_groups.into_iter().map(|(_, bound)| bound).collect(),
+    })
 }
 
 #[cfg(feature = "gpu-accelerated")]
@@ -2341,7 +2487,25 @@ fn gat_prepare_admission(
         logrows,
         1u64 << logrows,
     );
-    let shape_census = plonk::census_native_shape::<G1Affine, _>(logrows, &circuit)?;
+    // Admission needs the real native selector/copy shape, but GraphCircuit::new
+    // deliberately starts with placeholder inputs and empty params/outputs.
+    // Key generation uses the witnessless shape of the circuit, which fills
+    // params/outputs to their declared dimensions before synthesis.
+    let census_circuit = circuit.without_witnesses();
+    let shape_census = plonk::census_native_shape::<G1Affine, _>(logrows, &census_circuit)?;
+    let domain_size = 1u64
+        .checked_shl(logrows)
+        .ok_or_else(|| format!("invalid native GAT logrows for admission: {}", logrows))?;
+    let lookup_shape = native_mv_lookup_shape(&cs, &shape_census, domain_size)?;
+    let evaluation_shape = plonk::native_evaluation_resource_shape::<G1Affine>(&cs);
+    let lookup_table_group_count = lookup_shape.table_cardinality_upper_bounds.len();
+    let graph_witness_scalar_element_count = shape_scalar_elements(
+        &circuit.model().graph.input_shapes()?
+            .into_iter()
+            .chain(circuit.model().graph.param_shapes()?)
+            .chain(circuit.model().graph.output_shapes()?)
+            .collect::<Vec<_>>(),
+    )?;
     let selector_fixed_column_count = shape_census.selector_fixed_column_count;
     let fixed_column_count_post_compression = cs
         .num_fixed_columns()
@@ -2378,9 +2542,6 @@ fn gat_prepare_admission(
         permutation_successor_entry_count_upper,
         selector_activation_bitmap_bytes,
     );
-    let domain_size = 1u64
-        .checked_shl(logrows)
-        .ok_or_else(|| format!("invalid native GAT logrows for admission: {}", logrows))?;
     let scalar_columns = cs.num_fixed_columns() + cs.num_advice_columns() + cs.num_instance_columns();
     let scalar_domain_bytes = u128::from(domain_size)
         * scalar_columns as u128
@@ -2399,12 +2560,103 @@ fn gat_prepare_admission(
         .checked_next_power_of_two()
         .ok_or_else(|| "native GAT extended proof domain is not representable".to_string())?;
     let proof_logrows = proof_domain_size.trailing_zeros();
+    let uses_recursive_fft = !cfg!(target_arch = "x86_64");
+    let recursive_fft_twiddle_field_elements = if uses_recursive_fft {
+        u64::try_from(
+            2u128
+                .checked_mul(
+                    u128::from(proof_domain_size - 1) + u128::from(proof_logrows),
+                )
+                .ok_or_else(|| "recursive FFT twiddle count overflow".to_string())?,
+        )
+        .map_err(|_| "recursive FFT twiddle count exceeds u64".to_string())?
+    } else {
+        0
+    };
+    let recursive_fft_cached_domain_lengths = if uses_recursive_fft {
+        vec![proof_domain_size]
+    } else {
+        Vec::new()
+    };
+    let fft_cache_domain = halo2_proofs::poly::EvaluationDomain::<Fr>::new(
+        u32::try_from(degree).map_err(|_| "native GAT degree exceeds u32".to_string())?,
+        logrows,
+    );
+    let quotient_piece_count = fft_cache_domain.get_quotient_poly_degree();
+    let fft_cache_entry_count = fft_cache_domain.fft_cache_entry_count();
+    let fft_cache_entry_capacity = fft_cache_domain.fft_cache_entry_capacity();
+    let shplonk_shape = plonk::native_shplonk_resource_shape::<Fr>(
+        &cs,
+        domain_size,
+        usize::try_from(lookup_shape.argument_count)
+            .map_err(|_| "native mv-lookup argument count exceeds host index width")?,
+        1,
+        quotient_piece_count,
+    );
+    drop(fft_cache_domain);
+    let srs_fft_cache_domain = halo2_proofs::poly::EvaluationDomain::<Fr>::new(1, logrows);
+    let srs_fft_cache_entry_count = srs_fft_cache_domain.fft_cache_entry_count();
+    let srs_fft_cache_entry_capacity = srs_fft_cache_domain.fft_cache_entry_capacity();
+    drop(srs_fft_cache_domain);
+    let parallel_fft_lookup_table_elements = if proof_logrows < 10 {
+        1u64 << proof_logrows
+    } else {
+        (1u64 << 10) + (1u64 << (proof_logrows - 10))
+    };
+    let size_of_fft_data = std::mem::size_of::<
+        halo2_proofs::fft::recursive::FFTData<Fr>,
+    >();
+    let size_of_fft_data_once_lock = std::mem::size_of::<
+        std::sync::OnceLock<halo2_proofs::fft::recursive::FFTData<Fr>>,
+    >();
+    let size_of_fft_data_cache_entry = std::mem::size_of::<(
+        usize,
+        std::sync::Arc<
+            std::sync::OnceLock<halo2_proofs::fft::recursive::FFTData<Fr>>,
+        >,
+    )>();
+    let size_of_fft_data_cache_map = std::mem::size_of::<std::collections::HashMap<
+        usize,
+        std::sync::Arc<
+            std::sync::OnceLock<halo2_proofs::fft::recursive::FFTData<Fr>>,
+        >,
+    >>();
+    let fft_parallel_thread_count = halo2_proofs::fft::parallel_thread_count();
     let device_capacity = halo2_proofs::icicle::device_capacity_identity()
         .map_err(|error| format!("native GAT CUDA memory identity failed: {}", error))?;
+    let (
+        size_of_mv_lookup_prepared_bytes,
+        size_of_mv_lookup_prepared_table_bytes,
+        size_of_mv_lookup_committed_bytes,
+    ) =
+        plonk::native_mv_lookup_resource_layout::<G1Affine>();
+    let (
+        size_of_shplonk_commitment_extension_bytes,
+        size_of_shplonk_rotation_set_extension_bytes,
+    ) = halo2_proofs::poly::kzg::multiopen::native_shplonk_resource_layout::<G1Affine>();
+    let size_of_coeff_polynomial_header_bytes = std::mem::size_of::<
+        halo2_proofs::poly::Polynomial<Fr, halo2_proofs::poly::Coeff>,
+    >();
+    let shplonk_rotation_set_count = shplonk_shape.rotation_set_commitment_counts.len();
     let memory_model = serde_json::json!({
-        "schema": "ezkl-halo2-memory-model-v2",
+        "schema": "ezkl-halo2-memory-model-v4",
+        "native_target_arch": std::env::consts::ARCH,
+        "uses_recursive_fft": uses_recursive_fft,
         "proof_logrows": proof_logrows,
         "proof_domain_size": proof_domain_size,
+        "recursive_fft_cached_domain_lengths": recursive_fft_cached_domain_lengths,
+        "recursive_fft_twiddle_field_elements": recursive_fft_twiddle_field_elements,
+        "fft_cache_supported_length_count": fft_cache_entry_count,
+        "fft_cache_entry_capacity": fft_cache_entry_capacity,
+        "srs_fft_cache_supported_length_count": srs_fft_cache_entry_count,
+        "srs_fft_cache_entry_capacity": srs_fft_cache_entry_capacity,
+        "fft_parallel_thread_count": fft_parallel_thread_count,
+        "parallel_fft_lookup_table_elements": parallel_fft_lookup_table_elements,
+        "size_of_fftdata_bytes": size_of_fft_data,
+        "size_of_fftdata_once_lock_bytes": size_of_fft_data_once_lock,
+        "size_of_fftdata_cache_entry_bytes": size_of_fft_data_cache_entry,
+        "size_of_fftdata_cache_map_bytes": size_of_fft_data_cache_map,
+        "size_of_arc_header_bytes": std::mem::size_of::<(usize, usize)>(),
         "advice_column_phase_ids": cs.advice_column_phase(),
         "size_of_fr_bytes": std::mem::size_of::<Fr>(),
         "size_of_assigned_fr_bytes": std::mem::size_of::<plonk::Assigned<Fr>>(),
@@ -2413,6 +2665,42 @@ fn gat_prepare_admission(
         "size_of_usize_bytes": std::mem::size_of::<usize>(),
         "size_of_usize_pair_bytes": std::mem::size_of::<(usize, usize)>(),
         "size_of_g1_affine_bytes": std::mem::size_of::<G1Affine>(),
+        "size_of_g1_projective_bytes": std::mem::size_of::<<G1Affine as halo2curves::group::prime::PrimeCurveAffine>::Curve>(),
+        "size_of_g2_affine_bytes": std::mem::size_of::<halo2curves::bn256::G2Affine>(),
+        "size_of_fft_stage_bytes": std::mem::size_of::<halo2_proofs::fft::recursive::FFTStage>(),
+        "size_of_atomic_u64_bytes": std::mem::size_of::<std::sync::atomic::AtomicU64>(),
+        "size_of_lookup_map_entry_bytes": std::mem::size_of::<(Vec<u8>, usize)>(),
+        "size_of_lookup_map_header_bytes": plonk::native_mv_lookup_map_header_bytes(),
+        "size_of_vec_u8_bytes": std::mem::size_of::<Vec<u8>>(),
+        "size_of_lookup_repr_bytes": Fr::default().to_repr().as_ref().len(),
+        "size_of_vec_header_bytes": std::mem::size_of::<Vec<Fr>>(),
+        "size_of_polynomial_header_bytes": std::mem::size_of::<halo2_proofs::poly::Polynomial<Fr, halo2_proofs::poly::LagrangeCoeff>>(),
+        "size_of_mv_lookup_prepared_bytes": size_of_mv_lookup_prepared_bytes,
+        "size_of_mv_lookup_prepared_table_bytes": size_of_mv_lookup_prepared_table_bytes,
+        "size_of_mv_lookup_committed_bytes": size_of_mv_lookup_committed_bytes,
+        "size_of_shplonk_commitment_extension_bytes": size_of_shplonk_commitment_extension_bytes,
+        "size_of_shplonk_rotation_set_extension_bytes": size_of_shplonk_rotation_set_extension_bytes,
+        "size_of_coeff_polynomial_header_bytes": size_of_coeff_polynomial_header_bytes,
+        "lookup_table_cardinality_upper_bounds": lookup_shape.table_cardinality_upper_bounds,
+        "custom_gate_dependency_columns": evaluation_shape.custom_gate_dependency_columns,
+        "lookup_dependency_columns": evaluation_shape.lookup_dependency_columns,
+        "lookup_query_polynomial_counts": evaluation_shape.lookup_query_polynomial_counts,
+        "shuffle_dependency_columns": evaluation_shape.shuffle_dependency_columns,
+        "shplonk_rotation_set_commitment_counts": shplonk_shape.rotation_set_commitment_counts,
+        "shplonk_query_polynomial_count": shplonk_shape.query_polynomial_count,
+        "shplonk_rotation_set_count": shplonk_rotation_set_count,
+        "shplonk_max_rotation_count": shplonk_shape.max_rotation_count,
+        "shplonk_unique_opening_point_count": shplonk_shape.unique_opening_point_count,
+        "shplonk_max_commitments_per_rotation_set": shplonk_shape.max_commitments_per_rotation_set,
+        "shplonk_permutation_product_set_count": shplonk_shape.permutation_product_set_count,
+        "shplonk_advice_query_polynomial_count": shplonk_shape.advice_query_polynomial_count,
+        "shplonk_fixed_query_polynomial_count": shplonk_shape.fixed_query_polynomial_count,
+        "shplonk_lookup_argument_count": shplonk_shape.lookup_argument_count,
+        "shplonk_shuffle_argument_count": shplonk_shape.shuffle_argument_count,
+        "shplonk_proof_instance_count": shplonk_shape.proof_instance_count,
+        "shplonk_quotient_piece_count": shplonk_shape.quotient_piece_count,
+        "graph_witness_scalar_element_count": graph_witness_scalar_element_count,
+        "size_of_graph_witness_scalar_bytes": std::mem::size_of::<Fr>(),
         "cuda_uuid": device_capacity.0,
         "cuda_free_bytes_at_admission": device_capacity.1,
         "cuda_total_memory_bytes": device_capacity.2,
@@ -2442,7 +2730,7 @@ fn gat_prepare_admission(
     let compiled_circuit_sha256 = get_file_hash(&compiled_path)?;
     let relation_identity = native_admission_relation_identity(&loaded)?;
     let admission = serde_json::json!({
-        "schema_version": 3,
+        "schema_version": 4,
         "relation_id": "R_GAT-ezkl",
         "dataset": loaded.dataset,
         "model_arch_id": loaded.spec.model.model_arch_id,
@@ -2465,6 +2753,7 @@ fn gat_prepare_admission(
         "constraint_system": {
             "degree": degree,
             "num_fixed_columns": cs.num_fixed_columns(),
+            "num_custom_gate_groups": evaluation_shape.custom_gate_dependency_columns.len(),
             "selector_fixed_column_count": selector_fixed_column_count,
             "fixed_column_count_post_compression": fixed_column_count_post_compression,
             "permutation_copy_call_count": shape_census.permutation_copy_call_count,
@@ -2472,7 +2761,10 @@ fn gat_prepare_admission(
             "num_advice_columns": cs.num_advice_columns(),
             "num_instance_columns": cs.num_instance_columns(),
             "num_selectors": cs.num_selectors(),
-            "num_lookup_arguments": cs.lookups().len(),
+            "num_lookup_arguments": lookup_shape.argument_count,
+            "num_lookup_query_polynomials": lookup_shape.query_polynomial_count,
+            "max_lookup_query_polynomials_per_argument": lookup_shape.max_query_polynomials_per_argument,
+            "num_unique_lookup_table_expression_groups": lookup_table_group_count,
             "num_shuffle_arguments": cs.shuffles().len(),
             "num_permutation_columns": cs.num_permutation_columns(),
             "num_blinding_factors": cs.blinding_factors(),
@@ -2547,7 +2839,7 @@ fn load_native_admission_circuit(
     }
     let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
     let expected_relation_identity = native_admission_relation_identity(loaded)?;
-    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(3)
+    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(4)
         || admission.get("relation_id").and_then(JsonValue::as_str) != Some("R_GAT-ezkl")
         || admission.get("dataset").and_then(JsonValue::as_str) != Some(loaded.dataset.as_str())
         || admission.get("resource_manifest_sha256").and_then(JsonValue::as_str)
@@ -2571,6 +2863,24 @@ fn load_native_admission_circuit(
     }
     assert_native_gat_identity(&circuit, &loaded.spec)?;
     let current_cs = configure_canonical_constraint_system(&circuit);
+    let current_evaluation_shape =
+        plonk::native_evaluation_resource_shape::<G1Affine>(&current_cs);
+    let current_shplonk_domain = halo2_proofs::poly::EvaluationDomain::<Fr>::new(
+        u32::try_from(current_cs.degree())
+            .map_err(|_| "native admission degree exceeds u32".to_string())?,
+        settings.run_args.logrows,
+    );
+    let current_quotient_piece_count = current_shplonk_domain.get_quotient_poly_degree();
+    let current_shplonk_shape = plonk::native_shplonk_resource_shape::<Fr>(
+        &current_cs,
+        1u64
+            .checked_shl(settings.run_args.logrows)
+            .ok_or_else(|| "native admission domain size overflow".to_string())?,
+        current_cs.lookups().len(),
+        1,
+        current_quotient_piece_count,
+    );
+    drop(current_shplonk_domain);
     let admission_cs = admission
         .get("constraint_system")
         .and_then(JsonValue::as_object)
@@ -2613,6 +2923,10 @@ fn load_native_admission_circuit(
         ("num_advice_columns", current_cs.num_advice_columns()),
         ("num_instance_columns", current_cs.num_instance_columns()),
         ("num_selectors", current_cs.num_selectors()),
+        (
+            "num_custom_gate_groups",
+            current_evaluation_shape.custom_gate_dependency_columns.len(),
+        ),
         ("num_lookup_arguments", current_cs.lookups().len()),
         ("num_shuffle_arguments", current_cs.shuffles().len()),
         ("num_permutation_columns", current_cs.num_permutation_columns()),
@@ -2627,7 +2941,7 @@ fn load_native_admission_circuit(
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "native admission has no memory model".to_string())?;
     if memory_model.get("schema").and_then(JsonValue::as_str)
-        != Some("ezkl-halo2-memory-model-v2")
+        != Some("ezkl-halo2-memory-model-v4")
         || memory_model.get("fixed_polynomial_read_mode").and_then(JsonValue::as_str)
             != Some("streamed_one_polynomial_chunked_v1")
     {
@@ -2645,14 +2959,250 @@ fn load_native_admission_circuit(
     let decoded_chunk_bytes = chunk_fields * std::mem::size_of::<Fr>();
     let read_heap_bytes = raw_chunk_bytes + decoded_chunk_bytes;
     let batch_invert_entry_bytes = std::mem::size_of::<(Fr, &mut Fr)>() as u128;
+    let (prepared_bytes, prepared_table_bytes, committed_bytes) =
+        plonk::native_mv_lookup_resource_layout::<G1Affine>();
+    let quotient_extent = n
+        .checked_mul(current_cs.degree().saturating_sub(1) as u128)
+        .ok_or_else(|| "native admission proof-domain extent overflow".to_string())?;
+    let expected_proof_domain_size = quotient_extent
+        .checked_next_power_of_two()
+        .ok_or_else(|| "native admission proof-domain size overflow".to_string())?;
+    let expected_proof_logrows = expected_proof_domain_size.trailing_zeros();
+    let uses_recursive_fft = !cfg!(target_arch = "x86_64");
+    let expected_twiddle_elements = if uses_recursive_fft {
+        2u128
+            .checked_mul(
+                expected_proof_domain_size
+                    .checked_sub(1)
+                    .and_then(|value| value.checked_add(u128::from(expected_proof_logrows)))
+                    .ok_or_else(|| "native admission recursive FFT twiddle count overflow".to_string())?,
+            )
+            .ok_or_else(|| "native admission recursive FFT twiddle count overflow".to_string())?
+    } else {
+        0
+    };
+    let expected_cached_domain_lengths = if uses_recursive_fft {
+        vec![u64::try_from(expected_proof_domain_size)
+            .map_err(|_| "native admission proof domain exceeds u64".to_string())?]
+    } else {
+        Vec::new()
+    };
+    let expected_parallel_fft_lookup_table_elements = if expected_proof_logrows < 10 {
+        1u128 << expected_proof_logrows
+    } else {
+        (1u128 << 10) + (1u128 << (expected_proof_logrows - 10))
+    };
+    let cache_shape_domain = halo2_proofs::poly::EvaluationDomain::<Fr>::new(
+        u32::try_from(current_cs.degree())
+            .map_err(|_| "native admission degree exceeds u32".to_string())?,
+        settings.run_args.logrows,
+    );
+    let expected_cache_supported_length_count = cache_shape_domain.fft_cache_entry_count();
+    let expected_cache_entry_capacity = cache_shape_domain.fft_cache_entry_capacity();
+    drop(cache_shape_domain);
+    let srs_cache_shape_domain = halo2_proofs::poly::EvaluationDomain::<Fr>::new(
+        1,
+        settings.run_args.logrows,
+    );
+    let expected_srs_cache_supported_length_count = srs_cache_shape_domain.fft_cache_entry_count();
+    let expected_srs_cache_entry_capacity = srs_cache_shape_domain.fft_cache_entry_capacity();
+    drop(srs_cache_shape_domain);
+    for (name, expected) in [
+        ("native_target_arch", JsonValue::from(std::env::consts::ARCH)),
+        ("uses_recursive_fft", JsonValue::from(uses_recursive_fft)),
+        (
+            "recursive_fft_twiddle_field_elements",
+            JsonValue::from(u64::try_from(expected_twiddle_elements)
+                .map_err(|_| "native admission FFT twiddle count exceeds u64".to_string())?),
+        ),
+        (
+            "fft_cache_supported_length_count",
+            JsonValue::from(expected_cache_supported_length_count as u64),
+        ),
+        (
+            "fft_cache_entry_capacity",
+            JsonValue::from(expected_cache_entry_capacity as u64),
+        ),
+        (
+            "srs_fft_cache_supported_length_count",
+            JsonValue::from(expected_srs_cache_supported_length_count as u64),
+        ),
+        (
+            "srs_fft_cache_entry_capacity",
+            JsonValue::from(expected_srs_cache_entry_capacity as u64),
+        ),
+        (
+            "fft_parallel_thread_count",
+            JsonValue::from(halo2_proofs::fft::parallel_thread_count() as u64),
+        ),
+        (
+            "parallel_fft_lookup_table_elements",
+            JsonValue::from(u64::try_from(expected_parallel_fft_lookup_table_elements)
+                .map_err(|_| "native admission parallel FFT table count exceeds u64".to_string())?),
+        ),
+        (
+            "recursive_fft_cached_domain_lengths",
+            serde_json::json!(expected_cached_domain_lengths),
+        ),
+        (
+            "custom_gate_dependency_columns",
+            serde_json::json!(current_evaluation_shape.custom_gate_dependency_columns),
+        ),
+        (
+            "lookup_dependency_columns",
+            serde_json::json!(current_evaluation_shape.lookup_dependency_columns),
+        ),
+        (
+            "lookup_query_polynomial_counts",
+            serde_json::json!(current_evaluation_shape.lookup_query_polynomial_counts),
+        ),
+        (
+            "shuffle_dependency_columns",
+            serde_json::json!(current_evaluation_shape.shuffle_dependency_columns),
+        ),
+        (
+            "shplonk_rotation_set_commitment_counts",
+            serde_json::json!(current_shplonk_shape.rotation_set_commitment_counts),
+        ),
+        (
+            "shplonk_query_polynomial_count",
+            JsonValue::from(current_shplonk_shape.query_polynomial_count as u64),
+        ),
+        (
+            "shplonk_rotation_set_count",
+            JsonValue::from(current_shplonk_shape.rotation_set_count as u64),
+        ),
+        (
+            "shplonk_max_rotation_count",
+            JsonValue::from(current_shplonk_shape.max_rotation_count as u64),
+        ),
+        (
+            "shplonk_unique_opening_point_count",
+            JsonValue::from(current_shplonk_shape.unique_opening_point_count as u64),
+        ),
+        (
+            "shplonk_max_commitments_per_rotation_set",
+            JsonValue::from(current_shplonk_shape.max_commitments_per_rotation_set as u64),
+        ),
+        (
+            "shplonk_permutation_product_set_count",
+            JsonValue::from(current_shplonk_shape.permutation_product_set_count as u64),
+        ),
+        (
+            "shplonk_advice_query_polynomial_count",
+            JsonValue::from(current_shplonk_shape.advice_query_polynomial_count as u64),
+        ),
+        (
+            "shplonk_fixed_query_polynomial_count",
+            JsonValue::from(current_shplonk_shape.fixed_query_polynomial_count as u64),
+        ),
+        (
+            "shplonk_lookup_argument_count",
+            JsonValue::from(current_shplonk_shape.lookup_argument_count as u64),
+        ),
+        (
+            "shplonk_shuffle_argument_count",
+            JsonValue::from(current_shplonk_shape.shuffle_argument_count as u64),
+        ),
+        (
+            "shplonk_proof_instance_count",
+            JsonValue::from(current_shplonk_shape.proof_instance_count as u64),
+        ),
+        (
+            "shplonk_quotient_piece_count",
+            JsonValue::from(current_shplonk_shape.quotient_piece_count as u64),
+        ),
+    ] {
+        if memory_model.get(name) != Some(&expected) {
+            return Err(format!("native admission {} disagrees with source-matched evaluation geometry", name).into());
+        }
+    }
+    let expected_memory_sizes = [
+        ("proof_logrows", expected_proof_logrows as u128),
+        ("proof_domain_size", expected_proof_domain_size),
+        (
+            "size_of_fftdata_bytes",
+            std::mem::size_of::<halo2_proofs::fft::recursive::FFTData<Fr>>() as u128,
+        ),
+        (
+            "size_of_fftdata_once_lock_bytes",
+            std::mem::size_of::<std::sync::OnceLock<halo2_proofs::fft::recursive::FFTData<Fr>>>() as u128,
+        ),
+        (
+            "size_of_fftdata_cache_entry_bytes",
+            std::mem::size_of::<(
+                usize,
+                std::sync::Arc<std::sync::OnceLock<halo2_proofs::fft::recursive::FFTData<Fr>>>,
+            )>() as u128,
+        ),
+        (
+            "size_of_fftdata_cache_map_bytes",
+            std::mem::size_of::<std::collections::HashMap<
+                usize,
+                std::sync::Arc<std::sync::OnceLock<halo2_proofs::fft::recursive::FFTData<Fr>>>,
+            >>() as u128,
+        ),
+        (
+            "size_of_arc_header_bytes",
+            std::mem::size_of::<(usize, usize)>() as u128,
+        ),
+        ("size_of_fr_bytes", std::mem::size_of::<Fr>() as u128),
+        ("size_of_assigned_fr_bytes", std::mem::size_of::<plonk::Assigned<Fr>>() as u128),
+        ("size_of_option_fr_bytes", std::mem::size_of::<Option<Fr>>() as u128),
+        ("size_of_batch_invert_entry_bytes", batch_invert_entry_bytes),
+        ("size_of_usize_bytes", std::mem::size_of::<usize>() as u128),
+        ("size_of_usize_pair_bytes", std::mem::size_of::<(usize, usize)>() as u128),
+        ("size_of_g1_affine_bytes", std::mem::size_of::<G1Affine>() as u128),
+        (
+            "size_of_g1_projective_bytes",
+            std::mem::size_of::<<G1Affine as halo2curves::group::prime::PrimeCurveAffine>::Curve>() as u128,
+        ),
+        ("size_of_g2_affine_bytes", std::mem::size_of::<halo2curves::bn256::G2Affine>() as u128),
+        (
+            "size_of_fft_stage_bytes",
+            std::mem::size_of::<halo2_proofs::fft::recursive::FFTStage>() as u128,
+        ),
+        ("size_of_atomic_u64_bytes", std::mem::size_of::<std::sync::atomic::AtomicU64>() as u128),
+        ("size_of_lookup_map_entry_bytes", std::mem::size_of::<(Vec<u8>, usize)>() as u128),
+        (
+            "size_of_lookup_map_header_bytes",
+            plonk::native_mv_lookup_map_header_bytes() as u128,
+        ),
+        ("size_of_vec_u8_bytes", std::mem::size_of::<Vec<u8>>() as u128),
+        ("size_of_lookup_repr_bytes", Fr::default().to_repr().as_ref().len() as u128),
+        ("size_of_vec_header_bytes", std::mem::size_of::<Vec<Fr>>() as u128),
+        (
+            "size_of_polynomial_header_bytes",
+            std::mem::size_of::<halo2_proofs::poly::Polynomial<Fr, halo2_proofs::poly::LagrangeCoeff>>() as u128,
+        ),
+        ("size_of_mv_lookup_prepared_bytes", prepared_bytes as u128),
+        ("size_of_mv_lookup_prepared_table_bytes", prepared_table_bytes as u128),
+        ("size_of_mv_lookup_committed_bytes", committed_bytes as u128),
+        (
+            "size_of_shplonk_commitment_extension_bytes",
+            halo2_proofs::poly::kzg::multiopen::native_shplonk_resource_layout::<G1Affine>().0 as u128,
+        ),
+        (
+            "size_of_shplonk_rotation_set_extension_bytes",
+            halo2_proofs::poly::kzg::multiopen::native_shplonk_resource_layout::<G1Affine>().1 as u128,
+        ),
+        (
+            "size_of_coeff_polynomial_header_bytes",
+            std::mem::size_of::<
+                halo2_proofs::poly::Polynomial<Fr, halo2_proofs::poly::Coeff>,
+            >() as u128,
+        ),
+    ];
     for (name, expected) in [
         ("selector_activation_bitmap_bytes", expected_selector_bitmap_bytes),
-        ("size_of_batch_invert_entry_bytes", batch_invert_entry_bytes),
         ("fixed_polynomial_read_chunk_fields_upper", chunk_fields as u128),
         ("fixed_polynomial_read_raw_chunk_bytes_upper", raw_chunk_bytes as u128),
         ("fixed_polynomial_read_decoded_chunk_bytes_upper", decoded_chunk_bytes as u128),
         ("fixed_polynomial_read_heap_scratch_bytes_upper", read_heap_bytes as u128),
-    ] {
+    ]
+    .into_iter()
+    .chain(expected_memory_sizes)
+    {
         if memory_model.get(name).and_then(JsonValue::as_u64) != u64::try_from(expected).ok() {
             return Err(format!("native admission {} disagrees with the source memory bound", name).into());
         }
@@ -4348,6 +4898,95 @@ pub(crate) fn load_params_prover<Scheme: CommitmentScheme>(
 #[cfg(test)]
 mod native_geometry_diagnostics {
     use super::*;
+
+    #[test]
+    fn tiny_fixture_lookup_memory_bounds_match_native_census() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/gat_lookup_reuse/compiled.circuit");
+        let saved = GraphCircuit::load(fixture).expect("load tiny GAT fixture");
+        let circuit = GraphCircuit::new(saved.model().clone(), &saved.settings().run_args)
+            .expect("construct fresh tiny GAT circuit");
+        let k = circuit.settings().run_args.logrows;
+        let gat = circuit
+            .model()
+            .graph
+            .nodes
+            .values()
+            .find_map(|node| match node {
+                crate::graph::NodeType::Node(node) => match &node.opkind {
+                    crate::graph::SupportedOp::Gat(op) => Some(&op.spec),
+                    _ => None,
+                },
+                crate::graph::NodeType::SubGraph { .. } => None,
+            })
+            .expect("tiny fixture includes canonical GAT spec");
+        println!(
+            "EZKL_TINY_GAT_FIXTURE k={} domain={} graph_nodes={} assignments={} rows={} n_total={} n={} e={} feature_dim={} feature_values={} hidden_heads_din_dhead={:?} output_heads={} classes={} required_ranges={:?} required_lookups={} dyn_rows={} dyn_max_input={} dyn_lookups={} shuffle_rows={} einsum_rows={} instances={:?}",
+            k,
+            1usize.checked_shl(k).unwrap_or(0),
+            circuit.model().graph.nodes.len(),
+            circuit.settings().total_assignments,
+            circuit.settings().num_rows,
+            gat.graph.n_total,
+            gat.graph.n,
+            gat.graph.e,
+            gat.feature_dim,
+            gat.features.len(),
+            gat.model.hidden_layers.iter().map(|layer| (layer.heads.len(), layer.d_in, layer.d_head)).collect::<Vec<_>>(),
+            gat.model.output_heads.len(),
+            gat.model.classes,
+            circuit.settings().required_range_checks,
+            circuit.settings().required_lookups.len(),
+            circuit.settings().dynamic_lookup_params.total_dynamic_col_size,
+            circuit.settings().dynamic_lookup_params.max_dynamic_input_len,
+            circuit.settings().dynamic_lookup_params.num_dynamic_lookups,
+            circuit.settings().shuffle_params.total_shuffle_col_size,
+            circuit.settings().einsum_params.total_einsum_col_size,
+            circuit.settings().model_instance_shapes,
+        );
+        let census_circuit = circuit.without_witnesses();
+        let census = plonk::census_native_shape::<G1Affine, _>(k, &census_circuit)
+            .expect("native tiny GAT selector census");
+        let cs = configure_canonical_constraint_system(&circuit);
+        let shape = native_mv_lookup_shape(&cs, &census, 1u64 << k)
+            .expect("derive source-bounded mv-lookup admission shape");
+        println!(
+            "EZKL_TINY_LOOKUP_CONFIG num_inner_cols={} requires_dynamic={} dynamic_lookup_and_shuffle_cols={} configured_lookups={} advice={} fixed={} selectors={} argument_count={} table_groups={}",
+            circuit.settings().run_args.num_inner_cols,
+            circuit.settings().requires_dynamic_lookup(),
+            circuit.settings().dynamic_lookup_params.total_dynamic_col_size
+                + circuit.settings().shuffle_params.total_shuffle_col_size,
+            cs.lookups().len(),
+            cs.num_advice_columns(),
+            cs.num_fixed_columns(),
+            cs.num_selectors(),
+            shape.argument_count,
+            shape.table_cardinality_upper_bounds.len(),
+        );
+        println!(
+            "EZKL_TINY_LOOKUP_MEMORY_SHAPE arguments={} query_polynomials={} max_queries_per_argument={} table_cardinality_upper_bounds={:?} selectors={} total_selector_activations={} total_fixed_value_assignments={} copy_calls={} table_group_count={}",
+            shape.argument_count,
+            shape.query_polynomial_count,
+            shape.max_query_polynomials_per_argument,
+            shape.table_cardinality_upper_bounds,
+            census.selector_fixed_column_count,
+            census.selector_activation_counts.iter().sum::<u64>(),
+            census.fixed_value_assignment_counts.iter().sum::<u64>(),
+            census.permutation_copy_call_count,
+            shape.table_cardinality_upper_bounds.len(),
+        );
+        assert_eq!(shape.argument_count as usize, cs.lookups().len());
+        assert!(shape.argument_count > 0);
+        assert!(!shape.table_cardinality_upper_bounds.is_empty());
+        assert!(
+            shape.table_cardinality_upper_bounds.len() <= shape.argument_count as usize,
+            "table groups must not exceed the exact post-chunk lookup argument count"
+        );
+        assert!(shape
+            .table_cardinality_upper_bounds
+            .iter()
+            .all(|bound| *bound > 0 && *bound <= (1u64 << k)));
+    }
 
     /// Explicitly invoked diagnostic for current-source geometry. This does
     /// not create a formal session, keys, proof, or READY marker.

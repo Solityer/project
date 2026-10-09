@@ -214,12 +214,16 @@ impl<F: Field> Assignment<F> for Assembly<F> {
 /// shape-only synthesis. Copy calls are counted so the serialized sparse
 /// successor mapping can use the source-derived `2 * copy_calls` bound rather
 /// than the much looser full `permutation_columns * domain_size` bound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeShapeCensus {
     /// Number of fixed columns emitted by native selector compression.
     pub selector_fixed_column_count: usize,
     /// Number of copy callbacks made by the real circuit floor planner.
     pub permutation_copy_call_count: u64,
+    /// Exact enabled-row count for every virtual selector, in selector-index order.
+    pub selector_activation_counts: Vec<u64>,
+    /// Upper bounds on distinct fixed values assigned or filled per fixed column.
+    pub fixed_value_assignment_counts: Vec<u64>,
 }
 
 /// Run shape-only synthesis without building fixed/permutation polynomials or
@@ -253,6 +257,8 @@ where
         fixed_columns: cs.num_fixed_columns,
         permutation_columns: cs.permutation.columns.clone(),
         selectors,
+        selector_activation_counts: vec![0; cs.num_selectors],
+        fixed_value_assignment_counts: vec![0; cs.num_fixed_columns],
         usable_rows: 0..usable_end,
         permutation_copy_call_count: 0,
         _marker: std::marker::PhantomData,
@@ -268,6 +274,8 @@ where
     Ok(NativeShapeCensus {
         selector_fixed_column_count: cs.compress_selector_bitmaps(&assembly.selectors).1,
         permutation_copy_call_count: assembly.permutation_copy_call_count,
+        selector_activation_counts: assembly.selector_activation_counts,
+        fixed_value_assignment_counts: assembly.fixed_value_assignment_counts,
     })
 }
 
@@ -293,6 +301,8 @@ struct SelectorOnlyAssembly<F: Field> {
     fixed_columns: usize,
     permutation_columns: Vec<Column<Any>>,
     selectors: Vec<SelectorBitmap>,
+    selector_activation_counts: Vec<u64>,
+    fixed_value_assignment_counts: Vec<u64>,
     usable_rows: Range<usize>,
     permutation_copy_call_count: u64,
     _marker: std::marker::PhantomData<F>,
@@ -316,11 +326,21 @@ impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
         if !self.usable_rows.contains(&row) {
             return Err(Error::not_enough_rows_available(self.k));
         }
-        self.selectors
-            .get_mut(selector.0)
-            .ok_or(Error::BoundsFailure)?
-            .set_value(row, 1)
-            .map_err(Error::NativeStorage)
+        let selector_index = selector.0;
+        let bitmap = self
+            .selectors
+            .get_mut(selector_index)
+            .ok_or(Error::BoundsFailure)?;
+        let was_enabled = bitmap.value(row) != 0;
+        bitmap.set_value(row, 1).map_err(Error::NativeStorage)?;
+        if !was_enabled {
+            let count = self
+                .selector_activation_counts
+                .get_mut(selector_index)
+                .ok_or(Error::BoundsFailure)?;
+            *count = count.checked_add(1).ok_or(Error::BoundsFailure)?;
+        }
+        Ok(())
     }
 
     fn query_instance(&self, _: Column<Instance>, row: usize) -> Result<Value<F>, Error> {
@@ -367,6 +387,11 @@ impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
             return Err(Error::BoundsFailure);
         }
         let _ = to().into_field().assign()?;
+        let count = self
+            .fixed_value_assignment_counts
+            .get_mut(column.index())
+            .ok_or(Error::BoundsFailure)?;
+        *count = count.checked_add(1).ok_or(Error::BoundsFailure)?;
         Ok(())
     }
 
@@ -406,6 +431,11 @@ impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
             return Err(Error::BoundsFailure);
         }
         let _ = to.assign()?;
+        let count = self
+            .fixed_value_assignment_counts
+            .get_mut(column.index())
+            .ok_or(Error::BoundsFailure)?;
+        *count = count.checked_add(1).ok_or(Error::BoundsFailure)?;
         Ok(())
     }
 

@@ -456,14 +456,17 @@ pub(crate) fn build_vk<'params, C: CurveAffine, P: Params<'params, C>>(
 
 #[cfg(all(test, not(feature = "thread-safe-region")))]
 mod sparse_assembly_tests {
-    use super::{build_vk, Assembly};
+    use super::{build_vk, Assembly, ProvingKey};
     use crate::{
-        halo2curves::bn256::{Bn256, Fr},
+        halo2curves::bn256::{Bn256, Fr, G1Affine},
         plonk::{permutation::Argument, Any, Column},
-        poly::{kzg::commitment::ParamsKZG, EvaluationDomain},
+        poly::{commitment::{Blind, Params}, kzg::commitment::ParamsKZG, EvaluationDomain},
+        SerdeFormat,
     };
     use ff::{Field, PrimeField};
+    use group::Curve;
     use rand_core::OsRng;
+    use std::io::Cursor;
 
     #[test]
     fn touched_sparse_successors_match_dense_assembly_and_vk_commitments() {
@@ -560,8 +563,8 @@ mod sparse_assembly_tests {
 
         let params = ParamsKZG::<Bn256>::setup(3, OsRng);
         let domain = EvaluationDomain::<Fr>::new(3, 3);
-        let sparse_vk = sparse.build_vk(&params, &domain, &argument);
-        let dense_vk = build_vk(&params, &domain, &argument, move |column, row| {
+        let sparse_vk = sparse.clone().build_vk(&params, &domain, &argument);
+        let dense_vk = build_vk(&params, &domain, &argument, |column, row| {
             dense_mapping[column][row]
         });
         assert_eq!(
@@ -569,5 +572,59 @@ mod sparse_assembly_tests {
             dense_vk.commitments(),
             "verification-key sigma commitments differ"
         );
+
+        // Exercise the serialized production PK path, including reconstruction
+        // of coefficient-basis sigma polynomials. Compare every loaded native
+        // sigma row and its KZG commitment against the same dense native map
+        // used to construct the VK above.
+        let native_pk = sparse
+            .build_pk(&params, &domain, &argument)
+            .expect("construct sparse permutation proving key");
+        let mut encoded = Vec::new();
+        native_pk
+            .write(&mut encoded, SerdeFormat::RawBytes)
+            .expect("serialize sparse permutation proving key");
+        let mut reader = Cursor::new(encoded.clone());
+        let loaded = ProvingKey::<G1Affine>::read(
+            &mut reader,
+            SerdeFormat::RawBytes,
+            &domain,
+            &argument.get_columns(),
+        )
+        .expect("reload sparse permutation proving key");
+        let mut roundtripped = Vec::new();
+        loaded
+            .write(&mut roundtripped, SerdeFormat::RawBytes)
+            .expect("reserialize sparse permutation proving key");
+        assert_eq!(roundtripped, encoded, "raw successor payload is canonical");
+        assert_eq!(loaded.polys().len(), columns.len());
+
+        let mut omega_powers = vec![Fr::ONE; n];
+        for row in 1..n {
+            omega_powers[row] = omega_powers[row - 1] * domain.get_omega();
+        }
+        for column in 0..columns.len() {
+            let sigma = loaded
+                .sigma_lagrange(&domain, column, &omega_powers)
+                .expect("rehydrate native sigma in Lagrange basis");
+            for row in 0..n {
+                let (target_column, target_row) = dense_mapping[column][row];
+                let expected = Fr::DELTA.pow_vartime([target_column as u64])
+                    * omega_powers[target_row];
+                assert_eq!(sigma[row], expected, "rehydrated sigma ({column}, {row})");
+                assert_eq!(
+                    crate::arithmetic::eval_polynomial(&loaded.polys()[column], omega_powers[row]),
+                    expected,
+                    "rehydrated coefficient sigma ({column}, {row})",
+                );
+            }
+            assert_eq!(
+                params
+                    .commit_lagrange(&sigma, Blind::default())
+                    .to_affine(),
+                sparse_vk.commitments()[column],
+                "rehydrated sigma KZG commitment for column {column}",
+            );
+        }
     }
 }

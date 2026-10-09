@@ -5,6 +5,12 @@ use crate::{poly::query::Query, transcript::ChallengeScalar};
 use ff::Field;
 use maybe_rayon::{iter::ParallelIterator, prelude::IntoParallelIterator};
 pub use prover::ProverSHPLONK;
+
+/// Returns the heap layout sizes for one SHPLONK commitment extension and one
+/// SHPLONK rotation-set extension.
+pub fn native_shplonk_resource_layout<C: crate::arithmetic::CurveAffine>() -> (usize, usize) {
+    prover::native_shplonk_resource_layout::<C>()
+}
 use std::collections::BTreeSet;
 pub use verifier::VerifierSHPLONK;
 

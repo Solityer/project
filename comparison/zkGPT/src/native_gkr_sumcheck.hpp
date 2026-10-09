@@ -149,9 +149,13 @@ inline quadratic_poly fold_prefix_product_round(
 // into the source pair and later folds compact toward lower indices, one
 // ascending bounded chunk at a time is safe without a full-domain fold buffer.
 class PackedAffinePrefixArena {
+    enum class Mode { Empty, Scalar, Source, SourcePending, Affine };
     NativeVector<F> fields_;
     std::uint64_t logical_extent_ = 0;
-    bool affine_ = false;
+    std::uint64_t source_extent_ = 0;
+    std::uint64_t pending_extent_ = 0;
+    Mode mode_ = Mode::Empty;
+    NativeFieldView source_;
 
     static std::size_t required_capacity(std::uint64_t logical_extent) {
         if (logical_extent == std::numeric_limits<std::uint64_t>::max())
@@ -162,7 +166,7 @@ class PackedAffinePrefixArena {
     }
 
 public:
-    void initialize_scalars(std::uint64_t logical_extent, const F& initial_value = F_ZERO) {
+    void initialize_scalars(std::uint64_t logical_extent, const F& initial_value = F_ZERO, bool clear_storage = true) {
         if (!fields_.empty() || fields_.capacity() != 0U)
             throw std::logic_error("packed GKR prefix arena must be released before initialization");
         const std::size_t capacity = required_capacity(logical_extent);
@@ -170,35 +174,53 @@ public:
         if (fields_.capacity() != capacity)
             throw std::logic_error("packed GKR prefix arena capacity differs from its source bound");
         fields_.resize(capacity);
-        std::fill(fields_.begin(), fields_.end(), F_ZERO);
+        if (clear_storage) std::fill(fields_.begin(), fields_.end(), F_ZERO);
         logical_extent_ = logical_extent;
-        affine_ = false;
-        for (std::uint64_t index = 0U; index < logical_extent_; ++index)
-            fields_[static_cast<std::size_t>(index)] = initial_value;
+        source_extent_ = 0U;
+        pending_extent_ = 0U;
+        mode_ = Mode::Scalar;
+        source_ = NativeFieldView();
+        if (!initial_value.isZero())
+            for (std::uint64_t index = 0U; index < logical_extent_; ++index)
+                fields_[static_cast<std::size_t>(index)] = initial_value;
+    }
+
+    void initialize_source_view(std::uint64_t logical_extent, NativeFieldView source) {
+        if (!fields_.empty() || fields_.capacity() != 0U || mode_ != Mode::Empty)
+            throw std::logic_error("packed GKR source view requires an empty prefix arena");
+        if (!source.valid() || source.size() != logical_extent)
+            throw std::invalid_argument("packed GKR source view does not match its active prefix");
+        logical_extent_ = logical_extent;
+        source_extent_ = logical_extent;
+        pending_extent_ = 0U;
+        source_ = std::move(source);
+        mode_ = Mode::Source;
     }
 
     std::uint64_t logical_extent() const { return logical_extent_; }
-    bool affine_mode() const { return affine_; }
+    bool affine_mode() const { return mode_ == Mode::Affine; }
+    bool source_view_mode() const { return mode_ == Mode::Source || mode_ == Mode::SourcePending; }
     std::size_t capacity() const { return fields_.capacity(); }
     std::size_t capacity_bytes() const {
         if (fields_.capacity() > std::numeric_limits<std::size_t>::max() / sizeof(F))
             throw std::overflow_error("packed GKR prefix byte count overflows");
         return fields_.capacity() * sizeof(F);
     }
+    std::uint64_t physical_bytes() const { return native_storage::physical_bytes(fields_.data(), capacity_bytes()); }
 
     F first_slope() const {
-        if (logical_extent_ == 0U || !affine_) return F_ZERO;
+        if (logical_extent_ == 0U || mode_ != Mode::Affine) return F_ZERO;
         return fields_[0U];
     }
 
     void set_scalar(std::uint64_t index, const F& value) {
-        if (affine_ || index >= logical_extent_)
+        if (mode_ != Mode::Scalar || index >= logical_extent_)
             throw std::out_of_range("packed GKR scalar assignment is outside its active prefix");
         fields_[static_cast<std::size_t>(index)] = value;
     }
 
     void add_scalar(std::uint64_t index, const F& value) {
-        if (affine_ || index >= logical_extent_)
+        if (mode_ != Mode::Scalar || index >= logical_extent_)
             throw std::out_of_range("packed GKR scalar accumulation is outside its active prefix");
         fields_[static_cast<std::size_t>(index)] += value;
     }
@@ -206,7 +228,10 @@ public:
     F coordinate_value(std::uint64_t index, const F& point) const {
         if (index >= logical_extent_)
             throw std::out_of_range("packed GKR coordinate is outside its active prefix");
-        if (!affine_) return fields_[static_cast<std::size_t>(index)];
+        if (mode_ == Mode::Source) return source_.at(checked_extent(index, "packed GKR source coordinate"));
+        if (mode_ == Mode::SourcePending || mode_ == Mode::Empty)
+            throw std::logic_error("packed GKR coordinate is unavailable before its challenge transition");
+        if (mode_ == Mode::Scalar) return fields_[static_cast<std::size_t>(index)];
         const std::size_t offset = checked_extent(index * 2U, "packed GKR affine coordinate");
         const F& slope = fields_[offset];
         const F& intercept = fields_[offset + 1U];
@@ -219,23 +244,32 @@ public:
 
     F first_constant() const {
         if (logical_extent_ == 0U) return F_ZERO;
-        return affine_ ? fields_[1U] : fields_[0U];
+        if (mode_ == Mode::Source) return source_.at(0U);
+        if (mode_ == Mode::SourcePending || mode_ == Mode::Empty)
+            throw std::logic_error("packed GKR terminal constant is unavailable before its challenge transition");
+        return mode_ == Mode::Affine ? fields_[1U] : fields_[0U];
     }
 
     void evaluate_first_in_place(const F& point) {
         if (logical_extent_ == 0U) return;
         const F value = coordinate_value(0U, point);
-        if (affine_) {
+        if (mode_ == Mode::Source) {
+            initialize_scalars(logical_extent_);
+            fields_[0U] = value;
+        } else if (mode_ == Mode::Affine) {
             fields_[0U].clear();
             fields_[1U] = value;
-        } else {
+        } else if (mode_ == Mode::Scalar) {
             fields_[0U] = value;
-        }
+        } else throw std::logic_error("packed GKR first coordinate cannot be evaluated in its current mode");
     }
 
     void store_folded(std::uint64_t index, const linear_poly& value) {
         if (index >= (logical_extent_ / 2U + logical_extent_ % 2U))
             throw std::out_of_range("packed GKR folded output is outside its active prefix");
+        if (mode_ == Mode::Source) return;
+        if (mode_ != Mode::Scalar && mode_ != Mode::Affine)
+            throw std::logic_error("packed GKR folded output is unavailable in its current mode");
         const std::size_t offset = checked_extent(index * 2U, "packed GKR folded output");
         if (offset + 1U >= fields_.size())
             throw std::out_of_range("packed GKR folded output exceeds its reserved arena");
@@ -246,14 +280,63 @@ public:
     void finish_fold(std::uint64_t folded_extent) {
         if (folded_extent != logical_extent_ / 2U + logical_extent_ % 2U)
             throw std::logic_error("packed GKR folded extent differs from the source prefix");
+        if (mode_ == Mode::Source) {
+            pending_extent_ = folded_extent;
+            mode_ = Mode::SourcePending;
+            return;
+        }
+        if (mode_ != Mode::Scalar && mode_ != Mode::Affine)
+            throw std::logic_error("packed GKR fold cannot finish in its current mode");
         logical_extent_ = folded_extent;
-        affine_ = true;
+        mode_ = Mode::Affine;
+        const std::size_t affine_fields = checked_extent(folded_extent * 2U, "packed GKR affine live extent");
+        if (affine_fields > std::numeric_limits<std::size_t>::max() / sizeof(F))
+            throw std::overflow_error("packed GKR affine live byte count overflows");
+        native_storage::record_live_bound(fields_.data(), affine_fields * sizeof(F), capacity_bytes());
+    }
+
+    void apply_challenge(const F& challenge) {
+        if (logical_extent_ == 0U) return;
+        if (mode_ == Mode::SourcePending) {
+            const std::uint64_t source_extent = source_extent_;
+            const std::uint64_t folded_extent = pending_extent_;
+            const NativeFieldView source = source_;
+            initialize_scalars(folded_extent, F_ZERO, false);
+            for (std::uint64_t index = 0U; index < folded_extent; ++index) {
+                const std::uint64_t even = index * 2U;
+                const std::uint64_t odd = even + 1U;
+                const F zero_value = source.at(checked_extent(even, "packed GKR source fold"));
+                const F one_value = odd < source_extent
+                    ? source.at(checked_extent(odd, "packed GKR source fold")) : F_ZERO;
+                const F slope = one_value - zero_value;
+                fields_[static_cast<std::size_t>(index)] = slope.isZero() ? zero_value : slope * challenge + zero_value;
+            }
+            source_extent_ = 0U;
+            pending_extent_ = 0U;
+            source_ = NativeFieldView();
+            native_storage::reclaim_tail(fields_.data(), logical_extent_ * sizeof(F), capacity_bytes());
+            return;
+        }
+        if (mode_ != Mode::Affine) throw std::logic_error("packed GKR challenge was applied more than once or before a fold");
+        const std::uint64_t extent = logical_extent_;
+        for (std::uint64_t index = 0U; index < extent; ++index) {
+            const std::size_t offset = checked_extent(index * 2U, "packed GKR challenge compaction");
+            const F& slope = fields_[offset];
+            const F& intercept = fields_[offset + 1U];
+            const F value = slope.isZero() ? intercept : slope * challenge + intercept;
+            fields_[static_cast<std::size_t>(index)] = value;
+        }
+        mode_ = Mode::Scalar;
+        native_storage::reclaim_tail(fields_.data(), checked_extent(extent, "packed GKR challenge live prefix") * sizeof(F), capacity_bytes());
     }
 
     void release() {
         NativeVector<F>().swap(fields_);
         logical_extent_ = 0U;
-        affine_ = false;
+        source_extent_ = 0U;
+        pending_extent_ = 0U;
+        source_ = NativeFieldView();
+        mode_ = Mode::Empty;
     }
 };
 

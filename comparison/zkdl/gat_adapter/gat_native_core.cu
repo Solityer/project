@@ -5,6 +5,7 @@
 #include <fstream>
 #include <filesystem>
 #include <initializer_list>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -28,6 +29,37 @@ constexpr const char *kBridgeApi = "zkdl_native_gat_bridge_v1";
 constexpr const char *kProofScope = "full_gat_forward";
 constexpr std::uint64_t kMaxNativeDomain = 1ULL << 30U;
 
+class NativeProgressScope {
+public:
+    explicit NativeProgressScope(const char *phase)
+        : phase_(phase), started_(std::chrono::steady_clock::now()) {
+        emit("START");
+    }
+
+    ~NativeProgressScope() {
+        if (!completed_) emit("FAIL");
+    }
+
+    void pass(const std::string &detail = std::string()) {
+        completed_ = true;
+        emit("PASS", detail);
+    }
+
+private:
+    const char *phase_;
+    std::chrono::steady_clock::time_point started_;
+    bool completed_ = false;
+
+    void emit(const char *status, const std::string &detail = std::string()) const {
+        const double elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - started_).count();
+        std::clog << "zkdl_native_progress phase=" << phase_ << " status=" << status
+                  << " elapsed_wall_seconds=" << elapsed;
+        if (!detail.empty()) std::clog << ' ' << detail;
+        std::clog << '\n' << std::flush;
+    }
+};
+
 std::uint32_t checked_native_u32(std::uint64_t value, const std::string &label, std::string *error = nullptr, bool allow_zero = false) {
     if ((!allow_zero && value == 0U) || value > kMaxNativeDomain || value > std::numeric_limits<std::uint32_t>::max()) {
         const std::string message = "BLOCKED: " + label + " exceeds native u32 domain bounds";
@@ -40,6 +72,12 @@ std::uint32_t checked_native_u32(std::uint64_t value, const std::string &label, 
 bool checked_mul_u64(std::uint64_t left, std::uint64_t right, std::uint64_t &product) {
     if (right != 0U && left > std::numeric_limits<std::uint64_t>::max() / right) return false;
     product = left * right;
+    return true;
+}
+
+bool checked_add_u64(std::uint64_t left, std::uint64_t right, std::uint64_t &sum) {
+    if (left > std::numeric_limits<std::uint64_t>::max() - right) return false;
+    sum = left + right;
     return true;
 }
 
@@ -2773,7 +2811,9 @@ bool sorted_lookup_prover_providers(const zkdl::AuthenticatedSortedLookupDescrip
         !scratch(layout.merge_offset, descriptor.merge_domain, 5U, providers.merge_prefix) ||
         !scratch(layout.merge_offset, descriptor.merge_domain, 6U, providers.merge_active) ||
         !scratch(layout.merge_offset, descriptor.merge_domain, 7U, providers.merge_marker) ||
-        !relation::make_authenticated_sorted_lookup_shifted_key_provider(providers.merge_keys, providers.merge_previous_key, error) ||
+        !relation::make_authenticated_sorted_lookup_shifted_key_provider(
+            providers.merge_keys, providers.merge_active,
+            providers.merge_previous_key, error) ||
         !relation::make_authenticated_sorted_lookup_nonzero_provider(providers.merge_delta, providers.merge_nonzero, error) ||
         !relation::make_authenticated_sorted_lookup_selector_provider(descriptor.merge_domain, descriptor.segment_size, 0U, providers.merge_first, error) ||
         !relation::make_authenticated_sorted_lookup_selector_provider(descriptor.merge_domain, descriptor.segment_size, descriptor.merge_active_length - 1U,
@@ -2888,6 +2928,8 @@ bool sorted_lookup_build_prover_context(const Config &config, const StaticTables
         std::vector<FrWire> blinders;
         std::vector<std::vector<FrWire>> segment_blinders;
         std::vector<std::vector<zkdl::CpuG1Point>> segment_commitments;
+        relation::RelationSegmentProgressReporter outer_commitment_progress(
+            "sorted_lookup_outer_commitment");
         const auto add_outer = [&](std::uint32_t role, std::uint32_t column, const std::string &name, const relation::SegmentedTensorProvider &provider) {
             const auto commitment_operation_start = std::chrono::steady_clock::now();
             const double provider_io_before_commitment = context.provider_file_io_decode_time_seconds != nullptr
@@ -2898,10 +2940,16 @@ bool sorted_lookup_build_prover_context(const Config &config, const StaticTables
             relation::SegmentCommitmentMaterial material;
             const std::string tensor_id = "sorted_lookup/" + query.operation_id + "/" + name;
             double commitment_crypto_seconds = 0.0;
+            const relation::SegmentCommitmentProgressCallback segment_progress =
+                [&tensor_id, &outer_commitment_progress](std::uint32_t completed,
+                                                        std::uint32_t total) {
+                    outer_commitment_progress.update(tensor_id, completed, total);
+                };
             const bool commitment_built = relation::zktr_build_segment_commitment_material(
                 tensor_id, 3U, provider, context.ipa_generators, context.ipa_blinding_generator,
                 context.ipa_u_generator, blinder, relation_statement, wire, material,
-                error, &commitment_crypto_seconds, descriptor.segment_size);
+                error, &commitment_crypto_seconds, descriptor.segment_size,
+                &segment_progress);
             if (!commitment_built) return false;
             const auto point_conversion_start = std::chrono::steady_clock::now();
             const zkdl::CpuG1Point commitment = zkdl::cpu_g1_from_native(wire.commitment);
@@ -3751,12 +3799,16 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             if (!add(&metrics->route_count, 1U, "route count")) return false;
         if (operation.kind == relation::RelationKind::SparseRoute || !operation.selector_source_ref.empty()) {
             std::uint64_t route_source_domain = 0U, route_output_domain = 0U;
+            std::uint64_t route_factor_elements = 0U;
             if (!checked_mul_u64(operation.selector_node_domain,
                                  operation.selector_source_feature_domain,
                                  route_source_domain) ||
                 !checked_mul_u64(operation.selector_edge_domain,
                                  operation.selector_feature_domain,
                                  route_output_domain) ||
+                !checked_add_u64(operation.selector_node_domain,
+                                 operation.selector_source_feature_domain,
+                                 route_factor_elements) ||
                 route_source_domain == 0U || route_output_domain == 0U ||
                 domains.find(operation.selector_source_ref) == domains.end() ||
                 domains.find(operation.selector_output_ref) == domains.end() ||
@@ -3769,13 +3821,18 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 std::max(metrics->maximum_route_source_domain, route_source_domain);
             metrics->maximum_route_edge_domain =
                 std::max(metrics->maximum_route_edge_domain, route_output_domain);
+            metrics->maximum_route_selector_factor_elements =
+                std::max(metrics->maximum_route_selector_factor_elements, route_factor_elements);
         }
         for (const auto &binding : operation.fac_bindings) {
             std::uint64_t source_domain = 0U, output_domain = 0U;
+            std::uint64_t factor_elements = 0U;
             if (!checked_mul_u64(binding.canonical_outer_domain,
                                  binding.canonical_feature_domain, source_domain) ||
                 !checked_mul_u64(binding.view_outer_domain,
                                  binding.view_feature_domain, output_domain) ||
+                !checked_add_u64(binding.canonical_outer_domain,
+                                 binding.canonical_feature_domain, factor_elements) ||
                 source_domain == 0U || output_domain == 0U ||
                 domains.find(binding.canonical_ref) == domains.end() ||
                 domains.find(binding.view_ref) == domains.end() ||
@@ -3788,6 +3845,8 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 std::max(metrics->maximum_route_source_domain, source_domain);
             metrics->maximum_route_edge_domain =
                 std::max(metrics->maximum_route_edge_domain, output_domain);
+            metrics->maximum_route_selector_factor_elements =
+                std::max(metrics->maximum_route_selector_factor_elements, factor_elements);
         }
         for (const auto &primitive : operation.primitives) {
             for (const auto &tensor_id : primitive.tensor_refs) {
@@ -4424,59 +4483,106 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
              std::max(hidden_forward_temp, output_forward_temp),
              "trace forward live peak")) return false;
 
-    // gat_sparse_route.cuh materializes four full source-domain Sumcheck
-    // arrays (public selector, source, zero selector and output value).  The
-    // public selector is produced while source/zero and the output opening's
-    // first bounded segment are live; its MLE builder also holds a node-sized
-    // result and one edge-sized indicator.  The segmented Sumcheck then holds
-    // bounded provider blocks alongside those arrays.  Model both real peaks.
+    // Sparse-route Sumcheck keeps the validated source vector and, after the
+    // first challenge, four folded states whose largest combined length is
+    // two source domains.  Selector, zero and constant-output providers are
+    // virtual; their only retained public data are the node/feature factors.
+    // The source vector remains live for its authenticated opening after the
+    // Sumcheck, while all provider/fold buffers stay segment-bounded.
     const std::uint64_t route_domain = metrics->maximum_route_source_domain;
     const std::uint64_t route_sumcheck_domain = std::max<std::uint64_t>(2U, route_domain);
-    std::uint64_t route_arrays = 0U, route_bytes = 0U, route_segment_bytes = 0U;
-    std::uint64_t route_edge_indicator_bytes = 0U, route_selector_build_bytes = 0U;
+    std::uint64_t route_source_bytes = 0U, route_folded_values = 0U;
+    std::uint64_t route_folded_state_bytes = 0U, route_segment_bytes = 0U;
+    std::uint64_t route_selector_factor_bytes = 0U;
+    std::uint64_t route_selector_weight_values = 0U;
+    std::uint64_t route_selector_weight_bytes = 0U;
     std::uint64_t route_output_segment_bytes = 0U;
-    if (!checked_mul_u64(route_sumcheck_domain, 4U, route_arrays) ||
-        !checked_mul_u64(route_arrays, sizeof(FrWire), route_bytes) ||
+    std::uint64_t route_source_opening_segment_bytes = 0U;
+    std::uint64_t route_opening_value_bytes = 0U;
+    std::uint64_t route_opening_generator_count = 0U;
+    std::uint64_t route_opening_generator_bytes = 0U;
+    const std::uint64_t route_weight_domain = std::max<std::uint64_t>(
+        1U, metrics->maximum_route_edge_domain);
+    const std::uint64_t route_low_weight_count = std::min<std::uint64_t>(
+        route_weight_domain, 1U << 18U);
+    const std::uint64_t route_high_weight_count =
+        (route_weight_domain + route_low_weight_count - 1U) /
+        route_low_weight_count;
+    if (!checked_mul_u64(route_sumcheck_domain, sizeof(FrWire),
+                         route_source_bytes) ||
+        !checked_mul_u64(route_sumcheck_domain / 2U, 4U,
+                         route_folded_values) ||
+        !checked_mul_u64(route_folded_values, sizeof(FrWire),
+                         route_folded_state_bytes) ||
         !checked_mul_u64(std::min<std::uint64_t>(
                              std::max(route_domain, metrics->maximum_route_edge_domain),
                              kSegmentSize), sizeof(FrWire) * 8U, route_segment_bytes) ||
-        !checked_mul_u64(metrics->maximum_route_edge_domain, sizeof(FrWire),
-                         route_edge_indicator_bytes) ||
-        route_sumcheck_domain == std::numeric_limits<std::uint64_t>::max() ||
-        !checked_mul_u64(route_sumcheck_domain + 1U, sizeof(FrWire),
-                         route_selector_build_bytes) ||
+        !checked_mul_u64(metrics->maximum_route_selector_factor_elements,
+                         sizeof(FrWire),
+                         route_selector_factor_bytes) ||
+        !checked_add_u64(route_low_weight_count, route_high_weight_count,
+                         route_selector_weight_values) ||
+        !checked_mul_u64(route_selector_weight_values, sizeof(FrWire),
+                         route_selector_weight_bytes) ||
         !checked_mul_u64(std::min<std::uint64_t>(metrics->maximum_route_edge_domain,
                                                 kSegmentSize),
                          sizeof(FrWire), route_output_segment_bytes)) {
-        if (error) *error = "native route Sumcheck live shape overflows";
+        if (error) *error = "native route folded-state live shape overflows";
         return false;
     }
-    // Selector construction overlaps the source and zero arrays (2D), its
-    // output (D), outer/feature factors (at most D+1 together), the edge
-    // indicator (E), and the retained output opening segment.  D+1 is
-    // conservatively bounded by D+1 to cover the scalar-domain case.
-    std::uint64_t selector_peak = route_bytes;
-    if (!add(&selector_peak, route_selector_build_bytes,
-             "route selector construction arrays") ||
-        !add(&selector_peak, route_edge_indicator_bytes,
-             "route selector edge indicator") ||
+    if (!checked_mul_u64(std::min<std::uint64_t>(route_sumcheck_domain, kSegmentSize),
+                         sizeof(FrWire), route_source_opening_segment_bytes) ||
+        !checked_add_u64(route_source_opening_segment_bytes,
+                         route_output_segment_bytes, route_opening_value_bytes) ||
+        !checked_mul_u64(std::min<std::uint64_t>(
+                             std::max(route_sumcheck_domain, metrics->maximum_route_edge_domain),
+                             kSegmentSize), 2U, route_opening_generator_count) ||
+        !checked_mul_u64(route_opening_generator_count, sizeof(zkdl::CpuG1Point),
+                         route_opening_generator_bytes)) {
+        if (error) *error = "native route opening live shape overflows";
+        return false;
+    }
+    // The output-domain upper bound also bounds each edge/feature weight
+    // domain; weights are split at 2^18 and never allocate a full MLE table.
+    // Factor storage uses the maximum node+source-feature count of one route
+    // or FAC binding, not an unrelated source-domain upper bound.
+    // Selector construction overlaps the retained source, node/feature
+    // factors, one bounded weight pair, and the output opening segment.
+    std::uint64_t selector_peak = route_source_bytes;
+    if (!add(&selector_peak, route_selector_factor_bytes,
+             "route selector factors") ||
+        !add(&selector_peak, route_selector_weight_bytes,
+             "route selector bounded MLE weights") ||
         !add(&selector_peak, route_output_segment_bytes,
              "route output opening segment")) return false;
-    std::uint64_t sumcheck_peak = route_bytes;
-    if (!add(&metrics->route_sumcheck_live_peak_bytes_upper_bound,
-             0U, "route Sumcheck segment buffers") ||
+    std::uint64_t sumcheck_peak = route_source_bytes;
+    if (!add(&sumcheck_peak, route_folded_state_bytes,
+             "route cached folded Sumcheck states") ||
         !add(&sumcheck_peak, route_segment_bytes,
              "route Sumcheck segment buffers") ||
         !add(&sumcheck_peak, route_output_segment_bytes,
              "route Sumcheck retained output segment") ||
-        !add(&sumcheck_peak, 8U * sizeof(std::vector<FrWire>),
-             "route Sumcheck vector metadata") ||
-        !add(&selector_peak, 4U * sizeof(std::vector<FrWire>),
+        !add(&sumcheck_peak, route_selector_factor_bytes,
+             "route Sumcheck retained selector factors") ||
+        !add(&sumcheck_peak, 12U * sizeof(std::vector<FrWire>),
              "route Sumcheck vector metadata") ||
         !add(&sumcheck_peak, sizeof(relation::SparseRouteProof),
              "route proof object metadata")) return false;
+    // After the fold-state function returns, both segment generator prefixes
+    // and the two aggregated opening-value vectors coexist.  Keep this phase
+    // separate from the 8 GiB cache phase so the bound reflects actual
+    // lifetimes while still covering the authenticated source opening.
+    std::uint64_t opening_peak = route_source_bytes;
+    if (!add(&opening_peak, route_selector_factor_bytes,
+             "route opening retained selector factors") ||
+        !add(&opening_peak, route_opening_value_bytes,
+             "route source/output aggregate values") ||
+        !add(&opening_peak, route_opening_generator_bytes,
+             "route source/output segment generators") ||
+        !add(&opening_peak, sizeof(relation::SparseRouteProof),
+             "route opening proof metadata")) return false;
     metrics->route_sumcheck_live_peak_bytes_upper_bound =
-        std::max(selector_peak, sumcheck_peak);
+        std::max(selector_peak, std::max(sumcheck_peak, opening_peak));
     return true;
 }
 
@@ -4532,7 +4638,9 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
         return reject(result, error, "BLOCKED: formal GPU prover completed without a native cryptographic kernel", request.config, request.statement,
                       request.backend);
     const auto serialization_start = std::chrono::steady_clock::now();
+    NativeProgressScope wire_progress("proof_wire_serialize");
     result->proof_bytes = proof.serialize();
+    wire_progress.pass("proof_bytes=" + std::to_string(result->proof_bytes.size()));
     const double serialization_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - serialization_start).count();
     if (relation_commitment_seconds > relation_prove_seconds ||
@@ -4641,6 +4749,7 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest &request, std::string
     // identity checks.  Resource loading and verifier-context construction
     // above remain outside this cryptographic verification interval.
     const auto verify_start = std::chrono::steady_clock::now();
+    NativeProgressScope parse_progress("proof_wire_parse");
     relation::Proof proof;
     std::string parse_error;
     if (!relation::Proof::deserialize(*request.proof_bytes, proof,
@@ -4650,12 +4759,15 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest &request, std::string
                                       typed_plan_metrics.sorted_lookup_relation_body_max_bytes,
                                       &parse_error))
         return reject(nullptr, error, "native GAT relation proof parse failed: " + parse_error, request.config, request.statement, request.backend);
+    parse_progress.pass("proof_bytes=" + std::to_string(request.proof_bytes->size()));
     if (request.envelope->proof_size_bytes != request.proof_bytes->size() || request.envelope->proof_id != digest_hex(zkdl::sha256(*request.proof_bytes))) {
         return reject(nullptr, error, "proof envelope size/id is not bound to native proof bytes", request.config, request.statement, request.backend);
     }
+    NativeProgressScope verify_progress("independent_relation_verify");
     const bool verified = relation::verify(
         proof, context, error,
         typed_plan_metrics.terminal_relation_body_max_bytes);
+    if (verified) verify_progress.pass();
     const auto verify_end = std::chrono::steady_clock::now();
     if (!verified)
         return reject(nullptr, error, error ? *error : "native relation verifier rejected proof", request.config, request.statement, request.backend);

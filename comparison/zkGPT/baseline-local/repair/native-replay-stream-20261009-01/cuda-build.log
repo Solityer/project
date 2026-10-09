@@ -1,0 +1,23 @@
+[  2%] Built target gen_base.o
+[  5%] Built target gen_bint.o
+[ 11%] Built target mcl
+[ 17%] Built target gat_cuda
+[ 20%] Building CXX object src/CMakeFiles/gpt_lib.dir/proof_session.cpp.o
+[ 22%] Linking CXX static library libgpt_lib.a
+[ 68%] Built target gpt_lib
+[ 71%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_proof.cpp.o
+[ 74%] Linking CUDA device code CMakeFiles/gat_adapter.dir/cmake_device_link.o
+[ 77%] Linking CXX static library libgat_adapter.a
+[ 91%] Built target gat_adapter
+[ 94%] Linking CUDA device code CMakeFiles/zkgpt_gat_prover.dir/cmake_device_link.o
+[ 97%] Linking CXX executable zkgpt_gat_prover
+[100%] Built target zkgpt_gat_prover
+[  2%] Built target gen_base.o
+[  5%] Built target gen_bint.o
+[ 11%] Built target mcl
+[ 17%] Built target gat_cuda
+[ 68%] Built target gpt_lib
+[ 91%] Built target gat_adapter
+[ 94%] Linking CUDA device code CMakeFiles/zkgpt_gat_verifier.dir/cmake_device_link.o
+[ 97%] Linking CXX executable zkgpt_gat_verifier
+[100%] Built target zkgpt_gat_verifier

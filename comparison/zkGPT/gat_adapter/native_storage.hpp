@@ -21,13 +21,40 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <linux/falloc.h>
+#endif
 
 namespace zkgpt {
 namespace native_storage {
-struct Mapping { std::size_t bytes; int fd; };
+struct Mapping { std::size_t bytes; std::size_t file_bytes; std::size_t live_bytes; std::uint64_t allocated_bytes; std::size_t allocation_unit_bytes; int fd; };
 inline std::mutex mapping_mutex;
 inline std::unordered_map<void*, Mapping> mappings;
 inline constexpr std::size_t heap_limit = std::size_t(8) << 20;
+
+inline std::uint64_t fd_allocated_bytes(int fd) {
+    struct stat info{};
+    if (::fstat(fd, &info) != 0 || info.st_blocks < 0) throw std::runtime_error("cannot inspect native scratch allocation blocks");
+    const unsigned __int128 bytes = static_cast<unsigned __int128>(info.st_blocks) * 512U;
+    if (bytes > std::numeric_limits<std::uint64_t>::max()) throw std::overflow_error("native scratch allocated block count exceeds u64");
+    return static_cast<std::uint64_t>(bytes);
+}
+
+inline std::size_t page_size() {
+    const long size = ::sysconf(_SC_PAGESIZE);
+    if (size <= 0) throw std::runtime_error("cannot inspect native scratch page size");
+    return static_cast<std::size_t>(size);
+}
+
+inline std::size_t filesystem_allocation_unit_bytes(const std::filesystem::path& directory) {
+    struct statvfs capacity{};
+    if (::statvfs(directory.c_str(), &capacity) != 0)
+        throw std::runtime_error("cannot inspect native scratch allocation unit: " + directory.string());
+    const std::uint64_t unit = capacity.f_frsize != 0U ? capacity.f_frsize : capacity.f_bsize;
+    if (unit == 0U || unit > std::numeric_limits<std::size_t>::max())
+        throw std::runtime_error("native scratch filesystem allocation unit is unsupported");
+    return static_cast<std::size_t>(unit);
+}
 
 inline std::filesystem::path baseline_root() {
     std::vector<std::filesystem::path> candidates{std::filesystem::current_path()};
@@ -81,7 +108,11 @@ inline void* allocate(std::size_t bytes, std::size_t alignment) {
     if (bytes > static_cast<std::size_t>(std::numeric_limits<off_t>::max())) throw std::length_error("native scratch allocation exceeds file offset capacity");
     const auto directory = scratch_directory();
     const std::uint64_t available = available_bytes(directory);
-    if (available < bytes) throw std::runtime_error("insufficient zkGPT native scratch disk capacity: required " + std::to_string(bytes) + " bytes");
+    const std::size_t allocation_unit = filesystem_allocation_unit_bytes(directory);
+    if (bytes > std::numeric_limits<std::size_t>::max() - (allocation_unit - 1U))
+        throw std::length_error("native scratch allocation block rounding overflows");
+    const std::size_t physical_reservation = ((bytes + allocation_unit - 1U) / allocation_unit) * allocation_unit;
+    if (available < physical_reservation) throw std::runtime_error("insufficient zkGPT native scratch disk capacity: required " + std::to_string(physical_reservation) + " allocated bytes");
     std::string pattern = (directory / "oracle-XXXXXX").string();
     std::vector<char> filename(pattern.begin(), pattern.end());
     filename.push_back(0);
@@ -96,9 +127,82 @@ inline void* allocate(std::size_t bytes, std::size_t alignment) {
     if (pointer == MAP_FAILED) { ::close(fd); throw std::bad_alloc(); }
     if (reinterpret_cast<std::uintptr_t>(pointer) % alignment != 0) { ::munmap(pointer, bytes); ::close(fd); throw std::runtime_error("native scratch object alignment is unsupported"); }
     ::madvise(pointer, bytes, MADV_SEQUENTIAL);
-    try { std::lock_guard<std::mutex> lock(mapping_mutex); mappings.emplace(pointer, Mapping{bytes, fd}); }
+    try { std::lock_guard<std::mutex> lock(mapping_mutex); mappings.emplace(pointer, Mapping{bytes, bytes, bytes, fd_allocated_bytes(fd), allocation_unit, fd}); }
     catch (...) { ::munmap(pointer, bytes); ::close(fd); throw; }
     return pointer;
+}
+
+struct ReclaimReport { std::uint64_t before_bytes; std::uint64_t after_bytes; std::size_t mapping_bytes; std::size_t live_bytes; bool mapped; };
+
+inline std::uint64_t physical_bytes(const void* pointer, std::size_t virtual_bytes) {
+    if (pointer == nullptr || virtual_bytes == 0U) return 0U;
+    std::lock_guard<std::mutex> lock(mapping_mutex);
+    const auto found = mappings.find(const_cast<void*>(pointer));
+    if (found == mappings.end()) return virtual_bytes;
+    found->second.allocated_bytes = fd_allocated_bytes(found->second.fd);
+    return found->second.allocated_bytes;
+}
+
+inline void record_live_bound(void* pointer, std::size_t live_bytes, std::size_t virtual_bytes) {
+    if (live_bytes > virtual_bytes) throw std::out_of_range("native scratch live bound exceeds its mapping capacity");
+    if (pointer == nullptr || virtual_bytes == 0U) {
+        if (live_bytes != 0U) throw std::invalid_argument("native scratch live bound has no allocation");
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mapping_mutex);
+    const auto found = mappings.find(pointer);
+    if (found == mappings.end()) return;
+    if (found->second.bytes != virtual_bytes || found->second.file_bytes != virtual_bytes)
+        throw std::logic_error("native scratch live bound changed its original mapping length");
+    found->second.live_bytes = live_bytes;
+}
+
+inline ReclaimReport reclaim_tail(void* pointer, std::size_t active_bytes, std::size_t virtual_bytes) {
+    if (active_bytes > virtual_bytes) throw std::out_of_range("native scratch live prefix exceeds its allocation capacity");
+    if (pointer == nullptr || virtual_bytes == 0U) {
+        if (active_bytes != 0U) throw std::invalid_argument("native scratch live prefix has no allocation");
+        return {0U, 0U, 0U, 0U, false};
+    }
+    std::lock_guard<std::mutex> lock(mapping_mutex);
+    const auto found = mappings.find(pointer);
+    if (found == mappings.end()) return {virtual_bytes, virtual_bytes, virtual_bytes, active_bytes, false};
+    Mapping& mapping = found->second;
+    if (mapping.bytes != virtual_bytes || mapping.file_bytes != virtual_bytes) throw std::logic_error("native scratch mapping capacity changed while live");
+    const std::uint64_t before = fd_allocated_bytes(mapping.fd);
+    const std::size_t page = page_size();
+    if (active_bytes > std::numeric_limits<std::size_t>::max() - (page - 1U)) throw std::overflow_error("native scratch live prefix alignment overflows");
+    const std::size_t aligned_live = std::min(mapping.file_bytes, ((active_bytes + page - 1U) / page) * page);
+    const std::size_t aligned_end = mapping.file_bytes - mapping.file_bytes % page;
+    if (aligned_live < aligned_end) {
+#ifdef FALLOC_FL_PUNCH_HOLE
+        if (::fallocate(mapping.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, static_cast<off_t>(aligned_live), static_cast<off_t>(aligned_end - aligned_live)) != 0)
+            throw std::runtime_error("native scratch tail reclamation failed: " + std::to_string(errno));
+#else
+        throw std::runtime_error("native scratch tail reclamation is unsupported by this platform");
+#endif
+    }
+    const std::uint64_t after = fd_allocated_bytes(mapping.fd);
+    if (aligned_live < aligned_end && after >= before) throw std::runtime_error("native scratch tail reclamation released no allocated blocks");
+    const std::size_t trailing_fragment = mapping.file_bytes - aligned_end;
+    const auto round_up = [](std::size_t bytes, std::size_t unit) {
+        if (bytes == 0U) return std::size_t(0);
+        if (bytes > std::numeric_limits<std::size_t>::max() - (unit - 1U))
+            return std::numeric_limits<std::size_t>::max();
+        return ((bytes + unit - 1U) / unit) * unit;
+    };
+    const std::size_t allocated_live_bound = round_up(aligned_live, mapping.allocation_unit_bytes);
+    const std::size_t allocated_tail_bound = round_up(trailing_fragment, mapping.allocation_unit_bytes);
+    const std::size_t expected_bound = allocated_live_bound > std::numeric_limits<std::size_t>::max() - allocated_tail_bound
+        ? std::numeric_limits<std::size_t>::max() : allocated_live_bound + allocated_tail_bound;
+    if (after > expected_bound) throw std::runtime_error(
+        "native scratch allocated blocks exceed the live-prefix bound after reclamation (allocated=" +
+        std::to_string(after) + ", bound=" + std::to_string(expected_bound) +
+        ", active=" + std::to_string(active_bytes) + ", page_live=" +
+        std::to_string(aligned_live) + ", file=" + std::to_string(mapping.file_bytes) +
+        ", tail=" + std::to_string(trailing_fragment) + ")");
+    mapping.live_bytes = active_bytes;
+    mapping.allocated_bytes = after;
+    return {before, after, mapping.bytes, mapping.live_bytes, true};
 }
 
 inline void deallocate(void* pointer, std::size_t alignment) noexcept {

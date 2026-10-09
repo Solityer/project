@@ -26,9 +26,12 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <iostream>
 #include <openssl/hmac.h>
 #include <limits>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -42,6 +45,39 @@ namespace relation {
 
 using byte = zkdl::byte;
 using FrWire = zkdl::FrWire;
+using RouteWorkProgressCallback =
+    std::function<void(const char*, std::uint64_t, std::uint64_t)>;
+using SegmentCommitmentProgressCallback =
+    std::function<void(std::uint32_t, std::uint32_t)>;
+
+struct NativeOperationProgressReporter {
+    using Clock = std::chrono::steady_clock;
+    std::string phase;
+    std::string operation;
+    Clock::time_point started = Clock::now();
+    Clock::time_point last_report = started;
+
+    NativeOperationProgressReporter(std::string phase_name, std::string operation_id)
+        : phase(std::move(phase_name)), operation(std::move(operation_id)) {}
+
+    void update(const char* step, std::uint64_t completed, std::uint64_t total,
+                std::uint32_t item_index = std::numeric_limits<std::uint32_t>::max(),
+                std::uint32_t item_total = 0U,
+                std::uint32_t round = 0U, std::uint32_t total_rounds = 0U) {
+        const auto now = Clock::now();
+        if (now - last_report < std::chrono::seconds(15)) return;
+        std::clog << "zkdl_native_progress phase=" << phase << " status=PROGRESS"
+                  << " operation_id=" << operation << " step=" << step;
+        if (total_rounds != 0U) std::clog << " round=" << round << '/' << total_rounds;
+        if (item_index != std::numeric_limits<std::uint32_t>::max())
+            std::clog << " item_index=" << item_index + 1U << '/' << item_total;
+        std::clog << " completed=" << completed << '/' << total
+                  << " elapsed_wall_seconds="
+                  << std::chrono::duration<double>(now - started).count()
+                  << '\n' << std::flush;
+        last_report = now;
+    }
+};
 
 // Relation-family wire caps are deliberately finite.  They are large enough
 // for the configured lookup/range domains, but never become an unbounded
@@ -196,16 +232,17 @@ public:
         if (!checked_relation_u32(values.size(), logical_domain,
                                   "segmented tensor value count", error))
             return false;
+        const auto* value_source = &values;
         provider = SegmentedTensorProvider(
             logical_domain, segment_size,
-            [&values](std::uint64_t offset, std::uint32_t count,
+            [value_source](std::uint64_t offset, std::uint32_t count,
                       std::vector<FrWire>& output, std::string* read_error) {
-                if (offset > values.size() || count > values.size() - offset) {
+                if (offset > value_source->size() || count > value_source->size() - offset) {
                     if (read_error) *read_error = "segmented tensor vector range is out of bounds";
                     return false;
                 }
-                output.assign(values.begin() + static_cast<std::ptrdiff_t>(offset),
-                              values.begin() + static_cast<std::ptrdiff_t>(offset + count));
+                output.assign(value_source->begin() + static_cast<std::ptrdiff_t>(offset),
+                              value_source->begin() + static_cast<std::ptrdiff_t>(offset + count));
                 return true;
             });
         (void)segment_count;
@@ -227,14 +264,15 @@ public:
     std::uint32_t segment_size() const noexcept { return segment_size_; }
     std::uint32_t segment_count() const noexcept { return segment_count_; }
 
-    bool evaluate_mle(const std::vector<FrWire>& point, FrWire& output, std::string* error = nullptr) const {
+    bool evaluate_mle(const std::vector<FrWire>& point, FrWire& output, std::string* error = nullptr,
+                      NativeOperationProgressReporter* progress = nullptr) const {
         if (!valid(error) || point.size() >= 31U || (std::uint64_t(1U) << point.size()) != logical_domain_) { if (error) *error = "segmented MLE point/domain mismatch"; return false; }
         std::uint32_t low_bits = 0U;
         for (auto size = segment_size_; size > 1U; size >>= 1U) ++low_bits;
         const std::vector<FrWire> high(point.begin(), point.end() - low_bits), low(point.end() - low_bits, point.end());
         const auto high_weights = zkdl::cpu_ipa_mle_weights(high), low_weights = zkdl::cpu_ipa_mle_weights(low);
         output = FrWire{};
-        for (std::uint32_t segment = 0U; segment < segment_count_; ++segment) { std::vector<FrWire> values; if (!read_segment(segment, values, error)) return false; output = zkdl::fr_add(output, zkdl::fr_mul(high_weights[segment], zkdl::cpu_ipa_inner_product(values, low_weights))); }
+        for (std::uint32_t segment = 0U; segment < segment_count_; ++segment) { std::vector<FrWire> values; if (!read_segment(segment, values, error)) return false; output = zkdl::fr_add(output, zkdl::fr_mul(high_weights[segment], zkdl::cpu_ipa_inner_product(values, low_weights))); if (progress != nullptr) progress->update("mle_segments", segment + 1U, segment_count_); }
         return true;
     }
 
@@ -599,50 +637,165 @@ inline bool make_authenticated_sorted_lookup_inverse_provider(
     return true;
 }
 
+struct AuthenticatedSortedLookupPrefixCache {
+    std::uint32_t logical_domain = 0U;
+    std::uint32_t segment_size = 0U;
+    std::uint32_t segment_count = 0U;
+    std::uint32_t key_bits = 0U;
+    FrWire beta{};
+    FrWire gamma{};
+    std::array<byte, 32U> descriptor_digest{};
+    std::mutex mutex;
+    bool initialized = false;
+    bool failed = false;
+    std::string failure;
+    std::vector<FrWire> segment_prefix;
+};
+
 inline bool make_authenticated_sorted_lookup_prefix_product_provider(
     const SegmentedTensorProvider& keys, const SegmentedTensorProvider& active_mask,
     const FrWire& beta, const FrWire& gamma,
-    SegmentedTensorProvider& prefix_provider, std::string* error = nullptr) {
+    SegmentedTensorProvider& prefix_provider, std::string* error = nullptr,
+    NativeOperationProgressReporter* progress = nullptr,
+    const std::array<byte, 32U>& descriptor_digest = {},
+    std::uint32_t key_bits = 127U) {
     if (!keys.valid(error) || !active_mask.valid(error) ||
         keys.logical_domain() != active_mask.logical_domain() ||
         keys.segment_size() != active_mask.segment_size() ||
         keys.segment_count() != active_mask.segment_count() ||
         !zkdl::fr_canonical(beta) || !zkdl::fr_canonical(gamma) ||
+        key_bits == 0U || key_bits > 127U ||
         beta == FrWire{} || gamma == FrWire{}) {
         if (error && error->empty()) *error = "invalid sorted-lookup prefix-product inputs";
         return false;
     }
+    const auto cache = std::make_shared<AuthenticatedSortedLookupPrefixCache>();
+    cache->logical_domain = keys.logical_domain();
+    cache->segment_size = keys.segment_size();
+    cache->segment_count = keys.segment_count();
+    cache->key_bits = key_bits;
+    cache->beta = beta;
+    cache->gamma = gamma;
+    cache->descriptor_digest = descriptor_digest;
     prefix_provider = SegmentedTensorProvider(
         keys.logical_domain(), keys.segment_size(),
-        [keys, active_mask, beta, gamma](
+        [keys, active_mask, beta, gamma, cache, progress, key_bits, descriptor_digest](
             std::uint64_t offset, std::uint32_t count,
             std::vector<FrWire>& output, std::string* read_error) {
             if (offset > keys.logical_domain() || count > keys.logical_domain() - offset) {
                 if (read_error) *read_error = "sorted-lookup prefix range is out of bounds";
                 return false;
             }
+            std::lock_guard<std::mutex> guard(cache->mutex);
+            if (cache->failed) {
+                if (read_error) *read_error = cache->failure;
+                return false;
+            }
+            const auto fail_cache = [&](const std::string& message) {
+                cache->failed = true;
+                cache->failure = message;
+                if (read_error) *read_error = message;
+                return false;
+            };
+            if (cache->logical_domain != keys.logical_domain() ||
+                cache->segment_size != keys.segment_size() ||
+                cache->segment_count != keys.segment_count() ||
+                cache->key_bits != key_bits ||
+                cache->beta != beta || cache->gamma != gamma ||
+                cache->descriptor_digest != descriptor_digest) {
+                return fail_cache("sorted-lookup prefix cache identity mismatch");
+            }
+            if (!cache->initialized) {
+                std::vector<FrWire> segment_prefix;
+                segment_prefix.reserve(keys.segment_count());
+                FrWire product = zkdl::fr_from_u32(1U);
+                bool padding_seen = false;
+                for (std::uint32_t segment = 0U; segment < keys.segment_count(); ++segment) {
+                    std::vector<FrWire> key_block, active_block;
+                    if (!keys.read_segment(segment, key_block, read_error) ||
+                        !active_mask.read_segment(segment, active_block, read_error) ||
+                        key_block.size() != keys.segment_size() ||
+                        active_block.size() != keys.segment_size()) {
+                        return fail_cache(read_error && !read_error->empty()
+                            ? *read_error : "sorted-lookup prefix cache source segment shape mismatch");
+                    }
+                    segment_prefix.push_back(product);
+                    for (std::uint32_t inside = 0U; inside < keys.segment_size(); ++inside) {
+                        if (!sorted_lookup_boolean(active_block[inside])) {
+                            return fail_cache("sorted-lookup prefix active mask is not boolean");
+                        }
+                        unsigned __int128 key = 0U;
+                        if (!sorted_lookup_u128_from_field(key_block[inside], key_bits, key, read_error))
+                            return fail_cache(read_error && !read_error->empty()
+                                ? *read_error : "sorted-lookup prefix key is not canonical");
+                        if (active_block[inside] == zkdl::fr_from_u32(0U)) {
+                            padding_seen = true;
+                            if (key != 0U) return fail_cache("sorted-lookup prefix inactive key is nonzero");
+                        } else {
+                            if (padding_seen) return fail_cache("sorted-lookup prefix active mask is not contiguous");
+                            product = zkdl::fr_mul(
+                                product, zkdl::fr_add(
+                                    zkdl::fr_mul(beta, key_block[inside]), gamma));
+                        }
+                    }
+                    if (progress != nullptr)
+                        progress->update("prefix_seed_segments", segment + 1U,
+                                         keys.segment_count());
+                }
+                cache->segment_prefix = std::move(segment_prefix);
+                cache->initialized = true;
+            }
             output.assign(count, FrWire{});
-            FrWire product = zkdl::fr_from_u32(1U);
-            for (std::uint32_t segment = 0U; segment < keys.segment_count(); ++segment) {
+            std::uint64_t cursor = offset;
+            std::uint32_t remaining = count;
+            std::uint32_t completed = 0U;
+            const std::uint32_t requested_segments = static_cast<std::uint32_t>(
+                (offset % keys.segment_size() + count + keys.segment_size() - 1U) /
+                keys.segment_size());
+            while (remaining != 0U) {
+                std::uint32_t segment = 0U, inside = 0U;
+                if (!checked_relation_u32(cursor / keys.segment_size(), segment,
+                                          "sorted-lookup prefix segment index", read_error) ||
+                    !checked_relation_u32(cursor % keys.segment_size(), inside,
+                                          "sorted-lookup prefix segment offset", read_error) ||
+                    segment >= cache->segment_prefix.size()) return false;
                 std::vector<FrWire> key_block, active_block;
                 if (!keys.read_segment(segment, key_block, read_error) ||
-                    !active_mask.read_segment(segment, active_block, read_error)) return false;
-                const std::uint64_t segment_offset =
-                    static_cast<std::uint64_t>(segment) * keys.segment_size();
-                for (std::uint32_t inside = 0U; inside < keys.segment_size(); ++inside) {
-                    const std::uint64_t global = segment_offset + inside;
-                    if (global >= keys.logical_domain()) break;
-                    if (!sorted_lookup_boolean(active_block[inside])) {
-                        if (read_error) *read_error = "sorted-lookup prefix active mask is not boolean";
-                        return false;
+                    !active_mask.read_segment(segment, active_block, read_error) ||
+                    key_block.size() != keys.segment_size() ||
+                    active_block.size() != keys.segment_size())
+                    return fail_cache(read_error && !read_error->empty()
+                        ? *read_error : "sorted-lookup prefix requested segment shape mismatch");
+                const std::uint32_t take = std::min(
+                    remaining, keys.segment_size() - inside);
+                FrWire product = cache->segment_prefix[segment];
+                const std::uint32_t stop = inside + take;
+                for (std::uint32_t local = 0U; local < stop; ++local) {
+                    if (!sorted_lookup_boolean(active_block[local])) {
+                        return fail_cache("sorted-lookup prefix active mask is not boolean");
                     }
-                    if (global >= offset && global - offset < count &&
-                        active_block[inside] == zkdl::fr_from_u32(1U))
+                    unsigned __int128 key = 0U;
+                    if (!sorted_lookup_u128_from_field(key_block[local], key_bits, key, read_error))
+                        return fail_cache(read_error && !read_error->empty()
+                            ? *read_error : "sorted-lookup prefix key is not canonical");
+                    const std::uint64_t global =
+                        static_cast<std::uint64_t>(segment) * keys.segment_size() + local;
+                    if (active_block[local] == zkdl::fr_from_u32(0U) && key != 0U)
+                        return fail_cache("sorted-lookup prefix inactive key is nonzero");
+                    if (local >= inside && global < offset + count &&
+                        active_block[local] == zkdl::fr_from_u32(1U))
                         output[static_cast<std::size_t>(global - offset)] = product;
-                    if (active_block[inside] == zkdl::fr_from_u32(1U))
+                    if (active_block[local] == zkdl::fr_from_u32(1U))
                         product = zkdl::fr_mul(
-                            product, zkdl::fr_add(zkdl::fr_mul(beta, key_block[inside]), gamma));
+                            product, zkdl::fr_add(
+                                zkdl::fr_mul(beta, key_block[local]), gamma));
                 }
+                cursor += take;
+                remaining -= take;
+                ++completed;
+                if (progress != nullptr)
+                    progress->update("prefix_output_segments", completed,
+                                     requested_segments);
             }
             return true;
         });
@@ -652,10 +805,15 @@ inline bool make_authenticated_sorted_lookup_prefix_product_provider(
 inline bool authenticated_sorted_lookup_prefix_product_endpoint(
     const SegmentedTensorProvider& keys, const SegmentedTensorProvider& active_mask,
     std::uint32_t active_length, const FrWire& beta, const FrWire& gamma,
-    FrWire& endpoint, std::string* error = nullptr) {
+    FrWire& endpoint, std::string* error = nullptr,
+    NativeOperationProgressReporter* progress = nullptr,
+    const std::array<byte, 32U>& descriptor_digest = {},
+    const SegmentedTensorProvider* existing_prefix = nullptr) {
     SegmentedTensorProvider prefix;
-    if (!make_authenticated_sorted_lookup_prefix_product_provider(
-            keys, active_mask, beta, gamma, prefix, error)) return false;
+    if (existing_prefix != nullptr) prefix = *existing_prefix;
+    else if (!make_authenticated_sorted_lookup_prefix_product_provider(
+                 keys, active_mask, beta, gamma, prefix, error, progress,
+                 descriptor_digest)) return false;
     if (active_length > keys.logical_domain()) {
         if (error) *error = "sorted-lookup prefix endpoint length is out of bounds";
         return false;
@@ -678,22 +836,37 @@ inline bool authenticated_sorted_lookup_prefix_product_endpoint(
 }
 
 inline bool make_authenticated_sorted_lookup_shifted_key_provider(
-    const SegmentedTensorProvider& keys, SegmentedTensorProvider& previous_provider,
+    const SegmentedTensorProvider& keys, const SegmentedTensorProvider& active_mask,
+    SegmentedTensorProvider& previous_provider,
     std::string* error = nullptr) {
-    if (!keys.valid(error)) return false;
+    if (!keys.valid(error) || !active_mask.valid(error) ||
+        keys.logical_domain() != active_mask.logical_domain() ||
+        keys.segment_size() != active_mask.segment_size() ||
+        keys.segment_count() != active_mask.segment_count()) {
+        if (error && error->empty())
+            *error = "invalid sorted-lookup shifted-key provider inputs";
+        return false;
+    }
     previous_provider = SegmentedTensorProvider(
         keys.logical_domain(), keys.segment_size(),
-        [keys](std::uint64_t offset, std::uint32_t count,
+        [keys, active_mask](std::uint64_t offset, std::uint32_t count,
                std::vector<FrWire>& output, std::string* read_error) {
             std::vector<FrWire> source;
+            std::vector<FrWire> active;
             const std::uint64_t source_offset = offset == 0U ? 0U : offset - 1U;
-            const std::uint32_t source_count = offset == 0U ? count : count;
-            if (!sorted_lookup_read_range(keys, source_offset, source_count, source,
+            if (!sorted_lookup_read_range(keys, source_offset, count, source,
+                                          read_error) ||
+                !sorted_lookup_read_range(active_mask, offset, count, active,
                                           read_error)) return false;
             output.assign(count, FrWire{});
             for (std::uint32_t index = 0U; index < count; ++index) {
                 const std::uint64_t global = offset + index;
-                if (global != 0U) {
+                if (!sorted_lookup_boolean(active[index])) {
+                    if (read_error)
+                        *read_error = "sorted-lookup shifted-key active mask is not boolean";
+                    return false;
+                }
+                if (global != 0U && active[index] == zkdl::fr_from_u32(1U)) {
                     const std::size_t source_index =
                         offset == 0U ? index - 1U : index;
                     if (source_index >= source.size()) {
@@ -821,7 +994,8 @@ inline bool make_authenticated_sorted_lookup_constant_provider(
 inline bool authenticated_sorted_lookup_public_table_product(
     const SegmentedTensorProvider& table_keys, const SegmentedTensorProvider& table_active,
     std::uint32_t active_length, const FrWire& beta, const FrWire& gamma,
-    FrWire& product, std::string* error = nullptr) {
+    FrWire& product, std::string* error = nullptr,
+    NativeOperationProgressReporter* progress = nullptr) {
     if (!table_keys.valid(error) || !table_active.valid(error) ||
         table_keys.logical_domain() != table_active.logical_domain() ||
         table_keys.segment_size() != table_active.segment_size() ||
@@ -846,6 +1020,9 @@ inline bool authenticated_sorted_lookup_public_table_product(
             product = zkdl::fr_mul(product,
                                    zkdl::fr_add(zkdl::fr_mul(beta, keys[index]), gamma));
         }
+        if (progress != nullptr)
+            progress->update("public_table_product_segments", segment + 1U,
+                             table_keys.segment_count());
     }
     return true;
 }
@@ -940,10 +1117,13 @@ struct AuthenticatedSortedLookupProviderSet {
 
         const auto validate_mask = [&](const SegmentedTensorProvider& keys,
                                        const SegmentedTensorProvider& mask,
+                                       const char* kind,
                                        std::uint32_t active_length,
-                                       bool strict_sorted) {
+                                       bool require_nondecreasing,
+                                       bool strict_unique) {
             bool previous_set = false;
             unsigned __int128 previous = 0U;
+            std::uint64_t previous_index = 0U;
             std::uint32_t observed = 0U;
             for (std::uint32_t segment = 0U; segment < keys.segment_count(); ++segment) {
                 std::vector<FrWire> key_block, mask_block;
@@ -954,33 +1134,61 @@ struct AuthenticatedSortedLookupProviderSet {
                     const std::uint64_t index = base + inside;
                     if (index >= keys.logical_domain()) break;
                     if (!sorted_lookup_boolean(mask_block[inside])) {
-                        if (error) *error = "sorted-lookup active mask is not boolean";
+                        if (error) *error = std::string("sorted-lookup ") + kind +
+                            " active mask is not boolean at index=" +
+                            std::to_string(index) + " active_length=" +
+                            std::to_string(active_length) + " domain=" +
+                            std::to_string(keys.logical_domain());
                         return false;
                     }
                     const bool active = mask_block[inside] == zkdl::fr_from_u32(1U);
                     if (active != (index < active_length)) {
-                        if (error) *error = "sorted-lookup active mask does not match declared length";
+                        if (error) *error = std::string("sorted-lookup ") + kind +
+                            " active mask does not match declared length at index=" +
+                            std::to_string(index) + " active_length=" +
+                            std::to_string(active_length) + " domain=" +
+                            std::to_string(keys.logical_domain());
                         return false;
                     }
                     unsigned __int128 current = 0U;
                     if (!sorted_lookup_u128_from_field(key_block[inside],
                                                        descriptor.x_bits + descriptor.y_bits,
-                                                       current, error)) return false;
+                                                       current, error)) {
+                        if (error) *error = std::string("sorted-lookup ") + kind +
+                            " key is not canonical at index=" + std::to_string(index) +
+                            " active_length=" + std::to_string(active_length) +
+                            " domain=" + std::to_string(keys.logical_domain());
+                        return false;
+                    }
                     if (zkdl::fr_compare(key_block[inside], descriptor.key_max) > 0) {
-                        if (error) *error = "sorted-lookup key exceeds authenticated key_max";
+                        if (error) *error = std::string("sorted-lookup ") + kind +
+                            " key exceeds authenticated key_max at index=" +
+                            std::to_string(index) + " active_length=" +
+                            std::to_string(active_length) + " domain=" +
+                            std::to_string(keys.logical_domain());
                         return false;
                     }
                     if (!active && current != 0U) {
-                        if (error) *error = "sorted-lookup padded key is nonzero";
+                        if (error) *error = std::string("sorted-lookup ") + kind +
+                            " padded key is nonzero at index=" + std::to_string(index) +
+                            " active_length=" + std::to_string(active_length) +
+                            " domain=" + std::to_string(keys.logical_domain());
                         return false;
                     }
                     if (active) {
-                        if (previous_set && (current < previous ||
-                            (strict_sorted && current == previous))) {
-                            if (error) *error = "sorted-lookup key sequence is not canonical sorted order";
+                        if (previous_set &&
+                            ((require_nondecreasing && current < previous) ||
+                             (strict_unique && current == previous))) {
+                            if (error) *error = std::string("sorted-lookup ") + kind +
+                                " key sequence is not canonical sorted order at index=" +
+                                std::to_string(index) + " previous_index=" +
+                                std::to_string(previous_index) + " active_length=" +
+                                std::to_string(active_length) + " domain=" +
+                                std::to_string(keys.logical_domain());
                             return false;
                         }
                         previous = current;
+                        previous_index = index;
                         previous_set = true;
                         ++observed;
                     }
@@ -989,9 +1197,12 @@ struct AuthenticatedSortedLookupProviderSet {
             return observed == active_length;
         };
 
-        if (!validate_mask(table_keys, table_active, descriptor.table_active_length, true) ||
-            !validate_mask(query_keys, query_active, descriptor.query_active_length, false) ||
-            !validate_mask(merge_keys, merge_active, descriptor.merge_active_length, false))
+        if (!validate_mask(table_keys, table_active, "table",
+                           descriptor.table_active_length, true, true) ||
+            !validate_mask(query_keys, query_active, "query",
+                           descriptor.query_active_length, false, false) ||
+            !validate_mask(merge_keys, merge_active, "merge",
+                           descriptor.merge_active_length, true, false))
             return false;
 
         for (std::uint32_t segment = 0U; segment < merge_keys.segment_count(); ++segment) {
@@ -1627,7 +1838,7 @@ struct TensorWitness {
         return output;
     }
 
-    bool valid(std::string* error = nullptr) const {
+    bool metadata_valid(std::string* error = nullptr) const {
         if (id.empty() ||
             domain_size == 0U || (domain_size & (domain_size - 1U)) != 0U ||
             (!values.empty() && values.size() != domain_size) || visibility == 0U || visibility > 3U) {
@@ -1636,6 +1847,14 @@ struct TensorWitness {
         }
         if (values.empty()) {
             if (!stored_provider.valid(error) || stored_provider.logical_domain() != domain_size) return false;
+            return true;
+        }
+        return true;
+    }
+
+    bool valid(std::string* error = nullptr) const {
+        if (!metadata_valid(error)) return false;
+        if (values.empty()) {
             for (std::uint32_t segment = 0U; segment < stored_provider.segment_count(); ++segment) { std::vector<FrWire> block; if (!stored_provider.read_segment(segment, block, error)) return false; }
             return true;
         }
@@ -1644,6 +1863,50 @@ struct TensorWitness {
                 if (error) *error = "relation tensor witness contains non-canonical field residue";
                 return false;
             }
+        return true;
+    }
+
+    bool materialize_validated(std::vector<FrWire>& output,
+                               std::string* error = nullptr,
+                               const RouteWorkProgressCallback* progress = nullptr) const {
+        output.clear();
+        if (!metadata_valid(error)) return false;
+        if (!values.empty()) {
+            constexpr std::size_t kProgressValues = 1U << 18U;
+            for (std::size_t begin = 0U; begin < values.size();) {
+                const std::size_t end = progress == nullptr
+                    ? values.size() : std::min(values.size(), begin + kProgressValues);
+                for (std::size_t index = begin; index < end; ++index)
+                    if (!zkdl::fr_canonical(values[index])) {
+                        if (error) *error = "relation tensor witness contains non-canonical field residue";
+                        return false;
+                    }
+                begin = end;
+                if (progress != nullptr)
+                    (*progress)("source_canonical_values", end, values.size());
+            }
+            output = values;
+            return true;
+        }
+        if (domain_size > (1U << 27U)) {
+            if (error) *error = "dense native primitive tensor is outside the bounded materialization domain";
+            return false;
+        }
+        output.reserve(domain_size);
+        for (std::uint32_t segment = 0U; segment < stored_provider.segment_count(); ++segment) {
+            std::vector<FrWire> block;
+            if (!stored_provider.read_segment(segment, block, error) ||
+                block.size() != stored_provider.segment_size()) return false;
+            output.insert(output.end(), block.begin(), block.end());
+            if (progress != nullptr)
+                (*progress)("source_materialize_segments", segment + 1U,
+                            stored_provider.segment_count());
+        }
+        if (output.size() != domain_size) {
+            if (error) *error = "materialized relation tensor has the wrong canonical length";
+            output.clear();
+            return false;
+        }
         return true;
     }
 };
@@ -3823,12 +4086,124 @@ inline bool zksc_validate_provider_inputs(
         round_generators, blinding_generator, u_generator, degree + 1U, error);
 }
 
+using ZkSumcheckProgressCallback = std::function<void(
+    const char*, std::uint32_t, std::uint32_t, std::uint64_t, std::uint64_t)>;
+
+struct RouteSumcheckProgressReporter {
+    using Clock = std::chrono::steady_clock;
+    const std::string& operation;
+    std::uint32_t total_rounds = 0U;
+    Clock::time_point started = Clock::now();
+    Clock::time_point last_report = started;
+
+    void update(const char* phase, std::uint32_t round,
+                std::uint32_t tensor_index, std::uint64_t completed,
+                std::uint64_t total) {
+        const auto now = Clock::now();
+        if (now - last_report < std::chrono::seconds(15)) return;
+        const double elapsed = std::chrono::duration<double>(now - started).count();
+        std::clog << "zkdl_native_progress phase=route_sumcheck status=PROGRESS"
+                  << " operation_id=" << operation
+                  << " step=" << phase
+                  << " round=" << round << '/' << total_rounds;
+        if (tensor_index != std::numeric_limits<std::uint32_t>::max())
+            std::clog << " tensor_index=" << tensor_index;
+        std::clog << " completed=" << completed << '/' << total
+                  << " elapsed_wall_seconds=" << elapsed << '\n' << std::flush;
+        last_report = now;
+    }
+
+    void update_route_work(const char* step, std::uint64_t completed,
+                           std::uint64_t total) {
+        const auto now = Clock::now();
+        if (now - last_report < std::chrono::seconds(15)) return;
+        const double elapsed = std::chrono::duration<double>(now - started).count();
+        std::clog << "zkdl_native_progress phase=route_work status=PROGRESS"
+                  << " operation_id=" << operation
+                  << " step=" << step
+                  << " completed=" << completed << '/' << total
+                  << " elapsed_wall_seconds=" << elapsed << '\n' << std::flush;
+        last_report = now;
+    }
+};
+
+struct RelationSegmentProgressReporter {
+    using Clock = std::chrono::steady_clock;
+    std::string phase;
+    Clock::time_point started = Clock::now();
+    Clock::time_point last_report = started;
+
+    explicit RelationSegmentProgressReporter(std::string phase_name)
+        : phase(std::move(phase_name)) {}
+
+    void update(const std::string& family, std::uint32_t completed,
+                std::uint32_t total) {
+        const auto now = Clock::now();
+        if (now - last_report < std::chrono::seconds(15)) return;
+        const double elapsed = std::chrono::duration<double>(now - started).count();
+        std::clog << "zkdl_native_progress phase=" << phase
+                  << " status=PROGRESS family_id=" << family
+                  << " segment=" << completed << '/' << total
+                  << " elapsed_wall_seconds=" << elapsed << '\n' << std::flush;
+        last_report = now;
+    }
+};
+
+inline bool zksc_accumulate_round_evaluations(
+    const ConstraintDescriptor& descriptor,
+    const std::vector<std::vector<FrWire>>& current,
+    std::uint32_t degree, std::vector<FrWire>& evaluations,
+    std::string* error = nullptr,
+    std::uint32_t round_index = 0U,
+    const ZkSumcheckProgressCallback* progress = nullptr,
+    const char* progress_phase = "sumcheck_cached_rows") {
+    if (current.empty() || current.front().size() < 2U ||
+        (current.front().size() & 1U) != 0U ||
+        evaluations.size() != degree + 1U) {
+        if (error) *error = "segmented ZkSumcheck current round shape is invalid";
+        return false;
+    }
+    for (const auto& tensor : current)
+        if (tensor.size() != current.front().size()) {
+            if (error) *error = "segmented ZkSumcheck current tensor shapes differ";
+            return false;
+        }
+    const std::size_t row_count = current.front().size() / 2U;
+    constexpr std::size_t kProgressRows = 1U << 18U;
+    for (std::size_t row_begin = 0U; row_begin < row_count;) {
+        const std::size_t row_end = progress == nullptr
+            ? row_count : std::min(row_count, row_begin + kProgressRows);
+        for (std::size_t row = row_begin; row < row_end; ++row) {
+            std::vector<FrWire> values;
+            values.reserve(current.size());
+            for (const auto& tensor : current) values.push_back(tensor[2U * row]);
+            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
+                const FrWire x = zkdl::fr_from_u32(evaluation);
+                values.clear();
+                for (const auto& tensor : current)
+                    values.push_back(zkdl::fr_add(
+                        tensor[2U * row], zkdl::fr_mul(x, zkdl::fr_sub(
+                            tensor[2U * row + 1U], tensor[2U * row]))));
+                evaluations[evaluation] = zkdl::fr_add(
+                    evaluations[evaluation], eval_constraint(descriptor, values));
+            }
+        }
+        row_begin = row_end;
+        if (progress != nullptr)
+            (*progress)(progress_phase, round_index,
+                        std::numeric_limits<std::uint32_t>::max(), row_end,
+                        row_count);
+    }
+    return true;
+}
+
 inline bool zksc_segmented_round_evaluations(
     const ConstraintDescriptor& descriptor,
     const std::vector<SegmentedTensorProvider>& providers,
     std::uint32_t degree, std::uint32_t round_index,
     const std::vector<FrWire>& prior_challenges,
-    std::vector<FrWire>& evaluations, std::string* error = nullptr) {
+    std::vector<FrWire>& evaluations, std::string* error = nullptr,
+    const ZkSumcheckProgressCallback* progress = nullptr) {
     if (providers.empty() || prior_challenges.size() != round_index ||
         providers.front().logical_domain() == 0U) {
         if (error) *error = "segmented ZkSumcheck round state is invalid";
@@ -3846,28 +4221,6 @@ inline bool zksc_segmented_round_evaluations(
         return false;
     }
     evaluations.assign(degree + 1U, FrWire{});
-    const auto accumulate = [&](const std::vector<std::vector<FrWire>>& current,
-                                std::size_t rows) {
-        for (std::size_t row = 0U; row < rows; ++row) {
-            std::vector<FrWire> values;
-            values.reserve(current.size());
-            for (const auto& tensor : current) {
-                if (2U * row + 1U >= tensor.size()) throw std::invalid_argument(
-                    "segmented ZkSumcheck current row is out of bounds");
-                values.push_back(tensor[2U * row]);
-            }
-            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
-                const FrWire x = zkdl::fr_from_u32(evaluation);
-                values.clear();
-                for (const auto& tensor : current)
-                    values.push_back(zkdl::fr_add(
-                        tensor[2U * row], zkdl::fr_mul(x, zkdl::fr_sub(
-                            tensor[2U * row + 1U], tensor[2U * row]))));
-                evaluations[evaluation] = zkdl::fr_add(
-                    evaluations[evaluation], eval_constraint(descriptor, values));
-            }
-        }
-    };
     try {
         if (round_index < low_bits) {
             for (std::uint32_t segment = 0U; segment < segment_count; ++segment) {
@@ -3877,7 +4230,14 @@ inline bool zksc_segmented_round_evaluations(
                     for (std::uint32_t previous = 0U; previous < round_index; ++previous)
                         fold_values(current[tensor], prior_challenges[previous]);
                 }
-                accumulate(current, current.front().size() / 2U);
+                if (!zksc_accumulate_round_evaluations(
+                        descriptor, current, degree, evaluations, error,
+                        round_index, progress,
+                        "sumcheck_provider_rows")) return false;
+                if (progress != nullptr)
+                    (*progress)("sumcheck_provider_segments", round_index,
+                                std::numeric_limits<std::uint32_t>::max(),
+                                segment + 1U, segment_count);
             }
         } else {
             std::vector<std::vector<FrWire>> current(providers.size(),
@@ -3890,11 +4250,17 @@ inline bool zksc_segmented_round_evaluations(
                         fold_values(block, prior_challenges[previous]);
                     current[tensor][segment] = block.front();
                 }
+                if (progress != nullptr)
+                    (*progress)("sumcheck_provider_segments", round_index,
+                                std::numeric_limits<std::uint32_t>::max(),
+                                segment + 1U, segment_count);
             }
             for (std::uint32_t previous = low_bits; previous < round_index; ++previous)
                 for (auto& tensor : current)
                     fold_values(tensor, prior_challenges[previous]);
-            accumulate(current, current.front().size() / 2U);
+            if (!zksc_accumulate_round_evaluations(
+                    descriptor, current, degree, evaluations, error,
+                    round_index, nullptr)) return false;
         }
     } catch (const std::exception& exception) {
         if (error) *error = exception.what();
@@ -3903,10 +4269,117 @@ inline bool zksc_segmented_round_evaluations(
     return true;
 }
 
+inline bool zksc_segmented_fold_state_initialize(
+    const std::vector<SegmentedTensorProvider>& providers,
+    const FrWire& challenge,
+    std::vector<std::vector<FrWire>>& state,
+    std::string* error = nullptr,
+    std::uint32_t progress_round = 0U,
+    const ZkSumcheckProgressCallback* progress = nullptr) {
+    if (providers.empty() || !zkdl::fr_canonical(challenge) ||
+        providers.front().logical_domain() < 2U) {
+        if (error) *error = "segmented ZkSumcheck fold-state initialization is invalid";
+        return false;
+    }
+    const std::uint32_t logical_domain = providers.front().logical_domain();
+    const std::uint32_t segment_size = providers.front().segment_size();
+    const std::uint32_t segment_count = providers.front().segment_count();
+    if ((logical_domain & 1U) != 0U || (segment_size & 1U) != 0U) {
+        if (error) *error = "segmented ZkSumcheck fold-state domain is not pair aligned";
+        return false;
+    }
+    try {
+        state.clear();
+        state.resize(providers.size());
+        for (std::size_t tensor = 0U; tensor < providers.size(); ++tensor) {
+            if (!providers[tensor].valid(error) ||
+                providers[tensor].logical_domain() != logical_domain ||
+                providers[tensor].segment_size() != segment_size ||
+                providers[tensor].segment_count() != segment_count) {
+                if (error && error->empty()) *error = "segmented ZkSumcheck fold-state provider layout mismatch";
+                return false;
+            }
+            state[tensor].reserve(logical_domain / 2U);
+        }
+        for (std::uint32_t segment = 0U; segment < segment_count; ++segment) {
+            std::vector<std::vector<FrWire>> blocks(providers.size());
+            for (std::size_t tensor = 0U; tensor < providers.size(); ++tensor) {
+                if (!providers[tensor].read_segment(segment, blocks[tensor], error) ||
+                    blocks[tensor].size() != segment_size) return false;
+                fold_values(blocks[tensor], challenge);
+                state[tensor].insert(state[tensor].end(), blocks[tensor].begin(), blocks[tensor].end());
+            }
+            if (progress != nullptr)
+                (*progress)("fold_state_init_segments", progress_round,
+                            std::numeric_limits<std::uint32_t>::max(),
+                            segment + 1U, segment_count);
+        }
+        for (const auto& tensor : state)
+            if (tensor.size() != logical_domain / 2U) {
+                if (error) *error = "segmented ZkSumcheck fold-state coverage mismatch";
+                return false;
+            }
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
+        return false;
+    }
+    return true;
+}
+
+inline bool zksc_fold_values_in_place(std::vector<FrWire>& values,
+                                      const FrWire& challenge,
+                                      std::string* error = nullptr,
+                                      std::uint32_t progress_round = 0U,
+                                      std::uint32_t tensor_index = 0U,
+                                      const ZkSumcheckProgressCallback* progress = nullptr) {
+    if (values.size() < 2U || (values.size() & 1U) != 0U ||
+        !zkdl::fr_canonical(challenge)) {
+        if (error) *error = "segmented ZkSumcheck in-place fold shape is invalid";
+        return false;
+    }
+    const FrWire one_minus = zkdl::fr_sub(zkdl::fr_from_u32(1U), challenge);
+    const std::size_t folded_size = values.size() / 2U;
+    constexpr std::size_t kProgressRows = 1U << 18U;
+    for (std::size_t begin = 0U; begin < folded_size;) {
+        const std::size_t end = progress == nullptr
+            ? folded_size : std::min(folded_size, begin + kProgressRows);
+        for (std::size_t index = begin; index < end; ++index) {
+            const FrWire left = values[2U * index];
+            const FrWire right = values[2U * index + 1U];
+            values[index] = zkdl::fr_add(zkdl::fr_mul(one_minus, left),
+                                         zkdl::fr_mul(challenge, right));
+        }
+        begin = end;
+        if (progress != nullptr)
+            (*progress)("fold_state_rows", progress_round, tensor_index,
+                        end, folded_size);
+    }
+    values.resize(folded_size);
+    return true;
+}
+
+inline bool zksc_folded_round_evaluations(
+    const ConstraintDescriptor& descriptor,
+    const std::vector<std::vector<FrWire>>& state,
+    std::uint32_t degree, std::vector<FrWire>& evaluations,
+    std::string* error = nullptr,
+    std::uint32_t round_index = 0U,
+    const ZkSumcheckProgressCallback* progress = nullptr) {
+    if (state.empty() || state.front().size() < 2U ||
+        (state.front().size() & 1U) != 0U) {
+        if (error) *error = "segmented ZkSumcheck cached round state is invalid";
+        return false;
+    }
+    evaluations.assign(degree + 1U, FrWire{});
+    return zksc_accumulate_round_evaluations(
+        descriptor, state, degree, evaluations, error, round_index, progress);
+}
+
 inline bool zksc_segmented_terminal_values(
     const std::vector<SegmentedTensorProvider>& providers,
     const std::vector<FrWire>& challenges, std::vector<FrWire>& terminal,
-    std::string* error = nullptr) {
+    std::string* error = nullptr,
+    const ZkSumcheckProgressCallback* progress = nullptr) {
     if (providers.empty() || challenges.empty()) {
         if (error) *error = "segmented ZkSumcheck terminal state is empty";
         return false;
@@ -3925,11 +4398,20 @@ inline bool zksc_segmented_terminal_values(
                                               std::vector<FrWire>(segment_count));
     for (std::uint32_t segment = 0U; segment < segment_count; ++segment) {
         for (std::size_t tensor = 0U; tensor < providers.size(); ++tensor) {
-            if (!providers[tensor].read_segment(segment, current[tensor], error)) return false;
+            std::vector<FrWire> block;
+            if (!providers[tensor].read_segment(segment, block, error)) return false;
             for (std::uint32_t previous = 0U; previous < low_bits; ++previous)
-                fold_values(current[tensor], challenges[previous]);
-            current[tensor][segment] = current[tensor].front();
+                fold_values(block, challenges[previous]);
+            if (block.empty() || segment >= current[tensor].size()) {
+                if (error) *error = "segmented ZkSumcheck terminal block shape mismatch";
+                return false;
+            }
+            current[tensor][segment] = block.front();
         }
+        if (progress != nullptr)
+            (*progress)("sumcheck_terminal_segments", total_bits - 1U,
+                        std::numeric_limits<std::uint32_t>::max(),
+                        segment + 1U, segment_count);
     }
     for (std::uint32_t previous = low_bits; previous < total_bits; ++previous)
         for (auto& tensor : current) fold_values(tensor, challenges[previous]);
@@ -3948,7 +4430,10 @@ inline bool prove_zk_sumcheck_segmented(
     const FrWire& initial_claim, const RelationStatement& statement,
     const std::string& operation_context, zkdl::Transcript& parent_transcript,
     ZkSumcheckProverResult& result, std::string* error = nullptr,
-    std::uint32_t shared_segment_size = 0U) {
+    std::uint32_t shared_segment_size = 0U,
+    bool reuse_folded_state = false,
+    const char* progress_phase = nullptr,
+    const char* progress_operation_id = nullptr) {
     try {
         if (!zksc_validate_provider_inputs(
                 descriptor, tensor_providers, degree, domain_size, generators,
@@ -3960,6 +4445,35 @@ inline bool prove_zk_sumcheck_segmented(
             if (error) *error = "ZkSumcheck domain has no supported round decomposition";
             return false;
         }
+        RouteSumcheckProgressReporter route_progress_reporter{
+            operation_context, bits};
+        NativeOperationProgressReporter native_progress(
+            progress_phase == nullptr ? std::string() : progress_phase,
+            progress_phase == nullptr ? std::string() :
+                (progress_operation_id == nullptr ? operation_context : progress_operation_id));
+        ZkSumcheckProgressCallback route_progress_callback;
+        ZkSumcheckProgressCallback native_progress_callback;
+        if (reuse_folded_state) {
+            route_progress_callback = [&route_progress_reporter](
+                const char* phase, std::uint32_t round,
+                std::uint32_t tensor_index, std::uint64_t completed,
+                std::uint64_t total) {
+                route_progress_reporter.update(
+                    phase, round + 1U, tensor_index, completed, total);
+            };
+        } else if (progress_phase != nullptr) {
+            native_progress_callback = [&native_progress, bits, tensor_count = tensor_providers.size()](
+                const char* phase, std::uint32_t round,
+                std::uint32_t tensor_index, std::uint64_t completed,
+                std::uint64_t total) {
+                native_progress.update(
+                    phase, completed, total, tensor_index,
+                    static_cast<std::uint32_t>(tensor_count), round + 1U, bits);
+            };
+        }
+        const ZkSumcheckProgressCallback* progress = reuse_folded_state
+            ? &route_progress_callback
+            : progress_phase != nullptr ? &native_progress_callback : nullptr;
         result = ZkSumcheckProverResult{};
         auto& proof = result.proof;
         proof.label = operation_context;
@@ -3991,11 +4505,17 @@ inline bool prove_zk_sumcheck_segmented(
         FrWire previous_blinder{};
         std::vector<FrWire> prior_challenges;
         prior_challenges.reserve(bits);
+        std::vector<std::vector<FrWire>> folded_state;
         for (std::uint32_t round_index = 0U; round_index < bits; ++round_index) {
             std::vector<FrWire> evaluations;
-            if (!zksc_segmented_round_evaluations(
-                    descriptor, tensor_providers, degree, round_index,
-                    prior_challenges, evaluations, error)) return false;
+            const bool evaluated = reuse_folded_state && round_index != 0U
+                ? zksc_folded_round_evaluations(
+                      descriptor, folded_state, degree, evaluations, error,
+                      round_index, progress)
+                : zksc_segmented_round_evaluations(
+                      descriptor, tensor_providers, degree, round_index,
+                      prior_challenges, evaluations, error, progress);
+            if (!evaluated) return false;
             std::vector<FrWire> coefficients;
             if (!zksc_interpolate_coefficients(evaluations, coefficients, error)) return false;
             const FrWire endpoint_value = zksc_eval_coefficients(
@@ -4081,13 +4601,40 @@ inline bool prove_zk_sumcheck_segmented(
             proof.rounds.push_back(round);
             previous_value = query_value;
             previous_blinder = r_q;
+            if (reuse_folded_state) {
+                if (round_index == 0U) {
+                    if (!zksc_segmented_fold_state_initialize(
+                            tensor_providers, challenge_wire, folded_state,
+                            error, round_index + 1U, progress)) return false;
+                } else {
+                    for (std::size_t tensor = 0U; tensor < folded_state.size(); ++tensor) {
+                        std::uint32_t tensor_index = 0U;
+                        if (!checked_relation_u32(tensor, tensor_index,
+                                                  "route Sumcheck tensor index", error) ||
+                            !zksc_fold_values_in_place(
+                                folded_state[tensor], challenge_wire, error,
+                                round_index + 1U, tensor_index, progress))
+                            return false;
+                    }
+                }
+            }
             prior_challenges.push_back(challenge_wire);
             result.challenges.push_back(challenge);
         }
         proof.final_claim_commitment = proof.rounds.back().evaluation_commitment;
-        if (!zksc_segmented_terminal_values(
-                tensor_providers, prior_challenges, result.folded_terminal_values, error))
-            return false;
+        if (reuse_folded_state) {
+            result.folded_terminal_values.clear();
+            result.folded_terminal_values.reserve(folded_state.size());
+            for (const auto& tensor : folded_state) {
+                if (tensor.size() != 1U) {
+                    if (error) *error = "segmented ZkSumcheck cached terminal shape is invalid";
+                    return false;
+                }
+                result.folded_terminal_values.push_back(tensor.front());
+            }
+        } else if (!zksc_segmented_terminal_values(
+                       tensor_providers, prior_challenges,
+                       result.folded_terminal_values, error, progress)) return false;
         result.final_q_blinder = previous_blinder;
         std::vector<byte> final_bytes;
         zkdl::append_g1(final_bytes, proof.final_claim_commitment);
@@ -4112,14 +4659,17 @@ inline bool prove_zk_sumcheck(
     const zkdl::CpuG1Point& blinding_generator, const zkdl::CpuG1Point& u_generator,
     const FrWire& initial_claim, const RelationStatement& statement,
     const std::string& operation_context, zkdl::Transcript& parent_transcript,
-    ZkSumcheckProverResult& result, std::string* error = nullptr) {
+    ZkSumcheckProverResult& result, std::string* error = nullptr,
+    const char* progress_phase = nullptr,
+    const char* progress_operation_id = nullptr) {
     std::vector<SegmentedTensorProvider> providers;
     if (!make_segmented_tensor_providers(tensor_values, generators.size(), providers, error))
         return false;
     return prove_zk_sumcheck_segmented(
         descriptor, providers, degree, domain_size, generators,
         blinding_generator, u_generator, initial_claim, statement,
-        operation_context, parent_transcript, result, error);
+        operation_context, parent_transcript, result, error, 0U, false,
+        progress_phase, progress_operation_id);
 }
 
 inline bool verify_zk_sumcheck(
@@ -4307,12 +4857,27 @@ struct ZkTerminalProductPlan {
     std::uint32_t left_commitment_index = 0U;
     std::uint32_t right_commitment_index = 0U;
     std::uint32_t output_commitment_index = 0U;
+    // A repeated terminal factor (x*x) gets a deterministic role alias for
+    // the existing product proof. The alias is never an independent claim:
+    // prover and verifier copy the already authenticated/opened ScalarState.
+    std::uint32_t right_alias_source_index =
+        std::numeric_limits<std::uint32_t>::max();
 };
 
 constexpr std::uint32_t kZkTerminalEvaluationIndexBase = 0x40000000U;
 constexpr std::uint32_t kZkTerminalProductIndexBase = 0x80000000U;
+constexpr std::uint32_t kZkTerminalProductAliasIndexBase = 0x90000000U;
 constexpr std::uint32_t kZkTerminalResidualIndex = 0xF0000000U;
 constexpr std::uint32_t kZkTerminalExternalIndex = 0xF0000001U;
+
+static_assert(kZkTerminalProductIndexBase +
+                  zkdl::ZkTerminalRelationProof::kMaxProductNodes <=
+              kZkTerminalProductAliasIndexBase,
+              "terminal product and alias index ranges overlap");
+static_assert(kZkTerminalProductAliasIndexBase +
+                  zkdl::ZkTerminalRelationProof::kMaxProductNodes <
+              kZkTerminalResidualIndex,
+              "terminal alias index range overlaps reserved residual roles");
 
 inline std::uint32_t zktr_terminal_evaluation_index(std::size_t tensor_index) {
     std::uint32_t checked_index = 0U;
@@ -4330,6 +4895,24 @@ inline std::uint32_t zktr_product_index(std::size_t node_index) {
                               "terminal product index"))
         throw std::invalid_argument("terminal product commitment index overflow");
     return kZkTerminalProductIndexBase + checked_index;
+}
+
+inline bool zktr_product_alias_index(std::size_t node_index,
+                                     std::uint32_t& alias_index,
+                                     std::string* error = nullptr) {
+    if (node_index >= zkdl::ZkTerminalRelationProof::kMaxProductNodes ||
+        !checked_relation_u32(node_index, alias_index,
+                              "terminal product alias index")) {
+        if (error && error->empty())
+            *error = "terminal product alias index exceeds its reserved range";
+        return false;
+    }
+    alias_index += kZkTerminalProductAliasIndexBase;
+    if (alias_index >= kZkTerminalResidualIndex) {
+        if (error) *error = "terminal product alias collides with a reserved role";
+        return false;
+    }
+    return true;
 }
 
 inline bool zktr_all_statement_digests_valid(const RelationStatement& statement,
@@ -4403,7 +4986,8 @@ inline bool zktr_build_segment_commitment_material(
     const RelationStatement& statement, CommitmentWire& commitment,
     SegmentCommitmentMaterial& material, std::string* error = nullptr,
     double* commitment_crypto_time_seconds = nullptr,
-    std::uint32_t shared_segment_size = 0U) {
+    std::uint32_t shared_segment_size = 0U,
+    const SegmentCommitmentProgressCallback* segment_progress = nullptr) {
     try {
         double commitment_crypto_seconds = 0.0;
         ZkRelationSegmentLayout layout;
@@ -4503,6 +5087,8 @@ inline bool zktr_build_segment_commitment_material(
             commitment.segment_commitments.push_back(std::move(wire));
             material.commitments.push_back(xi);
             legacy = next_legacy;
+            if (segment_progress != nullptr)
+                (*segment_progress)(segment + 1U, layout.segment_count);
         }
         const auto finalization_start = std::chrono::steady_clock::now();
         commitment.commitment = zkdl::cpu_g1_to_native(legacy);
@@ -4531,7 +5117,8 @@ inline bool zktr_commitment_wire_from_material(
     const zkdl::CpuG1Point& u_generator, const RelationStatement& statement,
     const SegmentCommitmentMaterial& material, CommitmentWire& commitment,
     std::string* error = nullptr,
-    std::uint32_t shared_segment_size = 0U) {
+    std::uint32_t shared_segment_size = 0U,
+    const SegmentCommitmentProgressCallback* segment_progress = nullptr) {
     try {
         ZkRelationSegmentLayout layout;
         const bool layout_valid = shared_segment_size == 0U
@@ -4614,6 +5201,7 @@ inline bool zktr_commitment_wire_from_material(
             wire.commitment = zkdl::cpu_g1_to_native(xi);
             commitment.segment_commitments.push_back(std::move(wire));
             legacy = zkdl::cpu_g1_add(legacy, xi);
+            if (segment_progress != nullptr) (*segment_progress)(segment + 1U, layout.segment_count);
         }
         commitment.commitment = zkdl::cpu_g1_to_native(legacy);
         commitment.segment_commitment_digest = segment_commitment_digest(commitment);
@@ -4900,9 +5488,22 @@ inline bool zktr_build_product_plan(
                                       "terminal product factor index", error))
                 return false;
             const std::uint32_t right = zktr_terminal_evaluation_index(refs[factor]);
+            std::uint32_t right_index = right;
+            std::uint32_t alias_source =
+                std::numeric_limits<std::uint32_t>::max();
+            if (right_index == left) {
+                alias_source = right_index;
+                if (!zktr_product_alias_index(node_index, right_index, error))
+                    return false;
+            }
             const std::uint32_t output = zktr_product_index(node_index);
+            if (left == right_index || left == output || right_index == output) {
+                if (error) *error = "terminal product role alias/index collision";
+                return false;
+            }
             plans.push_back(ZkTerminalProductPlan{
-                monomial_index, factor_step, left, right, output});
+                monomial_index, factor_step, left, right_index, output,
+                alias_source});
             left = output;
         }
         monomial_commitment_indices.push_back(left);
@@ -5084,8 +5685,11 @@ inline bool prove_zk_terminal_relation_segmented(
     ZkTerminalRelationProverResult& result,
     std::string* error = nullptr,
     const std::vector<SegmentCommitmentMaterial>* segment_materials = nullptr,
-    std::uint32_t shared_segment_size = 0U) {
+    std::uint32_t shared_segment_size = 0U,
+    NativeOperationProgressReporter* progress = nullptr) {
     try {
+        NativeOperationProgressReporter local_progress("terminal_relation", operation_context);
+        if (progress == nullptr) progress = &local_progress;
         if (!zktr_link_kind_valid(link_kind) ||
             !zktr_validate_common_inputs(
                 descriptor, tensor_providers, canonical_commitments, tensor_blinders,
@@ -5136,6 +5740,9 @@ inline bool prove_zk_terminal_relation_segmented(
         std::map<std::uint32_t, ScalarState> states;
         for (std::size_t tensor_index = 0U;
              tensor_index < tensor_providers.size(); ++tensor_index) {
+            std::uint32_t tensor_index_u32 = 0U;
+            if (!checked_relation_u32(tensor_index, tensor_index_u32,
+                                      "terminal relation tensor index", error)) return false;
             ZkRelationSegmentLayout layout;
             const bool layout_valid = shared_segment_size == 0U
                 ? zktr_segment_layout(tensor_providers[tensor_index].logical_domain(),
@@ -5240,6 +5847,9 @@ inline bool prove_zk_terminal_relation_segmented(
                     aggregate_tau, zkdl::cpu_g1_mul(segment_tau, high_weights[segment]));
                 aggregate_xi = zkdl::cpu_g1_add(
                     aggregate_xi, zkdl::cpu_g1_mul(segment_xi, high_weights[segment]));
+                progress->update("terminal_opening_segments", segment + 1U,
+                                 layout.segment_count, tensor_index_u32,
+                                 static_cast<std::uint32_t>(tensor_providers.size()));
             }
             const zkdl::CpuG1Point terminal_commitment = aggregate_tau;
             if (!zkdl::cpu_pedersen_strict_g1(terminal_commitment, error) ||
@@ -5256,7 +5866,27 @@ inline bool prove_zk_terminal_relation_segmented(
         }
 
         result.product_blinders.reserve(plans.size());
-        for (const auto& plan : plans) {
+        for (std::size_t plan_index = 0U; plan_index < plans.size(); ++plan_index) {
+            const auto& plan = plans[plan_index];
+            if (plan.right_alias_source_index !=
+                std::numeric_limits<std::uint32_t>::max()) {
+                std::uint32_t expected_alias = 0U;
+                const auto source = states.find(plan.right_alias_source_index);
+                if (plan.right_alias_source_index != plan.left_commitment_index ||
+                    !zktr_product_alias_index(plan_index, expected_alias, error) ||
+                    plan.right_commitment_index != expected_alias ||
+                    source == states.end() ||
+                    states.find(plan.right_commitment_index) != states.end()) {
+                    if (error && error->empty())
+                        *error = "terminal square-product alias does not match its opened source claim";
+                    return false;
+                }
+                if (!states.emplace(plan.right_commitment_index,
+                                    source->second).second) {
+                    if (error) *error = "terminal square-product alias index collision";
+                    return false;
+                }
+            }
             const auto left = states.find(plan.left_commitment_index);
             const auto right = states.find(plan.right_commitment_index);
             if (left == states.end() || right == states.end()) {
@@ -5288,6 +5918,7 @@ inline bool prove_zk_terminal_relation_segmented(
             result.product_blinders.push_back(output_blinder);
             states.emplace(plan.output_commitment_index,
                            ScalarState{output_value, output_blinder, output_commitment});
+            progress->update("terminal_product_nodes", plan_index + 1U, plans.size());
         }
 
         FrWire residual_value = descriptor.constant;
@@ -5638,6 +6269,25 @@ inline bool verify_zk_terminal_relation(
                 if (error) *error = "terminal product DAG order/ref mismatch";
                 return false;
             }
+            if (plan.right_alias_source_index !=
+                std::numeric_limits<std::uint32_t>::max()) {
+                std::uint32_t expected_alias = 0U;
+                const auto source = states.find(plan.right_alias_source_index);
+                if (plan.right_alias_source_index != plan.left_commitment_index ||
+                    !zktr_product_alias_index(node_index, expected_alias, error) ||
+                    plan.right_commitment_index != expected_alias ||
+                    source == states.end() ||
+                    states.find(plan.right_commitment_index) != states.end()) {
+                    if (error && error->empty())
+                        *error = "terminal square-product alias does not match its authenticated source claim";
+                    return false;
+                }
+                if (!states.emplace(plan.right_commitment_index,
+                                    source->second).second) {
+                    if (error) *error = "terminal square-product alias index collision";
+                    return false;
+                }
+            }
             const auto left = states.find(plan.left_commitment_index);
             const auto right = states.find(plan.right_commitment_index);
             if (left == states.end() || right == states.end()) {
@@ -5745,7 +6395,7 @@ inline std::vector<FrWire> pointwise_challenges(const ConstraintDescriptor& desc
     return rho;
 }
 
-inline void pointwise_absorb_provider_commitments(const std::string& context, std::uint32_t domain, const std::vector<std::string>& tags, const std::vector<zkdl::CpuG1Point>& canonical, const std::vector<std::vector<zkdl::CpuG1Point>>& segments, zkdl::Transcript& transcript) {
+inline void pointwise_absorb_provider_commitments(const std::string& context, std::uint32_t domain, const std::vector<std::string>& tags, const std::vector<zkdl::CpuG1Point>& canonical, const std::vector<std::vector<zkdl::CpuG1Point>>& segments, zkdl::Transcript& transcript, NativeOperationProgressReporter* progress = nullptr) {
     if (tags.size() != canonical.size() || tags.size() != segments.size()) throw std::invalid_argument("pointwise provider commitment count mismatch");
     std::vector<byte> encoded;
     zkdl::append_u32(encoded, domain);
@@ -5762,6 +6412,7 @@ inline void pointwise_absorb_provider_commitments(const std::string& context, st
                 throw std::invalid_argument("pointwise commitment segment count exceeds cap");
             zkdl::append_u32(encoded, segment_index);
             zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(segments[index][segment]));
+            if (progress != nullptr) progress->update("provider_commitment_transcript_segments", segment + 1U, segments[index].size(), static_cast<std::uint32_t>(index), static_cast<std::uint32_t>(segments.size()));
         }
     }
     transcript.absorb(context + ".pointwise-eqmask-v2.provider-commitments", encoded);
@@ -5834,6 +6485,84 @@ inline ConstraintDescriptor pointwise_terminal_descriptor(const ConstraintDescri
     const FrWire weight = pointwise_terminal_weight(descriptor, rho, point);
     terminal.constant = zkdl::fr_mul(terminal.constant, weight);
     for (auto& term : terminal.terms) term.coefficient = zkdl::fr_mul(term.coefficient, weight);
+    return terminal;
+}
+
+inline bool sorted_marker_pieces_valid(const std::vector<ConstraintDescriptor>& pieces,
+                                      const std::vector<FrWire>& piece_rhos,
+                                      std::uint32_t expected_count,
+                                      std::string* error = nullptr) {
+    const auto fail = [&](const char* detail) {
+        if (error) *error = detail;
+        return false;
+    };
+    if (pieces.size() != 2U || piece_rhos.size() != 2U ||
+        pieces[0].id != "marker-count" || pieces[0].degree != 1U ||
+        pieces[0].constant != zkdl::fr_neg(zkdl::fr_from_u32(expected_count)) ||
+        pieces[0].terms.size() != 1U || pieces[0].terms[0].coefficient != zkdl::fr_from_u32(1U) ||
+        pieces[0].terms[0].refs != std::vector<std::uint32_t>{0U} ||
+        pieces[1].id != "marker-padding" || pieces[1].degree != 2U ||
+        pieces[1].constant != FrWire{} || pieces[1].terms.size() != 2U ||
+        pieces[1].terms[0].coefficient != zkdl::fr_from_u32(1U) ||
+        pieces[1].terms[0].refs != std::vector<std::uint32_t>{0U} ||
+        pieces[1].terms[1].coefficient != zkdl::fr_neg(zkdl::fr_from_u32(1U)) ||
+        pieces[1].terms[1].refs != std::vector<std::uint32_t>{0U, 1U})
+        return fail("sorted-lookup marker relation plan is not canonical");
+    for (const auto& rho : piece_rhos)
+        if (!zkdl::fr_canonical(rho) || rho == FrWire{})
+            return fail("sorted-lookup marker relation challenge is invalid");
+    return true;
+}
+
+inline ConstraintDescriptor sorted_marker_mixed_sumcheck_descriptor(
+    const ConstraintDescriptor& relation,
+    const std::vector<ConstraintDescriptor>& pieces,
+    const std::vector<FrWire>& piece_rhos,
+    std::size_t input_count) {
+    std::uint32_t eq_index = 0U, active_index = 0U;
+    if (!checked_relation_u32(input_count, eq_index, "marker eq-mask tensor index") ||
+        input_count == std::numeric_limits<std::size_t>::max() ||
+        !checked_relation_u32(input_count + 1U, active_index, "marker active-mask tensor index"))
+        throw std::invalid_argument("sorted-lookup marker tensor count exceeds uint32 index space");
+    ConstraintDescriptor mixed;
+    mixed.id = relation.id + "/marker-count-hybrid-v1";
+    mixed.degree = 4U;
+    mixed.logical_shape = relation.logical_shape;
+    mixed.padded_shape = relation.padded_shape;
+    Monomial count_term = pieces[0].terms[0U];
+    count_term.coefficient = zkdl::fr_mul(piece_rhos[0U], count_term.coefficient);
+    mixed.terms.push_back(std::move(count_term));
+    for (const auto& source : pieces[1U].terms) {
+        Monomial padding_term = source;
+        padding_term.coefficient = zkdl::fr_mul(piece_rhos[1U], source.coefficient);
+        padding_term.refs.push_back(eq_index);
+        padding_term.refs.push_back(active_index);
+        mixed.terms.push_back(std::move(padding_term));
+    }
+    return mixed;
+}
+
+inline ConstraintDescriptor sorted_marker_mixed_terminal_descriptor(
+    const ConstraintDescriptor& relation,
+    const std::vector<ConstraintDescriptor>& pieces,
+    const std::vector<FrWire>& piece_rhos,
+    const std::vector<FrWire>& eq_rho,
+    const std::vector<FrWire>& point) {
+    ConstraintDescriptor terminal;
+    terminal.id = relation.id + "/marker-count-hybrid-v1";
+    terminal.degree = 4U;
+    terminal.logical_shape = relation.logical_shape;
+    terminal.padded_shape = relation.padded_shape;
+    const FrWire padding_weight = pointwise_terminal_weight(relation, eq_rho, point);
+    Monomial count_term = pieces[0U].terms[0U];
+    count_term.coefficient = zkdl::fr_mul(piece_rhos[0U], count_term.coefficient);
+    terminal.terms.push_back(std::move(count_term));
+    for (const auto& source : pieces[1U].terms) {
+        Monomial padding_term = source;
+        padding_term.coefficient = zkdl::fr_mul(
+            zkdl::fr_mul(piece_rhos[1U], padding_weight), source.coefficient);
+        terminal.terms.push_back(std::move(padding_term));
+    }
     return terminal;
 }
 
@@ -6032,6 +6761,7 @@ inline bool fill_constraint_openings(
         const std::vector<zkdl::CpuG1Point> terminal_generators = generators;
         ZkSumcheckProverResult sumcheck_result;
         const std::string operation_context = "gat.relation." + descriptor.id;
+        NativeOperationProgressReporter constraint_progress("constraint_proof", descriptor.id);
         const auto rho = pointwise_challenges(descriptor, domain, operation_refs.size(), operation_context, transcript);
         const ConstraintDescriptor weighted = pointwise_sumcheck_descriptor(descriptor, operation_refs.size());
         std::vector<SegmentedTensorProvider> weighted_providers;
@@ -6039,7 +6769,8 @@ inline bool fill_constraint_openings(
         if (!prove_zk_sumcheck_segmented(
                 weighted, weighted_providers, weighted.degree, domain, terminal_generators,
                 ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
-                operation_context, transcript, sumcheck_result, error)) return false;
+                operation_context, transcript, sumcheck_result, error, 0U, false,
+                "constraint_sumcheck", descriptor.id.c_str())) return false;
         proof.zk_sumcheck = std::move(sumcheck_result.proof);
         std::vector<FrWire> terminal_point;
         terminal_point.reserve(sumcheck_result.challenges.size());
@@ -6073,7 +6804,8 @@ inline bool fill_constraint_openings(
                 zkdl::cpu_g1_from_native(sumcheck_result.proof.final_claim_commitment),
                 sumcheck_result.final_q_blinder, FrWire{}, operation_context,
                 transcript, terminal_result, error,
-                segment_blinding_scalars != nullptr ? &terminal_materials : nullptr)) return false;
+                segment_blinding_scalars != nullptr ? &terminal_materials : nullptr,
+                0U, &constraint_progress)) return false;
         proof.terminal_relation = std::move(terminal_result.proof);
         return true;
     } catch (const std::exception& exception) {
@@ -6223,7 +6955,8 @@ inline std::vector<FrWire> fac_line8_rho_challenges(
 inline std::array<byte, 32U> fac_line8_aggregate_digest(
     const std::array<byte, 32U>& header_digest,
     const std::vector<FrWire>& rho,
-    const std::vector<SparseRouteProof>& routes) {
+    const std::vector<SparseRouteProof>& routes,
+    NativeOperationProgressReporter* progress = nullptr) {
     std::vector<byte> encoded(header_digest.begin(), header_digest.end());
     zkdl::append_u64(encoded, static_cast<std::uint64_t>(routes.size()));
     for (std::size_t index = 0U; index < routes.size(); ++index) {
@@ -6233,6 +6966,7 @@ inline std::array<byte, 32U> fac_line8_aggregate_digest(
         zkdl::append_g1(encoded, routes[index].terminal_binding.commitment_1);
         zkdl::append_g1(encoded, routes[index].terminal_binding.commitment_2);
         zkdl::append_g1(encoded, routes[index].sumcheck.final_claim_commitment);
+        if (progress != nullptr) progress->update("aggregate_selector_digest", index + 1U, routes.size());
     }
     return zkdl::sha256(encoded);
 }
@@ -6254,7 +6988,8 @@ inline zkdl::PedersenProofContext fac_line8_aggregate_context(
 inline bool fac_line8_aggregate_commitments(
     const std::vector<SparseRouteProof>& routes, const std::vector<FrWire>& rho,
     zkdl::CpuG1Point& residual_commitment,
-    zkdl::CpuG1Point& sumcheck_commitment, std::string* error) {
+    zkdl::CpuG1Point& sumcheck_commitment, std::string* error,
+    NativeOperationProgressReporter* progress = nullptr) {
     if (routes.empty() || routes.size() != rho.size()) {
         if (error) *error = "FAC4DNN aggregate terminal shape mismatch";
         return false;
@@ -6282,6 +7017,7 @@ inline bool fac_line8_aggregate_commitments(
             zkdl::cpu_g1_mul(
                 zkdl::cpu_g1_from_native(
                     routes[index].terminal_binding.commitment_2), rho[index]));
+        if (progress != nullptr) progress->update("aggregate_selector_commitments", index + 1U, routes.size());
     }
     return true;
 }
@@ -6299,6 +7035,7 @@ inline bool prove_fac_line8(
     std::string* error = nullptr,
     const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr) {
     try {
+        NativeOperationProgressReporter fac_progress("fac_line8", operation.id);
         proof = FacLine8Proof{};
         std::array<byte, 32U> header_digest{};
         if (!fac_line8_absorb_header(
@@ -6312,23 +7049,32 @@ inline bool prove_fac_line8(
                 operation, operation.fac_bindings[index], index);
             SparseRouteProof route;
             SparseRouteProverSecrets secrets;
+            std::string selector_error;
             if (!prove_sparse_route(
                     selector, tensor_map, blinders, generators,
                     ipa_blinding_generator, ipa_u_generator, commitments,
-                    statement, transcript, route, error, &secrets,
-                    segment_blinding_scalars)) return false;
+                    statement, transcript, route, &selector_error, &secrets,
+                    segment_blinding_scalars)) {
+                if (error) *error = "FAC4DNN selector proof failed operation_id=" + operation.id +
+                    " binding_index=" + std::to_string(index) + ": " + selector_error;
+                return false;
+            }
             const std::vector<byte> encoded = route.serialize();
             transcript.absorb(
                 "gat.fac4dnn.line8." + operation.id + ".selector." +
                     std::to_string(index), encoded);
             proof.selector_proofs.push_back(std::move(route));
             terminal_secrets.push_back(secrets);
+            fac_progress.update("selector_binding_proofs", index + 1U,
+                                operation.fac_bindings.size(),
+                                static_cast<std::uint32_t>(index),
+                                static_cast<std::uint32_t>(operation.fac_bindings.size()));
         }
         const std::vector<FrWire> rho = fac_line8_rho_challenges(operation, transcript);
         zkdl::CpuG1Point residual_commitment, sumcheck_commitment;
         if (!fac_line8_aggregate_commitments(
                 proof.selector_proofs, rho, residual_commitment,
-                sumcheck_commitment, error)) return false;
+                sumcheck_commitment, error, &fac_progress)) return false;
         FrWire aggregate_value{};
         FrWire residual_blinder{};
         FrWire sumcheck_blinder{};
@@ -6342,6 +7088,8 @@ inline bool prove_fac_line8(
             sumcheck_blinder = zkdl::fr_add(
                 sumcheck_blinder,
                 zkdl::fr_mul(rho[index], terminal_secrets[index].sumcheck_blinder));
+            fac_progress.update("aggregate_selector_blinders", index + 1U,
+                                terminal_secrets.size());
         }
         if (residual_blinder == FrWire{} || sumcheck_blinder == FrWire{}) {
             if (error) *error =
@@ -6349,7 +7097,7 @@ inline bool prove_fac_line8(
             return false;
         }
         const auto aggregate_digest = fac_line8_aggregate_digest(
-            header_digest, rho, proof.selector_proofs);
+            header_digest, rho, proof.selector_proofs, &fac_progress);
         proof.aggregate_binding = zkdl::cpu_open_pedersen_scalar_equality(
             aggregate_value, residual_blinder, sumcheck_blinder,
             residual_commitment, sumcheck_commitment,
@@ -6365,7 +7113,7 @@ inline bool prove_fac_line8(
             aggregate_bytes);
         return true;
     } catch (const std::exception& exception) {
-        if (error) *error = exception.what();
+        if (error) *error = "FAC4DNN proof failed operation_id=" + operation.id + ": " + exception.what();
         return false;
     }
 }
@@ -6906,7 +7654,7 @@ inline std::vector<FrWire> hidden_matmul_wire_points(const std::vector<Fr_t>& va
     return point;
 }
 
-inline bool hidden_matmul_line_values(const SegmentedTensorProvider& provider, const zkdl::MatMulShape& shape, const std::vector<Fr_t>& row_point, const std::vector<Fr_t>& column_point, const std::vector<Fr_t>& batch_point, bool left_tensor, std::vector<FrWire>& line, std::string* error) {
+inline bool hidden_matmul_line_values(const SegmentedTensorProvider& provider, const zkdl::MatMulShape& shape, const std::vector<Fr_t>& row_point, const std::vector<Fr_t>& column_point, const std::vector<Fr_t>& batch_point, bool left_tensor, std::vector<FrWire>& line, std::string* error, NativeOperationProgressReporter* progress = nullptr) {
     if (!provider.valid(error) || provider.logical_domain() != (left_tensor ? shape.a_size() : shape.b_size())) return false;
     const auto row_weights = zkdl::cpu_ipa_mle_weights(hidden_matmul_wire_points(row_point)), column_weights = zkdl::cpu_ipa_mle_weights(hidden_matmul_wire_points(column_point)), batch_weights = zkdl::cpu_ipa_mle_weights(hidden_matmul_wire_points(batch_point));
     line.assign(shape.n, FrWire{});
@@ -6921,6 +7669,7 @@ inline bool hidden_matmul_line_values(const SegmentedTensorProvider& provider, c
             const FrWire weight = zkdl::fr_mul(batch_weights.at(batch), left_tensor ? row_weights.at(outer) : column_weights.at(outer));
             line[inner] = zkdl::fr_add(line[inner], zkdl::fr_mul(values[slot], weight));
         }
+        if (progress != nullptr) progress->update(left_tensor ? "hidden_matmul_A_segments" : "hidden_matmul_B_segments", segment + 1U, provider.segment_count());
     }
     return true;
 }
@@ -6980,7 +7729,7 @@ struct HiddenMatMulOpeningSecrets {
     FrWire tau_blinder{};
 };
 
-inline bool prove_hidden_segmented_opening(const SegmentedTensorProvider& provider, const CommitmentWire& commitment, const SegmentCommitmentMaterial& material, const std::vector<FrWire>& point, const std::vector<zkdl::CpuG1Point>& generators, const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u, zkdl::CpuIpaOpeningMetadata metadata, HiddenMatMulOpeningSecrets& result, std::string* error) {
+inline bool prove_hidden_segmented_opening(const SegmentedTensorProvider& provider, const CommitmentWire& commitment, const SegmentCommitmentMaterial& material, const std::vector<FrWire>& point, const std::vector<zkdl::CpuG1Point>& generators, const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u, zkdl::CpuIpaOpeningMetadata metadata, HiddenMatMulOpeningSecrets& result, std::string* error, NativeOperationProgressReporter* progress = nullptr) {
     ZkRelationSegmentLayout layout;
     if (!provider.valid(error) || !zktr_segment_layout(provider.logical_domain(), generators.size(), layout, error) || !zktr_segment_material_matches(commitment, material, error) || commitment.domain_size != provider.logical_domain() || commitment.segment_size != layout.segment_size || commitment.segment_count != layout.segment_count || provider.segment_size() != layout.segment_size || provider.segment_count() != layout.segment_count || point.size() != log2_exact(layout.logical_domain)) return false;
     const auto low = zktr_segment_point(point, layout.segment_size), high = zktr_segment_prefix_point(point, layout.segment_size);
@@ -7009,6 +7758,7 @@ inline bool prove_hidden_segmented_opening(const SegmentedTensorProvider& provid
         result.value = zkdl::fr_add(result.value, zkdl::fr_mul(high_weights[segment], value));
         result.tau_blinder = zkdl::fr_add(result.tau_blinder, zkdl::fr_mul(high_weights[segment], blinder));
         tau = zkdl::cpu_g1_add(tau, zkdl::cpu_g1_mul(segment_tau, high_weights[segment]));
+        if (progress != nullptr) progress->update("hidden_matmul_opening_segments", segment + 1U, layout.segment_count);
     }
     result.proof.tau = zkdl::cpu_g1_to_native(tau);
     return hidden_matmul_opening_shape_valid(result.proof, layout.logical_domain);
@@ -7050,6 +7800,8 @@ inline bool prove_hidden_matmul(
     const RelationStatement& statement, zkdl::Transcript& transcript,
     HiddenMatMulProof& result, std::string* error, const std::map<std::string, std::vector<FrWire>>& segment_blinding_scalars) {
     try {
+        const std::string progress_operation_id = operation.id + "/primitive/" + std::to_string(primitive_index);
+        NativeOperationProgressReporter hidden_progress("hidden_matmul", progress_operation_id);
         std::uint32_t primitive_index_u32 = 0U;
         std::array<std::uint32_t, 3U> product_indices{};
         if (!checked_hidden_matmul_primitive_index(primitive_index,
@@ -7092,11 +7844,11 @@ inline bool prove_hidden_matmul(
                                          transcript, row_point, column_point, batch_point,
                                          error)) return false;
         std::vector<FrWire> a_line, b_line;
-        if (!hidden_matmul_line_values(a_provider, primitive.matmul_shape, row_point, column_point, batch_point, true, a_line, error) || !hidden_matmul_line_values(b_provider, primitive.matmul_shape, row_point, column_point, batch_point, false, b_line, error)) return false;
+        if (!hidden_matmul_line_values(a_provider, primitive.matmul_shape, row_point, column_point, batch_point, true, a_line, error, &hidden_progress) || !hidden_matmul_line_values(b_provider, primitive.matmul_shape, row_point, column_point, batch_point, false, b_line, error, &hidden_progress)) return false;
         const auto row = hidden_matmul_wire_points(row_point), column = hidden_matmul_wire_points(column_point), batch = hidden_matmul_wire_points(batch_point);
         const auto output_point = hidden_matmul_concat_points(batch, row, column);
         FrWire c_value{};
-        if (!c_provider.evaluate_mle(output_point, c_value, error)) return false;
+        if (!c_provider.evaluate_mle(output_point, c_value, error, &hidden_progress)) return false;
         std::vector<FrWire> c_selector(primitive.matmul_shape.n, FrWire{});
         c_selector[0U] = c_value;
         const ConstraintDescriptor constraint = hidden_matmul_constraint_descriptor(
@@ -7110,7 +7862,8 @@ inline bool prove_hidden_matmul(
         if (!prove_zk_sumcheck(constraint, {a_line, b_line, c_selector}, 2U,
                                primitive.matmul_shape.n, inner_generators,
                                ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
-                               operation_context, transcript, sumcheck, error)) return false;
+                               operation_context, transcript, sumcheck, error,
+                               "hidden_matmul_sumcheck", progress_operation_id.c_str())) return false;
         std::vector<FrWire> inner_point;
         for (const auto& challenge : sumcheck.challenges)
             inner_point.push_back(zkdl::fr_wire(challenge));
@@ -7126,7 +7879,7 @@ inline bool prove_hidden_matmul(
             SegmentCommitmentMaterial material;
             if (!zktr_material_from_wire(commitments[index], segment_blinding_scalars, material, error)) return false;
             const auto metadata = hidden_matmul_opening_metadata(operation, primitive, primitive_index, role, index, point, statement);
-            return prove_hidden_segmented_opening(provider, commitments[index], material, point, generators, ipa_blinding_generator, ipa_u_generator, metadata, opening, error);
+            return prove_hidden_segmented_opening(provider, commitments[index], material, point, generators, ipa_blinding_generator, ipa_u_generator, metadata, opening, error, &hidden_progress);
         };
         HiddenMatMulOpeningSecrets opening_a, opening_b, opening_c;
         if (!open_one(a_provider, a_index, full_a, "A", opening_a) || !open_one(b_provider, b_index, full_b, "B", opening_b) || !open_one(c_provider, c_index, full_c, "C", opening_c)) return false;
@@ -7191,7 +7944,7 @@ inline bool prove_hidden_matmul(
         result.terminal_binding = equality.proof;
         return true;
     } catch (const std::exception& exception) {
-        if (error) *error = std::string("hidden matrix prover failed: ") + exception.what();
+        if (error) *error = "hidden matrix prover failed operation_id=" + operation.id + " primitive_index=" + std::to_string(primitive_index) + ": " + exception.what();
         return false;
     }
 }
@@ -7690,56 +8443,97 @@ inline bool route_tensor_shapes_valid(
     return true;
 }
 
-inline std::vector<FrWire> public_route_selector_mle(
+inline std::vector<FrWire> public_route_selector_mle_blocked(
     const OperationDescriptor& descriptor, const std::vector<FrWire>& edge_point,
-    bool destination = false) {
+    bool destination, std::uint32_t max_block_bits,
+    const RouteWorkProgressCallback* progress = nullptr) {
     const std::uint32_t edge_domain = descriptor.selector_edge_domain;
     const std::uint32_t node_domain = descriptor.selector_node_domain;
-    if (edge_domain != (std::uint32_t(1U) << edge_point.size()) ||
-        descriptor.selector_src.size() != edge_domain) {
+    if (edge_point.size() >= kMaxRelationPointBits || max_block_bits > 18U ||
+        edge_domain != (std::uint32_t(1U) << edge_point.size()) ||
+        descriptor.selector_src.size() != edge_domain ||
+        descriptor.selector_active.size() != edge_domain ||
+        (destination && descriptor.selector_dst.size() != edge_domain)) {
         throw std::invalid_argument("public sparse selector MLE shape mismatch");
     }
+    const std::uint32_t low_bits = std::min<std::uint32_t>(
+        static_cast<std::uint32_t>(edge_point.size()), max_block_bits);
+    const std::size_t block_size = std::size_t(1U) << low_bits;
+    std::vector<FrWire> low_point(edge_point.begin(), edge_point.begin() + low_bits);
+    std::vector<FrWire> high_point(edge_point.begin() + low_bits, edge_point.end());
+    // fold_values consumes point[0] at edge-index parity; cpu_ipa_mle_weights is MSB-first.
+    std::reverse(low_point.begin(), low_point.end());
+    std::reverse(high_point.begin(), high_point.end());
+    const std::vector<FrWire> low_weights = zkdl::cpu_ipa_mle_weights(low_point);
+    const std::vector<FrWire> high_weights = zkdl::cpu_ipa_mle_weights(high_point);
     std::vector<FrWire> selector(node_domain);
-    const FrWire one = zkdl::fr_from_u32(1U);
+    for (std::size_t segment = 0U; segment < high_weights.size(); ++segment) {
+        for (std::size_t offset = 0U; offset < block_size; ++offset) {
+            const std::size_t edge = segment * block_size + offset;
+            if (!descriptor.selector_active[edge]) continue;
+            const std::uint32_t node = destination ? descriptor.selector_dst[edge] : descriptor.selector_src[edge];
+            if (node >= node_domain) throw std::invalid_argument("public sparse selector node index is out of bounds");
+            selector[node] = zkdl::fr_add(selector[node], zkdl::fr_mul(high_weights[segment], low_weights[offset]));
+        }
+        if (progress != nullptr)
+            (*progress)("selector_edge_blocks", (segment + 1U) * block_size,
+                        edge_domain);
+    }
+    return selector;
+}
+
+inline std::vector<FrWire> public_route_selector_mle(
+    const OperationDescriptor& descriptor, const std::vector<FrWire>& edge_point,
+    bool destination = false,
+    const RouteWorkProgressCallback* progress = nullptr) {
+    return public_route_selector_mle_blocked(
+        descriptor, edge_point, destination, 18U, progress);
+}
+
+inline std::vector<FrWire> public_route_feature_selector_mle(
+    const OperationDescriptor& descriptor,
+    const std::vector<FrWire>& feature_point,
+    std::uint32_t max_block_bits,
+    const RouteWorkProgressCallback* progress = nullptr) {
+    const std::uint32_t output_domain = descriptor.selector_feature_domain;
+    const std::uint32_t source_domain = descriptor.selector_source_feature_domain;
+    if (feature_point.size() >= kMaxRelationPointBits || max_block_bits > 18U ||
+        output_domain != (std::uint32_t(1U) << feature_point.size()) ||
+        descriptor.selector_feature_map.size() != output_domain) {
+        throw std::invalid_argument("public sparse feature selector MLE shape mismatch");
+    }
+    const std::uint32_t low_bits = std::min<std::uint32_t>(
+        static_cast<std::uint32_t>(feature_point.size()), max_block_bits);
+    const std::size_t block_size = std::size_t(1U) << low_bits;
+    std::vector<FrWire> low_point(feature_point.begin(), feature_point.begin() + low_bits);
+    std::vector<FrWire> high_point(feature_point.begin() + low_bits, feature_point.end());
+    std::reverse(low_point.begin(), low_point.end());
+    std::reverse(high_point.begin(), high_point.end());
+    const std::vector<FrWire> low_weights = zkdl::cpu_ipa_mle_weights(low_point);
+    const std::vector<FrWire> high_weights = zkdl::cpu_ipa_mle_weights(high_point);
     const FrWire zero{};
-    // This is the equality-MLE construction itself, not a dense one-hot
-    // matrix multiplication: each public node coordinate is evaluated by
-    // folding its edge indicator against the verifier's FS point.
-    for (std::uint32_t node = 0U; node < node_domain; ++node) {
-        std::vector<FrWire> indicator(edge_domain, zero);
-        for (std::uint32_t edge = 0U; edge < edge_domain; ++edge)
-            if (descriptor.selector_active[edge] &&
-                (destination ? descriptor.selector_dst[edge] : descriptor.selector_src[edge]) == node)
-                indicator[edge] = one;
-        for (const auto& challenge : edge_point) fold_values(indicator, challenge);
-        selector[node] = indicator.front();
+    std::vector<FrWire> selector(source_domain, zero);
+    for (std::size_t segment = 0U; segment < high_weights.size(); ++segment) {
+        for (std::size_t offset = 0U; offset < block_size; ++offset) {
+            const std::size_t output = segment * block_size + offset;
+            const std::uint32_t source = descriptor.selector_feature_map[output];
+            if (source >= source_domain) throw std::invalid_argument("public sparse feature selector source index is out of bounds");
+            const FrWire weight = zkdl::fr_mul(high_weights[segment], low_weights[offset]);
+            selector[source] = zkdl::fr_add(selector[source], weight);
+        }
+        if (progress != nullptr)
+            (*progress)("selector_feature_blocks", (segment + 1U) * block_size,
+                        output_domain);
     }
     return selector;
 }
 
 inline std::vector<FrWire> public_route_feature_selector_mle(
     const OperationDescriptor& descriptor,
-    const std::vector<FrWire>& feature_point) {
-    const std::uint32_t output_domain = descriptor.selector_feature_domain;
-    const std::uint32_t source_domain = descriptor.selector_source_feature_domain;
-    if (output_domain != (std::uint32_t(1U) << feature_point.size()) ||
-        descriptor.selector_feature_map.size() != output_domain) {
-        throw std::invalid_argument("public sparse feature selector MLE shape mismatch");
-    }
-    const FrWire one = zkdl::fr_from_u32(1U);
-    const FrWire zero{};
-    std::vector<FrWire> selector(source_domain, zero);
-    // Build the public equality-MLE selector by folding output-feature
-    // indicators.  This remains sparse/public and never materializes a dense
-    // one-hot matrix or accepts a prover-selected feature map.
-    for (std::uint32_t source = 0U; source < source_domain; ++source) {
-        std::vector<FrWire> indicator(output_domain, zero);
-        for (std::uint32_t output = 0U; output < output_domain; ++output)
-            if (descriptor.selector_feature_map[output] == source) indicator[output] = one;
-        for (const auto& challenge : feature_point) fold_values(indicator, challenge);
-        selector[source] = indicator.front();
-    }
-    return selector;
+    const std::vector<FrWire>& feature_point,
+    const RouteWorkProgressCallback* progress = nullptr) {
+    return public_route_feature_selector_mle(
+        descriptor, feature_point, 18U, progress);
 }
 
 inline bool route_commitment_index(
@@ -8127,10 +8921,76 @@ inline bool verify_authenticated_sorted_lookup(
     const zkdl::AuthenticatedSortedLookupProof& proof,
     std::string* error);
 
+struct RelationProofProgress {
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point started = Clock::now();
+    std::string phase = "entry_validation";
+    std::string operation;
+    bool completed = false;
+
+    static void emit(const char* phase_name, const char* status,
+                     Clock::time_point start, const std::string& detail = std::string()) {
+        const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
+        std::clog << "zkdl_native_progress phase=" << phase_name << " status=" << status
+                  << " elapsed_wall_seconds=" << elapsed;
+        if (!detail.empty()) std::clog << ' ' << detail;
+        std::clog << '\n' << std::flush;
+    }
+
+    RelationProofProgress(std::size_t operation_count, std::size_t tensor_count,
+                          std::size_t lookup_count) {
+        emit("relation", "START", started,
+             "operations=" + std::to_string(operation_count) +
+             " tensors=" + std::to_string(tensor_count) +
+             " lookups=" + std::to_string(lookup_count));
+    }
+
+    ~RelationProofProgress() {
+        if (!completed) {
+            std::string detail = "failed_phase=" + phase;
+            if (!operation.empty()) detail += " operation_id=" + operation;
+            emit("relation", "FAIL", started, detail);
+        }
+    }
+
+    void set_phase(const std::string& value) {
+        phase = value;
+        operation.clear();
+    }
+
+    void set_operation(const std::string& value) {
+        phase = "operation_proof";
+        operation = value;
+    }
+
+    void finish(std::size_t commitment_count, std::size_t operation_count,
+                std::size_t lookup_count) {
+        completed = true;
+        emit("relation", "PASS", started,
+             "commitments=" + std::to_string(commitment_count) +
+             " operations=" + std::to_string(operation_count) +
+             " sorted_lookups=" + std::to_string(lookup_count));
+    }
+};
+
 inline bool prove(const ProverContext& context, Proof& proof, std::string* error = nullptr) {
     try {
+        RelationProofProgress progress(context.operations.size(), context.tensors.size(),
+                                       context.sorted_lookup_descriptors.size());
+        const auto emit_progress = [&](const char* phase, const char* status,
+                                       std::chrono::steady_clock::time_point phase_start,
+                                       const std::string& detail = std::string()) {
+            const double elapsed = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - phase_start).count();
+            std::clog << "zkdl_native_progress phase=" << phase << " status=" << status
+                      << " elapsed_wall_seconds=" << elapsed;
+            if (!detail.empty()) std::clog << ' ' << detail;
+            std::clog << '\n' << std::flush;
+        };
+        progress.set_phase("descriptor_validation");
         if (!descriptor_vector_valid(context.operations, error)) return false;
         if (!formal_relation_components_supported(context.operations, error)) return false;
+        progress.set_phase("backend_validation");
         if (context.gpu_backend) {
             if (error) *error =
                 "BLOCKED: formal zkDL GPU GAT proving is unavailable until every relation family "
@@ -8149,6 +9009,7 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             return false;
         }
         std::map<std::string, const TensorWitness*> tensor_map;
+        progress.set_phase("tensor_validation");
         for (const auto& tensor : context.tensors) {
             if (!tensor.valid(error) || !tensor_map.emplace(tensor.id, &tensor).second) {
                 if (error && error->empty()) *error = "duplicate relation tensor id";
@@ -8157,6 +9018,7 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         }
         if (!relation_blinding_scalars_unique(context.tensors,
                                               context.blinding_scalars, error)) return false;
+        progress.set_phase("context_validation");
         proof = Proof{};
         proof.statement = context.statement;
         proof.statement.segment_binding_version = RelationStatement::kSegmentBindingVersion;
@@ -8183,6 +9045,12 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         }
         proof.statement.public_output_digest = expected_public_digest;
         proof.hiding_commitment_records.clear();
+        const auto commitment_phase_start = std::chrono::steady_clock::now();
+        progress.set_phase("commitment");
+        emit_progress("commitment", "START", commitment_phase_start,
+                      "tensor_commitments=" + std::to_string(context.tensors.size()) +
+                      " lookup_outer_groups=" + std::to_string(context.sorted_lookup_descriptors.size()));
+        RelationSegmentProgressReporter commitment_progress("commitment");
         for (const auto& tensor : context.tensors) {
             SegmentedTensorProvider provider;
             if (!tensor.segmented(context.ipa_generators.size(), provider, error)) return false;
@@ -8193,10 +9061,16 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             double commitment_crypto_seconds = 0.0;
             const double provider_io_before = context.provider_file_io_decode_time_seconds != nullptr
                 ? *context.provider_file_io_decode_time_seconds : 0.0;
+            const SegmentCommitmentProgressCallback segment_progress =
+                [&tensor, &commitment_progress](std::uint32_t completed,
+                                                std::uint32_t total) {
+                    commitment_progress.update(tensor.id, completed, total);
+                };
             const bool commitment_built = zktr_build_segment_commitment_material(
                     tensor.id, tensor.visibility, provider, context.ipa_generators,
                     context.ipa_blinding_generator, context.ipa_u_generator, randomness,
-                    proof.statement, commitment, material, error, &commitment_crypto_seconds);
+                    proof.statement, commitment, material, error,
+                    &commitment_crypto_seconds, 0U, &segment_progress);
             const double commitment_seconds = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - commitment_start).count();
             if (context.commitment_open_time_seconds != nullptr)
@@ -8295,21 +9169,48 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
             proof.statement, proof.commitments);
         if (!verify_model_registry(proof.commitments,
                                    context.registered_model_commitments, error)) return false;
+        emit_progress("commitment", "PASS", commitment_phase_start,
+                      "commitments=" + std::to_string(proof.commitments.size()));
         zkdl::Transcript transcript("zkdl-gat-relation-v1");
         absorb_statement(transcript, proof.statement, proof.commitments);
         absorb_hiding_records(transcript, proof.hiding_commitment_records);
         if (!prove_padding_records(context, tensor_map, proof.commitments,
                                    transcript, proof.padding_records, error,
                                    &segment_blinding_scalars)) return false;
-        for (const auto& operation : context.operations) {
+        const auto operation_phase_start = std::chrono::steady_clock::now();
+        auto last_operation_progress = operation_phase_start;
+        progress.set_phase("operation_proofs");
+        emit_progress("operation_proofs", "START", operation_phase_start,
+                      "total=" + std::to_string(context.operations.size()));
+        for (std::size_t operation_index = 0U;
+             operation_index < context.operations.size(); ++operation_index) {
+            const auto& operation = context.operations[operation_index];
+            progress.set_operation(operation.id);
+            const bool has_route = operation.kind == RelationKind::SparseRoute ||
+                                   !operation.selector_source_ref.empty();
+            const std::uint64_t source_domain = has_route
+                ? std::uint64_t(operation.selector_node_domain) * operation.selector_source_feature_domain
+                : 0U;
+            const std::uint64_t output_domain = has_route
+                ? std::uint64_t(operation.selector_edge_domain) * operation.selector_feature_domain
+                : 0U;
+            emit_progress("operation", "START", operation_phase_start,
+                          "index=" + std::to_string(operation_index + 1U) +
+                          " total=" + std::to_string(context.operations.size()) +
+                          " kind=" + std::to_string(static_cast<unsigned int>(operation.kind)) +
+                          " id=" + operation.id +
+                          " route=" + std::to_string(has_route) +
+                          " source_domain=" + std::to_string(source_domain) +
+                          " output_domain=" + std::to_string(output_domain) +
+                          " fac_bindings=" + std::to_string(operation.fac_bindings.size()) +
+                          " primitives=" + std::to_string(operation.primitives.size()) +
+                          " constraints=" + std::to_string(operation.constraints.size()));
             absorb_descriptor(transcript, operation);
             OperationProof operation_proof;
             operation_proof.descriptor = operation;
             if (operation.primitives.size() > 8U) {
                 throw std::invalid_argument("relation operation carries too many native primitives");
             }
-            const bool has_route = operation.kind == RelationKind::SparseRoute ||
-                                   !operation.selector_source_ref.empty();
             if (has_route) {
                 SparseRouteProof route;
                 if (!prove_sparse_route(operation, tensor_map, context.blinding_scalars,
@@ -8371,8 +9272,15 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
                         operation, primitive, primitive_index, tensor_map,
                         context.blinding_scalars, context.ipa_generators,
                         context.ipa_blinding_generator, context.ipa_u_generator,
-                        proof.commitments, context.statement, transcript, hidden, error, segment_blinding_scalars))
+                        proof.commitments, context.statement, transcript, hidden, error, segment_blinding_scalars)) {
+                    if (error) {
+                        const std::string detail = *error;
+                        *error = "hidden-matmul proof failed phase=operation_proofs operation_id=" +
+                            operation.id + " primitive_index=" + std::to_string(primitive_index) +
+                            (detail.empty() ? std::string{} : ": " + detail);
+                    }
                     return false;
+                }
                 std::vector<byte> primitive_bytes = hidden.serialize();
                 operation_proof.primitive_proofs.push_back(std::move(primitive_bytes));
                 transcript.absorb("gat.relation.primitive",
@@ -8396,9 +9304,31 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
                 operation_proof.constraints.push_back(std::move(constraint));
             }
             proof.operations.push_back(std::move(operation_proof));
+            progress.set_phase("operation_proofs");
+            const auto operation_now = std::chrono::steady_clock::now();
+            if (operation_now - last_operation_progress >= std::chrono::seconds(15) ||
+                operation_index + 1U == context.operations.size()) {
+                emit_progress("operation_proofs", "PROGRESS", operation_phase_start,
+                              "completed=" + std::to_string(operation_index + 1U) +
+                              " total=" + std::to_string(context.operations.size()) +
+                              " current_id=" + operation.id);
+                last_operation_progress = operation_now;
+            }
         }
+        emit_progress("operation_proofs", "PASS", operation_phase_start,
+                      "completed=" + std::to_string(context.operations.size()));
+        const auto lookup_phase_start = std::chrono::steady_clock::now();
+        progress.set_phase("sorted_lookup_proofs");
+        emit_progress("sorted_lookup_proofs", "START", lookup_phase_start,
+                      "total=" + std::to_string(context.sorted_lookup_descriptors.size()));
         for (std::size_t lookup_index = 0U;
              lookup_index < context.sorted_lookup_descriptors.size(); ++lookup_index) {
+            progress.phase = "sorted_lookup_proof";
+            progress.operation = context.sorted_lookup_descriptors[lookup_index].operation_id;
+            emit_progress("sorted_lookup", "START", lookup_phase_start,
+                          "index=" + std::to_string(lookup_index + 1U) +
+                          " total=" + std::to_string(context.sorted_lookup_descriptors.size()) +
+                          " operation_id=" + context.sorted_lookup_descriptors[lookup_index].operation_id);
             zkdl::AuthenticatedSortedLookupProof lookup;
             if (!prove_authenticated_sorted_lookup(
                     context.sorted_lookup_descriptors[lookup_index],
@@ -8407,11 +9337,25 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
                     sorted_blinders[lookup_index], sorted_materials[lookup_index],
                     context.ipa_generators,
                     context.ipa_blinding_generator, context.ipa_u_generator,
-                    context.statement, lookup, error)) return false;
+                    context.statement, lookup, error)) {
+                if (error) {
+                    const std::string detail = *error;
+                    *error = "sorted-lookup proof failed phase=sorted_lookup operation_id=" +
+                        context.sorted_lookup_descriptors[lookup_index].operation_id +
+                        (detail.empty() ? std::string{} : ": " + detail);
+                }
+                return false;
+            }
             const std::vector<byte> encoded = lookup.serialize();
             transcript.absorb("gat.relation.sorted_lookup", encoded);
             proof.sorted_lookup_proofs.push_back(std::move(lookup));
+            progress.set_phase("sorted_lookup_proofs");
         }
+        emit_progress("sorted_lookup_proofs", "PASS", lookup_phase_start,
+                      "completed=" + std::to_string(context.sorted_lookup_descriptors.size()));
+        const auto output_phase_start = std::chrono::steady_clock::now();
+        progress.set_phase("public_output");
+        emit_progress("public_output", "START", output_phase_start);
         const auto public_it = std::find_if(context.tensors.begin(), context.tensors.end(),
                                             [](const TensorWitness& tensor) {
                                                 return tensor.id == "public_Y" && tensor.visibility == 1U;
@@ -8437,7 +9381,8 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         auto output_metadata = relation_opening_metadata(public_output_opening_descriptor(), proof.public_output_commitment, output_point, context.statement);
         output_metadata.evaluation_commitment_index = 0x70000000U;
         HiddenMatMulOpeningSecrets output_opening;
-        if (!prove_hidden_segmented_opening(output_provider, proof.commitments[proof.public_output_commitment], output_material, output_point, context.ipa_generators, context.ipa_blinding_generator, context.ipa_u_generator, output_metadata, output_opening, error)) return false;
+        NativeOperationProgressReporter output_progress("public_output_opening", "public_Y");
+        if (!prove_hidden_segmented_opening(output_provider, proof.commitments[proof.public_output_commitment], output_material, output_point, context.ipa_generators, context.ipa_blinding_generator, context.ipa_u_generator, output_metadata, output_opening, error, &output_progress)) return false;
         proof.public_output_opening = std::move(output_opening.proof);
         auto output_context = zksc_make_context(zkdl::PedersenProofContext::kOperationScalarValue, 1U, 0U, proof.public_output_commitment, zkdl::PedersenProofContext::kUnsetIndex, zkdl::cpu_ipa_basis_digest({}, context.ipa_blinding_generator, context.ipa_u_generator, 0U), output_metadata.descriptor_digest, context.statement);
         proof.public_output_binding = zkdl::cpu_open_pedersen_scalar_value_public(output_opening.value, output_opening.tau_blinder, zkdl::cpu_g1_from_native(proof.public_output_opening.tau), context.ipa_blinding_generator, context.ipa_u_generator, output_context).proof;
@@ -8446,6 +9391,11 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         zkdl::serialize_pedersen_scalar_value(proof.public_output_binding, public_bytes);
         transcript.absorb("gat.public_output.opening", public_bytes);
         proof.transcript_digest = transcript.digest();
+        emit_progress("public_output", "PASS", output_phase_start,
+                      "proof_operations=" + std::to_string(proof.operations.size()) +
+                      " sorted_lookups=" + std::to_string(proof.sorted_lookup_proofs.size()));
+        progress.finish(proof.commitments.size(), proof.operations.size(),
+                        proof.sorted_lookup_proofs.size());
         return true;
     } catch (const std::exception& exception) {
         if (error) *error = exception.what();
@@ -8744,6 +9694,7 @@ inline bool prove_authenticated_sorted_lookup(
     zkdl::AuthenticatedSortedLookupProof& proof,
     std::string* error = nullptr) {
     try {
+        NativeOperationProgressReporter lookup_progress("sorted_lookup_proof", descriptor.operation_id);
         if (!descriptor.valid(error) || descriptor.table_digest != statement.table_digest ||
             !zktr_all_statement_digests_valid(statement, error) ||
             !providers.valid(descriptor, error) || commitment_refs.empty() ||
@@ -8797,6 +9748,7 @@ inline bool prove_authenticated_sorted_lookup(
             }
             return std::make_pair(static_cast<std::uint32_t>(0U), 0U);
         };
+        SegmentedTensorProvider query_product_prefix, merge_product_prefix;
         const auto provider_for_tag = [&](const std::string& tag,
                                           SegmentedTensorProvider& provider) {
             if (tag == "query_x") provider = providers.query_x;
@@ -8804,6 +9756,7 @@ inline bool prove_authenticated_sorted_lookup(
             else if (tag == "query_key") provider = providers.query_keys;
             else if (tag == "query_active") provider = providers.query_active;
             else if (tag == "query_prefix") provider = providers.query_prefix;
+            else if (tag == "query_product_prefix") provider = query_product_prefix;
             else if (tag == "query_prefix_next") provider = providers.query_prefix_next;
             else if (tag == "query_first") provider = providers.query_first;
             else if (tag == "query_last") provider = providers.query_last;
@@ -8813,6 +9766,7 @@ inline bool prove_authenticated_sorted_lookup(
             else if (tag == "merge_marker") provider = providers.merge_marker;
             else if (tag == "merge_inverse") provider = providers.merge_inverse;
             else if (tag == "merge_prefix") provider = providers.merge_prefix;
+            else if (tag == "merge_product_prefix") provider = merge_product_prefix;
             else if (tag == "merge_prefix_next") provider = providers.merge_prefix_next;
             else if (tag == "merge_previous_key") provider = providers.merge_previous_key;
             else if (tag == "merge_nonzero") provider = providers.merge_nonzero;
@@ -8856,6 +9810,8 @@ inline bool prove_authenticated_sorted_lookup(
                     return false;
                 }
             }
+            lookup_progress.update("query_validation_segments", segment + 1U,
+                                   descriptor.query_segment_count);
         }
 
         zkdl::Transcript transcript("zkdl-authenticated-sorted-lookup-v1");
@@ -8877,22 +9833,46 @@ inline bool prove_authenticated_sorted_lookup(
             transcript, "gat.sorted_lookup.beta");
         const FrWire gamma = zkdl::cpu_ipa_nonzero_challenge(
             transcript, "gat.sorted_lookup.gamma");
+        std::vector<byte> prefix_identity;
+        serialize_authenticated_sorted_lookup_descriptor(descriptor, prefix_identity);
+        append_digest(prefix_identity, statement.statement_digest);
+        append_digest(prefix_identity, statement.model_digest);
+        append_digest(prefix_identity, statement.table_digest);
+        append_digest(prefix_identity, statement.ledger_digest);
+        append_digest(prefix_identity, statement.registry_digest);
+        append_digest(prefix_identity, statement.srs_digest);
+        append_digest(prefix_identity, statement.public_output_digest);
+        const std::array<byte, 32U> prefix_base_digest = zkdl::sha256(prefix_identity);
+        std::vector<byte> query_prefix_identity = prefix_identity;
+        zkdl::append_string(query_prefix_identity, "query-product-prefix");
+        std::vector<byte> merge_prefix_identity = prefix_identity;
+        zkdl::append_string(merge_prefix_identity, "merge-product-prefix");
+        const std::array<byte, 32U> query_prefix_digest = zkdl::sha256(query_prefix_identity);
+        const std::array<byte, 32U> merge_prefix_digest = zkdl::sha256(merge_prefix_identity);
+        const std::uint32_t key_bits = descriptor.x_bits + descriptor.y_bits;
+        const SegmentCommitmentProgressCallback segment_commitment_progress =
+            [&lookup_progress](std::uint32_t completed, std::uint32_t total) {
+                lookup_progress.update("relation_commitment_segments", completed, total);
+            };
         if (!make_authenticated_sorted_lookup_prefix_product_provider(
                 providers.query_keys, providers.query_active, beta, gamma,
-                providers.query_prefix, error) ||
+                query_product_prefix, error, &lookup_progress,
+                query_prefix_digest, key_bits) ||
             !make_authenticated_sorted_lookup_prefix_next_provider(
-                providers.query_prefix, providers.query_keys, providers.query_active,
+                query_product_prefix, providers.query_keys, providers.query_active,
                 descriptor.query_active_length, beta, gamma,
                 providers.query_prefix_next, error) ||
             !make_authenticated_sorted_lookup_prefix_product_provider(
                 providers.merge_keys, providers.merge_active, beta, gamma,
-                providers.merge_prefix, error) ||
+                merge_product_prefix, error, &lookup_progress,
+                merge_prefix_digest, key_bits) ||
             !make_authenticated_sorted_lookup_prefix_next_provider(
-                providers.merge_prefix, providers.merge_keys, providers.merge_active,
+                merge_product_prefix, providers.merge_keys, providers.merge_active,
                 descriptor.merge_active_length, beta, gamma,
                 providers.merge_prefix_next, error) ||
             !make_authenticated_sorted_lookup_shifted_key_provider(
-                providers.merge_keys, providers.merge_previous_key, error) ||
+                providers.merge_keys, providers.merge_active,
+                providers.merge_previous_key, error) ||
             !make_authenticated_sorted_lookup_nonzero_provider(
                 providers.merge_delta, providers.merge_nonzero, error)) {
             return false;
@@ -8922,22 +9902,38 @@ inline bool prove_authenticated_sorted_lookup(
         FrWire table_product{};
         if (!authenticated_sorted_lookup_public_table_product(
                 providers.table_keys, providers.table_active, descriptor.table_active_length,
-                beta, gamma, table_product, error)) return false;
+                beta, gamma, table_product, error, &lookup_progress)) {
+            if (error && !error->empty())
+                *error = "sorted-lookup phase=public_table_product: " + *error;
+            else if (error)
+                *error = "sorted-lookup phase=public_table_product failed";
+            return false;
+        }
 
         SegmentedTensorProvider query_endpoint_provider, merge_endpoint_provider;
         FrWire query_endpoint{}, merge_endpoint{};
-        if (!authenticated_sorted_lookup_prefix_product_endpoint(
+        const bool lookup_endpoints_ready =
+            authenticated_sorted_lookup_prefix_product_endpoint(
                 providers.query_keys, providers.query_active, descriptor.query_active_length,
-                beta, gamma, query_endpoint, error) ||
-            !authenticated_sorted_lookup_prefix_product_endpoint(
+                beta, gamma, query_endpoint, error, &lookup_progress,
+                query_prefix_digest, &query_product_prefix) &&
+            authenticated_sorted_lookup_prefix_product_endpoint(
                 providers.merge_keys, providers.merge_active, descriptor.merge_active_length,
-                beta, gamma, merge_endpoint, error) ||
-            !make_authenticated_sorted_lookup_constant_provider(
+                beta, gamma, merge_endpoint, error, &lookup_progress,
+                merge_prefix_digest, &merge_product_prefix) &&
+            make_authenticated_sorted_lookup_constant_provider(
                 descriptor.query_domain, descriptor.segment_size, query_endpoint,
-                query_endpoint_provider, error) ||
-            !make_authenticated_sorted_lookup_constant_provider(
+                query_endpoint_provider, error) &&
+            make_authenticated_sorted_lookup_constant_provider(
                 descriptor.merge_domain, descriptor.segment_size, merge_endpoint,
-                merge_endpoint_provider, error)) return false;
+                merge_endpoint_provider, error);
+        if (!lookup_endpoints_ready) {
+            if (error && !error->empty())
+                *error = "sorted-lookup phase=prefix_endpoint: " + *error;
+            else if (error)
+                *error = "sorted-lookup phase=prefix_endpoint failed";
+            return false;
+        }
 
         struct State {
             zkdl::CpuG1Point commitment;
@@ -8964,7 +9960,7 @@ inline bool prove_authenticated_sorted_lookup(
                         "sorted_lookup/material-check", 3U, provider, generators,
                         blinding_generator, u_generator, statement,
                         outer_materials[index], checked, error,
-                        descriptor.segment_size) ||
+                        descriptor.segment_size, &segment_commitment_progress) ||
                     !zkdl::cpu_g1_equal(
                         zkdl::cpu_g1_from_native(checked.commitment),
                         outer_commitments[index]))
@@ -8981,7 +9977,7 @@ inline bool prove_authenticated_sorted_lookup(
                         "sorted_lookup/internal/" + tag, 3U, provider, generators,
                         blinding_generator, u_generator, blinder, statement,
                         internal_wire, internal_material, error, nullptr,
-                        descriptor.segment_size)) return false;
+                        descriptor.segment_size, &segment_commitment_progress)) return false;
                 const auto commitment = zkdl::cpu_g1_from_native(internal_wire.commitment);
                 state = State{commitment, blinder,
                               std::numeric_limits<std::uint32_t>::max(),
@@ -9003,7 +9999,8 @@ inline bool prove_authenticated_sorted_lookup(
         };
         const auto weighted_descriptor = [&](std::uint32_t kind,
                                              const std::vector<std::string>& tags,
-                                             const std::vector<ConstraintDescriptor>& pieces) {
+                                             const std::vector<ConstraintDescriptor>& pieces,
+                                             std::vector<FrWire>* piece_rhos) {
             std::vector<byte> plan;
             zkdl::append_u32(plan, kind);
             zkdl::append_u64(plan, static_cast<std::uint64_t>(tags.size()));
@@ -9015,10 +10012,12 @@ inline bool prove_authenticated_sorted_lookup(
             ConstraintDescriptor result;
             result.id = "authenticated_sorted_lookup/relation/" + std::to_string(kind);
             result.degree = 1U;
+            if (piece_rhos != nullptr) { piece_rhos->clear(); piece_rhos->reserve(pieces.size()); }
             for (const auto& piece : pieces) result.degree = std::max(result.degree, piece.degree);
             for (std::size_t index = 0U; index < pieces.size(); ++index) {
                 const FrWire rho = zkdl::cpu_ipa_nonzero_challenge(
                     transcript, context + ".rho." + std::to_string(index));
+                if (piece_rhos != nullptr) piece_rhos->push_back(rho);
                 result.constant = zkdl::fr_add(result.constant,
                                                zkdl::fr_mul(rho, pieces[index].constant));
                 for (const auto& term : pieces[index].terms) {
@@ -9040,6 +10039,8 @@ inline bool prove_authenticated_sorted_lookup(
                                       const std::vector<std::string>& tags,
                                       const std::vector<SegmentedTensorProvider>& relation_providers,
                                       const std::vector<ConstraintDescriptor>& pieces) mutable {
+            std::string failure_phase = "layout";
+            const auto run_relation_body = [&]() -> bool {
             if (tags.empty() || tags.size() != relation_providers.size()) return false;
             ZkRelationSegmentLayout relation_layout;
             if (!zktr_segment_layout_for_size(
@@ -9058,7 +10059,10 @@ inline bool prove_authenticated_sorted_lookup(
             std::vector<std::uint32_t> indices, outer_indices;
             std::vector<SegmentCommitmentMaterial> terminal_materials;
             terminal_materials.reserve(tags.size());
+            failure_phase = "state_commitment";
             for (std::size_t index = 0U; index < tags.size(); ++index) {
+                lookup_progress.update("relation_provider_states", index + 1U,
+                                       tags.size(), kind, 5U);
                 State state;
                 if (!state_for(tags[index], relation_providers[index], state)) return false;
                 canonical.push_back(state.commitment);
@@ -9074,26 +10078,46 @@ inline bool prove_authenticated_sorted_lookup(
             const std::string context = "gat.sorted_lookup.relation." + std::to_string(kind);
             std::vector<std::vector<zkdl::CpuG1Point>> provider_segments;
             for (const auto& material : terminal_materials) provider_segments.push_back(material.commitments);
-            pointwise_absorb_provider_commitments(context, relation_providers.front().logical_domain(), tags, canonical, provider_segments, transcript);
-            const ConstraintDescriptor relation = weighted_descriptor(kind, tags, pieces);
+            failure_phase = "commitment_absorb";
+            pointwise_absorb_provider_commitments(
+                context, relation_providers.front().logical_domain(), tags, canonical,
+                provider_segments, transcript, &lookup_progress);
+            failure_phase = "challenge_plan";
+            std::vector<FrWire> piece_rhos;
+            const ConstraintDescriptor relation = weighted_descriptor(kind, tags, pieces, &piece_rhos);
             if (!relation.valid(error)) return false;
             relation_descriptors[kind] = relation;
             const auto rho = pointwise_challenges(relation, relation_providers.front().logical_domain(), relation_providers.size(), context, transcript);
-            const ConstraintDescriptor weighted = pointwise_sumcheck_descriptor(relation, relation_providers.size());
+            const bool marker_membership = kind == static_cast<std::uint32_t>(zkdl::AuthenticatedSortedLookupRelationKind::MarkerMembership);
+            if (marker_membership && !sorted_marker_pieces_valid(pieces, piece_rhos, descriptor.table_unique_rows, error)) return false;
+            const ConstraintDescriptor weighted = marker_membership
+                ? sorted_marker_mixed_sumcheck_descriptor(relation, pieces, piece_rhos, relation_providers.size())
+                : pointwise_sumcheck_descriptor(relation, relation_providers.size());
+            const FrWire initial_claim = marker_membership
+                ? zkdl::fr_mul(piece_rhos[0U], zkdl::fr_from_u32(descriptor.table_unique_rows))
+                : FrWire{};
             std::vector<SegmentedTensorProvider> weighted_providers;
+            failure_phase = "sumcheck_provider";
             if (!pointwise_providers(relation, relation_providers, rho, weighted_providers, error)) return false;
             ZkSumcheckProverResult sumcheck;
+            failure_phase = "sumcheck";
             if (!prove_zk_sumcheck_segmented(
                     weighted, weighted_providers, weighted.degree,
                     relation_providers.front().logical_domain(), generators,
-                    blinding_generator, u_generator, FrWire{}, statement, context,
-                    transcript, sumcheck, error, descriptor.segment_size)) return false;
+                    blinding_generator, u_generator, initial_claim, statement, context,
+                    transcript, sumcheck, error, descriptor.segment_size, false,
+                    "sorted_lookup_sumcheck", descriptor.operation_id.c_str())) {
+                return false;
+            }
             std::vector<FrWire> point;
             for (const auto& challenge : sumcheck.challenges)
                 point.push_back(zkdl::fr_wire(challenge));
             std::reverse(point.begin(), point.end());
-            const ConstraintDescriptor terminal_descriptor = pointwise_terminal_descriptor(relation, rho, point);
+            const ConstraintDescriptor terminal_descriptor = marker_membership
+                ? sorted_marker_mixed_terminal_descriptor(relation, pieces, piece_rhos, rho, point)
+                : pointwise_terminal_descriptor(relation, rho, point);
             ZkTerminalRelationProverResult terminal;
+            failure_phase = "terminal";
             if (!prove_zk_terminal_relation_segmented(
                     terminal_descriptor, relation_providers, canonical, blinders, indices, point,
                     generators, blinding_generator, u_generator, statement,
@@ -9101,7 +10125,7 @@ inline bool prove_authenticated_sorted_lookup(
                     zkdl::cpu_g1_from_native(sumcheck.proof.final_claim_commitment),
                     sumcheck.final_q_blinder, FrWire{}, context, transcript,
                     terminal, error, &terminal_materials,
-                    descriptor.segment_size)) return false;
+                    descriptor.segment_size, &lookup_progress)) return false;
             zkdl::AuthenticatedSortedLookupRelationProof wire;
             wire.kind = static_cast<zkdl::AuthenticatedSortedLookupRelationKind>(kind);
             wire.logical_domain = relation_providers.front().logical_domain();
@@ -9113,6 +10137,7 @@ inline bool prove_authenticated_sorted_lookup(
             wire.outer_commitment_indices = outer_indices;
             wire.sumcheck = sumcheck.proof;
             wire.terminal_relation = terminal.proof;
+            failure_phase = "relation_wire";
             if (!wire.valid(error)) return false;
             std::vector<byte> encoded;
             serialize_authenticated_sorted_lookup_relation(wire, encoded);
@@ -9127,7 +10152,51 @@ inline bool prove_authenticated_sorted_lookup(
             }
             proof.relations.push_back(std::move(wire));
             return true;
+            };
+            bool completed = false;
+            try {
+                completed = run_relation_body();
+            } catch (const std::exception& exception) {
+                if (error) *error = exception.what();
+            }
+            if (!completed && error) {
+                const std::string detail = *error;
+                *error = "sorted-lookup relation kind=" + std::to_string(kind) +
+                         " phase=" + failure_phase +
+                         (detail.empty() ? " failed" : ": " + detail);
+            }
+            return completed;
         };
+
+        const auto authenticate_outer_count_scratch = [&](std::uint32_t role,
+                                                           const SegmentedTensorProvider& provider,
+                                                           const char* role_name) {
+            const auto outer = outer_by_role.find(std::make_pair(role, 0U));
+            if (outer == outer_by_role.end()) {
+                if (error) *error = std::string("sorted-lookup outer count scratch role is missing: ") + role_name;
+                return false;
+            }
+            const std::size_t index = outer->second;
+            CommitmentWire checked;
+            if (!zktr_commitment_wire_from_material(
+                    "sorted_lookup/material-check", 3U, provider, generators,
+                    blinding_generator, u_generator, statement, outer_materials[index],
+                    checked, error, descriptor.segment_size,
+                    &segment_commitment_progress) ||
+                !zkdl::cpu_g1_equal(
+                    zkdl::cpu_g1_from_native(checked.commitment), outer_commitments[index])) {
+                if (error && error->empty())
+                    *error = std::string("sorted-lookup outer count scratch commitment mismatch: ") + role_name;
+                return false;
+            }
+            return true;
+        };
+        if (!authenticate_outer_count_scratch(
+                zkdl::kSortedLookupCommitmentQueryPrefix,
+                providers.query_prefix, "query_prefix") ||
+            !authenticate_outer_count_scratch(
+                zkdl::kSortedLookupCommitmentMergePrefix,
+                providers.merge_prefix, "merge_prefix")) return false;
 
         const auto index_map = [](const std::vector<std::string>& tags) {
             std::map<std::string, std::uint32_t> result;
@@ -9149,7 +10218,7 @@ inline bool prove_authenticated_sorted_lookup(
         };
 
         const std::vector<std::string> query_tags = {
-            "query_x", "query_y", "query_key", "query_active", "query_prefix",
+            "query_x", "query_y", "query_key", "query_active", "query_product_prefix",
             "query_prefix_next", "query_first", "query_last", "query_endpoint"};
         const auto query_indices = index_map(query_tags);
         const FrWire query_base_wire = sorted_lookup_field_from_u128(query_base);
@@ -9188,12 +10257,12 @@ inline bool prove_authenticated_sorted_lookup(
             "query-prefix-recurrence", 2U, FrWire{},
             {monomial(zkdl::fr_from_u32(1U), {query_indices.at("query_prefix_next")}),
              monomial(zkdl::fr_neg(beta),
-                      {query_indices.at("query_prefix"), query_indices.at("query_key")}),
-             monomial(zkdl::fr_neg(gamma), {query_indices.at("query_prefix")})}));
+                      {query_indices.at("query_product_prefix"), query_indices.at("query_key")}),
+             monomial(zkdl::fr_neg(gamma), {query_indices.at("query_product_prefix")})}));
         query_pieces.push_back(make_piece(
             "query-prefix-initial", 2U, FrWire{},
             {monomial(zkdl::fr_from_u32(1U),
-                      {query_indices.at("query_first"), query_indices.at("query_prefix")}),
+                      {query_indices.at("query_first"), query_indices.at("query_product_prefix")}),
              monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)),
                       {query_indices.at("query_first")})}));
         query_pieces.push_back(make_piece(
@@ -9204,25 +10273,25 @@ inline bool prove_authenticated_sorted_lookup(
                       {query_indices.at("query_last"), query_indices.at("query_endpoint")})}));
         std::vector<SegmentedTensorProvider> query_relation_providers = {
             providers.query_x, providers.query_y, providers.query_keys,
-            providers.query_active, providers.query_prefix, providers.query_prefix_next,
+            providers.query_active, query_product_prefix, providers.query_prefix_next,
             providers.query_first, providers.query_last, query_endpoint_provider};
         if (!run_relation(static_cast<std::uint32_t>(zkdl::AuthenticatedSortedLookupRelationKind::QueryBinding),
                           query_tags, query_relation_providers, query_pieces)) return false;
 
         const std::vector<std::string> recurrence_tags = {
-            "merge_prefix", "merge_prefix_next", "merge_key", "merge_active", "merge_first"};
+            "merge_product_prefix", "merge_prefix_next", "merge_key", "merge_active", "merge_first"};
         const auto recurrence_indices = index_map(recurrence_tags);
         std::vector<ConstraintDescriptor> recurrence_pieces;
         recurrence_pieces.push_back(make_piece(
             "merge-prefix-recurrence", 2U, FrWire{},
             {monomial(zkdl::fr_from_u32(1U), {recurrence_indices.at("merge_prefix_next")}),
              monomial(zkdl::fr_neg(beta),
-                      {recurrence_indices.at("merge_prefix"), recurrence_indices.at("merge_key")}),
-             monomial(zkdl::fr_neg(gamma), {recurrence_indices.at("merge_prefix")})}));
+                      {recurrence_indices.at("merge_product_prefix"), recurrence_indices.at("merge_key")}),
+             monomial(zkdl::fr_neg(gamma), {recurrence_indices.at("merge_product_prefix")})}));
         recurrence_pieces.push_back(make_piece(
             "merge-prefix-initial", 2U, FrWire{},
             {monomial(zkdl::fr_from_u32(1U),
-                      {recurrence_indices.at("merge_first"), recurrence_indices.at("merge_prefix")}),
+                      {recurrence_indices.at("merge_first"), recurrence_indices.at("merge_product_prefix")}),
              monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)),
                       {recurrence_indices.at("merge_first")})}));
         recurrence_pieces.push_back(make_piece(
@@ -9237,7 +10306,7 @@ inline bool prove_authenticated_sorted_lookup(
              monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)),
                       {recurrence_indices.at("merge_key"), recurrence_indices.at("merge_active")})}));
         std::vector<SegmentedTensorProvider> recurrence_providers = {
-            providers.merge_prefix, providers.merge_prefix_next, providers.merge_keys,
+            merge_product_prefix, providers.merge_prefix_next, providers.merge_keys,
             providers.merge_active, providers.merge_first};
         if (!run_relation(static_cast<std::uint32_t>(zkdl::AuthenticatedSortedLookupRelationKind::MultisetRecurrence),
                           recurrence_tags, recurrence_providers, recurrence_pieces)) return false;
@@ -9361,21 +10430,34 @@ inline bool prove_authenticated_sorted_lookup(
             zkdl::PedersenProofContext::kUnsetIndex,
             zkdl::PedersenProofContext::kOperationScalarValue,
             blinding_generator, u_generator);
-        proof.table_product_value_proof = zkdl::cpu_open_pedersen_scalar_value_public(
-            table_product, table_blinder, table_commitment, blinding_generator,
-            u_generator, table_context).proof;
+        try {
+            proof.table_product_value_proof = zkdl::cpu_open_pedersen_scalar_value_public(
+                table_product, table_blinder, table_commitment, blinding_generator,
+                u_generator, table_context).proof;
+        } catch (const std::exception& exception) {
+            if (error) *error = std::string("sorted-lookup phase=table_product_opening: ") +
+                                exception.what();
+            return false;
+        }
         proof.table_product_commitment = zkdl::cpu_g1_to_native(table_commitment);
         proof.query_endpoint_commitment = zkdl::cpu_g1_to_native(terminal_commitments.at("query_endpoint"));
         proof.merge_endpoint_commitment = zkdl::cpu_g1_to_native(terminal_commitments.at("merge_endpoint"));
         const auto endpoint_context = zktr_make_product_context(
             statement, descriptor.descriptor_digest, blinding_generator, u_generator,
             0xE1000001U, 0xE1000002U, 0xE1000003U);
-        const auto endpoint_product = zkdl::cpu_open_pedersen_product(
-            terminal_values.at("query_endpoint"), table_product,
-            terminal_blinders.at("query_endpoint"), table_blinder,
-            terminal_blinders.at("merge_endpoint"), terminal_commitments.at("query_endpoint"),
-            table_commitment, terminal_commitments.at("merge_endpoint"),
-            blinding_generator, u_generator, endpoint_context);
+        zkdl::PedersenProductProverResult endpoint_product;
+        try {
+            endpoint_product = zkdl::cpu_open_pedersen_product(
+                terminal_values.at("query_endpoint"), table_product,
+                terminal_blinders.at("query_endpoint"), table_blinder,
+                terminal_blinders.at("merge_endpoint"), terminal_commitments.at("query_endpoint"),
+                table_commitment, terminal_commitments.at("merge_endpoint"),
+                blinding_generator, u_generator, endpoint_context);
+        } catch (const std::exception& exception) {
+            if (error) *error = std::string("sorted-lookup phase=endpoint_product_opening: ") +
+                                exception.what();
+            return false;
+        }
         proof.endpoint_product = endpoint_product.proof;
         std::vector<byte> table_value_bytes, endpoint_product_bytes;
         zkdl::serialize_pedersen_scalar_value(proof.table_product_value_proof, table_value_bytes);
@@ -9402,7 +10484,8 @@ inline bool prove_authenticated_sorted_lookup(
         if (!proof.valid(error)) return false;
         return true;
     } catch (const std::exception& exception) {
-        if (error) *error = exception.what();
+        if (error) *error = "sorted-lookup proof failed operation_id=" +
+            descriptor.operation_id + " phase=sorted_lookup: " + exception.what();
         return false;
     }
 }
@@ -9601,7 +10684,8 @@ inline bool verify_authenticated_sorted_lookup(
 
         const auto weighted_descriptor = [&](std::uint32_t kind,
                                              const std::vector<std::string>& tags,
-                                             const std::vector<ConstraintDescriptor>& pieces) {
+                                             const std::vector<ConstraintDescriptor>& pieces,
+                                             std::vector<FrWire>* piece_rhos) {
             std::vector<byte> plan;
             zkdl::append_u32(plan, kind);
             zkdl::append_u64(plan, static_cast<std::uint64_t>(tags.size()));
@@ -9613,10 +10697,12 @@ inline bool verify_authenticated_sorted_lookup(
             ConstraintDescriptor result;
             result.id = "authenticated_sorted_lookup/relation/" + std::to_string(kind);
             result.degree = 1U;
+            if (piece_rhos != nullptr) { piece_rhos->clear(); piece_rhos->reserve(pieces.size()); }
             for (const auto& piece : pieces) result.degree = std::max(result.degree, piece.degree);
             for (std::size_t index = 0U; index < pieces.size(); ++index) {
                 const FrWire rho = zkdl::cpu_ipa_nonzero_challenge(
                     transcript, context + ".rho." + std::to_string(index));
+                if (piece_rhos != nullptr) piece_rhos->push_back(rho);
                 result.constant = zkdl::fr_add(result.constant,
                                                zkdl::fr_mul(rho, pieces[index].constant));
                 for (const auto& term : pieces[index].terms) {
@@ -9697,16 +10783,24 @@ inline bool verify_authenticated_sorted_lookup(
             }
             const std::string context = "gat.sorted_lookup.relation." + std::to_string(kind);
             pointwise_absorb_provider_commitments(context, wire.logical_domain, tags, canonical, provider_segments, transcript);
-            const ConstraintDescriptor relation = weighted_descriptor(kind, tags, pieces);
+            std::vector<FrWire> piece_rhos;
+            const ConstraintDescriptor relation = weighted_descriptor(kind, tags, pieces, &piece_rhos);
             if (!relation.valid(error) || wire.relation_digest != zksc_proof_descriptor_digest(relation, statement, context)) return false;
             relation_descriptors[kind] = relation;
             if (!pointwise_shape_domain(relation, wire.logical_domain, error)) return false;
             const auto rho = pointwise_challenges(relation, wire.logical_domain, tags.size(), context, transcript);
-            const ConstraintDescriptor weighted = pointwise_sumcheck_descriptor(relation, tags.size());
+            const bool marker_membership = kind == static_cast<std::uint32_t>(zkdl::AuthenticatedSortedLookupRelationKind::MarkerMembership);
+            if (marker_membership && !sorted_marker_pieces_valid(pieces, piece_rhos, descriptor.table_unique_rows, error)) return false;
+            const ConstraintDescriptor weighted = marker_membership
+                ? sorted_marker_mixed_sumcheck_descriptor(relation, pieces, piece_rhos, tags.size())
+                : pointwise_sumcheck_descriptor(relation, tags.size());
+            const FrWire initial_claim = marker_membership
+                ? zkdl::fr_mul(piece_rhos[0U], zkdl::fr_from_u32(descriptor.table_unique_rows))
+                : FrWire{};
             ZkSumcheckVerifierResult sumcheck;
             if (!verify_zk_sumcheck(
                     wire.sumcheck, weighted, weighted.degree, wire.logical_domain,
-                    generators, blinding_generator, u_generator, FrWire{}, statement,
+                    generators, blinding_generator, u_generator, initial_claim, statement,
                     context, transcript, sumcheck, error,
                     descriptor.segment_size)) return false;
             std::vector<FrWire> point;
@@ -9758,7 +10852,10 @@ inline bool verify_authenticated_sorted_lookup(
             }
             ZkTerminalRelationVerifierResult terminal;
             if (!verify_zk_terminal_relation(
-                    wire.terminal_relation, pointwise_terminal_descriptor(relation, rho, point), canonical, indices, point,
+                    wire.terminal_relation,
+                    marker_membership
+                        ? sorted_marker_mixed_terminal_descriptor(relation, pieces, piece_rhos, rho, point)
+                        : pointwise_terminal_descriptor(relation, rho, point), canonical, indices, point,
                     generators, blinding_generator, u_generator, statement,
                     zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
                     zkdl::cpu_g1_from_native(sumcheck.final_claim_commitment), FrWire{},
@@ -9778,7 +10875,7 @@ inline bool verify_authenticated_sorted_lookup(
 
         const unsigned __int128 query_base = static_cast<unsigned __int128>(1U) << descriptor.y_bits;
         const std::vector<std::string> query_tags = {
-            "query_x", "query_y", "query_key", "query_active", "query_prefix",
+            "query_x", "query_y", "query_key", "query_active", "query_product_prefix",
             "query_prefix_next", "query_first", "query_last", "query_endpoint"};
         const auto query_indices = index_map(query_tags);
         const FrWire query_base_wire = sorted_lookup_field_from_u128(query_base);
@@ -9817,12 +10914,12 @@ inline bool verify_authenticated_sorted_lookup(
             "query-prefix-recurrence", 2U, FrWire{},
             {monomial(zkdl::fr_from_u32(1U), {query_indices.at("query_prefix_next")}),
              monomial(zkdl::fr_neg(beta),
-                      {query_indices.at("query_prefix"), query_indices.at("query_key")}),
-             monomial(zkdl::fr_neg(gamma), {query_indices.at("query_prefix")})}));
+                      {query_indices.at("query_product_prefix"), query_indices.at("query_key")}),
+             monomial(zkdl::fr_neg(gamma), {query_indices.at("query_product_prefix")})}));
         query_pieces.push_back(make_piece(
             "query-prefix-initial", 2U, FrWire{},
             {monomial(zkdl::fr_from_u32(1U),
-                      {query_indices.at("query_first"), query_indices.at("query_prefix")}),
+                      {query_indices.at("query_first"), query_indices.at("query_product_prefix")}),
              monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)),
                       {query_indices.at("query_first")})}));
         query_pieces.push_back(make_piece(
@@ -9836,19 +10933,19 @@ inline bool verify_authenticated_sorted_lookup(
                              query_tags, query_pieces)) return false;
 
         const std::vector<std::string> recurrence_tags = {
-            "merge_prefix", "merge_prefix_next", "merge_key", "merge_active", "merge_first"};
+            "merge_product_prefix", "merge_prefix_next", "merge_key", "merge_active", "merge_first"};
         const auto recurrence_indices = index_map(recurrence_tags);
         std::vector<ConstraintDescriptor> recurrence_pieces;
         recurrence_pieces.push_back(make_piece(
             "merge-prefix-recurrence", 2U, FrWire{},
             {monomial(zkdl::fr_from_u32(1U), {recurrence_indices.at("merge_prefix_next")}),
              monomial(zkdl::fr_neg(beta),
-                      {recurrence_indices.at("merge_prefix"), recurrence_indices.at("merge_key")}),
-             monomial(zkdl::fr_neg(gamma), {recurrence_indices.at("merge_prefix")})}));
+                      {recurrence_indices.at("merge_product_prefix"), recurrence_indices.at("merge_key")}),
+             monomial(zkdl::fr_neg(gamma), {recurrence_indices.at("merge_product_prefix")})}));
         recurrence_pieces.push_back(make_piece(
             "merge-prefix-initial", 2U, FrWire{},
             {monomial(zkdl::fr_from_u32(1U),
-                      {recurrence_indices.at("merge_first"), recurrence_indices.at("merge_prefix")}),
+                      {recurrence_indices.at("merge_first"), recurrence_indices.at("merge_product_prefix")}),
              monomial(zkdl::fr_neg(zkdl::fr_from_u32(1U)),
                       {recurrence_indices.at("merge_first")})}));
         recurrence_pieces.push_back(make_piece(

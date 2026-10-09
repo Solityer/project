@@ -1,0 +1,25 @@
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/pzh/project/comparison/zkGPT/build/gpu
+[  2%] Built target gen_base.o
+[  5%] Built target gen_bint.o
+[ 11%] Built target mcl
+[ 17%] Built target gat_cuda
+[ 68%] Built target gpt_lib
+[ 71%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_proof.cpp.o
+[ 74%] Linking CUDA device code CMakeFiles/gat_adapter.dir/cmake_device_link.o
+[ 77%] Linking CXX static library libgat_adapter.a
+[ 91%] Built target gat_adapter
+[ 94%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_prover.dir/gat_cli.cpp.o
+[ 97%] Linking CUDA device code CMakeFiles/zkgpt_gat_prover.dir/cmake_device_link.o
+[100%] Linking CXX executable zkgpt_gat_prover
+[100%] Built target zkgpt_gat_prover
+[  2%] Built target gen_base.o
+[  5%] Built target gen_bint.o
+[ 11%] Built target mcl
+[ 17%] Built target gat_cuda
+[ 68%] Built target gpt_lib
+[ 91%] Built target gat_adapter
+[ 94%] Linking CUDA device code CMakeFiles/zkgpt_gat_verifier.dir/cmake_device_link.o
+[ 97%] Linking CXX executable zkgpt_gat_verifier
+[100%] Built target zkgpt_gat_verifier

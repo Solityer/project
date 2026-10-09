@@ -1,0 +1,5 @@
+CAPACITY_STAGE_BEGIN dataset=ppi stage=resource_snapshot
+CAPACITY_STAGE_END dataset=ppi stage=resource_snapshot host_headroom_bytes=102842122240 shared_disk_available_bytes=1713207787520 same_filesystem=true
+CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_graph_load
+CAPACITY_STAGE_END dataset=ppi stage=canonical_graph_load nodes=56944 edges=850576 features=50 graphs=295
+CAPACITY_STAGE_BEGIN dataset=ppi stage=shape_estimate

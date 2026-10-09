@@ -22,12 +22,6 @@ int main() {
     const std::map<std::string, const TensorWitness *> witnesses{{source.id, &source}, {output.id, &output}};
     const std::map<std::string, FrWire> blinders{{source.id, scalar(17U)}, {output.id, scalar(19U)}};
     std::vector<CommitmentWire> commitments;
-    for (const auto *tensor : {&source, &output}) {
-        const auto commitment = zkdl::cpu_g1_add(zkdl::cpu_g1_sum(std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + tensor->domain_size),
-                                                                  tensor->values),
-                                                 zkdl::cpu_g1_mul(h, blinders.at(tensor->id)));
-        commitments.push_back(CommitmentWire{tensor->id, tensor->visibility, tensor->domain_size, zkdl::cpu_g1_to_native(commitment)});
-    }
     OperationDescriptor descriptor;
     descriptor.id = "layer1/route";
     descriptor.kind = RelationKind::SparseRoute;
@@ -55,6 +49,20 @@ int main() {
         if (!condition) throw std::runtime_error(std::string(label) + ": " + error);
     };
     try {
+        for (const auto *tensor : {&source, &output}) {
+            SegmentedTensorProvider provider;
+            SegmentCommitmentMaterial material;
+            CommitmentWire commitment;
+            require(SegmentedTensorProvider::from_values(tensor->values, generators.size(), provider, &error),
+                    "segment commitment provider");
+            require(zktr_build_segment_commitment_material(
+                        tensor->id, tensor->visibility, provider, generators, h, u,
+                        blinders.at(tensor->id), statement, commitment, material, &error),
+                    "segment commitment material");
+            commitments.push_back(std::move(commitment));
+        }
+        statement.segment_commitments_digest =
+            relation_commitment_vector_digest(statement, commitments);
         const std::vector<FrWire> kat_point{scalar(2U), scalar(3U)};
         const std::vector<FrWire> kat_expected{scalar(2U), zkdl::fr_neg(scalar(3U)), zkdl::fr_neg(scalar(4U)), scalar(6U)};
         const auto kat_weights = zkdl::cpu_ipa_mle_weights(kat_point);

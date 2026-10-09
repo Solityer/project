@@ -5091,7 +5091,7 @@ int admit(const Config &config) {
             fail("native admission model commitment segment total overflows");
         model_commitment_segment_count += segments;
     }
-    std::cout << "{\"schema\":\"zkdl_native_relation_admission_v1\",\"status\":\"PASS\",\"dataset\":\"" << config.dataset
+    std::cout << "{\"schema\":\"zkdl_native_relation_admission_v2\",\"status\":\"PASS\",\"dataset\":\"" << config.dataset
               << "\",\"input_preprocess_id\":" << json_quote_config(config.input_preprocess_id)
               << ",\"batching_rule\":" << json_quote_config(config.batching_rule)
               << ",\"nodes\":" << graph.nodes << ",\"edges\":" << graph.edges << ",\"graphs\":" << graph.graphs
@@ -5130,6 +5130,7 @@ int admit(const Config &config) {
               << ",\"native_trace_forward_live_peak_bytes_upper_bound\":" << plan_metrics.trace_forward_live_peak_bytes_upper_bound
               << ",\"native_maximum_route_source_domain\":" << plan_metrics.maximum_route_source_domain
               << ",\"native_maximum_route_edge_domain\":" << plan_metrics.maximum_route_edge_domain
+              << ",\"native_maximum_route_selector_factor_elements\":" << plan_metrics.maximum_route_selector_factor_elements
               << ",\"native_route_sumcheck_live_peak_bytes_upper_bound\":" << plan_metrics.route_sumcheck_live_peak_bytes_upper_bound
               << ",\"sorted_lookup_query_count\":" << relation.sorted_lookup.queries.size()
               << ",\"maximum_sorted_lookup_merge_logical_rows\":" << maximum_sorted_lookup_merge_logical_rows

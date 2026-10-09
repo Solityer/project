@@ -1,10 +1,13 @@
 #include "gat_proof.hpp"
+#include "gat_formal_internal.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <type_traits>
 
 using namespace zkgpt::gat;
 
@@ -241,9 +244,11 @@ bool semantic_plan_coverage_valid(const GatCircuitPlan& plan, const Model& model
 }
 
 int main() {
-    const Model model = model_fixture();
-    const QuantConfig quant = quant_fixture();
-    const Graph graph = graph_fixture();
+    static_assert(!std::is_copy_constructible_v<detail::ValidatedFormalInputs>);
+    static_assert(std::is_move_constructible_v<detail::ValidatedFormalInputs>);
+    Model model = model_fixture();
+    QuantConfig quant = quant_fixture();
+    Graph graph = graph_fixture();
     const GatCircuitPlan plan = build_gat_circuit_plan(graph, model, quant);
     if (!plan.official_layered || plan.has_placeholder || plan.circuit.circuit.size() <= 1 || plan.matmuls.size() != 54 || plan.sparse_gkr.empty() ||
         plan.lasso.size() != 4 || plan.checkpoints.empty() || !plan.registry.covers_all_segments() ||
@@ -405,9 +410,46 @@ int main() {
     }
     const NativePrimitiveEvidence evidence = exercise_official_primitives("proof-plan-smoke");
     if (!evidence.sumcheck_called || !evidence.gkr_path_bound || !evidence.lasso_range_called || !evidence.hyrax_commit_called) return 2;
+
+    ForwardResult owner_forward = detail::compute_formal_forward_unvalidated(
+        graph, features, model, quant);
+    const auto repeated_validation_begin = std::chrono::steady_clock::now();
+    for (unsigned call = 0; call < 4; ++call)
+        if (!validate_relation(graph, features, model, quant, owner_forward))
+            return 17;
+    const double four_validation_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - repeated_validation_begin).count();
+    detail::ValidatedFormalInputs owned = detail::ValidatedFormalInputs::consume(
+        std::move(graph), std::move(features), std::move(model),
+        std::move(quant), std::move(owner_forward));
+    if (owned.canonical_validation_calls() != 1U ||
+        !validate_gat_circuit_plan(owned.plan()) ||
+        four_validation_ms < owned.canonical_validation_ms()) {
+        std::cerr << "move-owned formal path did not retain one complete canonical validation\n";
+        return 18;
+    }
+    ForwardResult tampered_owner_trace = owned.forward();
+    if (tampered_owner_trace.trace.ledger.families.empty()) return 19;
+    ++tampered_owner_trace.trace.ledger.families.front().input_abs;
+    bool public_plan_rejected = false;
+    try {
+        (void)build_gat_circuit_plan(owned.graph(), owned.model(), owned.quant(),
+                                     tampered_owner_trace);
+    } catch (const std::exception&) {
+        public_plan_rejected = true;
+    }
+    if (!public_plan_rejected || validate_relation(
+            owned.graph(), owned.features(), owned.model(), owned.quant(),
+            tampered_owner_trace)) {
+        std::cerr << "public untrusted plan/relation API accepted a tampered trace\n";
+        return 20;
+    }
     std::cout << "gat_proof_plan_smoke: PASS plan_structure layers=" << plan.circuit.circuit.size()
               << " fconn_bindings=" << checked_output_bindings << " matmuls=" << plan.matmuls.size()
               << " lasso_families=" << plan.lasso.size() << " checkpoints=" << plan.checkpoints.size()
-              << " capacity=NOT_FINALIZED\n";
+              << " capacity=NOT_FINALIZED canonical_validation_calls="
+              << owned.canonical_validation_calls() << " old_four_validation_ms="
+              << four_validation_ms << " new_one_validation_ms="
+              << owned.canonical_validation_ms() << '\n';
     return 0;
 }

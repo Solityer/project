@@ -1,0 +1,6 @@
+{
+  "source": "/home/pzh/project/comparison/zkGPT/baseline-local/repair/formal-private-closure-20261009-02/proof.artifact",
+  "fixture": "/home/pzh/project/comparison/zkGPT/baseline-local/repair/native-replay-stream-20261009-01/proof.artifact",
+  "size_bytes": 8244255,
+  "sha256": "636b4134b911b167bcb95c247cd957f6f3c1e3444089c67a7a6990361b57ec1f"
+}

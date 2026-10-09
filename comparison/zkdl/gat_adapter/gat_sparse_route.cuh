@@ -76,6 +76,82 @@ inline std::vector<FrWire> sparse_route_public_selector(const OperationDescripto
     return selector;
 }
 
+inline bool sparse_route_sumcheck_providers(
+    const std::vector<FrWire> &source_values,
+    const std::vector<FrWire> &selector_outer,
+    const std::vector<FrWire> &selector_feature,
+    const FrWire &output_value, std::uint32_t domain_size,
+    std::size_t basis_size,
+    std::vector<SegmentedTensorProvider> &providers,
+    std::string *error) {
+    std::uint32_t segment_size = 0U, segment_count = 0U;
+    const std::uint64_t selector_size = static_cast<std::uint64_t>(selector_outer.size()) * selector_feature.size();
+    if (source_values.size() != domain_size ||
+        std::max<std::uint64_t>(2U, selector_size) != domain_size ||
+        selector_outer.empty() || selector_feature.empty() ||
+        !SegmentedTensorProvider::shape(domain_size, basis_size, segment_size,
+                                        segment_count, error)) {
+        if (error && error->empty()) *error = "sparse route virtual Sumcheck provider shape mismatch";
+        return false;
+    }
+    providers.clear();
+    providers.reserve(4U);
+    const auto* outer_values = &selector_outer;
+    const auto* feature_values = &selector_feature;
+    providers.emplace_back(
+        domain_size, segment_size,
+        [outer_values, feature_values, domain_size](
+            std::uint64_t offset, std::uint32_t count,
+            std::vector<FrWire> &output, std::string *read_error) {
+            if (offset > domain_size || count > domain_size - offset) {
+                if (read_error) *read_error = "sparse route selector provider range is out of bounds";
+                return false;
+            }
+            output.assign(count, FrWire{});
+            const std::uint64_t selector_size =
+                static_cast<std::uint64_t>(outer_values->size()) * feature_values->size();
+            for (std::uint32_t index = 0U; index < count; ++index) {
+                const std::uint64_t global = offset + index;
+                if (global < selector_size) {
+                    const std::size_t node = static_cast<std::size_t>(global / feature_values->size());
+                    const std::size_t feature = static_cast<std::size_t>(global % feature_values->size());
+                    output[index] = zkdl::fr_mul((*outer_values)[node], (*feature_values)[feature]);
+                }
+            }
+            return true;
+        });
+    SegmentedTensorProvider source_provider;
+    if (!SegmentedTensorProvider::from_values(source_values, basis_size,
+                                               source_provider, error)) return false;
+    providers.push_back(std::move(source_provider));
+    providers.emplace_back(
+        domain_size, segment_size,
+        [domain_size](std::uint64_t offset, std::uint32_t count,
+                      std::vector<FrWire> &output, std::string *read_error) {
+            if (offset > domain_size || count > domain_size - offset) {
+                if (read_error) *read_error = "sparse route zero provider range is out of bounds";
+                return false;
+            }
+            output.assign(count, FrWire{});
+            if (offset == 0U && count != 0U) output[0] = zkdl::fr_from_u32(1U);
+            return true;
+        });
+    providers.emplace_back(
+        domain_size, segment_size,
+        [domain_size, output_value](std::uint64_t offset, std::uint32_t count,
+                                    std::vector<FrWire> &output,
+                                    std::string *read_error) {
+            if (offset > domain_size || count > domain_size - offset) {
+                if (read_error) *read_error = "sparse route output provider range is out of bounds";
+                return false;
+            }
+            output.assign(count, output_value);
+            return true;
+        });
+    (void)segment_count;
+    return true;
+}
+
 inline std::array<byte, 32U> sparse_route_terminal_digest(const std::array<byte, 32U> &header_digest, const SparseRouteProof &route) {
     std::vector<byte> encoded(header_digest.begin(), header_digest.end());
     append_native_fr_vector(encoded, route.edge_point);
@@ -106,13 +182,21 @@ inline bool sparse_route_aggregate_opening_inputs(const TensorWitness &tensor, c
                                                   const std::map<std::string, FrWire> &blinders,
                                                   const std::map<std::string, std::vector<FrWire>> *segment_blinding_scalars,
                                                   std::vector<FrWire> &aggregate_values, FrWire &aggregate_blinder, FrWire &aggregate_value,
-                                                  zkdl::CpuG1Point &aggregate_xi, std::string *error) {
+                                                  zkdl::CpuG1Point &aggregate_xi, std::string *error,
+                                                  const std::vector<FrWire> *validated_values = nullptr,
+                                                  const RouteWorkProgressCallback* progress = nullptr) {
     if (commitment_index >= commitments.size() || commitments[commitment_index].tensor_id != tensor.id) {
         if (error) *error = "sparse route aggregate commitment index is not canonical";
         return false;
     }
     SegmentedTensorProvider provider;
-    if (!tensor.segmented(generators.size(), provider, error)) return false;
+    if (validated_values != nullptr) {
+        if (validated_values->size() != tensor.domain_size ||
+            !SegmentedTensorProvider::from_values(*validated_values, generators.size(), provider, error)) {
+            if (error && error->empty()) *error = "sparse route validated tensor shape mismatch";
+            return false;
+        }
+    } else if (!tensor.segmented(generators.size(), provider, error)) return false;
     ZkRelationSegmentLayout layout;
     if (!zktr_segment_layout(provider.logical_domain(), generators.size(), layout, error) || point.size() != log2_exact(layout.logical_domain)) return false;
     SegmentCommitmentMaterial material;
@@ -148,11 +232,23 @@ inline bool sparse_route_aggregate_opening_inputs(const TensorWitness &tensor, c
     aggregate_xi = zkdl::CpuG1Point::zero();
     for (std::uint32_t segment = 0U; segment < layout.segment_count; ++segment) {
         std::vector<FrWire> values;
-        if (!provider.read_segment(segment, values, error) || values.size() != layout.segment_size) return false;
+        if (validated_values != nullptr) {
+            const std::size_t offset = static_cast<std::size_t>(segment) * layout.segment_size;
+            if (offset > validated_values->size() ||
+                layout.segment_size > validated_values->size() - offset) {
+                if (error) *error = "sparse route validated tensor range is out of bounds";
+                return false;
+            }
+            values.assign(validated_values->begin() + static_cast<std::ptrdiff_t>(offset),
+                          validated_values->begin() + static_cast<std::ptrdiff_t>(offset + layout.segment_size));
+        } else if (!provider.read_segment(segment, values, error) || values.size() != layout.segment_size) return false;
         for (std::size_t index = 0U; index < values.size(); ++index)
             aggregate_values[index] = zkdl::fr_add(aggregate_values[index], zkdl::fr_mul(high_weights[segment], values[index]));
         aggregate_blinder = zkdl::fr_add(aggregate_blinder, zkdl::fr_mul(high_weights[segment], material.blinders[segment]));
         aggregate_xi = zkdl::cpu_g1_add(aggregate_xi, zkdl::cpu_g1_mul(material.commitments[segment], high_weights[segment]));
+        if (progress != nullptr)
+            (*progress)("opening_aggregate_segments", segment + 1U,
+                        layout.segment_count);
     }
     const zkdl::CpuG1Point recomputed_xi = zkdl::cpu_g1_add(zkdl::cpu_g1_sum(segment_generators, aggregate_values),
                                                             zkdl::cpu_g1_mul(ipa_blinding_generator, aggregate_blinder));
@@ -171,13 +267,22 @@ inline bool prove_sparse_route(const OperationDescriptor &descriptor, const std:
                                SparseRouteProof &route, std::string *error, SparseRouteProverSecrets *secrets,
                                const std::map<std::string, std::vector<FrWire>> *segment_blinding_scalars) {
     try {
+        RouteSumcheckProgressReporter route_work_reporter{descriptor.id, 0U};
+        const RouteWorkProgressCallback route_work_progress =
+            [&route_work_reporter](const char* phase, std::uint64_t completed,
+                                  std::uint64_t total) {
+                route_work_reporter.update_route_work(phase, completed, total);
+            };
         const TensorWitness *source = nullptr;
         const TensorWitness *output = nullptr;
+        std::vector<FrWire> source_values;
         route = SparseRouteProof{};
-        if (!route_tensor_shapes_valid(descriptor, tensor_map, source, output, error) || !source->valid(error) || !output->valid(error) ||
+        if (!route_tensor_shapes_valid(descriptor, tensor_map, source, output, error) || !source->metadata_valid(error) || !output->metadata_valid(error) ||
             !sparse_route_public_inputs_valid(descriptor, commitments, generators, statement, route.source_commitment_index, route.output_commitment_index,
                                               error) ||
-            !relation_segment_commitments_valid(statement, commitments, error))
+            !relation_segment_commitments_valid(statement, commitments, error) ||
+            !source->materialize_validated(source_values, error,
+                                           &route_work_progress))
             return false;
         route.edge_domain = descriptor.selector_edge_domain;
         route.node_domain = descriptor.selector_node_domain;
@@ -198,36 +303,29 @@ inline bool prove_sparse_route(const OperationDescriptor &descriptor, const std:
         FrWire output_aggregate_blinder{}, output_value{};
         zkdl::CpuG1Point output_xi;
         if (!sparse_route_aggregate_opening_inputs(*output, output_point, generators, ipa_blinding_generator, commitments, route.output_commitment_index,
-                                                   blinders, segment_blinding_scalars, output_values, output_aggregate_blinder, output_value, output_xi, error))
+                                                   blinders, segment_blinding_scalars, output_values, output_aggregate_blinder, output_value, output_xi, error,
+                                                   nullptr, &route_work_progress))
             return false;
         const std::uint32_t domain = std::max(2U, source->domain_size);
-        std::vector<FrWire> source_values = source->materialize();
-
-        if (source_values.size() == 1U) source_values.push_back(source_values.front());
-        std::vector<FrWire> zero_selector(domain);
-        zero_selector[0] = zkdl::fr_from_u32(1U);
+        const bool duplicate_singleton = source_values.size() == 1U;
+        if (duplicate_singleton) source_values.push_back(source_values.front());
         const auto constraint = sparse_route_sumcheck_descriptor(descriptor, header_digest);
         ZkSumcheckProverResult sumcheck_result;
-        // Keep one owner for each actual Sumcheck input.  A braced temporary
-        // passed to prove_zk_sumcheck(const vector<vector<FrWire>>& ...) copied
-        // both full-domain lvalue vectors into the initializer_list and again
-        // into the function's vector argument, multiplying route resident
-        // memory without changing the relation.  Moving the same four arrays
-        // into the vector preserves the prover inputs and their order.
-        std::vector<std::vector<FrWire>> sumcheck_values;
-        sumcheck_values.reserve(4U);
-        sumcheck_values.push_back(sparse_route_public_selector(descriptor, edge_point, feature_point));
-        sumcheck_values.push_back(std::move(source_values));
-        sumcheck_values.push_back(std::move(zero_selector));
-        sumcheck_values.emplace_back(domain, output_value);
-        if (!prove_zk_sumcheck(constraint, sumcheck_values,
+        const auto selector_outer = public_route_selector_mle(
+            descriptor, edge_point, descriptor.route_by_destination,
+            &route_work_progress);
+        const auto selector_feature = public_route_feature_selector_mle(
+            descriptor, feature_point, &route_work_progress);
+        std::vector<SegmentedTensorProvider> sumcheck_providers;
+        if (!sparse_route_sumcheck_providers(
+                source_values, selector_outer, selector_feature, output_value,
+                domain, generators.size(), sumcheck_providers, error) ||
+            !prove_zk_sumcheck_segmented(constraint, sumcheck_providers,
                                2U, domain, generators, ipa_blinding_generator, ipa_u_generator, FrWire{}, statement, constraint.id, transcript, sumcheck_result,
-                               error))
+                               error, 0U, true))
             return false;
-        // The later Hyrax openings read the authenticated source provider and
-        // only retain bounded segment buffers; these full-domain Sumcheck
-        // inputs are no longer live after its transcript has been produced.
-        sumcheck_values.clear();
+        sumcheck_providers.clear();
+        if (duplicate_singleton) source_values.pop_back();
         route.sumcheck = std::move(sumcheck_result.proof);
         const std::uint32_t source_feature_bits = log2_exact(route.source_feature_domain);
         const std::uint32_t source_bits = log2_exact(source->domain_size);
@@ -242,7 +340,8 @@ inline bool prove_sparse_route(const OperationDescriptor &descriptor, const std:
         zkdl::CpuG1Point source_xi;
         if (!sparse_route_aggregate_opening_inputs(*source, source_point, generators, ipa_blinding_generator, commitments, route.source_commitment_index,
                                                    blinders, segment_blinding_scalars, source_values_aggregate, source_aggregate_blinder,
-                                                   source_value_aggregate, source_xi, error))
+                                                   source_value_aggregate, source_xi, error, &source_values,
+                                                   &route_work_progress))
             return false;
         const auto terminal_digest = sparse_route_terminal_digest(header_digest, route);
         const auto source_metadata = zktr_make_opening_metadata(terminal_digest, statement, source_point, route.source_commitment_index,

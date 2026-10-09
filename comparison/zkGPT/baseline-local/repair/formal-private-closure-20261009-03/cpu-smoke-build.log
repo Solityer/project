@@ -1,0 +1,15 @@
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 12%] Built target mcl
+[ 68%] Built target gpt_lib
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object tests/CMakeFiles/gat_adapter_smoke.dir/gat_adapter_smoke.cpp.o
+/home/pzh/project/comparison/zkGPT/tests/gat_adapter_smoke.cpp: In function ‘void {anonymous}::write_standalone_fixture(const std::string&, const zkgpt::gat::VerifierContext&, const zkgpt::gat::GatProofArtifact&)’:
+/home/pzh/project/comparison/zkGPT/tests/gat_adapter_smoke.cpp:217:5: error: ‘artifact_out’ was not declared in this scope; did you mean ‘artifact_path’?
+  217 |     artifact_out.close();
+      |     ^~~~~~~~~~~~
+      |     artifact_path
+gmake[3]: *** [tests/CMakeFiles/gat_adapter_smoke.dir/build.make:76: tests/CMakeFiles/gat_adapter_smoke.dir/gat_adapter_smoke.cpp.o] Error 1
+gmake[2]: *** [CMakeFiles/Makefile2:432: tests/CMakeFiles/gat_adapter_smoke.dir/all] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:439: tests/CMakeFiles/gat_adapter_smoke.dir/rule] Error 2
+gmake: *** [Makefile:296: gat_adapter_smoke] Error 2

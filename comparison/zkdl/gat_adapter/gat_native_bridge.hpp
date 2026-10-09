@@ -77,6 +77,7 @@ struct NativeRelationPlanMetrics {
     std::uint64_t trace_forward_live_peak_bytes_upper_bound = 0U;
     std::uint64_t maximum_route_source_domain = 0U;
     std::uint64_t maximum_route_edge_domain = 0U;
+    std::uint64_t maximum_route_selector_factor_elements = 0U;
     std::uint64_t route_sumcheck_live_peak_bytes_upper_bound = 0U;
 };
 

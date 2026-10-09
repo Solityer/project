@@ -424,6 +424,7 @@ def install_process_signal_cleanup() -> None:
         return
     signal.signal(signal.SIGINT, _process_signal_handler)
     signal.signal(signal.SIGTERM, _process_signal_handler)
+    signal.signal(signal.SIGHUP, _process_signal_handler)
     _PROCESS_SIGNAL_HANDLERS_INSTALLED = True
 
 

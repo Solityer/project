@@ -1,4 +1,5 @@
 #include "gat_types.hpp"
+#include "gat_forward_internal.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1211,7 +1212,7 @@ bool IntegerBoundLedger::validate() const {
     return true;
 }
 
-ForwardResult run_forward(const Graph& graph, const Tensor2D& features, const Model& model, const QuantConfig& quant) {
+ForwardResult detail::compute_formal_forward_unvalidated(const Graph& graph, const Tensor2D& features, const Model& model, const QuantConfig& quant) {
     ensure_field();
     graph.validate();
     model.validate_schema();
@@ -1327,7 +1328,13 @@ ForwardResult run_forward(const Graph& graph, const Tensor2D& features, const Mo
     for (const HiddenLayerTrace& hidden : result.trace.hidden_layers)
         for (const AttentionTrace& head : hidden.heads) result.trace.relation_ok = result.trace.relation_ok && head.relation_ok;
     for (const OutputHeadTrace& head : result.trace.output_heads) result.trace.relation_ok = result.trace.relation_ok && head.attention.relation_ok;
-    result.trace.relation_ok = result.trace.relation_ok && validate_relation(graph, features, model, quant, result);
+    return result;
+}
+
+ForwardResult run_forward(const Graph& graph, const Tensor2D& features, const Model& model, const QuantConfig& quant) {
+    ForwardResult result = detail::compute_formal_forward_unvalidated(graph, features, model, quant);
+    result.trace.relation_ok = result.trace.relation_ok &&
+        validate_relation(graph, features, model, quant, result);
     return result;
 }
 

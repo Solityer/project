@@ -1,9 +1,11 @@
 #include "gat_proof.hpp"
+#include "gat_formal_internal.hpp"
 
 #include <cassert>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <functional>
@@ -12,6 +14,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -183,7 +186,8 @@ std::string relative_to_cwd(const std::string& path) {
     throw std::runtime_error("standalone fixture directory is outside the baseline root");
 }
 
-void write_standalone_fixture(const std::string& directory, const VerifierContext& context, const GatProofArtifact& artifact) {
+void write_standalone_fixture(const std::string& directory, const VerifierContext& context,
+                              const GatProofArtifact& artifact) {
     struct stat info{};
     if (::stat(directory.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) throw std::runtime_error("standalone fixture directory is not present");
     const std::string context_path = directory + "/verifier_context.bin";
@@ -206,7 +210,10 @@ void write_standalone_fixture(const std::string& directory, const VerifierContex
         out << logits.str();
         if (!out.good()) throw std::runtime_error("cannot finalize standalone public logits");
     }
-    if (!artifact.write(artifact_path, &reason)) throw std::runtime_error("standalone proof artifact write failed: " + reason);
+    const std::uint64_t wire_limit = gat_proof_artifact_wire_limit(context, &reason);
+    if (wire_limit == 0) throw std::runtime_error("standalone proof artifact has no trusted wire capacity: " + reason);
+    if (!artifact.write(artifact_path, &reason))
+        throw std::runtime_error("standalone proof artifact write failed: " + reason);
     struct stat artifact_info{};
     if (::stat(artifact_path.c_str(), &artifact_info) != 0 || artifact_info.st_size < 0) throw std::runtime_error("cannot stat standalone proof artifact");
     const std::string context_rel = relative_to_cwd(context_path);
@@ -258,7 +265,9 @@ void run_signed_round_div_gate_boundary_checks() {
     std::cout << "native_division_boundary_checks: PASS both modes positive/negative/zero/exact/ties\n";
 }
 
-int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only, bool full_head_fixture) {
+int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only,
+                       bool full_head_fixture, bool private_formal_fixture,
+                       bool owner_check_only) {
     const auto stage = [](const char* name) { std::cerr << "gat_adapter_formal_stage: " << name << '\n'; };
     if (proof_verify_only && standalone_dir.empty()) {
         std::cerr << "formal proof/verify fixture requires a fresh standalone directory\n";
@@ -272,7 +281,7 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
         }
     }
     stage("model");
-    const Model formal_model = make_formal_model(full_head_fixture);
+    Model formal_model = make_formal_model(full_head_fixture);
     stage("graph");
     Graph formal_graph;
     formal_graph.num_nodes = 1;
@@ -327,22 +336,77 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     formal_quant.static_elu_max = elu_bound;
     formal_quant.validate();
     stage("formal-forward");
-    const ForwardResult formal_forward = run_forward(formal_graph, formal_features, formal_model, formal_quant);
-    if (!formal_forward.trace.relation_ok) {
-        std::cerr << "18-head formal fixture forward relation is invalid\n";
-        return 1;
+    ForwardResult formal_forward;
+    std::unique_ptr<detail::ValidatedFormalInputs> owned_formal_inputs;
+    std::shared_ptr<const GatCircuitPlan> formal_plan_owner;
+    double old_reference_validation_ms = 0.0;
+    std::size_t old_reference_validation_calls = 0U;
+    if (private_formal_fixture) {
+        stage("private-move-owned-forward-and-validation");
+        ForwardResult computed_forward = detail::compute_formal_forward_unvalidated(
+            formal_graph, formal_features, formal_model, formal_quant);
+        if (owner_check_only) {
+            const auto validation_begin = std::chrono::steady_clock::now();
+            for (std::size_t call = 0; call < 4U; ++call) {
+                if (!validate_relation(formal_graph, formal_features, formal_model,
+                                       formal_quant, computed_forward)) {
+                    std::cerr << "old-path repeated canonical reference validation failed\n";
+                    return 1;
+                }
+                ++old_reference_validation_calls;
+            }
+            old_reference_validation_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - validation_begin).count();
+        }
+        owned_formal_inputs = std::make_unique<detail::ValidatedFormalInputs>(
+            detail::ValidatedFormalInputs::consume(
+                std::move(formal_graph), std::move(formal_features),
+                std::move(formal_model), std::move(formal_quant),
+                std::move(computed_forward)));
+        if (owned_formal_inputs->canonical_validation_calls() != 1U) {
+            std::cerr << "private formal fixture did not perform one canonical reference validation\n";
+            return 1;
+        }
+        formal_plan_owner = owned_formal_inputs->plan_owner();
+    } else {
+        formal_forward = run_forward(formal_graph, formal_features, formal_model, formal_quant);
+        if (!formal_forward.trace.relation_ok) {
+            std::cerr << "18-head formal fixture forward relation is invalid\n";
+            return 1;
+        }
+        stage("plan");
+        formal_plan_owner = std::make_shared<const GatCircuitPlan>(
+            build_gat_circuit_plan(formal_graph, formal_model, formal_quant, formal_forward));
     }
-    stage("plan");
-    const auto formal_plan_owner = std::make_shared<const GatCircuitPlan>(
-        build_gat_circuit_plan(formal_graph, formal_model, formal_quant, formal_forward));
+    const Graph& proving_graph = owned_formal_inputs ? owned_formal_inputs->graph() : formal_graph;
+    const Tensor2D& proving_features = owned_formal_inputs ? owned_formal_inputs->features() : formal_features;
+    const Model& proving_model = owned_formal_inputs ? owned_formal_inputs->model() : formal_model;
+    const QuantConfig& proving_quant = owned_formal_inputs ? owned_formal_inputs->quant() : formal_quant;
+    const ForwardResult& proving_forward = owned_formal_inputs ? owned_formal_inputs->forward() : formal_forward;
     const GatCircuitPlan& formal_plan = *formal_plan_owner;
-    if (!proof_verify_only) {
+    if (owner_check_only) {
+        static_assert(!std::is_copy_constructible_v<detail::ValidatedFormalInputs>);
+        ForwardResult tampered = proving_forward;
+        tampered.trace.hidden_layers.at(0).heads.at(0).activated.at(0) += 1;
+        bool public_api_rejected = false;
+        try {
+            (void)build_gat_circuit_plan(proving_graph, proving_model,
+                                         proving_quant, tampered);
+        } catch (const std::invalid_argument&) {
+            public_api_rejected = true;
+        }
+        if (!public_api_rejected) {
+            std::cerr << "public plan API accepted a tampered formal trace\n";
+            return 1;
+        }
+    }
+    if (!proof_verify_only && !owner_check_only) {
         stage("native-gate-negative-checks");
-        const GatCircuitWitness assignment = build_gat_circuit_witness(formal_plan, formal_graph, formal_features, formal_model, formal_quant, formal_forward);
+        const GatCircuitWitness assignment = build_gat_circuit_witness(formal_plan, proving_graph, proving_features, proving_model, proving_quant, proving_forward);
         std::string assignment_reason;
-        if (!evaluate_gat_circuit_assignment(formal_plan, assignment.input_layer, formal_forward.logits, &assignment_reason)) throw std::runtime_error("honest native gate assignment rejected: " + assignment_reason);
+        if (!evaluate_gat_circuit_assignment(formal_plan, assignment.input_layer, proving_forward.logits, &assignment_reason)) throw std::runtime_error("honest native gate assignment rejected: " + assignment_reason);
         const auto checkpoint = [&](const std::string& suffix) { for (const CheckpointDescriptor& item : formal_plan.checkpoints) if (item.id == suffix) return item.coordinate_offset; throw std::runtime_error("missing native negative-check checkpoint: " + suffix); };
-        const auto corrupt_coordinate = [&](const std::string& name, std::size_t coordinate, const Fr& increment = Fr(1)) { zkgpt::NativeFieldVector corrupted = assignment.input_layer; corrupted.at(coordinate) += increment; std::string reason; if (evaluate_gat_circuit_assignment(formal_plan, corrupted, formal_forward.logits, &reason) || reason.empty()) throw std::runtime_error("native constraint corruption was not rejected: " + name + ": " + reason); };
+        const auto corrupt_coordinate = [&](const std::string& name, std::size_t coordinate, const Fr& increment = Fr(1)) { zkgpt::NativeFieldVector corrupted = assignment.input_layer; corrupted.at(coordinate) += increment; std::string reason; if (evaluate_gat_circuit_assignment(formal_plan, corrupted, proving_forward.logits, &reason) || reason.empty()) throw std::runtime_error("native constraint corruption was not rejected: " + name + ": " + reason); };
         const std::size_t division = checkpoint("rounding/hidden/hidden/layer0/head0");
         corrupt_coordinate("public feature Aux copy", formal_plan.input_layout.segments.at(2).offset);
         corrupt_coordinate("hidden concat", checkpoint("concat/hidden/layer0"));
@@ -361,26 +425,90 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
         corrupt_coordinate("final fixed denominator", checkpoint("output/final_average") + 8);
         std::cout << "native_gate_negative_checks: PASS tuple/range/inverse/division/max/fixed-denominator\n";
         run_signed_round_div_gate_boundary_checks();
-    } else {
+    } else if (proof_verify_only) {
         stage("complete-relation-proof-verify");
     }
     stage("registration");
-    const ModelRegistration formal_registration = register_model(formal_model, formal_quant, formal_plan.input_layout, formal_model.manifest.model_arch_id);
+    const ModelRegistration formal_registration = register_model(proving_model, proving_quant, formal_plan.input_layout, proving_model.manifest.model_arch_id);
     stage("context");
-    VerifierContext formal_context = make_verifier_context(formal_graph, formal_features, formal_quant,
-                                                           formal_forward.trace.tables, formal_forward.logits,
+    VerifierContext formal_context = make_verifier_context(proving_graph, proving_features, proving_quant,
+                                                           proving_forward.trace.tables, proving_forward.logits,
                                                            formal_registration, formal_plan_owner, "masked_full");
     formal_context.backend = "cpu";
     formal_context.full_dataset_identity = "canonical:synthetic";
     formal_context.checkpoint_identity = "baseline-local/checkpoints/synthetic_gat/integrity.sha256";
     formal_context.cache_identity = "baseline-local/data/cache/synthetic/integrity.sha256";
+    if (owner_check_only) {
+        VerifierContext mismatched_context = formal_context;
+        mismatched_context.public_logits.values.at(0) += 1;
+        ProveResult mismatch = detail::prove_gat_formal(
+            *owned_formal_inputs, formal_registration, mismatched_context,
+            "masked_full");
+        if (mismatch.status != ProveStatus::REJECTED || mismatch.diagnostic.empty()) {
+            std::cerr << "private proof API accepted a context detached from its move-owned validated inputs\n";
+            return 1;
+        }
+        GatCapacityReport altered_report = owned_formal_inputs->capacity();
+        ++altered_report.num_edges;
+        QuantConfig altered_quant = proving_quant;
+        ++altered_quant.s_exp;
+        Graph altered_graph = proving_graph;
+        ++altered_graph.num_nodes;
+        if (detail::formal_capacity_report_matches_plan(
+                altered_report, proving_graph, proving_model, proving_quant,
+                formal_plan) ||
+            detail::formal_capacity_report_matches_plan(
+                owned_formal_inputs->capacity(), proving_graph, proving_model,
+                altered_quant, formal_plan) ||
+            detail::formal_capacity_report_matches_plan(
+                owned_formal_inputs->capacity(), altered_graph, proving_model,
+                proving_quant, formal_plan)) {
+            std::cerr << "private capacity identity accepted a changed report, quant config, or graph shape\n";
+            return 1;
+        }
+        if (old_reference_validation_calls != 4U ||
+            owned_formal_inputs->canonical_validation_calls() != 1U ||
+            owned_formal_inputs->capacity_census_calls() != 1U ||
+            owned_formal_inputs->capacity_restore_rebuild_calls() != 0U) {
+            std::cerr << "reference validation invocation count differs from old/new formal path contract\n";
+            return 1;
+        }
+        std::cout << "FORMAL_REFERENCE_VALIDATION old_calls="
+                  << old_reference_validation_calls << " old_total_ms="
+                  << old_reference_validation_ms << " new_calls="
+                  << owned_formal_inputs->canonical_validation_calls()
+                  << " new_ms=" << owned_formal_inputs->canonical_validation_ms()
+                  << " exact_capacity_censuses="
+                  << owned_formal_inputs->capacity_census_calls()
+                  << " altered_report=REJECT changed_quant=REJECT changed_graph_shape=REJECT"
+                  << " public_tampered_trace=REJECT private_mismatched_context=REJECT\n";
+        return 0;
+    }
     stage("masked-full-prove");
-    const ProveResult formal = prove_gat(formal_plan_owner, formal_graph, formal_features, formal_model, formal_quant,
-                                         formal_forward, formal_registration, formal_context, "masked_full");
+    ProveResult formal;
+    if (owned_formal_inputs)
+        formal = detail::prove_gat_formal(*owned_formal_inputs, formal_registration,
+                                          formal_context, "masked_full");
+    else
+        formal = prove_gat(formal_plan_owner, proving_graph, proving_features,
+                           proving_model, proving_quant, proving_forward,
+                           formal_registration, formal_context, "masked_full");
     if (formal.status != ProveStatus::GENERATED || !formal.has_artifact) {
         std::cerr << "masked_full formal smoke rejected: " << formal.diagnostic << "\n";
         return 1;
     }
+    if (owned_formal_inputs &&
+        (owned_formal_inputs->capacity_census_calls() != 1U ||
+         owned_formal_inputs->capacity_restore_rebuild_calls() != 1U)) {
+        std::cerr << "private formal proof did not reuse its single capacity census during native-plan restoration\n";
+        return 1;
+    }
+    if (owned_formal_inputs)
+        std::cout << "FORMAL_CAPACITY_CENSUS exact_census_calls="
+                  << owned_formal_inputs->capacity_census_calls()
+                  << " cached_restore_rebuilds="
+                  << owned_formal_inputs->capacity_restore_rebuild_calls()
+                  << " report_owner_plan_identity=PASS\n";
     if (formal.artifact.has_private_payload()) {
         std::cerr << "masked_full fixture serialized private witness payload\n";
         return 1;
@@ -511,7 +639,7 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     }
 
     if (standalone_dir.empty()) std::remove(formal_path.c_str());
-    std::cout << "gat_adapter_formal_smoke: PASS masked_full heads=" << formal_model.hidden_heads() * 2 + formal_model.manifest.output_heads
+    std::cout << "gat_adapter_formal_smoke: PASS masked_full heads=" << proving_model.hidden_heads() * 2 + proving_model.manifest.output_heads
               << " serialize/verify/tamper\n";
     return 0;
 }
@@ -669,19 +797,246 @@ int run_existing_artifact_mutants(const std::string& standalone_dir) {
     return 0;
 }
 
+void append_legacy_u64(std::string& out, std::uint64_t value) {
+    for (unsigned shift = 0; shift < 64; shift += 8)
+        out.push_back(static_cast<char>((value >> shift) & 0xffU));
+}
+
+void append_legacy_string(std::string& out, const std::string& value) {
+    append_legacy_u64(out, static_cast<std::uint64_t>(value.size()));
+    out.append(value);
+}
+
+void append_legacy_statement(std::string& out, const NativeProofStatement& statement) {
+    append_legacy_string(out, "zkgpt-native-statement-v4");
+    append_legacy_string(out, statement.verifier_context_digest);
+    append_legacy_string(out, statement.field_id);
+    append_legacy_string(out, statement.plan_digest);
+    append_legacy_string(out, statement.resources_digest);
+    append_legacy_string(out, statement.tables_digest);
+    append_legacy_string(out, statement.com_w_digest);
+    append_legacy_string(out, statement.aux_digest);
+    append_legacy_string(out, statement.l_digest);
+    append_legacy_string(out, statement.basis_digest);
+    append_legacy_u64(out, statement.l_dimension);
+    append_legacy_string(out, statement.statement_root_digest);
+    append_legacy_string(out, statement.relation_schema);
+    append_legacy_string(out, statement.relation_digest);
+    append_legacy_u64(out, static_cast<std::uint64_t>(statement.relation_order.size()));
+    for (const std::string& relation : statement.relation_order)
+        append_legacy_string(out, relation);
+}
+
+void append_legacy_transcript_prefix(std::string& out, const std::string& domain,
+                                     const NativeProofStatement& statement,
+                                     std::size_t message_count) {
+    append_legacy_string(out, "zkgpt-native-fs-v4");
+    append_legacy_string(out, domain);
+    append_legacy_statement(out, statement);
+    append_legacy_u64(out, static_cast<std::uint64_t>(message_count));
+}
+
+void append_legacy_message(std::string& out, const NativeProofMessage& message) {
+    out.push_back(static_cast<char>(message.kind));
+    append_legacy_u64(out, message.sequence);
+    append_legacy_string(out, message.label);
+    append_legacy_string(out, message.payload);
+}
+
+int run_legacy_challenge_reference(const std::string& standalone_dir) {
+    const std::string input_path = standalone_dir + "/proof.artifact";
+    initialize_gat_field();
+    struct stat source_info{};
+    if (::stat(input_path.c_str(), &source_info) != 0 || !S_ISREG(source_info.st_mode) || source_info.st_size <= 0) {
+        std::cerr << "legacy challenge reference source is not a nonempty regular file\n";
+        return 1;
+    }
+    const std::uint64_t wire_limit = static_cast<std::uint64_t>(source_info.st_size);
+    std::string wire;
+    std::string reason;
+    if (!GatProofArtifact::read_wire_bytes(input_path, wire, wire_limit, &reason)) {
+        std::cerr << "cannot read legacy challenge reference artifact: " << reason << '\n';
+        return 1;
+    }
+    GatProofArtifact artifact;
+    if (!GatProofArtifact::parse_wire(wire, artifact, wire_limit, &reason)) {
+        std::cerr << "cannot parse legacy challenge reference artifact: " << reason << '\n';
+        return 1;
+    }
+    if (artifact.native_messages.empty()) {
+        std::cerr << "legacy challenge reference artifact has no native messages\n";
+        return 1;
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    std::string replayed_body;
+    std::uint64_t challenge_count = 0;
+    std::uint64_t prior_challenge_body_bytes = 0;
+    for (std::size_t index = 0; index < artifact.native_messages.size(); ++index) {
+        const NativeProofMessage& message = artifact.native_messages[index];
+        if (message.sequence != static_cast<std::uint64_t>(index)) {
+            std::cerr << "legacy challenge reference sequence is noncanonical at " << index << '\n';
+            return 1;
+        }
+        if (message.kind == NativeProofMessageKind::Challenge) {
+            if (message.label.compare(0, sizeof("challenge/") - 1, "challenge/") != 0 ||
+                message.label.size() == sizeof("challenge/") - 1) {
+                std::cerr << "legacy challenge reference label is malformed at " << index << '\n';
+                return 1;
+            }
+            prior_challenge_body_bytes += static_cast<std::uint64_t>(replayed_body.size());
+            std::string encoded;
+            append_legacy_transcript_prefix(encoded, artifact.native_domain,
+                                            artifact.native_statement, index);
+            encoded.append(replayed_body);
+            append_legacy_string(encoded, message.label.substr(sizeof("challenge/") - 1));
+            Fr derived;
+            derived.setHashOf(encoded.data(), encoded.size());
+            Fr expected;
+            try {
+                expected.setStr(message.payload, 16);
+            } catch (const std::exception& error) {
+                std::cerr << "legacy challenge reference payload is malformed at " << index
+                          << ": " << error.what() << '\n';
+                return 1;
+            }
+            if (expected.getStr(16) != message.payload || derived != expected) {
+                std::cerr << "legacy one-shot challenge differs from artifact at message " << index << '\n';
+                return 1;
+            }
+            ++challenge_count;
+        }
+        append_legacy_message(replayed_body, message);
+    }
+    const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - started).count();
+    std::cout << "legacy_challenge_reference: PASS native_messages=" << artifact.native_messages.size()
+              << " challenge_messages=" << challenge_count
+              << " encoded_message_body_bytes=" << replayed_body.size()
+              << " exact_challenge_prefix_copy_bytes=" << prior_challenge_body_bytes
+              << " elapsed_ms=" << elapsed_ms << '\n';
+    std::cout.flush();
+    return 0;
+}
+
+int run_existing_artifact_io_profile(const std::string& standalone_dir) {
+    const std::string input_path = standalone_dir + "/proof.artifact";
+    const std::string output_path = standalone_dir + "/proof.artifact.public-write";
+    initialize_gat_field();
+    const auto elapsed_ms = [](const std::chrono::steady_clock::time_point begin,
+                               const std::chrono::steady_clock::time_point end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    std::string reason;
+    struct stat source_info{};
+    if (::stat(input_path.c_str(), &source_info) != 0 || !S_ISREG(source_info.st_mode) || source_info.st_size <= 0) {
+        std::cerr << "artifact io profile source is not a nonempty regular file\n";
+        return 1;
+    }
+    const std::uint64_t wire_limit = static_cast<std::uint64_t>(source_info.st_size);
+
+    std::string input_wire;
+    std::cerr << "artifact_io_profile: source-bytes begin\n" << std::flush;
+    auto begin = std::chrono::steady_clock::now();
+    if (!GatProofArtifact::read_wire_bytes(input_path, input_wire, wire_limit, &reason)) {
+        std::cerr << "artifact io profile cannot read source bytes: " << reason << '\n';
+        return 1;
+    }
+    const double source_read_ms = elapsed_ms(begin, std::chrono::steady_clock::now());
+    std::cerr << "artifact_io_profile: source-bytes complete elapsed_ms=" << source_read_ms << '\n' << std::flush;
+
+    GatProofArtifact artifact;
+    std::cerr << "artifact_io_profile: wire-parse begin\n" << std::flush;
+    begin = std::chrono::steady_clock::now();
+    if (!GatProofArtifact::parse_wire(input_wire, artifact, wire_limit, &reason)) {
+        std::cerr << "artifact io profile cannot parse source artifact: " << reason << '\n';
+        return 1;
+    }
+    const double parse_ms = elapsed_ms(begin, std::chrono::steady_clock::now());
+    std::cerr << "artifact_io_profile: wire-parse complete elapsed_ms=" << parse_ms << '\n' << std::flush;
+
+    std::uint64_t challenge_count = 0;
+    std::uint64_t encoded_body_bytes = 0;
+    std::uint64_t replay_prior_message_bytes = 0;
+    for (const NativeProofMessage& message : artifact.native_messages) {
+        if (message.kind == NativeProofMessageKind::Challenge) {
+            ++challenge_count;
+            replay_prior_message_bytes += encoded_body_bytes;
+        }
+        encoded_body_bytes += static_cast<std::uint64_t>(1 + sizeof(std::uint64_t) + sizeof(std::uint64_t) +
+                                                           message.label.size() + sizeof(std::uint64_t) + message.payload.size());
+    }
+
+    std::remove(output_path.c_str());
+    std::cerr << "artifact_io_profile: public-write begin\n" << std::flush;
+    begin = std::chrono::steady_clock::now();
+    if (!artifact.write(output_path, wire_limit, &reason)) {
+        std::cerr << "artifact io profile public write failed: " << reason << '\n';
+        return 1;
+    }
+    const double public_write_including_wire_validation_ms = elapsed_ms(begin, std::chrono::steady_clock::now());
+    std::cerr << "artifact_io_profile: public-write complete elapsed_ms="
+              << public_write_including_wire_validation_ms << '\n' << std::flush;
+
+    GatProofArtifact readback;
+    std::cerr << "artifact_io_profile: readback begin\n" << std::flush;
+    begin = std::chrono::steady_clock::now();
+    if (!GatProofArtifact::read(output_path, readback, wire_limit, &reason)) {
+        std::cerr << "artifact io profile public-write readback failed: " << reason << '\n';
+        return 1;
+    }
+    const double public_write_readback_and_validation_ms = elapsed_ms(begin, std::chrono::steady_clock::now());
+    std::cerr << "artifact_io_profile: readback complete elapsed_ms="
+              << public_write_readback_and_validation_ms << '\n' << std::flush;
+    std::string source_bytes;
+    std::string output_bytes;
+    source_bytes.swap(input_wire);
+    if (!GatProofArtifact::read_wire_bytes(output_path, output_bytes, wire_limit, &reason)) {
+        std::cerr << "artifact io profile cannot read public-written bytes: " << reason << '\n';
+        return 1;
+    }
+    if (source_bytes != output_bytes || readback.transcript_digest != artifact.transcript_digest) {
+        std::cerr << "artifact io profile public write changed canonical artifact bytes\n";
+        return 1;
+    }
+    std::cout << "artifact_io_profile: PASS source_bytes=" << source_bytes.size()
+              << " source_read_ms=" << source_read_ms
+              << " parse_ms=" << parse_ms
+              << " native_messages=" << artifact.native_messages.size()
+              << " challenge_messages=" << challenge_count
+              << " encoded_message_body_bytes=" << encoded_body_bytes
+              << " challenge_prior_message_bytes_per_replay=" << replay_prior_message_bytes
+              << " public_write_including_wire_validation_ms=" << public_write_including_wire_validation_ms
+              << " public_write_readback_and_validation_ms=" << public_write_readback_and_validation_ms
+              << " byte_identical=true\n";
+    std::cout.flush();
+    return 0;
+}
+
 }
 
 int main(int argc, char** argv) {
     bool formal = false;
+    bool private_formal_fixture = false;
+    bool owner_check_only = false;
     bool proof_verify_only = false;
     bool full_head_fixture = false;
     bool division_boundary_only = false;
     std::string artifact_mutants_dir;
+    std::string artifact_io_profile_dir;
+    std::string legacy_replay_reference_dir;
     std::string standalone_dir;
     for (int index = 1; index < argc; ++index) {
         const std::string argument(argv[index]);
         if (argument == "--formal") {
             formal = true;
+        } else if (argument == "--formal-private") {
+            formal = true;
+            private_formal_fixture = true;
+        } else if (argument == "--formal-owner-check") {
+            formal = true;
+            private_formal_fixture = true;
+            owner_check_only = true;
         } else if (argument == "--formal-proof-verify") {
             formal = true;
             proof_verify_only = true;
@@ -692,6 +1047,10 @@ int main(int argc, char** argv) {
             division_boundary_only = true;
         } else if (argument == "--artifact-mutants" && index + 1 < argc) {
             artifact_mutants_dir = argv[++index];
+        } else if (argument == "--artifact-io-profile" && index + 1 < argc) {
+            artifact_io_profile_dir = argv[++index];
+        } else if (argument == "--native-replay-legacy-reference" && index + 1 < argc) {
+            legacy_replay_reference_dir = argv[++index];
         } else if (argument == "--standalone-dir" && index + 1 < argc) {
             standalone_dir = argv[++index];
         } else {
@@ -703,13 +1062,17 @@ int main(int argc, char** argv) {
         run_signed_round_div_gate_boundary_checks();
         return 0;
     }
+    if (!legacy_replay_reference_dir.empty()) return run_legacy_challenge_reference(legacy_replay_reference_dir);
+    if (!artifact_io_profile_dir.empty()) return run_existing_artifact_io_profile(artifact_io_profile_dir);
     if (!artifact_mutants_dir.empty()) return run_existing_artifact_mutants(artifact_mutants_dir);
     if (formal) {
         if (full_head_fixture && (proof_verify_only || standalone_dir.empty())) {
             std::cerr << "full-head formal fixture requires --standalone-dir and in-process mutant checks\n";
             return 2;
         }
-        return run_formal_fixture(standalone_dir, proof_verify_only, full_head_fixture);
+        return run_formal_fixture(standalone_dir, proof_verify_only,
+                                  full_head_fixture, private_formal_fixture,
+                                  owner_check_only);
     }
     const DivisionResult tie = signed_round_div(-5, 2);
     assert(tie.value == -3 && tie.witness.valid(RoundingMode::NEAREST_TIES_AWAY));

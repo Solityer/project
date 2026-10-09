@@ -1,4 +1,5 @@
 #include "gat_proof.hpp"
+#include "gat_formal_internal.hpp"
 
 #include "hyrax_util.hpp"
 #include "native_lasso.hpp"
@@ -1429,6 +1430,9 @@ struct ExplicitUnaryGate {
     u8 lu = 0;
     ll sc = 1;
 };
+static_assert(sizeof(ExplicitUnaryGate) >=
+                  2 * sizeof(std::size_t) + sizeof(u8) + sizeof(ll),
+              "GAT explicit unary temporary must retain all coordinate and coefficient fields");
 
 struct ExplicitBinaryGate {
     std::size_t g = 0;
@@ -1440,8 +1444,10 @@ struct ExplicitBinaryGate {
 
 class GkrPointShapeCollector {
   public:
-    GkrPointShapeCollector(layeredCircuit& circuit, const InputLayout& layout)
-        : circuit_(circuit) {
+    GkrPointShapeCollector(layeredCircuit& circuit, const InputLayout& layout, bool symbolic = false)
+        : circuit_(circuit), symbolic_(symbolic),
+          progress_started_(std::chrono::steady_clock::now()),
+          progress_last_report_(progress_started_) {
         layer_shapes_.reserve(256);
         append_layer_shape(circuit_.circuit.front(), 0, 0);
         std::uint64_t support_entries = 0;
@@ -1460,22 +1466,27 @@ class GkrPointShapeCollector {
             previous_end = static_cast<std::uint64_t>(segment.offset + segment.logical_length);
         }
         support_entries_ = support_entries;
-        const std::uint64_t words64 = support_entries / 64 + (support_entries % 64 != 0);
-        if (words64 > std::numeric_limits<std::size_t>::max() / (2 * sizeof(std::uint64_t)))
-            throw std::length_error("shape-only GKR source bitmap exceeds native size_t");
-        word_count_ = static_cast<std::size_t>(words64);
-        if (word_count_ > std::numeric_limits<std::size_t>::max() / 2)
-            throw std::length_error("shape-only GKR dual-lane bitmap exceeds native size_t");
-        seen_.resize(word_count_ * 2);
-        bitmap_bytes_ = static_cast<std::uint64_t>(seen_.size()) * sizeof(std::uint64_t);
+        input_source_entries_upper_bound_ = support_entries;
+        if (!symbolic_) {
+            const std::uint64_t words64 = support_entries / 64 + (support_entries % 64 != 0);
+            if (words64 > std::numeric_limits<std::size_t>::max() / (2 * sizeof(std::uint64_t)))
+                throw std::length_error("shape-only GKR source bitmap exceeds native size_t");
+            word_count_ = static_cast<std::size_t>(words64);
+            if (word_count_ > std::numeric_limits<std::size_t>::max() / 2)
+                throw std::length_error("shape-only GKR dual-lane bitmap exceeds native size_t");
+            seen_.resize(word_count_ * 2);
+            bitmap_bytes_ = static_cast<std::uint64_t>(seen_.size()) * sizeof(std::uint64_t);
+        }
         if (prefixes_.empty()) prefixes_.push_back(0);
-        touched_index_capacity_ = seen_.size();
-        if (touched_index_capacity_ > std::numeric_limits<std::size_t>::max() / sizeof(std::size_t))
-            throw std::length_error("shape-only GKR touched-index capacity exceeds native size_t");
-        touched_index_bytes_upper_bound_ =
-            static_cast<std::uint64_t>(touched_index_capacity_) * sizeof(std::size_t);
-        if (touched_index_capacity_ != 0)
-            touched_indices_ = touched_index_allocator_.allocate(touched_index_capacity_);
+        if (!symbolic_) {
+            touched_index_capacity_ = seen_.size();
+            if (touched_index_capacity_ > std::numeric_limits<std::size_t>::max() / sizeof(std::size_t))
+                throw std::length_error("shape-only GKR touched-index capacity exceeds native size_t");
+            touched_index_bytes_upper_bound_ =
+                static_cast<std::uint64_t>(touched_index_capacity_) * sizeof(std::size_t);
+            if (touched_index_capacity_ != 0)
+                touched_indices_ = touched_index_allocator_.allocate(touched_index_capacity_);
+        }
     }
 
     ~GkrPointShapeCollector() {
@@ -1490,19 +1501,44 @@ class GkrPointShapeCollector {
         return touched_index_bytes_upper_bound_;
     }
     const std::vector<GatGkrLayerShapeProfile>& layer_shapes() const noexcept { return layer_shapes_; }
+    bool symbolic() const noexcept { return symbolic_; }
+
+    void set_symbolic_input_source_entries_upper_bound(std::uint64_t bound) {
+        if (!symbolic_ || bound == 0 || bound > support_entries_)
+            throw std::invalid_argument("symbolic GKR active input-source bound is invalid");
+        input_source_entries_upper_bound_ = bound;
+    }
 
     void append_unary(std::size_t output, std::size_t input, std::uint8_t lu) {
         const std::size_t current_layer = circuit_.circuit.size();
+        if (symbolic_) {
+            observe_output(output);
+            has_pre_layer_u_ = has_pre_layer_u_ || lu != 0;
+            ++unary_count_;
+            (void)input;
+            return;
+        }
         const std::size_t source_layer = lu == 0 ? 0 : current_layer - 1;
         observe_output(output);
         observe_source(0, source_layer, input, current_layer);
         has_pre_layer_u_ = has_pre_layer_u_ || lu != 0;
         ++unary_count_;
+        note_shape_progress(1);
     }
 
     void append_binary(std::size_t output, std::size_t lhs, std::size_t rhs,
                        std::uint8_t l) {
         const std::size_t current_layer = circuit_.circuit.size();
+        if (symbolic_) {
+            observe_output(output);
+            has_pre_layer_u_ = has_pre_layer_u_ || l != 0;
+            has_pre_layer_v_ = has_pre_layer_v_ || (l & 1) != 0;
+            has_v_operand_ = true;
+            ++binary_count_;
+            (void)lhs;
+            (void)rhs;
+            return;
+        }
         const std::size_t source_u = l == 0 ? 0 : current_layer - 1;
         const std::size_t source_v = (l & 1) == 0 ? 0 : current_layer - 1;
         observe_output(output);
@@ -1510,6 +1546,7 @@ class GkrPointShapeCollector {
         observe_source(1, source_v, rhs, current_layer);
         has_v_operand_ = true;
         ++binary_count_;
+        note_shape_progress(1);
     }
 
     void append_range_decomposition(std::size_t first_output,
@@ -1522,6 +1559,19 @@ class GkrPointShapeCollector {
         if (width == 0 || first_output > std::numeric_limits<std::size_t>::max() - width ||
             range_begin > std::numeric_limits<std::size_t>::max() - width)
             throw std::overflow_error("shape-only GKR range decomposition overflows size_t");
+        if (symbolic_) {
+            observe_output(first_output + width);
+            (void)support_index(static_cast<std::uint64_t>(source));
+            validate_support_interval(static_cast<std::uint64_t>(range_begin),
+                                      static_cast<std::uint64_t>(width));
+            if (width > (std::numeric_limits<std::size_t>::max() - 1) / 2 ||
+                unary_count != 2 * width + 1 || binary_count != width)
+                throw std::logic_error("symbolic GKR range gate profile is inconsistent");
+            unary_count_ += unary_count;
+            binary_count_ += binary_count;
+            has_v_operand_ = true;
+            return;
+        }
         observe_output(first_output + width);
         observe_source(0, 0, source, current_layer);
         mark_support_interval(0, static_cast<std::uint64_t>(range_begin),
@@ -1536,10 +1586,22 @@ class GkrPointShapeCollector {
         unary_count_ += unary_count;
         binary_count_ += binary_count;
         has_v_operand_ = true;
+        if (binary_count > std::numeric_limits<std::size_t>::max() - unary_count)
+            throw std::overflow_error("GKR shape progress gate delta overflows size_t");
+        note_shape_progress(static_cast<std::uint64_t>(unary_count + binary_count));
     }
 
     void append_explicit_layer(layerType type, std::size_t output_size,
                                std::size_t unary_count, std::size_t binary_count) {
+        if (symbolic_) {
+            const std::uint64_t u_refs = static_cast<std::uint64_t>(unary_count) + binary_count;
+            const std::uint64_t v_refs = static_cast<std::uint64_t>(binary_count);
+            append_symbolic_explicit_layer(type, output_size, unary_count, binary_count,
+                                           std::min(input_source_entries_upper_bound_, u_refs),
+                                           std::min(input_source_entries_upper_bound_, v_refs),
+                                           has_pre_layer_u_, has_pre_layer_v_, has_v_operand_);
+            return;
+        }
         if (unary_count != unary_count_ || binary_count != binary_count_ ||
             (unary_count_ == 0 && binary_count_ == 0))
             throw std::logic_error("shape-only GKR gate visitor count mismatch");
@@ -1573,6 +1635,39 @@ class GkrPointShapeCollector {
         reset_layer_counters();
     }
 
+    void append_symbolic_explicit_layer(layerType type, std::size_t output_size,
+                                        std::size_t unary_count, std::size_t binary_count,
+                                        std::uint64_t input_u_upper, std::uint64_t input_v_upper,
+                                        bool has_pre_layer_u, bool has_pre_layer_v,
+                                        bool need_phase2) {
+        if (!symbolic_ || (unary_count == 0 && binary_count == 0) || output_size == 0 ||
+            circuit_.circuit.size() >= std::numeric_limits<u8>::max())
+            throw std::invalid_argument("symbolic GKR layer shape is empty or exceeds native layer limits");
+        layer current;
+        current.ty = type;
+        current.size = as_u64(output_size, "symbolic explicit layer size");
+        current.zero_start_id = current.size;
+        current.bit_length = bit_length(current.size);
+        current.size_u[0] = as_u64(std::min<std::uint64_t>(input_source_entries_upper_bound_, input_u_upper), "symbolic U input source bound");
+        current.size_v[0] = as_u64(std::min<std::uint64_t>(input_source_entries_upper_bound_, input_v_upper), "symbolic V input source bound");
+        current.bit_length_u[0] = current.size_u[0] == 0 ? -1 : ceilPow2BitLength(current.size_u[0]);
+        current.bit_length_v[0] = current.size_v[0] == 0 ? -1 : ceilPow2BitLength(current.size_v[0]);
+        if (has_pre_layer_u) {
+            current.size_u[1] = circuit_.circuit.back().size;
+            current.bit_length_u[1] = circuit_.circuit.back().bit_length;
+        }
+        if (has_pre_layer_v) {
+            current.size_v[1] = circuit_.circuit.back().size;
+            current.bit_length_v[1] = circuit_.circuit.back().bit_length;
+        }
+        current.need_phase2 = need_phase2;
+        current.updateSize();
+        append_layer_shape(current, unary_count, binary_count);
+        circuit_.circuit.push_back(std::move(current));
+        circuit_.size = static_cast<u8>(circuit_.circuit.size());
+        reset_layer_counters();
+    }
+
     void append_fconn(const layer& current) {
         if (unary_count_ != 0 || binary_count_ != 0)
             throw std::logic_error("shape-only GKR FCONN overlaps an unfinished gate layer");
@@ -1588,6 +1683,49 @@ class GkrPointShapeCollector {
     }
 
   private:
+    void note_shape_progress(std::uint64_t gate_delta) {
+        if (gate_delta > std::numeric_limits<std::uint64_t>::max() - progress_total_gates_)
+            throw std::overflow_error("GKR shape progress gate count overflows u64");
+        progress_total_gates_ += gate_delta;
+        constexpr std::uint64_t kGateProgressInterval = 1ULL << 20;
+        if (progress_total_gates_ < next_progress_gate_threshold_) return;
+        const std::uint64_t next_multiple = progress_total_gates_ / kGateProgressInterval + 1;
+        next_progress_gate_threshold_ = next_multiple >
+                std::numeric_limits<std::uint64_t>::max() / kGateProgressInterval
+            ? std::numeric_limits<std::uint64_t>::max()
+            : next_multiple * kGateProgressInterval;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - progress_last_report_ < std::chrono::seconds(15)) return;
+        progress_last_report_ = now;
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - progress_started_).count();
+        std::cerr << "NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=" << progress_total_gates_
+                  << " layer_unary=" << unary_count_
+                  << " layer_binary=" << binary_count_
+                  << " current_layer=" << circuit_.circuit.size()
+                  << " elapsed_ms=" << elapsed_ms << '\n' << std::flush;
+    }
+
+    void validate_support_interval(std::uint64_t begin, std::uint64_t count) const {
+        if (count > std::numeric_limits<std::uint64_t>::max() - begin)
+            throw std::overflow_error("symbolic GKR source interval overflows u64");
+        std::uint64_t coordinate = begin;
+        const std::uint64_t end = begin + count;
+        while (coordinate < end) {
+            const auto after = std::upper_bound(
+                ranges_.begin(), ranges_.end(), coordinate,
+                [](std::uint64_t value, const auto& range) { return value < range.first; });
+            if (after == ranges_.begin())
+                throw std::out_of_range("symbolic GKR source interval is outside logical support");
+            const auto& range = *(after - 1);
+            if (coordinate < range.first || coordinate - range.first >= range.second)
+                throw std::out_of_range("symbolic GKR source interval crosses a logical-support gap");
+            const std::uint64_t range_end = static_cast<std::uint64_t>(range.first) +
+                static_cast<std::uint64_t>(range.second);
+            coordinate = std::min<std::uint64_t>(end, range_end);
+        }
+    }
+
     void append_layer_shape(const layer& current, std::size_t unary, std::size_t binary) {
         GatGkrLayerShapeProfile shape;
         shape.layer_type = static_cast<std::uint32_t>(current.ty);
@@ -1737,6 +1875,7 @@ class GkrPointShapeCollector {
     zkgpt::NativeVector<std::uint64_t> seen_;
     std::vector<GatGkrLayerShapeProfile> layer_shapes_;
     std::uint64_t support_entries_ = 0;
+    std::uint64_t input_source_entries_upper_bound_ = 0;
     std::uint64_t bitmap_bytes_ = 0;
     std::size_t word_count_ = 0;
     std::size_t unary_count_ = 0;
@@ -1750,6 +1889,11 @@ class GkrPointShapeCollector {
     bool has_pre_layer_u_ = false;
     bool has_pre_layer_v_ = false;
     bool has_v_operand_ = false;
+    bool symbolic_ = false;
+    std::uint64_t progress_total_gates_ = 0;
+    std::uint64_t next_progress_gate_threshold_ = 1ULL << 20;
+    std::chrono::steady_clock::time_point progress_started_;
+    std::chrono::steady_clock::time_point progress_last_report_;
 };
 
 thread_local GkrPointShapeCollector* active_gkr_point_shape_collector = nullptr;
@@ -1770,7 +1914,11 @@ class GkrPointShapeCollectorScope {
 class ExplicitUnaryGateBuffer {
   public:
     void reserve(std::size_t count) {
-        if (active_gkr_point_shape_collector == nullptr) gates_.reserve(count);
+        if (active_gkr_point_shape_collector == nullptr) {
+            gates_.reserve(count);
+            if (count != 0U && gates_.capacity() != count)
+                throw std::length_error("explicit unary gate buffer capacity differs from its exact source bound");
+        }
     }
     void push_back(const ExplicitUnaryGate& gate) {
         ++count_;
@@ -1939,6 +2087,13 @@ void append_projection_layer(GatCircuitPlan& plan, const MatMulDescriptor& descr
     current.native_output_offset = descriptor.output_offset;
     if (active_gkr_point_shape_collector != nullptr) {
         active_gkr_point_shape_collector->append_fconn(current);
+        if (active_gkr_point_shape_collector->symbolic()) {
+            active_gkr_point_shape_collector->append_symbolic_explicit_layer(
+                layerType::ADD_BIAS, descriptor.output_coordinates,
+                checked_mul(descriptor.output_coordinates, 2, "symbolic FCONN binding gate count"),
+                0, descriptor.output_coordinates, 0, true, false, false);
+            return;
+        }
         ExplicitUnaryGateBuffer unary;
         ExplicitBinaryGateBuffer binary;
         unary.reserve(checked_mul(descriptor.output_coordinates, 2,
@@ -2072,6 +2227,16 @@ struct RelationLayerBuilder {
         emitted_targets += target_count;
         emitted_unary += unary_count;
         emitted_binary += binary_count;
+    }
+
+    void set_symbolic_counts() {
+        if (!shape_only || active_gkr_point_shape_collector == nullptr ||
+            !active_gkr_point_shape_collector->symbolic())
+            throw std::logic_error("symbolic relation counts require symbolic shape-only planning");
+        next_output = output_capacity;
+        emitted_targets = target_capacity;
+        emitted_unary = unary_capacity;
+        emitted_binary = binary_capacity;
     }
 
     std::size_t add_unary(std::size_t input, ll coefficient = 1) { return add_residual({{input, coefficient}}, {}); }
@@ -3051,11 +3216,13 @@ SparseGkrProofWire make_sparse_proof_wire(const GatCircuitPlan& plan, const Spar
 }
 
 GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const QuantConfig& quant, const ForwardResult* forward,
-                               bool shape_only = false, const GatCapacityReport* capacity_override = nullptr) {
+                               bool shape_only = false, const GatCapacityReport* capacity_override = nullptr,
+                               bool forward_prevalidated = false, bool symbolic_shape_only = false) {
     graph.validate();
     model.validate_schema();
     quant.validate();
-    if (forward != nullptr && !validate_relation(graph, forward->trace.input, model, quant, *forward))
+    if (forward != nullptr && !forward_prevalidated &&
+        !validate_relation(graph, forward->trace.input, model, quant, *forward))
         throw std::invalid_argument("cannot build proof plan from an invalid GAT trace");
 
     const GatCapacityReport computed_capacity = capacity_override == nullptr ? inspect_gat_capacity(graph, model, quant) : GatCapacityReport{};
@@ -3114,7 +3281,7 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
     std::unique_ptr<GkrPointShapeCollectorScope> shape_collector_scope;
     if (shape_only) {
         shape_collector = std::make_unique<GkrPointShapeCollector>(plan.circuit,
-                                                                  plan.input_layout);
+                                                                  plan.input_layout, symbolic_shape_only);
         shape_collector_scope = std::make_unique<GkrPointShapeCollectorScope>(
             shape_collector.get());
     }
@@ -3272,18 +3439,24 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
         }
         const std::size_t concat_coordinates =
             checked_mul(graph.num_nodes, checked_mul(output_dim, model.hidden_heads(), "concat width"), "concat coordinates");
-        ExplicitUnaryGateBuffer concat_unary;
-        concat_unary.reserve(concat_coordinates);
-        for (std::size_t node = 0; node < graph.num_nodes; ++node) {
-            for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
-                const AttentionCoordinates& a = coordinates.hidden[layer_id][head];
-                for (std::size_t col = 0; col < output_dim; ++col) {
-                    const std::size_t output_index = node * output_dim * model.hidden_heads() + head * output_dim + col;
-                    concat_unary.push_back({output_index, a.activated + node * output_dim + col, 0, 1});
+        if (active_gkr_point_shape_collector != nullptr && active_gkr_point_shape_collector->symbolic()) {
+            active_gkr_point_shape_collector->append_symbolic_explicit_layer(
+                layerType::ADD_BIAS, std::max<std::size_t>(1, concat_coordinates),
+                concat_coordinates, 0, concat_coordinates, 0, false, false, false);
+        } else {
+            ExplicitUnaryGateBuffer concat_unary;
+            concat_unary.reserve(concat_coordinates);
+            for (std::size_t node = 0; node < graph.num_nodes; ++node) {
+                for (std::size_t head = 0; head < model.hidden_heads(); ++head) {
+                    const AttentionCoordinates& a = coordinates.hidden[layer_id][head];
+                    for (std::size_t col = 0; col < output_dim; ++col) {
+                        const std::size_t output_index = node * output_dim * model.hidden_heads() + head * output_dim + col;
+                        concat_unary.push_back({output_index, a.activated + node * output_dim + col, 0, 1});
+                    }
                 }
             }
+            append_explicit_layer(plan, layerType::ADD_BIAS, std::max<std::size_t>(1, concat_coordinates), concat_unary, {}, false);
         }
-        append_explicit_layer(plan, layerType::ADD_BIAS, std::max<std::size_t>(1, concat_coordinates), concat_unary, {}, false);
         append_checkpoint(plan, "concat/hidden/layer" + std::to_string(layer_id), "concat", "Aux", concat_coordinates, coordinates.hidden_concat[layer_id],
                           "Aux[row_major_exact[node,head,col]]");
     }
@@ -3416,10 +3589,16 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
     append_checkpoint(plan, "output/head_sum", "output.public_logits", "Aux", output_coordinates, coordinates.head_sum, "Aux[row_major_exact[node,class]]");
     append_checkpoint(plan, "output/final_average", "rounding", "Aux", checked_mul(output_coordinates, 9, "average division coordinates"),
                       coordinates.final_average_divisions, "Aux[row_major_exact[node,class,witness_component]]");
-    ExplicitUnaryGateBuffer final_unary;
-    final_unary.reserve(output_coordinates);
-    for (std::size_t index = 0; index < output_coordinates; ++index) final_unary.push_back({index, coordinates.final_logits + index, 0, 1});
-    append_explicit_layer(plan, layerType::ADD_BIAS, std::max<std::size_t>(1, output_coordinates), final_unary, {}, false);
+    if (active_gkr_point_shape_collector != nullptr && active_gkr_point_shape_collector->symbolic()) {
+        active_gkr_point_shape_collector->append_symbolic_explicit_layer(
+            layerType::ADD_BIAS, std::max<std::size_t>(1, output_coordinates),
+            output_coordinates, 0, output_coordinates, 0, false, false, false);
+    } else {
+        ExplicitUnaryGateBuffer final_unary;
+        final_unary.reserve(output_coordinates);
+        for (std::size_t index = 0; index < output_coordinates; ++index) final_unary.push_back({index, coordinates.final_logits + index, 0, 1});
+        append_explicit_layer(plan, layerType::ADD_BIAS, std::max<std::size_t>(1, output_coordinates), final_unary, {}, false);
+    }
     append_checkpoint(plan, "output/public_logits", "output.public_logits", "Aux", output_coordinates, coordinates.final_logits,
                       "Aux[row_major_exact[node,class]]");
 
@@ -3447,6 +3626,30 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
     add_lasso("function/exp", "T_exp", query_counts.exp, query_coordinates.exp, canonical_tables.exp.size(), canonical_tables.exp.front().x);
     add_lasso("function/elu", "T_ELU", query_counts.elu, query_coordinates.elu, canonical_tables.elu.size(), canonical_tables.elu.front().x);
     add_lasso("range/all", "T_range", query_counts.range, query_coordinates.range, 2, 0);
+    if (symbolic_shape_only) {
+        std::uint64_t source_entries = 0;
+        source_entries = checked_add(source_entries,
+            plan.input_layout.segments.at(0).logical_length,
+            "symbolic active X_pub source span");
+        source_entries = checked_add(source_entries,
+            plan.input_layout.segments.at(1).logical_length,
+            "symbolic active W source span");
+        source_entries = checked_add(source_entries,
+            plan.input_layout.segments.at(2).logical_length,
+            "symbolic active Aux source span");
+        for (const LassoFamilyDescriptor& family : plan.lasso)
+            source_entries = checked_add(source_entries, family.padded_queries,
+                "symbolic active padded L_qry source blocks");
+        std::uint64_t all_logical_source_entries = 0;
+        for (const InputSegment& segment : plan.input_layout.segments)
+            all_logical_source_entries = checked_add(all_logical_source_entries,
+                segment.logical_length, "symbolic logical source support");
+        if (source_entries == 0 || source_entries > all_logical_source_entries ||
+            shape_collector == nullptr)
+            throw std::logic_error("symbolic active layer-0 source bound exceeds canonical logical support");
+        shape_collector->set_symbolic_input_source_entries_upper_bound(source_entries);
+        plan.gkr_layer0_source_domain_upper_bound = source_entries;
+    }
     if (trace != nullptr && trace->tables.digest != canonical_tables.digest)
         throw std::invalid_argument("forward trace static table digest does not match canonical plan tables");
     if (w_cursor != checked_add(plan.input_layout.segments.at(1).offset, plan.input_layout.segments.at(1).logical_length, "model weight end")) {
@@ -3470,9 +3673,11 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
                              static_cast<std::size_t>(capacity.relation_gate_unary_entries),
                              static_cast<std::size_t>(capacity.relation_gate_binary_entries),
                              relation_coefficient_candidate_count(quant, canonical_lookup_bounds));
+    const std::size_t public_output_coordinates = checked_mul(graph.num_nodes, classes, "public output coordinates");
+    if (symbolic_shape_only) relation_builder.set_symbolic_counts();
+    else {
     std::size_t bound_profile_index = 0;
     std::size_t bound_lrelu_cursor = query_coordinates.lrelu, bound_exp_cursor = query_coordinates.exp, bound_elu_cursor = query_coordinates.elu, bound_range_cursor = query_coordinates.range;
-    const std::size_t public_output_coordinates = checked_mul(graph.num_nodes, classes, "public output coordinates");
     for (std::size_t index = 0; index < public_output_coordinates; ++index) relation_builder.add_public_output(coordinates.final_logits + index);
 
     for (std::size_t index = 0; index < plan.input_layout.segments.front().logical_length; ++index) relation_builder.add_residual({{plan.input_layout.segments.at(2).offset + index, 1}, {index, -1}}, {});
@@ -3544,6 +3749,7 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
         Int pad = 0; if (!padding.isZero()) pad = std::stoll(padding.getStr());
         for (std::size_t index = family.real_queries; index < family.padded_queries; ++index) relation_builder.add_residual({{family.query_offset + index, 1}}, {}, pad);
     }
+    }
     if (relation_builder.next_output != capacity.relation_gate_output_entries ||
         relation_builder.emitted_targets != capacity.relation_residual_entries ||
         relation_builder.emitted_unary != capacity.relation_gate_unary_entries ||
@@ -3569,22 +3775,32 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
             relation_builder.emitted_unary != capacity.relation_gate_unary_entries ||
             relation_builder.emitted_binary != capacity.relation_gate_binary_entries)
             throw std::logic_error("shape-only GAT relation emission disagrees with its exact capacity profile");
-        active_gkr_point_shape_collector->append_explicit_layer(
-            layerType::RELU, relation_builder.next_output,
-            relation_builder.emitted_unary, relation_builder.emitted_binary);
+        if (symbolic_shape_only) {
+            const std::uint64_t unary_refs = static_cast<std::uint64_t>(relation_builder.emitted_unary) + relation_builder.emitted_binary;
+            active_gkr_point_shape_collector->append_symbolic_explicit_layer(
+                layerType::RELU, relation_builder.next_output,
+                relation_builder.emitted_unary, relation_builder.emitted_binary,
+                unary_refs, relation_builder.emitted_binary, false, false,
+                relation_builder.emitted_binary != 0);
+        } else {
+            active_gkr_point_shape_collector->append_explicit_layer(
+                layerType::RELU, relation_builder.next_output,
+                relation_builder.emitted_unary, relation_builder.emitted_binary);
+        }
         std::vector<NativeGkrMatmulShape> shapes;
         shapes.reserve(plan.matmuls.size());
         for (const MatMulDescriptor& descriptor : plan.matmuls)
             shapes.push_back(native_gkr_shape_from_descriptor(descriptor,
                                                                plan.input_layout));
         std::string shape_reason;
-        if (!validate_native_gkr_point_domains(
-                plan.circuit, shapes, plan.circuit.circuit.front().size,
-                &shape_reason))
-            throw std::invalid_argument("shape-only GKR point-domain admission failed: " +
-                                        shape_reason);
-        plan.gkr_point_shape_digest = gkr_point_shape_digest(
-            plan.circuit, plan.matmuls, plan.input_layout);
+        plan.gkr_point_domain_upper_bound_valid = validate_native_gkr_point_domains(
+            plan.circuit, shapes, plan.circuit.circuit.front().size, &shape_reason);
+        plan.gkr_point_domain_upper_bound_reason = shape_reason;
+        if (!plan.gkr_point_domain_upper_bound_valid && !symbolic_shape_only)
+            throw std::invalid_argument("shape-only GKR point-domain admission failed: " + shape_reason);
+        if (!symbolic_shape_only)
+            plan.gkr_point_shape_digest = gkr_point_shape_digest(
+                plan.circuit, plan.matmuls, plan.input_layout);
         plan.gkr_layer_shape_profile = shape_collector->layer_shapes();
         plan.gkr_point_shape_bitmap_bytes = shape_collector->bitmap_bytes();
         plan.gkr_point_shape_touched_index_bytes_upper_bound =
@@ -7225,7 +7441,8 @@ InputLayout build_gat_input_layout(const Graph& graph, const Model& model, const
 }
 
 GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, const QuantConfig& quant,
-                                      std::uint64_t feature_source_file_bytes) {
+                                      std::uint64_t feature_source_file_bytes,
+                                      bool symbolic_profile_only) {
     GatCapacityReport report;
     report.num_nodes = graph.num_nodes;
     report.num_edges = graph.edges();
@@ -7358,7 +7575,15 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             return bits;
         };
         for (std::size_t family = 0; family < query_counts_ordered.size(); ++family) {
-            const std::uint64_t padded_queries = pow2(u64_from_size(query_counts_ordered[family], "Lasso query count"));
+            const std::uint64_t real_queries = u64_from_size(query_counts_ordered[family], "Lasso query count");
+            const std::uint64_t padded_queries = pow2(real_queries);
+            report.lasso_real_query_entries = uadd(report.lasso_real_query_entries,
+                real_queries, "total real Lasso query entries");
+            report.lasso_padded_query_entries = uadd(report.lasso_padded_query_entries,
+                padded_queries, "total padded Lasso query entries");
+            report.lasso_family_zero_pad_entries = uadd(
+                report.lasso_family_zero_pad_entries, padded_queries - real_queries,
+                "total Lasso family zero padding");
             const std::uint64_t table_domain = pow2(u64_from_size(table_sizes[family], "Lasso table size"));
             const NativeLassoCapacityProfile workspace = native_lasso_capacity_profile(padded_queries, table_domain);
             const std::uint64_t logical_entries = workspace.full_domain;
@@ -7405,6 +7630,14 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             entry.family_message_count_upper_bound = family_messages;
             entry.family_wire_bytes_upper_bound = family_wire;
             report.lasso_workspace_profile.push_back(std::move(entry));
+            report.lasso_total_rows = uadd(report.lasso_total_rows, workspace.rows,
+                "total Lasso row commitments");
+            report.lasso_total_row_commitment_chunks = uadd(report.lasso_total_row_commitment_chunks,
+                row_chunks, "total Lasso row commitment chunks");
+            report.hyrax_matrix_masked_openings = uadd(report.hyrax_matrix_masked_openings,
+                workspace.hyrax_matrix_masked_openings, "total Hyrax matrix openings");
+            report.hyrax_l_qry_tensor_openings = uadd(report.hyrax_l_qry_tensor_openings,
+                workspace.hyrax_l_qry_tensor_openings, "total Hyrax L_qry tensor openings");
             report.lasso_family_domains.push_back({{workspace.rows, workspace.columns}});
             report.lasso_logical_domain_entries = uadd(report.lasso_logical_domain_entries, logical_entries, "Lasso logical domain entries");
             family_persistent_bytes = uadd(family_persistent_bytes, workspace.row_ledger_retained_bytes, "Lasso retained workspace");
@@ -7430,6 +7663,14 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             maximum_family_g1_buffer_bytes = std::max({maximum_family_g1_buffer_bytes, workspace.row_commitment_bytes,
                 workspace.column_generator_bytes, workspace.masked_opening_generator_bytes});
         }
+        const std::uint64_t lqry_logical_length = u64_from_size(
+            report.input_layout.segments.at(3).logical_length, "L_qry tensor length");
+        if (report.lasso_padded_query_entries > lqry_logical_length)
+            throw std::logic_error("padded Lasso query blocks exceed canonical L_qry support");
+        report.gkr_layer0_lqry_padded_block_entries_upper_bound =
+            report.lasso_padded_query_entries;
+        report.gkr_layer0_lqry_zero_gap_entries =
+            lqry_logical_length - report.lasso_padded_query_entries;
         report.lasso_private_selected_row_workspace_peak_bytes = uadd(family_persistent_bytes,
             std::max(family_row_commitment_bytes, largest_family_transient_bytes), "Lasso private workspace peak");
         report.lasso_heap_workspace_peak_bytes = uadd(family_persistent_bytes,
@@ -7625,8 +7866,8 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         report.relation_public_output_bytes_upper_bound = 0;
         report.relation_residual_entries = relation_residual_entries;
         report.relation_residual_bytes_upper_bound = 0;
-        const GatCircuitPlan exact_shape_plan = build_plan_impl(graph, model, quant, nullptr, true, &report);
-        const std::vector<GatGkrLayerShapeProfile>& layer_shapes = exact_shape_plan.gkr_layer_shape_profile;
+        GatCircuitPlan exact_shape_plan = build_plan_impl(graph, model, quant, nullptr, true, &report, false, symbolic_profile_only);
+        std::vector<GatGkrLayerShapeProfile>& layer_shapes = exact_shape_plan.gkr_layer_shape_profile;
         if (layer_shapes.size() != exact_shape_plan.circuit.circuit.size() || layer_shapes.size() < 2 ||
             layer_shapes.back().size != relation_counts.outputs ||
             layer_shapes.back().unary_gates != relation_counts.unary ||
@@ -7640,7 +7881,9 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         std::uint64_t fconn_layers = 0;
         std::uint64_t fconn_output_bit_sum = 0, nonfconn_output_bit_sum = 0, gkr_sumcheck_rounds = 0;
         for (std::size_t index = 1; index < layer_shapes.size(); ++index) {
-            const GatGkrLayerShapeProfile& shape = layer_shapes[index];
+            GatGkrLayerShapeProfile& shape = layer_shapes[index];
+            shape.source_domains_exact = !symbolic_profile_only ||
+                shape.layer_type == static_cast<std::uint32_t>(layerType::FCONN);
             actual_unary_gates = uadd(actual_unary_gates, shape.unary_gates, "actual GKR unary gates");
             actual_binary_gates = uadd(actual_binary_gates, shape.binary_gates, "actual GKR binary gates");
             const std::uint64_t layer_source_refs = uadd(shape.unary_gates, umul(2, shape.binary_gates, "actual layer operand references"), "actual layer operand references");
@@ -7661,6 +7904,13 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                 const std::uint64_t inner_bits = bits_for(shape.native_inner);
                 fconn_output_bit_sum = uadd(fconn_output_bit_sum, static_cast<std::uint64_t>(shape.bit_length), "actual FCONN output bits");
                 gkr_sumcheck_rounds = uadd(gkr_sumcheck_rounds, inner_bits, "actual GKR Sumcheck rounds");
+                report.fconn_scalar_multiply_terms = uadd(report.fconn_scalar_multiply_terms,
+                    umul(umul(shape.native_rows, shape.native_inner, "FCONN row-inner terms"),
+                         shape.native_cols, "FCONN scalar multiply terms"),
+                    "FCONN scalar multiply terms");
+                report.fconn_output_coordinates = uadd(report.fconn_output_coordinates,
+                    umul(shape.native_rows, shape.native_cols, "FCONN output coordinates"),
+                    "FCONN output coordinates");
             } else {
                 if (shape.max_bl_u < 0 || (shape.need_phase2 && shape.max_bl_v < 0))
                     throw std::logic_error("actual GKR layer visitor omitted a required sumcheck domain");
@@ -7668,6 +7918,193 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                 const std::uint64_t v_rounds = shape.need_phase2 ? static_cast<std::uint64_t>(shape.max_bl_v) : 0;
                 nonfconn_output_bit_sum = uadd(nonfconn_output_bit_sum, static_cast<std::uint64_t>(shape.bit_length), "actual GKR output bits");
                 gkr_sumcheck_rounds = uadd(gkr_sumcheck_rounds, uadd(u_rounds, v_rounds, "actual GKR layer rounds"), "actual GKR Sumcheck rounds");
+
+                const auto fold_work = [&uadd, &umul](std::uint64_t extent, std::uint64_t rounds,
+                                               std::uint64_t& first_pairs,
+                                               std::uint64_t& followup_pairs,
+                                               std::uint64_t& total_pairs,
+                                               std::uint64_t& extent_visits,
+                                               std::uint64_t& followup_extent_visits,
+                                               std::uint64_t& first_adds,
+                                               std::uint64_t& first_subs,
+                                               std::uint64_t& first_muls,
+                                               std::uint64_t& followup_adds,
+                                               std::uint64_t& followup_subs,
+                                               std::uint64_t& followup_muls) {
+                    for (std::uint64_t round = 0; round < rounds; ++round) {
+                        const std::uint64_t pairs = extent / 2U + extent % 2U;
+                        const std::uint64_t workers = pairs == 0 ? 0 : pairs < (1U << 15U)
+                            ? 1U : std::min<std::uint64_t>(32U, std::min<std::uint64_t>(pairs, 1U << 16U));
+                        const std::uint64_t chunks = pairs / (1U << 16U) +
+                            static_cast<std::uint64_t>(pairs % (1U << 16U) != 0);
+                        const std::uint64_t accumulator_adds = uadd(
+                            umul(3U, umul(workers, chunks, "GKR fold partial chunk additions"),
+                                 "GKR fold partial chunk additions"),
+                            umul(3U, workers, "GKR fold partial reduction additions"),
+                            "GKR fold accumulator additions");
+                        if (round == 0)
+                            first_pairs = uadd(first_pairs, pairs, "first-round packed GKR fold pairs");
+                        else {
+                            followup_pairs = uadd(followup_pairs, pairs, "follow-up packed GKR fold pairs");
+                            followup_extent_visits = uadd(followup_extent_visits, extent,
+                                "follow-up packed GKR active extent visits");
+                        }
+                        total_pairs = uadd(total_pairs, pairs, "packed GKR fold pairs");
+                        extent_visits = uadd(extent_visits, extent, "packed GKR active extent visits");
+                        const std::uint64_t pair_subtractions = umul(2U, pairs,
+                            "GKR fold linear coefficient subtractions");
+                        const std::uint64_t pair_multiplications = umul(3U, pairs,
+                            "GKR fold quadratic coefficient multiplications");
+                        const std::uint64_t pair_additions = uadd(umul(4U, pairs,
+                            "GKR fold polynomial additions"), accumulator_adds,
+                            "GKR fold polynomial and partial additions");
+                        if (round == 0) {
+                            first_subs = uadd(first_subs, pair_subtractions,
+                                "first-round GKR fold field subtractions");
+                            first_muls = uadd(first_muls, pair_multiplications,
+                                "first-round GKR fold field multiplications");
+                            first_adds = uadd(first_adds, pair_additions,
+                                "first-round GKR fold field additions");
+                        } else {
+                            const std::uint64_t affine_coordinate_ops = umul(2U, extent,
+                                "follow-up GKR affine coordinate operations");
+                            followup_subs = uadd(followup_subs, pair_subtractions,
+                                "follow-up GKR fold field subtractions");
+                            followup_muls = uadd(followup_muls,
+                                uadd(pair_multiplications, affine_coordinate_ops,
+                                     "follow-up GKR fold field multiplications"),
+                                "follow-up GKR fold field multiplications");
+                            followup_adds = uadd(followup_adds,
+                                uadd(pair_additions, affine_coordinate_ops,
+                                     "follow-up GKR fold field additions"),
+                                "follow-up GKR fold field additions");
+                        }
+                        extent = pairs;
+                    }
+                };
+                shape.phase1_rounds = u_rounds;
+                fold_work(shape.size_u0, u_rounds, shape.phase1_first_round_pair_visits,
+                          shape.phase1_followup_pair_visits, shape.phase1_total_pair_visits,
+                          shape.phase1_extent_visits, shape.phase1_followup_extent_visits,
+                          shape.phase1_first_round_field_adds_upper_bound,
+                          shape.phase1_first_round_field_subs_upper_bound,
+                          shape.phase1_first_round_field_muls_upper_bound,
+                          shape.phase1_followup_field_adds_upper_bound,
+                          shape.phase1_followup_field_subs_upper_bound,
+                          shape.phase1_followup_field_muls_upper_bound);
+                fold_work(shape.size_u1, u_rounds, shape.phase1_first_round_pair_visits,
+                          shape.phase1_followup_pair_visits, shape.phase1_total_pair_visits,
+                          shape.phase1_extent_visits, shape.phase1_followup_extent_visits,
+                          shape.phase1_first_round_field_adds_upper_bound,
+                          shape.phase1_first_round_field_subs_upper_bound,
+                          shape.phase1_first_round_field_muls_upper_bound,
+                          shape.phase1_followup_field_adds_upper_bound,
+                          shape.phase1_followup_field_subs_upper_bound,
+                          shape.phase1_followup_field_muls_upper_bound);
+                const auto packed_arena_init_fields = [&uadd](std::uint64_t extent, const char* what) {
+                    return std::max<std::uint64_t>(2U, uadd(extent, extent & 1U, what));
+                };
+                shape.phase1_init_field_writes = uadd(
+                    packed_arena_init_fields(shape.size_u0, "GKR phase-one lane 0 initialization capacity"),
+                    packed_arena_init_fields(shape.size_u1, "GKR phase-one lane 1 initialization capacity"),
+                    "GKR phase-one packed scalar initializations");
+                shape.phase2_rounds = v_rounds;
+                fold_work(shape.size_v0, v_rounds, shape.phase2_first_round_pair_visits,
+                          shape.phase2_followup_pair_visits, shape.phase2_total_pair_visits,
+                          shape.phase2_extent_visits, shape.phase2_followup_extent_visits,
+                          shape.phase2_first_round_field_adds_upper_bound,
+                          shape.phase2_first_round_field_subs_upper_bound,
+                          shape.phase2_first_round_field_muls_upper_bound,
+                          shape.phase2_followup_field_adds_upper_bound,
+                          shape.phase2_followup_field_subs_upper_bound,
+                          shape.phase2_followup_field_muls_upper_bound);
+                fold_work(shape.size_v1, v_rounds, shape.phase2_first_round_pair_visits,
+                          shape.phase2_followup_pair_visits, shape.phase2_total_pair_visits,
+                          shape.phase2_extent_visits, shape.phase2_followup_extent_visits,
+                          shape.phase2_first_round_field_adds_upper_bound,
+                          shape.phase2_first_round_field_subs_upper_bound,
+                          shape.phase2_first_round_field_muls_upper_bound,
+                          shape.phase2_followup_field_adds_upper_bound,
+                          shape.phase2_followup_field_subs_upper_bound,
+                          shape.phase2_followup_field_muls_upper_bound);
+                shape.phase2_init_field_writes = uadd(
+                    packed_arena_init_fields(shape.size_v0, "GKR phase-two lane 0 initialization capacity"),
+                    packed_arena_init_fields(shape.size_v1, "GKR phase-two lane 1 initialization capacity"),
+                    "GKR phase-two packed scalar initializations");
+                report.gkr_phase1_rounds_upper_bound = uadd(report.gkr_phase1_rounds_upper_bound,
+                    u_rounds, "GKR phase-one rounds");
+                report.gkr_phase2_rounds_upper_bound = uadd(report.gkr_phase2_rounds_upper_bound,
+                    v_rounds, "GKR phase-two rounds");
+                report.gkr_phase1_first_round_pair_visits_upper_bound = uadd(
+                    report.gkr_phase1_first_round_pair_visits_upper_bound,
+                    shape.phase1_first_round_pair_visits, "GKR phase-one first-round pairs");
+                report.gkr_phase1_followup_pair_visits_upper_bound = uadd(
+                    report.gkr_phase1_followup_pair_visits_upper_bound,
+                    shape.phase1_followup_pair_visits, "GKR phase-one follow-up pairs");
+                report.gkr_phase1_total_pair_visits_upper_bound = uadd(
+                    report.gkr_phase1_total_pair_visits_upper_bound,
+                    shape.phase1_total_pair_visits, "GKR phase-one total fold pairs");
+                report.gkr_phase1_extent_visits_upper_bound = uadd(
+                    report.gkr_phase1_extent_visits_upper_bound,
+                    shape.phase1_extent_visits, "GKR phase-one active extent visits");
+                report.gkr_phase1_followup_extent_visits_upper_bound = uadd(
+                    report.gkr_phase1_followup_extent_visits_upper_bound,
+                    shape.phase1_followup_extent_visits, "GKR phase-one follow-up extent visits");
+                report.gkr_phase1_first_round_field_adds_upper_bound = uadd(
+                    report.gkr_phase1_first_round_field_adds_upper_bound,
+                    shape.phase1_first_round_field_adds_upper_bound, "GKR phase-one first-round field additions");
+                report.gkr_phase1_first_round_field_subs_upper_bound = uadd(
+                    report.gkr_phase1_first_round_field_subs_upper_bound,
+                    shape.phase1_first_round_field_subs_upper_bound, "GKR phase-one first-round field subtractions");
+                report.gkr_phase1_first_round_field_muls_upper_bound = uadd(
+                    report.gkr_phase1_first_round_field_muls_upper_bound,
+                    shape.phase1_first_round_field_muls_upper_bound, "GKR phase-one first-round field multiplications");
+                report.gkr_phase1_followup_field_adds_upper_bound = uadd(
+                    report.gkr_phase1_followup_field_adds_upper_bound,
+                    shape.phase1_followup_field_adds_upper_bound, "GKR phase-one follow-up field additions");
+                report.gkr_phase1_followup_field_subs_upper_bound = uadd(
+                    report.gkr_phase1_followup_field_subs_upper_bound,
+                    shape.phase1_followup_field_subs_upper_bound, "GKR phase-one follow-up field subtractions");
+                report.gkr_phase1_followup_field_muls_upper_bound = uadd(
+                    report.gkr_phase1_followup_field_muls_upper_bound,
+                    shape.phase1_followup_field_muls_upper_bound, "GKR phase-one follow-up field multiplications");
+                report.gkr_phase1_init_field_writes = uadd(report.gkr_phase1_init_field_writes,
+                    shape.phase1_init_field_writes, "GKR phase-one active scalar initializations");
+                report.gkr_phase2_first_round_pair_visits_upper_bound = uadd(
+                    report.gkr_phase2_first_round_pair_visits_upper_bound,
+                    shape.phase2_first_round_pair_visits, "GKR phase-two first-round pairs");
+                report.gkr_phase2_followup_pair_visits_upper_bound = uadd(
+                    report.gkr_phase2_followup_pair_visits_upper_bound,
+                    shape.phase2_followup_pair_visits, "GKR phase-two follow-up pairs");
+                report.gkr_phase2_total_pair_visits_upper_bound = uadd(
+                    report.gkr_phase2_total_pair_visits_upper_bound,
+                    shape.phase2_total_pair_visits, "GKR phase-two total fold pairs");
+                report.gkr_phase2_extent_visits_upper_bound = uadd(
+                    report.gkr_phase2_extent_visits_upper_bound,
+                    shape.phase2_extent_visits, "GKR phase-two active extent visits");
+                report.gkr_phase2_followup_extent_visits_upper_bound = uadd(
+                    report.gkr_phase2_followup_extent_visits_upper_bound,
+                    shape.phase2_followup_extent_visits, "GKR phase-two follow-up extent visits");
+                report.gkr_phase2_first_round_field_adds_upper_bound = uadd(
+                    report.gkr_phase2_first_round_field_adds_upper_bound,
+                    shape.phase2_first_round_field_adds_upper_bound, "GKR phase-two first-round field additions");
+                report.gkr_phase2_first_round_field_subs_upper_bound = uadd(
+                    report.gkr_phase2_first_round_field_subs_upper_bound,
+                    shape.phase2_first_round_field_subs_upper_bound, "GKR phase-two first-round field subtractions");
+                report.gkr_phase2_first_round_field_muls_upper_bound = uadd(
+                    report.gkr_phase2_first_round_field_muls_upper_bound,
+                    shape.phase2_first_round_field_muls_upper_bound, "GKR phase-two first-round field multiplications");
+                report.gkr_phase2_followup_field_adds_upper_bound = uadd(
+                    report.gkr_phase2_followup_field_adds_upper_bound,
+                    shape.phase2_followup_field_adds_upper_bound, "GKR phase-two follow-up field additions");
+                report.gkr_phase2_followup_field_subs_upper_bound = uadd(
+                    report.gkr_phase2_followup_field_subs_upper_bound,
+                    shape.phase2_followup_field_subs_upper_bound, "GKR phase-two follow-up field subtractions");
+                report.gkr_phase2_followup_field_muls_upper_bound = uadd(
+                    report.gkr_phase2_followup_field_muls_upper_bound,
+                    shape.phase2_followup_field_muls_upper_bound, "GKR phase-two follow-up field multiplications");
+                report.gkr_phase2_init_field_writes = uadd(report.gkr_phase2_init_field_writes,
+                    shape.phase2_init_field_writes, "GKR phase-two active scalar initializations");
             }
         }
         if (actual_unary_gates < relation_counts.unary || actual_binary_gates < relation_counts.binary ||
@@ -7692,15 +8129,23 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         report.max_materialized_fr_bytes = std::max(ubytes(maximum_layer_values, sizeof(Fr), "maximum materialized field vector"), maximum_family_fr_buffer_bytes);
         report.materialized_g1 = static_cast<std::size_t>(std::min<std::uint64_t>(maximum_family_columns, std::numeric_limits<std::size_t>::max()));
         report.max_materialized_g1_bytes = maximum_family_g1_buffer_bytes;
-        report.gkr_point_shape_ready = true;
-        report.gkr_point_shape_digest = exact_shape_plan.gkr_point_shape_digest;
+        report.gkr_point_shape_ready = !symbolic_profile_only;
+        report.gkr_point_shape_exact = !symbolic_profile_only;
+        report.gkr_point_domain_upper_bound_valid = exact_shape_plan.gkr_point_domain_upper_bound_valid;
+        report.symbolic_analysis_profile_complete = symbolic_profile_only;
+        report.gkr_point_shape_digest = symbolic_profile_only ? std::string{} : exact_shape_plan.gkr_point_shape_digest;
         report.gkr_point_shape_layer_count = static_cast<std::uint64_t>(layer_shapes.size());
         report.gkr_point_shape_fconn_count = fconn_layers;
-        report.gkr_point_shape_bitmap_scratch_bytes = exact_shape_plan.gkr_point_shape_bitmap_bytes;
-        report.gkr_point_shape_touched_index_scratch_bytes_upper_bound =
-            exact_shape_plan.gkr_point_shape_touched_index_bytes_upper_bound;
+        report.gkr_point_shape_bitmap_scratch_bytes = symbolic_profile_only ? 0 : exact_shape_plan.gkr_point_shape_bitmap_bytes;
+        report.gkr_point_shape_touched_index_scratch_bytes_upper_bound = symbolic_profile_only
+            ? 0 : exact_shape_plan.gkr_point_shape_touched_index_bytes_upper_bound;
         report.gkr_layer_count_upper_bound = static_cast<std::uint64_t>(layer_shapes.size());
         report.gkr_fconn_layer_count_upper_bound = fconn_layers;
+        report.gkr_work_counts_exact = !symbolic_profile_only;
+        report.gkr_layer_work_profile = layer_shapes;
+        report.gkr_layer0_source_domain_entries_upper_bound = symbolic_profile_only
+            ? exact_shape_plan.gkr_layer0_source_domain_upper_bound
+            : std::max(max_input_u_entries, max_input_v_entries);
         bool previous_lane_active = true;
         std::size_t next_matmul = exact_shape_plan.matmuls.size();
         std::uint64_t gkr_input_source_count = 0;
@@ -7755,17 +8200,51 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t maximum_single_gate_array_bytes = std::max(ubytes(maximum_unary_gate_array_entries, unary_gate_entry_bytes, "maximum unary gate array"),
             ubytes(maximum_binary_gate_array_entries, binary_gate_entry_bytes, "maximum binary gate array"));
         report.max_single_gate_array_bytes_upper_bound = maximum_single_gate_array_bytes;
+        // The production-wide ExplicitUnaryGate buffers exist only for the
+        // hidden concatenation layers and final logits copy. Relation layers
+        // and FCONN bindings write directly into their compact native arrays;
+        // using maximum_unary_layer_gates here incorrectly attributed the
+        // largest relation layer to a builder that never materializes it.
+        const std::uint64_t maximum_explicit_unary_builder_entries = std::max({
+            umul(n0, hidden_heads_u, "hidden concatenation explicit unary builder"),
+            umul(n1, hidden_heads_u, "hidden concatenation explicit unary builder"),
+            nc});
+        const std::uint64_t explicit_unary_gate_buffer_bytes =
+            ubytes(maximum_explicit_unary_builder_entries, sizeof(ExplicitUnaryGate),
+                   "maximum production explicit unary gate builder buffer");
+        const std::uint64_t explicit_unary_compact_coexist_bytes = ubytes(
+            maximum_explicit_unary_builder_entries, sizeof(uniGate),
+            "compact unary gate array coexisting with production explicit builder");
+        report.explicit_unary_gate_buffer_entry_bytes =
+            static_cast<std::uint64_t>(sizeof(ExplicitUnaryGate));
+        report.explicit_unary_gate_buffer_entries_upper_bound =
+            maximum_explicit_unary_builder_entries;
+        report.max_explicit_unary_gate_buffer_bytes_upper_bound =
+            explicit_unary_gate_buffer_bytes;
+        report.explicit_unary_gate_buffer_compact_coexist_bytes_upper_bound =
+            uadd(explicit_unary_gate_buffer_bytes, explicit_unary_compact_coexist_bytes,
+                 "explicit unary raw/compact coexistence");
         report.max_materialized_gate_bytes = static_cast<std::size_t>(std::min<std::uint64_t>(maximum_single_gate_array_bytes, std::numeric_limits<std::size_t>::max()));
-        // Each active sumcheck phase owns value and multiplier Fr arenas for
-        // both lanes. The scalar prefix is folded in-place to interleaved
-        // affine (a,b) pairs, so each arena holds max(2, round_up_even(n))
-        // field elements for its source extent n. The two bounded linear_poly
-        // scratch arrays are ordinary heap vectors; include their actual
-        // maximum single-call size in the workspace report, but not in mapped
-        // storage. finalize1 releases phase one before phase two starts.
+        // Each active phase borrows its round-zero value prefix and allocates
+        // only the multiplier arenas. After each native challenge, affine
+        // pairs compact to scalars in place and mapped tails are punched before
+        // the half-sized value arena is allocated. Original mappings remain
+        // reserved; mapped accounting includes active page and filesystem block
+        // rounding, including a partial final block after the punched extent.
         const std::uint64_t prefix_heap_limit = static_cast<std::uint64_t>(zkgpt::native_storage::heap_limit);
-        const auto prefix_phase = [&umul, &uadd, &ubytes, prefix_heap_limit](std::uint64_t lane0,
-                                                                             std::uint64_t lane1) {
+        const std::uint64_t prefix_page_bytes = zkgpt::native_storage::page_size();
+        const std::uint64_t prefix_allocation_unit_bytes =
+            zkgpt::native_storage::filesystem_allocation_unit_bytes(zkgpt::native_storage::scratch_directory());
+        report.gkr_prefix_filesystem_allocation_unit_bytes = prefix_allocation_unit_bytes;
+        const auto prefix_round_to_allocation = [&uadd, &umul, prefix_allocation_unit_bytes](std::uint64_t bytes, const char* what) {
+            if (bytes == 0U) return std::uint64_t(0);
+            return umul(uadd(bytes, prefix_allocation_unit_bytes - 1U, what) / prefix_allocation_unit_bytes,
+                        prefix_allocation_unit_bytes, what);
+        };
+        const auto prefix_phase = [&umul, &uadd, &ubytes, prefix_heap_limit, prefix_page_bytes,
+                                   &prefix_round_to_allocation](std::uint64_t lane0,
+                                                                                                 std::uint64_t lane1,
+                                                                                                 std::uint64_t rounds) {
             const auto arena_capacity = [&uadd](std::uint64_t extent, const char* what) {
                 return std::max<std::uint64_t>(2U,
                     uadd(extent, extent & 1U, what));
@@ -7774,8 +8253,14 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             const std::uint64_t capacity1 = arena_capacity(lane1, "GKR lane 1 packed arena capacity");
             const std::uint64_t arena0_bytes = ubytes(capacity0, sizeof(Fr), "GKR lane 0 packed arena");
             const std::uint64_t arena1_bytes = ubytes(capacity1, sizeof(Fr), "GKR lane 1 packed arena");
-            const std::uint64_t arena_bytes = umul(2, uadd(arena0_bytes, arena1_bytes,
-                "GKR packed value and multiplier arenas"), "GKR four packed prefix arenas");
+            const std::uint64_t mapped0 = arena0_bytes > prefix_heap_limit
+                ? prefix_round_to_allocation(arena0_bytes, "GKR lane 0 allocated arena blocks") : 0U;
+            const std::uint64_t mapped1 = arena1_bytes > prefix_heap_limit
+                ? prefix_round_to_allocation(arena1_bytes, "GKR lane 1 allocated arena blocks") : 0U;
+            const std::uint64_t heap0 = arena0_bytes > prefix_heap_limit ? 0U : arena0_bytes;
+            const std::uint64_t heap1 = arena1_bytes > prefix_heap_limit ? 0U : arena1_bytes;
+            const std::uint64_t initial_mapped = uadd(mapped0, mapped1, "GKR round-zero multiplier arenas");
+            const std::uint64_t initial_heap = uadd(heap0, heap1, "GKR round-zero multiplier heap");
 
             constexpr std::uint64_t kChunkPairs = 1U << 16U;
             const std::uint64_t fold0 = lane0 / 2U + lane0 % 2U;
@@ -7789,28 +8274,56 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                        "GKR bounded prefix fold scratch arrays"),
                 ubytes(workers, sizeof(quadratic_poly), "GKR prefix worker partials"),
                 "GKR bounded prefix fold scratch and partials");
-            const std::uint64_t host_bytes = uadd(
-                uadd(arena0_bytes <= prefix_heap_limit ? arena0_bytes : 0,
-                     arena1_bytes <= prefix_heap_limit ? arena1_bytes : 0,
-                     "GKR packed prefix heap arenas"),
-                uadd(arena0_bytes <= prefix_heap_limit ? arena0_bytes : 0,
-                     arena1_bytes <= prefix_heap_limit ? arena1_bytes : 0,
-                     "GKR packed multiplier heap arenas"),
-                "GKR packed prefix heap storage");
-            const std::uint64_t heap_workspace = uadd(host_bytes, scratch_bytes,
-                "GKR packed prefix heap and bounded scratch");
-            const std::uint64_t total_bytes = uadd(arena_bytes, scratch_bytes,
-                "GKR packed prefix arenas and bounded fold scratch");
-
-            const auto mapped_one = [prefix_heap_limit, &ubytes](std::uint64_t capacity, const char* what) {
-                const std::uint64_t bytes = ubytes(capacity, sizeof(Fr), what);
-                return bytes > prefix_heap_limit ? bytes : std::uint64_t(0);
+            const auto mapped_live_bound = [prefix_heap_limit, prefix_page_bytes,
+                                             &uadd, &umul, &ubytes, &prefix_round_to_allocation](std::uint64_t capacity,
+                                                                                                          std::uint64_t active,
+                                                                                                          const char* what) {
+                const std::uint64_t file_bytes = ubytes(capacity, sizeof(Fr), what);
+                if (file_bytes <= prefix_heap_limit) return std::uint64_t(0);
+                const std::uint64_t active_bytes = ubytes(active, sizeof(Fr), what);
+                const std::uint64_t page_live = std::min(file_bytes, umul(
+                    uadd(active_bytes, prefix_page_bytes - 1U, what) / prefix_page_bytes,
+                    prefix_page_bytes, what));
+                const std::uint64_t tail = file_bytes % prefix_page_bytes;
+                const std::uint64_t blocks_live = prefix_round_to_allocation(page_live, what);
+                const std::uint64_t blocks_tail = prefix_round_to_allocation(tail, what);
+                const std::uint64_t maximum_file_blocks = prefix_round_to_allocation(file_bytes, what);
+                return std::min(maximum_file_blocks, uadd(blocks_live, blocks_tail, what));
             };
-            const std::uint64_t mapped_bytes = umul(2,
-                uadd(mapped_one(capacity0, "GKR mapped lane 0 packed arena"),
-                     mapped_one(capacity1, "GKR mapped lane 1 packed arena"),
-                     "GKR mapped packed value arenas"), "GKR mapped value and multiplier arenas");
-            return std::array<std::uint64_t, 3>{total_bytes, mapped_bytes, heap_workspace};
+            std::uint64_t mapped_peak = initial_mapped;
+            std::uint64_t heap_peak = uadd(initial_heap, scratch_bytes, "GKR round-zero multiplier and fold scratch heap");
+            std::uint64_t total_peak = uadd(mapped_peak, heap_peak, "GKR round-zero multiplier and fold workspace");
+            if (rounds > 0U && (lane0 > 0U || lane1 > 0U)) {
+                const std::uint64_t after0 = lane0 == 0U ? 0U : arena_capacity(fold0, "GKR lane 0 half-size value arena capacity");
+                const std::uint64_t after1 = lane1 == 0U ? 0U : arena_capacity(fold1, "GKR lane 1 half-size value arena capacity");
+                const std::uint64_t after0_bytes = ubytes(after0, sizeof(Fr), "GKR lane 0 half-size value arena");
+                const std::uint64_t after1_bytes = ubytes(after1, sizeof(Fr), "GKR lane 1 half-size value arena");
+                const std::uint64_t after_mapped = uadd(
+                    mapped_live_bound(capacity0, fold0, "GKR lane 0 punched multiplier tail"),
+                    mapped_live_bound(capacity1, fold1, "GKR lane 1 punched multiplier tail"),
+                    "GKR compact multiplier physical blocks");
+                const std::uint64_t after_mapped_values = uadd(
+                    after0_bytes > prefix_heap_limit ? prefix_round_to_allocation(after0_bytes, "GKR lane 0 allocated value blocks") : 0U,
+                    after1_bytes > prefix_heap_limit ? prefix_round_to_allocation(after1_bytes, "GKR lane 1 allocated value blocks") : 0U,
+                    "GKR half-size mapped value arenas");
+                const std::uint64_t after_heap_values = uadd(
+                    after0_bytes > prefix_heap_limit ? 0U : after0_bytes,
+                    after1_bytes > prefix_heap_limit ? 0U : after1_bytes,
+                    "GKR half-size value heap");
+                const std::uint64_t after_heap = uadd(initial_heap, after_heap_values,
+                    "GKR retained multiplier and half-size value heap");
+                const std::uint64_t later_heap = rounds > 1U
+                    ? uadd(after_heap, scratch_bytes, "GKR later compact-prefix fold workspace") : after_heap;
+                const std::uint64_t after_mapped_total = uadd(after_mapped, after_mapped_values,
+                    "GKR first-challenge mapped prefix peak");
+                const std::uint64_t after_total = uadd(after_mapped_total,
+                    rounds > 1U ? later_heap : after_heap,
+                    "GKR compact prefix live workspace");
+                mapped_peak = std::max(mapped_peak, after_mapped_total);
+                heap_peak = std::max(heap_peak, later_heap);
+                total_peak = std::max(total_peak, after_total);
+            }
+            return std::array<std::uint64_t, 3>{total_peak, mapped_peak, heap_peak};
         };
         std::uint64_t max_prefix_phase_bytes = 0;
         std::uint64_t max_prefix_mapped_bytes = 0;
@@ -7818,12 +8331,12 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         for (std::size_t index = 1; index < layer_shapes.size(); ++index) {
             const GatGkrLayerShapeProfile& shape = layer_shapes[index];
             if (shape.layer_type == static_cast<std::uint32_t>(layerType::FCONN)) continue;
-            const auto phase1 = prefix_phase(shape.size_u0, shape.size_u1);
+            const auto phase1 = prefix_phase(shape.size_u0, shape.size_u1, static_cast<std::uint64_t>(std::max<i8>(0, shape.max_bl_u)));
             max_prefix_phase_bytes = std::max(max_prefix_phase_bytes, phase1[0]);
             max_prefix_mapped_bytes = std::max(max_prefix_mapped_bytes, phase1[1]);
             max_prefix_heap_bytes = std::max(max_prefix_heap_bytes, phase1[2]);
             if (shape.need_phase2) {
-                const auto phase2 = prefix_phase(shape.size_v0, shape.size_v1);
+                const auto phase2 = prefix_phase(shape.size_v0, shape.size_v1, static_cast<std::uint64_t>(std::max<i8>(0, shape.max_bl_v)));
                 max_prefix_phase_bytes = std::max(max_prefix_phase_bytes, phase2[0]);
                 max_prefix_mapped_bytes = std::max(max_prefix_mapped_bytes, phase2[1]);
                 max_prefix_heap_bytes = std::max(max_prefix_heap_bytes, phase2[2]);
@@ -8244,10 +8757,25 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             uadd(uadd(mapped_direct_gate_arrays, mapped_direct_wide_ids, "gate-builder direct gates and coefficient IDs"),
                 coefficient_pools_mapped_bytes, "gate-builder coefficient pools"),
             mapped_gate_builder, "gate-builder mapped buffers before relation-array transfer");
+        // append_explicit_layer retains the raw ExplicitUnaryGate vector while
+        // it allocates/fills the compact uniGate array. Bound that distinct
+        // plan-construction live phase from the exact maximum canonical unary
+        // layer; direct compact arrays above already include that layer.
+        const std::uint64_t mapped_explicit_unary_gate_buffer =
+            mapped_allocation(explicit_unary_gate_buffer_bytes);
+        const std::uint64_t explicit_unary_plan_mapped_peak = uadd(
+            uadd(uadd(mapped_direct_gate_arrays, mapped_direct_wide_ids,
+                       "explicit unary plan direct gates and coefficient IDs"),
+                 coefficient_pools_mapped_bytes,
+                 "explicit unary plan coefficient pools"),
+            mapped_explicit_unary_gate_buffer,
+            "explicit unary raw builder coexisting with compact plan gates");
         const std::uint64_t gate_subset_mapped_peak = uadd(mapped_gate_arrays,
             uadd(mapped_residual_targets, uadd(mapped_origin_maps, mapped_subset_scratch_peak, "gate-subset mapped buffers"),
                  "gate-subset targets and maps"), "gate-subset mapped buffers");
-        const std::uint64_t gate_plan_mapped_peak = std::max(gate_builder_mapped_peak, gate_subset_mapped_peak);
+        const std::uint64_t gate_plan_mapped_peak =
+            std::max({gate_builder_mapped_peak, explicit_unary_plan_mapped_peak,
+                      gate_subset_mapped_peak});
 
         const std::uint64_t layer_value_bytes = ubytes(layer_value_entries, sizeof(Fr), "layer witness values");
         const std::uint64_t max_layer_value_bytes = ubytes(maximum_layer_values, sizeof(Fr), "maximum layer witness allocation");
@@ -8371,6 +8899,7 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             {"component:tensor_opening", mapped_tensor_opening_peak},
             {"component:w_mle", mapped_w_mle_peak},
             {"component:source_bitmap", mapped_subset_scratch_peak},
+            {"component:explicit_unary_gate_buffer", mapped_explicit_unary_gate_buffer},
         };
         const std::uint64_t gate_plan_scratch_peak = gate_plan_mapped_peak;
         report.estimated_native_mapped_bytes_upper_bound = std::max({gate_plan_scratch_peak, plan_restore_mapped_peak,
@@ -8387,8 +8916,11 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             uadd(max_prefix_heap_bytes,
                 uadd(uadd(coefficient_pools_heap_bytes, input_fold_heap_bytes,
                          "native coefficient-pool and bounded input-fold heap"),
-                    builder_target_dictionary_heap_bytes,
-                    "native coefficient, input-fold, and packed target-dictionary heap"),
+                    uadd(builder_target_dictionary_heap_bytes,
+                         explicit_unary_gate_buffer_bytes <= prefix_heap_limit
+                             ? explicit_unary_gate_buffer_bytes : 0,
+                         "packed target dictionary and heap-backed explicit unary builder"),
+                    "native coefficient, input-fold, target-dictionary, and explicit unary builder heap"),
                 "GKR prefix and bounded native heap workspace"),
             "native heap and bounded GKR/helper workspaces upper bound");
         report.estimated_native_heap_bytes_upper_bound = uadd(report.estimated_native_heap_bytes_upper_bound,
@@ -8532,6 +9064,10 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         report.full_relation_bound = true;
         report.ready = false;
         report.reason = pointer_ok ? "runtime resource headroom has not been finalized" : "graph batch node_ptr/edge_ptr boundary is not canonical";
+        if (symbolic_profile_only && exact_shape_plan.gkr_point_domain_upper_bound_valid)
+            report.reason = "analysis-only symbolic profile; per-gate point source census and point digest were intentionally omitted";
+        else if (symbolic_profile_only)
+            report.reason = "analysis-only symbolic profile has an unvalidated conservative point-domain upper bound: " + exact_shape_plan.gkr_point_domain_upper_bound_reason;
     } catch (const std::exception& error) {
         report.ready = false;
         report.reason = error.what();
@@ -8746,13 +9282,14 @@ GatCircuitWitness build_gat_circuit_witness_impl(
     const Tensor2D& public_features, const Model& model,
     const QuantConfig& quant, const ForwardResult& forward,
     const hyrax::HyraxScalarProvider& l_query_values, bool borrow_aux,
-    bool copy_terminal_vectors) {
+    bool copy_terminal_vectors, bool forward_prevalidated = false) {
     std::string reason;
     if (!validate_gat_circuit_plan(plan, &reason)) throw std::invalid_argument("cannot build GAT circuit witness: " + reason);
     graph.validate();
     model.validate_schema();
     quant.validate();
-    if (!validate_relation(graph, public_features, model, quant, forward))
+    if (!forward_prevalidated &&
+        !validate_relation(graph, public_features, model, quant, forward))
         throw std::invalid_argument("cannot build GAT circuit witness from an invalid trace");
 
     GatCircuitWitness witness;
@@ -8990,6 +9527,132 @@ GatPointDomainAdmission inspect_gat_point_domain_admission(
 
 GatCircuitPlan build_gat_circuit_plan(const Graph& graph, const Model& model, const QuantConfig& quant) {
     return build_plan_impl(graph, model, quant, nullptr);
+}
+
+detail::ValidatedFormalInputs::ValidatedFormalInputs(
+    Graph&& graph, Tensor2D&& features, Model&& model, QuantConfig&& quant,
+    ForwardResult&& forward)
+    : graph_(std::move(graph)), features_(std::move(features)),
+      model_(std::move(model)), quant_(std::move(quant)),
+      forward_(std::move(forward)) {}
+
+detail::ValidatedFormalInputs detail::ValidatedFormalInputs::consume(
+    Graph&& graph, Tensor2D&& features, Model&& model, QuantConfig&& quant,
+    ForwardResult&& forward) {
+    ValidatedFormalInputs owned(std::move(graph), std::move(features),
+                                std::move(model), std::move(quant),
+                                std::move(forward));
+    const auto validation_begin = std::chrono::steady_clock::now();
+    owned.canonical_validation_calls_ = 1;
+    if (!validate_relation(owned.graph_, owned.features_, owned.model_,
+                           owned.quant_, owned.forward_))
+        throw std::invalid_argument("canonical GAT relation validation failed for move-owned formal inputs");
+    owned.canonical_validation_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - validation_begin).count();
+    owned.capacity_quant_digest_ = canonical_quant_digest(owned.quant_);
+    if (owned.capacity_census_calls_ != 0U)
+        throw std::logic_error("private formal capacity census was already performed");
+    ++owned.capacity_census_calls_;
+    owned.capacity_ = inspect_gat_capacity(owned.graph_, owned.model_,
+                                           owned.quant_);
+    owned.plan_ = std::make_shared<GatCircuitPlan>(
+        build_plan_impl(owned.graph_, owned.model_, owned.quant_,
+                        &owned.forward_, false, &owned.capacity_, true));
+    if (owned.capacity_quant_digest_ != canonical_quant_digest(owned.quant_) ||
+        !detail::formal_capacity_report_matches_plan(
+            owned.capacity_, owned.graph_, owned.model_, owned.quant_,
+            *owned.plan_))
+        throw std::logic_error("private formal capacity report does not match its move-owned inputs and canonical plan");
+    return owned;
+}
+
+bool detail::formal_capacity_report_matches_plan(
+    const GatCapacityReport& capacity, const Graph& graph, const Model& model,
+    const QuantConfig& quant, const GatCircuitPlan& plan) {
+    const auto same_model_shape = [](const CanonicalModelShape& left,
+                                     const CanonicalModelShape& right) {
+        if (left.model_arch_id != right.model_arch_id ||
+            left.tensor_count != right.tensor_count || left.layers != right.layers ||
+            left.output_heads != right.output_heads || left.classes != right.classes ||
+            left.input_dim != right.input_dim || left.hidden_dim != right.hidden_dim ||
+            left.tensors.size() != right.tensors.size())
+            return false;
+        for (std::size_t index = 0; index < left.tensors.size(); ++index) {
+            if (left.tensors[index].name != right.tensors[index].name ||
+                !(left.tensors[index].shape == right.tensors[index].shape))
+                return false;
+        }
+        return true;
+    };
+    const auto same_layout = [](const InputLayout& left, const InputLayout& right) {
+        if (left.n_raw != right.n_raw || left.n_in != right.n_in ||
+            left.selector != right.selector ||
+            left.segments.size() != right.segments.size())
+            return false;
+        for (std::size_t index = 0; index < left.segments.size(); ++index) {
+            const InputSegment& a = left.segments[index];
+            const InputSegment& b = right.segments[index];
+            if (a.name != b.name || a.offset != b.offset ||
+                a.logical_length != b.logical_length ||
+                a.padded_length != b.padded_length)
+                return false;
+        }
+        return true;
+    };
+    try {
+        const CanonicalModelShape expected_model = canonical_model_shape(model);
+        const InputLayout expected_layout =
+            canonical_input_layout_impl(graph, model, quant);
+        const std::string quant_digest = canonical_quant_digest(quant);
+        const std::string formal_path =
+            "formal_native_masked_lasso_hyrax+native_masked_layered_gkr";
+        if (capacity.schema != "zkgpt-gat-capacity-v8" ||
+            capacity.symbolic_analysis_profile_complete ||
+            !capacity.gkr_point_shape_ready || !capacity.gkr_point_shape_exact ||
+            !is_lower_hex_digest(capacity.gkr_point_shape_digest) ||
+            !capacity.full_relation_bound || capacity.proof_path != formal_path ||
+            capacity.explicit_matmul_gate_expansion ||
+            capacity.num_nodes != graph.num_nodes ||
+            capacity.num_edges != graph.edges() ||
+            capacity.num_features != graph.num_features ||
+            capacity.num_classes != graph.num_classes ||
+            capacity.graph_count != graph.graph_count ||
+            !same_model_shape(capacity.model_shape, expected_model) ||
+            !same_model_shape(capacity.model_shape, plan.model_shape) ||
+            !same_layout(capacity.input_layout, expected_layout) ||
+            !same_layout(capacity.input_layout, plan.input_layout) ||
+            plan.model_arch_id != model.manifest.model_arch_id ||
+            plan.graph_num_nodes != graph.num_nodes ||
+            plan.graph_num_features != graph.num_features ||
+            plan.graph_count != graph.graph_count ||
+            plan.graph_num_classes != graph.num_classes ||
+            plan.graph_edge_count != graph.edges() ||
+            plan.quant_cfg_id != quant.quant_cfg_id ||
+            plan.quant_digest != quant_digest ||
+            capacity.gkr_point_shape_digest != plan.gkr_point_shape_digest ||
+            plan.recipe_schema != "canonical_plan_recipe_v3" ||
+            plan.relation_schema != "zkgpt-gat-relation-v1" ||
+            plan.opening_policy != "same_r_three_terminal_openings_v1" ||
+            plan.terminal_openings != std::vector<std::string>{"W@r", "Aux@r", "L_qry@r"} ||
+            !plan.official_layered || plan.has_placeholder)
+            return false;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+GatCircuitPlan detail::rebuild_formal_plan_for_restore(
+    const detail::ValidatedFormalInputs& inputs) {
+    if (inputs.capacity_census_calls() != 1U ||
+        canonical_quant_digest(inputs.quant()) != inputs.capacity_quant_digest() ||
+        !detail::formal_capacity_report_matches_plan(
+            inputs.capacity(), inputs.graph(), inputs.model(), inputs.quant(),
+            inputs.plan()))
+        throw std::invalid_argument("move-owned formal capacity report is stale or mismatched");
+    ++inputs.capacity_restore_rebuild_calls_;
+    return build_plan_impl(inputs.graph(), inputs.model(), inputs.quant(),
+                           &inputs.forward(), false, &inputs.capacity(), true);
 }
 
 bool CommitmentWire::valid() const {
@@ -10350,7 +11013,8 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
                                   const VerifierContext* provided_context, const Graph& graph,
                                   const Tensor2D& public_features, const Model& model, const QuantConfig& quant,
                                   const ForwardResult& forward, const ModelRegistration& registration,
-                                  const std::string& privacy_profile) {
+                                  const std::string& privacy_profile,
+                                  const detail::ValidatedFormalInputs* validated_owner = nullptr) {
     ProveResult result;
     const auto preparation_begin = std::chrono::steady_clock::now();
     try {
@@ -10359,6 +11023,14 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         graph.validate();
         model.validate_schema();
         quant.validate();
+        if (validated_owner != nullptr &&
+            (&graph != &validated_owner->graph() ||
+             &public_features != &validated_owner->features() ||
+             &model != &validated_owner->model() ||
+             &quant != &validated_owner->quant() ||
+             &forward != &validated_owner->forward() ||
+             !shared_plan || shared_plan.get() != &validated_owner->plan()))
+            throw std::invalid_argument("trusted formal proof inputs do not match their move-owned validated context");
         if (provided_context != nullptr) {
             if (!shared_plan || provided_context->shared_plan != shared_plan ||
                 &provided_context->plan_ref() != shared_plan.get())
@@ -10400,7 +11072,9 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         if (!plan.official_layered || plan.has_placeholder) throw std::invalid_argument("official layered circuit plan is incomplete");
         if (!registration_matches_model(model, quant, plan.input_layout, registration))
             throw std::invalid_argument("private model does not match the bound model registration");
-        if (!validate_relation(graph, public_features, model, quant, forward)) throw std::invalid_argument("canonical GAT relation is invalid");
+        if (validated_owner == nullptr &&
+            !validate_relation(graph, public_features, model, quant, forward))
+            throw std::invalid_argument("canonical GAT relation is invalid");
         if (plan.virtual_sparse) throw std::invalid_argument("virtual sparse proof is unsupported: canonical GAT arithmetic and registered W/Aux/L commitment binding are incomplete");
         if (plan.virtual_sparse) {
             if (privacy_profile != "masked_full") {
@@ -10555,9 +11229,13 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
             lasso.query_blinding_prepare_ms;
         result.lasso_family_generator_derive_ms =
             lasso.family_generator_derive_ms;
-        GatCircuitWitness circuit_witness = build_gat_circuit_witness_borrowed_aux(
-            plan, graph, public_features, model, quant, forward,
-            lasso.query.value_provider, false);
+        GatCircuitWitness circuit_witness = validated_owner != nullptr
+            ? build_gat_circuit_witness_impl(
+                  plan, graph, public_features, model, quant, forward,
+                  lasso.query.value_provider, true, false, true)
+            : build_gat_circuit_witness_borrowed_aux(
+                  plan, graph, public_features, model, quant, forward,
+                  lasso.query.value_provider, false);
         stage("witness");
         std::string witness_reason;
         {
@@ -10697,7 +11375,9 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         const auto restore_native_plan = [&]() {
             if (plan.native_proof_backing_is_resident()) return;
             stage("restore-native-plan");
-            GatCircuitPlan rebuilt = build_gat_circuit_plan(graph, model, quant, forward);
+            GatCircuitPlan rebuilt = validated_owner != nullptr
+                ? detail::rebuild_formal_plan_for_restore(*validated_owner)
+                : build_gat_circuit_plan(graph, model, quant, forward);
             plan.restore_native_proof_backing(std::move(rebuilt));
         };
         plan.release_native_proof_backing();
@@ -10893,14 +11573,25 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         core_copy_sections(session, artifact);
         session = NativeProofSession{};
         std::string verify_reason;
-        const auto self_verify_begin = std::chrono::steady_clock::now();
-        const bool self_verified = verify_gat(context, artifact, &verify_reason);
-        result.self_verify_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - self_verify_begin).count();
-        if (!self_verified) throw std::runtime_error("formal masked GAT self-verification failed: " + verify_reason);
+        if (validated_owner != nullptr) {
+            // The formal CLI immediately serializes, reads back, and verifies
+            // these exact bytes, then its independent verifier process and
+            // final validator verify again. Keep public proof API defaults
+            // self-verifying while avoiding only this duplicate in-memory pass.
+            result.self_verify_ms = 0.0;
+            stage("selfverify-deferred-to-serialized-readback");
+        } else {
+            const auto self_verify_begin = std::chrono::steady_clock::now();
+            const bool self_verified = verify_gat(context, artifact, &verify_reason);
+            result.self_verify_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - self_verify_begin).count();
+            if (!self_verified) throw std::runtime_error("formal masked GAT self-verification failed: " + verify_reason);
+        }
         result.status = ProveStatus::GENERATED;
         result.has_artifact = true;
         result.artifact = std::move(artifact);
-        result.diagnostic = "masked_full canonical GAT proof generated and independently verified";
+        result.diagnostic = validated_owner != nullptr
+            ? "masked_full canonical GAT proof generated; serialized readback and independent verification remain required"
+            : "masked_full canonical GAT proof generated and independently verified";
         return result;
     } catch (const std::exception& error) {
         result.status = ProveStatus::REJECTED;
@@ -10929,6 +11620,17 @@ ProveResult prove_gat(std::shared_ptr<const GatCircuitPlan> plan, const Graph& g
     const GatCircuitPlan& plan_ref = *plan;
     return prove_gat_impl(plan_ref, std::move(plan), &context, graph, public_features, model, quant, forward,
                           registration, privacy_profile);
+}
+
+ProveResult detail::prove_gat_formal(
+    detail::ValidatedFormalInputs& inputs,
+    const ModelRegistration& registration, const VerifierContext& context,
+    const std::string& privacy_profile) {
+    std::shared_ptr<const GatCircuitPlan> plan_owner = inputs.plan_;
+    return prove_gat_impl(inputs.plan(), std::move(plan_owner), &context,
+                          inputs.graph(), inputs.features(), inputs.model(),
+                          inputs.quant(), inputs.forward(), registration,
+                          privacy_profile, &inputs);
 }
 
 struct SparseVerifierRuntime {

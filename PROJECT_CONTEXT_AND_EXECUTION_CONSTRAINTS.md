@@ -1,181 +1,81 @@
-
 # zkGAT 项目背景与执行约束
 
-> 适用范围：`/home/pzh/project` 中除 `comparison/` 外的主实验。  
-> 最高技术规范：`GAT-ZKML-多层多头.md`。  
-> 本文件用于明确当前主实验的最终目标、开发边界、执行权限、测试要求和工作区治理规则。后续 Codex 任务应先完整阅读 `GAT-ZKML-多层多头.md`、本文件和 `PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md` 三份只读约束文件，再直接基于主实验真实代码执行，不需要在每次 Prompt 中重复本文件内容。
+> 工作区：`/home/pzh/project`。本文件仅适用于 zkGAT 主项目，不包括独立的 `comparison/`。
+>
+> 最高技术规范：`GAT-ZKML-多层多头.md`。
+>
+> 本文件负责长期项目约束、任务阶段切换、当前机制级实验以及代码与工件治理。`PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md` 只在项目负责人后续明确下达“主实验性能优化”任务时启用，不对当前机制级实验形成提前优化要求。
+>
+> Codex 开始任务前必须完整阅读本文件与 `GAT-ZKML-多层多头.md`；若当前任务属于主实验性能优化，还必须完整阅读 `PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md`。三份文件均由项目负责人管理，Codex 只读，不得擅自修改、删除或重命名。项目负责人明确要求修订约束文件的情况除外。
 
 ---
 
-## 1. 项目背景与判断原则
+## 1. 项目范围、优先级及阶段边界
 
-zkGAT 主实验研究 GAT 推理的零知识证明与验证。
+### 1.1 技术与执行优先级
 
-当前工作的目标不是重新设计 zkGAT 协议，也不是重新做一套实验系统，而是在现有已经实现的主实验代码和正式证明流程基础上，把论文最终使用的 GAT 模型实例正式调整为真正的多层多头 GAT，并保证现有训练、模型加载、前向计算、trace、prove、verify、CPU/GPU 和结果导出流程能够正确处理新的模型结构。
+技术规范优先级：
 
-### 1.1 只处理主实验
+1. `GAT-ZKML-多层多头.md`：正式 zkGAT 模型、协议、密码学关系与安全目标。
+2. 本文件：任务范围、实验体系、执行权限、工作区与正式工件约束。
+3. `PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md`：**仅在主实验性能优化阶段**生效的专项限制。
+4. 当前 Codex Prompt：在以上边界内明确本轮操作。
 
-当前工作区：/home/pzh/project
+阶段专项文件只有在对应阶段激活后才适用。不得利用低优先级文件覆盖高优先级协议或安全规则；也不得用尚未激活的性能优化任务扩大当前机制级实验的工作范围。
 
-`comparison/` 为完全独立的对比实验目录，本轮强制忽略。
+### 1.2 当前与后续任务严格分离
 
-不得：分析 `comparison/` 的内部实现；修改、删除、运行或清理 `comparison/`；使用 `comparison/` 的代码、协议组件、配置、结果或命名推断主实验应如何实现；把 `comparison/` 的任何机制写入主实验约束；让主实验依赖 `comparison/`。
+**当前阶段：机制级消融重构。**
 
-主实验当前实际上实现了什么，只能根据主实验真实源码、真实调用链和实际数据流判断。`GAT-ZKML-多层多头.md` 用于约束正式模型语义、正式方法和当前实现必须满足的技术边界，但不得用文档描述代替对当前代码实现状态的检查，也不得因为文档中出现某个概念就推断主实验代码已经实现对应机制。
+本轮唯一目标：去除不再需要的端到端消融专属代码，最大化安全复用其中正确的证明实现，构建并真实跑通两组独立机制级对照实验，完成必要回归，汇报结果，然后停止。
 
-### 1.2 判断真实实现必须以代码执行链为准
+本轮**不得**自行启动主实验的通用性能优化；不得在机制级实验完成后自动转向 MSM、NTT、quotient、opening、GPU 调度等独立优化专项。为机制级实验所必需的正确性修复不构成启动性能优化的授权。
 
-README、源码注释、旧说明文档和历史描述不得作为判断当前主实验实际实现状态的事实依据；它们只能用于辅助定位文件或理解背景，不能用于证明某项能力已经实现。判断主实验是否真正支持当前模型结构时，必须沿真实代码调用和数据流分析，而不能只看 README、注释、文件名、配置 parser、结构体字段、历史描述或 `comparison/`。至少应沿实际主实验链路检查：
+**后续阶段：主实验性能优化。**
 
-```text
-配置读取
--> 模型结构建立
--> checkpoint / manifest 加载
--> GAT 前向
--> quantized / registered forward
--> trace 构造
--> prove
--> proof serialize / deserialize
--> verify
--> CPU backend
--> GPU backend
--> 结果导出
-```
+只有项目负责人另行发布明确的新 Prompt 才能开始；此时再启用 `PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md` 的全部专项条款。机制级消融结果汇报不构成自动进入该阶段的授权。
 
-训练相关链路应实际检查：
+**再后续的统一正式重跑、论文性能结果收集与性能冻结**由项目负责人另行安排，本轮不代替其作决定。
 
-```text
-训练入口
--> 模型构造
--> 真实训练
--> checkpoint export
--> manifest
--> C++ loader
--> 正式前向与证明流程
-```
+### 1.3 严格隔离 comparison
 
-只有真实代码路径能够完整消费新模型结构，才算真正支持多层多头。
+`comparison/` 及全部子目录不得分析、修改、删除、运行、清理或用来推断主实验的实际实现；不得将其代码、结果、配置或协议组件引入 zkGAT。必要的外部方案介绍不得导致本项目对 `comparison/` 的运行或改造。
 
-## 2. 当前正式实验目标
+### 1.4 当前实现以源码和真实调用链为准
 
-这次不是增加一个额外的 architecture scaling 实验，而是把论文最终五个主实验本身统一改为真正的多层多头 GAT。
-
-### 2.1 最终统一模型结构
-
-五个正式数据集统一采用：L = 3；hidden_profile = [8x8,8x8]；K_out = 2
-
-含义：两个隐藏 GAT 层；每个隐藏层 8 个 attention heads；每个 hidden head 维度为 8；每个隐藏层 multi-head concat 后宽度为 64；一个输出 GAT 层；输出层 2 个 attention heads。
-
-`L = 3` 表示：2 hidden GAT layers + 1 output GAT layer
-
-当前正式 GAT 前向语义保持现有主实验已经实现并采用的正式语义，不得为了这次模型扩展主动改变隐藏层 concat、激活、attention、aggregation、输出层 bias、输出 heads 聚合等已有计算规则。
-
-### 2.2 五个正式数据集
-
-| Dataset | `d_in_profile` | `num_classes` |
-|---|---:|---:|
-| Cora | `[1433,64]` | 7 |
-| Citeseer | `[3703,64]` | 6 |
-| Pubmed | `[500,64]` | 3 |
-| PPI | `[50,64]` | 121 |
-| OGBN-Arxiv | `[128,64]` | 40 |
-
-第二隐藏层输入必须真实接收第一隐藏层 `8 heads x 8 dims = 64` 的 concat 输出，不能只在配置层写成 64，而真实 forward、checkpoint 或 proof 路径仍按旧结构运行。本轮只调整正式模型架构。五个数据集当前已经正确实现的数据加载、图结构、节点/边语义、预处理及数据集特有边界处理均保持现状；不得为了适配多层多头主动修改正式数据语义。
-
-### 2.3 最终实验矩阵
-
-最终论文正式主实验：5 datasets x 2 backends = 10 formal runs
-
-backend：
-
-- CPU；
-- GPU：沿用当前主实验已经实现的正式 CUDA backend / hotspot 路径，具体 backend 名称、CUDA 覆盖范围和 CPU fallback 以当前真实代码为准。
-
-对于同一数据集，CPU/GPU 必须使用同一个正式 checkpoint、同一个正式 config、同一个该数据集对应的 canonical SRS 和相同公开输入，只允许当前正式 backend 所必需的执行设备和执行参数不同。本轮多层多头改造不要求把当前仍在 CPU 执行的协议阶段迁移到 GPU，也不得为了所谓“完整 GPU”重新设计、扩大或替换现有 backend。不同数据集使用各自独立的 checkpoint、config 和 dataset-specific SRS。
-
-### 2.4 不做 architecture scaling
-
-本轮不新增不同 `L`、不同 hidden heads、不同 `K_out` 或 depth/heads/K_out/combined 的正式 scaling curve。之前未正式执行、未正式采用且已经不再服务于当前主实验的 architecture-scaling 草案，在确认没有当前正式依赖后可以清理。这里禁止的是模型 architecture scaling，不等于删除现有 CPU/GPU 工程优化或论文原本需要的工程性能能力。
+README、普通注释、旧文档和历史讨论仅可辅助定位，不可代替代码证据。Codex 必须核实真实的配置、trace、挑战、承诺、quotient、opening、prover/verifier、序列化与结果导出调用链。协议规范定义“应是什么”，代码检查证明“实际是什么”；不能把二者混淆。
 
 ---
 
-## 3. 本轮 Codex 需要实际完成的工作
+## 2. 固定的 zkGAT 正式主实验
 
-Codex 的任务不是重新设计方案，而是全面检查当前主实验真实代码，并把与当前正式多层多头模型相关的工程问题一次性处理到位。
+### 2.1 模型、任务与公开输出
 
-### 3.1 先判断现有实现到底哪里需要改
-
-必须沿真实代码路径确认：
-
-- 当前模型结构是否真正支持两个隐藏层；
-- 第二隐藏层是否真实消费第一层 multi-head concat 输出；
-- 每个隐藏层是否真正按实际 head 数完整执行；
-- 输出层是否真正支持 `K_out = 2`；
-- checkpoint shape 和参数组织是否真实支持当前结构；
-- manifest 是否能完整描述并检查当前结构；
-- C++ loader 是否能正确加载；
-- C++ FP32 forward 是否正确；
-- quantized / registered forward 是否正确；
-- trace 是否按实际 layer/head 组织；
-- prove / verify 是否已经能够直接处理当前结构；
-- CPU/GPU 是否都支持相同正式模型结构；
-- SRS 是否与新的实际 proof shape 完整兼容，以及当前正式 envelope、capacity 和真实 binding 条件是否需要相应调整；
-- 正式结果导出是否仍然正确。
-
-如果现有某一部分本来已经通用且正确，保持现状，不为了产生修改量而重构。本轮保持当前主实验“一次完整 GAT 推理对应一次完整正式 prove/verify”的组织方式。不得为了适配多层或多头，主动把一个完整正式推理拆分为按 layer、按 head 或其他方式组织的多个彼此独立的正式 proof。
-
-### 3.2 现有协议默认保持不变
-
-当前已经实现并能够正确工作的主实验正式证明流程，是本轮工作的基线。
-
-本轮目标是：让新的多层多头模型正确进入现有正式 zkGAT 流程，而不是借多层多头改造重新设计 zkGAT 协议。
-
-因此：
-
-- 已经正确工作的 trace / prove / verify 等正式协议代码默认不改；
-- 已经正确工作的公开/私有语义默认不改；
-- 已经正确工作的 proof 组织、serialization 和验证逻辑默认不改；
-- 已经正确工作的 CPU/GPU 正式优化路径默认保留；
-- 不得因为代码美观、重构、所谓通用化、方便扩展、方便训练、方便 SRS 或性能优化而主动改写协议核心；
-- 不得根据本文件、历史记录或 `comparison/` 凭空新增主实验原本不存在的 protocol relation、subprotocol 或安全机制。
-
-只有真实主实验代码或测试证明当前正式多层多头实例存在明确问题，并且不能通过配置、checkpoint、训练、维度、SRS 适配或执行入口等非协议层解决时，才允许做最小必要协议修改。协议相关修改必须保持 `GAT-ZKML-多层多头.md` 已确定的方法和安全目标，并完成与修改直接对应的 correctness / regression 验证。当前主实验已有正式安全参数和安全强度保持不变，包括当前 120-bit security target。不得为了降低多层多头实验成本主动降低安全参数、跳过正式验证或启用非正式快速路径。
-
-### 3.3 五个正式配置直接改成最终状态
-
-继续使用：
+研究对象是多层多头 GAT **推理**的零知识证明，不新增训练性能或模型精度研究。正式模型结构固定为：
 
 ```text
-configs/cora_secure.cfg
-configs/citeseer_secure.cfg
-configs/pubmed_secure.cfg
-configs/ppi_secure.cfg
-configs/ogbn_arxiv_secure.cfg
+L = 3
+hidden_profile = [8x8,8x8]
+K_out = 2
 ```
 
-不得另建 `*_multilayer.cfg`、`*_new.cfg`、`*_v2.cfg`、`*_final.cfg` 等第二套正式配置。
+即两层隐藏 GAT，每层 8 个注意力头、每头宽度 8；隐藏层多头拼接后的维度为 64；输出层具有两个真实注意力头，并执行当前固定的输出后偏置与多头平均规则。前向、量化、图排序、跨图边界、trace、KZG、Fiat–Shamir、quotient、opening、私有见证保护以及 public logits 绑定均遵守最高技术规范。
 
-修改正式架构时，当前真实代码中所有由模型结构派生、用于结构识别或用于 artifact/config 一致性绑定的 metadata / ID 也必须同步到新的正式架构。不得保留仍表示旧 `L=2`、旧 hidden profile、旧 `K_out=1` 或其他旧模型 shape 的结构派生值。具体字段和值必须依据现有生成、加载和校验逻辑确定，本文件不重新定义第二套命名规则。
+不得为了建立机制级实验而改变正式 zkGAT 的模型语义、ProofSchema、Fiat–Shamir 顺序、KZG 安全性、证明对象、验证方独立性或安全参数。现有正式安全目标保持 **120-bit**，不得通过缩小挑战域、减少必要约束或使用已知 trapdoor 降低成本。
 
-### 3.4 训练和 checkpoint
+### 2.2 五个正式数据集与配置
 
-五个数据集都必须具有能够真实训练当前最终架构的正式训练路径。Codex 负责把训练入口、模型构造、参数传递、checkpoint/export/manifest 链准备并验证到可正式执行状态；五个数据集的正式长时间训练由项目负责人按照 §4.3 执行，最终正式 checkpoint 必须来自本轮真实训练。
+| 数据集 | `d_in_profile` | `num_classes` | `range_bits` | 正式配置 |
+|---|---|---:|---:|---|
+| Cora | `[1433,64]` | 7 | 12 | `configs/cora_secure.cfg` |
+| Citeseer | `[3703,64]` | 6 | 12 | `configs/citeseer_secure.cfg` |
+| Pubmed | `[500,64]` | 3 | 12 | `configs/pubmed_secure.cfg` |
+| PPI | `[50,64]` | 121 | 14 | `configs/ppi_secure.cfg` |
+| OGBN-Arxiv | `[128,64]` | 40 | 21 | `configs/ogbn_arxiv_secure.cfg` |
 
-checkpoint/bundle import、旧 checkpoint 转换、tensor reshape、bundle export 或其他 artifact 转换流程都不等同于训练。Codex 必须逐数据集检查真实训练入口；如果某个数据集当前只有导入/转换路径，或者训练路径仍对旧架构存在硬编码，必须把这一问题作为当前多层多头适配的一部分处理。
+完整 zkGAT 的正式结果仍为五个数据集 × CPU/GPU 两个后端，共十组完整推理证明，全部必须真实 `VERIFY_OK`。同一数据集的 CPU/GPU 使用相同正式模型、checkpoint、图、公开输入、config、SRS 和证明语义，仅在合法执行后端上不同。正式模型的 checkpoint、训练种子 11、SRS 规则、range 审计及已有安全门禁保持不变。
 
-正式训练继续使用：seed = 11固定 seed 只用于 checkpoint 生成过程可复现，不新增多 seed accuracy 实验。
-
-正式训练不得静默采用 smoke/minimal 默认参数。若某个 trainer 的默认 `epochs`、`patience` 或其他训练参数明显只服务于短时验证，不得直接把这些默认值作为论文正式 checkpoint 的训练设置。若当前项目没有已经确定的正式训练 schedule，Codex 必须明确报告项目负责人确认，不得自行把测试默认值升级为正式实验参数。
-
-training-only 参数不得为了方便直接塞入当前 C++ 正式 config parser 不接受的 canonical `*_secure.cfg`。训练参数应通过当前真实 trainer 已支持的 CLI 或项目当前已有的合法训练入口传递；只有主实验真实正式配置链本身要求某字段时才进入 canonical secure config。
-
-禁止复制旧 head、复制旧隐藏层、reshape 旧 checkpoint、拼接旧权重、随机补层、synthetic weights 或其他没有经过真实训练的方式生成正式模型。
-
-训练只用于生成正式 proof 实验需要的 checkpoint。本项目不新增 Accuracy、F1、AUC、多 seed 模型效果、训练收敛曲线或训练性能研究。
-
-checkpoint / manifest / loader 必须与正式 config 的完整模型 shape 严格一致。结构不一致应拒绝，不得通过放松检查兼容错误 artifact。
-
-canonical checkpoint 路径：
+正式主实验的 canonical checkpoint：
 
 ```text
 artifacts/checkpoints/cora_gat/
@@ -185,35 +85,7 @@ artifacts/checkpoints/ppi_gat/
 artifacts/checkpoints/ogbn_arxiv_gat/
 ```
 
-### 3.5 `range_bits`
-
-先保持当前已有正式值：
-
-| Dataset | `range_bits` |
-|---|---:|
-| Cora | 12 |
-| Citeseer | 12 |
-| Pubmed | 12 |
-| PPI | 14 |
-| OGBN-Arxiv | 21 |
-
-新 checkpoint 产生后执行真实整数范围审计。如果不足，不得自动修改；必须报告 dataset、layer/head、对应中间关系或中间量、实际最大范围、当前允许范围和最低需要 bits，由项目负责人决定是否调整。已知 range audit 未通过时，不得把该数据集后续完整运行结果当作正式论文结果。
-
-### 3.6 SRS
-
-SRS 必须根据当前主实验真实的 SRS 生成、加载、manifest/binding 和实际 proof shape 判断是否与新的正式多层多头实例完整兼容，而不能只看某一个表面容量字段。不得因为改成多层多头而重新设计一套 SRS 协议。
-
-需要做的是：
-
-- 按当前主实验真实代码检查现有 dataset-specific canonical SRS 是否与新的正式 proof shape 完整兼容；
-- 检查当前代码实际要求的 capacity 以及其他真实存在的绑定条件；
-- 如果当前正式实现判定旧 SRS 不兼容，就按照现有正式 SRS 工具和规则准备重新生成；
-- 不得仅因为 nominal capacity 看起来足够就直接认定旧 SRS 一定可以继续使用；
-- 保持当前正式 SRS 生成、manifest、PK/VK 和 loader 语义；
-- 不引入新的非正式 SRS 路径；
-- 不使用已知 trapdoor 绕过正式 setup。
-
-canonical SRS 路径：
+正式 SRS：
 
 ```text
 artifacts/srs/cora_formal_srs/
@@ -223,127 +95,91 @@ artifacts/srs/ppi_formal_srs/
 artifacts/srs/ogbn_arxiv_formal_srs/
 ```
 
-正式大型 SRS 由项目负责人执行。
+正式主实验结果统一保持在 `results/paper_secure/`，不允许机制级结果覆盖该目录中的主实验工件。
 
-### 3.7 correctness / parity
+### 2.3 机制级实验不是完整推理结果
 
-论文不研究模型 accuracy，但必须确认新的多层多头模型真的被当前主实验正确计算和证明。
+机制级实验可以仿照 VerfCNN 的 Pure Convolution Evaluation，直接构造与目标机制相符的不同规模证明工作负载；不必为每组机制配置执行五个数据集的完整 GAT 推理。独立机制工作负载必须具有合法图、节点/边关系、真实有限域见证及可验证的证明声明，并记录规模来源与参数。机制级测试可以采用真实工作负载尺寸和受控的参数化设置，但不能把测试 fixture 或缩规模结果冒充完整 zkGAT 五数据集正式结果。
 
-根据当前真实代码验证：
+本轮不重新设计正式 GAT 网络的 architecture scaling；机制级实验所需的节点数、边数、特征宽度等规模变化是**证明机制的规模评估**，不等同于改变五个正式 GAT 模型的层数、头数或输出结构。
 
-```text
-trained model
--> exported checkpoint
--> C++ forward
--> quantized / registered forward
--> secure trace / proof path
--> public output
--> verify
-```
+### 2.4 正式 checkpoint、训练与 SRS 的长期不变量
 
-具体测试内容由当前主实验真实实现决定，不得从 `comparison/` 或历史说明增加主实验不存在的协议测试项。最终完整正式运行必须 `VERIFY_OK`。
+本轮不重新训练或重生成正式 SRS，但后续任何涉及正式主实验的任务均不得破坏以下规则：
 
-## 4. 测试和执行权限
+- checkpoint 必须来自针对对应正式多层多头 GAT 的真实训练；不得用旧模型权重复制、补层、reshape、导入/导出转换或 synthetic weights 冒充正式训练。训练固定 `seed=11`。正式训练 schedule 不得静默采用 smoke/default 训练参数；尚未明确的正式参数应报告项目负责人决定。
+- checkpoint / manifest / loader 必须严格匹配对应正式 config 的层数、头数、维度及参数身份；不匹配直接拒绝，不能放宽校验。
+- 五个正式配置使用 §2.2 已登记的唯一 canonical 路径，不另建 `*_new.cfg`、`*_v2.cfg`、`*_final.cfg` 等平行正式配置。
+- checkpoint 生成后必须执行真实 forward、量化一致性与整数范围审计。`range_bits` 默认保持 §2.2 数值；若不足，必须报告层/头、超限值、所需位数，由项目负责人决定，Codex 不得自行修改范围参数来促使实验通过。
+- SRS 必须通过真实生成、manifest、PK/VK、domain 目录、digest 与 proof-shape 绑定检查判定兼容；不能仅依据名义 capacity 推断兼容，也不能使用已知 trapdoor 或非正式 setup 代替安全 SRS。
+- 正式主实验对应的 private model、量化和 public logits 绑定不因机制级消融实验而变更；禁止使用测试性模型、子图或缩减节点/边数替代正式完整数据集证明。
 
-### 4.1 `tests/` 是唯一 test-only 工作区
+### 2.5 正式主实验报告与身份
 
-所有 test-only 的 unit/regression/correctness/parity/security/negative test、helper、fixture、mock、测试配置、测试脚本、测试输入、测试日志、测试 proof、测试 cache、测试中间 artifact，以及仅用于开发验证的 benchmark/profiling 代码，都只能位于 `tests/`。
-
-是否属于 test-only 内容，必须根据真实职责和调用关系判断，而不能根据文件名中是否含有 `test`、`check`、`validate`、`parity` 等字样机械判断。
-
-如果某个 checker / validator 是正式 checkpoint、artifact、SRS 或正式执行 Gate 的生产工具，应保持其真实正式职责和合理目录，不得仅为了目录形式统一强行迁入 `tests/`；如果其真实职责仅为开发测试，则必须收敛到 `tests/`。
-
-test-only 内容不得散落到 `src/`、`include/`、`tools/`、`scripts/`、`configs/`、`artifacts/`、`runs/`、`results/` 等正式目录。
-
-正式运行本身需要的性能统计、backend 开关和正式工程优化能力不属于 test-only 代码，不应被迁移到 `tests/`。
-
-### 4.2 Codex 必须自己完成短时验证
-
-Codex 不能只修改代码然后把所有验证交给项目负责人。
-
-能够在合理时间内完成的必要验证，由 Codex 自己执行，包括 CMake configure、CPU build、GPU build、必要 unit test、targeted regression、correctness/parity、与本轮实际修改直接相关的既有 security/negative regression，以及必要短时局部集成验证。只有新架构真实暴露新的 correctness/security defect 时，才针对该真实问题补最小必要测试，不得为了本轮多层多头适配扩展新的协议测试体系。
-
-### 4.3 长时间任务由项目负责人执行
-
-由项目负责人执行：
-
-- 十分钟级及以上或明显高资源的测试；
-- 接近完整数据集规模的验证；
-- 五数据集正式训练；
-- 正式大型 SRS；
-- 完整数据集 proof / verify；
-- 五数据集 CPU 完整实验；
-- 五数据集 GPU 完整实验；
-- 会触发上述重型计算的正式结果采集。
-
-Codex 不得因为这些操作由项目负责人执行，就提前停止其他仍可完成的代码、配置、测试、构建和静态检查工作。
-
-只有后续工作真实依赖项目负责人执行后产生的新 checkpoint、SRS 或长时间结果，并且其他可完成工作已经完成，才算真正受到阻塞。
-
-### 4.4 Codex 必须准备长时间任务的完整命令
-
-需要项目负责人执行的任务，Codex 必须根据修改后的真实项目准备完整命令、实际参数、输入/输出路径、执行顺序、成功判据以及需要返回继续检查的结果。
-
-不得只给示例命令或使用省略号。
-
-正式长时间训练、SRS、测试和 CPU/GPU 实验默认运行至自然完成或真实失败，不应人为加入固定 timeout，除非项目负责人明确要求。
-
-### 4.5 其他执行边界
-
-本轮默认只读：
+正式主实验继续沿用现有 canonical 汇总与安全报告，包括：
 
 ```text
-GAT-ZKML-多层多头.md
-PROJECT_CONTEXT_AND_EXECUTION_CONSTRAINTS.md
-PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md
+results/paper_secure/summary.md
+results/paper_secure/latest.csv
+results/paper_secure/latest.json
+results/paper_secure/security_tests_report.md
 ```
 
-Codex 不得为了迁就当前代码自行修改这三份文件。
-
-Codex 可以使用 `git status`、`git diff`、`git log`、`git ls-files` 等只读 Git 命令检查当前状态、差异和 tracked/untracked 情况。
-
-不得自行执行 `git pull`、`git commit`、`git push`、merge、rebase、tag、创建/删除分支、`git reset --hard`，也不得执行其他会改变当前 Git 工作区、历史或远程状态的操作。
-
-执行测试前必须确认测试入口不会隐式触发正式训练、大型 SRS、完整数据集 proof 或最终正式实验。
-
-### 4.6 后续正式执行顺序
-
-Codex 完成本轮工程准备后，后续正式长时间任务按以下依赖顺序执行：
-
-```text
-正式训练
--> checkpoint / manifest 检查
--> forward / parity / range 检查通过
--> 正式 SRS 生成与检查
--> 必要长时间验证
--> CPU/GPU 十组正式实验
--> VERIFY_OK
--> 正式结果汇总
-```
-
-任何一步发现真实问题，都必须先解决并重新通过对应检查，再进入下一步。不得在已知前置检查失败的情况下继续生成后续正式结果。
-
-这一顺序只是正式执行和验收顺序，不改变当前主实验已经实现的协议流程。
+正式结果必须能追溯数据集、backend、config、checkpoint、SRS、proof、verifier 判定与四项正式指标。不同模型架构或不同数据集的历史证明不得与当前固定的多层多头正式实验混成同一主表。任何正式结果必须真实通过 `VERIFY_OK` 与一致性、安全门禁，不能只依据日志中的单阶段成功宣告完成。
 
 ---
 
-## 5. 正式结果要求
+## 3. 当前只保留的三类论文实验内容
 
-最终论文正式结果只能来自当前：
+最终实验体系只包括：
 
-```text
-L = 3
-hidden_profile = [8x8,8x8]
-K_out = 2
-```
+1. **机制一：Sparse Node-to-Edge Feature Verification**，比较随机特征折叠与逐坐标 node-to-edge 特征对应证明。
+2. **机制二：Shared Neighborhood Verification**，比较共享邻域证明与 denominator / weighted aggregate 的两套独立邻域证明。
+3. **完整 zkGAT End-to-End 主实验**，五个数据集的真实多层多头完整推理证明及外部基线比较（外部基线不属于本文件代码修改范围）。
 
-的五个完整数据集。
+**不保留端到端消融作为正式实验类别。** 不再执行或维护完整 GAT 的 `zkgat`、`wo_feature_folding`、`wo_shared_neighborhood` 三变体消融矩阵。历史端到端消融数据可以保留作为历史证据，但不进入新机制级主表，也不得混入正式 zkGAT 结果。
 
-禁止 toy dataset、sampled subgraph、缩减图、部分节点/边或测试 fixture 替代论文正式结果。
+### 3.1 机制一：Feature Folding
 
-旧 `L=2`、旧 hidden profile、`K_out=1` 或其他历史结果不得与新的十组结果混合形成最终主表。
+证明声明必须准确对应现有 zkGAT 的**隐藏层源节点至边特征对应关系**，不得笼统描述为“禁用整个网络的所有折叠”。
 
-正式性能指标继续使用当前正式口径：
+- 原始方案：以承诺后随机挑战折叠特征坐标，在绑定源表示的前提下证明 node-to-edge 对应关系。
+- 对照方案：对相同源节点特征和边映射，逐坐标执行相应的 node-to-edge 对应证明。
+- 必须保持相同输入语义、映射条件、隐私要求、来源 commitment 绑定、安全等级及 verifier 判定目标。
+- 两种实现均不得跳过源特征绑定、有效边检查、随机挑战次序或完整的对应关系证明。
+- 先审计现有 `wo_feature_folding` 实现；它若包含正确的逐坐标路由与证明实现，应直接复用。仅删除不再需要的完整 GAT 消融包装层。
+
+### 3.2 机制二：Shared Neighborhood
+
+证明声明必须对应同一组目标节点邻域上的 denominator 与 weighted aggregate 两项关系。
+
+- 原始方案：使用承诺后采样的随机线性组合，共享 PSQ 与目标邻域证明关系。
+- 对照方案：使用两套独立 PSQ 及对应的目标邻域证明关系。
+- 两者输入图结构、邻居分组、边序、值、聚合语义、隐私要求、挑战强度和验证目标一致；不得将独立方案偷换成只验证其中一条关系。
+- 对多图 workload 保留 `node_ptr` / `edge_ptr` 与每图内部有效分组语义，禁止跨图拼接错误。
+- 先审计现有 `wo_shared_neighborhood` 实现；符合数学语义与安全规范的证明、quotient、opening 及 verifier 逻辑应保留复用。
+
+### 3.3 真实机制证明的边界
+
+机制级实验只执行所比较的**目标证明关系及其必要的证明依赖**；不重复无关的 GAT 模型投影、注意力计算、激活、全局中间值和整个网络的统一证明。
+
+必须先沿生产源码确定两侧各自的 commitment、trace、LogUp/route/PSQ、Fiat–Shamir、quotient、opening、proof serialization 和 verifier 最小闭合依赖。可以构建清楚定义独立证明声明的机制级 proof/verifier，但不得改变原正式 zkGAT proof 语义；机制级证明属于明确隔离的实验协议与工件。
+
+只有确实能够生成**独立、完整、可序列化且由真实 verifier 验收**的机制证明，才可以报告其独立 Commitment、Prove、Verify 和 Proof Size 四项结果。
+
+如受共享商多项式、transcript、opening registry 或安全绑定限制，当前设计不能形成数学上成立的独立机制证明，必须分析并解决这些依赖；不得通过单独计时函数、硬编码校验通过、伪造 proof 或随意相减全局 proof size 冒充机制证明成功。确实无法解决的约束必须如实汇报，不得宣布任务已完成。
+
+### 3.4 公平比较和机制规模
+
+每一组对照使用相同目标声明、输入规模、图与边映射、原始见证、120-bit 安全目标、GPU 设备与后端条件。各变体特有的 witness 生成、折叠、route、PSQ、commitment、quotient、opening、serialization 必须计入实际相关计量范围。
+
+可按机制本身的关键变量测试多种工作负载：节点数 N、边数 E、隐藏特征宽度 d_h；Shared Neighborhood 额外记录目标邻域分布和多图边界。具体参数必须有可行的密码学域与 SRS，并能真实完成验证；不为了制造更大的加速比挑选不公平参数。优先从相同工作负载的配对比较出发。
+
+---
+
+## 4. 正式机制级指标与计时语义
+
+两项机制实验优先输出和正式主实验同名的五项结果：
 
 ```text
 commitment_time_ms
@@ -353,96 +189,120 @@ proof_size_bytes
 VERIFY_OK
 ```
 
-正式总时间的统计口径固定为：
+根据当前 `src/main.cpp` 的在线计时与 wall-clock 分区校验，`commitment_time_ms` 与 `prove_time_ms` 是**互不重叠**的 prover 时间分区；`prove_time_ms` **不包含** `commitment_time_ms`。`prove_time_ms` 对应除承诺外的在线 trace、prover 和证明序列化工作，并受既有计时边界及校验约束；`verify_time_ms` 依照正式路径计入 proof 解析与实际验证的指定范围。后续若真实源码变更导致这一事实不再成立，必须先报告计时语义冲突并按正式计时规范处理，不得悄悄修改本规则或实验口径。正式合计口径保持：
 
 ```text
-commitment_time_ms +
-prove_time_ms +
-verify_time_ms
+formal_time_sum_ms =
+    commitment_time_ms + prove_time_ms + verify_time_ms
 ```
 
-沿用当前正式实现已有的总时间字段命名。不得仅为了满足本文件重新命名或新增一个语义等价的总时间字段，也不得为了新的模型修改已有 timer 边界或把原本计时内工作移到 timer 外制造性能收益。`proof_size_bytes` 必须是真实 serialized proof 的字节数。
+不得将 Commitment 再计入 Prove，也不得凭习惯改变既有官方 timer 边界。机制级实验应采用相同的不重叠语义；它们仅因**真实工作范围不同**而与全网端到端耗时不同。
 
-论文正式结果统一收敛到：results/paper_secure/
+`proof_size_bytes` 必须来自该机制 proof 的实际规范序列化字节数，既不能使用全网 proof 冒充机制 proof，也不能去除真实 proof 必需的字段。若对应的是局部归因统计而非独立证明，应使用单独准确命名的增量/诊断指标，不得使用上述完整 proof 指标名称伪装。
 
-至少包括：
-
-```text
-results/paper_secure/summary.md
-results/paper_secure/latest.csv
-results/paper_secure/latest.json
-results/paper_secure/security_tests_report.md
-```
-
-`security_tests_report.md` 是论
-
-
-
-文级正式安全测试汇总；raw test logs、临时测试 proof 和其他测试产物仍然只存在于 `tests/`。
-
-正式结果必须能够追溯到当前 dataset、backend、config、checkpoint、SRS、run/proof、`VERIFY_OK` 和正式性能指标。不要求为了本轮重新设计结果 schema；当前导出机制已经具备时保持现状即可。
+如有必要，可另外记录 witness/trace、PSQ/route、commitment MSM、quotient、opening、对象/关系数量等解释性指标，但不能混淆嵌套计时，不得让 profiler 明显改变所报告的正式性能。
 
 ---
 
-## 6. 工作区治理
+## 5. 旧端到端消融代码的清理与复用
 
-主实验最终只保留当前唯一正式状态。
+先进行完整的生产调用链与文件依赖审计，然后才删除。
 
-不得创建或长期保留 `old`、`new`、`backup`、`legacy`、`previous`、`preserved`、`pre_*`、`phase*`、`final/final2`、日期型副本、`multilayer_v2`、`formal_new` 等开发历史式文件或目录。
-
-主实验自行控制的 schema、file format、security profile、protocol、envelope、artifact、manifest、registry、report、transcript/domain identity、magic/header 及其他正式内部 identity 均只保留当前唯一 canonical 定义，不得携带 `v1/v2/vN`、`_vN`、`-vN` 或其他体现项目历史版本演进的编号。清理必须依据真实引用关系沿 producer、serialization、hash/digest/transcript、consumer 和 validation 调用链完整传播，不能以删除正式语义、弱化校验或破坏协议绑定为代价。第三方标准、外部 ABI/API、依赖自身版本、数据集官方版本以及算法或密码学参数中的固有版本/数字不属于本规则的清理对象。
-
-同一职责只保留一个 canonical 实现。不得通过复制文件、平行实现、大段注释旧代码、备份目录或历史 artifact 保留修改过程。
-
-除非项目负责人明确要求，不得新增 `TASK_REPORT.md`、`IMPLEMENTATION_NOTES.md`、`MIGRATION_NOTES.md`、`CHANGES.md`、`TODO_MULTILAYER.md` 或其他本轮任务过程文档。
-
-清理文件时必须根据主实验真实引用关系确认已经失效，不得使用宽泛通配符或推测性大范围删除 checkpoint、SRS、results、runs 或其他 artifact。
-
-当新的正式 checkpoint / SRS 尚未生成时：
-
-- canonical config 仍保持最终多层多头目标；
-- 不得为了短时测试临时改回旧模型配置；
-- 不得复制、改名或伪造旧 checkpoint / SRS 填充正式状态；
-- 需要轻量测试 artifact 时使用 `tests/` 内合法 fixture，不污染正式 canonical artifact。
-
-需要人工保留的历史文件移出 `/home/pzh/project`。
-
-`comparison/` 始终不参与任何清理。
+- 删除确认**仅服务于旧完整 GAT 消融矩阵**的 runner、矩阵聚合、重复配置、专属 CLI 包装和无效文档/产物生成逻辑。
+- 尽量保留并复用旧变体中对机制级证明真正必要且正确的 trace、PSQ、特征坐标路由、quotient、commitment、opening、challenge、序列化及 verifier 逻辑。
+- 对已被正式 zkGAT 或新机制证明共享调用的代码，禁止为了“清理消融”删除、降级或复制出不一致的替代版本。
+- 不在主实验的正式 proof schema、transcript 或验证规则中保留不必要的实验分支；但必须根据真实使用关系决定能否移除，不能凭名称删除。
+- 已有历史 `runs/`、证明、日志、SRS、checkpoint、canonical cache 和主实验结果保留，不作通配符式大范围删除。
+- 新增机制级实验必须具有明确独立入口、参数验证、独立输出目录、日志、可追溯配置、证明工件与结果汇总；不得与旧端到端消融混用。
 
 ---
 
-## 7. 当前任务完成标准
+## 6. 当前已知执行错误的处理范围
 
-本节区分两个状态：
+旧 `wo_shared_neighborhood / OGBN-Arxiv` 端到端运行曾报告：
 
-### 7.1 Codex 本轮工程准备完成
+```text
+CUDA quotient coset route was selected but materialization was not admitted:
+target_size=134217728 domain=FH route=cuda_coset_to_host
+```
 
-Codex 本轮的目标不是在没有新 checkpoint、正式 SRS 和完整数据集运行结果的情况下宣称最终实验已经完成，而是把项目准备到只剩项目负责人必须执行的长时间任务。
+这条原生错误应保留为故障事实，不得将后续 `run_manifest.json` 缺失当成根因，也不得推断它必然是物理 OOM。
 
-Codex 只有在以下条件满足后，才可以认为本轮“工程准备完成”并停止等待项目负责人执行长时间任务：
+若审计确认缺陷发生在**正式 zkGAT 或新机制级实验共用**的执行层，且影响本轮机制正确性、构建或可执行性，则按必要最小范围修复并执行针对性回归。不得为了修复已取消的旧端到端消融而重新运行完整 OGBN-Arxiv，也不得借该错误提前启动全局主实验性能优化。
 
-1. 已基于主实验真实代码执行链完成分析，而不是依赖 README、注释、历史描述或 `comparison/`。
-2. 五个正式 config 已直接表示 `L=3`、`hidden_profile=[8x8,8x8]`、`K_out=2`，并具有正确 `d_in_profile`；所有由模型结构派生或用于结构绑定的 metadata / ID 已同步到新架构，没有残留旧模型 shape。
-3. 已逐数据集确认存在真正能够训练当前多层多头模型的正式训练路径，固定 seed 为 `11`，不会把 import/export/旧 checkpoint 转换当成训练，也不会把 smoke/minimal 默认参数静默当成正式训练参数；能够导出匹配 checkpoint / manifest。
-4. 已确认 checkpoint loader、模型构造和真实 forward 能够正确处理两个隐藏层和两个 output heads。
-5. 已确认 trace、prove、verify、CPU 和当前正式 CUDA backend / hotspot 路径对新结构的真实支持情况；没有为了本轮改造扩张 GPU 覆盖范围或重构现有 backend。
-6. 对已经正确工作的正式协议代码没有无意义重构。
-7. 如果真实代码发现旧单层/单输出头等硬编码，只进行了当前多层多头所需的最小必要修复，并完成对应短时验证。
-8. 已准备当前模型所需 range audit，且没有擅自修改现有 `range_bits`。
-9. 已根据当前主实验真实的 SRS 生成、加载、manifest/binding 和实际 proof shape，检查当前 dataset-specific canonical SRS 与新的正式多层多头实例是否完整兼容；如果当前正式实现判定需要重新生成，已经按照现有正式 SRS 流程准备好对应生成入口。没有仅依据 nominal capacity 作结论，也没有重新设计 SRS 协议。
-10. 所有 test-only 代码和 test-only 产物均收敛在 `tests/`；正式 checker/validator 是否迁移已依据真实职责和调用关系判断，没有按文件名机械处理。
-11. Codex 已实际完成 CPU/GPU build 及所有合理时间内能够执行的必要短时验证。
-12. 旧 architecture-scaling 草案、真实失效的历史副本和重复实现，在确认没有正式依赖后已经清理；主实验自行控制的 schema/format/security/profile/protocol/envelope/artifact/manifest/registry/report/transcript 等正式内部 identity 已统一为当前唯一无历史版本号的 canonical 定义，不存在 `v1/v2/vN`、legacy、compatibility、migration 或旧格式 fallback；现有正式 CPU/GPU 工程优化能力没有被误删或回退。
-13. 没有新建第二套正式 config、checkpoint、SRS、protocol 或 backend 实现。
-14. 没有从 `comparison/` 引入任何主实验不存在的协议关系、代码或测试要求。
-15. 对仍需要项目负责人执行的正式训练、checkpoint 后检查、SRS 生成、长时间测试和最终 CPU/GPU 十组实验，已给出经过检查的完整执行命令和成功判据。
-16. 在要求项目负责人开始长时间任务前，所有不依赖这些任务实际输出即可完成的开发工作已经完成。
-17. 已明确区分“当前代码路径经静态分析/短时验证确认具备支持能力”和“依赖新 checkpoint、新 SRS、完整数据集运行后才能最终确认”的事项；不得在尚未完成长时间正式任务时把后者描述为已经最终验证通过；正式时间仍沿用当前实现既有字段命名和 timer 边界。
+不得关闭 CUDA 安全检查、跳过被证明关系、伪造结果或把 CPU 退化路径称为 GPU 成功。对于资源拒绝，应找到触发条件并验证计算语义等价的合法执行路径。
 
-### 7.2 最终正式实验完成
+---
 
-在 Codex 完成本轮工程准备后，由项目负责人按本文件规定的顺序执行正式训练、训练后检查、正式 SRS、必要长时间验证以及五个数据集 CPU/GPU 共十组完整实验。
+## 7. 测试、权限与执行
 
-只有在新的正式 checkpoint、正式 SRS 和完整数据集实际运行均完成，并且十组当前统一多层多头正式实验全部 `VERIFY_OK`、结果能够正确汇总到当前 canonical 正式结果后，才可以认为“最终正式实验完成”。
+### 7.1 测试职责、范围与真实性
 
-是否开始正式训练、生成正式 SRS、执行长时间测试、运行最终十组实验以及是否冻结论文最终结果，由项目负责人决定。
+所有 test-only 的单元测试、回归测试、负例测试、fixture、smoke/profiling 辅助程序及测试工件统一放入 `tests/`。真正的**机制级正式实验运行入口和证明实现不是 test-only**，应根据生产职责保留在合理的源代码、脚本、配置与结果目录中，不得机械地全部迁入 `tests/`。
+
+Codex 必须自行完成能力和资源允许范围内的构建与**有针对性的完整正确性验证**。对两项机制分别覆盖两侧真实证明与独立验证、必要的挑战/承诺绑定、非法声明或 proof 篡改拒绝、输入索引与多图边界、序列化和计时分区；当实际实现涉及 CPU/CUDA 共享路径时，须覆盖有代表性的 CPU/GPU 结果一致性。测试对象是机制级证明，不是完整多层多头 GAT 的长时间证明。
+
+测试要按证明关系、执行路径和风险**合并组织**。可复用既有测试，不为每个函数另建一套，也不因为代码微调反复运行相同测试。构建成功、函数返回值正确或简单 smoke test **单独都不足以证明**真实密码学证明正确；但也不需要对未受影响的所有主实验组件重复全面回归。
+
+允许 Codex 在权限和资源允许时执行**预计短于十分钟的真实机制级实验**并报告实际结果；若某正式工作负载预计达到十分钟级或明显高资源，应先完成其余可执行实现和短时验证，再向项目负责人提供直接可执行的完整命令。不得仅因完整 GAT 正式 proof 禁止由 Codex 运行，就拒绝执行合理短时的独立机制 proof。
+
+本轮不得运行完整 Cora/Citeseer/Pubmed/PPI/OGBN-Arxiv GAT 正式证明、五数据集全矩阵、正式训练或大型 SRS 生成。长时间任务由项目负责人决定并执行；不得以“完整验证”“正式回归”为由变相进行大规模测试。正式任务应运行至自然结束或真实失败，不擅自添加固定超时；诊断性短时测试应有合理的超时与资源界限。
+
+### 7.2 后台运行与结果要求
+
+机制级实验入口需要支持 GPU 后端、明确工作负载选择、日志与退出码完整记录。需后台运行时应可脱离 SSH 会话持续执行；禁止并发启动互相争抢 GPU 资源的正式单元，避免污染性能数据。
+
+每个正式机制 proof 需要可追溯至原始变体、参数、config、SRS、可执行文件、验证器输入、证明序列化摘要及真实验证结论。输出路径与主实验的 `results/paper_secure/` 严格隔离；完整主实验结果仍按现有正式路径管理。
+
+只有实际证明、序列化、独立验证和结果检查全部成功后，才可报告 `VERIFY_OK`；仅有 `prove` 或控制台打印成功不等于最终验收成功。
+
+### 7.3 安全与执行规则
+
+- 不读取或泄露 witness 给 verifier；不把裸中间私有值写入证明。
+- 不绕过真实 KZG、Fiat–Shamir、随机挑战后绑定、安全门禁、独立验证或协议身份检查。
+- 机制原方案与对照方案必须有可核验的具体证明声明，不允许模拟、空壳或预设成功。
+- 与本轮无关的正式训练、模型精度、SRS 重构及全局性能优化不做。
+- 每项变更以源码证据和实际测试为依据，不作无理由的大范围重构。
+
+### 7.4 后续性能优化的验证权限
+
+本文件规定所有开发任务共同遵守的资源、安全及工件上限；**后续主实验性能优化专用的测试节奏、覆盖判据和验收方法，以单独启用的 `PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md` 为准**。机制级实验的对照测试清单不会自动变成性能优化时每次必须重新运行的测试矩阵。
+
+未来性能优化必须在完成一个具有真实调用链边界的成组改动后，按受影响风险集中验证；**禁止每修改一两个函数便启动一轮完整测试，也禁止仅凭一次简单测试就宣布整个优化成功**。在保证关键正确性覆盖的前提下，严格控制测试次数、规模、耗时和 GPU 资源；测试失败时优先定位根因并只复测受影响的范围，禁止无意义的全面重复运行。
+
+---
+
+## 8. 工件、Git 与工作区治理
+
+1. 约束文件与最高技术规范均由项目负责人维护；Codex 在普通实现任务中只读。
+2. 不得新建保留 `old/new/backup/legacy/v2/final2/日期型` 等历史副本或平行的正式协议实现；同一职责只保留当前 canonical 实现。
+3. 不得滥改正式 schema、format、artifact、manifest、identity、hash/transcript 绑定；必要变更必须沿 producer、serializer、consumer、verifier、validator 闭合。
+4. 不得未经许可创建 `TASK_REPORT.md`、`CHANGES.md`、迁移说明、临时计划等额外过程文档。完成报告直接在 Codex 对话中给出。
+5. 只允许 `git status`、`git diff`、`git log`、`git ls-files` 等只读 Git 检查；不允许 pull、commit、push、merge、rebase、reset、branch/tag 变更或其他改变 Git 状态的操作。
+6. 不得污染或覆盖正式 SRS、checkpoint、数据缓存、主实验配置、proof、manifest、历史运行结果或 `results/paper_secure/`。
+7. 清理仅针对能够由真实依赖证明已废弃的端到端消融专属部分；不删除有效的主实验性能优化能力、GPU 热点实现和机制级共享逻辑。
+
+---
+
+## 9. 当前机制级重构的完成标准
+
+只有以下条件全部满足，才可报告本轮完成：
+
+1. 已沿源码厘清旧端到端消融与新机制级实验的完整依赖，正确清理失效部分并复用有效实现。
+2. 完整 zkGAT 正式主实验的模型结构、证明语义、安全参数、CPU/GPU 路径、结果导出未被破坏。
+3. Feature Folding 与 Per-coordinate 两种机制均有同一明确证明声明、真实 proof、独立真实 verifier 和必要的正确性/负例测试。
+4. Shared Neighborhood 与 Independent Neighborhood 两种机制均有同一明确证明声明、真实 proof、独立真实 verifier 和必要的正确性/负例测试。
+5. 两组机制级实验具有可运行的合法工作负载、独立入口、GPU 支持、准确的四项正式指标与 `VERIFY_OK`、真实序列化 proof、独立日志和结果汇总。
+6. Codex 已实际运行权限内能够完成的构建和真实机制 proof/verify，修复可复现的相关缺陷；对未执行的高资源/长时间项明确标注并提供完整执行指令，不能声称已通过。
+7. 对历史工件及正式主实验没有污染，没有遗留已知可以解决的编译、验证、计时或运行入口错误。
+8. 汇报具体复用/删除/新增的代码、实际运行输出、四项指标、真实验证状态、测试结论，以及未执行且需用户处理的项目（如有）。
+
+**完成以上工作后立即停止，等待项目负责人新的 Prompt。不得自动进入主实验性能优化阶段。**
+
+---
+
+## 10. 后续性能优化阶段的启用规则
+
+项目负责人单独发布“开始主实验性能优化”等明确新任务之后，才激活 `PERFORMANCE_OPTIMIZATION_CONSTRAINTS.md`。届时该文件负责进一步规定 GPU 优先、父级热点、正向收益、禁止用回退或关闭优化冒充修复、短时测试和正式性能冻结。
+
+本文件关于正式 zkGAT 数学语义、实验身份、数据一致性、可信计量、安全保护、工件隔离和执行权限的长期约束持续有效；仅与“本轮机制级消融”直接绑定的操作范围在下一阶段自动结束，不再阻止负责人明确授权的性能优化。

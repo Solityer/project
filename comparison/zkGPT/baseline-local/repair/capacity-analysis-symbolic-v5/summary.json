@@ -1,0 +1,116 @@
+{
+  "binary_sha256": "8c33546d11c607dcb0798ebfad388a0c027b350ef7ba907e2444bdc7067f492a",
+  "profile_kind": "analysis_only",
+  "datasets": {
+    "cora": {
+      "exit_code": 0,
+      "elapsed_s": 0.25928537698928267,
+      "stdout_bytes": 156117,
+      "stderr_bytes": 1111,
+      "timed_out": false,
+      "command": [
+        "/home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/zkgpt_gat_prover",
+        "--capacity-profile-only",
+        "--dataset",
+        "cora",
+        "--backend",
+        "cpu",
+        "--baseline-root",
+        "/home/pzh/project/comparison/zkGPT"
+      ],
+      "json_status": "ANALYSIS_ONLY",
+      "ready": false,
+      "profile_kind": "analysis_only",
+      "profile_binary_sha256": "8c33546d11c607dcb0798ebfad388a0c027b350ef7ba907e2444bdc7067f492a",
+      "shape": null
+    },
+    "citeseer": {
+      "exit_code": 0,
+      "elapsed_s": 0.32279232901055366,
+      "stdout_bytes": 156147,
+      "stderr_bytes": 1149,
+      "timed_out": false,
+      "command": [
+        "/home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/zkgpt_gat_prover",
+        "--capacity-profile-only",
+        "--dataset",
+        "citeseer",
+        "--backend",
+        "cpu",
+        "--baseline-root",
+        "/home/pzh/project/comparison/zkGPT"
+      ],
+      "json_status": "ANALYSIS_ONLY",
+      "ready": false,
+      "profile_kind": "analysis_only",
+      "profile_binary_sha256": "8c33546d11c607dcb0798ebfad388a0c027b350ef7ba907e2444bdc7067f492a",
+      "shape": null
+    },
+    "pubmed": {
+      "exit_code": 0,
+      "elapsed_s": 0.3999739110004157,
+      "stdout_bytes": 157212,
+      "stderr_bytes": 1132,
+      "timed_out": false,
+      "command": [
+        "/home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/zkgpt_gat_prover",
+        "--capacity-profile-only",
+        "--dataset",
+        "pubmed",
+        "--backend",
+        "cpu",
+        "--baseline-root",
+        "/home/pzh/project/comparison/zkGPT"
+      ],
+      "json_status": "ANALYSIS_ONLY",
+      "ready": false,
+      "profile_kind": "analysis_only",
+      "profile_binary_sha256": "8c33546d11c607dcb0798ebfad388a0c027b350ef7ba907e2444bdc7067f492a",
+      "shape": null
+    },
+    "ppi": {
+      "exit_code": 0,
+      "elapsed_s": 1.5188812609994784,
+      "stdout_bytes": 161519,
+      "stderr_bytes": 1107,
+      "timed_out": false,
+      "command": [
+        "/home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/zkgpt_gat_prover",
+        "--capacity-profile-only",
+        "--dataset",
+        "ppi",
+        "--backend",
+        "cpu",
+        "--baseline-root",
+        "/home/pzh/project/comparison/zkGPT"
+      ],
+      "json_status": "ANALYSIS_ONLY",
+      "ready": false,
+      "profile_kind": "analysis_only",
+      "profile_binary_sha256": "8c33546d11c607dcb0798ebfad388a0c027b350ef7ba907e2444bdc7067f492a",
+      "shape": null
+    },
+    "ogbn_arxiv": {
+      "exit_code": 0,
+      "elapsed_s": 2.014348844997585,
+      "stdout_bytes": 158491,
+      "stderr_bytes": 1173,
+      "timed_out": false,
+      "command": [
+        "/home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/zkgpt_gat_prover",
+        "--capacity-profile-only",
+        "--dataset",
+        "ogbn_arxiv",
+        "--backend",
+        "cpu",
+        "--baseline-root",
+        "/home/pzh/project/comparison/zkGPT"
+      ],
+      "json_status": "ANALYSIS_ONLY",
+      "ready": false,
+      "profile_kind": "analysis_only",
+      "profile_binary_sha256": "8c33546d11c607dcb0798ebfad388a0c027b350ef7ba907e2444bdc7067f492a",
+      "shape": null
+    }
+  }
+}

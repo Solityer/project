@@ -1,0 +1,9 @@
+CAPACITY_STAGE_BEGIN dataset=pubmed stage=resource_snapshot
+CAPACITY_STAGE_END dataset=pubmed stage=resource_snapshot host_headroom_bytes=103836971008 shared_disk_available_bytes=1713210015744 same_filesystem=true
+CAPACITY_STAGE_BEGIN dataset=pubmed stage=canonical_graph_load
+CAPACITY_STAGE_END dataset=pubmed stage=canonical_graph_load nodes=19717 edges=108365 features=500 graphs=1
+CAPACITY_STAGE_BEGIN dataset=pubmed stage=shape_estimate
+CAPACITY_STAGE_END dataset=pubmed stage=shape_estimate host_peak_upper_bytes=12311230057 disk_peak_upper_bytes=0 artifact_bytes_upper=540284274
+CAPACITY_STAGE_BEGIN dataset=pubmed stage=gkr_point_shape
+CAPACITY_STAGE_END dataset=pubmed stage=gkr_point_shape status=PASS layers=113 fconn=54 bitmap_bytes=556235152 touched_index_bytes_upper=556235152
+CAPACITY_PROFILE_ONLY dataset=pubmed status=ANALYSIS_ONLY forward_admission=NOT_RUN host_peak_upper_bytes=12311230057 disk_peak_upper_bytes=120556815230

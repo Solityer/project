@@ -1,0 +1,47 @@
+bint_obj=/home/pzh/project/comparison/zkGPT/build/gpu/3rd/mcl/bint64.o
+base_obj=/home/pzh/project/comparison/zkGPT/build/gpu/3rd/mcl/base64.o
+CMake Warning (dev) in gat_adapter/CMakeLists.txt:
+  Policy CMP0104 is not set: CMAKE_CUDA_ARCHITECTURES now detected for NVCC,
+  empty CUDA_ARCHITECTURES not allowed.  Run "cmake --help-policy CMP0104"
+  for policy details.  Use the cmake_policy command to set the policy and
+  suppress this warning.
+
+  CUDA_ARCHITECTURES is empty for target "gat_cuda".
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) in gat_adapter/CMakeLists.txt:
+  Policy CMP0104 is not set: CMAKE_CUDA_ARCHITECTURES now detected for NVCC,
+  empty CUDA_ARCHITECTURES not allowed.  Run "cmake --help-policy CMP0104"
+  for policy details.  Use the cmake_policy command to set the policy and
+  suppress this warning.
+
+  CUDA_ARCHITECTURES is empty for target "gat_cuda".
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) in gat_adapter/CMakeLists.txt:
+  Policy CMP0104 is not set: CMAKE_CUDA_ARCHITECTURES now detected for NVCC,
+  empty CUDA_ARCHITECTURES not allowed.  Run "cmake --help-policy CMP0104"
+  for policy details.  Use the cmake_policy command to set the policy and
+  suppress this warning.
+
+  CUDA_ARCHITECTURES is empty for target "gat_adapter".
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) in gat_adapter/CMakeLists.txt:
+  Policy CMP0104 is not set: CMAKE_CUDA_ARCHITECTURES now detected for NVCC,
+  empty CUDA_ARCHITECTURES not allowed.  Run "cmake --help-policy CMP0104"
+  for policy details.  Use the cmake_policy command to set the policy and
+  suppress this warning.
+
+  CUDA_ARCHITECTURES is empty for target "zkgpt_gat_prover".
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) in gat_adapter/CMakeLists.txt:
+  Policy CMP0104 is not set: CMAKE_CUDA_ARCHITECTURES now detected for NVCC,
+  empty CUDA_ARCHITECTURES not allowed.  Run "cmake --help-policy CMP0104"
+  for policy details.  Use the cmake_policy command to set the policy and
+  suppress this warning.
+
+  CUDA_ARCHITECTURES is empty for target "zkgpt_gat_verifier".
+This warning is for project developers.  Use -Wno-dev to suppress it.
+

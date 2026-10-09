@@ -132,7 +132,7 @@ inline FrWire fr_reduce(const std::array<std::uint32_t, 2 * blstrs__scalar__Scal
     return out;
 }
 
-inline FrWire fr_mul(const FrWire& a, const FrWire& b) {
+inline FrWire fr_mul_limb_fallback(const FrWire& a, const FrWire& b) {
     std::array<std::uint32_t, 2 * blstrs__scalar__Scalar_LIMBS> product{};
     for (size_t i = 0; i < a.size(); ++i) {
         std::uint64_t carry = 0;
@@ -152,6 +152,39 @@ inline FrWire fr_mul(const FrWire& a, const FrWire& b) {
         }
     }
     return fr_reduce(product);
+}
+
+inline FrWire fr_mul(const FrWire& a, const FrWire& b) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    if (fr_canonical(a) && fr_canonical(b)) {
+        std::array<byte, 32U> a_le{}, b_le{}, result_le{};
+        for (size_t limb = 0U; limb < a.size(); ++limb) {
+            for (size_t part = 0U; part < 4U; ++part) {
+                a_le[4U * limb + part] = static_cast<byte>(a[limb] >> (8U * part));
+                b_le[4U * limb + part] = static_cast<byte>(b[limb] >> (8U * part));
+            }
+        }
+        zkdl_blst::blst_scalar a_scalar{}, b_scalar{}, result_scalar{};
+        zkdl_blst::blst_scalar_from_lendian(&a_scalar, a_le.data());
+        zkdl_blst::blst_scalar_from_lendian(&b_scalar, b_le.data());
+        if (zkdl_blst::blst_scalar_fr_check(&a_scalar) &&
+            zkdl_blst::blst_scalar_fr_check(&b_scalar)) {
+            zkdl_blst::blst_fr a_montgomery{}, b_montgomery{}, product{};
+            zkdl_blst::blst_fr_from_scalar(&a_montgomery, &a_scalar);
+            zkdl_blst::blst_fr_from_scalar(&b_montgomery, &b_scalar);
+            zkdl_blst::blst_fr_mul(&product, &a_montgomery, &b_montgomery);
+            zkdl_blst::blst_scalar_from_fr(&result_scalar, &product);
+            zkdl_blst::blst_lendian_from_scalar(result_le.data(), &result_scalar);
+            FrWire result{};
+            for (size_t limb = 0U; limb < result.size(); ++limb) {
+                for (size_t part = 0U; part < 4U; ++part)
+                    result[limb] |= static_cast<std::uint32_t>(result_le[4U * limb + part]) << (8U * part);
+            }
+            return result;
+        }
+    }
+#endif
+    return fr_mul_limb_fallback(a, b);
 }
 
 inline FrWire fr_pow(FrWire base, std::uint32_t exponent_bit_count,

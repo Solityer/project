@@ -88,11 +88,18 @@ pub struct Polynomial<F, B> {
 
 impl<F: Copy, B: Clone> Clone for Polynomial<F, B> {
     fn clone(&self) -> Self {
-        let mapped = self.mapped.as_ref().map(|_| {
-            spill::map_values(self.as_slice())
-                .expect("cloning a spilled polynomial requires private disk backing")
-        });
-        Self {
+        self.try_clone()
+            .expect("cloning a spilled polynomial requires private disk backing")
+    }
+}
+
+impl<F: Copy, B> Polynomial<F, B> {
+    pub(crate) fn try_clone(&self) -> io::Result<Self> {
+        let mapped = match self.mapped.as_ref() {
+            Some(_) => Some(spill::map_values(self.as_slice())?),
+            None => None,
+        };
+        Ok(Self {
             values: if self.mapped.is_some() {
                 Vec::new()
             } else {
@@ -100,7 +107,7 @@ impl<F: Copy, B: Clone> Clone for Polynomial<F, B> {
             },
             mapped,
             _marker: PhantomData,
-        }
+        })
     }
 }
 

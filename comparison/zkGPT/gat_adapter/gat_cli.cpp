@@ -1,4 +1,5 @@
 #include "gat_proof.hpp"
+#include "gat_formal_internal.hpp"
 #include "gat_types.hpp"
 #include "native_storage.hpp"
 
@@ -40,6 +41,7 @@ struct Options {
     bool help = false;
     bool register_only = false;
     bool capacity_only = false;
+    bool capacity_profile_only = false;
 };
 
 struct Record {
@@ -693,10 +695,13 @@ void write_registration(const std::string& path, const ModelRegistration& regist
 
 void write_capacity_report(const GatCapacityReport& report, const std::string& dataset, const std::string& backend, const std::string& quant_cfg_id,
                            const std::string& cache_identity, const std::string& checkpoint_identity,
-                           const Graph* graph = nullptr, const CanonicalConfig* config = nullptr) {
+                           const Graph* graph = nullptr, const CanonicalConfig* config = nullptr,
+                           bool analysis_only = false) {
     std::ostringstream out;
     out << "{\n";
     json_string(out, "schema", report.schema);
+    json_string(out, "profile_kind", analysis_only ? "analysis_only" : "formal_admission");
+    json_string(out, "profile_binary_sha256", sha256_file_digest("/proc/self/exe"));
     json_string(out, "dataset", dataset);
     json_string(out, "backend", backend);
     json_string(out, "quant_cfg_id", quant_cfg_id);
@@ -718,6 +723,16 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("model_hidden_dim", report.model_shape.hidden_dim);
     number("n_raw", report.input_layout.n_raw);
     number("n_in", report.input_layout.n_in);
+    out << "  \"input_segments\": [";
+    for (std::size_t index = 0; index < report.input_layout.segments.size(); ++index) {
+        const InputSegment& segment = report.input_layout.segments[index];
+        if (index != 0) out << ',';
+        out << "{\"name\":\"" << json_escape(segment.name)
+            << "\",\"offset\":" << segment.offset
+            << ",\"logical_length\":" << segment.logical_length
+            << ",\"padded_length\":" << segment.padded_length << '}';
+    }
+    out << "],\n";
     number("explicit_gate_count", report.explicit_gate_count);
     number("max_materialized_gate_bytes", report.max_materialized_gate_bytes);
     number("max_materialized_vector_bytes", report.max_materialized_vector_bytes);
@@ -725,6 +740,9 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("context_payload_bytes_bound", report.context_payload_bytes_bound);
     json_bool(out, "ppi_node_ptr_boundary", report.ppi_node_ptr_boundary);
     json_bool(out, "ppi_edge_ptr_boundary", report.ppi_edge_ptr_boundary);
+    json_bool(out, "symbolic_analysis_profile_complete", report.symbolic_analysis_profile_complete);
+    json_bool(out, "gkr_point_shape_exact", report.gkr_point_shape_exact);
+    json_bool(out, "gkr_point_domain_upper_bound_valid", report.gkr_point_domain_upper_bound_valid);
     number("lasso_logical_domain_entries", report.lasso_logical_domain_entries);
     number("lasso_private_selected_row_workspace_peak_bytes", report.lasso_private_selected_row_workspace_peak_bytes);
     number("lasso_heap_workspace_peak_bytes", report.lasso_heap_workspace_peak_bytes);
@@ -755,6 +773,11 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("relation_gate_binary_entries", report.relation_gate_binary_entries);
     number("relation_gate_output_entries", report.relation_gate_output_entries);
     number("max_single_gate_array_bytes_upper_bound", report.max_single_gate_array_bytes_upper_bound);
+    number("explicit_unary_gate_buffer_entry_bytes", report.explicit_unary_gate_buffer_entry_bytes);
+    number("explicit_unary_gate_buffer_entries_upper_bound", report.explicit_unary_gate_buffer_entries_upper_bound);
+    number("max_explicit_unary_gate_buffer_bytes_upper_bound", report.max_explicit_unary_gate_buffer_bytes_upper_bound);
+    number("explicit_unary_gate_buffer_compact_coexist_bytes_upper_bound",
+           report.explicit_unary_gate_buffer_compact_coexist_bytes_upper_bound);
     number("max_single_relation_builder_array_bytes_upper_bound", report.max_single_relation_builder_array_bytes_upper_bound);
     number("gkr_subset_source_map_bytes_upper_bound", report.gkr_subset_source_map_bytes_upper_bound);
     number("gkr_subset_sort_scratch_bytes_upper_bound", report.gkr_subset_sort_scratch_bytes_upper_bound);
@@ -767,6 +790,9 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     json_string(out, "gkr_point_shape_digest", report.gkr_point_shape_digest);
     json_bool(out, "gkr_point_shape_ready", report.gkr_point_shape_ready);
     number("gkr_subset_source_support_entries_upper_bound", report.gkr_subset_source_support_entries_upper_bound);
+    number("gkr_layer0_source_domain_entries_upper_bound", report.gkr_layer0_source_domain_entries_upper_bound);
+    number("gkr_layer0_lqry_padded_block_entries_upper_bound", report.gkr_layer0_lqry_padded_block_entries_upper_bound);
+    number("gkr_layer0_lqry_zero_gap_entries", report.gkr_layer0_lqry_zero_gap_entries);
     number("native_transcript_heap_bytes_upper_bound", report.native_transcript_heap_bytes_upper_bound);
     number("transcript_content_bytes_upper_bound", report.transcript_content_bytes_upper_bound);
     number("transcript_wire_bytes_upper_bound", report.transcript_wire_bytes_upper_bound);
@@ -778,10 +804,47 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("lasso_table_and_index_bytes_upper_bound", report.lasso_table_and_index_bytes_upper_bound);
     number("gkr_layer_count_upper_bound", report.gkr_layer_count_upper_bound);
     number("gkr_fconn_layer_count_upper_bound", report.gkr_fconn_layer_count_upper_bound);
+    json_bool(out, "gkr_work_counts_exact", report.gkr_work_counts_exact);
+    number("gkr_phase1_rounds_upper_bound", report.gkr_phase1_rounds_upper_bound);
+    number("gkr_phase2_rounds_upper_bound", report.gkr_phase2_rounds_upper_bound);
+    number("gkr_phase1_first_round_pair_visits_upper_bound", report.gkr_phase1_first_round_pair_visits_upper_bound);
+    number("gkr_phase1_followup_pair_visits_upper_bound", report.gkr_phase1_followup_pair_visits_upper_bound);
+    number("gkr_phase1_total_pair_visits_upper_bound", report.gkr_phase1_total_pair_visits_upper_bound);
+    number("gkr_phase1_extent_visits_upper_bound", report.gkr_phase1_extent_visits_upper_bound);
+    number("gkr_phase1_followup_extent_visits_upper_bound", report.gkr_phase1_followup_extent_visits_upper_bound);
+    number("gkr_phase1_first_round_field_adds_upper_bound", report.gkr_phase1_first_round_field_adds_upper_bound);
+    number("gkr_phase1_first_round_field_subs_upper_bound", report.gkr_phase1_first_round_field_subs_upper_bound);
+    number("gkr_phase1_first_round_field_muls_upper_bound", report.gkr_phase1_first_round_field_muls_upper_bound);
+    number("gkr_phase1_followup_field_adds_upper_bound", report.gkr_phase1_followup_field_adds_upper_bound);
+    number("gkr_phase1_followup_field_subs_upper_bound", report.gkr_phase1_followup_field_subs_upper_bound);
+    number("gkr_phase1_followup_field_muls_upper_bound", report.gkr_phase1_followup_field_muls_upper_bound);
+    number("gkr_phase1_init_active_scalar_assignments", report.gkr_phase1_init_field_writes);
+    number("gkr_phase2_first_round_pair_visits_upper_bound", report.gkr_phase2_first_round_pair_visits_upper_bound);
+    number("gkr_phase2_followup_pair_visits_upper_bound", report.gkr_phase2_followup_pair_visits_upper_bound);
+    number("gkr_phase2_total_pair_visits_upper_bound", report.gkr_phase2_total_pair_visits_upper_bound);
+    number("gkr_phase2_extent_visits_upper_bound", report.gkr_phase2_extent_visits_upper_bound);
+    number("gkr_phase2_followup_extent_visits_upper_bound", report.gkr_phase2_followup_extent_visits_upper_bound);
+    number("gkr_phase2_first_round_field_adds_upper_bound", report.gkr_phase2_first_round_field_adds_upper_bound);
+    number("gkr_phase2_first_round_field_subs_upper_bound", report.gkr_phase2_first_round_field_subs_upper_bound);
+    number("gkr_phase2_first_round_field_muls_upper_bound", report.gkr_phase2_first_round_field_muls_upper_bound);
+    number("gkr_phase2_followup_field_adds_upper_bound", report.gkr_phase2_followup_field_adds_upper_bound);
+    number("gkr_phase2_followup_field_subs_upper_bound", report.gkr_phase2_followup_field_subs_upper_bound);
+    number("gkr_phase2_followup_field_muls_upper_bound", report.gkr_phase2_followup_field_muls_upper_bound);
+    number("gkr_phase2_init_active_scalar_assignments", report.gkr_phase2_init_field_writes);
+    number("fconn_scalar_multiply_terms", report.fconn_scalar_multiply_terms);
+    number("fconn_output_coordinates", report.fconn_output_coordinates);
+    number("lasso_total_rows", report.lasso_total_rows);
+    number("lasso_total_row_commitment_chunks", report.lasso_total_row_commitment_chunks);
+    number("lasso_real_query_entries", report.lasso_real_query_entries);
+    number("lasso_padded_query_entries", report.lasso_padded_query_entries);
+    number("lasso_family_zero_pad_entries", report.lasso_family_zero_pad_entries);
+    number("hyrax_matrix_masked_openings", report.hyrax_matrix_masked_openings);
+    number("hyrax_l_qry_tensor_openings", report.hyrax_l_qry_tensor_openings);
     number("gkr_input_source_count_upper_bound", report.gkr_input_source_count_upper_bound);
     number("gkr_message_count_upper_bound", report.gkr_message_count_upper_bound);
     number("gkr_wire_bytes_upper_bound", report.gkr_wire_bytes_upper_bound);
     number("gkr_prefix_workspace_bytes_upper_bound", report.gkr_prefix_workspace_bytes_upper_bound);
+    number("gkr_prefix_filesystem_allocation_unit_bytes", report.gkr_prefix_filesystem_allocation_unit_bytes);
     number("l_query_zero_interval_count_upper_bound", report.l_query_zero_interval_count_upper_bound);
     number("estimated_peak_host_memory_bytes", report.estimated_peak_host_memory_bytes);
     number("forward_admission_peak_host_memory_bytes_upper_bound", report.forward_admission_peak_host_memory_bytes_upper_bound);
@@ -877,10 +940,58 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
             << ",\"family_wire_bytes_upper_bound\":" << family.family_wire_bytes_upper_bound << '}';
     }
     out << "],\n";
+    out << "  \"gkr_layer_work_profile\": [";
+    for (std::size_t index = 0; index < report.gkr_layer_work_profile.size(); ++index) {
+        const GatGkrLayerShapeProfile& layer = report.gkr_layer_work_profile[index];
+        if (index != 0) out << ',';
+        out << "{\"layer_type\":" << layer.layer_type
+            << ",\"size\":" << layer.size
+            << ",\"size_u0\":" << layer.size_u0
+            << ",\"size_u1\":" << layer.size_u1
+            << ",\"size_v0\":" << layer.size_v0
+            << ",\"size_v1\":" << layer.size_v1
+            << ",\"unary_gates\":" << layer.unary_gates
+            << ",\"binary_gates\":" << layer.binary_gates
+            << ",\"native_rows\":" << layer.native_rows
+            << ",\"native_inner\":" << layer.native_inner
+            << ",\"native_cols\":" << layer.native_cols
+            << ",\"bit_length\":" << layer.bit_length
+            << ",\"max_bl_u\":" << layer.max_bl_u
+            << ",\"max_bl_v\":" << layer.max_bl_v
+            << ",\"need_phase2\":" << bool_json(layer.need_phase2)
+            << ",\"source_domains_exact\":" << bool_json(layer.source_domains_exact)
+            << ",\"phase1_rounds\":" << layer.phase1_rounds
+            << ",\"phase1_first_round_pair_visits\":" << layer.phase1_first_round_pair_visits
+            << ",\"phase1_followup_pair_visits\":" << layer.phase1_followup_pair_visits
+            << ",\"phase1_total_pair_visits\":" << layer.phase1_total_pair_visits
+            << ",\"phase1_extent_visits\":" << layer.phase1_extent_visits
+            << ",\"phase1_followup_extent_visits\":" << layer.phase1_followup_extent_visits
+            << ",\"phase1_first_round_field_adds_upper_bound\":" << layer.phase1_first_round_field_adds_upper_bound
+            << ",\"phase1_first_round_field_subs_upper_bound\":" << layer.phase1_first_round_field_subs_upper_bound
+            << ",\"phase1_first_round_field_muls_upper_bound\":" << layer.phase1_first_round_field_muls_upper_bound
+            << ",\"phase1_followup_field_adds_upper_bound\":" << layer.phase1_followup_field_adds_upper_bound
+            << ",\"phase1_followup_field_subs_upper_bound\":" << layer.phase1_followup_field_subs_upper_bound
+            << ",\"phase1_followup_field_muls_upper_bound\":" << layer.phase1_followup_field_muls_upper_bound
+            << ",\"phase1_init_active_scalar_assignments\":" << layer.phase1_init_field_writes
+            << ",\"phase2_rounds\":" << layer.phase2_rounds
+            << ",\"phase2_first_round_pair_visits\":" << layer.phase2_first_round_pair_visits
+            << ",\"phase2_followup_pair_visits\":" << layer.phase2_followup_pair_visits
+            << ",\"phase2_total_pair_visits\":" << layer.phase2_total_pair_visits
+            << ",\"phase2_extent_visits\":" << layer.phase2_extent_visits
+            << ",\"phase2_followup_extent_visits\":" << layer.phase2_followup_extent_visits
+            << ",\"phase2_first_round_field_adds_upper_bound\":" << layer.phase2_first_round_field_adds_upper_bound
+            << ",\"phase2_first_round_field_subs_upper_bound\":" << layer.phase2_first_round_field_subs_upper_bound
+            << ",\"phase2_first_round_field_muls_upper_bound\":" << layer.phase2_first_round_field_muls_upper_bound
+            << ",\"phase2_followup_field_adds_upper_bound\":" << layer.phase2_followup_field_adds_upper_bound
+            << ",\"phase2_followup_field_subs_upper_bound\":" << layer.phase2_followup_field_subs_upper_bound
+            << ",\"phase2_followup_field_muls_upper_bound\":" << layer.phase2_followup_field_muls_upper_bound
+            << ",\"phase2_init_active_scalar_assignments\":" << layer.phase2_init_field_writes << '}';
+    }
+    out << "],\n";
     json_string(out, "proof_path", report.proof_path);
     json_bool(out, "full_relation_bound", report.full_relation_bound);
     json_bool(out, "ready", report.ready);
-    json_string(out, "status", report.ready ? "READY" : "BLOCKED");
+    json_string(out, "status", analysis_only ? "ANALYSIS_ONLY" : (report.ready ? "READY" : "BLOCKED"));
     json_string(out, "reason", report.reason, graph != nullptr);
     if (graph != nullptr) {
         if (config == nullptr) throw std::invalid_argument("canonical graph identity requires its consumed config");
@@ -975,6 +1086,8 @@ Options parse_options(int argc, char** argv) {
             options.register_only = true;
         } else if (arg == "--capacity-only") {
             options.capacity_only = true;
+        } else if (arg == "--capacity-profile-only") {
+            options.capacity_profile_only = true;
         } else {
             throw std::runtime_error("unknown or incomplete argument: " + arg);
         }
@@ -989,9 +1102,12 @@ Options parse_options(int argc, char** argv) {
     if (options.baseline_root.empty()) throw std::runtime_error("--baseline-root is empty");
     const bool any_session_binding = !options.formal_session_id.empty() || !options.run_nonce.empty() ||
         !options.session_manifest_sha256.empty() || !options.formal_run_directory.empty();
-    if (options.capacity_only && any_session_binding)
-        throw std::runtime_error("capacity-only mode does not accept formal session outputs");
-    if (!options.capacity_only && !any_session_binding)
+    if (options.capacity_only && options.capacity_profile_only)
+        throw std::runtime_error("formal capacity admission and analysis-only capacity profile are separate modes");
+    const bool capacity_mode = options.capacity_only || options.capacity_profile_only;
+    if (capacity_mode && any_session_binding)
+        throw std::runtime_error("capacity modes do not accept formal session outputs");
+    if (!capacity_mode && !any_session_binding)
         throw std::runtime_error("formal proof/registration requires an explicit session binding");
     if (any_session_binding) {
         const auto is_hex = [](const std::string& value, std::size_t expected) {
@@ -1015,6 +1131,7 @@ void print_help() {
                  "[--registration <baseline-relative.json>] [--com-w-secret <baseline-relative.secret>]\n"
                  "       gat_cli ... --register-only\n"
                  "       gat_cli --capacity-only --dataset <...> --backend cpu [--baseline-root <zkGPT-root>] [--config <...>]\n"
+                 "       gat_cli --capacity-profile-only --dataset <...> --backend cpu [--baseline-root <zkGPT-root>] [--config <...>]\n"
                  "The normal command emits one baseline-local run record and exits nonzero on FAILED or UNSUPPORTED.\n"
                  "--register-only writes the long-lived public model registration and its prover-only 0600 secret.\n";
 }
@@ -1089,13 +1206,14 @@ int main(int argc, char** argv) {
         const std::string cache_dir = local_path(root, cache_rel + "/" + options.dataset, "cache");
         const std::string bundle_dir = local_path(root, bundle_rel, "checkpoint bundle");
         const std::string quant_path = local_path(root, "baseline-local/configs/quantization_scale_chain.cfg", "quantization config");
-        const QuantConfig quant = QuantConfig::load(quant_path);
+        QuantConfig quant = QuantConfig::load(quant_path);
         if (quant.quant_cfg_id != config.get("quant_cfg_id")) throw std::runtime_error("quantization config identity mismatch");
 
-        if (options.capacity_only) {
+        if (options.capacity_only || options.capacity_profile_only) {
             if (options.backend != "cpu") {
                 write_capacity_report(GatCapacityReport{}, options.dataset, options.backend, quant.quant_cfg_id,
-                                      rel_display(root, cache_dir + "/integrity.sha256"), rel_display(root, bundle_dir + "/integrity.sha256"));
+                                      rel_display(root, cache_dir + "/integrity.sha256"), rel_display(root, bundle_dir + "/integrity.sha256"),
+                                      nullptr, nullptr, options.capacity_profile_only);
                 return 1;
             }
 
@@ -1120,7 +1238,7 @@ int main(int argc, char** argv) {
             std::cerr << "CAPACITY_STAGE_BEGIN dataset=" << options.dataset << " stage=shape_estimate\n" << std::flush;
             Model shape_model = Model::load_shape_only(bundle_dir);
             shape_model.validate_identity(config);
-            GatCapacityReport report = inspect_gat_capacity(graph, shape_model, quant, static_cast<std::uint64_t>(feature_file_size));
+            GatCapacityReport report = inspect_gat_capacity(graph, shape_model, quant, static_cast<std::uint64_t>(feature_file_size), options.capacity_profile_only);
             std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset << " stage=shape_estimate host_peak_upper_bytes="
                       << report.estimated_peak_host_memory_bytes << " disk_peak_upper_bytes="
                       << report.disk_requirement_bytes_upper_bound << " artifact_bytes_upper="
@@ -1129,7 +1247,10 @@ int main(int argc, char** argv) {
             const bool point_shape_ready = report.gkr_point_shape_ready;
             const std::uint64_t point_shape_bitmap_bytes = report.gkr_point_shape_bitmap_scratch_bytes;
             std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset << " stage=gkr_point_shape status="
-                      << (point_shape_ready ? "PASS" : "BLOCKED") << " layers=" << report.gkr_point_shape_layer_count
+                      << (options.capacity_profile_only
+                              ? (report.gkr_point_domain_upper_bound_valid ? "ANALYSIS_UPPER_BOUND" : "ANALYSIS_UNCERTAIN")
+                              : (point_shape_ready ? "PASS" : "BLOCKED"))
+                      << " exact=" << (report.gkr_point_shape_exact ? "true" : "false") << " layers=" << report.gkr_point_shape_layer_count
                       << " fconn=" << report.gkr_point_shape_fconn_count << " bitmap_bytes=" << point_shape_bitmap_bytes
                       << " touched_index_bytes_upper="
                       << report.gkr_point_shape_touched_index_scratch_bytes_upper_bound;
@@ -1182,6 +1303,30 @@ int main(int argc, char** argv) {
                     shape_mapped_bytes);
             }
             shape_model = Model{};
+            if (options.capacity_profile_only) {
+                report.host_memory_limit_bytes = resource_snapshot.host_headroom_bytes;
+                report.native_scratch_available_bytes = resource_snapshot.scratch_available_bytes;
+                report.artifact_disk_available_bytes = resource_snapshot.artifact_available_bytes;
+                report.scratch_artifact_same_filesystem = resource_snapshot.same_filesystem;
+                report.shared_scratch_artifact_available_bytes = resource_snapshot.shared_available_bytes;
+                finalize_gat_capacity_report(report);
+                report.ready = false;
+                report.reason = report.gkr_point_domain_upper_bound_valid
+                    ? "analysis-only symbolic profile: per-gate point source census, canonical all-value forward admission, SRS setup, proving, and verification were intentionally not run"
+                    : "analysis-only symbolic profile has an unvalidated conservative point-domain upper bound; no formal readiness inference is permitted";
+                std::cerr << "CAPACITY_PROFILE_ONLY dataset=" << options.dataset
+                          << " status=ANALYSIS_ONLY symbolic_profile_complete="
+                          << (report.symbolic_analysis_profile_complete ? "true" : "false")
+                          << " native_point_shape=NOT_ENUMERATED forward_admission=NOT_RUN host_peak_upper_bytes="
+                          << report.estimated_peak_host_memory_bytes << " disk_peak_upper_bytes="
+                          << report.disk_requirement_bytes_upper_bound << '\n' << std::flush;
+                write_capacity_report(report, options.dataset, options.backend,
+                                      quant.quant_cfg_id,
+                                      rel_display(root, cache_dir + "/integrity.sha256"),
+                                      rel_display(root, bundle_dir + "/integrity.sha256"),
+                                      &graph, &config, true);
+                return report.symbolic_analysis_profile_complete ? 0 : 1;
+            }
             if (point_shape_ready && report.forward_admission_peak_host_memory_bytes_upper_bound <= resource_snapshot.host_headroom_bytes) {
                 std::cerr << "CAPACITY_STAGE_BEGIN dataset=" << options.dataset << " stage=canonical_forward_inputs\n" << std::flush;
                 const Tensor2D features = load_features(cache_dir, config, quant, graph);
@@ -1285,10 +1430,10 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        const Graph graph = load_graph(cache_dir, config);
-        const Tensor2D features = load_features(cache_dir, config, quant, graph);
-        (void)load_labels(cache_dir, graph);
-        const Model model = Model::load(bundle_dir);
+        Graph loaded_graph = load_graph(cache_dir, config);
+        Tensor2D loaded_features = load_features(cache_dir, config, quant, loaded_graph);
+        (void)load_labels(cache_dir, loaded_graph);
+        Model model = Model::load(bundle_dir);
         model.validate_identity(config);
         const StaticTables tables = StaticTables::build(quant);
         if (!tables.authenticate()) throw std::runtime_error("canonical static table authentication failed");
@@ -1298,11 +1443,24 @@ int main(int argc, char** argv) {
         record.load_ms = elapsed_ms(load_begin, Clock::now());
 
         const auto witness_begin = Clock::now();
-        const ForwardResult forward = run_forward(graph, features, model, quant);
-        if (!validate_relation(graph, features, model, quant, forward)) throw std::runtime_error("canonical GAT relation validation failed");
-        const auto plan_owner = std::make_shared<const GatCircuitPlan>(build_gat_circuit_plan(graph, model, quant, forward));
+        ForwardResult computed_forward = detail::compute_formal_forward_unvalidated(
+            loaded_graph, loaded_features, model, quant);
+        detail::ValidatedFormalInputs owned_inputs =
+            detail::ValidatedFormalInputs::consume(
+                std::move(loaded_graph), std::move(loaded_features),
+                std::move(model), std::move(quant),
+                std::move(computed_forward));
+        const Graph& graph = owned_inputs.graph();
+        const Tensor2D& features = owned_inputs.features();
+        const QuantConfig& owner_quant = owned_inputs.quant();
+        const ForwardResult& forward = owned_inputs.forward();
+        const auto plan_owner = owned_inputs.plan_owner();
         const GatCircuitPlan& plan = *plan_owner;
         if (!plan.official_layered || plan.has_placeholder) throw std::runtime_error("official layered GAT circuit plan is unavailable");
+        if (owned_inputs.canonical_validation_calls() != 1U)
+            throw std::logic_error("formal inputs were not independently reference-validated exactly once");
+        std::cerr << "[zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms="
+                  << owned_inputs.canonical_validation_ms() << '\n' << std::flush;
         record.witness_ms = elapsed_ms(witness_begin, Clock::now());
 
         const auto registration_begin = Clock::now();
@@ -1323,7 +1481,7 @@ int main(int argc, char** argv) {
         record.registration_path = run_rel + "/model_registration.json";
         record.prover_secret_path = run_rel + "/com_W.prover.secret";
 
-        VerifierContext context = make_verifier_context(graph, features, quant, tables, forward.logits, registration, plan_owner,
+        VerifierContext context = make_verifier_context(graph, features, owner_quant, tables, forward.logits, registration, plan_owner,
                                                         record.privacy_profile);
         std::string artifact_limit_reason;
         const std::uint64_t artifact_wire_limit =
@@ -1342,12 +1500,12 @@ int main(int argc, char** argv) {
         record.public_logits_path = run_rel + "/public_logits.txt";
         record.verifier_context_path = run_rel + "/verifier_context.bin";
         write_logits(run_dir + "/public_logits.txt", forward.logits);
-        write_public_statement(run_dir + "/public_statement.json", record, graph, features, quant, tables, plan);
+        write_public_statement(run_dir + "/public_statement.json", record, graph, features, owner_quant, tables, plan);
         write_verifier_context(run_dir + "/verifier_context.bin", context);
 
         const auto prove_begin = Clock::now();
-        ProveResult proved = prove_gat(plan_owner, graph, features, model, quant, forward, registration, context,
-                                      record.privacy_profile);
+        ProveResult proved = detail::prove_gat_formal(
+            owned_inputs, registration, context, record.privacy_profile);
         record.prove_total_ms = elapsed_ms(prove_begin, Clock::now());
         record.preparation_ms = proved.preparation_ms;
         record.aux_commitment_ms = proved.aux_commitment_ms;
@@ -1395,16 +1553,18 @@ int main(int argc, char** argv) {
 
         const std::string artifact_file = run_dir + "/proof.artifact";
         std::string artifact_reason;
-        std::string artifact_wire;
         const auto artifact_wire_self_check_begin = Clock::now();
         if (!proved.artifact.valid_wire(&artifact_reason))
             throw std::runtime_error("proof artifact failed internal wire self-check: " + artifact_reason);
         record.artifact_wire_self_check_ms = elapsed_ms(artifact_wire_self_check_begin, Clock::now());
+        std::string artifact_wire;
         const auto artifact_serialize_begin = Clock::now();
-        if (!proved.artifact.serialize_after_wire_validation(
-                artifact_wire, artifact_wire_limit, &artifact_reason))
+        std::cerr << "[zkGPT][artifact] serialize_begin wire_limit_bytes=" << artifact_wire_limit << '\n' << std::flush;
+        if (!proved.artifact.serialize_after_wire_validation(artifact_wire, artifact_wire_limit, &artifact_reason))
             throw std::runtime_error("proof artifact in-memory serialization failed: " + artifact_reason);
         record.serialize_ms = elapsed_ms(artifact_serialize_begin, Clock::now());
+        std::cerr << "[zkGPT][artifact] serialize_complete bytes=" << artifact_wire.size()
+                  << " elapsed_ms=" << record.serialize_ms << '\n' << std::flush;
         record.prove_ms += record.serialize_ms;
         if (artifact_wire.empty() || artifact_wire.size() > artifact_wire_limit)
             throw std::runtime_error("serialized proof artifact has invalid exact byte length");

@@ -19,7 +19,7 @@ GAT_RESOURCE_TARGET := gat_resource_setup
 BLST_LIBRARY := third_party/blst/libblst.a
 BLST_SOURCES := $(shell find third_party/blst/src third_party/blst/build third_party/blst/bindings -type f)
 
-.PHONY: all baseline-local-build test-short checkpoint-manifest-check ledger-contract-check lookup-table-index-bits-check signed-round-bounds-check static-table-bounds-check segmented-fixture-check segmented-shared-srs-check sorted-lookup-descriptor-check cpu-g1-blst-check output-stream-failure-check formal-closure-check clean
+.PHONY: all baseline-local-build test-short checkpoint-manifest-check ledger-contract-check lookup-table-index-bits-check signed-round-bounds-check static-table-bounds-check segmented-fixture-check segmented-shared-srs-check sorted-lookup-descriptor-check sorted-lookup-prefix-cache-check cpu-g1-blst-check output-stream-failure-check formal-closure-check clean
 
 all: $(TARGETS) $(GAT_TARGET) $(GAT_RESOURCE_TARGET)
 
@@ -42,6 +42,9 @@ segmented-shared-srs-check: tests/segmented_lookup_fixture
 
 sorted-lookup-descriptor-check: tests/authenticated_sorted_lookup_descriptor_check
 	./tests/authenticated_sorted_lookup_descriptor_check
+
+sorted-lookup-prefix-cache-check: tests/sorted_lookup_prefix_cache_check
+	timeout 60s ./tests/sorted_lookup_prefix_cache_check
 
 cpu-g1-blst-check: tests/cpu_g1_blst_check
 	./tests/cpu_g1_blst_check
@@ -94,6 +97,9 @@ tests/segmented_lookup_fixture: tests/segmented_lookup_fixture.cu zkrelation-pro
 
 tests/authenticated_sorted_lookup_descriptor_check: tests/authenticated_sorted_lookup_descriptor_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp
 	$(NVCC) $(NVCC_FLAGS) -std=c++17 $(INCLUDES) $(LIBS) -I. -Igat_adapter $< -o $@
+
+tests/sorted_lookup_prefix_cache_check: tests/sorted_lookup_prefix_cache_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
+	timeout 300s $(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
 
 tests/cpu_g1_blst_check: tests/cpu_g1_blst_check.cu proof.cuh cpu-backend.cuh g1-wire.cuh $(BLST_LIBRARY)
 	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. $< $(BLST_LIBRARY) -o $@

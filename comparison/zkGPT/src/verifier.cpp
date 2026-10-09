@@ -15,6 +15,7 @@ static bool masked_fconn_shape_matches(const layer &current, const NativeGkrMatm
 #include <algorithm>
 #include <iterator>
 #include <limits>
+#include <chrono>
 
 using namespace std;
 using namespace mcl::bn;
@@ -22,6 +23,38 @@ vector<F> beta_v;
 static vector<F> beta_u, beta_gs;
 
 namespace {
+
+class GkrRoundProgress {
+  public:
+    explicit GkrRoundProgress(std::string phase)
+        : phase_(std::move(phase)), started_(Clock::now()), last_report_(started_) {}
+
+    void round_completed(std::uint64_t completed, std::uint64_t total) {
+        const auto now = Clock::now();
+        if (now - last_report_ < std::chrono::seconds(15)) return;
+        report("progress", completed, total, now);
+        last_report_ = now;
+    }
+
+    void finish(std::uint64_t total) {
+        report("complete", total, total, Clock::now());
+    }
+
+  private:
+    using Clock = std::chrono::steady_clock;
+
+    void report(const char *state, std::uint64_t completed,
+                std::uint64_t total, Clock::time_point now) const {
+        const double elapsed = std::chrono::duration<double>(now - started_).count();
+        std::cerr << "[zkGPT][gkr] " << phase_ << ' ' << state
+                  << " rounds=" << completed << '/' << total
+                  << " elapsed_s=" << elapsed << std::endl;
+    }
+
+    std::string phase_;
+    Clock::time_point started_;
+    Clock::time_point last_report_;
+};
 
 bool decode_transcript_field(const std::string &payload, F &value) {
     if (payload.empty() || payload.size() > 128) return false;
@@ -925,6 +958,7 @@ bool verifier::verifyGKR()
                 }
                 vtimer.stop();
                 verifier_time+=vtimer.elapse_sec();
+                p->sumcheckApplyChallenge(r_u[i][j]);
                 previousRandom = r_u[i][j];
                 previousSum = nxt_claim;
             }
@@ -975,6 +1009,7 @@ bool verifier::verifyGKR()
                         }
                         vtimer.stop();
                         verifier_time+=vtimer.elapse_sec();
+                        p->sumcheckApplyChallenge(r_v[i][j]);
                         previousRandom = r_v[i][j];
                         previousSum = poly.eval(previousRandom);
                 }
@@ -3164,6 +3199,7 @@ bool masked_public_product_prove(
     NativeMaskedSumcheckProver sumcheck(
         session, label, 2, masked_initial, spec, &unmasked_initial, &basis,
         fast_path);
+    GkrRoundProgress progress("input-aggregate label=" + label);
     std::uint64_t active = public_oracle->size();
     for (std::uint64_t round = 0; active > 1; ++round) {
         if (round + 2 == public_oracle->input_rounds())
@@ -3182,7 +3218,9 @@ bool masked_public_product_prove(
             return false;
         public_oracle->fold_round(challenge, active, round, witness);
         active >>= 1;
+        progress.round_completed(round + 1, expected_rounds);
     }
+    progress.finish(expected_rounds);
     spec.public_evaluation = public_oracle->terminal_value();
     spec.has_public_evaluation = true;
     const F terminal_value = witness.terminal_value();
@@ -3470,6 +3508,9 @@ bool masked_fold_matmul_operands(const NativeGkrMatmulWitness &witness,
         masked_set_reason(reason, "masked FCONN descriptor dimensions are invalid");
         return false;
     }
+    GkrRoundProgress row_fold_progress(
+        "FCONN row fold rows=" + std::to_string(shape.rows) +
+        " inner=" + std::to_string(shape.inner));
     const std::size_t row_bits = ceilPow2BitLength(
         static_cast<u64>(shape.rows));
     const std::size_t inner_bits = ceilPow2BitLength(
@@ -3527,7 +3568,12 @@ bool masked_fold_matmul_operands(const NativeGkrMatmulWitness &witness,
                 : witness.left[row * shape.inner + term];
             left[term] += row_weight * value;
         }
+        row_fold_progress.round_completed(row + 1, shape.rows);
     }
+    row_fold_progress.finish(shape.rows);
+    GkrRoundProgress column_fold_progress(
+        "FCONN column fold cols=" + std::to_string(shape.cols) +
+        " inner=" + std::to_string(shape.inner));
     for (std::size_t col = 0; col < shape.cols; ++col) {
         F col_weight = F_ONE;
         for (std::size_t bit = 0; bit < col_bits; ++bit) {
@@ -3541,7 +3587,9 @@ bool masked_fold_matmul_operands(const NativeGkrMatmulWitness &witness,
                 : witness.right[index];
             right[term] += col_weight * value;
         }
+        column_fold_progress.round_completed(col + 1, shape.cols);
     }
+    column_fold_progress.finish(shape.cols);
     return true;
 }
 
@@ -3578,6 +3626,7 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
     zkgpt::NativeFieldVector g = std::move(right);
     F previous_random = F_ZERO;
     std::size_t active = f.size();
+    GkrRoundProgress progress("FCONN product label=" + label);
     for (std::size_t round = 0; round < inner_bits; ++round) {
         const std::size_t half = active >> 1;
         F A = F_ZERO, B = F_ZERO, C = F_ZERO;
@@ -3609,7 +3658,9 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
         g.swap(next_g);
         active = half;
         previous_random = challenge;
+        progress.round_completed(round + 1, inner_bits);
     }
+    progress.finish(inner_bits);
     (void)previous_random;
     spec.unmasked_terminal_openings = {
         zkgpt::native_pedersen::commit_fresh(sumcheck.result().basis, f[0],
@@ -4330,6 +4381,7 @@ bool prove_masked_gkr_transcript(
             masked_gkr_progress("layer=" + std::to_string(layer_id) +
                                 " phase1 begin rounds=" +
                                 std::to_string(current.max_bl_u));
+            GkrRoundProgress phase1_progress(prefix + " phase1");
             native_prover.sumcheckInitPhase1(relu_rou);
             F previous_random = F_ZERO;
             F phase1_unmasked = previous_unmasked;
@@ -4343,13 +4395,17 @@ bool prove_masked_gkr_transcript(
                                           poly.eval(F(2))}, &challenge, reason))
                     throw std::runtime_error("masked GKR phase1 append: " +
                                              (reason != nullptr ? *reason : std::string()));
+                native_prover.sumcheckApplyChallenge(challenge);
                 previous_random = challenge;
                 phase1_unmasked = poly.eval(challenge);
+                phase1_progress.round_completed(
+                    static_cast<std::uint64_t>(bit + 1),
+                    static_cast<std::uint64_t>(std::max<i8>(0, current.max_bl_u)));
             }
             F claim_u0 = F_ZERO, claim_u1 = F_ZERO;
             native_prover.sumcheckFinalize1(previous_random, claim_u0, claim_u1);
-            masked_gkr_progress("layer=" + std::to_string(layer_id) +
-                                " phase1 rounds done");
+            phase1_progress.finish(
+                static_cast<std::uint64_t>(std::max<i8>(0, current.max_bl_u)));
             r_u[layer_id] = phase1.result().challenges;
             std::vector<F> r0 = r_u[layer_id + 1];
             std::vector<F> r1 = r_v[layer_id + 1];
@@ -4402,6 +4458,7 @@ bool prove_masked_gkr_transcript(
                 masked_gkr_progress("layer=" + std::to_string(layer_id) +
                                     " phase2 begin rounds=" +
                                     std::to_string(current.max_bl_v));
+                GkrRoundProgress phase2_progress(prefix + " phase2");
                 native_prover.sumcheckInitPhase2();
                 previous_random = F_ZERO;
                 for (int bit = 0; bit < current.max_bl_v; ++bit) {
@@ -4410,11 +4467,17 @@ bool prove_masked_gkr_transcript(
                     if (!phase2.append_round({poly.eval(F_ZERO), poly.eval(F_ONE),
                                               poly.eval(F(2))}, &challenge, reason))
                         throw std::runtime_error(*reason);
+                    native_prover.sumcheckApplyChallenge(challenge);
                     previous_random = challenge;
                     phase2_unmasked = poly.eval(challenge);
+                    phase2_progress.round_completed(
+                        static_cast<std::uint64_t>(bit + 1),
+                        static_cast<std::uint64_t>(std::max<i8>(0, current.max_bl_v)));
                 }
                 F claim_v0 = F_ZERO, claim_v1 = F_ZERO;
                 native_prover.sumcheckFinalize2(previous_random, claim_v0, claim_v1);
+                phase2_progress.finish(
+                    static_cast<std::uint64_t>(std::max<i8>(0, current.max_bl_v)));
                 r_v[layer_id] = phase2.result().challenges;
                 const std::vector<F> phase2_coefficients = masked_gkr_coefficients(
                     current, r0, r1, r_u[layer_id], alpha, beta, relu_rou,

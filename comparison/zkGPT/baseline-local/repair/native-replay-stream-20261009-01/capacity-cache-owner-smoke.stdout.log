@@ -1,0 +1,1 @@
+FORMAL_REFERENCE_VALIDATION old_calls=4 old_total_ms=0.257154 new_calls=1 new_ms=0.063889 exact_capacity_censuses=1 altered_report=REJECT changed_quant=REJECT changed_graph_shape=REJECT public_tampered_trace=REJECT private_mismatched_context=REJECT

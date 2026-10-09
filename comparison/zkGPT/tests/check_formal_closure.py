@@ -147,17 +147,29 @@ def run_tiny_formal(root: Path, backend: str, retain_dir: str = "") -> Dict[str,
     else:
         fresh = Path(tempfile.mkdtemp(prefix=".formal-preflight-", dir=str(results_dir)))
     started_ns = time.time_ns()
+    overall_deadline = time.monotonic() + timeout
+
+    def remaining_stage_budget() -> float:
+        # Reserve up to ten seconds for process-group termination and log
+        # drains so the complete proof/readback/tamper check stays bounded by
+        # the single configured wall-clock budget.
+        remaining = overall_deadline - time.monotonic() - 10.0
+        if remaining <= 0.0:
+            raise ChainError("tiny formal chain exhausted its total wall-clock budget")
+        return min(timeout, remaining)
+
     keep_fresh = False
     stage = "smoke"
     try:
+        smoke_timeout = remaining_stage_budget()
         completed = _run_streaming(
-            [str(smoke), "--formal-proof-verify", "--standalone-dir", str(fresh)],
-            root, "smoke", fresh, timeout,
+            [str(smoke), "--formal-private", "--formal-proof-verify", "--standalone-dir", str(fresh)],
+            root, "smoke", fresh, smoke_timeout,
         )
         if getattr(completed, "timed_out", False):
             keep_fresh = True
             raise ChainError(
-                f"formal adapter smoke timed out after {timeout:g}s; partial diagnostics: {fresh}"
+                f"formal adapter smoke timed out after {smoke_timeout:g}s; partial diagnostics: {fresh}"
             )
         if completed.returncode != 0:
             keep_fresh = True
@@ -180,15 +192,16 @@ def run_tiny_formal(root: Path, backend: str, retain_dir: str = "") -> Dict[str,
         artifact_rel = relative_path(root, artifact, "formal fixture artifact")
         report_rel = relative_path(root, report, "formal fixture report")
         stage = "verifier"
+        verifier_timeout = remaining_stage_budget()
         verified = _run_streaming(
             [str(verifier), "--baseline-root", str(root), "--verifier-context", context_rel,
              "--public-logits", logits_rel, "--artifact", artifact_rel, "--report", report_rel],
-            root, "verifier", fresh, timeout,
+            root, "verifier", fresh, verifier_timeout,
         )
         if getattr(verified, "timed_out", False):
             keep_fresh = True
             raise ChainError(
-                f"standalone independent verifier timed out after {timeout:g}s; partial diagnostics: {fresh}"
+                f"standalone independent verifier timed out after {verifier_timeout:g}s; partial diagnostics: {fresh}"
             )
         if verified.returncode != 0:
             keep_fresh = True
@@ -217,17 +230,49 @@ def run_tiny_formal(root: Path, backend: str, retain_dir: str = "") -> Dict[str,
         artifact_fp = file_fingerprint(artifact, "tiny proof artifact")
         if report_payload.get("artifact_sha256") != artifact_fp["sha256"] or report_payload.get("artifact_size_bytes") != artifact_fp["size_bytes"]:
             raise ChainError("tiny verifier artifact identity mismatch")
+        tampered_logits = fresh / "public_logits.tampered.txt"
+        logits_tokens = logits.read_text(encoding="utf-8").split()
+        if len(logits_tokens) < 3:
+            raise ChainError("tiny public logits are too short to exercise verifier tamper rejection")
+        logits_tokens[2] = str(int(logits_tokens[2]) + 1)
+        tampered_logits.write_text(
+            f"{logits_tokens[0]} {logits_tokens[1]}\n" + " ".join(logits_tokens[2:]) + "\n",
+            encoding="utf-8",
+        )
+        tamper_report = fresh / "tampered_verifier_report.json"
+        stage = "tampered-independent-verifier"
+        tamper_timeout = remaining_stage_budget()
+        tampered = _run_streaming(
+            [str(verifier), "--baseline-root", str(root), "--verifier-context", context_rel,
+             "--public-logits", relative_path(root, tampered_logits, "tampered tiny public logits"),
+             "--artifact", artifact_rel,
+             "--report", relative_path(root, tamper_report, "tampered tiny verifier report")],
+            root, "tampered-verifier", fresh, tamper_timeout,
+        )
+        if getattr(tampered, "timed_out", False):
+            keep_fresh = True
+            raise ChainError(
+                f"standalone tamper verifier timed out after {tamper_timeout:g}s; partial diagnostics: {fresh}"
+            )
+        if tampered.returncode == 0:
+            keep_fresh = True
+            raise ChainError("standalone independent verifier accepted tampered public logits")
+        tamper_payload = load_json(tamper_report, "tampered tiny independent verifier report")
+        if not isinstance(tamper_payload, dict) or tamper_payload.get("status") != "REJECTED" or tamper_payload.get("independent") is not True:
+            raise ChainError("standalone independent verifier did not report tampered-input rejection")
         files = {
             "verifier_context": file_fingerprint(context, "tiny verifier context"),
             "public_logits": file_fingerprint(logits, "tiny public logits"),
+            "tampered_public_logits": file_fingerprint(tampered_logits, "tampered tiny public logits"),
             "proof_artifact": artifact_fp,
             "fixture": file_fingerprint(fixture_path, "tiny fixture"),
             "verifier_report": file_fingerprint(report, "tiny verifier report"),
+            "tampered_verifier_report": file_fingerprint(tamper_report, "tampered tiny verifier report"),
         }
-        assert_fresh_files((fixture_path, context, logits, artifact, report), started_ns, "tiny formal output")
+        assert_fresh_files((fixture_path, context, logits, artifact, report, tampered_logits, tamper_report), started_ns, "tiny formal output")
         return {
             "schema": "zkgpt-gat-tiny-formal-v1", "status": "READY", "backend": backend,
-            "independent_verifier": True, "verifier_reads_checkpoint": False,
+            "independent_verifier": True, "tampered_input_rejected": True, "verifier_reads_checkpoint": False,
             "verifier_reads_witness": False, "fixture_schema": fixture["schema"],
             "identity": identity, "files": files,
             "smoke_binary": {"path": relative_path(root, smoke, "smoke executable"), **smoke_fp},

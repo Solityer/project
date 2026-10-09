@@ -24,6 +24,11 @@ pub fn fft<Scalar: Field, G: FftGroup<Scalar>>(
     recursive::fft(a, omega, log_n, data, inverse)
 }
 
+/// Return the native worker count used by the shared parallel runtime.
+pub fn parallel_thread_count() -> usize {
+    crate::multicore::current_num_threads()
+}
+
 #[cfg(test)]
 mod tests {
     use ark_std::{end_timer, start_timer};

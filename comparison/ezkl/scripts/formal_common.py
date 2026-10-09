@@ -426,6 +426,8 @@ def validate_formal_python_environment() -> dict[str, Any]:
         "ICICLE_NATIVE_MANIFEST_SHA256", "NVIDIA_VISIBLE_DEVICES",
         "EZKL_FORMAL_SELECTED_CUDA_DEVICE", "EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256", "EZKL_FORMAL_BUILD_RECEIPT_SHA256",
         "EZKL_WORKING_DIR", "EZKL_GAT_RUN_DIR",
+        "EZKL_NATIVE_PREPARE_BUDGET_BYTES", "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES",
+        "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS",
     )
     changed = [name for name in unsupported if os.environ.get(name)]
     if changed:

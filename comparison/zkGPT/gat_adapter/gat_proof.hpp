@@ -346,8 +346,53 @@ struct GatLassoWorkspaceProfile {
     std::uint64_t family_wire_bytes_upper_bound = 0;
 };
 
+struct GatGkrLayerShapeProfile {
+    std::uint32_t layer_type = 0;
+    std::uint64_t size = 0;
+    std::uint64_t size_u0 = 0;
+    std::uint64_t size_u1 = 0;
+    std::uint64_t size_v0 = 0;
+    std::uint64_t size_v1 = 0;
+    std::uint64_t unary_gates = 0;
+    std::uint64_t binary_gates = 0;
+    std::uint64_t native_rows = 0;
+    std::uint64_t native_inner = 0;
+    std::uint64_t native_cols = 0;
+    std::int32_t bit_length = -1;
+    std::int32_t max_bl_u = -1;
+    std::int32_t max_bl_v = -1;
+    bool need_phase2 = false;
+    bool source_domains_exact = false;
+    std::uint64_t phase1_rounds = 0;
+    std::uint64_t phase1_first_round_pair_visits = 0;
+    std::uint64_t phase1_followup_pair_visits = 0;
+    std::uint64_t phase1_total_pair_visits = 0;
+    std::uint64_t phase1_extent_visits = 0;
+    std::uint64_t phase1_followup_extent_visits = 0;
+    std::uint64_t phase1_first_round_field_adds_upper_bound = 0;
+    std::uint64_t phase1_first_round_field_subs_upper_bound = 0;
+    std::uint64_t phase1_first_round_field_muls_upper_bound = 0;
+    std::uint64_t phase1_followup_field_adds_upper_bound = 0;
+    std::uint64_t phase1_followup_field_subs_upper_bound = 0;
+    std::uint64_t phase1_followup_field_muls_upper_bound = 0;
+    std::uint64_t phase1_init_field_writes = 0;
+    std::uint64_t phase2_rounds = 0;
+    std::uint64_t phase2_first_round_pair_visits = 0;
+    std::uint64_t phase2_followup_pair_visits = 0;
+    std::uint64_t phase2_total_pair_visits = 0;
+    std::uint64_t phase2_extent_visits = 0;
+    std::uint64_t phase2_followup_extent_visits = 0;
+    std::uint64_t phase2_first_round_field_adds_upper_bound = 0;
+    std::uint64_t phase2_first_round_field_subs_upper_bound = 0;
+    std::uint64_t phase2_first_round_field_muls_upper_bound = 0;
+    std::uint64_t phase2_followup_field_adds_upper_bound = 0;
+    std::uint64_t phase2_followup_field_subs_upper_bound = 0;
+    std::uint64_t phase2_followup_field_muls_upper_bound = 0;
+    std::uint64_t phase2_init_field_writes = 0;
+};
+
 struct GatCapacityReport {
-    std::string schema = "zkgpt-gat-capacity-v6";
+    std::string schema = "zkgpt-gat-capacity-v8";
     std::size_t num_nodes = 0;
     std::size_t num_edges = 0;
     std::size_t num_features = 0;
@@ -415,6 +460,10 @@ struct GatCapacityReport {
     std::uint64_t relation_gate_binary_entries = 0;
     std::uint64_t relation_gate_output_entries = 0;
     std::uint64_t max_single_gate_array_bytes_upper_bound = 0;
+    std::uint64_t explicit_unary_gate_buffer_entry_bytes = 0;
+    std::uint64_t explicit_unary_gate_buffer_entries_upper_bound = 0;
+    std::uint64_t max_explicit_unary_gate_buffer_bytes_upper_bound = 0;
+    std::uint64_t explicit_unary_gate_buffer_compact_coexist_bytes_upper_bound = 0;
     std::uint64_t max_single_relation_builder_array_bytes_upper_bound = 0;
     std::uint64_t gkr_subset_source_map_bytes_upper_bound = 0;
     std::uint64_t gkr_subset_sort_scratch_bytes_upper_bound = 0;
@@ -425,7 +474,16 @@ struct GatCapacityReport {
     std::uint64_t gkr_point_shape_fconn_count = 0;
     std::string gkr_point_shape_digest;
     bool gkr_point_shape_ready = false;
+    bool gkr_point_shape_exact = false;
+    bool gkr_point_domain_upper_bound_valid = false;
+    bool symbolic_analysis_profile_complete = false;
     std::uint64_t gkr_subset_source_support_entries_upper_bound = 0;
+    std::uint64_t gkr_layer0_source_domain_entries_upper_bound = 0;
+    std::uint64_t gkr_layer0_lqry_padded_block_entries_upper_bound = 0;
+    std::uint64_t gkr_layer0_lqry_zero_gap_entries = 0;
+    std::uint64_t lasso_real_query_entries = 0;
+    std::uint64_t lasso_padded_query_entries = 0;
+    std::uint64_t lasso_family_zero_pad_entries = 0;
     std::uint64_t native_transcript_heap_bytes_upper_bound = 0;
     std::uint64_t transcript_content_bytes_upper_bound = 0;
     std::uint64_t transcript_wire_bytes_upper_bound = 0;
@@ -439,10 +497,45 @@ struct GatCapacityReport {
     std::uint64_t lasso_table_and_index_bytes_upper_bound = 0;
     std::uint64_t gkr_layer_count_upper_bound = 0;
     std::uint64_t gkr_fconn_layer_count_upper_bound = 0;
+    bool gkr_work_counts_exact = false;
+    std::uint64_t gkr_phase1_rounds_upper_bound = 0;
+    std::uint64_t gkr_phase2_rounds_upper_bound = 0;
+    std::uint64_t gkr_phase1_first_round_pair_visits_upper_bound = 0;
+    std::uint64_t gkr_phase1_followup_pair_visits_upper_bound = 0;
+    std::uint64_t gkr_phase1_total_pair_visits_upper_bound = 0;
+    std::uint64_t gkr_phase1_extent_visits_upper_bound = 0;
+    std::uint64_t gkr_phase1_followup_extent_visits_upper_bound = 0;
+    std::uint64_t gkr_phase1_first_round_field_adds_upper_bound = 0;
+    std::uint64_t gkr_phase1_first_round_field_subs_upper_bound = 0;
+    std::uint64_t gkr_phase1_first_round_field_muls_upper_bound = 0;
+    std::uint64_t gkr_phase1_followup_field_adds_upper_bound = 0;
+    std::uint64_t gkr_phase1_followup_field_subs_upper_bound = 0;
+    std::uint64_t gkr_phase1_followup_field_muls_upper_bound = 0;
+    std::uint64_t gkr_phase1_init_field_writes = 0;
+    std::uint64_t gkr_phase2_first_round_pair_visits_upper_bound = 0;
+    std::uint64_t gkr_phase2_followup_pair_visits_upper_bound = 0;
+    std::uint64_t gkr_phase2_total_pair_visits_upper_bound = 0;
+    std::uint64_t gkr_phase2_extent_visits_upper_bound = 0;
+    std::uint64_t gkr_phase2_followup_extent_visits_upper_bound = 0;
+    std::uint64_t gkr_phase2_first_round_field_adds_upper_bound = 0;
+    std::uint64_t gkr_phase2_first_round_field_subs_upper_bound = 0;
+    std::uint64_t gkr_phase2_first_round_field_muls_upper_bound = 0;
+    std::uint64_t gkr_phase2_followup_field_adds_upper_bound = 0;
+    std::uint64_t gkr_phase2_followup_field_subs_upper_bound = 0;
+    std::uint64_t gkr_phase2_followup_field_muls_upper_bound = 0;
+    std::uint64_t gkr_phase2_init_field_writes = 0;
+    std::uint64_t fconn_scalar_multiply_terms = 0;
+    std::uint64_t fconn_output_coordinates = 0;
+    std::uint64_t lasso_total_rows = 0;
+    std::uint64_t lasso_total_row_commitment_chunks = 0;
+    std::uint64_t hyrax_matrix_masked_openings = 0;
+    std::uint64_t hyrax_l_qry_tensor_openings = 0;
+    std::vector<GatGkrLayerShapeProfile> gkr_layer_work_profile;
     std::uint64_t gkr_input_source_count_upper_bound = 0;
     std::uint64_t gkr_message_count_upper_bound = 0;
     std::uint64_t gkr_wire_bytes_upper_bound = 0;
     std::uint64_t gkr_prefix_workspace_bytes_upper_bound = 0;
+    std::uint64_t gkr_prefix_filesystem_allocation_unit_bytes = 0;
     std::uint64_t l_query_zero_interval_count_upper_bound = 0;
     std::uint64_t flattened_input_domain_entries = 0;
     std::uint64_t flattened_input_domain_limit_u64 = (std::uint64_t(1) << 62);
@@ -478,7 +571,8 @@ struct GatCapacityReport {
 };
 
 GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, const QuantConfig& quant,
-                                      std::uint64_t feature_source_file_bytes = 0);
+                                      std::uint64_t feature_source_file_bytes = 0,
+                                      bool symbolic_profile_only = false);
 void finalize_gat_capacity_report(GatCapacityReport& report);
 std::vector<std::array<unsigned, 5>> canonical_division_range_profiles(const Graph& graph, const Model& model, const QuantConfig& quant);
 
@@ -494,24 +588,6 @@ struct GatPointDomainAdmission {
 
 GatPointDomainAdmission inspect_gat_point_domain_admission(const Graph& graph, const Model& model, const QuantConfig& quant);
 
-struct GatGkrLayerShapeProfile {
-    std::uint32_t layer_type = 0;
-    std::uint64_t size = 0;
-    std::uint64_t size_u0 = 0;
-    std::uint64_t size_u1 = 0;
-    std::uint64_t size_v0 = 0;
-    std::uint64_t size_v1 = 0;
-    std::uint64_t unary_gates = 0;
-    std::uint64_t binary_gates = 0;
-    std::uint64_t native_rows = 0;
-    std::uint64_t native_inner = 0;
-    std::uint64_t native_cols = 0;
-    std::int32_t bit_length = -1;
-    std::int32_t max_bl_u = -1;
-    std::int32_t max_bl_v = -1;
-    bool need_phase2 = false;
-};
-
 struct GatCircuitPlan {
     std::string recipe_schema = "canonical_plan_recipe_v3";
     std::string relation_schema = "zkgpt-gat-relation-v1";
@@ -521,9 +597,12 @@ struct GatCircuitPlan {
     std::size_t sparse_chunk_size = kSparseGkrChunkEntries;
     std::string sparse_plan_digest;
     std::string gkr_point_shape_digest;
+    bool gkr_point_domain_upper_bound_valid = true;
+    std::string gkr_point_domain_upper_bound_reason;
     std::vector<GatGkrLayerShapeProfile> gkr_layer_shape_profile;
     std::uint64_t gkr_point_shape_bitmap_bytes = 0;
     std::uint64_t gkr_point_shape_touched_index_bytes_upper_bound = 0;
+    std::uint64_t gkr_layer0_source_domain_upper_bound = 0;
     bool virtual_sparse = false;
     std::string model_arch_id;
     CanonicalModelShape model_shape;

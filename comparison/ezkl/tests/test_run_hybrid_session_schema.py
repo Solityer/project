@@ -24,6 +24,7 @@ from run_hybrid_formal import (  # noqa: E402
     _formal_dataset_command_plan,
     _native_capacity_requirements,
     _main,
+    _native_prepare_budget,
     _recheck_local_phase_capacity,
     _remaining_setup_disk_bytes,
     _validate_cub_workspace_query,
@@ -35,25 +36,88 @@ class LocalFormalEntryTest(unittest.TestCase):
     @staticmethod
     def _capacity_admission() -> dict[str, object]:
         return {
+            "logrows": 4,
             "domain_size": 16,
             "constraint_system": {
                 "degree": 3,
                 "num_fixed_columns": 3,
                 "num_advice_columns": 4,
                 "num_instance_columns": 1,
+                "num_selectors": 2,
+                "num_custom_gate_groups": 1,
+                "num_blinding_factors": 2,
+                "num_lookup_arguments": 2,
+                "num_lookup_query_polynomials": 2,
+                "max_lookup_query_polynomials_per_argument": 1,
+                "num_unique_lookup_table_expression_groups": 1,
+                "num_shuffle_arguments": 1,
                 "num_permutation_columns": 2,
                 "fixed_column_count_post_compression": 5,
                 "permutation_successor_entry_count_upper": 8,
             },
             "native_memory_model": {
-                "proof_domain_size": 64,
+                "native_target_arch": "aarch64",
+                "uses_recursive_fft": True,
+                "proof_logrows": 5,
+                "proof_domain_size": 32,
+                "recursive_fft_cached_domain_lengths": [32],
+                "recursive_fft_twiddle_field_elements": 74,
+                "fft_cache_supported_length_count": 2,
+                "fft_cache_entry_capacity": 3,
+                "fft_parallel_thread_count": 2,
+                "srs_fft_cache_supported_length_count": 1,
+                "srs_fft_cache_entry_capacity": 3,
+                "parallel_fft_lookup_table_elements": 1056,
+                "size_of_fftdata_bytes": 96,
+                "size_of_fftdata_once_lock_bytes": 128,
+                "size_of_fftdata_cache_entry_bytes": 24,
+                "size_of_fftdata_cache_map_bytes": 48,
+                "size_of_arc_header_bytes": 16,
+                "custom_gate_dependency_columns": [2],
+                "lookup_dependency_columns": [2, 2],
+                "lookup_query_polynomial_counts": [1, 1],
+                "shuffle_dependency_columns": [2],
                 "size_of_fr_bytes": 32,
                 "size_of_assigned_fr_bytes": 40,
                 "size_of_option_fr_bytes": 48,
                 "size_of_batch_invert_entry_bytes": 40,
+                "size_of_usize_bytes": 8,
+                "size_of_usize_pair_bytes": 16,
+                "size_of_atomic_u64_bytes": 8,
+                "size_of_lookup_map_entry_bytes": 32,
+                "size_of_lookup_map_header_bytes": 24,
+                "size_of_vec_u8_bytes": 24,
+                "size_of_lookup_repr_bytes": 32,
+                "size_of_vec_header_bytes": 24,
+                "size_of_polynomial_header_bytes": 48,
+                "size_of_mv_lookup_prepared_bytes": 120,
+                "size_of_mv_lookup_prepared_table_bytes": 48,
+                "size_of_mv_lookup_committed_bytes": 96,
+                "size_of_shplonk_commitment_extension_bytes": 128,
+                "size_of_shplonk_rotation_set_extension_bytes": 48,
+                "size_of_coeff_polynomial_header_bytes": 48,
+                "shplonk_rotation_set_commitment_counts": [8, 5, 3],
+                "shplonk_query_polynomial_count": 16,
+                "shplonk_rotation_set_count": 3,
+                "shplonk_max_rotation_count": 3,
+                "shplonk_unique_opening_point_count": 3,
+                "shplonk_max_commitments_per_rotation_set": 8,
+                "shplonk_permutation_product_set_count": 2,
+                "shplonk_advice_query_polynomial_count": 2,
+                "shplonk_fixed_query_polynomial_count": 2,
+                "shplonk_lookup_argument_count": 2,
+                "shplonk_shuffle_argument_count": 1,
+                "shplonk_proof_instance_count": 1,
+                "shplonk_quotient_piece_count": 2,
                 "size_of_g1_affine_bytes": 96,
+                "size_of_g1_projective_bytes": 144,
+                "size_of_g2_affine_bytes": 192,
+                "size_of_fft_stage_bytes": 24,
+                "graph_witness_scalar_element_count": 0,
+                "size_of_graph_witness_scalar_bytes": 32,
                 "selector_activation_bitmap_bytes": 100,
                 "fixed_polynomial_read_heap_scratch_bytes_upper": 4096,
+                "lookup_table_cardinality_upper_bounds": [4],
             },
         }
 
@@ -100,25 +164,62 @@ class LocalFormalEntryTest(unittest.TestCase):
         requirements = _native_capacity_requirements(
             self._capacity_admission(), {"scalar_bytes": 32, "affine_bytes": 64}
         )
-        self.assertEqual(requirements["setup_persisted_mapped_bytes"], (2 * 5 * 16 + 2 * 16 + 3 * 64) * 32)
-        self.assertEqual(requirements["setup_transition_mapped_bytes"], (64 + 16) * 32)
+        self.assertEqual(requirements["setup_persisted_mapped_bytes"], (2 * 5 * 16 + 2 * 16 + 3 * 32) * 32)
+        self.assertEqual(requirements["setup_transition_mapped_bytes"], (32 + 16) * 32)
         self.assertEqual(
             requirements["setup_mapped_peak_bytes"],
-            3 * 16 * 40 + (2 * 5 * 16 + 2 * 16 + 3 * 64) * 32 + (64 + 16) * 32,
+            3 * 16 * 40 + (2 * 5 * 16 + 2 * 16 + 3 * 32) * 32 + (32 + 16) * 32,
         )
-        self.assertEqual(requirements["quotient_extended_backing_bytes"], 64 * 32)
+        self.assertEqual(requirements["quotient_extended_backing_bytes"], 32 * 32)
         self.assertEqual(requirements["quotient_piece_bytes"], 16 * (3 - 1) * 32)
         self.assertEqual(
             requirements["proof_spill_known_bytes"],
-            requirements["setup_persisted_mapped_bytes"] + 4 * 16 * 32 + 2 * 16 * 32 + 64 * 32 + 16 * 2 * 32,
+            requirements["setup_persisted_mapped_bytes"]
+            + 4 * 16 * 32
+            + 2 * 16 * 32
+            + 32 * 32
+            + 16 * 2 * 32
+            + requirements["lookup_spill_known_bytes"]
+            + 5 * 32 * 32
+            + requirements["shplonk_transient_spill_upper_bytes"],
+        )
+        self.assertEqual(requirements["proof_evaluation_coset_mapped_window_bytes"], 5 * 32 * 32)
+        self.assertEqual(requirements["proof_nonprepare_hot_mmap_host_bytes"], 3 * 32 * 32)
+        self.assertEqual(
+            requirements["proof_evaluation_hot_mmap_host_bytes"],
+            4 * 32 * 32 + 5 * 32 * 32 + 4 * 16 * 32,
         )
         self.assertEqual(requirements["batch_invert_heap_scratch_bytes_upper"], 16 * 40)
+        self.assertEqual(
+            requirements["lookup_commit_task_host_bytes"],
+            16 * (max(2 * 32 + 40, 3 * 32) + 3 * 32) + 5 * 24,
+        )
         self.assertEqual(requirements["icicle_msm_host_staging_bytes"], (32 + 64) * (1 << 20))
+        self.assertEqual(requirements["shplonk_batch_width_upper"], 2)
+        self.assertEqual(requirements["shplonk_task_host_bytes"], 2 * 16 * 32 + 2 * 48)
+        self.assertEqual(requirements["shplonk_fixed_workspace_host_bytes"], 4 * 16 * 32 + 4 * 48)
+        self.assertEqual(requirements["shplonk_transient_spill_upper_bytes"], 4 * 16 * 32)
+        self.assertEqual(
+            requirements["proof_host_peak_bytes"],
+            max(
+                requirements["lookup_prepare_host_peak_bytes"],
+                requirements["lookup_commit_host_peak_bytes"],
+                requirements["proof_evaluation_host_peak_bytes"],
+                requirements["shplonk_host_peak_bytes"],
+            ),
+        )
         self.assertEqual(
             requirements["permutation_vk_msm_host_known_bytes"],
             100 + 2 * 16 * 32 + (32 + 64) * (1 << 20),
         )
-        self.assertEqual(requirements["host_known_bytes"], requirements["permutation_vk_msm_host_known_bytes"])
+        self.assertEqual(
+            requirements["host_known_bytes"],
+            max(
+                requirements["setup_keygen_host_peak_bytes"],
+                requirements["srs_setup_host_peak_bytes"],
+                requirements["proof_host_peak_bytes"],
+            ),
+        )
         self.assertGreater(requirements["setup_key_artifact_upper_bytes"], requirements["setup_persisted_mapped_bytes"])
 
     def test_capacity_gate_accepts_exact_limits_and_rejects_each_shortfall(self) -> None:
@@ -127,6 +228,7 @@ class LocalFormalEntryTest(unittest.TestCase):
         sample = {"free_memory_bytes": 100, "total_memory_bytes": 200, "device_uuid": "GPU-test"}
         query = {"device_workspace_peak_bytes": 100, "integrated_device": False}
         with mock.patch("run_hybrid_formal._effective_host_memory_available_bytes", return_value=(100, {})), \
+             mock.patch("run_hybrid_formal._host_os_diagnostic_reserve_bytes", return_value=(0, {})), \
              mock.patch("run_hybrid_formal._filesystem_available_bytes", return_value=(100, {})):
             check = _check_dataset_capacity(
                 "cora", requirements, output_root=output_root, remaining_known_disk_bytes=100,
@@ -143,19 +245,64 @@ class LocalFormalEntryTest(unittest.TestCase):
         ):
             with self.subTest(expected=expected), \
                  mock.patch("run_hybrid_formal._effective_host_memory_available_bytes", return_value=(host, {})), \
+                 mock.patch("run_hybrid_formal._host_os_diagnostic_reserve_bytes", return_value=(0, {})), \
                  mock.patch("run_hybrid_formal._filesystem_available_bytes", return_value=(disk, {})):
                 with self.assertRaisesRegex(formal_common.ContractError, expected):
                     _check_dataset_capacity(
                         "cora", requirements, output_root=output_root, remaining_known_disk_bytes=100,
                         phase="setup", device_sample={**sample, "free_memory_bytes": free},
                         workspace_query=query,
-                    )
+                )
+
+    def test_native_prepare_budget_charges_baseline_and_table_cache_once(self) -> None:
+        requirements = _native_capacity_requirements(
+            self._capacity_admission(), {"scalar_bytes": 32, "affine_bytes": 64}
+        )
+        minimum_task = max(
+            requirements["lookup_prepare_task_host_bytes"],
+            requirements["lookup_commit_task_host_bytes"],
+            requirements["shplonk_fixed_workspace_host_bytes"]
+            + requirements["shplonk_task_host_bytes"],
+        )
+        reserve = 100
+        device = 200
+        expected_taskcap = 7 * minimum_task
+        initial_available = (
+            requirements["proof_nonprepare_heap_host_bytes"]
+            + requirements["proof_nonprepare_hot_mmap_host_bytes"]
+            + requirements["lookup_table_cache_retained_host_bytes"]
+            + requirements["shplonk_extension_host_upper_bytes"]
+            + requirements["icicle_msm_host_staging_bytes"]
+            + reserve
+            + device
+            + expected_taskcap
+        )
+        with mock.patch("run_hybrid_formal._effective_host_memory_limit_bytes", return_value=(10**12, {})), \
+             mock.patch("run_hybrid_formal._host_os_diagnostic_reserve_bytes", return_value=(reserve, {})):
+            budget = _native_prepare_budget(
+                requirements,
+                initial_available_bytes=initial_available,
+                workspace_query={"integrated_device": True, "device_workspace_peak_bytes": device},
+            )
+        self.assertEqual(budget["taskcap_bytes"], expected_taskcap)
+        self.assertEqual(
+            budget["future_phase_increment_bytes"],
+            budget["tablecache_bytes"]
+            + budget["shplonk_extensions_bytes"]
+            + budget["icicle_staging_bytes"]
+            + expected_taskcap,
+        )
+        self.assertEqual(
+            budget["incremental_envelope_bytes"],
+            budget["future_phase_increment_bytes"],
+        )
 
     def test_integrated_device_workspace_is_added_to_host_bound(self) -> None:
         requirements = {"host_known_bytes": 100}
         sample = {"free_memory_bytes": 100, "total_memory_bytes": 200, "device_uuid": "GPU-test"}
         query = {"device_workspace_peak_bytes": 100, "integrated_device": True}
         with mock.patch("run_hybrid_formal._effective_host_memory_available_bytes", return_value=(199, {})), \
+             mock.patch("run_hybrid_formal._host_os_diagnostic_reserve_bytes", return_value=(0, {})), \
              mock.patch("run_hybrid_formal._filesystem_available_bytes", return_value=(1000, {})):
             with self.assertRaisesRegex(formal_common.ContractError, "host allocation"):
                 _check_dataset_capacity(
@@ -164,6 +311,7 @@ class LocalFormalEntryTest(unittest.TestCase):
                     workspace_query=query,
                 )
         with mock.patch("run_hybrid_formal._effective_host_memory_available_bytes", return_value=(200, {})), \
+             mock.patch("run_hybrid_formal._host_os_diagnostic_reserve_bytes", return_value=(0, {})), \
              mock.patch("run_hybrid_formal._filesystem_available_bytes", return_value=(1000, {})):
             _check_dataset_capacity(
                 "cora", requirements, output_root=Path("/capacity/formal"),

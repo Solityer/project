@@ -240,14 +240,15 @@ def _checked_capacity_int(value: Any, label: str, *, allow_zero: bool = False) -
 
 
 def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[str, ...]) -> dict[str, int]:
-    if profile.get("schema") != "zkdl_formal_capacity_profile_v1" or profile.get("baseline") != "zkdl":
+    if profile.get("schema") != "zkdl_formal_capacity_profile_v3" or profile.get("baseline") != "zkdl":
         raise RunnerError("zkDL local capacity profile schema/baseline mismatch")
     if profile.get("backend") != "cpu" or profile.get("memory_accounting_kind") != "host-only" or profile.get("device") is not None:
         raise RunnerError("zkDL capacity profile does not match the source-bound CPU-only formal path")
     methods = profile.get("bound_methods")
     if (not isinstance(methods, dict) or
             methods.get("additional_disk_peak") != "source_derived_upper_bound" or
-            methods.get("host_peak") != "source_derived_upper_bound"):
+            methods.get("host_peak") != "source_derived_upper_bound" or
+            methods.get("finalization_host_peak") != "srs_manifest_schema_python_heap_upper_bound"):
         raise RunnerError("zkDL capacity profile lacks source-derived host/disk bounds")
     if tuple(DATASETS[:len(completed)]) != completed:
         raise RunnerError("zkDL capacity recheck is not following the canonical dataset sequence")
@@ -267,6 +268,13 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
             raise RunnerError(f"zkDL capacity profile row is malformed for {dataset}")
         if item.get("phase_coverage") != ["setup", "witness", "commitment", "prove", "verify"]:
             raise RunnerError(f"zkDL capacity profile phase coverage is malformed for {dataset}")
+        route_source_domain = _checked_capacity_int(
+            item.get("native_route_source_domain"), f"{dataset} route selector source domain")
+        route_factor_elements = _checked_capacity_int(
+            item.get("native_route_selector_factor_elements"),
+            f"{dataset} route selector factor elements")
+        if route_source_domain > (1 << 30) or route_factor_elements > route_source_domain + 1:
+            raise RunnerError(f"zkDL route selector factor bound is invalid for {dataset}")
         host_required = max(host_required, _checked_capacity_int(item.get("host_peak_bytes"),
                                                                    f"{dataset} host peak"))
         device_peak = _checked_capacity_int(item.get("device_peak_bytes"), f"{dataset} CPU device peak", allow_zero=True)
@@ -290,14 +298,30 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
         if future_retained_prefix > (1 << 64) - 1:
             raise RunnerError("zkDL retained prefix requirement overflows u64")
     disk_required = max(disk_required, future_retained_prefix + finalization)
+    finalization_profile = profile.get("finalization_manifest_capacity")
+    if (not isinstance(finalization_profile, dict) or
+            finalization_profile.get("schema") != "zkdl_srs_manifest_finalization_heap_v1" or
+            not isinstance(finalization_profile.get("datasets"), dict) or
+            set(finalization_profile["datasets"]) != set(DATASETS)):
+        raise RunnerError("zkDL finalization manifest capacity schema/dataset set mismatch")
+    finalization_dataset_bounds: list[int] = []
+    for dataset in DATASETS:
+        item = finalization_profile["datasets"][dataset]
+        if not isinstance(item, dict):
+            raise RunnerError(f"zkDL finalization manifest capacity is malformed for {dataset}")
+        family_count = _checked_capacity_int(item.get("family_count"), f"{dataset} SRS family count")
+        segment_count = _checked_capacity_int(item.get("segment_count"), f"{dataset} SRS segment count")
+        try:
+            expected = formal_phase._srs_manifest_finalization_capacity(family_count, segment_count)
+        except formal_phase.PhaseError as exc:
+            raise RunnerError(f"zkDL finalization manifest bound is invalid for {dataset}: {exc}") from exc
+        if item != expected:
+            raise RunnerError(f"zkDL finalization manifest bound does not match its fixed-schema counts for {dataset}")
+        finalization_dataset_bounds.append(expected["host_peak_bytes_upper_bound"])
     finalization_host = _checked_capacity_int(profile.get("finalization_host_peak_bytes_upper_bound"),
                                               "finalization host upper bound")
-    all_host_peaks = [
-        _checked_capacity_int(datasets[dataset].get("host_peak_bytes"), f"{dataset} host peak")
-        for dataset in DATASETS
-    ]
-    if finalization_host != max(all_host_peaks):
-        raise RunnerError("zkDL finalization host bound differs from the existing source-derived dataset bounds")
+    if finalization_host != max(finalization_dataset_bounds):
+        raise RunnerError("zkDL finalization host bound differs from its SRS manifest schema bounds")
     return {"host_bytes": host_required, "disk_bytes": disk_required,
             "device_bytes": device_required, "finalization_host_bytes": finalization_host}
 
@@ -317,7 +341,7 @@ def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) ->
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RunnerError("zkDL prepare receipt is unreadable") from exc
-    if (not isinstance(receipt, dict) or receipt.get("schema") != "zkDL_formal_prepare_receipt_v1" or
+    if (not isinstance(receipt, dict) or receipt.get("schema") != "zkDL_formal_prepare_receipt_v2" or
             receipt.get("baseline") != "zkdl" or receipt.get("status") != "PASS" or
             receipt.get("session_id") != session_id):
         raise RunnerError("zkDL prepare receipt identity/status mismatch")
@@ -343,8 +367,32 @@ def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) ->
     if (not isinstance(profile, dict) or marker.get("capacity_profile") != profile or
             profile.get("session_id") != session_id or profile.get("baseline") != "zkdl"):
         raise RunnerError("zkDL prepare marker/receipt capacity profile identity mismatch")
-    if profile.get("schema") != "zkdl_formal_capacity_profile_v1":
+    if profile.get("schema") != "zkdl_formal_capacity_profile_v3":
         raise RunnerError("zkDL prepare capacity profile is not baseline-local")
+    native_admissions = receipt.get("native_admissions")
+    if not isinstance(native_admissions, dict) or set(native_admissions) != set(DATASETS):
+        raise RunnerError("zkDL prepare receipt does not contain exactly five native admissions")
+    profile_datasets = profile.get("datasets")
+    if not isinstance(profile_datasets, dict) or set(profile_datasets) != set(DATASETS):
+        raise RunnerError("zkDL prepare capacity profile does not contain exactly five datasets")
+    for dataset in DATASETS:
+        admission = native_admissions[dataset]
+        row = profile_datasets[dataset]
+        if (not isinstance(admission, dict) or
+                admission.get("schema") != "zkdl_native_relation_admission_v2" or
+                admission.get("status") != "PASS" or admission.get("dataset") != dataset or
+                not isinstance(row, dict)):
+            raise RunnerError(f"zkDL native admission identity/schema mismatch for {dataset}")
+        source_domain = _checked_capacity_int(
+            admission.get("native_maximum_route_source_domain"),
+            f"{dataset} native route source domain")
+        factor_elements = _checked_capacity_int(
+            admission.get("native_maximum_route_selector_factor_elements"),
+            f"{dataset} native route selector factor elements")
+        if (source_domain > (1 << 30) or factor_elements > source_domain + 1 or
+                row.get("native_route_source_domain") != source_domain or
+                row.get("native_route_selector_factor_elements") != factor_elements):
+            raise RunnerError(f"zkDL native route selector factor profile mismatch for {dataset}")
     if type(profile.get("fs_device_id")) is not int or profile["fs_device_id"] != session.stat(follow_symlinks=False).st_dev:
         raise RunnerError("zkDL prepare capacity profile filesystem identity changed")
     if _session_file_bytes(session) < _checked_capacity_int(profile.get("preexisting_baseline_artifact_bytes"),

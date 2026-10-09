@@ -46,6 +46,11 @@ pub use keygen::*;
 pub use prover::*;
 pub use verifier::*;
 
+pub use evaluation::{
+    native_evaluation_resource_shape, native_shplonk_resource_shape, NativeEvaluationShape,
+    NativeShplonkShape,
+};
+pub(crate) use prover::native_shplonk_batch_width;
 use evaluation::Evaluator;
 use std::io;
 

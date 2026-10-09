@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::io::{self, BufRead, Read};
 use std::iter;
 use std::ops::RangeTo;
+use std::path::PathBuf;
 
 use super::{
     circuit::{
@@ -40,6 +41,251 @@ use crate::{
         Basis, Coeff, LagrangeCoeff, Polynomial, ProverQuery,
     },
 };
+
+#[cfg(feature = "mv-lookup")]
+/// Returns the native in-memory sizes used to account prepared lookup state.
+pub fn native_mv_lookup_resource_layout<C: crate::arithmetic::CurveAffine>() -> (usize, usize, usize) {
+    (
+        std::mem::size_of::<lookup::prover::Prepared<C>>(),
+        std::mem::size_of::<lookup::prover::PreparedTable<C>>(),
+        std::mem::size_of::<lookup::prover::Committed<C>>(),
+    )
+}
+
+#[cfg(feature = "mv-lookup")]
+/// Returns the native hash-map header size used by multi-lookup table membership.
+pub fn native_mv_lookup_map_header_bytes() -> usize {
+    std::mem::size_of::<HashMap<Vec<u8>, usize>>()
+}
+
+#[cfg(feature = "mv-lookup")]
+struct NativePreparePolicy {
+    python_budget_bytes: Option<u64>,
+    device_headroom_bytes: u64,
+    table_cardinality_bounds: Option<Vec<usize>>,
+}
+
+fn invalid_native_prepare_policy(message: impl Into<String>) -> Error {
+    Error::NativeStorage(io::Error::new(io::ErrorKind::InvalidInput, message.into()))
+}
+
+#[cfg(feature = "mv-lookup")]
+fn native_prepare_policy() -> Result<NativePreparePolicy, Error> {
+    let formal = std::env::var_os("EZKL_GAT_RUN_DIR").is_some();
+    let python_budget_bytes = match std::env::var("EZKL_NATIVE_PREPARE_BUDGET_BYTES") {
+        Ok(value) => Some(value.parse::<u64>().map_err(|_| {
+            invalid_native_prepare_policy("EZKL_NATIVE_PREPARE_BUDGET_BYTES is not a u64")
+        })?),
+        Err(std::env::VarError::NotPresent) if !formal => None,
+        Err(_) => {
+            return Err(invalid_native_prepare_policy(
+                "formal mv-lookup proving requires EZKL_NATIVE_PREPARE_BUDGET_BYTES",
+            ))
+        }
+    };
+    let device_headroom_bytes = match std::env::var("EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES") {
+        Ok(value) => value.parse::<u64>().map_err(|_| {
+            invalid_native_prepare_policy(
+                "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES is not a u64",
+            )
+        })?,
+        Err(std::env::VarError::NotPresent) if !formal => 0,
+        Err(_) => {
+            return Err(invalid_native_prepare_policy(
+                "formal mv-lookup proving requires EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES",
+            ))
+        }
+    };
+    let table_cardinality_bounds = match std::env::var("EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS") {
+        Ok(value) if value.is_empty() => Some(Vec::new()),
+        Ok(value) => {
+            let bounds = value
+                .split(',')
+                .map(|item| {
+                    let parsed = item.parse::<u64>().map_err(|_| {
+                        invalid_native_prepare_policy(
+                            "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS contains a non-u64 value",
+                        )
+                    })?;
+                    if parsed == 0 {
+                        return Err(invalid_native_prepare_policy(
+                            "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS contains zero",
+                        ));
+                    }
+                    usize::try_from(parsed).map_err(|_| {
+                        invalid_native_prepare_policy(
+                            "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS exceeds usize",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(bounds)
+        }
+        Err(std::env::VarError::NotPresent) if !formal => None,
+        Err(_) => {
+            return Err(invalid_native_prepare_policy(
+                "formal mv-lookup proving requires EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS",
+            ))
+        }
+    };
+    Ok(NativePreparePolicy {
+        python_budget_bytes,
+        device_headroom_bytes,
+        table_cardinality_bounds,
+    })
+}
+
+fn native_prepare_available_bytes(device_headroom_bytes: u64) -> Result<u64, Error> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo")
+        .map_err(|error| Error::NativeStorage(io::Error::new(error.kind(), error)))?;
+    let mut mem_available = None;
+    let mut mem_total = None;
+    for line in meminfo.lines() {
+        let (key, value) = line.split_once(':').unwrap_or(("", ""));
+        if key == "MemAvailable" || key == "MemTotal" {
+            let kilobytes = value
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| invalid_native_prepare_policy("/proc/meminfo has malformed memory values"))?;
+            let bytes = kilobytes.checked_mul(1024).ok_or_else(|| {
+                invalid_native_prepare_policy("/proc/meminfo memory value overflow")
+            })?;
+            if key == "MemAvailable" {
+                mem_available = Some(bytes);
+            } else {
+                mem_total = Some(bytes);
+            }
+        }
+    }
+    let mut available = mem_available
+        .ok_or_else(|| invalid_native_prepare_policy("/proc/meminfo lacks MemAvailable"))?;
+    let mut limit = mem_total
+        .ok_or_else(|| invalid_native_prepare_policy("/proc/meminfo lacks MemTotal"))?;
+
+    let mut cgroup_paths = Vec::new();
+    if let Ok(cgroup) = std::fs::read_to_string("/proc/self/cgroup") {
+        for line in cgroup.lines() {
+            let Some((hierarchy, tail)) = line.split_once(':') else {
+                continue;
+            };
+            let Some((_controllers, relative)) = tail.split_once(':') else {
+                continue;
+            };
+            if hierarchy == "0" {
+                let mut path = PathBuf::from("/sys/fs/cgroup").join(relative.trim_start_matches('/'));
+                loop {
+                    if !cgroup_paths.contains(&path) {
+                        cgroup_paths.push(path.clone());
+                    }
+                    if path == PathBuf::from("/sys/fs/cgroup") || !path.pop() {
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+    }
+    let cgroup_root = PathBuf::from("/sys/fs/cgroup");
+    if !cgroup_paths.contains(&cgroup_root) {
+        cgroup_paths.push(cgroup_root);
+    }
+    for base in cgroup_paths {
+        let maximum = match std::fs::read_to_string(base.join("memory.max")) {
+            Ok(value) => value.trim().to_owned(),
+            Err(_) => continue,
+        };
+        if maximum == "max" {
+            continue;
+        }
+        let Ok(maximum) = maximum.parse::<u64>() else {
+            return Err(invalid_native_prepare_policy(format!(
+                "malformed cgroup memory.max at {}",
+                base.display()
+            )));
+        };
+        let current = match std::fs::read_to_string(base.join("memory.current"))
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+        {
+            Some(value) => value,
+            None => continue,
+        };
+        limit = limit.min(maximum);
+        available = available.min(maximum.saturating_sub(current));
+    }
+    let reserve_percent = ((u128::from(limit) * 5 + 99) / 100)
+        .try_into()
+        .map_err(|_| invalid_native_prepare_policy("native memory reserve overflow"))?;
+    let reserve = (2u64 * 1024 * 1024 * 1024).max(reserve_percent);
+    Ok(available
+        .saturating_sub(reserve)
+        .saturating_sub(device_headroom_bytes))
+}
+
+/// Chooses a bounded SHPLONK contribution batch from the formal proof budget
+/// and the current effective host availability. The batch is local to the
+/// existing contribution loop and does not change Rayon global-pool settings.
+pub(crate) fn native_shplonk_batch_width(
+    requested_width: usize,
+    per_task_bytes: u64,
+    fixed_workspace_bytes: u64,
+) -> Result<(usize, u64), Error> {
+    if requested_width == 0 || per_task_bytes == 0 {
+        return Err(invalid_native_prepare_policy(
+            "native SHPLONK contribution batch has an empty width or zero task bound",
+        ));
+    }
+    let formal = std::env::var_os("EZKL_GAT_RUN_DIR").is_some();
+    let thread_width = crate::multicore::current_num_threads().max(1);
+    let requested_width = requested_width.min(thread_width).max(1);
+    let python_budget_bytes = match std::env::var("EZKL_NATIVE_PREPARE_BUDGET_BYTES") {
+        Ok(value) => Some(value.parse::<u64>().map_err(|_| {
+            invalid_native_prepare_policy("EZKL_NATIVE_PREPARE_BUDGET_BYTES is not a u64")
+        })?),
+        Err(std::env::VarError::NotPresent) if !formal => None,
+        Err(_) => {
+            return Err(invalid_native_prepare_policy(
+                "formal SHPLONK proving requires EZKL_NATIVE_PREPARE_BUDGET_BYTES",
+            ))
+        }
+    };
+    let device_headroom_bytes = match std::env::var("EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES") {
+        Ok(value) => value.parse::<u64>().map_err(|_| {
+            invalid_native_prepare_policy(
+                "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES is not a u64",
+            )
+        })?,
+        Err(std::env::VarError::NotPresent) if !formal => 0,
+        Err(_) => {
+            return Err(invalid_native_prepare_policy(
+                "formal SHPLONK proving requires EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES",
+            ))
+        }
+    };
+    if let Some(python_budget_bytes) = python_budget_bytes {
+        let available = python_budget_bytes.min(native_prepare_available_bytes(
+            device_headroom_bytes,
+        )?);
+        let task_envelope = available.saturating_sub(fixed_workspace_bytes);
+        let width = task_envelope / per_task_bytes;
+        if width == 0 {
+            return Err(invalid_native_prepare_policy(format!(
+                "native SHPLONK contribution needs {} fixed workspace bytes plus one {}-byte task; only {} bytes remain",
+                fixed_workspace_bytes, per_task_bytes, available
+            )));
+        }
+        Ok((
+            usize::try_from(width)
+                .unwrap_or(usize::MAX)
+                .min(requested_width)
+                .max(1),
+            available,
+        ))
+    } else {
+        Ok((requested_width, u64::MAX))
+    }
+}
 use group::prime::PrimeCurveAffine;
 
 const ASSIGNED_EVENT_BATCH_SIZE: usize = 8192;
@@ -773,30 +1019,226 @@ where
     let start = Instant::now();
 
     #[cfg(feature = "mv-lookup")]
+    let prepare_policy = native_prepare_policy()?;
+
+    #[cfg(feature = "mv-lookup")]
+    let lookup_run_label = std::env::var("EZKL_GAT_RUN_DIR")
+        .ok()
+        .and_then(|path| PathBuf::from(path).file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "nonformal".to_owned());
+
+    #[cfg(feature = "mv-lookup")]
+    println!(
+        "EZKL_NATIVE_PHASE START stage=mv_lookup_prepare dataset={} instances={} arguments={} domain={}",
+        lookup_run_label,
+        instance.len(),
+        pk.vk.cs.lookups.len(),
+        params.n(),
+    );
+
+    #[cfg(feature = "mv-lookup")]
+    let max_query_polynomials_per_argument = pk
+        .vk
+        .cs
+        .lookups
+        .iter()
+        .map(|lookup| lookup.inputs_expressions.len())
+        .max()
+        .unwrap_or(0);
+
+    #[cfg(feature = "mv-lookup")]
+    let prepare_task_bytes = (params.n() as u128)
+        .checked_mul(
+            (max_query_polynomials_per_argument as u128)
+                .checked_add(2)
+                .and_then(|count| count.checked_mul(std::mem::size_of::<Scheme::Scalar>() as u128))
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::sync::atomic::AtomicU64>() as u128))
+                .ok_or_else(|| invalid_native_prepare_policy("mv-lookup per-task byte bound overflow"))?,
+        )
+        .and_then(|bytes| {
+            let polynomial_headers = max_query_polynomials_per_argument
+                .checked_mul(std::mem::size_of::<Polynomial<Scheme::Scalar, LagrangeCoeff>>())?;
+            let transient_vector_headers =
+                std::mem::size_of::<Vec<std::sync::atomic::AtomicU64>>()
+                    + std::mem::size_of::<Vec<Scheme::Scalar>>();
+            let prepared_header = std::mem::size_of::<lookup::prover::Prepared<Scheme::Curve>>();
+            bytes.checked_add((polynomial_headers + transient_vector_headers + prepared_header) as u128)
+        })
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| invalid_native_prepare_policy("mv-lookup per-task byte bound is invalid"))?;
+
+    #[cfg(feature = "mv-lookup")]
     let lookups: Vec<Vec<lookup::prover::Prepared<Scheme::Curve>>> = instance
         .par_iter()
         .zip(advice.par_iter())
         .map(|(instance, advice)| -> Result<Vec<_>, Error> {
-            // Construct and commit to permuted values for each lookup
-            pk.vk
-                .cs
-                .lookups
-                .par_iter()
-                .map(|lookup| {
-                    lookup.prepare(
-                        &pk.vk,
-                        params,
-                        domain,
-                        theta,
-                        &advice.advice_polys,
-                        &pk.fixed_values,
-                        &instance.instance_values,
-                        &challenges,
-                    )
-                })
-                .collect()
+            // Table expressions are identical for several independent lookup
+            // arguments in a proof instance. Evaluate the compressed table and
+            // its existing byte-key membership map once per exact expression
+            // vector, scoped to this instance's advice and the current theta.
+            let table_cache_started = Instant::now();
+            println!(
+                "EZKL_NATIVE_PHASE START stage=mv_lookup_table_cache dataset={} arguments={}",
+                lookup_run_label,
+                pk.vk.cs.lookups.len(),
+            );
+            let mut table_cache = Vec::new();
+            let mut tables_for_lookup = Vec::with_capacity(pk.vk.cs.lookups.len());
+            for lookup in &pk.vk.cs.lookups {
+                let cached = table_cache
+                    .iter()
+                    .find(|(expressions, _)| expressions == &lookup.table_expressions)
+                    .map(|(_, table)| std::sync::Arc::clone(table));
+                let table = match cached {
+                    Some(table) => table,
+                    None => {
+                        let table_group_index = table_cache.len();
+                        let cardinality_upper = match &prepare_policy.table_cardinality_bounds {
+                            Some(bounds) => *bounds.get(table_group_index).ok_or_else(|| {
+                                invalid_native_prepare_policy(
+                                    "native mv-lookup table groups exceed admitted cardinality bounds",
+                                )
+                            })?,
+                            None => params.n() as usize,
+                        };
+                        let table = std::sync::Arc::new(lookup.prepare_table(
+                            &pk.vk,
+                            params,
+                            domain,
+                            theta,
+                            &advice.advice_polys,
+                            &pk.fixed_values,
+                            &instance.instance_values,
+                            &challenges,
+                            cardinality_upper,
+                        )?);
+                        table_cache.push((lookup.table_expressions.clone(), table.clone()));
+                        table
+                    }
+                };
+                tables_for_lookup.push(table);
+            }
+            if prepare_policy
+                .table_cardinality_bounds
+                .as_ref()
+                .is_some_and(|bounds| bounds.len() != table_cache.len())
+            {
+                return Err(invalid_native_prepare_policy(
+                    "native mv-lookup table group count disagrees with admitted cardinality bounds",
+                ));
+            }
+            let (table_map_entries, table_map_capacity) = table_cache
+                .iter()
+                .map(|(_, table)| table.membership_map_shape())
+                .fold((0usize, 0usize), |(entries, capacity), shape| {
+                    (entries.saturating_add(shape.0), capacity.saturating_add(shape.1))
+                });
+            println!(
+                "EZKL_NATIVE_PHASE DONE stage=mv_lookup_table_cache dataset={} groups={} arguments={} map_entries={} map_capacity={} map_capacity_bytes_upper={} table_poly_mapped_bytes={} elapsed_ms={:.3}",
+                lookup_run_label,
+                table_cache.len(),
+                pk.vk.cs.lookups.len(),
+                table_map_entries,
+                table_map_capacity,
+                (table_map_capacity as u128)
+                    .saturating_mul((std::mem::size_of::<(Vec<u8>, usize)>() + 1) as u128)
+                    .saturating_add(16u128 * table_cache.len() as u128),
+                (params.n() as u128)
+                    .saturating_mul(std::mem::size_of::<Scheme::Scalar>() as u128)
+                    .saturating_mul(table_cache.len() as u128),
+                table_cache_started.elapsed().as_secs_f64() * 1000.0,
+            );
+
+            // Query polynomials and each argument's multiplicity polynomial
+            // remain distinct; only the exact table work above is shared.
+            let mut prepared = Vec::with_capacity(pk.vk.cs.lookups.len());
+            let mut lookup_start = 0usize;
+            while lookup_start < pk.vk.cs.lookups.len() {
+                let (batch_width, available_budget) = if let Some(python_budget) = prepare_policy.python_budget_bytes {
+                    let runtime_budget = native_prepare_available_bytes(
+                        prepare_policy.device_headroom_bytes,
+                    )?;
+                    let available = python_budget.min(runtime_budget);
+                    let all_instances = u64::try_from(instances.len()).map_err(|_| {
+                        invalid_native_prepare_policy("native proof instance count exceeds u64")
+                    })?;
+                    let per_instance_budget = available / all_instances.max(1);
+                    let width = per_instance_budget / prepare_task_bytes;
+                    if width == 0 {
+                        return Err(invalid_native_prepare_policy(format!(
+                            "native mv-lookup prepare requires at least one bounded task of {} bytes per proof instance; only {} bytes remain",
+                            prepare_task_bytes, available
+                        )));
+                    }
+                    (usize::try_from(width)
+                        .unwrap_or(usize::MAX)
+                        .min(pk.vk.cs.lookups.len() - lookup_start)
+                        .max(1), available)
+                } else {
+                    (pk.vk.cs.lookups.len() - lookup_start, u64::MAX)
+                };
+                let lookup_end = lookup_start
+                    .checked_add(batch_width)
+                    .ok_or_else(|| invalid_native_prepare_policy("mv-lookup batch index overflow"))?;
+                let batch_started = Instant::now();
+                println!(
+                    "EZKL_NATIVE_PHASE START stage=mv_lookup_prepare_batch dataset={} first_argument={} end_argument={} total_arguments={} batch_width={} per_task_bytes={} available_budget_bytes={}",
+                    lookup_run_label,
+                    lookup_start,
+                    lookup_end,
+                    pk.vk.cs.lookups.len(),
+                    batch_width,
+                    prepare_task_bytes,
+                    available_budget,
+                );
+                let batch = pk.vk.cs.lookups[lookup_start..lookup_end]
+                    .par_iter()
+                    .zip(tables_for_lookup[lookup_start..lookup_end].par_iter())
+                    .enumerate()
+                    .map(|(batch_index, (lookup, table))| {
+                        lookup.prepare(
+                            &pk.vk,
+                            params,
+                            domain,
+                            theta,
+                            &advice.advice_polys,
+                            &pk.fixed_values,
+                            &instance.instance_values,
+                            &challenges,
+                            table,
+                            lookup_start + batch_index,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                prepared.extend(batch);
+                println!(
+                    "EZKL_NATIVE_PHASE DONE stage=mv_lookup_prepare_batch dataset={} first_argument={} end_argument={} total_arguments={} elapsed_ms={:.3}",
+                    lookup_run_label,
+                    lookup_start,
+                    lookup_end,
+                    pk.vk.cs.lookups.len(),
+                    batch_started.elapsed().as_secs_f64() * 1000.0,
+                );
+                lookup_start = lookup_end;
+            }
+            Ok(prepared)
         })
         .collect::<Result<Vec<_>, _>>()?;
+
+    #[cfg(feature = "mv-lookup")]
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=mv_lookup_prepare dataset={} instances={} arguments={} table_groups={} elapsed_ms={:.3}",
+        lookup_run_label,
+        lookups.len(),
+        pk.vk.cs.lookups.len(),
+        prepare_policy
+            .table_cardinality_bounds
+            .as_ref()
+            .map(Vec::len)
+            .unwrap_or(0),
+        start.elapsed().as_secs_f64() * 1000.0,
+    );
 
     #[cfg(feature = "mv-lookup")]
     {
@@ -871,31 +1313,129 @@ where
     // preallocate the lookups
 
     #[cfg(feature = "mv-lookup")]
+    let commit_task_bytes = (params.n() as u128)
+        .checked_mul(
+            (5 * std::mem::size_of::<Scheme::Scalar>()
+                + std::mem::size_of::<(Scheme::Scalar, &mut Scheme::Scalar)>()) as u128,
+        )
+        .and_then(|bytes| {
+            // Per concurrent argument, include the three N-element mapped
+            // windows touched by lookup commit (input, m, and phi output),
+            // plus the exact dense heap arrays and BatchInvert prefix scratch.
+            // The shared table polynomial is charged once in the Python
+            // table-cache envelope.
+            bytes.checked_add(
+                (5 * std::mem::size_of::<Vec<Scheme::Scalar>>()) as u128,
+            )
+        })
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| invalid_native_prepare_policy("mv-lookup commit per-task byte bound is invalid"))?;
+
+    #[cfg(feature = "mv-lookup")]
     let phi_blinds = (0..pk.vk.cs.blinding_factors())
         .map(|_| Scheme::Scalar::random(&mut rng))
         .collect::<Vec<_>>();
 
     #[cfg(feature = "mv-lookup")]
     let commit_lookups = || -> Result<Vec<Vec<lookup::prover::Committed<Scheme::Curve>>>, _> {
-        lookups
-            .into_iter()
-            .map(|lookups| -> Result<Vec<_>, _> {
-                // Construct and commit to products for each lookup
+        let total_lookup_arguments = lookups.iter().try_fold(0usize, |count, instance| {
+            count.checked_add(instance.len()).ok_or_else(|| {
+                invalid_native_prepare_policy("mv-lookup total argument count overflow")
+            })
+        })?;
+        let mut remaining_arguments = total_lookup_arguments;
+        let mut committed_instances = Vec::with_capacity(lookups.len());
+        println!(
+            "EZKL_NATIVE_PHASE START stage=mv_lookup_commit dataset={} instances={} arguments={} per_task_bytes={} phi_spill_bytes_upper={}",
+            lookup_run_label,
+            lookups.len(),
+            total_lookup_arguments,
+            commit_task_bytes,
+            (total_lookup_arguments as u128)
+                .saturating_mul(params.n() as u128)
+                .saturating_mul(std::mem::size_of::<Scheme::Scalar>() as u128),
+        );
+        for pending in lookups {
+            let mut pending = std::collections::VecDeque::from(pending);
+            let mut committed = Vec::with_capacity(pending.len());
+            let mut first_argument = total_lookup_arguments - remaining_arguments;
+            while !pending.is_empty() {
+                let (batch_width, available_budget) = if let Some(python_budget) = prepare_policy.python_budget_bytes {
+                    let available = python_budget.min(native_prepare_available_bytes(
+                        prepare_policy.device_headroom_bytes,
+                    )?);
+                    let width = available / commit_task_bytes;
+                    if width == 0 {
+                        return Err(invalid_native_prepare_policy(format!(
+                            "native mv-lookup commit requires one bounded task of {} bytes; only {} bytes remain",
+                            commit_task_bytes, available
+                        )));
+                    }
+                    (usize::try_from(width)
+                        .unwrap_or(usize::MAX)
+                        .min(pending.len())
+                        .max(1), available)
+                } else {
+                    (pending.len(), u64::MAX)
+                };
+                let batch_started = Instant::now();
+                let mut batch = Vec::with_capacity(batch_width);
+                for _ in 0..batch_width {
+                    if let Some(lookup) = pending.pop_front() {
+                        batch.push(lookup);
+                    }
+                }
+                let batch_end_argument = first_argument + batch.len();
+                println!(
+                    "EZKL_NATIVE_PHASE START stage=mv_lookup_commit_batch dataset={} first_argument={} end_argument={} total_arguments={} batch_width={} per_task_bytes={} available_budget_bytes={} remaining_phi_spill_bytes_upper={}",
+                    lookup_run_label,
+                    first_argument,
+                    batch_end_argument,
+                    total_lookup_arguments,
+                    batch.len(),
+                    commit_task_bytes,
+                    available_budget,
+                    (remaining_arguments as u128)
+                        .saturating_mul(params.n() as u128)
+                        .saturating_mul(std::mem::size_of::<Scheme::Scalar>() as u128),
+                );
                 #[cfg(feature = "metal")]
-                let res = lookups
+                let batch_result = batch
                     .into_iter()
                     .map(|lookup| lookup.commit_grand_sum(&pk.vk, params, beta, &phi_blinds))
-                    .collect::<Result<Vec<_>, _>>();
-
+                    .collect::<Result<Vec<_>, _>>()?;
                 #[cfg(not(feature = "metal"))]
-                let res = lookups
+                let batch_result = batch
                     .into_par_iter()
                     .map(|lookup| lookup.commit_grand_sum(&pk.vk, params, beta, &phi_blinds))
-                    .collect::<Result<Vec<_>, _>>();
-
-                res
-            })
-            .collect::<Result<Vec<_>, _>>()
+                    .collect::<Result<Vec<_>, _>>()?;
+                committed.extend(batch_result);
+                remaining_arguments = remaining_arguments
+                    .checked_sub(batch_width)
+                    .ok_or_else(|| invalid_native_prepare_policy("mv-lookup remaining argument underflow"))?;
+                println!(
+                    "EZKL_NATIVE_PHASE DONE stage=mv_lookup_commit_batch dataset={} first_argument={} end_argument={} total_arguments={} elapsed_ms={:.3}",
+                    lookup_run_label,
+                    first_argument,
+                    batch_end_argument,
+                    total_lookup_arguments,
+                    batch_started.elapsed().as_secs_f64() * 1000.0,
+                );
+                first_argument = batch_end_argument;
+            }
+            committed_instances.push(committed);
+        }
+        println!(
+            "EZKL_NATIVE_PHASE DONE stage=mv_lookup_commit dataset={} instances={} arguments={} phi_spill_bytes_upper={} ",
+            lookup_run_label,
+            committed_instances.len(),
+            total_lookup_arguments,
+            (total_lookup_arguments as u128)
+                .saturating_mul(params.n() as u128)
+                .saturating_mul(std::mem::size_of::<Scheme::Scalar>() as u128),
+        );
+        Ok(committed_instances)
     };
 
     #[cfg(not(feature = "mv-lookup"))]
@@ -972,8 +1512,7 @@ where
     let start = Instant::now();
     let advice: Vec<AdviceSingle<Scheme::Curve, Coeff>> = advice
         .into_iter()
-        .map(
-            |AdviceSingle {
+        .map(|AdviceSingle {
                  advice_polys,
                  advice_blinds,
              }| {
@@ -984,8 +1523,7 @@ where
                         .collect::<Vec<_>>(),
                     advice_blinds,
                 }
-            },
-        )
+            })
         .collect();
     log::trace!("Advice calculation: {:?}", start.elapsed());
 
@@ -1395,6 +1933,20 @@ fn packed_selector_count_vk_roundtrip_and_proof_verify() {
     assert_eq!(decoded_vk.transcript_repr(), vk.transcript_repr());
 
     let pk = keygen_pk(&params, vk, &circuit).expect("keygen_pk should succeed");
+    // Compact native proving keys reconstruct dense sigma polynomials while
+    // loading the serialized key. Exercise that supported production path
+    // instead of proving from the intentionally sparse in-memory keygen value.
+    let pk_bytes = pk.to_bytes(SerdeFormat::RawBytes);
+    #[cfg(feature = "circuit-params")]
+    let pk = super::ProvingKey::from_bytes::<SelectorCircuit>(
+        &pk_bytes,
+        SerdeFormat::RawBytes,
+        (),
+    )
+    .expect("packed selector PK should reload");
+    #[cfg(not(feature = "circuit-params"))]
+    let pk = super::ProvingKey::from_bytes::<SelectorCircuit>(&pk_bytes, SerdeFormat::RawBytes)
+        .expect("packed selector PK should reload");
     let mut writer = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
         &params,

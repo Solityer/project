@@ -108,6 +108,21 @@ int main() {
         assert(overflow_rejected);
     }
     assert(zkgpt::native_storage::mappings.size() == initial_mappings);
+    {
+        constexpr std::size_t original_bytes = std::size_t(16) << 20;
+        constexpr std::size_t active_bytes = std::size_t(8) << 20;
+        const std::size_t field_count = original_bytes / sizeof(F);
+        zkgpt::NativeFieldVector fields(field_count, F(7));
+        const std::size_t virtual_bytes = fields.capacity() * sizeof(F);
+        assert(virtual_bytes == original_bytes);
+        const std::uint64_t before = zkgpt::native_storage::physical_bytes(fields.data(), virtual_bytes);
+        const auto reclaimed = zkgpt::native_storage::reclaim_tail(fields.data(), active_bytes, virtual_bytes);
+        const std::uint64_t after = zkgpt::native_storage::physical_bytes(fields.data(), virtual_bytes);
+        assert(reclaimed.mapped && reclaimed.mapping_bytes == original_bytes && reclaimed.live_bytes == active_bytes);
+        assert(before >= original_bytes - (std::size_t(1) << 20) && after < before);
+        assert(before - after >= active_bytes - (std::size_t(1) << 20) && after <= active_bytes + (std::size_t(1) << 20));
+        std::cout << "NATIVE_STORAGE_RECLAIM blocks_before_bytes=" << before << " blocks_after_bytes=" << after << " mapping_bytes=" << original_bytes << " live_bytes=" << active_bytes << '\n';
+    }
     std::vector<F> values(5003), point(13);
     for (std::size_t i = 0; i < values.size(); ++i) values[i] = F(static_cast<int>(i % 79) - 40);
     for (std::size_t i = 0; i < point.size(); ++i) point[i] = F(static_cast<int>(i + 2));

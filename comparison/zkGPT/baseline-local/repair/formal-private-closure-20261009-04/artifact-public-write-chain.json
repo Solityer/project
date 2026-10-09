@@ -1,0 +1,27 @@
+{
+  "fresh_independent_verify": {
+    "exit_code": 0,
+    "log": "/home/pzh/project/comparison/zkGPT/baseline-local/repair/formal-private-closure-20261009-04/artifact-public-write-independent-verifier.log",
+    "timed_out": false,
+    "timeout_seconds": 60.0,
+    "wall_seconds": 25.634998212990467
+  },
+  "max_total_seconds": 120.0,
+  "output_artifact": "baseline-local/repair/formal-private-closure-20261009-02/proof.artifact.public-write",
+  "output_sha256": "636b4134b911b167bcb95c247cd957f6f3c1e3444089c67a7a6990361b57ec1f",
+  "proof_digest": "05e1ff690902a7c913a5e170cb8817bc5b0c8473c680b5c632fb6cc882511e09",
+  "public_write_readback": {
+    "exit_code": 0,
+    "log": "/home/pzh/project/comparison/zkGPT/baseline-local/repair/formal-private-closure-20261009-04/artifact-public-write-profile.log",
+    "timed_out": false,
+    "timeout_seconds": 60.0,
+    "wall_seconds": 44.713519376004115
+  },
+  "report": "baseline-local/repair/formal-private-closure-20261009-04/artifact-public-write-verifier-report.json",
+  "source_artifact": "/home/pzh/project/comparison/zkGPT/baseline-local/repair/formal-private-closure-20261009-02/proof.artifact",
+  "source_sha256": "636b4134b911b167bcb95c247cd957f6f3c1e3444089c67a7a6990361b57ec1f",
+  "status": "PUBLIC_WRITE_READBACK_AND_FRESH_VERIFY_OK",
+  "total_wall_seconds": 70.36340510300943,
+  "verifier_crypto_ms": 25568.860613,
+  "verifier_decode_crypto_ms": 8.010045
+}

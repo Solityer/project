@@ -1,0 +1,182 @@
+[smoke/stderr] gat_adapter_formal_stage: model
+[smoke/stderr] gat_adapter_formal_stage: graph
+[smoke/stderr] gat_adapter_formal_stage: probe-forward
+[smoke/stderr] gat_adapter_formal_stage: formal-forward
+[smoke/stderr] gat_adapter_formal_stage: private-move-owned-forward-and-validation
+[smoke/stderr] gat_adapter_formal_stage: complete-relation-proof-verify
+[smoke/stderr] gat_adapter_formal_stage: registration
+[smoke/stderr] gat_adapter_formal_stage: context
+[smoke/stderr] gat_adapter_formal_stage: masked-full-prove
+[smoke/stderr] gat_adapter_prover_stage: begin
+[smoke/stderr] gat_adapter_prover_stage: lasso-build
+[smoke/stderr] gat_adapter_prover_stage: witness
+[smoke/stderr] gat_adapter_prover_stage: generators
+[smoke/stderr] gat_adapter_prover_stage: lasso-prove
+[smoke/stderr] gat_adapter_prover_stage: restore-native-plan
+[smoke/stderr] gat_adapter_prover_stage: gkr-prove
+[smoke/stderr] [zkGPT][gkr] begin layers=23 fconn=9
+[smoke/stderr] [zkGPT][gkr] layer=22 begin ty=4 size=1201 bits=11 u=11 v=10 phase2=1
+[smoke/stderr] [zkGPT][gkr] layer=22 phase1 begin rounds=11
+[smoke/stderr] [zkGPT][gkr] gkr/layer/22 phase1 complete rounds=11/11 elapsed_s=2.00389
+[smoke/stderr] [zkGPT][gkr] layer=22 phase2 begin rounds=10
+[smoke/stderr] [zkGPT][gkr] gkr/layer/22 phase2 complete rounds=10/10 elapsed_s=2.03878
+[smoke/stderr] [zkGPT][gkr] layer=22 phase2 end
+[smoke/stderr] [zkGPT][gkr] layer=22 end
+[smoke/stderr] [zkGPT][gkr] layer=21 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=21 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/21 phase1 complete rounds=0/0 elapsed_s=6.8e-06
+[smoke/stderr] [zkGPT][gkr] layer=21 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=21 end
+[smoke/stderr] [zkGPT][gkr] layer=20 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=20 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/20 phase1 complete rounds=0/0 elapsed_s=6.272e-06
+[smoke/stderr] [zkGPT][gkr] layer=20 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=20 end
+[smoke/stderr] [zkGPT][gkr] layer=19 begin ty=11 size=1 bits=0 u=-1 v=-1 phase2=1
+[smoke/stderr] [zkGPT][gkr] layer=19 fconn begin
+[smoke/stderr] [zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=3.296e-06
+[smoke/stderr] [zkGPT][gkr] FCONN column fold cols=1 inner=1 complete rounds=1/1 elapsed_s=8.48e-07
+[smoke/stderr] [zkGPT][gkr] FCONN product label=gkr/layer/19/matmul complete rounds=0/0 elapsed_s=1.44e-07
+[smoke/stderr] [zkGPT][gkr] layer=19 fconn end rounds=0
+[smoke/stderr] [zkGPT][gkr] layer=18 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=18 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/18 phase1 complete rounds=0/0 elapsed_s=5.184e-06
+[smoke/stderr] [zkGPT][gkr] layer=18 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=18 end
+[smoke/stderr] [zkGPT][gkr] layer=17 begin ty=11 size=1 bits=0 u=-1 v=-1 phase2=1
+[smoke/stderr] [zkGPT][gkr] layer=17 fconn begin
+[smoke/stderr] [zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=4.4e-06
+[smoke/stderr] [zkGPT][gkr] FCONN column fold cols=1 inner=1 complete rounds=1/1 elapsed_s=7.52e-07
+[smoke/stderr] [zkGPT][gkr] FCONN product label=gkr/layer/17/matmul complete rounds=0/0 elapsed_s=6.24e-07
+[smoke/stderr] [zkGPT][gkr] layer=17 fconn end rounds=0
+[smoke/stderr] [zkGPT][gkr] layer=16 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=16 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/16 phase1 complete rounds=0/0 elapsed_s=7.44e-06
+[smoke/stderr] [zkGPT][gkr] layer=16 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=16 end
+[smoke/stderr] [zkGPT][gkr] layer=15 begin ty=11 size=1 bits=0 u=-1 v=-1 phase2=1
+[smoke/stderr] [zkGPT][gkr] layer=15 fconn begin
+[smoke/stderr] [zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=2.993e-06
+[smoke/stderr] [zkGPT][gkr] FCONN column fold cols=1 inner=1 complete rounds=1/1 elapsed_s=7.04e-07
+[smoke/stderr] [zkGPT][gkr] FCONN product label=gkr/layer/15/matmul complete rounds=0/0 elapsed_s=3.2e-08
+[smoke/stderr] [zkGPT][gkr] layer=15 fconn end rounds=0
+[smoke/stderr] [zkGPT][gkr] layer=14 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=14 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/14 phase1 complete rounds=0/0 elapsed_s=6.16e-06
+[smoke/stderr] [zkGPT][gkr] layer=14 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=14 end
+[smoke/stderr] [zkGPT][gkr] layer=13 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=13 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/13 phase1 complete rounds=0/0 elapsed_s=8.32e-06
+[smoke/stderr] [zkGPT][gkr] layer=13 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=13 end
+[smoke/stderr] [zkGPT][gkr] layer=12 begin ty=11 size=1 bits=0 u=-1 v=-1 phase2=1
+[smoke/stderr] [zkGPT][gkr] layer=12 fconn begin
+[smoke/stderr] [zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=3.216e-06
+[smoke/stderr] [zkGPT][gkr] FCONN column fold cols=1 inner=1 complete rounds=1/1 elapsed_s=1.056e-06
+[smoke/stderr] [zkGPT][gkr] FCONN product label=gkr/layer/12/matmul complete rounds=0/0 elapsed_s=2.08e-07
+[smoke/stderr] [zkGPT][gkr] layer=12 fconn end rounds=0
+[smoke/stderr] [zkGPT][gkr] layer=11 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=11 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/11 phase1 complete rounds=0/0 elapsed_s=6.096e-06
+[smoke/stderr] [zkGPT][gkr] layer=11 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=11 end
+[smoke/stderr] [zkGPT][gkr] layer=10 begin ty=11 size=1 bits=0 u=-1 v=-1 phase2=1
+[smoke/stderr] [zkGPT][gkr] layer=10 fconn begin
+[smoke/stderr] [zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=3.152e-06
+[smoke/stderr] [zkGPT][gkr] FCONN column fold cols=1 inner=1 complete rounds=1/1 elapsed_s=8e-07
+[smoke/stderr] [zkGPT][gkr] FCONN product label=gkr/layer/10/matmul complete rounds=0/0 elapsed_s=3.2e-08
+[smoke/stderr] [zkGPT][gkr] layer=10 fconn end rounds=0
+[smoke/stderr] [zkGPT][gkr] layer=9 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=9 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/9 phase1 complete rounds=0/0 elapsed_s=5.776e-06
+[smoke/stderr] [zkGPT][gkr] layer=9 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=9 end
+[smoke/stderr] [zkGPT][gkr] layer=8 begin ty=11 size=1 bits=0 u=-1 v=-1 phase2=1
+[smoke/stderr] [zkGPT][gkr] layer=8 fconn begin
+[smoke/stderr] [zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=2.753e-06
+[smoke/stderr] [zkGPT][gkr] FCONN column fold cols=1 inner=1 complete rounds=1/1 elapsed_s=5.6e-07
+[smoke/stderr] [zkGPT][gkr] FCONN product label=gkr/layer/8/matmul complete rounds=0/0 elapsed_s=3.2e-08
+[smoke/stderr] [zkGPT][gkr] layer=8 fconn end rounds=0
+[smoke/stderr] [zkGPT][gkr] layer=7 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=7 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/7 phase1 complete rounds=0/0 elapsed_s=7.585e-06
+[smoke/stderr] [zkGPT][gkr] layer=7 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=7 end
+[smoke/stderr] [zkGPT][gkr] layer=6 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=6 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/6 phase1 complete rounds=0/0 elapsed_s=5.936e-06
+[smoke/stderr] [zkGPT][gkr] layer=6 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=6 end
+[smoke/stderr] [zkGPT][gkr] layer=5 begin ty=11 size=1 bits=0 u=-1 v=-1 phase2=1
+[smoke/stderr] [zkGPT][gkr] layer=5 fconn begin
+[smoke/stderr] [zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=6.336e-06
+[smoke/stderr] [zkGPT][gkr] FCONN column fold cols=1 inner=1 complete rounds=1/1 elapsed_s=1.472e-06
+[smoke/stderr] [zkGPT][gkr] FCONN product label=gkr/layer/5/matmul complete rounds=0/0 elapsed_s=8e-08
+[smoke/stderr] [zkGPT][gkr] layer=5 fconn end rounds=0
+[smoke/stderr] [zkGPT][gkr] layer=4 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=4 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/4 phase1 complete rounds=0/0 elapsed_s=6.368e-06
+[smoke/stderr] [zkGPT][gkr] layer=4 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=4 end
+[smoke/stderr] [zkGPT][gkr] layer=3 begin ty=11 size=1 bits=0 u=-1 v=-1 phase2=1
+[smoke/stderr] [zkGPT][gkr] layer=3 fconn begin
+[smoke/stderr] [zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=3.344e-06
+[smoke/stderr] [zkGPT][gkr] FCONN column fold cols=1 inner=1 complete rounds=1/1 elapsed_s=8.16e-07
+[smoke/stderr] [zkGPT][gkr] FCONN product label=gkr/layer/3/matmul complete rounds=0/0 elapsed_s=9.6e-08
+[smoke/stderr] [zkGPT][gkr] layer=3 fconn end rounds=0
+[smoke/stderr] [zkGPT][gkr] layer=2 begin ty=3 size=1 bits=0 u=0 v=0 phase2=0
+[smoke/stderr] [zkGPT][gkr] layer=2 phase1 begin rounds=0
+[smoke/stderr] [zkGPT][gkr] gkr/layer/2 phase1 complete rounds=0/0 elapsed_s=5.872e-06
+[smoke/stderr] [zkGPT][gkr] layer=2 phase1 terminal end
+[smoke/stderr] [zkGPT][gkr] layer=2 end
+[smoke/stderr] [zkGPT][gkr] layer=1 begin ty=11 size=1 bits=0 u=-1 v=-1 phase2=1
+[smoke/stderr] [zkGPT][gkr] layer=1 fconn begin
+[smoke/stderr] [zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=2.384e-06
+[smoke/stderr] [zkGPT][gkr] FCONN column fold cols=1 inner=1 complete rounds=1/1 elapsed_s=7.2e-07
+[smoke/stderr] [zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=0/0 elapsed_s=4.8e-08
+[smoke/stderr] [zkGPT][gkr] layer=1 fconn end rounds=0
+[smoke/stderr] [zkGPT][gkr] input aggregate begin sources=34
+[smoke/stderr] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=13/13 elapsed_s=3.82826
+[smoke/stderr] [zkGPT][gkr] input aggregate end rounds=13
+[smoke/stderr] gat_adapter_prover_stage: input-openings
+[smoke/stderr] gat_adapter_prover_stage: artifact
+[smoke/stderr] gat_adapter_prover_stage: selfverify-deferred-to-serialized-readback
+[smoke/stderr] gat_adapter_formal_stage: artifact-write
+[smoke/stderr] gat_adapter_formal_stage: artifact-wire-serialize begin
+[smoke/stderr] gat_adapter_formal_stage: artifact-wire-serialize complete bytes=8244255 elapsed_ms=2.61314
+[smoke/stdout] gat_adapter_formal_fixture: GENERATED for independent verification and mutants
+[verifier/stdout] VERIFY_OK
+[tampered-verifier/stdout] {
+[tampered-verifier/stdout]   "schema": "zkgpt-gat-independent-verifier-v4",
+[tampered-verifier/stdout]   "status": "REJECTED",
+[tampered-verifier/stdout]   "independent": true,
+[tampered-verifier/stdout]   "masked_full": true,
+[tampered-verifier/stdout]   "verifier_reads_witness": false,
+[tampered-verifier/stdout]   "verifier_reads_checkpoint": false,
+[tampered-verifier/stdout]   "dataset": "synthetic",
+[tampered-verifier/stdout]   "backend": "cpu",
+[tampered-verifier/stdout]   "statement_digest": "148a2d8c6e26da6cace96cbe45f24fcba030b9f2670c1c76ca3429b5aa6fabb9",
+[tampered-verifier/stdout]   "plan_digest": "0e5f256950c0f41a47333aa3c6fb62446571130a2dd940066268ef6d72301810",
+[tampered-verifier/stdout]   "circuit_id": "R_GAT-zkGPT/0e5f256950c0f41a47333aa3c6fb62446571130a2dd940066268ef6d72301810",
+[tampered-verifier/stdout]   "proof_digest": "",
+[tampered-verifier/stdout]   "registration_digest": "16cb05bd776b2e4724c38625499ef945338701eebdb248d2fb6659ee6744ad2e",
+[tampered-verifier/stdout]   "registration_binding_digest": "06910cee741dccaafe5b91b64f5d712ef1ea5c77c1f88771bd2002ef5a6757c8",
+[tampered-verifier/stdout]   "registration_layout_digest": "0aac87d2c15c3290a29fddbf52aca7b237cbea9d88c56def570711d6ae0bf326",
+[tampered-verifier/stdout]   "com_W_point": "cc684fe3935c60ff0d86c7f313a96a28de7911742f97eba714f46e1ec1a17c1e",
+[tampered-verifier/stdout]   "full_dataset_identity": "canonical:synthetic",
+[tampered-verifier/stdout]   "checkpoint_identity": "baseline-local/checkpoints/synthetic_gat/integrity.sha256",
+[tampered-verifier/stdout]   "cache_identity": "baseline-local/data/cache/synthetic/integrity.sha256",
+[tampered-verifier/stdout]   "statement_path": "baseline-local/repair/formal-private-closure-20261009-02/public_statement.json",
+[tampered-verifier/stdout]   "verifier_context_path": "baseline-local/repair/formal-private-closure-20261009-02/verifier_context.bin",
+[tampered-verifier/stdout]   "public_logits_path": "baseline-local/repair/formal-private-closure-20261009-02/public_logits.tampered.txt",
+[tampered-verifier/stdout]   "artifact_path": "baseline-local/repair/formal-private-closure-20261009-02/proof.artifact",
+[tampered-verifier/stdout]   "artifact_sha256": "",
+[tampered-verifier/stdout]   "artifact_size_bytes": 0,
+[tampered-verifier/stdout]   "decode_crypto_ms": 0,
+[tampered-verifier/stdout]   "verify_crypto_ms": 0,
+[tampered-verifier/stdout]   "crypto_verify_ms": 0,
+[tampered-verifier/stdout]   "reason": "separately supplied public logits do not match v4 context"
+[tampered-verifier/stdout] }
+DEVELOPMENT_E2E_OK backend=cpu independent_verifier=true
+PREFLIGHT_RETAINED_EVIDENCE directory=baseline-local/repair/formal-private-closure-20261009-02

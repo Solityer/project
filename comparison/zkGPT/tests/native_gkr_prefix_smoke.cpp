@@ -1,6 +1,8 @@
 #include "../src/native_gkr_sumcheck.hpp"
 
 #include <mcl/bn256.hpp>
+#include <atomic>
+#include <chrono>
 #include <iostream>
 #include <stdexcept>
 
@@ -16,6 +18,108 @@ void require_equal(const quadratic_poly& left, const quadratic_poly& right,
                    const char* message) {
     require(left.a == right.a && left.b == right.b && left.c == right.c,
             message);
+}
+
+void challenged_compaction_case(std::uint64_t lane, std::uint64_t extent, unsigned rounds) {
+    std::vector<F> source(static_cast<std::size_t>(extent));
+    std::vector<F> multiplier(static_cast<std::size_t>(extent));
+    zkgpt::NativeVector<linear_poly> old_mult(static_cast<std::size_t>(extent)), old_values(static_cast<std::size_t>(extent));
+    zkgpt::NativeVector<linear_poly> old_fold_mult, old_fold_values;
+    zkgpt::native_gkr::PackedAffinePrefixArena packed_mult, packed_values;
+    packed_mult.initialize_scalars(extent);
+    packed_values.initialize_source_view(extent, zkgpt::NativeFieldView::from_vector(source));
+    require(packed_values.capacity() == 0U, "round-zero source view allocated a full value prefix");
+    F claim = F_ZERO;
+    for (std::uint64_t index = 0U; index < extent; ++index) {
+        source[static_cast<std::size_t>(index)] = F(static_cast<int>(index * 11U + lane + 3U));
+        multiplier[static_cast<std::size_t>(index)] = F(static_cast<int>(index * 7U + lane + 5U));
+        old_values[static_cast<std::size_t>(index)] = linear_poly(source[static_cast<std::size_t>(index)]);
+        old_mult[static_cast<std::size_t>(index)] = linear_poly(multiplier[static_cast<std::size_t>(index)]);
+        packed_mult.set_scalar(index, multiplier[static_cast<std::size_t>(index)]);
+        claim += source[static_cast<std::size_t>(index)] * multiplier[static_cast<std::size_t>(index)];
+    }
+    std::uint64_t active = extent;
+    F previous_random = F_ZERO;
+    for (unsigned round = 0U; round < rounds; ++round) {
+        const quadratic_poly old_poly = zkgpt::native_gkr::fold_prefix_product_round(old_mult, old_values, old_fold_mult, old_fold_values, active, previous_random);
+        const quadratic_poly packed_poly = zkgpt::native_gkr::fold_prefix_product_round_packed(packed_mult, packed_values, active, previous_random);
+        require_equal(packed_poly, old_poly, "challenge-compacted packed round differs from the original dense affine round");
+        require(old_poly.eval(F_ZERO) + old_poly.eval(F_ONE) == claim, "challenge-compacted round changed its prior claim");
+        const F challenge(static_cast<int>(round * 13U + lane + 17U));
+        claim = old_poly.eval(challenge);
+        packed_mult.apply_challenge(challenge);
+        packed_values.apply_challenge(challenge);
+        old_mult.swap(old_fold_mult);
+        old_values.swap(old_fold_values);
+        active = active / 2U + active % 2U;
+        previous_random = challenge;
+        for (std::uint64_t index = 0U; index < active; ++index) {
+            require(packed_mult.coordinate_value(index, previous_random) == old_mult[static_cast<std::size_t>(index)].eval(previous_random), "compacted multiplier differs after native challenge");
+            require(packed_values.coordinate_value(index, previous_random) == old_values[static_cast<std::size_t>(index)].eval(previous_random), "compacted value differs after native challenge");
+        }
+        require(!packed_mult.affine_mode() && !packed_values.affine_mode(), "challenge transition retained affine mode");
+        if (active != 0U) require(!packed_values.source_view_mode(), "challenge transition retained a source view");
+    }
+    const F old_terminal = active == 0U ? F_ZERO : old_mult[0].eval(previous_random) * old_values[0].eval(previous_random);
+    const F packed_terminal = packed_mult.first_value(previous_random) * packed_values.first_value(previous_random);
+    require(packed_terminal == old_terminal && packed_terminal == claim, "challenge-compacted terminal differs from the original proof claim");
+}
+
+void challenged_compaction_cases() {
+    challenged_compaction_case(0U, 0U, 6U);
+    challenged_compaction_case(1U, 1U, 6U);
+    challenged_compaction_case(2U, 3U, 6U);
+    challenged_compaction_case(3U, 9U, 6U);
+    challenged_compaction_case(4U, 32U, 6U);
+    std::cout << "NATIVE_GKR_CHALLENGE_COMPACTION_OK cases=5 rounds=6\n";
+}
+
+void source_materialization_microbenchmark() {
+    constexpr std::uint64_t extent = 300001U;
+    const F challenge(29);
+    std::vector<F> source(static_cast<std::size_t>(extent));
+    std::vector<F> multiplier(static_cast<std::size_t>(extent));
+    for (std::uint64_t index = 0U; index < extent; ++index) {
+        source[static_cast<std::size_t>(index)] = F(static_cast<int>(index % 101U + 3U));
+        multiplier[static_cast<std::size_t>(index)] = F(static_cast<int>(index % 97U + 5U));
+    }
+    quadratic_poly old_poly;
+    F old_terminal = F_ZERO;
+    const auto old_begin = std::chrono::steady_clock::now();
+    {
+        zkgpt::NativeVector<linear_poly> old_mult(static_cast<std::size_t>(extent)), old_values(static_cast<std::size_t>(extent));
+        zkgpt::NativeVector<linear_poly> folded_mult, folded_values;
+        for (std::uint64_t index = 0U; index < extent; ++index) {
+            old_mult[static_cast<std::size_t>(index)] = linear_poly(multiplier[static_cast<std::size_t>(index)]);
+            old_values[static_cast<std::size_t>(index)] = linear_poly(source[static_cast<std::size_t>(index)]);
+        }
+        old_poly = zkgpt::native_gkr::fold_prefix_product_round(old_mult, old_values, folded_mult, folded_values, extent, F_ZERO);
+        old_terminal = folded_mult[0].eval(challenge) * folded_values[0].eval(challenge);
+    }
+    const auto old_end = std::chrono::steady_clock::now();
+    std::atomic<std::uint64_t> getter_reads{0U};
+    quadratic_poly packed_poly;
+    F packed_terminal = F_ZERO;
+    const auto packed_begin = std::chrono::steady_clock::now();
+    {
+        zkgpt::native_gkr::PackedAffinePrefixArena packed_mult, packed_values;
+        packed_mult.initialize_scalars(extent);
+        for (std::uint64_t index = 0U; index < extent; ++index) packed_mult.set_scalar(index, multiplier[static_cast<std::size_t>(index)]);
+        packed_values.initialize_source_view(extent, zkgpt::NativeFieldView::borrowed(static_cast<std::size_t>(extent), &source, [&](std::size_t index) {
+            getter_reads.fetch_add(1U, std::memory_order_relaxed);
+            return source.at(index);
+        }));
+        packed_poly = zkgpt::native_gkr::fold_prefix_product_round_packed(packed_mult, packed_values, extent, F_ZERO);
+        packed_mult.apply_challenge(challenge);
+        packed_values.apply_challenge(challenge);
+        packed_terminal = packed_mult.first_value(challenge) * packed_values.first_value(challenge);
+    }
+    const auto packed_end = std::chrono::steady_clock::now();
+    require_equal(packed_poly, old_poly, "microbenchmark packed polynomial differs from its old-path control");
+    require(packed_terminal == old_terminal, "microbenchmark compacted terminal differs from its old-path control");
+    const auto old_us = std::chrono::duration_cast<std::chrono::microseconds>(old_end - old_begin).count();
+    const auto packed_us = std::chrono::duration_cast<std::chrono::microseconds>(packed_end - packed_begin).count();
+    std::cout << "NATIVE_GKR_PREFIX_MICROBENCH extent=" << extent << " source_reads_new=" << getter_reads.load() << " source_reads_old=" << extent << " old_us=" << old_us << " compacted_us=" << packed_us << "\n";
 }
 
 void dense_round_equivalence() {
@@ -294,6 +398,8 @@ void empty_lane_zero_terminal() {
 
 int main() {
     initPairing(mcl::BN_SNARK1);
+    challenged_compaction_cases();
+    source_materialization_microbenchmark();
     dense_round_equivalence();
     asymmetric_lanes_and_chunk_boundary();
     virtual_37_bit_domain();

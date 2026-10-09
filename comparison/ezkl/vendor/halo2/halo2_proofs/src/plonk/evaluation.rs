@@ -15,7 +15,7 @@ use crate::{
 use group::ff::{Field, PrimeField, WithSmallOrderMulGroup};
 #[cfg(feature = "mv-lookup")]
 use maybe_rayon::iter::{IndexedParallelIterator, ParallelIterator};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 use super::{shuffle, ConstraintSystem, Expression};
@@ -232,6 +232,217 @@ struct ColumnDependencies {
     instance: BTreeSet<usize>,
 }
 
+/// Exact column dependency counts for the native evaluator's sequential groups.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NativeEvaluationShape {
+    /// Distinct fixed/advice/instance columns loaded by each custom-gate group.
+    pub custom_gate_dependency_columns: Vec<usize>,
+    /// Distinct columns loaded by each lookup argument after chunking.
+    pub lookup_dependency_columns: Vec<usize>,
+    /// Number of query polynomials evaluated by each lookup argument.
+    pub lookup_query_polynomial_counts: Vec<usize>,
+    /// Distinct columns loaded by each shuffle argument.
+    pub shuffle_dependency_columns: Vec<usize>,
+}
+
+/// Source-derived SHPLONK commitment counts grouped by the exact rotation set
+/// that `construct_intermediate_sets` uses for each polynomial commitment.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NativeShplonkShape {
+    /// Number of polynomial commitments in each distinct rotation-set class.
+    pub rotation_set_commitment_counts: Vec<usize>,
+    /// Number of opened polynomial commitments before SHPLONK groups them.
+    pub query_polynomial_count: usize,
+    /// Number of distinct polynomial rotation-set classes.
+    pub rotation_set_count: usize,
+    /// Maximum number of queried rotation points attached to one commitment.
+    pub max_rotation_count: usize,
+    /// Number of unique native query rotation points across all commitments.
+    pub unique_opening_point_count: usize,
+    /// Maximum number of polynomial contributions in one rotation set.
+    pub max_commitments_per_rotation_set: usize,
+    /// Number of permutation product polynomials opened by the native prover.
+    pub permutation_product_set_count: usize,
+    /// Number of queried advice polynomials across proof instances.
+    pub advice_query_polynomial_count: usize,
+    /// Number of queried fixed polynomials shared across proof instances.
+    pub fixed_query_polynomial_count: usize,
+    /// Number of post-chunk multi-lookup arguments per proof instance.
+    pub lookup_argument_count: usize,
+    /// Number of shuffle product polynomials per proof instance.
+    pub shuffle_argument_count: usize,
+    /// Number of circuit instances passed to native proof construction.
+    pub proof_instance_count: usize,
+    /// Number of committed quotient h pieces.
+    pub quotient_piece_count: usize,
+}
+
+fn canonical_shplonk_rotation(rotation: i32, domain_size: u64) -> i64 {
+    if domain_size <= i64::MAX as u64 {
+        i64::from(rotation).rem_euclid(domain_size as i64)
+    } else {
+        i64::from(rotation)
+    }
+}
+
+fn insert_shplonk_rotation_class(
+    classes: &mut BTreeMap<Vec<i64>, usize>,
+    rotations: impl IntoIterator<Item = i32>,
+    domain_size: u64,
+    count: usize,
+) {
+    if count == 0 {
+        return;
+    }
+    let rotations = rotations
+        .into_iter()
+        .map(|rotation| canonical_shplonk_rotation(rotation, domain_size))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    *classes.entry(rotations).or_default() += count;
+}
+
+fn queried_column_rotations<C: crate::plonk::ColumnType>(
+    queries: &[(crate::plonk::Column<C>, crate::poly::Rotation)],
+) -> BTreeMap<usize, BTreeSet<i32>> {
+    let mut columns = BTreeMap::<usize, BTreeSet<i32>>::new();
+    for (column, rotation) in queries {
+        columns
+            .entry(column.index())
+            .or_default()
+            .insert(rotation.0);
+    }
+    columns
+}
+
+/// Derives SHPLONK's per-rotation-set contribution width from the same
+/// constraint-system queries and protocol object counts used by native proof
+/// construction. `lookup_argument_count` is the post-chunk native mv-lookup
+/// count; `proof_instance_count` is the number of circuit instances passed to
+/// `plonk::create_proof`; `quotient_piece_count` is the native domain's exact
+/// number of committed h pieces.
+pub fn native_shplonk_resource_shape<F: Field>(
+    cs: &ConstraintSystem<F>,
+    domain_size: u64,
+    lookup_argument_count: usize,
+    proof_instance_count: usize,
+    quotient_piece_count: usize,
+) -> NativeShplonkShape {
+    let mut classes = BTreeMap::<Vec<i64>, usize>::new();
+    let advice = queried_column_rotations(&cs.advice_queries);
+    let fixed = queried_column_rotations(&cs.fixed_queries);
+    let cur = crate::poly::Rotation::cur().0;
+    let next = crate::poly::Rotation::next().0;
+    let prev = crate::poly::Rotation::prev().0;
+
+    for _ in 0..proof_instance_count {
+        for rotations in advice.values() {
+            insert_shplonk_rotation_class(
+                &mut classes,
+                rotations.iter().copied(),
+                domain_size,
+                1,
+            );
+        }
+
+        let permutation_chunk_size = cs.degree().saturating_sub(2).max(1);
+    let permutation_product_set_count =
+        cs.num_permutation_columns().div_ceil(permutation_chunk_size);
+    let permutation_nonfinal_rotations = [prev, cur, next];
+    let permutation_final_rotations = [cur, next];
+    for set_index in 0..permutation_product_set_count {
+        let rotations = if set_index + 1 < permutation_product_set_count {
+            &permutation_nonfinal_rotations[..]
+        } else {
+            &permutation_final_rotations[..]
+        };
+            insert_shplonk_rotation_class(
+                &mut classes,
+                rotations.iter().copied(),
+                domain_size,
+                1,
+            );
+        }
+
+        for _ in 0..lookup_argument_count {
+            // mv-lookup opens phi at x and omega*x and m at x.
+            insert_shplonk_rotation_class(
+                &mut classes,
+                [cur, next],
+                domain_size,
+                1,
+            );
+            insert_shplonk_rotation_class(&mut classes, [cur], domain_size, 1);
+        }
+
+        for _ in cs.shuffles.iter() {
+            // Each native shuffle opens one product polynomial at x and omega*x.
+            insert_shplonk_rotation_class(
+                &mut classes,
+                [cur, next],
+                domain_size,
+                1,
+            );
+        }
+    }
+
+    for rotations in fixed.values() {
+        insert_shplonk_rotation_class(
+            &mut classes,
+            rotations.iter().copied(),
+            domain_size,
+            1,
+        );
+    }
+
+    // The native permutation verifying key opens one sigma polynomial per
+    // permutation column. These and vanishing h/random polynomials are shared
+    // across proof instances in plonk::create_proof.
+    insert_shplonk_rotation_class(
+        &mut classes,
+        [cur],
+        domain_size,
+        cs.num_permutation_columns(),
+    );
+    insert_shplonk_rotation_class(
+        &mut classes,
+        [cur],
+        domain_size,
+        quotient_piece_count.saturating_add(1),
+    );
+
+    let rotation_set_count = classes.len();
+    let max_rotation_count = classes.keys().map(Vec::len).max().unwrap_or(0);
+    let unique_opening_point_count = classes
+        .keys()
+        .flat_map(|rotations| rotations.iter().copied())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let rotation_set_commitment_counts = classes.into_values().collect::<Vec<_>>();
+    let query_polynomial_count = rotation_set_commitment_counts.iter().sum();
+    let max_commitments_per_rotation_set =
+        rotation_set_commitment_counts.iter().copied().max().unwrap_or(0);
+    let permutation_chunk_size = cs.degree().saturating_sub(2).max(1);
+    NativeShplonkShape {
+        rotation_set_commitment_counts,
+        query_polynomial_count,
+        rotation_set_count,
+        max_rotation_count,
+        unique_opening_point_count,
+        max_commitments_per_rotation_set,
+        permutation_product_set_count: cs
+            .num_permutation_columns()
+            .div_ceil(permutation_chunk_size),
+        advice_query_polynomial_count: advice.len() * proof_instance_count,
+        fixed_query_polynomial_count: fixed.len(),
+        lookup_argument_count,
+        shuffle_argument_count: cs.shuffles.len() * proof_instance_count,
+        proof_instance_count,
+        quotient_piece_count,
+    }
+}
+
 impl ColumnDependencies {
     fn add(&mut self, source: &ValueSource) {
         match source {
@@ -252,6 +463,10 @@ impl ColumnDependencies {
         self.fixed.extend(other.fixed.iter().copied());
         self.advice.extend(other.advice.iter().copied());
         self.instance.extend(other.instance.iter().copied());
+    }
+
+    fn column_count(&self) -> usize {
+        self.fixed.len() + self.advice.len() + self.instance.len()
     }
 }
 
@@ -460,6 +675,56 @@ impl<C: CurveAffine> Evaluator<C> {
         ev
     }
 
+    fn native_resource_shape(&self) -> NativeEvaluationShape {
+        let custom_gate_dependency_columns = self
+            .custom_gates
+            .iter()
+            .map(|graph| graph.column_dependencies().column_count())
+            .collect();
+
+        #[cfg(feature = "mv-lookup")]
+        let (lookup_dependency_columns, lookup_query_polynomial_counts) = {
+            let mut dependencies = Vec::with_capacity(self.lookups.len());
+            let mut query_counts = Vec::with_capacity(self.lookups.len());
+            for (input_graphs, table_graph) in &self.lookups {
+                let mut group = ColumnDependencies::default();
+                for graph in input_graphs.iter().chain(std::iter::once(table_graph)) {
+                    group.extend(&graph.column_dependencies());
+                }
+                dependencies.push(group.column_count());
+                query_counts.push(input_graphs.len());
+            }
+            (dependencies, query_counts)
+        };
+
+        #[cfg(not(feature = "mv-lookup"))]
+        let (lookup_dependency_columns, lookup_query_polynomial_counts) = {
+            let dependencies = self
+                .lookups
+                .iter()
+                .map(|graph| graph.column_dependencies().column_count())
+                .collect();
+            (dependencies, vec![1; self.lookups.len()])
+        };
+
+        let shuffle_dependency_columns = self
+            .shuffles
+            .chunks_exact(2)
+            .map(|graphs| {
+                let mut group = graphs[0].column_dependencies();
+                group.extend(&graphs[1].column_dependencies());
+                group.column_count()
+            })
+            .collect();
+
+        NativeEvaluationShape {
+            custom_gate_dependency_columns,
+            lookup_dependency_columns,
+            lookup_query_polynomial_counts,
+            shuffle_dependency_columns,
+        }
+    }
+
     /// Evaluate the native quotient polynomial a constraint group at a time.
     /// The Horner order remains gate -> permutation -> lookup -> shuffle, while
     /// each group's extended-domain inputs are reconstructed in mapped storage
@@ -578,6 +843,7 @@ impl<C: CurveAffine> Evaluator<C> {
                 // running products are mapped arrays; no all-column coset bank
                 // or all-set product coset bank is retained.
                 let mut column_index = 0usize;
+                let mut delta_power = C::ScalarExt::ONE;
                 for (set, columns) in sets.iter().zip(column_groups.into_iter()) {
                     let z = domain
                         .coeff_to_extended_spilled(&set.permutation_product_poly)
@@ -600,7 +866,6 @@ impl<C: CurveAffine> Evaluator<C> {
                     });
                     drop(z);
 
-                    let mut delta_power = C::ScalarExt::ONE;
                     for column in columns {
                         let source = match column.column_type() {
                             Any::Advice(_) => &advice[column.index()],
@@ -901,6 +1166,14 @@ impl<C: CurveAffine> Evaluator<C> {
     }
 }
 
+/// Build the same expression graphs used by the native prover and report each
+/// sequential evaluator group's exact polynomial-column dependency count.
+pub fn native_evaluation_resource_shape<C: CurveAffine>(
+    cs: &ConstraintSystem<C::ScalarExt>,
+) -> NativeEvaluationShape {
+    Evaluator::<C>::new(cs).native_resource_shape()
+}
+
 impl<C: CurveAffine> Default for GraphEvaluator<C> {
     fn default() -> Self {
         Self {
@@ -1188,4 +1461,114 @@ pub fn evaluate<F: Field, B: Basis>(
         }
     });
     values
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{native_evaluation_resource_shape, native_shplonk_resource_shape};
+    use crate::{
+        halo2curves::bn256::G1Affine,
+        plonk::ConstraintSystem,
+        poly::Rotation,
+    };
+
+    #[test]
+    fn native_resource_shape_counts_exact_group_dependency_unions() {
+        let mut cs = ConstraintSystem::default();
+        let advice = cs.advice_column();
+        let fixed = cs.fixed_column();
+        let instance = cs.instance_column();
+
+        cs.create_gate("shape gate", |meta| {
+            let advice_value = meta.query_advice(advice, Rotation::cur());
+            let fixed_value = meta.query_fixed(fixed, Rotation::cur());
+            vec![advice_value + fixed_value]
+        });
+
+        #[cfg(feature = "mv-lookup")]
+        {
+            for _ in 0..2 {
+                cs.lookup_any("shape lookup", |meta| {
+                    vec![(
+                        meta.query_advice(advice, Rotation::cur()),
+                        meta.query_fixed(fixed, Rotation::cur()),
+                    )]
+                });
+            }
+        }
+
+        cs.shuffle("shape shuffle", |meta| {
+            vec![(
+                meta.query_advice(advice, Rotation::cur()),
+                meta.query_instance(instance, Rotation::cur()),
+            )]
+        });
+
+        #[cfg(feature = "mv-lookup")]
+        let cs = cs.chunk_lookups();
+        let shape = native_evaluation_resource_shape::<G1Affine>(&cs);
+
+        assert_eq!(shape.custom_gate_dependency_columns, vec![2]);
+        assert_eq!(shape.shuffle_dependency_columns, vec![2]);
+        #[cfg(feature = "mv-lookup")]
+        {
+            assert_eq!(shape.lookup_dependency_columns, vec![2]);
+            assert_eq!(shape.lookup_query_polynomial_counts, vec![2]);
+        }
+    }
+
+    #[test]
+    fn native_shplonk_shape_counts_query_rotation_classes() {
+        let mut cs = ConstraintSystem::default();
+        let advice_cur_next_a = cs.advice_column();
+        let advice_cur_next_b = cs.advice_column();
+        let advice_cur = cs.advice_column();
+        let fixed_cur = cs.fixed_column();
+        let fixed_next = cs.fixed_column();
+        let instance = cs.instance_column();
+
+        cs.create_gate("shplonk resource shape", |meta| {
+            let a0_cur = meta.query_advice(advice_cur_next_a, Rotation::cur());
+            let a0_next = meta.query_advice(advice_cur_next_a, Rotation::next());
+            let a1_cur = meta.query_advice(advice_cur_next_b, Rotation::cur());
+            let a1_next = meta.query_advice(advice_cur_next_b, Rotation::next());
+            let a2_cur = meta.query_advice(advice_cur, Rotation::cur());
+            let fixed_cur = meta.query_fixed(fixed_cur, Rotation::cur());
+            let fixed_next = meta.query_fixed(fixed_next, Rotation::next());
+            vec![
+                a0_cur * a0_next * a2_cur + a1_cur * a1_next,
+                fixed_cur + fixed_next,
+            ]
+        });
+        cs.shuffle("shplonk resource shuffle", |meta| {
+            vec![(
+                meta.query_advice(advice_cur_next_a, Rotation::cur()),
+                meta.query_instance(instance, Rotation::cur()),
+            )]
+        });
+        cs.enable_equality(advice_cur_next_a);
+        cs.enable_equality(advice_cur_next_b);
+        cs.enable_equality(fixed_cur);
+
+        #[cfg(feature = "mv-lookup")]
+        let cs = cs.chunk_lookups();
+        let shape = native_shplonk_resource_shape::<halo2curves::bn256::Fr>(
+            &cs,
+            16,
+            1,
+            1,
+            2,
+        );
+
+        // Advice columns, fixed columns, and all proof arguments are grouped
+        // by their actual opened rotations, including the nonfinal
+        // permutation-product set's prev/current/next openings.
+        assert_eq!(shape.rotation_set_commitment_counts, vec![9, 5, 2, 1]);
+        assert_eq!(shape.query_polynomial_count, 17);
+        assert_eq!(shape.max_commitments_per_rotation_set, 9);
+        assert_eq!(shape.max_rotation_count, 3);
+        assert_eq!(shape.unique_opening_point_count, 3);
+        assert_eq!(shape.permutation_product_set_count, 3);
+        let _ = instance;
+    }
 }

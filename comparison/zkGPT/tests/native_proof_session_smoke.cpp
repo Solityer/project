@@ -161,6 +161,17 @@ int main() {
         return 4;
     }
     std::remove(path.c_str());
+
+    Fr::setHashFunc(mcl::fp::sha512);
+    NativeProofSession custom_hash_fallback("native-session-custom-hash-smoke-v1", statement);
+    custom_hash_fallback.absorb("custom-hash/commitment", "legacy-hash-binding");
+    custom_hash_fallback.challenge("custom-hash/r/0");
+    if (!custom_hash_fallback.valid(&reason) || !custom_hash_fallback.replay(&reason)) {
+        Fr::setHashFunc(mcl::fp::sha256);
+        std::cerr << "native proof session did not preserve a configured non-default hash: " << reason << '\n';
+        return 27;
+    }
+    Fr::setHashFunc(mcl::fp::sha256);
     std::cout << "native_proof_session_smoke: PASS first=" << first.getStr(16) << " second=" << second.getStr(16) << '\n';
     return 0;
 }

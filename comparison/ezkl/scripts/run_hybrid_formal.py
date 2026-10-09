@@ -15,6 +15,7 @@ import fcntl
 import importlib
 import json
 import os
+import platform
 import queue
 import re
 import signal
@@ -851,9 +852,12 @@ def native_admit_all_datasets(
     }
     cs_keys = {
         "degree", "num_fixed_columns", "num_advice_columns", "num_instance_columns", "num_selectors",
+        "num_custom_gate_groups",
         "num_lookup_arguments", "num_shuffle_arguments", "num_permutation_columns", "num_blinding_factors",
         "selector_fixed_column_count", "fixed_column_count_post_compression",
         "permutation_copy_call_count", "permutation_successor_entry_count_upper",
+        "num_lookup_query_polynomials", "max_lookup_query_polynomials_per_argument",
+        "num_unique_lookup_table_expression_groups",
     }
     for dataset in DATASETS:
         admission_dir = admission_root / dataset
@@ -869,7 +873,7 @@ def native_admit_all_datasets(
         if not isinstance(admission, dict) or set(admission) != expected_keys:
             abort(f"{dataset} native admission JSON has an incompatible schema")
         if (
-            admission["schema_version"] != 3
+            admission["schema_version"] != 4
             or admission["relation_id"] != "R_GAT-ezkl"
             or admission["dataset"] != dataset
             or isinstance(admission["logrows"], bool)
@@ -916,22 +920,66 @@ def native_admit_all_datasets(
             abort(f"{dataset} native admission compact permutation entry bound is inconsistent")
         memory = admission["native_memory_model"]
         memory_keys = {
-            "schema", "proof_logrows", "proof_domain_size", "advice_column_phase_ids",
+            "schema", "native_target_arch", "uses_recursive_fft", "proof_logrows", "proof_domain_size",
+            "recursive_fft_cached_domain_lengths", "recursive_fft_twiddle_field_elements",
+            "fft_cache_supported_length_count", "fft_cache_entry_capacity", "fft_parallel_thread_count",
+            "srs_fft_cache_supported_length_count", "srs_fft_cache_entry_capacity",
+            "parallel_fft_lookup_table_elements", "size_of_fftdata_bytes",
+            "size_of_fftdata_once_lock_bytes", "size_of_fftdata_cache_entry_bytes",
+            "size_of_fftdata_cache_map_bytes", "size_of_arc_header_bytes", "custom_gate_dependency_columns",
+            "lookup_dependency_columns", "lookup_query_polynomial_counts", "shuffle_dependency_columns",
+            "advice_column_phase_ids",
             "size_of_fr_bytes", "size_of_assigned_fr_bytes", "size_of_option_fr_bytes",
             "size_of_batch_invert_entry_bytes", "size_of_usize_bytes", "size_of_usize_pair_bytes",
-            "size_of_g1_affine_bytes",
+            "size_of_g1_affine_bytes", "size_of_g1_projective_bytes", "size_of_g2_affine_bytes",
+            "size_of_fft_stage_bytes",
+            "size_of_atomic_u64_bytes", "size_of_lookup_map_entry_bytes",
+            "size_of_lookup_map_header_bytes", "size_of_vec_u8_bytes",
+            "size_of_lookup_repr_bytes", "lookup_table_cardinality_upper_bounds",
+            "size_of_vec_header_bytes", "size_of_polynomial_header_bytes",
+            "size_of_mv_lookup_prepared_bytes", "size_of_mv_lookup_prepared_table_bytes",
+            "size_of_mv_lookup_committed_bytes",
+            "size_of_shplonk_commitment_extension_bytes",
+            "size_of_shplonk_rotation_set_extension_bytes",
+            "size_of_coeff_polynomial_header_bytes",
+            "shplonk_rotation_set_commitment_counts",
+            "shplonk_query_polynomial_count", "shplonk_rotation_set_count",
+            "shplonk_max_rotation_count", "shplonk_unique_opening_point_count",
+            "shplonk_max_commitments_per_rotation_set",
+            "shplonk_permutation_product_set_count",
+            "shplonk_advice_query_polynomial_count",
+            "shplonk_fixed_query_polynomial_count",
+            "shplonk_lookup_argument_count", "shplonk_shuffle_argument_count",
+            "shplonk_proof_instance_count", "shplonk_quotient_piece_count",
+            "graph_witness_scalar_element_count", "size_of_graph_witness_scalar_bytes",
             "cuda_uuid", "cuda_free_bytes_at_admission", "cuda_total_memory_bytes",
             "selector_activation_bitmap_bytes", "fixed_polynomial_read_mode",
             "fixed_polynomial_read_chunk_fields_upper", "fixed_polynomial_read_raw_chunk_bytes_upper",
             "fixed_polynomial_read_decoded_chunk_bytes_upper", "fixed_polynomial_read_heap_scratch_bytes_upper",
         }
-        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-memory-model-v2":
+        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-memory-model-v4":
             abort(f"{dataset} native admission has an incompatible source memory model")
         positive_memory_keys = {
             "proof_logrows", "proof_domain_size", "size_of_fr_bytes",
             "size_of_assigned_fr_bytes", "size_of_option_fr_bytes",
             "size_of_batch_invert_entry_bytes", "size_of_usize_bytes",
             "size_of_usize_pair_bytes", "size_of_g1_affine_bytes",
+            "size_of_g1_projective_bytes", "size_of_g2_affine_bytes", "size_of_fft_stage_bytes",
+            "size_of_atomic_u64_bytes", "size_of_lookup_map_entry_bytes",
+            "size_of_lookup_map_header_bytes", "size_of_vec_u8_bytes",
+            "size_of_lookup_repr_bytes", "size_of_graph_witness_scalar_bytes",
+            "size_of_vec_header_bytes", "size_of_polynomial_header_bytes",
+            "size_of_mv_lookup_prepared_bytes", "size_of_mv_lookup_prepared_table_bytes",
+            "size_of_mv_lookup_committed_bytes",
+            "size_of_shplonk_commitment_extension_bytes",
+            "size_of_shplonk_rotation_set_extension_bytes",
+            "size_of_coeff_polynomial_header_bytes",
+            "size_of_fftdata_bytes", "size_of_fftdata_once_lock_bytes",
+            "size_of_fftdata_cache_entry_bytes", "size_of_fftdata_cache_map_bytes",
+            "fft_cache_supported_length_count", "fft_cache_entry_capacity", "fft_parallel_thread_count",
+            "srs_fft_cache_supported_length_count", "srs_fft_cache_entry_capacity",
+            "size_of_arc_header_bytes",
+            "parallel_fft_lookup_table_elements",
             "cuda_total_memory_bytes",
             "fixed_polynomial_read_chunk_fields_upper", "fixed_polynomial_read_raw_chunk_bytes_upper",
             "fixed_polynomial_read_decoded_chunk_bytes_upper", "fixed_polynomial_read_heap_scratch_bytes_upper",
@@ -946,18 +994,169 @@ def native_admit_all_datasets(
         ):
             abort(f"{dataset} native admission has non-positive or malformed source memory values")
         if (
-            memory["proof_domain_size"] != 1 << memory["proof_logrows"]
-            or memory["proof_logrows"] < admission["logrows"]
-            or memory["proof_domain_size"] < admission["domain_size"]
+            isinstance(memory.get("graph_witness_scalar_element_count"), bool)
+            or not isinstance(memory.get("graph_witness_scalar_element_count"), int)
+            or memory["graph_witness_scalar_element_count"] < 0
+        ):
+            abort(f"{dataset} native admission has a malformed graph-witness shape count")
+        cardinality_bounds = memory["lookup_table_cardinality_upper_bounds"]
+        if (
+            not isinstance(cardinality_bounds, list)
+            or len(cardinality_bounds) != cs["num_unique_lookup_table_expression_groups"]
+            or any(
+                isinstance(bound, bool)
+                or not isinstance(bound, int)
+                or bound <= 0
+                or bound > admission["domain_size"]
+                for bound in cardinality_bounds
+            )
+            or cs["num_lookup_query_polynomials"] < cs["num_lookup_arguments"]
+            or cs["max_lookup_query_polynomials_per_argument"] > cs["num_lookup_query_polynomials"]
+            or cs["num_unique_lookup_table_expression_groups"] > cs["num_lookup_arguments"]
+        ):
+            abort(f"{dataset} native mv-lookup shape bounds are malformed or inconsistent")
+        expected_proof_logrows = (
+            admission["domain_size"] * (cs["degree"] - 1) - 1
+        ).bit_length()
+        expected_recursive_fft = platform.machine() != "x86_64"
+        expected_twiddle_elements = (
+            2 * (memory["proof_domain_size"] - 1 + expected_proof_logrows)
+            if expected_recursive_fft
+            else 0
+        )
+        expected_parallel_lut_elements = (
+            1 << expected_proof_logrows
+            if expected_proof_logrows < 10
+            else (1 << 10) + (1 << (expected_proof_logrows - 10))
+        )
+        if (
+            memory["proof_domain_size"] != 1 << expected_proof_logrows
+            or memory["proof_logrows"] != expected_proof_logrows
+            or memory["native_target_arch"] != platform.machine()
+            or not isinstance(memory["uses_recursive_fft"], bool)
+            or memory["uses_recursive_fft"] != expected_recursive_fft
+            or memory["recursive_fft_twiddle_field_elements"] != expected_twiddle_elements
+            or memory["recursive_fft_cached_domain_lengths"]
+            != ([memory["proof_domain_size"]] if expected_recursive_fft else [])
+            or memory["fft_cache_supported_length_count"]
+            != expected_proof_logrows - admission["logrows"] + 1
+            or memory["fft_cache_entry_capacity"] < memory["fft_cache_supported_length_count"]
+            or memory["srs_fft_cache_supported_length_count"] != 1
+            or memory["srs_fft_cache_entry_capacity"] < 1
+            or memory["parallel_fft_lookup_table_elements"] != expected_parallel_lut_elements
             or memory["size_of_usize_pair_bytes"] != 2 * memory["size_of_usize_bytes"]
+            or memory["size_of_lookup_map_entry_bytes"]
+            != memory["size_of_vec_u8_bytes"] + memory["size_of_usize_bytes"]
+            or memory["size_of_lookup_repr_bytes"] != memory["size_of_fr_bytes"]
+            or memory["size_of_graph_witness_scalar_bytes"] != memory["size_of_fr_bytes"]
+            or memory["size_of_vec_header_bytes"] != memory["size_of_vec_u8_bytes"]
             or memory["size_of_option_fr_bytes"] < memory["size_of_fr_bytes"]
             or memory["size_of_batch_invert_entry_bytes"] < memory["size_of_fr_bytes"]
+            or memory["size_of_fftdata_once_lock_bytes"] < memory["size_of_fftdata_bytes"]
+            or memory["size_of_arc_header_bytes"] != 2 * memory["size_of_usize_bytes"]
             or memory["cuda_free_bytes_at_admission"] > memory["cuda_total_memory_bytes"]
             or not isinstance(memory["cuda_uuid"], str)
             or re.fullmatch(r"GPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", memory["cuda_uuid"]) is None
             or memory["cuda_uuid"] != selected_device.get("uuid")
         ):
             abort(f"{dataset} native admission memory model is internally inconsistent or targets another GPU")
+        if (
+            isinstance(memory["recursive_fft_twiddle_field_elements"], bool)
+            or not isinstance(memory["recursive_fft_twiddle_field_elements"], int)
+            or memory["recursive_fft_twiddle_field_elements"] < 0
+            or not isinstance(memory["recursive_fft_cached_domain_lengths"], list)
+        ):
+            abort(f"{dataset} native admission has malformed recursive FFT cache accounting")
+        for name, expected_count, allow_zero in (
+            ("custom_gate_dependency_columns", cs["num_custom_gate_groups"], True),
+            ("lookup_dependency_columns", cs["num_lookup_arguments"], True),
+            ("lookup_query_polynomial_counts", cs["num_lookup_arguments"], False),
+            ("shuffle_dependency_columns", cs["num_shuffle_arguments"], True),
+        ):
+            values = memory[name]
+            if (
+                not isinstance(values, list)
+                or len(values) != expected_count
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < (0 if allow_zero else 1)
+                    or value > cs["num_fixed_columns"] + cs["num_advice_columns"] + cs["num_instance_columns"]
+                    for value in values
+                )
+            ):
+                abort(f"{dataset} native admission has malformed {name} source geometry")
+        if (
+            sum(memory["lookup_query_polynomial_counts"]) != cs["num_lookup_query_polynomials"]
+            or max(memory["lookup_query_polynomial_counts"], default=0)
+            != cs["max_lookup_query_polynomials_per_argument"]
+        ):
+            abort(f"{dataset} native admission lookup dependency/query counts do not match chunked arguments")
+        shplonk_counts = memory["shplonk_rotation_set_commitment_counts"]
+        shplonk_count_fields = (
+            "shplonk_query_polynomial_count",
+            "shplonk_rotation_set_count",
+            "shplonk_max_rotation_count",
+            "shplonk_unique_opening_point_count",
+            "shplonk_max_commitments_per_rotation_set",
+            "shplonk_permutation_product_set_count",
+            "shplonk_advice_query_polynomial_count",
+            "shplonk_fixed_query_polynomial_count",
+            "shplonk_lookup_argument_count",
+            "shplonk_shuffle_argument_count",
+            "shplonk_proof_instance_count",
+            "shplonk_quotient_piece_count",
+        )
+        if (
+            not isinstance(shplonk_counts, list)
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                for value in shplonk_counts
+            )
+            or any(
+                isinstance(memory.get(name), bool)
+                or not isinstance(memory.get(name), int)
+                or memory[name] <= 0
+                for name in shplonk_count_fields
+            )
+        ):
+            abort(f"{dataset} native admission has malformed SHPLONK shape counts")
+        shplonk_permutation_chunk = max(cs["degree"] - 2, 1)
+        expected_shplonk_permutation_sets = (
+            cs["num_permutation_columns"] + shplonk_permutation_chunk - 1
+        ) // shplonk_permutation_chunk
+        expected_shplonk_queries = (
+            memory["shplonk_advice_query_polynomial_count"]
+            + memory["shplonk_fixed_query_polynomial_count"]
+            + (
+                expected_shplonk_permutation_sets
+                + 2 * cs["num_lookup_arguments"]
+                + cs["num_shuffle_arguments"]
+            ) * memory["shplonk_proof_instance_count"]
+            + cs["num_permutation_columns"]
+            + (cs["degree"] - 1)
+            + 1
+        )
+        if (
+            len(shplonk_counts) != memory["shplonk_rotation_set_count"]
+            or sum(shplonk_counts) != memory["shplonk_query_polynomial_count"]
+            or max(shplonk_counts, default=0)
+            != memory["shplonk_max_commitments_per_rotation_set"]
+            or memory["shplonk_query_polynomial_count"] != expected_shplonk_queries
+            or memory["shplonk_permutation_product_set_count"]
+            != expected_shplonk_permutation_sets
+            or memory["shplonk_advice_query_polynomial_count"] > cs["num_advice_columns"]
+            or memory["shplonk_fixed_query_polynomial_count"]
+            > cs["fixed_column_count_post_compression"]
+            or memory["shplonk_lookup_argument_count"] != cs["num_lookup_arguments"]
+            or memory["shplonk_shuffle_argument_count"] != cs["num_shuffle_arguments"]
+            or memory["shplonk_proof_instance_count"] != 1
+            or memory["shplonk_quotient_piece_count"] != cs["degree"] - 1
+            or memory["shplonk_max_rotation_count"]
+            > memory["shplonk_unique_opening_point_count"]
+            or memory["shplonk_unique_opening_point_count"] > admission["domain_size"]
+        ):
+            abort(f"{dataset} native SHPLONK opening shape is inconsistent with Halo2 geometry")
         expected_bitmap = cs["num_selectors"] * ((admission["domain_size"] + 7) // 8)
         read_chunk_fields = memory["fixed_polynomial_read_chunk_fields_upper"]
         if (
@@ -1366,6 +1565,47 @@ def _effective_host_memory_available_bytes() -> tuple[int, dict[str, object]]:
     return effective, accounting
 
 
+def _effective_host_memory_limit_bytes() -> tuple[int, dict[str, object]]:
+    try:
+        total = None
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, separator, value = line.partition(":")
+            if separator and key == "MemTotal":
+                pieces = value.split()
+                if pieces and pieces[0].isdigit():
+                    total = int(pieces[0]) * 1024
+                break
+    except OSError as exc:
+        abort(f"cannot sample host MemTotal for EZKL reserve: {exc}")
+    if total is None or total <= 0:
+        abort("host MemTotal is absent or malformed; EZKL reserve cannot be calculated")
+    limit = total
+    cgroup_limits: list[dict[str, object]] = []
+    for base in _cgroup_memory_paths():
+        try:
+            value = (base / "memory.max").read_text().strip()
+        except OSError:
+            continue
+        if value == "max":
+            continue
+        if not value.isdigit() or int(value) <= 0:
+            abort(f"malformed cgroup memory.max for EZKL reserve at {base}")
+        value_bytes = int(value)
+        limit = min(limit, value_bytes)
+        cgroup_limits.append({"path": str(base), "limit_bytes": value_bytes})
+    return limit, {
+        "host_mem_total_bytes": total,
+        "effective_memory_limit_bytes": limit,
+        "cgroup_limits": cgroup_limits,
+    }
+
+
+def _host_os_diagnostic_reserve_bytes() -> tuple[int, dict[str, object]]:
+    effective_limit, accounting = _effective_host_memory_limit_bytes()
+    reserve = max(2 * (1 << 30), (effective_limit * 5 + 99) // 100)
+    return reserve, {**accounting, "os_diagnostic_reserve_bytes": reserve}
+
+
 def _filesystem_available_bytes(path: Path) -> tuple[int, dict[str, int]]:
     try:
         stat = os.statvfs(path)
@@ -1391,14 +1631,55 @@ def _native_capacity_requirements(
     assigned = int(memory["size_of_assigned_fr_bytes"])
     option_fr = int(memory["size_of_option_fr_bytes"])
     batch_invert_entry = int(memory["size_of_batch_invert_entry_bytes"])
+    atomic_u64 = int(memory["size_of_atomic_u64_bytes"])
+    map_entry = int(memory["size_of_lookup_map_entry_bytes"])
+    map_header = int(memory["size_of_lookup_map_header_bytes"])
+    repr_bytes = int(memory["size_of_lookup_repr_bytes"])
+    vec_header = int(memory["size_of_vec_header_bytes"])
+    polynomial_header = int(memory["size_of_polynomial_header_bytes"])
+    prepared_header = int(memory["size_of_mv_lookup_prepared_bytes"])
+    prepared_table_header = int(memory["size_of_mv_lookup_prepared_table_bytes"])
+    committed_header = int(memory["size_of_mv_lookup_committed_bytes"])
+    graph_witness_scalars = int(memory["graph_witness_scalar_element_count"])
+    g1_affine = int(memory["size_of_g1_affine_bytes"])
+    g1_projective = int(memory["size_of_g1_projective_bytes"])
+    g2_affine = int(memory["size_of_g2_affine_bytes"])
+    fft_stage = int(memory["size_of_fft_stage_bytes"])
+    lookup_arguments = int(cs["num_lookup_arguments"])
+    lookup_queries = int(cs["num_lookup_query_polynomials"])
+    max_lookup_queries = int(cs["max_lookup_query_polynomials_per_argument"])
+    table_group_count = int(cs["num_unique_lookup_table_expression_groups"])
+    table_bounds = memory["lookup_table_cardinality_upper_bounds"]
+    custom_gate_dependencies = memory["custom_gate_dependency_columns"]
+    lookup_dependencies = memory["lookup_dependency_columns"]
+    lookup_query_counts = memory["lookup_query_polynomial_counts"]
+    shuffle_dependencies = memory["shuffle_dependency_columns"]
     n = domain_size
     proof_domain = int(memory["proof_domain_size"])
+    proof_logrows = int(memory["proof_logrows"])
+    uses_recursive_fft = bool(memory["uses_recursive_fft"])
     fixed_post = int(cs["fixed_column_count_post_compression"])
     fixed_uncompressed = int(cs["num_fixed_columns"])
     permutation = int(cs["num_permutation_columns"])
     advice = int(cs["num_advice_columns"])
     instances = int(cs["num_instance_columns"])
     degree = int(cs["degree"])
+    fft_supported_lengths = int(memory["fft_cache_supported_length_count"])
+    fft_cache_capacity = int(memory["fft_cache_entry_capacity"])
+    srs_fft_supported_lengths = int(memory["srs_fft_cache_supported_length_count"])
+    srs_fft_cache_capacity = int(memory["srs_fft_cache_entry_capacity"])
+    fftdata_once_lock = int(memory["size_of_fftdata_once_lock_bytes"])
+    fftdata_entry = int(memory["size_of_fftdata_cache_entry_bytes"])
+    fftdata_map_header = int(memory["size_of_fftdata_cache_map_bytes"])
+    arc_header = int(memory["size_of_arc_header_bytes"])
+    parallel_threads = int(memory["fft_parallel_thread_count"])
+    shplonk_query_polynomials = int(memory["shplonk_query_polynomial_count"])
+    shplonk_rotation_sets = int(memory["shplonk_rotation_set_count"])
+    shplonk_max_rotations = int(memory["shplonk_max_rotation_count"])
+    shplonk_commitment_size = int(memory["size_of_shplonk_commitment_extension_bytes"])
+    shplonk_rotation_set_size = int(memory["size_of_shplonk_rotation_set_extension_bytes"])
+    coeff_polynomial_header = int(memory["size_of_coeff_polynomial_header_bytes"])
+    parallel_lut_elements = int(memory["parallel_fft_lookup_table_elements"])
     icicle_scalar_bytes = int(icicle_type_sizes["scalar_bytes"])
     icicle_affine_bytes = int(icicle_type_sizes["affine_bytes"])
     if degree < 2:
@@ -1408,11 +1689,95 @@ def _native_capacity_requirements(
     for label, number in (
         ("Fr", fr), ("Assigned<Fr>", assigned), ("Option<Fr>", option_fr),
         ("ICICLE scalar", icicle_scalar_bytes), ("ICICLE affine", icicle_affine_bytes),
+        ("AtomicU64", atomic_u64), ("lookup entry", map_entry), ("lookup map header", map_header),
+        ("lookup repr", repr_bytes), ("Vec header", vec_header), ("Polynomial header", polynomial_header),
+        ("Prepared header", prepared_header), ("PreparedTable header", prepared_table_header),
+        ("Committed header", committed_header), ("G1 projective", g1_projective),
+        ("G2 affine", g2_affine), ("FFT stage", fft_stage),
+        ("SHPLONK query polynomials", shplonk_query_polynomials),
+        ("SHPLONK rotation sets", shplonk_rotation_sets),
+        ("SHPLONK rotations", shplonk_max_rotations),
+        ("SHPLONK commitment extension", shplonk_commitment_size),
+        ("SHPLONK rotation-set extension", shplonk_rotation_set_size),
+        ("coefficient polynomial header", coeff_polynomial_header),
     ):
         if number <= 0:
             abort(f"EZKL native admission has invalid sizeof({label})")
     if icicle_scalar_bytes != fr:
         abort("compiled ICICLE BN254 scalar size disagrees with native Halo2 Fr")
+    if (
+        not isinstance(table_bounds, list)
+        or len(table_bounds) != table_group_count
+        or any(isinstance(bound, bool) or not isinstance(bound, int) or bound <= 0 or bound > n for bound in table_bounds)
+        or lookup_queries < lookup_arguments
+        or max_lookup_queries > lookup_queries
+        or table_group_count > lookup_arguments
+    ):
+        abort("EZKL native admission has inconsistent source-bounded mv-lookup cardinalities")
+    for label, values, expected_count, allow_zero in (
+        ("custom gate dependency", custom_gate_dependencies, int(cs["num_custom_gate_groups"]), True),
+        ("lookup dependency", lookup_dependencies, lookup_arguments, True),
+        ("lookup query count", lookup_query_counts, lookup_arguments, False),
+        ("shuffle dependency", shuffle_dependencies, int(cs["num_shuffle_arguments"]), True),
+    ):
+        if (
+            not isinstance(values, list)
+            or len(values) != expected_count
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < (0 if allow_zero else 1)
+                or value > fixed_uncompressed + advice + instances
+                for value in values
+            )
+        ):
+            abort(f"EZKL native admission has malformed {label} counts")
+    if (
+        sum(lookup_query_counts) != lookup_queries
+        or max(lookup_query_counts, default=0) != max_lookup_queries
+        or not isinstance(memory["uses_recursive_fft"], bool)
+        or parallel_threads <= 0
+        or fft_supported_lengths <= 0
+        or fft_cache_capacity < fft_supported_lengths
+        or srs_fft_supported_lengths != 1
+        or srs_fft_cache_capacity < 1
+    ):
+        abort("EZKL native admission has inconsistent evaluator/FFT resource metadata")
+    shplonk_batch_width_upper = min(shplonk_query_polynomials, parallel_threads)
+    shplonk_task_bytes = 2 * n * fr + 2 * coeff_polynomial_header
+    shplonk_fixed_workspace_bytes = 4 * n * fr + 4 * coeff_polynomial_header
+    shplonk_query_point_upper = shplonk_query_polynomials * shplonk_max_rotations
+    shplonk_extension_host_upper = (
+        shplonk_query_polynomials * shplonk_commitment_size
+        + shplonk_rotation_sets * shplonk_rotation_set_size
+        + 2 * shplonk_query_point_upper * fr
+        + shplonk_rotation_sets * shplonk_max_rotations * fr
+        + shplonk_query_point_upper * (2 * fr + int(memory["size_of_usize_bytes"]))
+        + parallel_threads * shplonk_max_rotations * 2 * fr
+    )
+    shplonk_transient_spill_upper = (shplonk_batch_width_upper + 2) * n * fr
+
+    def fft_cache_map_allocation(capacity: int) -> int:
+        required_buckets = (capacity * 8 + 6) // 7
+        bucket_count = max(4, 1 << (required_buckets - 1).bit_length())
+        return fftdata_map_header + bucket_count * (fftdata_entry + 1) + 16
+
+    def fft_cache_payload(length_count: int, map_capacity: int, transform_logrows: int, twiddles: int) -> int:
+        return (
+            fft_cache_map_allocation(map_capacity)
+            + length_count * (fftdata_once_lock + arc_header)
+            + transform_logrows * fft_stage
+            + 2 * transform_logrows * vec_header
+            + twiddles * fr
+        )
+
+    proof_fft_twiddle_elements = int(memory["recursive_fft_twiddle_field_elements"])
+    proof_fft_cache_bytes = fft_cache_payload(
+        fft_supported_lengths,
+        fft_cache_capacity,
+        proof_logrows,
+        proof_fft_twiddle_elements if uses_recursive_fft else 0,
+    )
     # Source-derived known mapped setup allocations: fixed assignment maps,
     # fixed-value and coefficient maps, permutation polynomials, three
     # extended-domain selector polynomials retained by the PK, plus the live
@@ -1438,12 +1803,52 @@ def _native_capacity_requirements(
         + 8 + 12 + 2 * (4 + 4 * fixed_post)
     )
     quotient_coefficients = n * (degree - 1)
+    lookup_query_spill_bytes = lookup_queries * n * fr
+    lookup_m_spill_bytes = lookup_arguments * n * fr
+    lookup_table_spill_bytes = table_group_count * n * fr
+    lookup_phi_spill_bytes = lookup_arguments * n * fr
+    lookup_spill_known = (
+        lookup_query_spill_bytes
+        + lookup_m_spill_bytes
+        + lookup_table_spill_bytes
+        + lookup_phi_spill_bytes
+    )
+    max_gate_dependencies = max(custom_gate_dependencies, default=0)
+    max_lookup_dependencies = max(lookup_dependencies, default=0)
+    max_shuffle_dependencies = max(shuffle_dependencies, default=0)
+    max_lookup_input_count = max(lookup_query_counts, default=0)
+    permutation_eval_coset_window = 5 if permutation else 0
+    evaluation_coset_window = max(
+        max_gate_dependencies,
+        max_lookup_dependencies + 2 if lookup_arguments else 0,
+        max_shuffle_dependencies + 1 if int(cs["num_shuffle_arguments"]) else 0,
+        permutation_eval_coset_window,
+    )
+    evaluation_source_column_window = max(
+        max_gate_dependencies,
+        max_lookup_dependencies + 2 if lookup_arguments else 0,
+        max_shuffle_dependencies + 1 if int(cs["num_shuffle_arguments"]) else 0,
+        3 if permutation else 0,
+    )
+    evaluation_temporary_mapped_bytes = evaluation_coset_window * proof_domain * fr
+    evaluation_source_hot_bytes = evaluation_source_column_window * n * fr
+    # `evaluate_h` always keeps the three PK boundary-selector cosets and the
+    # quotient accumulator mapped; only the current expression group's exact
+    # source dependencies and their cosets are additionally touched.
+    proof_eval_hot_mmap = (
+        4 * proof_domain * fr
+        + evaluation_temporary_mapped_bytes
+        + evaluation_source_hot_bytes
+    )
     proof_spill_known = (
         setup_persisted_maps
         + advice * n * fr
         + 2 * instances * n * fr
         + proof_domain * fr
         + quotient_coefficients * fr
+        + lookup_spill_known
+        + evaluation_temporary_mapped_bytes
+        + shplonk_transient_spill_upper
     )
     # Native save_pk also emits a separate VK file; include its known selector
     # bitmaps and commitments in the retained-artifact reservation.
@@ -1466,7 +1871,210 @@ def _native_capacity_requirements(
     # Vecs, omega powers, and the current dense permutation column as well as
     # the ICICLE conversion Vecs.
     permutation_vk_phase = selectors + 2 * n * fr + icicle_msm_staging
-    host_known = max(selector_phase, pk_phase, read_scratch, icicle_msm_staging, permutation_vk_phase)
+    # Native SRS loading keeps the target G1 monomial vector while deriving
+    # Lagrange points. On aarch64, recursive::fft copies its projective input
+    # and allocates a second projective scratch vector, so the transform peak
+    # has three projective N-vectors; the x86 parallel path has two. The
+    # twiddle cache is the exact one-length SRS EvaluationDomain cache.
+    srs_loaded = 2 * n * g1_affine + 2 * g2_affine
+    srs_fft_twiddle_elements = 2 * (n - 1 + admission["logrows"])
+    srs_fft_data = srs_fft_twiddle_elements * fr
+    srs_fft_metadata = (
+        admission["logrows"] * fft_stage
+        + 2 * admission["logrows"] * vec_header
+    )
+    srs_fft_cache_metadata = fft_cache_payload(
+        srs_fft_supported_lengths,
+        srs_fft_cache_capacity,
+        admission["logrows"],
+        srs_fft_twiddle_elements if uses_recursive_fft else 0,
+    )
+    srs_fft_twiddle_lut = parallel_lut_elements * fr
+    if uses_recursive_fft:
+        srs_fft_transform_peak = (
+            n * g1_affine
+            + 3 * n * g1_projective
+            + srs_fft_cache_metadata
+            + 2 * g2_affine
+        )
+        srs_fft_output_peak = (
+            2 * n * g1_affine
+            + n * g1_projective
+            + srs_fft_cache_metadata
+            + 2 * g2_affine
+        )
+        srs_fft_cache_build_peak = (
+            n * g1_affine
+            + n * g1_projective
+            + srs_fft_cache_metadata
+            + n * fr
+            + 2 * g2_affine
+        )
+    else:
+        srs_fft_transform_peak = (
+            n * g1_affine
+            + 2 * n * g1_projective
+            + srs_fft_cache_metadata
+            + srs_fft_twiddle_lut
+            + 2 * g2_affine
+        )
+        srs_fft_output_peak = (
+            2 * n * g1_affine
+            + n * g1_projective
+            + srs_fft_cache_metadata
+            + srs_fft_twiddle_lut
+            + 2 * g2_affine
+        )
+        srs_fft_cache_build_peak = (
+            n * g1_affine
+            + n * g1_projective
+            + srs_fft_cache_metadata
+            + n * fr
+            + srs_fft_twiddle_lut
+            + 2 * g2_affine
+        )
+    srs_downsize_peak = max(srs_fft_transform_peak, srs_fft_output_peak, srs_fft_cache_build_peak)
+    srs_setup_peak = graph_witness_scalars * fr + srs_downsize_peak
+    srs_loaded_and_witness = graph_witness_scalars * fr + srs_loaded
+    # While the proof owns the key and SRS, advice and public instance maps
+    # remain mapped. The sparse permutation successor vector is heap-backed.
+    permutation_mapping_host = (
+        int(cs["permutation_successor_entry_count_upper"]) * int(memory["size_of_usize_pair_bytes"])
+        + vec_header
+    )
+    selector_bitmap_host = selectors
+    proof_nonprepare_heap = (
+        graph_witness_scalars * fr
+        + selector_bitmap_host
+        + permutation_mapping_host
+        + srs_loaded
+    )
+    # The three PK selector cosets are persistent in the loaded key. Other
+    # proof polynomials are mmap-backed but are touched one exact evaluator
+    # group at a time and are bounded by proof_eval_hot_mmap below.
+    proof_nonprepare_hot_mmap = 3 * proof_domain * fr
+    proof_nonprepare_resident = (
+        proof_nonprepare_heap + proof_nonprepare_hot_mmap
+    )
+    lookup_map_allocations: list[int] = []
+    previous_bucket_growth: list[int] = []
+    for upper in table_bounds:
+        required_buckets = (upper * 8 + 6) // 7
+        bucket_count = max(4, 1 << (required_buckets - 1).bit_length())
+        map_allocation = (
+            map_header
+            + bucket_count * (map_entry + 1)
+            + 16
+            + upper * (repr_bytes + 32)
+        )
+        lookup_map_allocations.append(map_allocation)
+        previous_bucket_count = bucket_count // 2 if bucket_count > 4 else 0
+        previous_bucket_growth.append(
+            previous_bucket_count * (map_entry + 1) + (16 if previous_bucket_count else 0)
+        )
+    lookup_maps_retained = sum(lookup_map_allocations)
+    lookup_map_growth_peak = max(previous_bucket_growth, default=0)
+    lookup_table_polynomials = lookup_table_spill_bytes
+    lookup_metadata_retained = (
+        table_group_count * (prepared_table_header + vec_header)
+        + lookup_arguments * committed_header
+        + lookup_arguments * prepared_header
+        + lookup_queries * polynomial_header
+        + 2 * vec_header
+    )
+    lookup_table_cache_retained_host = (
+        lookup_maps_retained + lookup_table_polynomials + lookup_metadata_retained
+    )
+    # `Expression::evaluate` and the dense polynomial fold can have three
+    # N-element field vectors live while one unique table group is built.
+    lookup_table_build_peak = (
+        3 * n * fr + lookup_map_growth_peak + (repr_bytes + 32)
+    ) if table_group_count else 0
+    lookup_table_cache_peak_host = lookup_table_cache_retained_host + lookup_table_build_peak
+    lookup_prepare_task_bytes = (
+        n * (max_lookup_queries * fr + atomic_u64 + 2 * fr)
+        + max_lookup_queries * polynomial_header
+        + prepared_header
+        + 2 * vec_header
+    ) if lookup_arguments else 0
+    lookup_prepare_host_peak = (
+        proof_nonprepare_resident
+        + lookup_table_cache_peak_host
+        + lookup_prepare_task_bytes
+        + icicle_msm_staging
+    )
+    # Source lifetimes in commit_grand_sum: the largest heap phase is either
+    # the accumulator + current input + BatchInvert's (Fr, &mut Fr) prefix,
+    # or three dense vectors while constructing log_derivatives_diff. The
+    # two accumulators are dropped before phi construction; phi is spilled.
+    # Add only the touched input/m/phi mapping window per concurrent task.
+    lookup_commit_heap_per_task = n * max(2 * fr + batch_invert_entry, 3 * fr)
+    lookup_commit_active_map_per_task = 3 * n * fr
+    lookup_commit_task_bytes = (
+        lookup_commit_heap_per_task + lookup_commit_active_map_per_task + 5 * vec_header
+    ) if lookup_arguments else 0
+    # Includes the one shared table-expression group mapping in addition to
+    # the per-task input, m, and phi windows.
+    lookup_commit_active_map_window = (
+        4 * n * fr
+    ) if lookup_arguments else 0
+    lookup_commit_host_peak = (
+        proof_nonprepare_resident
+        + lookup_table_polynomials
+        + lookup_metadata_retained
+        + lookup_commit_task_bytes
+        + icicle_msm_staging
+    )
+    parallel_split_m = 1 << (parallel_threads.bit_length() - 1)
+    parallel_task_elements = parallel_threads * parallel_split_m
+    parallel_fft_transient = (
+        proof_domain * fr
+        + parallel_lut_elements * fr
+        + parallel_task_elements * fr
+    )
+    recursive_fft_transient = 2 * proof_domain * fr if uses_recursive_fft else 0
+    fft_cache_build_scratch = proof_domain * fr if uses_recursive_fft else 0
+    proof_fft_transient = max(
+        parallel_fft_transient,
+        recursive_fft_transient,
+        fft_cache_build_scratch,
+    )
+    lookup_eval_workers = min(
+        parallel_threads,
+        max(1, (proof_domain + 4095) // 4096),
+    ) if lookup_arguments else 0
+    lookup_eval_task_host_peak = (
+        lookup_eval_workers
+        * 4096
+        * max_lookup_input_count
+        * (fr + batch_invert_entry)
+    ) if lookup_arguments else 0
+    proof_eval_h_host_peak = (
+        proof_nonprepare_heap
+        + proof_eval_hot_mmap
+        + proof_fft_cache_bytes
+        + max(proof_fft_transient, lookup_eval_task_host_peak)
+    )
+    shplonk_host_peak = (
+        proof_nonprepare_heap
+        + proof_eval_hot_mmap
+        + proof_fft_cache_bytes
+        + lookup_table_cache_retained_host
+        + icicle_msm_staging
+        + shplonk_extension_host_upper
+        + shplonk_fixed_workspace_bytes
+        + shplonk_batch_width_upper * shplonk_task_bytes
+    )
+    proof_host_peak = max(
+        lookup_prepare_host_peak,
+        lookup_commit_host_peak,
+        proof_eval_h_host_peak,
+        shplonk_host_peak,
+    )
+    setup_keygen_host_peak = srs_loaded_and_witness + max(
+        selector_phase, pk_phase, read_scratch, icicle_msm_staging, permutation_vk_phase
+    )
+    host_known = max(setup_keygen_host_peak, srs_setup_peak, proof_host_peak)
     return {
         "fixed_assignment_mapped_bytes": fixed_assignment_maps,
         "setup_persisted_mapped_bytes": setup_persisted_maps,
@@ -1474,6 +2082,56 @@ def _native_capacity_requirements(
         "setup_disk_known_bytes": setup_mapped_peak,
         "setup_mapped_peak_bytes": setup_mapped_peak,
         "proof_spill_known_bytes": proof_spill_known,
+        "lookup_query_spill_bytes": lookup_query_spill_bytes,
+        "lookup_m_spill_bytes": lookup_m_spill_bytes,
+        "lookup_table_spill_bytes": lookup_table_spill_bytes,
+        "lookup_phi_spill_bytes": lookup_phi_spill_bytes,
+        "lookup_spill_known_bytes": lookup_spill_known,
+        "srs_loaded_host_bytes": srs_loaded,
+        "srs_downsize_peak_host_bytes": srs_downsize_peak,
+        "srs_fft_data_bytes": srs_fft_data,
+        "srs_fft_metadata_bytes": srs_fft_metadata,
+        "srs_fft_cache_bytes": srs_fft_cache_metadata,
+        "srs_fft_transform_peak_bytes": srs_fft_transform_peak,
+        "srs_fft_output_peak_bytes": srs_fft_output_peak,
+        "srs_fft_cache_build_peak_bytes": srs_fft_cache_build_peak,
+        "srs_fft_twiddle_lut_bytes_upper": srs_fft_twiddle_lut,
+        "srs_setup_host_peak_bytes": srs_setup_peak,
+        "setup_keygen_host_peak_bytes": setup_keygen_host_peak,
+        "proof_nonprepare_resident_host_bytes": proof_nonprepare_resident,
+        "proof_nonprepare_heap_host_bytes": proof_nonprepare_heap,
+        "proof_nonprepare_hot_mmap_host_bytes": proof_nonprepare_hot_mmap,
+        "proof_evaluation_hot_mmap_host_bytes": proof_eval_hot_mmap,
+        "proof_evaluation_coset_mapped_window_bytes": evaluation_temporary_mapped_bytes,
+        "proof_evaluation_source_mapped_window_bytes": evaluation_source_hot_bytes,
+        "proof_evaluation_fft_cache_host_bytes": proof_fft_cache_bytes,
+        "proof_evaluation_fft_transient_host_bytes": proof_fft_transient,
+        "proof_evaluation_lookup_task_host_bytes": lookup_eval_task_host_peak,
+        "proof_evaluation_host_peak_bytes": proof_eval_h_host_peak,
+        "shplonk_batch_width_upper": shplonk_batch_width_upper,
+        "shplonk_task_host_bytes": shplonk_task_bytes,
+        "shplonk_fixed_workspace_host_bytes": shplonk_fixed_workspace_bytes,
+        "shplonk_extension_host_upper_bytes": shplonk_extension_host_upper,
+        "shplonk_host_peak_bytes": shplonk_host_peak,
+        "shplonk_transient_spill_upper_bytes": shplonk_transient_spill_upper,
+        "lookup_map_retained_host_bytes": lookup_maps_retained,
+        "lookup_map_growth_transient_host_bytes": lookup_map_growth_peak,
+        "lookup_table_polynomial_mapped_bytes": lookup_table_polynomials,
+        "lookup_metadata_retained_host_bytes": lookup_metadata_retained,
+        "lookup_table_cache_retained_host_bytes": lookup_table_cache_retained_host,
+        "lookup_table_build_transient_host_bytes": lookup_table_build_peak,
+        "lookup_table_cache_peak_host_bytes": lookup_table_cache_peak_host,
+        "lookup_prepare_task_host_bytes": lookup_prepare_task_bytes,
+        "lookup_prepare_host_peak_bytes": lookup_prepare_host_peak,
+        "lookup_commit_task_host_bytes": lookup_commit_task_bytes,
+        "lookup_commit_active_map_window_bytes_upper": lookup_commit_active_map_window,
+        "lookup_commit_host_peak_bytes": lookup_commit_host_peak,
+        "proof_host_peak_bytes": proof_host_peak,
+        "lookup_map_bounds": [int(item) for item in table_bounds],
+        "lookup_map_bucket_count_upper": [
+            max(4, 1 << (((int(item) * 8 + 6) // 7 - 1).bit_length()))
+            for item in table_bounds
+        ],
         "setup_key_artifact_upper_bytes": setup_key_artifact_upper,
         "quotient_extended_backing_bytes": proof_domain * fr,
         "quotient_piece_bytes": quotient_coefficients * fr,
@@ -1503,11 +2161,13 @@ def _check_dataset_capacity(
     workspace_query: dict[str, object],
 ) -> dict[str, object]:
     host_available, host_accounting = _effective_host_memory_available_bytes()
+    os_reserve, reserve_accounting = _host_os_diagnostic_reserve_bytes()
     disk_available, disk_accounting = _filesystem_available_bytes(output_root.parent)
     device_free = int(device_sample["free_memory_bytes"])
     device_peak = int(workspace_query["device_workspace_peak_bytes"])
     integrated = bool(workspace_query["integrated_device"])
-    host_required = requirements["host_known_bytes"] + (device_peak if integrated else 0)
+    device_headroom = device_peak if integrated else 0
+    host_required = requirements["host_known_bytes"] + device_headroom + os_reserve
     if host_required > host_available:
         abort(
             f"{dataset} {phase} EZKL-known host allocation gate needs {host_required} bytes "
@@ -1529,6 +2189,9 @@ def _check_dataset_capacity(
         "host_available_bytes": host_available,
         "host_required_known_bytes": host_required,
         "host_accounting": host_accounting,
+        "host_os_diagnostic_reserve_bytes": os_reserve,
+        "host_reserve_accounting": reserve_accounting,
+        "host_unified_device_headroom_bytes": device_headroom,
         "disk_available_bytes": disk_available,
         "disk_required_known_bytes": remaining_known_disk_bytes,
         "disk_accounting": disk_accounting,
@@ -1539,6 +2202,66 @@ def _check_dataset_capacity(
         "integrated_device": integrated,
         "coverage": "source-derived-known-allocation-gates; not a complete phase peak estimate",
         "sampled_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _native_prepare_budget(
+    requirements: dict[str, int],
+    *,
+    initial_available_bytes: int,
+    workspace_query: dict[str, object],
+) -> dict[str, int]:
+    """Derive the native lookup task cap before native proof objects are loaded."""
+    total_limit, _ = _effective_host_memory_limit_bytes()
+    reserve, _ = _host_os_diagnostic_reserve_bytes()
+    integrated = bool(workspace_query["integrated_device"])
+    device_peak = int(workspace_query["device_workspace_peak_bytes"])
+    device_headroom = device_peak if integrated else 0
+    baseline_heap = requirements["proof_nonprepare_heap_host_bytes"]
+    baseline_hot_mmap = requirements["proof_nonprepare_hot_mmap_host_bytes"]
+    tablecache = requirements["lookup_table_cache_retained_host_bytes"]
+    icicle_staging = requirements["icicle_msm_host_staging_bytes"]
+    shplonk_extensions = requirements["shplonk_extension_host_upper_bytes"]
+    task_envelope = max(
+        0,
+        initial_available_bytes
+        - baseline_heap
+        - baseline_hot_mmap
+        - tablecache
+        - shplonk_extensions
+        - icicle_staging
+        - device_headroom
+        - reserve,
+    )
+    minimum_task = max(
+        requirements["lookup_prepare_task_host_bytes"],
+        requirements["lookup_commit_task_host_bytes"],
+        requirements["shplonk_fixed_workspace_host_bytes"]
+        + requirements["shplonk_task_host_bytes"],
+    )
+    if minimum_task <= 0 or task_envelope < minimum_task:
+        abort(
+            "EZKL native lookup or SHPLONK cannot fit one source-bounded task after "
+            f"reserving its loaded baseline, table cache, SHPLONK extensions, ICICLE staging, unified-device headroom, "
+            f"and OS reserve: need {minimum_task} task bytes, have {task_envelope}"
+        )
+    return {
+        "total_limit_bytes": total_limit,
+        "initial_available_bytes": initial_available_bytes,
+        "baseline_heap_bytes": baseline_heap,
+        "baseline_hot_mmap_bytes": baseline_hot_mmap,
+        "tablecache_bytes": tablecache,
+        "shplonk_extensions_bytes": shplonk_extensions,
+        "icicle_staging_bytes": icicle_staging,
+        "device_headroom_bytes": device_headroom,
+        "reserve_bytes": reserve,
+        "incremental_envelope_bytes": max(
+            0,
+            initial_available_bytes - baseline_heap - baseline_hot_mmap - device_headroom - reserve,
+        ),
+        "future_phase_increment_bytes": tablecache + shplonk_extensions + icicle_staging + task_envelope,
+        "minimum_task_bytes": minimum_task,
+        "taskcap_bytes": task_envelope,
     }
 
 
@@ -1867,6 +2590,9 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         "ICICLE_NATIVE_MANIFEST_SHA256",
         "CUDA_ARCH",
         "EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID",
+        "EZKL_NATIVE_PREPARE_BUDGET_BYTES",
+        "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES",
+        "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS",
     ):
         os.environ.pop(name, None)
 
@@ -2081,14 +2807,35 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         )
         session_document = json.loads(session_file.read_text())
         session_document.setdefault("capacity_checks", []).append(prove_check)
-        _write_session_record(session_file, session_document)
-        invoke_python_entrypoint(
-            "run_single_dataset",
-            item["single"],
-            f"{dataset} final/witness/prove/independent verify",
-            context=context,
-            session_id=session_id,
+        prepare_budget = _native_prepare_budget(
+            capacity_requirements[dataset],
+            initial_available_bytes=int(prove_check["host_available_bytes"]),
+            workspace_query=cub_receipt["query"],
         )
+        prove_check["native_prepare_budget"] = prepare_budget
+        session_document.setdefault("capacity_checks", [])[-1] = prove_check
+        _write_session_record(session_file, session_document)
+        cardinality_bounds = admissions[dataset]["native_memory_model"]["lookup_table_cardinality_upper_bounds"]
+        os.environ["EZKL_NATIVE_PREPARE_BUDGET_BYTES"] = str(prepare_budget["taskcap_bytes"])
+        os.environ["EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES"] = str(prepare_budget["device_headroom_bytes"])
+        os.environ["EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS"] = ",".join(
+            str(bound) for bound in cardinality_bounds
+        )
+        try:
+            invoke_python_entrypoint(
+                "run_single_dataset",
+                item["single"],
+                f"{dataset} final/witness/prove/independent verify",
+                context=context,
+                session_id=session_id,
+            )
+        finally:
+            for name in (
+                "EZKL_NATIVE_PREPARE_BUDGET_BYTES",
+                "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES",
+                "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS",
+            ):
+                os.environ.pop(name, None)
 
     _set_stage(session_file, "collect_five_results")
     try:

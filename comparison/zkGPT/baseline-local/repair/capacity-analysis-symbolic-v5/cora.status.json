@@ -1,0 +1,22 @@
+{
+  "exit_code": 0,
+  "elapsed_s": 0.25928537698928267,
+  "stdout_bytes": 156117,
+  "stderr_bytes": 1111,
+  "timed_out": false,
+  "command": [
+    "/home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/zkgpt_gat_prover",
+    "--capacity-profile-only",
+    "--dataset",
+    "cora",
+    "--backend",
+    "cpu",
+    "--baseline-root",
+    "/home/pzh/project/comparison/zkGPT"
+  ],
+  "json_status": "ANALYSIS_ONLY",
+  "ready": false,
+  "profile_kind": "analysis_only",
+  "profile_binary_sha256": "8c33546d11c607dcb0798ebfad388a0c027b350ef7ba907e2444bdc7067f492a",
+  "shape": null
+}

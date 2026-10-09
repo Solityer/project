@@ -33,6 +33,35 @@ class PhaseError(RuntimeError):
     pass
 
 
+def _srs_manifest_finalization_capacity(family_count: int, segment_count: int) -> dict[str, int]:
+    if sys.implementation.name != "cpython":
+        raise PhaseError("zkDL finalization heap bound requires the source-profiled CPython object model")
+    if (type(family_count) is not int or family_count < 1 or family_count > (1 << 20) or
+            type(segment_count) is not int or segment_count < family_count or segment_count > family_count * 4096):
+        raise PhaseError("zkDL SRS manifest family/segment counts are invalid")
+    segment_fields = ("segment_index", "logical_offset", "actual_length", "padded_length", "basis_offset", "basis_count")
+    # prepare_form_resources.write_srs emits one family chunk and exactly these six integer fields per segment.
+    sample = dict.fromkeys(segment_fields, 0)
+    pointer_bytes = ctypes.sizeof(ctypes.c_void_p)
+    max_u64 = (1 << 64) - 1
+    segment_object_bytes = sys.getsizeof(sample) + sum(sys.getsizeof(field) + sys.getsizeof(max_u64) for field in segment_fields) + 2 * pointer_bytes
+    # The fixed 512-byte segment and 4096-byte family allowances exceed the indented JSON emitted by write_json.
+    raw_json_bytes = 64 * 1024 + family_count * 4096 + segment_count * 512
+    # Include each family/chunk's strings and containers, six keys/ints, segment list slots, one hash block and a reserved Python heap.
+    python_object_bytes = family_count * 16 * 1024 + segment_count * segment_object_bytes
+    hash_buffer_bytes = 1 << 20
+    interpreter_reserve_bytes = 256 << 20
+    host_peak_bytes = raw_json_bytes + python_object_bytes + hash_buffer_bytes + interpreter_reserve_bytes
+    if any(value > (1 << 64) - 1 for value in (segment_object_bytes, raw_json_bytes, python_object_bytes, host_peak_bytes)):
+        raise PhaseError("zkDL SRS manifest finalization bound overflows u64")
+    return {"family_count": family_count, "segment_count": segment_count,
+            "raw_json_bytes_upper_bound": raw_json_bytes,
+            "python_object_bytes_upper_bound": python_object_bytes,
+            "hash_buffer_bytes": hash_buffer_bytes,
+            "interpreter_reserve_bytes": interpreter_reserve_bytes,
+            "host_peak_bytes_upper_bound": host_peak_bytes}
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -410,6 +439,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
     # checked every nested body against the exact consumer's parser limit.
     datasets: dict[str, dict[str, Any]] = {}
     native_capacity_diagnostics: dict[str, Any] = {}
+    finalization_manifest_capacity: dict[str, dict[str, int]] = {}
     mib = 1 << 20
     cell_log_limit = 16 * mib
     finalization_bytes = 0
@@ -425,6 +455,30 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
                 type(frame_bytes) is not int or frame_bytes != 40 + basis_domain * 48 or
                 srs_bytes < frame_bytes + 2 * (40 + 48)):
             raise PhaseError(f"resource audit has an invalid source-bound SRS setup plan for {dataset}")
+        srs_families = srs_plan.get("families")
+        family_domains = audit.get("family_domains")
+        declared_family_count = audit.get("family_domain_count")
+        if (not isinstance(srs_families, dict) or not srs_families or not isinstance(family_domains, dict) or
+                set(srs_families) != set(family_domains) or type(declared_family_count) is not int or
+                declared_family_count != len(srs_families)):
+            raise PhaseError(f"resource audit has malformed exact SRS manifest family counts for {dataset}")
+        manifest_segment_count = 0
+        for family_id, family_plan in srs_families.items():
+            if not isinstance(family_id, str) or not family_id.isascii() or len(family_id.encode("ascii")) > 512 or not isinstance(family_plan, dict):
+                raise PhaseError(f"resource audit has an invalid SRS manifest family identity for {dataset}")
+            logical_domain = family_plan.get("logical_domain")
+            segment_size = family_plan.get("segment_size")
+            segment_count = family_plan.get("segment_count")
+            if (type(logical_domain) is not int or logical_domain < 1 or logical_domain > (1 << 30) or
+                    logical_domain & (logical_domain - 1) or type(segment_size) is not int or
+                    segment_size != basis_domain or type(segment_count) is not int or segment_count < 1 or
+                    segment_count > 4096 or segment_count != (logical_domain + segment_size - 1) // segment_size or
+                    type(family_domains.get(family_id)) is not int or family_domains[family_id] != logical_domain):
+                raise PhaseError(f"resource audit has an invalid SRS manifest segment count for {dataset}/{family_id}")
+            manifest_segment_count += segment_count
+            if manifest_segment_count > (1 << 64) - 1:
+                raise PhaseError(f"resource audit SRS manifest segment count overflows u64 for {dataset}")
+        finalization_manifest_capacity[dataset] = _srs_manifest_finalization_capacity(len(srs_families), manifest_segment_count)
         family_bytes = int(admission["private_family_storage_upper_bound_bytes"])
         sorted_bytes = int(admission["sorted_lookup_scratch_upper_bound_bytes"])
         tensor_count = int(admission["checkpoint_tensor_count"])
@@ -455,11 +509,18 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             "native_route_sumcheck_live_peak_bytes_upper_bound",
             "native_maximum_route_source_domain",
             "native_maximum_route_edge_domain",
+            "native_maximum_route_selector_factor_elements",
             "relation_plan_text_bytes",
         )
         for field in typed_fields:
             if type(admission.get(field)) is not int or admission[field] < 0:
                 raise PhaseError(f"native admission lacks a nonnegative source-typed metric {field} for {dataset}")
+        route_source_domain = int(admission["native_maximum_route_source_domain"])
+        route_factor_elements = int(admission["native_maximum_route_selector_factor_elements"])
+        if (route_source_domain == 0 or route_source_domain > (1 << 30) or
+                route_factor_elements == 0 or route_factor_elements > (1 << 64) - 1 or
+                route_factor_elements > route_source_domain + 1):
+            raise PhaseError(f"native admission returned an invalid route selector factor bound for {dataset}")
         proof_bytes = int(admission["native_proof_wire_bytes_upper_bound"])
         operation_descriptor_bytes = int(admission["native_operation_descriptor_bytes"])
         if proof_bytes == 0 or operation_descriptor_bytes > proof_bytes:
@@ -571,12 +632,16 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             "cell_retained_artifact_bytes_upper_bound": retained,
             "host_peak_bytes": host_peak,
             "device_peak_bytes": 0,
+            "native_route_source_domain": route_source_domain,
+            "native_route_selector_factor_elements": route_factor_elements,
             "phase_coverage": ["setup", "witness", "commitment", "prove", "verify"],
         }
         native_capacity_diagnostics[dataset] = {
             "srs_basis_domain": basis_domain,
             "srs_point_count": srs_point_count,
             "srs_materialized_bytes_upper_bound": srs_bytes,
+            "native_route_source_domain": route_source_domain,
+            "native_route_selector_factor_elements": route_factor_elements,
             "phase_peak_bytes": {
                 **native_phase_peak_bytes,
                 "setup_native_srs_generation": setup_generation_peak,
@@ -595,24 +660,24 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         if path.is_file():
             existing_bytes += path.stat().st_size
     device = os.stat(session, follow_symlinks=False).st_dev
+    finalization_host_peak = max(item["host_peak_bytes_upper_bound"] for item in finalization_manifest_capacity.values())
     profile = {
-        "schema": "zkdl_formal_capacity_profile_v1",
+        "schema": "zkdl_formal_capacity_profile_v3",
         "baseline": "zkdl",
         "session_id": session_id,
         "fs_device_id": int(device),
         "preexisting_baseline_artifact_bytes": existing_bytes,
         "finalization_disk_bytes_upper_bound": finalization_bytes,
-        # Finalization parses one dataset's public asset metadata at a time.
-        # Reuse the largest already source-derived per-cell host envelope as
-        # its conservative live host gate instead of inventing a Python-heap
-        # multiplier that is not represented by native admission evidence.
-        "finalization_host_peak_bytes_upper_bound": max(item["host_peak_bytes"] for item in datasets.values()),
+        "finalization_host_peak_bytes_upper_bound": finalization_host_peak,
+        "finalization_manifest_capacity": {"schema": "zkdl_srs_manifest_finalization_heap_v1",
+                                            "datasets": finalization_manifest_capacity},
         "backend": "cpu",
         "memory_accounting_kind": "host-only",
         "device": None,
         "bound_methods": {
             "additional_disk_peak": "source_derived_upper_bound",
             "host_peak": "source_derived_upper_bound",
+            "finalization_host_peak": "srs_manifest_schema_python_heap_upper_bound",
         },
         "datasets": datasets,
     }
@@ -671,14 +736,14 @@ def prepare(session: Path, session_id: str) -> None:
             result = json.loads(output.strip().splitlines()[-1])
         except (IndexError, json.JSONDecodeError) as exc:
             raise PhaseError(f"native production admission returned malformed evidence for {dataset}") from exc
-        if result.get("schema") != "zkdl_native_relation_admission_v1" or result.get("status") != "PASS" or result.get("dataset") != dataset:
+        if result.get("schema") != "zkdl_native_relation_admission_v2" or result.get("status") != "PASS" or result.get("dataset") != dataset:
             raise PhaseError(f"native production relation admission rejected {dataset}")
         native[dataset] = result
 
     profile, native_capacity_diagnostics = _admission_profile(session, session_id, report, native)
     graph_identity = _graph_identity(native)
     phase_receipt = {
-        "schema": "zkDL_formal_prepare_receipt_v1",
+        "schema": "zkDL_formal_prepare_receipt_v2",
         "baseline": "zkdl",
         "session_id": session_id,
         "status": "PASS",
@@ -719,6 +784,22 @@ def _read_kv(path: Path) -> dict[str, str]:
     return values
 
 
+def _cell_stage(stage: str, dataset: str, operation: Any) -> Any:
+    started = time.monotonic()
+    print(json.dumps({"zkdl_cell_stage": stage, "dataset": dataset, "status": "START"}, separators=(",", ":")), flush=True)
+    try:
+        result = operation()
+    except BaseException as exc:
+        marker = {"zkdl_cell_stage": stage, "dataset": dataset, "status": "FAIL",
+                  "elapsed_seconds": round(time.monotonic() - started, 6), "error": str(exc)[:512]}
+        print(json.dumps(marker, separators=(",", ":")), flush=True)
+        raise
+    marker = {"zkdl_cell_stage": stage, "dataset": dataset, "status": "PASS",
+              "elapsed_seconds": round(time.monotonic() - started, 6)}
+    print(json.dumps(marker, separators=(",", ":")), flush=True)
+    return result
+
+
 def cell(session: Path, session_id: str, dataset: str) -> None:
     if dataset not in DATASETS:
         raise PhaseError(f"cell dataset is not canonical: {dataset}")
@@ -735,27 +816,31 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
     config = _config(session, dataset)
     run_dir = session / dataset
     log_path = session / "logs" / f"{dataset}.log"
-    _run([sys.executable, str(ROOT / "scripts/formal_provenance.py"), "--check", str(build_manifest)],
-         log_path=log_path, fresh_log=True, env=env, max_log_bytes=16 * 1024 * 1024)
-    _run([str(ROOT / "scripts/setup_register.sh"), str(config)], log_path=log_path, env=env,
-         max_log_bytes=16 * 1024 * 1024)
-    _run([str(ROOT / "scripts/prepare_local.sh"), str(config), str(run_dir)], log_path=log_path, env=env,
-         max_log_bytes=16 * 1024 * 1024)
     runner = str(session / "build" / "gat_runner")
-    _run([runner, "prove", "--config", str(config), "--backend", "cpu", "--run-dir", str(run_dir)],
-         log_path=log_path, env=env, max_log_bytes=16 * 1024 * 1024)
-    for private_path in (run_dir / ".private_native", run_dir / "scratch" / "sorted_lookup"):
-        if private_path.is_symlink():
-            raise PhaseError(f"refusing to clean symlinked private prover scratch: {private_path}")
-        if private_path.exists():
-            if not private_path.is_dir():
-                raise PhaseError(f"private prover scratch path is not a directory: {private_path}")
-            shutil.rmtree(private_path)
-    scratch_parent = run_dir / "scratch"
-    if scratch_parent.is_dir() and not any(scratch_parent.iterdir()):
-        scratch_parent.rmdir()
-    _run([str(ROOT / "scripts/verify_single.sh"), str(config), str(run_dir)], log_path=log_path, env=env,
-         max_log_bytes=16 * 1024 * 1024)
+    def setup() -> None:
+        _run([sys.executable, str(ROOT / "scripts/formal_provenance.py"), "--check", str(build_manifest)],
+             log_path=log_path, fresh_log=True, env=env, max_log_bytes=16 * 1024 * 1024)
+        _run([str(ROOT / "scripts/setup_register.sh"), str(config)], log_path=log_path, env=env,
+             max_log_bytes=16 * 1024 * 1024)
+    _cell_stage("setup", dataset, setup)
+    _cell_stage("prepare", dataset, lambda: _run([str(ROOT / "scripts/prepare_local.sh"), str(config), str(run_dir)],
+                                                   log_path=log_path, env=env, max_log_bytes=16 * 1024 * 1024))
+    _cell_stage("prove", dataset, lambda: _run([runner, "prove", "--config", str(config), "--backend", "cpu", "--run-dir", str(run_dir)],
+                                                 log_path=log_path, env=env, max_log_bytes=16 * 1024 * 1024))
+    def cleanup() -> None:
+        for private_path in (run_dir / ".private_native", run_dir / "scratch" / "sorted_lookup"):
+            if private_path.is_symlink():
+                raise PhaseError(f"refusing to clean symlinked private prover scratch: {private_path}")
+            if private_path.exists():
+                if not private_path.is_dir():
+                    raise PhaseError(f"private prover scratch path is not a directory: {private_path}")
+                shutil.rmtree(private_path)
+        scratch_parent = run_dir / "scratch"
+        if scratch_parent.is_dir() and not any(scratch_parent.iterdir()):
+            scratch_parent.rmdir()
+    _cell_stage("cleanup", dataset, cleanup)
+    _cell_stage("verify", dataset, lambda: _run([str(ROOT / "scripts/verify_single.sh"), str(config), str(run_dir)],
+                                                  log_path=log_path, env=env, max_log_bytes=16 * 1024 * 1024))
 
     sys.path.insert(0, str(ROOT / "scripts"))
     from result_artifacts import audit_run
@@ -766,7 +851,7 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
             _read_kv(verification_path).get("status") != "VERIFIED" or
             audited.get("independent_verification") != "1"):
         raise PhaseError(f"single-cell proof audit/independent verification failed: {dataset}")
-    proof_digest = sha256_file(proof_path)
+    proof_digest = audited["proof_digest"]
     verify_digest = sha256_file(verification_path)
     cell_receipt = {
         "schema": "zkDL_formal_cell_receipt_v1",

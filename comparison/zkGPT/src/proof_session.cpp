@@ -1,5 +1,7 @@
 #include "proof_session.hpp"
 
+#include <cybozu/sha2.hpp>
+
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -149,6 +151,34 @@ void append_transcript_prefix(std::string& out, const std::string& domain, const
     append_string(out, domain);
     append_statement_encoding(out, statement);
     append_u64(out, static_cast<std::uint64_t>(message_count));
+}
+
+F derive_challenge_streamed_sha256(const std::string& domain, const NativeProofStatement& statement,
+                                  std::size_t message_count, const std::string& message_body,
+                                  const std::string& challenge_label) {
+    std::string prefix;
+    append_transcript_prefix(prefix, domain, statement, message_count);
+    std::string suffix;
+    append_string(suffix, challenge_label);
+
+    cybozu::Sha256 hash;
+    hash.update(prefix.data(), prefix.size());
+    hash.update(message_body.data(), message_body.size());
+    std::uint8_t digest[32];
+    hash.digest(digest, sizeof(digest), suffix.data(), suffix.size());
+
+    // BN254 Fr::setHashOf uses MCL's SHA-256 op and then this exact field mapping.
+    F result;
+    result.setArrayMask(digest, sizeof(digest));
+    return result;
+}
+
+bool configured_fr_hash_matches_sha256() {
+    // Compare the actual MCL operation selected for this field. A finite set
+    // of calibration messages cannot establish equivalence for an arbitrary
+    // custom hash function.
+    return MCL_FR_BIT == 256 && mcl::bn::getCurveType() == MCL_BN254 &&
+           F::getOp().hash == mcl::fp::sha256;
 }
 
 void append_transcript_encoding(std::string& out, const std::string& domain, const NativeProofStatement& statement,
@@ -415,17 +445,29 @@ bool NativeProofSession::replay(std::string* reason) const {
 bool NativeProofSession::replay_uncached(std::string* reason) const {
     try {
         if (!valid(reason)) return false;
+        bool hash_mode_checked = false;
+        bool stream_sha256 = false;
         for (std::size_t index = replayed_prefix_size_; index < messages_.size(); ++index) {
             const NativeProofMessage& message = messages_[index];
             if (message.kind == NativeProofMessageKind::Challenge) {
                 F expected;
                 if (!decode_field(message.payload, expected)) { set_reason(reason, "native proof challenge payload is not a field element"); return false; }
-                std::string encoded;
-                append_transcript_prefix(encoded, domain_, statement_, index);
-                encoded.append(replayed_message_body_);
-                append_string(encoded, message.label.substr(sizeof("challenge/") - 1));
+                if (!hash_mode_checked) {
+                    stream_sha256 = configured_fr_hash_matches_sha256();
+                    hash_mode_checked = true;
+                }
                 F derived;
-                derived.setHashOf(encoded.data(), encoded.size());
+                const std::string challenge_label = message.label.substr(sizeof("challenge/") - 1);
+                if (stream_sha256) {
+                    derived = derive_challenge_streamed_sha256(
+                        domain_, statement_, index, replayed_message_body_, challenge_label);
+                } else {
+                    std::string encoded;
+                    append_transcript_prefix(encoded, domain_, statement_, index);
+                    encoded.append(replayed_message_body_);
+                    append_string(encoded, challenge_label);
+                    derived.setHashOf(encoded.data(), encoded.size());
+                }
                 if (derived != expected) { set_reason(reason, "native proof Fiat-Shamir challenge mismatch"); return false; }
             }
             append_message_encoding(replayed_message_body_, message);

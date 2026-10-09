@@ -860,12 +860,53 @@ pub fn einsum<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(
         return einsum_with_base_ops(config, region, inputs, equation);
     }
 
-    let input_values = inputs
-        .iter()
-        .map(|t| t.get_inner())
-        .collect::<Result<Vec<_>, TensorError>>()?;
-    let (output_tensor, _) =
-        crate::tensor::ops::accumulated::einsum(equation, &input_values.iter().collect_vec())?;
+    // A witnessless circuit layout only needs the output shape here. Running
+    // the accumulated tensor kernel on unknown values still walks every
+    // multiply/reduction term, although the result of each operation remains
+    // unknown. Keep the actual einsum assignment and all circuit relations
+    // below unchanged; known, assigned, constant, and instance inputs retain
+    // the ordinary forward path.
+    let all_unassigned_values_unknown = !inputs.is_empty()
+        && inputs.iter().all(|input| match input {
+            ValTensor::Value { inner, .. } => inner.iter().all(|value| match value {
+                ValType::Value(value) => {
+                    let mut known = false;
+                    value.clone().map(|_| known = true);
+                    !known
+                }
+                _ => false,
+            }),
+            ValTensor::Instance { .. } => false,
+        });
+
+    let output_tensor = if all_unassigned_values_unknown {
+        // Match accumulated::einsum's output-shape convention exactly: an
+        // empty output expression is represented by a one-element tensor,
+        // and an output index absent from the inputs has extent one. The
+        // subsequent assign_einsum call still performs the native equation
+        // analysis and reports malformed equations as before.
+        let (_, output_expr) = equation
+            .split_once("->")
+            .ok_or(CircuitError::InvalidEinsum)?;
+        let mut output_dims = output_expr
+            .chars()
+            .map(|index| indices_to_size.get(&index).copied().unwrap_or(1))
+            .collect::<Vec<_>>();
+        if output_dims.is_empty() {
+            output_dims.push(1);
+        }
+        let output_len = output_dims.iter().try_fold(1usize, |len, dim| {
+            len.checked_mul(*dim)
+                .ok_or_else(|| TensorError::DimError("einsum output shape overflow".into()))
+        })?;
+        Tensor::new(Some(&vec![Value::<F>::unknown(); output_len]), &output_dims)?
+    } else {
+        let input_values = inputs
+            .iter()
+            .map(|t| t.get_inner())
+            .collect::<Result<Vec<_>, TensorError>>()?;
+        crate::tensor::ops::accumulated::einsum(equation, &input_values.iter().collect_vec())?.0
+    };
 
     config.einsums.as_ref().unwrap().assign_einsum(
         config,
@@ -1486,16 +1527,30 @@ pub(crate) struct AssignedDynamicLookupTable {
     block: usize,
 }
 
-pub(crate) fn assign_dynamic_lookup_table<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(config: &BaseConfig<F>, region: &mut RegionCtx<F>, tables: &[&ValTensor<F>; 2]) -> Result<AssignedDynamicLookupTable, CircuitError> {
+pub(crate) fn assign_dynamic_lookup_table<
+    F: PrimeField + TensorType + PartialOrd + std::hash::Hash,
+>(
+    config: &BaseConfig<F>,
+    region: &mut RegionCtx<F>,
+    tables: &[&ValTensor<F>; 2],
+) -> Result<AssignedDynamicLookupTable, CircuitError> {
     if tables[0].len() != tables[1].len() {
-        return Err(CircuitError::MismatchedLookupTableLength(tables[0].len(), tables[1].len()));
+        return Err(CircuitError::MismatchedLookupTableLength(
+            tables[0].len(),
+            tables[1].len(),
+        ));
     }
     let index = region.dynamic_lookup_index();
     let start = region.combined_dynamic_shuffle_coord();
-    let (table_0, flush_len_0) = region.assign_dynamic_lookup(&config.dynamic_lookups.tables[0], tables[0])?;
-    let (_, flush_len_1) = region.assign_dynamic_lookup(&config.dynamic_lookups.tables[1], tables[1])?;
+    let (table_0, flush_len_0) =
+        region.assign_dynamic_lookup(&config.dynamic_lookups.tables[0], tables[0])?;
+    let (_, flush_len_1) =
+        region.assign_dynamic_lookup(&config.dynamic_lookups.tables[1], tables[1])?;
     if flush_len_0 != flush_len_1 {
-        return Err(CircuitError::MismatchedLookupTableLength(flush_len_0, flush_len_1));
+        return Err(CircuitError::MismatchedLookupTableLength(
+            flush_len_0,
+            flush_len_1,
+        ));
     }
     let table_len = table_0.len();
     let table_index = create_constant_tensor(F::from(index as u64), table_len);
@@ -1503,11 +1558,20 @@ pub(crate) fn assign_dynamic_lookup_table<F: PrimeField + TensorType + PartialOr
     let (block, _, _) = config.dynamic_lookups.tables[0].cartesian_coord(start + flush_len_0);
     if !region.is_dummy() {
         for i in 0..table_len {
-            let (x, _, z) = config.dynamic_lookups.tables[0].cartesian_coord(start + i + flush_len_0);
+            let (x, _, z) =
+                config.dynamic_lookups.tables[0].cartesian_coord(start + i + flush_len_0);
             if x != block {
-                return Err(CircuitError::DimMismatch("dynamic lookup table crosses a native table block".into()));
+                return Err(CircuitError::DimMismatch(
+                    "dynamic lookup table crosses a native table block".into(),
+                ));
             }
-            let selector = config.dynamic_lookups.table_selectors.get(block).ok_or_else(|| CircuitError::MissingSelectors(format!("dynamic table block {}", block)))?;
+            let selector = config
+                .dynamic_lookups
+                .table_selectors
+                .get(block)
+                .ok_or_else(|| {
+                    CircuitError::MissingSelectors(format!("dynamic table block {}", block))
+                })?;
             region.enable(Some(selector), z)?;
         }
     }
@@ -1516,9 +1580,19 @@ pub(crate) fn assign_dynamic_lookup_table<F: PrimeField + TensorType + PartialOr
     Ok(AssignedDynamicLookupTable { index, block })
 }
 
-pub(crate) fn dynamic_lookup_from_table<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(config: &BaseConfig<F>, region: &mut RegionCtx<F>, lookups: &[&ValTensor<F>; 2], table: AssignedDynamicLookupTable) -> Result<(ValTensor<F>, ValTensor<F>), CircuitError> {
+pub(crate) fn dynamic_lookup_from_table<
+    F: PrimeField + TensorType + PartialOrd + std::hash::Hash,
+>(
+    config: &BaseConfig<F>,
+    region: &mut RegionCtx<F>,
+    lookups: &[&ValTensor<F>; 2],
+    table: AssignedDynamicLookupTable,
+) -> Result<(ValTensor<F>, ValTensor<F>), CircuitError> {
     if lookups[0].len() != lookups[1].len() {
-        return Err(CircuitError::MismatchedLookupLength(lookups[0].len(), lookups[1].len()));
+        return Err(CircuitError::MismatchedLookupLength(
+            lookups[0].len(),
+            lookups[1].len(),
+        ));
     }
     let lookup_0 = region.assign(&config.dynamic_lookups.inputs[0], lookups[0])?;
     let lookup_1 = region.assign(&config.dynamic_lookups.inputs[1], lookups[1])?;
@@ -1527,8 +1601,15 @@ pub(crate) fn dynamic_lookup_from_table<F: PrimeField + TensorType + PartialOrd 
     region.assign(&config.dynamic_lookups.inputs[2], &lookup_index)?;
     if !region.is_dummy() {
         for i in 0..lookup_len {
-            let (x, y, z) = config.dynamic_lookups.inputs[0].cartesian_coord(region.linear_coord() + i);
-            let selector = config.dynamic_lookups.lookup_selectors.get(&(table.block, (x, y))).ok_or_else(|| CircuitError::MissingSelectors(format!("{:?}", (table.block, (x, y)))))?;
+            let (x, y, z) =
+                config.dynamic_lookups.inputs[0].cartesian_coord(region.linear_coord() + i);
+            let selector = config
+                .dynamic_lookups
+                .lookup_selectors
+                .get(&(table.block, (x, y)))
+                .ok_or_else(|| {
+                    CircuitError::MissingSelectors(format!("{:?}", (table.block, (x, y))))
+                })?;
             region.enable(Some(selector), z)?;
         }
     }
@@ -1536,9 +1617,17 @@ pub(crate) fn dynamic_lookup_from_table<F: PrimeField + TensorType + PartialOrd 
     Ok((lookup_0, lookup_1))
 }
 
-pub(crate) fn dynamic_lookup<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(config: &BaseConfig<F>, region: &mut RegionCtx<F>, lookups: &[&ValTensor<F>; 2], tables: &[&ValTensor<F>; 2]) -> Result<(ValTensor<F>, ValTensor<F>), CircuitError> {
+pub(crate) fn dynamic_lookup<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(
+    config: &BaseConfig<F>,
+    region: &mut RegionCtx<F>,
+    lookups: &[&ValTensor<F>; 2],
+    tables: &[&ValTensor<F>; 2],
+) -> Result<(ValTensor<F>, ValTensor<F>), CircuitError> {
     if lookups[0].len() != lookups[1].len() {
-        return Err(CircuitError::MismatchedLookupLength(lookups[0].len(), lookups[1].len()));
+        return Err(CircuitError::MismatchedLookupLength(
+            lookups[0].len(),
+            lookups[1].len(),
+        ));
     }
     let table = assign_dynamic_lookup_table(config, region, tables)?;
     dynamic_lookup_from_table(config, region, lookups, table)
@@ -5032,8 +5121,17 @@ pub(crate) fn range_check<F: PrimeField + TensorType + PartialOrd + std::hash::H
                     .range_checks
                     .input
                     .cartesian_coord(region.linear_coord() + i);
-                let selector = config.range_checks.selectors.get(&(*range, x, y));
-                region.enable(selector, z)?;
+                let selector = config
+                    .range_checks
+                    .selectors
+                    .get(&(*range, x, y))
+                    .ok_or_else(|| {
+                        CircuitError::RangeCheckNotConfigured(format!(
+                            "selector range={range:?} block={x} inner_col={y} row={z} linear_coord={}",
+                            region.linear_coord() + i,
+                        ))
+                    })?;
+                region.enable(Some(selector), z)?;
                 Ok(())
             })
             .collect::<Result<Vec<_>, CircuitError>>()?;

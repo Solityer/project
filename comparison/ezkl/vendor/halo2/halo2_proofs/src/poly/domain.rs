@@ -10,9 +10,12 @@ use crate::{
 use super::{Coeff, ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial, Rotation};
 
 use group::ff::{BatchInvert, Field, WithSmallOrderMulGroup};
-use maybe_rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
-
-use std::{collections::HashMap, io, marker::PhantomData};
+use std::{
+    collections::HashMap,
+    io,
+    marker::PhantomData,
+    sync::{Arc, OnceLock},
+};
 
 /// This structure contains precomputed constants and other details needed for
 /// performing operations on an evaluation domain of size $2^k$ and an extended
@@ -34,8 +37,9 @@ pub struct EvaluationDomain<F: Field> {
     t_evaluations: Vec<F>,
     barycentric_weight: F,
 
-    // Recursive stuff
-    fft_data: HashMap<usize, FFTData<F>>,
+    // Recursive twiddles are initialized only for lengths actually requested.
+    // Cloned domains share the immutable cached arrays.
+    fft_data: HashMap<usize, Arc<OnceLock<FFTData<F>>>>,
 }
 
 impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
@@ -143,16 +147,9 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
 
         let omega_inv = omegas_inv[0];
         let extended_omega_inv = *omegas_inv.last().unwrap();
-        let fft_data = omegas
-            .into_par_iter()
-            .zip(omegas_inv)
-            .enumerate()
-            .map(|(i, (omega, omega_inv))| {
-                let intermediate_k = k as usize + i;
-                let len = 1usize << intermediate_k;
-                (len, FFTData::<F>::new(len, omega, omega_inv))
-            })
-            .collect::<HashMap<usize, FFTData<F>>>();
+        let fft_data = (k..=extended_k)
+            .map(|log_n| (1usize << log_n, Arc::new(OnceLock::new())))
+            .collect::<HashMap<usize, Arc<OnceLock<FFTData<F>>>>>();
 
         EvaluationDomain {
             n,
@@ -641,8 +638,9 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
     }
 
     fn ifft(&self, a: &mut [F], omega_inv: F, log_n: u32, divisor: F) {
-        let fft_data = self.get_fft_data(a.len());
-        crate::fft::parallel::fft(a, omega_inv, log_n, fft_data, true);
+        // The parallel FFT does not read FFTData; avoid populating the
+        // recursive twiddle cache for this path.
+        crate::fft::parallel::fft(a, omega_inv, log_n, &FFTData::default(), true);
         // self.fft_inner(a, omega_inv, log_n, true);
         parallelize(a, |a, _| {
             for a in a {
@@ -777,11 +775,28 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
         self.n
     }
 
+    /// Number of supported recursive FFT lengths retained by the domain cache.
+    pub fn fft_cache_entry_count(&self) -> usize {
+        self.fft_data.len()
+    }
+
+    /// Allocated entry capacity of the recursive FFT cache map.
+    pub fn fft_cache_entry_capacity(&self) -> usize {
+        self.fft_data.capacity()
+    }
+
     /// Get the private `fft_data`
     pub fn get_fft_data(&self, l: usize) -> &FFTData<F> {
         self.fft_data
             .get(&l)
             .expect("log_2(l) must be in k..=extended_k")
+            .get_or_init(|| {
+                let log_n = l.trailing_zeros();
+                let exponent = 1u64 << (self.extended_k - log_n);
+                let omega = self.extended_omega.pow_vartime([exponent]);
+                let omega_inv = self.extended_omega_inv.pow_vartime([exponent]);
+                FFTData::<F>::new(l, omega, omega_inv)
+            })
     }
 }
 
@@ -1127,4 +1142,82 @@ fn bench_lagrange_vecs_to_extended() {
     let got_timer = Instant::now();
     let _ = domain.lagrange_vecs_to_extended(poly_lagrange_vecs);
     println!("got time: {}s", got_timer.elapsed().as_secs_f64());
+}
+
+#[test]
+fn recursive_fft_cache_is_lazy_and_shared_by_domain_clones() {
+    use halo2curves::pasta::pallas::Scalar;
+
+    let domain = EvaluationDomain::<Scalar>::new(4, 3);
+    let clone = domain.clone();
+    assert!(domain.fft_data.values().all(|cache| cache.get().is_none()));
+    for (length, cache) in &domain.fft_data {
+        assert!(Arc::ptr_eq(
+            cache,
+            clone.fft_data.get(length).expect("clone has same FFT lengths")
+        ));
+    }
+
+    let n = domain.get_n() as usize;
+    let input = (0..n)
+        .map(|value| Scalar::from(value as u64))
+        .collect::<Vec<_>>();
+    let mut transformed = input.clone();
+    domain.fft_inner(&mut transformed, domain.omega, domain.k, false);
+    assert!(std::ptr::eq(
+        domain.get_fft_data(n),
+        clone.get_fft_data(n)
+    ));
+    assert_eq!(
+        domain.fft_data.values().filter(|cache| cache.get().is_some()).count(),
+        1
+    );
+
+    domain.ifft(
+        &mut transformed,
+        domain.omega_inv,
+        domain.k,
+        domain.ifft_divisor,
+    );
+    assert_eq!(transformed, input);
+
+    let e = domain.extended_len();
+    let extended_input = (0..e)
+        .map(|value| Scalar::from(value as u64))
+        .collect::<Vec<_>>();
+    let mut extended_transformed = extended_input.clone();
+    domain.fft_inner(
+        &mut extended_transformed,
+        domain.extended_omega,
+        domain.extended_k,
+        false,
+    );
+    assert!(std::ptr::eq(
+        domain.get_fft_data(e),
+        clone.get_fft_data(e)
+    ));
+    assert_eq!(
+        domain.fft_data.values().filter(|cache| cache.get().is_some()).count(),
+        2
+    );
+    domain.ifft(
+        &mut extended_transformed,
+        domain.extended_omega_inv,
+        domain.extended_k,
+        domain.extended_ifft_divisor,
+    );
+    assert_eq!(extended_transformed, extended_input);
+
+    let ifft_only_domain = EvaluationDomain::<Scalar>::new(4, 3);
+    let mut zeroes = vec![Scalar::ZERO; ifft_only_domain.get_n() as usize];
+    ifft_only_domain.ifft(
+        &mut zeroes,
+        ifft_only_domain.omega_inv,
+        ifft_only_domain.k,
+        ifft_only_domain.ifft_divisor,
+    );
+    assert!(ifft_only_domain
+        .fft_data
+        .values()
+        .all(|cache| cache.get().is_none()));
 }

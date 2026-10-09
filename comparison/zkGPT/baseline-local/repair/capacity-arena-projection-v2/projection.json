@@ -1,0 +1,321 @@
+{
+  "current_filesystem_available_bytes": 1613017989120,
+  "current_mem_available_bytes": 24676028416,
+  "datasets": {
+    "citeseer": {
+      "gkr_work": {
+        "challenge_time_v_source_read_bytes_upper_bound": 9129955520,
+        "fconn_scalar_multiply_terms": 805586472,
+        "hyrax_lqry_openings": 4,
+        "hyrax_matrix_openings": 16,
+        "lasso_row_chunks": 52,
+        "lasso_rows": 212992,
+        "phase1_fold_pairs": 171670159,
+        "phase1_rounds": 781,
+        "phase2_fold_pairs": 113641045,
+        "phase2_rounds": 27
+      },
+      "host_memory_peak_bytes_from_profile": 10646077870,
+      "shape": {
+        "classes": 6,
+        "edges": 12431,
+        "features": 3703,
+        "nodes": 3327,
+        "source_domain_upper_bound": 169901430,
+        "source_domains_exact": false
+      },
+      "storage_bytes": {
+        "artifact_upper_bound": 497819870,
+        "current_gkr_prefix_mapped": 10873691520,
+        "current_gkr_proving_stage": 18705300979,
+        "filesystem_available_bytes": 1613017989120,
+        "filesystem_residual_after_requirement_bytes": 1599251707695,
+        "largest_prefix_phase": {
+          "after_first_challenge_bytes": 5436852096,
+          "bytes": 5436852096,
+          "layer_index": 112,
+          "multiplier_only_bytes": 5436845760,
+          "phase": "phase1",
+          "phase_peak_stage": "after_first_challenge_m_reclaim_then_half_v",
+          "rounds": 28,
+          "source_extents": [
+            169901430,
+            0
+          ]
+        },
+        "meets_5pct_free_capacity_reserve": true,
+        "projected_gkr_prefix_mapped_peak": 5436852096,
+        "projected_gkr_proving_stage": 13268461555,
+        "projected_other_stage_peaks": {
+          "gate_plan": 7008926627,
+          "gkr_validation": 7831609459,
+          "input_opening": 7869358195,
+          "lasso_tensor": 5155533952,
+          "plan_restore": 7869493283
+        },
+        "projected_scratch_peak": 13268461555,
+        "reserve_5pct_bytes": 80650899456,
+        "scratch_plus_artifact_requirement": 13766281425
+      }
+    },
+    "cora": {
+      "gkr_work": {
+        "challenge_time_v_source_read_bytes_upper_bound": 8209335040,
+        "fconn_scalar_multiply_terms": 262643504,
+        "hyrax_lqry_openings": 4,
+        "hyrax_matrix_openings": 16,
+        "lasso_row_chunks": 52,
+        "lasso_rows": 212992,
+        "phase1_fold_pairs": 153163943,
+        "phase1_rounds": 781,
+        "phase2_fold_pairs": 103378043,
+        "phase2_rounds": 27
+      },
+      "host_memory_peak_bytes_from_profile": 9922527722,
+      "shape": {
+        "classes": 7,
+        "edges": 13264,
+        "features": 1433,
+        "nodes": 2708,
+        "source_domain_upper_bound": 151578804,
+        "source_domains_exact": false
+      },
+      "storage_bytes": {
+        "artifact_upper_bound": 361271566,
+        "current_gkr_prefix_mapped": 9701043456,
+        "current_gkr_proving_stage": 16293605268,
+        "filesystem_available_bytes": 1613017989120,
+        "filesystem_residual_after_requirement_bytes": 1601213628702,
+        "largest_prefix_phase": {
+          "after_first_challenge_bytes": 4850527040,
+          "bytes": 4850527040,
+          "layer_index": 112,
+          "multiplier_only_bytes": 4850521728,
+          "phase": "phase1",
+          "phase_peak_stage": "after_first_challenge_m_reclaim_then_half_v",
+          "rounds": 28,
+          "source_extents": [
+            151578804,
+            0
+          ]
+        },
+        "meets_5pct_free_capacity_reserve": true,
+        "projected_gkr_prefix_mapped_peak": 4850527040,
+        "projected_gkr_proving_stage": 11443088852,
+        "projected_other_stage_peaks": {
+          "gate_plan": 6329082924,
+          "gkr_validation": 6592561812,
+          "input_opening": 6611436180,
+          "lasso_tensor": 4594039680,
+          "plan_restore": 6628155308
+        },
+        "projected_scratch_peak": 11443088852,
+        "reserve_5pct_bytes": 80650899456,
+        "scratch_plus_artifact_requirement": 11804360418
+      }
+    },
+    "ogbn_arxiv": {
+      "gkr_work": {
+        "challenge_time_v_source_read_bytes_upper_bound": 1008604994048,
+        "fconn_scalar_multiply_terms": 3018369632,
+        "hyrax_lqry_openings": 4,
+        "hyrax_matrix_openings": 16,
+        "lasso_row_chunks": 416,
+        "lasso_rows": 1703936,
+        "phase1_fold_pairs": 18416808372,
+        "phase1_rounds": 1138,
+        "phase2_fold_pairs": 13102098023,
+        "phase2_rounds": 34
+      },
+      "host_memory_peak_bytes_from_profile": 37690001048,
+      "shape": {
+        "classes": 40,
+        "edges": 1335586,
+        "features": 128,
+        "nodes": 169343,
+        "source_domain_upper_bound": 18270492694,
+        "source_domains_exact": false
+      },
+      "storage_bytes": {
+        "artifact_upper_bound": 1123976246,
+        "current_gkr_prefix_mapped": 1169311532416,
+        "current_gkr_proving_stage": 1954033985842,
+        "filesystem_available_bytes": 1613017989120,
+        "filesystem_residual_after_requirement_bytes": 242515785368,
+        "largest_prefix_phase": {
+          "after_first_challenge_bytes": 584655774080,
+          "bytes": 584655774080,
+          "layer_index": 112,
+          "multiplier_only_bytes": 584655766208,
+          "phase": "phase1",
+          "phase_peak_stage": "after_first_challenge_m_reclaim_then_half_v",
+          "rounds": 35,
+          "source_extents": [
+            18270492694,
+            0
+          ]
+        },
+        "meets_5pct_free_capacity_reserve": true,
+        "projected_gkr_prefix_mapped_peak": 584655774080,
+        "projected_gkr_proving_stage": 1369378227506,
+        "projected_other_stage_peaks": {
+          "gate_plan": 782569108154,
+          "gkr_validation": 784756616242,
+          "input_opening": 784257494066,
+          "lasso_tensor": 555825163392,
+          "plan_restore": 788638457658
+        },
+        "projected_scratch_peak": 1369378227506,
+        "reserve_5pct_bytes": 80650899456,
+        "scratch_plus_artifact_requirement": 1370502203752
+      }
+    },
+    "ppi": {
+      "gkr_work": {
+        "challenge_time_v_source_read_bytes_upper_bound": 593794541824,
+        "fconn_scalar_multiply_terms": 1339550656,
+        "hyrax_lqry_openings": 4,
+        "hyrax_matrix_openings": 16,
+        "lasso_row_chunks": 352,
+        "lasso_rows": 1441792,
+        "phase1_fold_pairs": 9363892675,
+        "phase1_rounds": 1027,
+        "phase2_fold_pairs": 9192186928,
+        "phase2_rounds": 34
+      },
+      "host_memory_peak_bytes_from_profile": 24052509385,
+      "shape": {
+        "classes": 121,
+        "edges": 850576,
+        "features": 50,
+        "nodes": 56944,
+        "source_domain_upper_bound": 9299069080,
+        "source_domains_exact": false
+      },
+      "storage_bytes": {
+        "artifact_upper_bound": 732794034,
+        "current_gkr_prefix_mapped": 595140421120,
+        "current_gkr_proving_stage": 1077977346600,
+        "filesystem_available_bytes": 1613017989120,
+        "filesystem_residual_after_requirement_bytes": 831878053286,
+        "largest_prefix_phase": {
+          "after_first_challenge_bytes": 297570216320,
+          "bytes": 297570216320,
+          "layer_index": 112,
+          "multiplier_only_bytes": 297570210560,
+          "phase": "phase1",
+          "phase_peak_stage": "after_first_challenge_m_reclaim_then_half_v",
+          "rounds": 34,
+          "source_extents": [
+            9299069080,
+            0
+          ]
+        },
+        "meets_5pct_free_capacity_reserve": true,
+        "projected_gkr_prefix_mapped_peak": 297570216320,
+        "projected_gkr_proving_stage": 780407141800,
+        "projected_other_stage_peaks": {
+          "gate_plan": 482627507008,
+          "gkr_validation": 482921630760,
+          "input_opening": 482690944040,
+          "lasso_tensor": 277134477824,
+          "plan_restore": 484884077888
+        },
+        "projected_scratch_peak": 780407141800,
+        "reserve_5pct_bytes": 80650899456,
+        "scratch_plus_artifact_requirement": 781139935834
+      }
+    },
+    "pubmed": {
+      "gkr_work": {
+        "challenge_time_v_source_read_bytes_upper_bound": 60295792256,
+        "fconn_scalar_multiply_terms": 724560316,
+        "hyrax_lqry_openings": 4,
+        "hyrax_matrix_openings": 16,
+        "lasso_row_chunks": 136,
+        "lasso_rows": 557056,
+        "phase1_fold_pairs": 1171158753,
+        "phase1_rounds": 951,
+        "phase2_fold_pairs": 713085240,
+        "phase2_rounds": 30
+      },
+      "host_memory_peak_bytes_from_profile": 12311230057,
+      "shape": {
+        "classes": 3,
+        "edges": 108365,
+        "features": 500,
+        "nodes": 19717,
+        "source_domain_upper_bound": 1159587373,
+        "source_domains_exact": false
+      },
+      "storage_bytes": {
+        "artifact_upper_bound": 540284274,
+        "current_gkr_prefix_mapped": 74213591936,
+        "current_gkr_proving_stage": 120771433346,
+        "filesystem_available_bytes": 1613017989120,
+        "filesystem_residual_after_requirement_bytes": 1528813059980,
+        "largest_prefix_phase": {
+          "after_first_challenge_bytes": 37106803456,
+          "bytes": 37106803456,
+          "layer_index": 112,
+          "multiplier_only_bytes": 37106795968,
+          "phase": "phase1",
+          "phase_peak_stage": "after_first_challenge_m_reclaim_then_half_v",
+          "rounds": 31,
+          "source_extents": [
+            1159587373,
+            0
+          ]
+        },
+        "meets_5pct_free_capacity_reserve": true,
+        "projected_gkr_prefix_mapped_peak": 37106803456,
+        "projected_gkr_proving_stage": 83664644866,
+        "projected_other_stage_peaks": {
+          "gate_plan": 45794365354,
+          "gkr_validation": 46557841410,
+          "input_opening": 46526898178,
+          "lasso_tensor": 35360951584,
+          "plan_restore": 46795578570
+        },
+        "projected_scratch_peak": 83664644866,
+        "reserve_5pct_bytes": 80650899456,
+        "scratch_plus_artifact_requirement": 84204929140
+      }
+    }
+  },
+  "filesystem_block_bytes": 4096,
+  "filesystem_reserve_5pct_available_bytes": 80650899456,
+  "implementation_validated": false,
+  "projection_kind": "analysis_only_challenge_time_scalar_compaction",
+  "protocol_or_relation_changed": false,
+  "source_boundaries": [
+    "All five inputs are latest-binary ANALYSIS_ONLY symbolic profiles; non-FCONN per-layer source extents are conservative bounds.",
+    "Only the packed GKR value/multiplier arena lifetime is projected; gates, source maps, witness, transcript, other phases, and artifact bytes remain from the current source-bound report.",
+    "After each transcript challenge, a scalar array of ceil(n/2) fields is written into the original M arena, its dead file tail is punched, and only then is the V scalar array allocated.",
+    "The allocator mapping retains the original mmap/file length and registry size; only allocated disk blocks fall. Tail accounting keeps active pages and one possible short tail block.",
+    "The round polynomial still reads immutable witness values for round zero; V is seeded from that source after the challenge. This adds a second witness scan of the active source extents and is explicitly counted.",
+    "The proposed change is not implemented. No proving-time projection is made from counts."
+  ],
+  "source_profiles": {
+    "citeseer": {
+      "profile_binary_sha256": "fa4acfe431ee925bd62eeecca3cbe416e027091e171c89b445912da85e13d4e4",
+      "profile_status": "ANALYSIS_ONLY"
+    },
+    "cora": {
+      "profile_binary_sha256": "fa4acfe431ee925bd62eeecca3cbe416e027091e171c89b445912da85e13d4e4",
+      "profile_status": "ANALYSIS_ONLY"
+    },
+    "ogbn_arxiv": {
+      "profile_binary_sha256": "fa4acfe431ee925bd62eeecca3cbe416e027091e171c89b445912da85e13d4e4",
+      "profile_status": "ANALYSIS_ONLY"
+    },
+    "ppi": {
+      "profile_binary_sha256": "fa4acfe431ee925bd62eeecca3cbe416e027091e171c89b445912da85e13d4e4",
+      "profile_status": "ANALYSIS_ONLY"
+    },
+    "pubmed": {
+      "profile_binary_sha256": "fa4acfe431ee925bd62eeecca3cbe416e027091e171c89b445912da85e13d4e4",
+      "profile_status": "ANALYSIS_ONLY"
+    }
+  }
+}

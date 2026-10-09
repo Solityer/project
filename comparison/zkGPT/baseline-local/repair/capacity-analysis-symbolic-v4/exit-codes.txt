@@ -1,0 +1,5 @@
+cora exit=0
+citeseer exit=0
+pubmed exit=0
+ppi exit=0
+ogbn_arxiv exit=0
