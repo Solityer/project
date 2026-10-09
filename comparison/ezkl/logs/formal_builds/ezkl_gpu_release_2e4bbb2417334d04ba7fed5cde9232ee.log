@@ -137,3 +137,7 @@ warning: use of deprecated function `sha256::digest_file`: Use new function `try
     = note: `#[warn(deprecated)]` on by default
 
 warning: `ezkl` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 3m 18s
+[ezkl-formal] BUILD_STAGE=verify-native-cli-contract binary=/home/pzh/project/comparison/ezkl/target/gpu/release/ezkl
+[ezkl-formal] wrote current GPU build receipt /home/pzh/project/comparison/ezkl/artifacts/build/gpu/build_receipt.json
+[ezkl-formal] BUILD_STAGE=complete backend=gpu binary=/home/pzh/project/comparison/ezkl/target/gpu/release/ezkl
