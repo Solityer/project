@@ -42,13 +42,20 @@ METRIC_FIELDS = (
     "verify_time_ms",
     "proof_size_bytes",
 )
+METRIC_LABELS = {
+    "commitment_time_ms": "Commitment Time (ms)",
+    "prove_time_ms": "Prove Time (ms)",
+    "verify_time_ms": "Verify Time (ms)",
+    "proof_size_bytes": "Proof Size (Bytes)",
+}
 HEX_256 = re.compile(r"^[0-9a-f]{64}$")
 CANONICAL_UINT = re.compile(r"^(0|[1-9][0-9]*)$")
 POWER_OF_TWO_LOWER_BOUND = re.compile(r"^2\^([0-9]+)$")
 RUN_FORMAT = "zkgat_mechanism_result_v1"
 TIMING_SCHEMA = "mechanism_commitment_disjoint_verify_parse_accept_v2"
 REAL_INPUT_SCHEMA = "zkgat_real_mechanism_input_v1"
-EXPERIMENT_REPETITIONS = 3
+DEFAULT_EXPERIMENT_REPETITIONS = 3
+PUBLICATION_DOC_PATHS = ("README.md", "docs/mechanism_ablation.md")
 FORMAL_WIDTH = 8
 DATASETS: dict[str, dict[str, Any]] = {
     "cora": {
@@ -198,11 +205,37 @@ def git_output(*args: str) -> bytes:
     return result.stdout
 
 
+def git_output_excluding_identity_paths(*args: str) -> bytes:
+    provenance = load_build_provenance_module()
+    result = subprocess.run(
+        ["git", "-C", str(PROJECT_ROOT), *args, "--", ".", *provenance.git_exclusion_pathspecs()],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.stdout
+
+
+def publication_document_snapshot() -> dict[str, Any]:
+    files: list[dict[str, Any]] = []
+    for relative in PUBLICATION_DOC_PATHS:
+        path = PROJECT_ROOT / relative
+        require(path.is_file() and not path.is_symlink(), f"publication document is missing or not regular: {relative}")
+        files.append({"path": relative, "size": path.stat().st_size, "sha256": sha256_file(path)})
+    return {
+        "excluded_from_executable_source_identity": True,
+        "paths": list(PUBLICATION_DOC_PATHS),
+        "files": files,
+    }
+
+
 def source_snapshot() -> dict[str, Any]:
     provenance = load_build_provenance_module()
     manifest = provenance.source_manifest_document(PROJECT_ROOT)
-    diff = git_output("diff", "--binary", "HEAD")
-    status = git_output("status", "--porcelain=v1", "--untracked-files=all")
+    require(manifest.get("excluded_reporting_paths") == list(PUBLICATION_DOC_PATHS),
+            "build provenance does not exclude exactly the registered publication documents")
+    diff = git_output_excluding_identity_paths("diff", "--binary", "HEAD")
+    status = git_output_excluding_identity_paths("status", "--porcelain=v1", "--untracked-files=all")
     return {
         "git_head": git_output("rev-parse", "HEAD").decode("ascii").strip(),
         "git_diff_sha256": sha256_bytes(diff),
@@ -210,6 +243,7 @@ def source_snapshot() -> dict[str, Any]:
         "source_inventory_id": manifest["inventory_id"],
         "source_tree_hash": manifest["source_tree_hash"],
         "source_file_count": manifest["file_count"],
+        "publication_document_snapshot": publication_document_snapshot(),
         "source_manifest": manifest,
     }
 
@@ -1234,7 +1268,7 @@ def spec_for_cell(dataset: str, mechanism: str, width: int, graphs: int, compone
     return matches[0]
 
 
-def empty_summary(session_id: str, session_root: pathlib.Path) -> dict[str, Any]:
+def empty_summary(session_id: str, session_root: pathlib.Path, repetitions: int) -> dict[str, Any]:
     return {
         "format": "zkgat_real_mechanism_experiment_v1",
         "session_id": session_id,
@@ -1249,10 +1283,10 @@ def empty_summary(session_id: str, session_root: pathlib.Path) -> dict[str, Any]
         "ppi_component_rule": PPI_COMPONENT_RULE,
         "mechanisms": list(MECHANISMS),
         "variants": list(VARIANTS),
-        "repetitions": EXPERIMENT_REPETITIONS,
+        "repetitions": repetitions,
         "expected_config_count": len(FORMAL_CONFIGS),
-        "expected_pair_count": len(FORMAL_CONFIGS) * EXPERIMENT_REPETITIONS,
-        "expected_cell_count": len(FORMAL_CONFIGS) * EXPERIMENT_REPETITIONS * len(VARIANTS),
+        "expected_pair_count": len(FORMAL_CONFIGS) * repetitions,
+        "expected_cell_count": len(FORMAL_CONFIGS) * repetitions * len(VARIANTS),
         "formal_configs": [dict(item, config_id=matrix_config_id(item)) for item in FORMAL_CONFIGS],
         "prepared_inputs": [],
         "cells": [],
@@ -1268,7 +1302,7 @@ def empty_summary(session_id: str, session_root: pathlib.Path) -> dict[str, Any]
 
 def update_summary_counts(document: dict[str, Any], cells: list[dict[str, Any]]) -> None:
     pairs = summarize_real_pairs(cells)
-    groups = summarize_real_groups(pairs)
+    groups = summarize_real_groups(pairs, int(document["repetitions"]))
     document["cells"] = cells
     document["pairs"] = pairs
     document["groups"] = groups
@@ -1284,7 +1318,9 @@ def publish_progress(session_root: pathlib.Path, document: dict[str, Any], cells
         "session_id": document["session_id"], "session_status": document["session_status"],
         "updated_utc": utc_now(), "cell_count": document["cell_count"],
         "verified_cells": document["verified_cells"], "complete_pairs": document["complete_pairs"],
-        "expected_cell_count": document["expected_cell_count"], "failure_reason": document.get("failure_reason"),
+        "expected_cell_count": document["expected_cell_count"],
+        "expected_pair_count": document["expected_pair_count"], "repetitions": document["repetitions"],
+        "failure_reason": document.get("failure_reason"),
     })
 
 
@@ -1633,7 +1669,8 @@ def require_repetition_input_stability(cells: list[dict[str, Any]], config_id: s
          tuple(cell.get("component_ids", [])), cell.get("input_bundle_sha256"),
          cell.get("input_metadata_sha256"), cell.get("input_witness_sha256"),
          cell.get("data_identity_sha256"), cell.get("pair_input_commitment_sha256"),
-         cell.get("srs_id"), cell.get("srs_manifest_sha256"), cell.get("security_policy"))
+         cell.get("srs_id"), cell.get("srs_manifest_sha256"),
+         json.dumps(cell.get("security_policy"), sort_keys=True, separators=(",", ":"), allow_nan=False))
         for cell in selected
     }
     require(len(identities) <= 1,
@@ -1666,13 +1703,13 @@ def summarize_real_pairs(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
             metrics: dict[str, Any] = {}
             for name in METRIC_FIELDS:
                 original_value, control_value = float(original[name]), float(control[name])
-                relative = None if control_value == 0 else (original_value - control_value) * 100.0 / control_value
+                saving = None if control_value == 0 else (control_value - original_value) / control_value * 100.0
                 ratio = None if original_value == 0 else control_value / original_value
                 metrics[name] = {
                     "original": original_value, "control": control_value,
                     "original_minus_control": original_value - control_value,
-                    "relative_original_minus_control_over_control_percent": relative,
-                    "control_over_original": ratio,
+                    "saving_percent": saving,
+                    "improvement_factor": ratio,
                 }
             pair["metrics"] = metrics
         pairs.append(pair)
@@ -1687,7 +1724,7 @@ def _sample(values: list[float]) -> dict[str, float | None]:
     }
 
 
-def summarize_real_groups(pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def summarize_real_groups(pairs: list[dict[str, Any]], requested_repetitions: int) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for spec in FORMAL_CONFIGS:
         cfgid = matrix_config_id(spec)
@@ -1698,18 +1735,19 @@ def summarize_real_groups(pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             original_values = [float(pair["metrics"][name]["original"]) for pair in complete]
             control_values = [float(pair["metrics"][name]["control"]) for pair in complete]
             differences = [float(pair["metrics"][name]["original_minus_control"]) for pair in complete]
-            relative_values = [
-                float(pair["metrics"][name]["relative_original_minus_control_over_control_percent"])
+            saving_values = [
+                float(pair["metrics"][name]["saving_percent"])
                 for pair in complete
-                if pair["metrics"][name]["relative_original_minus_control_over_control_percent"] is not None
+                if pair["metrics"][name]["saving_percent"] is not None
             ]
-            ratios = [float(pair["metrics"][name]["control_over_original"]) for pair in complete
-                      if pair["metrics"][name]["control_over_original"] is not None]
+            ratios = [float(pair["metrics"][name]["improvement_factor"]) for pair in complete
+                      if pair["metrics"][name]["improvement_factor"] is not None]
             metrics[name] = {
-                "original": _sample(original_values), "control": _sample(control_values),
-                "paired_original_minus_control": _sample(differences),
-                "relative_original_minus_control_over_control_percent": _sample(relative_values),
-                "control_over_original_advantage": _sample(ratios),
+                "original": _single_or_sample(original_values, requested_repetitions),
+                "control": _single_or_sample(control_values, requested_repetitions),
+                "paired_original_minus_control": _single_or_sample(differences, requested_repetitions),
+                "saving_percent": _single_or_sample(saving_values, requested_repetitions),
+                "improvement_factor": _single_or_sample(ratios, requested_repetitions),
             }
         source_pair = selected[0] if selected else None
         source_cell = None if source_pair is None else (source_pair.get("original") or source_pair.get("control"))
@@ -1720,10 +1758,24 @@ def summarize_real_groups(pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "config_id": cfgid, "mechanism": spec["mechanism"], "dataset": spec["dataset"],
             "N": n, "E": e, "D": source_cell.get("D") if source_cell else spec["width"], "G": graphs,
             "component_ids": (source_cell.get("component_ids") if source_cell else list(spec["components"] or (0,))),
-            "requested_repetitions": EXPERIMENT_REPETITIONS,
+            "requested_repetitions": requested_repetitions,
             "complete_repetitions": len(complete), "metrics": metrics,
         })
     return result
+
+
+def _single_or_sample(values: list[float], requested_repetitions: int) -> dict[str, Any]:
+    if requested_repetitions == 1:
+        return {"value": values[0] if values else None, "n": len(values)}
+    return _sample(values)
+
+
+def _reported_value(summary: dict[str, Any]) -> float | None:
+    return summary.get("value") if "value" in summary else summary.get("mean")
+
+
+def _reported_sd(summary: dict[str, Any]) -> float | None:
+    return summary.get("sample_sd")
 
 
 def write_cells_csv(path: pathlib.Path, cells: list[dict[str, Any]]) -> None:
@@ -1763,35 +1815,61 @@ def _paper_number(value: Any, name: str) -> str:
 
 def write_mechanism_paper_markdown(path: pathlib.Path, document: dict[str, Any], mechanism: str) -> None:
     title = "Sparse Node-to-Edge Feature Verification" if mechanism == "feature_folding" else "Shared Neighborhood Verification"
+    single_measurement = int(document["repetitions"]) == 1
     lines = [
         f"# {title} — formal real-data CUDA mechanism results", "",
         f"Session: `{document['session_id']}`; status: **{document['session_status']}**; backend: **CUDA**.",
         f"Independent verifier: CPU, separate process. Accepted formal proof cells: {document['verified_cells']}/{document['expected_cell_count']}.",
+        f"Formal measurement count: **{document['repetitions']} per configuration**.",
         "Layer/head source: formal hidden layer 0, attention head 0, width 8. Feature Folding D<8 uses the first D coordinates of the same real width-8 hidden feature as a controlled mechanism width.",
         "PPI components use the fixed selection rule recorded in provenance: " + PPI_COMPONENT_RULE + ".",
         "Commitment and Prove are disjoint native proof partitions; Verify covers independent verifier parsing through acceptance; proof size is the serialized mechanism proof file length.",
-        "Paired difference is Original − Control; relative change is (Original − Control) / Control; advantage ratio is Control / Original. Mean and sample SD use complete verified pairs only.", "",
-        "| Dataset | N | E | D | G | Component IDs | Metric | Original mean | Original sample SD | Control mean | Control sample SD | Paired O−C mean | Paired O−C SD | Relative (O−C)/C % mean | Relative sample SD | C/O mean | C/O sample SD | Repetitions |",
-        "|---|---:|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "Paired difference is Original − Control; Saving (%) is (Control − Original) / Control × 100; Improvement Factor is Control / Original.",
     ]
+    if single_measurement:
+        lines.extend([
+            "Each configuration has one paired measurement. Values are the direct measured values; no sample standard deviation, confidence interval, or significance estimate is calculated.", "",
+            "| Dataset | N | E | D | G | Component IDs | Metric | Original | Control | Paired O−C | Saving (%) | Improvement Factor | Repetitions |",
+            "|---|---:|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|",
+        ])
+    else:
+        lines.extend([
+            "Metric values and paired effects report the mean and sample standard deviation over complete verified pairs; no confidence interval or significance estimate is calculated.", "",
+            "| Dataset | N | E | D | G | Component IDs | Metric | Original mean | Original sample SD | Control mean | Control sample SD | Paired O−C mean | Paired O−C SD | Saving % mean | Saving % SD | C/O mean | C/O sample SD | Repetitions |",
+            "|---|---:|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ])
     for row in document["groups"]:
         if row["mechanism"] != mechanism:
             continue
         comp = ",".join(str(x) for x in row["component_ids"])
         for metric_name in METRIC_FIELDS:
             values = row["metrics"][metric_name]
-            lines.append(
-                f"| {row['dataset']} | {row['N']} | {row['E']} | {row['D']} | {row['G']} | {comp} | `{metric_name}` | "
-                f"{_paper_number(values['original']['mean'], metric_name)} | {_paper_number(values['original']['sample_sd'], metric_name)} | "
-                f"{_paper_number(values['control']['mean'], metric_name)} | {_paper_number(values['control']['sample_sd'], metric_name)} | "
-                f"{_paper_number(values['paired_original_minus_control']['mean'], metric_name)} | "
-                f"{_paper_number(values['paired_original_minus_control']['sample_sd'], metric_name)} | "
-                f"{_paper_number(values['relative_original_minus_control_over_control_percent']['mean'], metric_name)} | "
-                f"{_paper_number(values['relative_original_minus_control_over_control_percent']['sample_sd'], metric_name)} | "
-                f"{_paper_number(values['control_over_original_advantage']['mean'], metric_name)} | "
-                f"{_paper_number(values['control_over_original_advantage']['sample_sd'], metric_name)} | "
-                f"{row['complete_repetitions']}/{row['requested_repetitions']} |"
-            )
+            if single_measurement:
+                fields = [
+                    row["dataset"], row["N"], row["E"], row["D"], row["G"], comp, METRIC_LABELS[metric_name],
+                    _paper_number(_reported_value(values["original"]), metric_name),
+                    _paper_number(_reported_value(values["control"]), metric_name),
+                    _paper_number(_reported_value(values["paired_original_minus_control"]), metric_name),
+                    _paper_number(_reported_value(values["saving_percent"]), "saving_percent"),
+                    _paper_number(_reported_value(values["improvement_factor"]), "improvement_factor"),
+                    f"{row['complete_repetitions']}/{row['requested_repetitions']}",
+                ]
+            else:
+                fields = [
+                    row["dataset"], row["N"], row["E"], row["D"], row["G"], comp, METRIC_LABELS[metric_name],
+                    _paper_number(_reported_value(values["original"]), metric_name),
+                    _paper_number(_reported_sd(values["original"]), metric_name),
+                    _paper_number(_reported_value(values["control"]), metric_name),
+                    _paper_number(_reported_sd(values["control"]), metric_name),
+                    _paper_number(_reported_value(values["paired_original_minus_control"]), metric_name),
+                    _paper_number(_reported_sd(values["paired_original_minus_control"]), metric_name),
+                    _paper_number(_reported_value(values["saving_percent"]), "saving_percent"),
+                    _paper_number(_reported_sd(values["saving_percent"]), "saving_percent"),
+                    _paper_number(_reported_value(values["improvement_factor"]), "improvement_factor"),
+                    _paper_number(_reported_sd(values["improvement_factor"]), "improvement_factor"),
+                    f"{row['complete_repetitions']}/{row['requested_repetitions']}",
+                ]
+            lines.append("| " + " | ".join(str(field) for field in fields) + " |")
     lines.extend(["", "## Proof cells", "", "| Config | Rep | Variant | Verification | Pair | Commitment ms | Prove ms | Verify ms | Proof bytes | CUDA device | Proof kernels | Warmup kernels | Input bundle SHA-256 | Metadata SHA-256 | Relation SHA-256 | Statement SHA-256 | Prover receipt SHA-256 | Proof SHA-256 | Verifier receipt SHA-256 |", "|---|---:|---|---|---|---:|---:|---:|---:|---|---:|---:|---|---|---|---|---|---|---|"])
     for cell in document["cells"]:
         if cell["mechanism"] != mechanism:
@@ -1839,10 +1917,16 @@ def write_mechanism_paper_markdown(path: pathlib.Path, document: dict[str, Any],
 
 
 def write_paper_csv(path: pathlib.Path, groups: list[dict[str, Any]], mechanism: str) -> None:
-    fields = ["mechanism", "dataset", "N", "E", "D", "G", "component_ids", "complete_repetitions", "requested_repetitions", "metric",
-              "original_mean", "original_sample_sd", "control_mean", "control_sample_sd", "paired_original_minus_control_mean",
-              "paired_original_minus_control_sample_sd", "relative_original_minus_control_over_control_percent_mean",
-              "relative_original_minus_control_over_control_percent_sample_sd", "control_over_original_mean", "control_over_original_sample_sd"]
+    single_measurement = all(group["requested_repetitions"] == 1 for group in groups)
+    fields = ["mechanism", "dataset", "N", "E", "D", "G", "component_ids", "complete_repetitions", "requested_repetitions", "metric"]
+    if single_measurement:
+        fields.extend(["original", "control", "paired_original_minus_control", "saving_percent", "improvement_factor"])
+    else:
+        fields.extend([
+            "original_mean", "original_sample_sd", "control_mean", "control_sample_sd",
+            "paired_original_minus_control_mean", "paired_original_minus_control_sample_sd",
+            "saving_percent_mean", "saving_percent_sample_sd", "improvement_factor_mean", "improvement_factor_sample_sd",
+        ])
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
@@ -1850,21 +1934,35 @@ def write_paper_csv(path: pathlib.Path, groups: list[dict[str, Any]], mechanism:
             if group["mechanism"] != mechanism:
                 continue
             for metric_name, values in group["metrics"].items():
-                writer.writerow({
+                row = {
                     "mechanism": mechanism, "dataset": group["dataset"], "N": group["N"], "E": group["E"],
                     "D": group["D"], "G": group["G"],
                     "component_ids": ",".join(str(x) for x in group["component_ids"]),
                     "complete_repetitions": group["complete_repetitions"], "requested_repetitions": group["requested_repetitions"],
-                    "metric": metric_name, "original_mean": values["original"]["mean"],
-                    "original_sample_sd": values["original"]["sample_sd"], "control_mean": values["control"]["mean"],
-                    "control_sample_sd": values["control"]["sample_sd"],
-                    "paired_original_minus_control_mean": values["paired_original_minus_control"]["mean"],
-                    "paired_original_minus_control_sample_sd": values["paired_original_minus_control"]["sample_sd"],
-                    "relative_original_minus_control_over_control_percent_mean": values["relative_original_minus_control_over_control_percent"]["mean"],
-                    "relative_original_minus_control_over_control_percent_sample_sd": values["relative_original_minus_control_over_control_percent"]["sample_sd"],
-                    "control_over_original_mean": values["control_over_original_advantage"]["mean"],
-                    "control_over_original_sample_sd": values["control_over_original_advantage"]["sample_sd"],
-                })
+                    "metric": METRIC_LABELS[metric_name],
+                }
+                if single_measurement:
+                    row.update({
+                        "original": _reported_value(values["original"]),
+                        "control": _reported_value(values["control"]),
+                        "paired_original_minus_control": _reported_value(values["paired_original_minus_control"]),
+                        "saving_percent": _reported_value(values["saving_percent"]),
+                        "improvement_factor": _reported_value(values["improvement_factor"]),
+                    })
+                else:
+                    row.update({
+                        "original_mean": _reported_value(values["original"]),
+                        "original_sample_sd": _reported_sd(values["original"]),
+                        "control_mean": _reported_value(values["control"]),
+                        "control_sample_sd": _reported_sd(values["control"]),
+                        "paired_original_minus_control_mean": _reported_value(values["paired_original_minus_control"]),
+                        "paired_original_minus_control_sample_sd": _reported_sd(values["paired_original_minus_control"]),
+                        "saving_percent_mean": _reported_value(values["saving_percent"]),
+                        "saving_percent_sample_sd": _reported_sd(values["saving_percent"]),
+                        "improvement_factor_mean": _reported_value(values["improvement_factor"]),
+                        "improvement_factor_sample_sd": _reported_sd(values["improvement_factor"]),
+                    })
+                writer.writerow(row)
 
 
 def generate_reports(session_root: pathlib.Path, document: dict[str, Any]) -> dict[str, str]:
@@ -1909,30 +2007,39 @@ def revalidate_input_sources(document: dict[str, Any]) -> None:
                 f"real dataset source manifest digest changed during the session: {meta['dataset']}")
 
 
-def formal_schedule() -> list[tuple[dict[str, Any], int]]:
+def formal_schedule(repetitions: int) -> list[tuple[dict[str, Any], int]]:
     schedule: list[tuple[dict[str, Any], int]] = []
-    for repetition in range(1, EXPERIMENT_REPETITIONS + 1):
+    for repetition in range(1, repetitions + 1):
         shift = ((repetition - 1) * 4) % len(FORMAL_CONFIGS)
         ordered = list(FORMAL_CONFIGS[shift:]) + list(FORMAL_CONFIGS[:shift])
         schedule.extend((spec, repetition) for spec in ordered)
     return schedule
 
 
+def pair_variant_order(pair_index: int) -> list[str]:
+    variants = list(VARIANTS)
+    if pair_index % 2:
+        variants.reverse()
+    return variants
+
+
 def execute_formal(args: argparse.Namespace) -> int:
+    require(type(args.repetitions) is int and args.repetitions > 0, "--repetitions must be a positive integer")
     require(0 <= args.timeout_seconds <= 599, "--timeout-seconds must be 0 (unlimited) or between 1 and 599")
     require(0 <= args.prepare_timeout_seconds <= 599,
             "--prepare-timeout-seconds must be 0 (unlimited) or between 1 and 599")
     output_root = safe_output_root(DEFAULT_OUTPUT_ROOT)
     session_id, session_root = create_session_dir(output_root)
     os.umask(0o077)
-    document = empty_summary(session_id, session_root)
+    document = empty_summary(session_id, session_root, args.repetitions)
     cells: list[dict[str, Any]] = []
     prepared: list[dict[str, Any]] = []
     lock_stream: BinaryIO | None = None
     session_log = session_root / "session.log"
     atomic_write_json(session_root / "status.json", {
-        "session_id": session_id, "session_status": "preflight", "expected_cell_count": 66,
+        "session_id": session_id, "session_status": "preflight", "expected_cell_count": document["expected_cell_count"],
         "started_utc": document["created_utc"], "timeout_seconds": args.timeout_seconds,
+        "repetitions": args.repetitions,
     })
     atomic_write_json(session_root / "summary.json", document)
     emit(f"MECHANISM_SESSION_STARTED session_id={session_id} output={session_root}", session_log)
@@ -1986,6 +2093,7 @@ def execute_formal(args: argparse.Namespace) -> int:
             "binary_path": str(binary), "srs_by_dataset": {name: info["srs"] for name, info in dataset_info.items()},
             "timeout_seconds_per_cell": args.timeout_seconds,
             "prepare_timeout_seconds": args.prepare_timeout_seconds,
+            "repetitions": args.repetitions,
             "pair_order_schedule": "global alternating Original-Control / Control-Original; configuration order rotates by repetition",
             "process_warmup": "each prover process performs an untimed CUDA NTT/INTT plus ephemeral non-SRS non-stable MSM warmup before proof counters; actual SRS/KZG bases remain cold until commitment timing",
         })
@@ -2016,12 +2124,10 @@ def execute_formal(args: argparse.Namespace) -> int:
         publish_progress(session_root, document, cells)
         used_seed_tokens: set[bytes] = set()
         pair_index = 0
-        for spec, repetition in formal_schedule():
+        for spec, repetition in formal_schedule(args.repetitions):
             cfgid = matrix_config_id(spec)
             input_record = prepared_by_key[bundle_key(spec["dataset"], spec["components"])]
-            variants = list(VARIANTS)
-            if pair_index % 2:
-                variants.reverse()
+            variants = pair_variant_order(pair_index)
             emit(
                 f"PAIR_START config={cfgid} repetition={repetition} order={','.join(variants)} "
                 f"N={input_record['actual']['N']} E={input_record['actual']['E']} D={spec['width']} G={input_record['actual']['G']}",
@@ -2072,6 +2178,7 @@ def execute_formal(args: argparse.Namespace) -> int:
             source_start["source_tree_hash"] == source_end["source_tree_hash"]
             and source_start["git_diff_sha256"] == source_end["git_diff_sha256"]
             and source_start["git_status_sha256"] == source_end["git_status_sha256"]
+            and source_start["publication_document_snapshot"] == source_end["publication_document_snapshot"]
             and build["binary_sha256"] == build_end["binary_sha256"]
             and build["cmake_cache_sha256"] == build_end["cmake_cache_sha256"]
             and build["source_manifest_sha256"] == build_end["source_manifest_sha256"]
@@ -2083,16 +2190,19 @@ def execute_formal(args: argparse.Namespace) -> int:
         document["provenance_end"] = {
             "source_tree_hash": source_end["source_tree_hash"], "git_diff_sha256": source_end["git_diff_sha256"],
             "git_status_sha256": source_end["git_status_sha256"], "binary_sha256": build_end["binary_sha256"],
+            "publication_document_snapshot": source_end["publication_document_snapshot"],
             "cmake_cache_sha256": build_end["cmake_cache_sha256"],
             "source_manifest_sha256": build_end["source_manifest_sha256"],
             "srs_manifest_sha256": {name: configs_end[name]["srs"]["manifest_sha256"] for name in configs_end},
         }
         require(stable, "source/config/build/SRS/data/checkpoint/input provenance changed during the formal session")
-        require(len(cells) == document["expected_cell_count"], "formal schedule ended without exactly 66 attempted proof cells")
+        require(len(cells) == document["expected_cell_count"],
+                f"formal schedule ended without exactly {document['expected_cell_count']} attempted proof cells")
         require(_INTERRUPT_SIGNAL is None, "formal mechanism session received a stop signal before finalization")
         require(document["verified_cells"] == document["expected_cell_count"] and
                 document["complete_pairs"] == document["expected_pair_count"],
-                "formal session did not produce 66 independently verified cells and 33 complete pairs")
+                f"formal session did not produce {document['expected_cell_count']} independently verified cells "
+                f"and {document['expected_pair_count']} complete pairs")
         document["session_status"] = "complete"
     except (OSError, ValueError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
         if document.get("failure_reason") is None:
@@ -2117,11 +2227,11 @@ def execute_formal(args: argparse.Namespace) -> int:
     return 0 if document.get("session_status") == "complete" else 1
 
 
-def expected_cell_keys() -> set[tuple[str, int, str]]:
+def expected_cell_keys(repetitions: int) -> set[tuple[str, int, str]]:
     return {
         (matrix_config_id(spec), repetition, variant)
         for spec in FORMAL_CONFIGS
-        for repetition in range(1, EXPERIMENT_REPETITIONS + 1)
+        for repetition in range(1, repetitions + 1)
         for variant in VARIANTS
     }
 
@@ -2132,16 +2242,63 @@ def check_regular_digest(path_text: str, expected_digest: str, label: str) -> No
     require(sha256_file(path) == expected_digest, f"{label} SHA-256 mismatch: {path}")
 
 
+def record_publication_documents(args: argparse.Namespace) -> int:
+    session_root = args.session.expanduser().resolve()
+    require(session_root.is_dir() and not args.session.is_symlink(),
+            "session path is missing, not a directory, or a symlink")
+    document = load_json(session_root / "summary.json", "mechanism summary")
+    require(document.get("session_status") == "complete", "publication docs cannot be bound to an incomplete session")
+    source = document.get("provenance", {}).get("source", {})
+    before = source.get("publication_document_snapshot")
+    require(isinstance(before, dict) and before.get("paths") == list(PUBLICATION_DOC_PATHS),
+            "formal session has no exact pre-run publication-document snapshot")
+    receipt = {
+        "format": "zkgat_mechanism_publication_document_receipt_v1",
+        "session_id": document["session_id"],
+        "summary_sha256": sha256_file(session_root / "summary.json"),
+        "excluded_from_executable_source_identity": list(PUBLICATION_DOC_PATHS),
+        "pre_run_files": before["files"],
+        "published_files": publication_document_snapshot()["files"],
+        "recorded_utc": utc_now(),
+    }
+    receipt_path = session_root / "publication_document_receipt.json"
+    atomic_write_json(receipt_path, receipt)
+    print(f"PUBLICATION_DOCUMENTS_RECORDED session={session_root} receipt={receipt_path} "
+          f"sha256={sha256_file(receipt_path)}")
+    return 0
+
+
 def audit_session(args: argparse.Namespace) -> int:
     session_root = args.session.expanduser().resolve()
     require(session_root.is_dir() and not args.session.is_symlink(), "session path is missing, not a directory, or a symlink")
     document = load_json(session_root / "summary.json", "mechanism summary")
     require(document.get("format") == "zkgat_real_mechanism_experiment_v1", "session summary is not a real-data mechanism run")
     require(document.get("session_status") == "complete", "formal session is incomplete; no formal result audit can pass")
-    require(document.get("cell_count") == 66 and document.get("verified_cells") == 66 and document.get("complete_pairs") == 33,
-            "session summary does not contain 66 independent verifications and 33 paired repetitions")
+    repetitions = document.get("repetitions")
+    require(type(repetitions) is int and repetitions > 0, "session summary has an invalid formal repetition count")
+    expected_pairs = len(FORMAL_CONFIGS) * repetitions
+    expected_cells = expected_pairs * len(VARIANTS)
+    require(document.get("expected_config_count") == len(FORMAL_CONFIGS) and
+            document.get("expected_pair_count") == expected_pairs and
+            document.get("expected_cell_count") == expected_cells and
+            document.get("cell_count") == expected_cells and
+            document.get("verified_cells") == expected_cells and document.get("complete_pairs") == expected_pairs,
+            f"session summary does not contain {expected_cells} independently verified cells and "
+            f"{expected_pairs} paired configurations")
     require(document.get("provenance_stable") is True, "formal session did not close with stable source/build/data provenance")
     source_expected = document.get("provenance", {}).get("source", {})
+    excluded_doc_snapshot = source_expected.get("publication_document_snapshot")
+    require(isinstance(excluded_doc_snapshot, dict) and
+            excluded_doc_snapshot.get("paths") == list(PUBLICATION_DOC_PATHS) and
+            excluded_doc_snapshot.get("excluded_from_executable_source_identity") is True,
+            "formal source provenance does not record the exact excluded publication documents")
+    pre_run_doc_files = excluded_doc_snapshot.get("files")
+    require(isinstance(pre_run_doc_files, list) and
+            [item.get("path") for item in pre_run_doc_files if isinstance(item, dict)] == list(PUBLICATION_DOC_PATHS) and
+            all(type(item.get("size")) is int and item["size"] >= 0 and
+                isinstance(item.get("sha256"), str) and HEX_256.fullmatch(item["sha256"])
+                for item in pre_run_doc_files),
+            "formal source provenance has invalid pre-run publication-document hashes")
     source_current = source_snapshot()
     require(source_current["source_tree_hash"] == source_expected.get("source_tree_hash") and
             source_current["git_diff_sha256"] == source_expected.get("git_diff_sha256") and
@@ -2162,7 +2319,7 @@ def audit_session(args: argparse.Namespace) -> int:
                 f"{name} config or trusted SRS manifest changed since the formal run")
     revalidate_input_sources(document)
     cells = document.get("cells")
-    require(isinstance(cells, list) and len(cells) == 66, "session summary cell inventory is incomplete")
+    require(isinstance(cells, list) and len(cells) == expected_cells, "session summary cell inventory is incomplete")
     keys: set[tuple[str, int, str]] = set()
     for cell in cells:
         key = (cell.get("config_id"), cell.get("repetition"), cell.get("variant"))
@@ -2187,7 +2344,8 @@ def audit_session(args: argparse.Namespace) -> int:
         check_regular_digest(cell["verifier_log"], cell["verifier_log_sha256"], "verifier log")
         cell_doc = load_json(pathlib.Path(cell["cell_json_path"]), "cell record")
         require(cell_doc == cell, f"cell record differs from the collected summary: {key}")
-    require(keys == expected_cell_keys(), "session summary does not contain the exact fixed 11 x 2 x 3 configuration matrix")
+    require(keys == expected_cell_keys(repetitions),
+            f"session summary does not contain the exact fixed 11 x 2 x {repetitions} configuration matrix")
     for bundle in document.get("prepared_inputs", []):
         check_regular_digest(bundle["input_bundle_path"], bundle["bundle_sha256"], "real input bundle")
         check_regular_digest(bundle["metadata_path"], bundle["metadata_sha256"], "real input metadata")
@@ -2221,7 +2379,8 @@ def audit_session(args: argparse.Namespace) -> int:
                 "receipt_path": str(result_path), "receipt_sha256": sha256_file(result_path),
                 "log_path": str(log_path), "exit_code": proc["return_code"],
             })
-        require(len(audit_cells) == 66, "post-session verifier re-audit did not cover all 66 proofs")
+        require(len(audit_cells) == expected_cells,
+                f"post-session verifier re-audit did not cover all {expected_cells} proofs")
     else:
         audit_cells = [{"config_id": cell["config_id"], "repetition": cell["repetition"],
                         "variant": cell["variant"], "status": "RECEIPT_VERIFIED"}
@@ -2231,8 +2390,24 @@ def audit_session(args: argparse.Namespace) -> int:
         "created_utc": utc_now(), "status": "PASS", "reverified_independently": bool(args.reverify),
         "summary_sha256": sha256_file(session_root / "summary.json"),
         "cell_count": len(audit_cells), "verified_cells": sum(item["status"] == "VERIFY_OK" for item in audit_cells)
-        if args.reverify else 66, "cells": audit_cells,
+        if args.reverify else expected_cells, "cells": audit_cells,
     }
+    publication_receipt_path = session_root / "publication_document_receipt.json"
+    if publication_receipt_path.exists():
+        require(not publication_receipt_path.is_symlink(), "publication document receipt must be a regular file")
+        publication_receipt = load_json(publication_receipt_path, "publication document receipt")
+        require(publication_receipt.get("format") == "zkgat_mechanism_publication_document_receipt_v1" and
+                publication_receipt.get("session_id") == document["session_id"] and
+                publication_receipt.get("summary_sha256") == audit["summary_sha256"] and
+                publication_receipt.get("excluded_from_executable_source_identity") == list(PUBLICATION_DOC_PATHS) and
+                publication_receipt.get("pre_run_files") == pre_run_doc_files and
+                [item.get("path") for item in publication_receipt.get("published_files", [])
+                 if isinstance(item, dict)] == list(PUBLICATION_DOC_PATHS) and
+                publication_receipt.get("published_files") == publication_document_snapshot()["files"],
+                "publication document hashes do not match the final README and mechanism report")
+        audit["publication_document_receipt"] = {
+            "path": str(publication_receipt_path), "sha256": sha256_file(publication_receipt_path),
+        }
     atomic_write_json(session_root / "audit.json", audit)
     print(f"RESULT_AUDIT_PASS session={session_root} cells={len(audit_cells)} reverified={str(args.reverify).lower()}")
     return 0
@@ -2247,7 +2422,9 @@ def regenerate_summary(args: argparse.Namespace) -> int:
             "results can be regenerated only after a passing audit for this session")
     require(audit.get("summary_sha256") == sha256_file(session_root / "summary.json"),
             "summary changed after result audit")
-    require(document.get("session_status") == "complete" and document.get("cell_count") == 66,
+    require(document.get("session_status") == "complete" and
+            document.get("cell_count") == document.get("expected_cell_count") and
+            document.get("expected_config_count") == len(FORMAL_CONFIGS),
             "cannot create formal tables from an incomplete experiment")
     generate_reports(session_root, document)
     print(f"PAPER_TABLES_REGENERATED session={session_root} feature_folding={session_root / 'feature_folding_summary.md'} "
@@ -2256,6 +2433,7 @@ def regenerate_summary(args: argparse.Namespace) -> int:
 
 
 def launch_formal(args: argparse.Namespace) -> int:
+    require(type(args.repetitions) is int and args.repetitions > 0, "--repetitions must be a positive integer")
     require(0 <= args.timeout_seconds <= 599 and 0 <= args.prepare_timeout_seconds <= 599,
             "formal runner timeouts must be 0 (unlimited) or at most 599 seconds")
     output_root = safe_output_root(DEFAULT_OUTPUT_ROOT)
@@ -2266,6 +2444,7 @@ def launch_formal(args: argparse.Namespace) -> int:
     launch_dir.mkdir(mode=0o700)
     log_path = launch_dir / "runner.log"
     command = [sys.executable, str(pathlib.Path(__file__).resolve()), "run", "--device", str(args.device),
+               "--repetitions", str(args.repetitions),
                "--timeout-seconds", str(args.timeout_seconds), "--prepare-timeout-seconds", str(args.prepare_timeout_seconds)]
     if args.binary is not None:
         command.extend(["--binary", str(args.binary.expanduser().resolve())])
@@ -2300,9 +2479,11 @@ def install_signal_handlers() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the fixed 11-configuration real-data CUDA zkGAT mechanism experiment.")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    run = subparsers.add_parser("run", help="prepare all real inputs and run the 66 formal CUDA proofs")
+    run = subparsers.add_parser("run", help="prepare all real inputs and run the paired formal CUDA proof matrix")
     run.add_argument("--binary", type=pathlib.Path, help="CUDA gatzk_mechanism binary; defaults to build_cuda/gatzk_mechanism")
     run.add_argument("--device", type=integer_arg, required=True, help="exclusive CUDA device index")
+    run.add_argument("--repetitions", type=integer_arg, default=DEFAULT_EXPERIMENT_REPETITIONS,
+                     help="positive paired measurement count per configuration; default 3, official single run uses 1")
     run.add_argument("--timeout-seconds", type=integer_arg, default=0,
                      help="per-cell prove+verify timeout; 0 means unlimited for the official run")
     run.add_argument("--prepare-timeout-seconds", type=integer_arg, default=0,
@@ -2311,6 +2492,8 @@ def build_parser() -> argparse.ArgumentParser:
     launch = subparsers.add_parser("launch", help="start the complete CUDA run in a detached SSH-resilient session")
     launch.add_argument("--binary", type=pathlib.Path, help="CUDA gatzk_mechanism binary; defaults to build_cuda/gatzk_mechanism")
     launch.add_argument("--device", type=integer_arg, required=True, help="exclusive CUDA device index")
+    launch.add_argument("--repetitions", type=integer_arg, default=DEFAULT_EXPERIMENT_REPETITIONS,
+                        help="positive paired measurement count per configuration; default 3, official single run uses 1")
     launch.add_argument("--timeout-seconds", type=integer_arg, default=0,
                         help="per-cell prove+verify timeout; 0 means unlimited for the official run")
     launch.add_argument("--prepare-timeout-seconds", type=integer_arg, default=0,
@@ -2318,10 +2501,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit = subparsers.add_parser("audit", help="audit exact cell/artifact/hash receipts and optionally reverify all proofs")
     audit.add_argument("session", type=pathlib.Path, help="session directory printed by the runner")
-    audit.add_argument("--reverify", action="store_true", help="run the independent CPU verifier again for all 66 proofs")
+    audit.add_argument("--reverify", action="store_true", help="run the independent CPU verifier again for every proof in this session")
 
     summarize = subparsers.add_parser("summarize", help="regenerate the two paper tables after a passing audit")
     summarize.add_argument("session", type=pathlib.Path, help="session directory printed by the runner")
+    publication_docs = subparsers.add_parser(
+        "record-publication-docs", help="record final README and mechanism report hashes without changing proof source identity")
+    publication_docs.add_argument("session", type=pathlib.Path, help="session directory printed by the runner")
     return parser
 
 
@@ -2337,6 +2523,8 @@ def main() -> int:
             return audit_session(args)
         if args.command == "summarize":
             return regenerate_summary(args)
+        if args.command == "record-publication-docs":
+            return record_publication_documents(args)
         raise ValueError(f"unsupported command: {args.command}")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"mechanism-runner: {exc}", file=sys.stderr)

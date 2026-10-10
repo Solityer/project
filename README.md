@@ -293,3 +293,54 @@ ceremony、完整 proof/verify 或十组实验，因此当前不生成这些文�
 
 当前 README 只描述这套 canonical 状态；正式训练、checkpoint 生成、SRS ceremony、完整
 proof/verify 和十组最终结果在执行完成前均不视为已完成。
+
+## 真实图机制级消融
+
+本轮已完成 11 组真实图配置、每组一对 Original/Control，共 22 份 CUDA 机制证明。每个配置只测量一次，因此下表直接列出单次测量值，不报告标准差、置信区间或显著性。数值格式为 Original / Control；Saving = (Control − Original) / Control × 100%；Factor = Control / Original。正 Saving 表示 Original 在该指标上更小。
+
+实验中间值来自正式 GAT 第一隐藏层第 0 个注意力头，宽度为 8。Feature Folding 的 D=1、2、4 使用同一个真实 8 维 H′ 的前 D 个坐标，是受控机制宽度实验，不代表正式模型完整单头计算。Shared Neighborhood 使用该头的有限域 U、Sum、归一化权重、加权压缩边特征和聚合前目标值；聚合值取自后续激活及舍入之前。实验只证明并比较这两项独立机制，不代表完整 GAT 端到端证明性能。
+
+### Feature Folding
+
+| 数据集 | N | E | D | G | Commitment O/C ms；Saving；Factor | Prove O/C ms；Saving；Factor | Verify O/C ms；Saving；Factor | Proof Size O/C bytes；Saving；Factor |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |
+| Cora | 2708 | 13264 | 1 | 1 | 124.879424 / 122.921320; -1.592973%; 0.984320× | 218.130203 / 212.301324; -2.745569%; 0.973278× | 35.973663 / 33.691886; -6.772482%; 0.936571× | 3848 / 3743; -2.805236%; 0.972713× |
+| Cora | 2708 | 13264 | 2 | 1 | 124.271522 / 227.543787; 45.385667%; 1.831021× | 217.102000 / 393.137180; 44.777037%; 1.810841× | 36.509525 / 50.775638; 28.096374%; 1.390750× | 3982 / 7105; 43.954961%; 1.784279× |
+| Cora | 2708 | 13264 | 4 | 1 | 128.251546 / 423.889607; 69.744116%; 3.305142× | 215.731652 / 750.205907; 71.243675%; 3.477496× | 36.667271 / 79.976278; 54.152316%; 2.181135× | 4250 / 13829; 69.267481%; 3.253882× |
+| Cora | 2708 | 13264 | 8 | 1 | 130.864436 / 813.990798; 83.923106%; 6.220107× | 220.331356 / 1468.470055; 84.995856%; 6.664826× | 37.459600 / 137.177366; 72.692580%; 3.662008× | 4786 / 27277; 82.454082%; 5.699331× |
+| Citeseer | 3327 | 12431 | 8 | 1 | 135.445006 / 819.076726; 83.463697%; 6.047301× | 217.005365 / 1465.546957; 85.192875%; 6.753506× | 35.591890 / 123.092559; 71.085263%; 3.458444× | 4790 / 27281; 82.441993%; 5.695407× |
+| PPI | 1546 | 17699 | 8 | 1 | 4325.626412 / 25648.274180; 83.134825%; 5.929378× | 23062.817338 / 155731.693336; 85.190672%; 6.752501× | 581.435836 / 4774.692892; 87.822550%; 8.211900× | 4785 / 27276; 82.457105%; 5.700313× |
+| PPI | 2923 | 33928 | 8 | 2 | 4272.736449 / 25611.597633; 83.317181%; 5.994191× | 22468.499785 / 154619.331276; 85.468505%; 6.881605× | 635.159136 / 4739.317609; 86.598089%; 7.461622× | 4785 / 27276; 82.457105%; 5.700313× |
+
+### Shared Neighborhood
+
+| 数据集 | N | E | D | G | Commitment O/C ms；Saving；Factor | Prove O/C ms；Saving；Factor | Verify O/C ms；Saving；Factor | Proof Size O/C bytes；Saving；Factor |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |
+| Cora | 2708 | 13264 | 8 | 1 | 197.048008 / 320.234547; 38.467598%; 1.625160× | 334.916930 / 620.896177; 46.059109%; 1.853881× | 41.350309 / 69.335738; 40.362200%; 1.676789× | 6429 / 10512; 38.841324%; 1.635091× |
+| Citeseer | 3327 | 12431 | 8 | 1 | 196.506448 / 323.183294; 39.196595%; 1.644645× | 319.366942 / 618.184915; 48.337959%; 1.935657× | 45.026568 / 60.843572; 25.996179%; 1.351282× | 6433 / 10516; 38.826550%; 1.634696× |
+| PPI | 1546 | 17699 | 8 | 1 | 6564.653727 / 11730.980944; 44.040027%; 1.786992× | 43021.798101 / 82348.166642; 47.756216%; 1.914103× | 1209.115697 / 2462.848683; 50.905807%; 2.036901× | 6428 / 10511; 38.845020%; 1.635190× |
+| PPI | 2923 | 33928 | 8 | 2 | 6684.225177 / 11498.205810; 41.867233%; 1.720200× | 44804.879436 / 80414.596513; 44.282653%; 1.794773× | 1370.420488 / 2613.936092; 47.572533%; 1.907397× | 6428 / 10511; 38.845020%; 1.635190× |
+
+PPI 选择规则固定为原始组件 ID 升序，选择 N≥3 且至少一个节点有两个不同非自环入邻居的前两个完整组件。组件 0 的原始节点边界为 [0,1546)，N/E=1546/17699，非自环入度 min/median/max 为 0/5/268；组件 9 的边界为 [1554,2931)，N/E=1377/16229，入度为 0/5/226。G=2 时 node_ptr=[0,1546,2923]、edge_ptr=[0,17699,33928]。两组件间边界保留，未填充孤立节点或截断边。
+
+计时含义和完整逐次结果见 [docs/mechanism_ablation.md](docs/mechanism_ablation.md)。结果目录为 <code>runs/mechanism_ablation_real/mechanism_20261010T025528Z_953a5b0e1617/</code>；其中 <code>cells.csv</code>、<code>summary.json</code>、<code>results_manifest.json</code>、两项机制各自的 Markdown/CSV 表格、独立验证收据及证明工件记录逐项来源和哈希。全量 CPU 独立复核归档在 <code>audit_reverify.json</code>，该检查 22/22 通过且 <code>reverified=true</code>。首次发布完整性流程也已成功：<code>record-publication-docs</code> 返回 0 并写出 <code>publication_document_receipt.json</code>；随后不带 <code>--reverify</code> 的严格 <code>audit</code> 返回 0、报告 <code>RESULT_AUDIT_PASS cells=22 reverified=false</code>；<code>summarize</code> 返回 0 并重生成两份论文表格。确切参数见下方命令。此处的 <code>reverified=false</code> 表示发布审计只检查工件与文档身份，完整的 22 项 CPU 重新验证证据仍在 <code>audit_reverify.json</code>。本次文档补充后，session owner 重新运行代码块中的三条出版收据、严格审计和汇总命令，使新收据绑定当前 README 与实验文档，然后生成 <code>publication_integrity.json</code>。
+
+本轮成功使用的构建、正式启动、全量独立复核和结果生成命令如下。工作目录为 <code>/home/pzh/project</code>。正式启动使用独立后台 launcher，CUDA 设备为 0，每组运行一次且不设证明超时：
+
+~~~bash
+cd /home/pzh/project
+cmake -S . -B build_cuda -DCMAKE_BUILD_TYPE=Release -DGATZK_ENABLE_CUDA_BACKEND=ON -DCMAKE_CUDA_ARCHITECTURES=native -DGATZK_ENABLE_NATIVE_ARCH=ON -DGATZK_BUILD_CORE_EXECUTION_REGRESSION=ON -DGATZK_BUILD_MECHANISM_SECURITY_REGRESSION=ON -DGATZK_BUILD_REAL_MECHANISM_INPUT_REGRESSION=ON -DGATZK_BUILD_DEFAULT_PROOF_REGRESSION=OFF
+cmake --build build_cuda --parallel 4 --target gatzk_mechanism gatzk_core_execution_regression gatzk_mechanism_security_regression gatzk_real_mechanism_input_regression
+python3 scripts/run_mechanism_ablation.py launch --binary /home/pzh/project/build_cuda/gatzk_mechanism --device 0 --repetitions 1 --timeout-seconds 0 --prepare-timeout-seconds 0
+python3 -u scripts/run_mechanism_ablation.py audit /home/pzh/project/runs/mechanism_ablation_real/mechanism_20261010T025528Z_953a5b0e1617 --reverify
+python3 -u scripts/run_mechanism_ablation.py summarize /home/pzh/project/runs/mechanism_ablation_real/mechanism_20261010T025528Z_953a5b0e1617
+python3 -u scripts/run_mechanism_ablation.py record-publication-docs /home/pzh/project/runs/mechanism_ablation_real/mechanism_20261010T025528Z_953a5b0e1617
+python3 -u scripts/run_mechanism_ablation.py audit /home/pzh/project/runs/mechanism_ablation_real/mechanism_20261010T025528Z_953a5b0e1617
+python3 -u scripts/run_mechanism_ablation.py summarize /home/pzh/project/runs/mechanism_ablation_real/mechanism_20261010T025528Z_953a5b0e1617
+~~~
+
+正式实验证明从 2026-10-10 10:55:28 到 11:36:33（Asia/Shanghai），墙钟时间 41 分 05 秒。构建环境为 CMake 3.28.3、G++ 13.3.0、CUDA 13.0；设备为 NVIDIA GB10、UUID <code>GPU-3cde57ba-ae43-4452-bd59-7b156b36db71</code>、driver 580.142。22 份证明都实际调用 CUDA NTT、INTT 和 MSM；独立验证器在 CPU 运行。
+
+首次后台尝试在 Cora Feature Folding D=1 的两份独立证明通过后，于重复输入稳定性检查抛出 <code>TypeError: unhashable type: 'dict'</code>：比较逻辑把含嵌套 <code>security_policy</code> 字典的 tuple 放入 set。修复后以规范 JSON 形式比较该策略，并增加显式 <code>--repetitions</code> 参数及单次运行的完整计数、审计和汇总逻辑。旧尝试 session <code>mechanism_20261010T015032Z_16f5013c1802</code> 的工件保留但未混入本轮；本轮采用新源码身份重新完成 22 份证明。
+
+这些收益只适用于两项机制的独立证明成本和 proof size；它们不表示完整 GAT 前向或端到端零知识证明的加速幅度。每组只有一次测量，差异是本轮配对实测值，不具有重复抽样的统计结论。

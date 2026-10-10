@@ -14,18 +14,28 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import struct
 import subprocess
 from typing import Any
 
-SOURCE_INVENTORY_ID = "zkgat:source-inventory"
+SOURCE_INVENTORY_ID = "zkgat:source-inventory-v2:mechanism-reporting-docs-excluded"
 SOURCE_MANIFEST_FORMAT = "zkgat_source_manifest"
 SOURCE_MANIFEST_ALGORITHM = "sha256:length-prefixed-path-content"
 BUILD_RECEIPT_FORMAT = "zkgat_build_receipt"
 BUILD_IDENTITY_ALGORITHM = "zkgat:build-identity"
 
 EXCLUDED_COMPONENTS = {"comparison", "runs", "tests", ".git"}
+EXCLUDED_REPORTING_PATHS = ("README.md", "docs/mechanism_ablation.md")
+
+
+def git_exclusion_pathspecs() -> list[str]:
+    specs = [spec for component in sorted(EXCLUDED_COMPONENTS)
+             for spec in (f":(exclude,glob){component}/**", f":(exclude,glob)**/{component}/**")]
+    specs.extend((":(exclude,glob)build*/**", ":(exclude,glob)**/build*/**"))
+    specs.extend(f":(exclude){path}" for path in EXCLUDED_REPORTING_PATHS)
+    return specs
 
 
 def _excluded(path: pathlib.PurePosixPath) -> bool:
@@ -42,21 +52,30 @@ def inventory_paths(root: pathlib.Path) -> list[str]:
     """Return canonical relative files, including new non-ignored sources."""
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ".",
+             *git_exclusion_pathspecs()],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
         candidates = result.stdout.decode("utf-8").split("\0")
     except (OSError, UnicodeDecodeError, subprocess.CalledProcessError):
-        candidates = [path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file() or path.is_symlink()]
+        candidates = []
+        for directory, dirnames, filenames in os.walk(root, followlinks=False):
+            relative_directory = pathlib.Path(directory).relative_to(root)
+            dirnames[:] = [name for name in dirnames
+                           if name not in EXCLUDED_COMPONENTS and not name.startswith("build")]
+            for filename in filenames:
+                relative = (relative_directory / filename).as_posix()
+                if relative not in EXCLUDED_REPORTING_PATHS:
+                    candidates.append(relative)
 
     paths: list[str] = []
     for candidate in candidates:
         if not candidate:
             continue
         relative = pathlib.PurePosixPath(candidate)
-        if relative.is_absolute() or _excluded(relative):
+        if relative.is_absolute() or relative.as_posix() in EXCLUDED_REPORTING_PATHS or _excluded(relative):
             continue
         absolute = root.joinpath(*relative.parts)
         if absolute.is_symlink() or not absolute.is_file():
@@ -96,6 +115,7 @@ def source_manifest_document(root: pathlib.Path) -> dict[str, Any]:
         append_bytes(canonical, (root / pathlib.Path(*entry["path"].split("/"))).read_bytes())
     return {
         "algorithm": SOURCE_MANIFEST_ALGORITHM,
+        "excluded_reporting_paths": list(EXCLUDED_REPORTING_PATHS),
         "file_count": len(files),
         "files": files,
         "format": SOURCE_MANIFEST_FORMAT,
