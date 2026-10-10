@@ -1,0 +1,132 @@
+START time=2026-10-10T16:32:26+08:00 commit=9413369614efa7ca28ce905adcb89cb87a199c15
+               total        used        free      shared  buff/cache   available
+内存：         121Gi        42Gi        13Gi       122Mi        67Gi        79Gi
+交换：          15Gi       8.0Ki        15Gi
+文件系统        大小  已用  可用 已用% 挂载点
+/dev/nvme0n1p2  3.7T  2.0T  1.6T   57% /
+Sat Oct 10 16:32:26 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.142                Driver Version: 580.142        CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GB10                    On  |   0000000F:01:00.0 Off |                  N/A |
+| N/A   61C    P0             21W /  N/A  | Not Supported          |     21%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A            3014      G   /usr/lib/xorg/Xorg                       18MiB |
+|    0   N/A  N/A            3117      G   /usr/bin/gnome-shell                      6MiB |
+|    0   N/A  N/A         1089566      C   /usr/bin/python3                        667MiB |
+|    0   N/A  N/A         1170911      C   ...ct/build_cuda/gatzk_mechanism       5086MiB |
++-----------------------------------------------------------------------------------------+
+START_TEST time=2026-10-10T16:32:26+08:00 name=01_region_increment
+FAIL_TEST time=2026-10-10T16:32:31+08:00 name=01_region_increment exit_code=101
+
+warning: method `invert` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:448:19
+    |
+431 | impl<F: Field> Polynomial<Assigned<F>, LagrangeCoeff> {
+    | ----------------------------------------------------- method in this implementation
+...
+448 |     pub(crate) fn invert(
+    |                   ^^^^^^
+
+warning: method `empty_lagrange_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/domain.rs:287:19
+    |
+ 45 | impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
+    | ------------------------------------------------------ method in this implementation
+...
+287 |     pub(crate) fn empty_lagrange_assigned(&self) -> Polynomial<Assigned<F>, LagrangeCoeff> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `write_value` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/spill.rs:325:19
+    |
+324 | impl<F: Copy> SpillBuilder<F> {
+    | ----------------------------- method in this implementation
+325 |     pub(super) fn write_value(&mut self, value: F) -> io::Result<()> {
+    |                   ^^^^^^^^^^^
+
+warning: function `pack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:108:8
+    |
+108 | pub fn pack(bits: &[bool]) -> u8 {
+    |        ^^^^
+
+warning: function `unpack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:118:8
+    |
+118 | pub fn unpack(byte: u8, bits: &mut [bool]) {
+    |        ^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/halo2/halo2_proofs/src/plonk/vanishing/verifier.rs:123:9
+    |
+123 |         &self,
+    |         ^^^^^ the lifetime is elided here
+124 |         x: ChallengeX<C>,
+125 |     ) -> impl Iterator<Item = VerifierQuery<C, M>> + Clone {
+    |                               ^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+125 |     ) -> impl Iterator<Item = VerifierQuery<'_, C, M>> + Clone {
+    |                                             +++
+
+warning: hiding a lifetime that's named elsewhere is confusing
+  --> vendor/halo2/halo2_proofs/src/poly/ipa/commitment.rs:81:36
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<C> {
+   |                   -------          ^^^^^^^^^ the same lifetime is hidden here
+   |                   |
+   |                   the lifetime is named here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'params`
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<'params, C> {
+   |                                           ++++++++
+
+warning: `halo2_proofs` (lib) generated 12 warnings (run `cargo fix --lib -p halo2_proofs` to apply 4 suggestions)
+   Compiling ezkl v0.0.0 (/home/pzh/project/comparison/ezkl)
+error: unused import: `RegionCtx`
+  --> src/graph/mod.rs:37:44
+   |
+37 | use crate::circuit::region::{ConstantsMap, RegionCtx, RegionSettings};
+   |                                            ^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> src/lib.rs:11:5
+   |
+11 |     unused,
+   |     ^^^^^^
+   = note: `#[deny(unused_imports)]` implied by `#[deny(unused)]`
+
+error: unused import: `Input`
+  --> src/graph/mod.rs:39:33
+   |
+39 | use crate::circuit::{CheckMode, Input, InputType};
+   |                                 ^^^^^
+
+warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
+   --> src/../gat_adapter/loader.rs:629:30
+    |
+629 |         let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
+    |                              ^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `ezkl` (lib) generated 1 warning
+error: could not compile `ezkl` (lib) due to 2 previous errors; 1 warning emitted
+FINISHED time=2026-10-10T16:32:31+08:00 exit_code=101
