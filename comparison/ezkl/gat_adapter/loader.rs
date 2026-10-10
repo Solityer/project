@@ -264,6 +264,17 @@ fn load_from_resources(
     if meta.name != dataset {
         return Err(format!("dataset meta name {} disagrees with {}", meta.name, dataset));
     }
+    let expected_preprocess = match dataset {
+        "cora" | "citeseer" | "pubmed" | "ppi" => "row_normalize",
+        "ogbn_arxiv" => "ogbn_arxiv_raw_float32",
+        _ => return Err(format!("unsupported canonical GAT dataset: {}", dataset)),
+    };
+    if meta.input_preprocess_id != expected_preprocess {
+        return Err(format!(
+            "{} input_preprocess_id {} does not match canonical identity {}",
+            dataset, meta.input_preprocess_id, expected_preprocess
+        ));
+    }
     require_cfg(&secure, &["checkpoint_bundle", "quant_cfg_id", "static_table_id", "degree_bound_id", "ezkl_security_profile_id",],)?;
     let checkpoint: CheckpointManifest = parse_json(&checkpoint_manifest.path)?;
     validate_checkpoint(&checkpoint, dataset, &meta, &secure)?;
@@ -613,11 +624,8 @@ fn parse_quant_chain(path: &Path, checkpoint: &CheckpointManifest) -> Result<Sca
 
 fn parse_features(path: &Path, meta: &DatasetMeta, scales: &ScaleChain,) -> Result<Vec<i128>, String> {
     if path.extension().and_then(|x| x.to_str()) == Some("npy") {
-        let parsed = parse_npy(path, scales.s_input)?;
         let expected_shape = vec![meta.num_nodes, meta.num_features];
-        if parsed.shape != expected_shape {
-            return Err(format!("feature npy shape {:?} disagrees with metadata", parsed.shape));
-        }
+        let parsed = parse_npy(path, scales.s_input, &meta.input_preprocess_id, &expected_shape)?;
         if meta.feature_format.as_deref() != Some("npy")
             || meta.feature_dtype.as_deref() != Some(parsed.dtype.as_str())
             || meta.feature_shape.as_ref() != Some(&parsed.shape)
@@ -647,19 +655,30 @@ fn parse_features(path: &Path, meta: &DatasetMeta, scales: &ScaleChain,) -> Resu
         if row >= rows {
             return Err("sparse feature file has too many rows".into());
         }
-        let mut raw = Vec::new();
+        // Materialize only this sparse row so normalization follows the
+        // canonical dense feature order, including rows whose tokens are not
+        // sorted. The canonical sparse input contract rejects repeated
+        // columns rather than applying last-token-wins semantics.
+        let mut row_values = vec![0.0_f64; cols];
+        let mut seen_indices = HashSet::new();
         for token in line.split_whitespace() {
             let (idx, value) = token.split_once(':').ok_or_else(|| format!("invalid sparse feature token {}", token))?;
             let idx = parse_usize(idx, "feature index")?;
             if idx >= cols {
                 return Err(format!("feature index {} outside shape", idx));
             }
+            if !seen_indices.insert(idx) {
+                return Err(format!("row {} repeats feature index {}", row, idx));
+            }
             let value = parse_finite(token_value(value)?, "feature")?;
-            raw.push((idx, value));
+            row_values[idx] = value;
         }
         let norm = if meta.input_preprocess_id == "row_normalize" {
-            let sum: f64 = raw.iter().map(|(_, x)| *x).sum();
-            if !sum.is_finite() || sum < 0.0 {
+            let mut sum = 0.0_f64;
+            for value in &row_values {
+                sum += *value;
+            }
+            if !sum.is_finite() {
                 return Err(format!("row {} has invalid normalization sum", row));
             }
             if sum == 0.0 {
@@ -670,8 +689,8 @@ fn parse_features(path: &Path, meta: &DatasetMeta, scales: &ScaleChain,) -> Resu
         } else {
             1.0
         };
-        for (idx, value) in raw {
-            out[row * cols + idx] = quantize(value / norm, scales.s_input)?;
+        for (idx, value) in row_values.into_iter().enumerate() {
+            out[row * cols + idx] = quantize_feature(value / norm, scales.s_input)?;
         }
         row_count += 1;
     }
@@ -705,6 +724,13 @@ fn quantize(value: f64, exponent: i32) -> Result<i128, String> {
         return Err("rounded value outside i128".into());
     }
     Ok(rounded as i128)
+}
+
+fn quantize_feature(value: f64, exponent: i32) -> Result<i128, String> {
+    let quantized = quantize(value, exponent)?;
+    i64::try_from(quantized)
+        .map(i128::from)
+        .map_err(|_| "quantized canonical feature exceeds signed i64".to_string())
 }
 
 fn parse_graph(path: &Path, meta: &DatasetMeta, dataset: &str, resources: &[AuthenticatedResource],) -> Result<CanonicalGraph, String> {
@@ -926,7 +952,12 @@ fn parse_tensor_archive(path: &Path, manifest: &CheckpointManifest,) -> Result<B
     Ok(result)
 }
 
-fn parse_npy(path: &Path, quantization_exponent: i32) -> Result<ParsedNpy, String> {
+fn parse_npy(
+    path: &Path,
+    quantization_exponent: i32,
+    input_preprocess_id: &str,
+    expected_shape: &[usize],
+) -> Result<ParsedNpy, String> {
     let file = fs::File::open(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     let mut reader = BufReader::new(file);
     let mut prefix = [0_u8; 8];
@@ -956,19 +987,35 @@ fn parse_npy(path: &Path, quantization_exponent: i32) -> Result<ParsedNpy, Strin
     if !header.contains("'fortran_order': False") && !header.contains("\"fortran_order\": False") {
         return Err("Fortran-order NumPy arrays are unsupported".into());
     }
-    let descr = header.split("'descr':").nth(1).or_else(|| header.split("\"descr\":").nth(1)).ok_or("NumPy descr missing")?;
-    let (item_size, dtype) = if descr.contains("f4") {
+    let descr_tail = header.split("'descr':").nth(1).or_else(|| header.split("\"descr\":").nth(1)).ok_or("NumPy descr missing")?;
+    let descr_tail = descr_tail.trim_start();
+    let quote = descr_tail.chars().next().filter(|quote| *quote == '\'' || *quote == '"').ok_or("NumPy descr is not a quoted string")?;
+    let descr_end = descr_tail[1..].find(quote).ok_or("NumPy descr string is unterminated")? + 1;
+    let descr = &descr_tail[1..descr_end];
+    let (item_size, dtype) = if descr == "<f4" {
         (4, "float32")
-    } else if descr.contains("f8") {
+    } else if descr == "<f8" {
         (8, "float64")
     } else {
-        return Err("NumPy dtype must be float32/float64".into());
+        return Err(format!("NumPy dtype {} is unsupported; expected little-endian <f4 or <f8", descr));
     };
     let shape_text = header.split("'shape':").nth(1).or_else(|| header.split("\"shape\":").nth(1)).ok_or("NumPy shape missing")?;
     let open = shape_text.find('(').ok_or("NumPy shape tuple missing")?;
     let close = shape_text[open + 1..].find(')').ok_or("NumPy shape tuple unterminated")? + open + 1;
     let shape: Vec<usize> =
         shape_text[open + 1..close].split(',').filter(|x| !x.trim().is_empty()).map(|x| parse_usize(x.trim(), "NumPy dimension")).collect::<Result<_, _>>()?;
+    if shape != expected_shape {
+        return Err(format!("feature npy shape {:?} disagrees with metadata {:?}", shape, expected_shape));
+    }
+    if shape.len() != 2 || shape.iter().any(|dimension| *dimension == 0) {
+        return Err("NumPy feature shape must be a nonempty rank-2 matrix".into());
+    }
+    let normalize_rows = match input_preprocess_id {
+        "row_normalize" => true,
+        "ogbn_arxiv_raw_float32" => false,
+        other => return Err(format!("unsupported input_preprocess_id for NumPy features: {}", other)),
+    };
+    let columns = shape[1];
     let count = shape.iter().try_fold(1_usize, |acc, x| acc.checked_mul(*x)).ok_or("NumPy shape overflow")?;
     let expected_bytes = count.checked_mul(item_size).ok_or("NumPy data size overflow")?;
     let expected_file_size = data_start_u64
@@ -980,6 +1027,7 @@ fn parse_npy(path: &Path, quantization_exponent: i32) -> Result<ParsedNpy, Strin
         return Err("NumPy data length mismatch".into());
     }
     let mut values = Vec::with_capacity(count);
+    let mut row_values = if normalize_rows { Vec::with_capacity(columns) } else { Vec::new() };
     let mut remaining = expected_bytes;
     let chunk_size = (1024 * 1024) - ((1024 * 1024) % item_size);
     let mut chunk = vec![0_u8; chunk_size];
@@ -994,13 +1042,34 @@ fn parse_npy(path: &Path, quantization_exponent: i32) -> Result<ParsedNpy, Strin
                 let bytes: [u8; 8] = value_bytes.try_into().unwrap();
                 f64::from_le_bytes(bytes)
             };
-            values.push(quantize(value, quantization_exponent)?);
+            let value = parse_finite(value, "NumPy feature")?;
+            if normalize_rows {
+                row_values.push(value);
+                if row_values.len() == columns {
+                    let mut row_sum = 0.0_f64;
+                    for feature in &row_values {
+                        row_sum += *feature;
+                    }
+                    if !row_sum.is_finite() {
+                        return Err("NumPy feature row has a non-finite normalization sum".into());
+                    }
+                    let divisor = if row_sum == 0.0 { 1.0 } else { row_sum };
+                    for feature in row_values.drain(..) {
+                        values.push(quantize_feature(feature / divisor, quantization_exponent)?);
+                    }
+                }
+            } else {
+                values.push(quantize_feature(value, quantization_exponent)?);
+            }
         }
         remaining -= take;
     }
     let mut trailing = [0_u8; 1];
     if reader.read(&mut trailing).map_err(|e| e.to_string())? != 0 {
         return Err("NumPy data has trailing bytes".into());
+    }
+    if !row_values.is_empty() || values.len() != count {
+        return Err("NumPy feature row/value count mismatch".into());
     }
     Ok(ParsedNpy { shape, dtype: dtype.to_string(), order: "C".into(), values,}) }
 
@@ -1253,7 +1322,82 @@ fn write_atomic_metadata(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod canonical_graph_tests {
-    use super::normalize_graph_edges;
+    use super::{normalize_graph_edges, parse_features, parse_npy, DatasetMeta};
+    use crate::gat_adapter::schema::ScaleChain;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_NPY: AtomicU64 = AtomicU64::new(0);
+
+    fn write_test_npy(descr: &str, rows: usize, columns: usize, payload: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ezkl-loader-test-{}-{}.npy",
+            std::process::id(),
+            NEXT_NPY.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut header = format!(
+            "{{'descr': '{}', 'fortran_order': False, 'shape': ({}, {}), }}",
+            descr, rows, columns
+        )
+        .into_bytes();
+        while (10 + header.len() + 1) % 16 != 0 {
+            header.push(b' ');
+        }
+        header.push(b'\n');
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(b"\x93NUMPY\x01\x00").unwrap();
+        file.write_all(&(header.len() as u16).to_le_bytes()).unwrap();
+        file.write_all(&header).unwrap();
+        file.write_all(payload).unwrap();
+        path
+    }
+
+    fn f32_payload(values: &[f32]) -> Vec<u8> {
+        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+    }
+
+    fn parse_test_npy(
+        descr: &str,
+        rows: usize,
+        columns: usize,
+        payload: &[u8],
+        exponent: i32,
+        preprocess_id: &str,
+    ) -> Result<Vec<i128>, String> {
+        let path = write_test_npy(descr, rows, columns, payload);
+        let parsed = parse_npy(&path, exponent, preprocess_id, &[rows, columns]);
+        let _ = fs::remove_file(path);
+        parsed.map(|parsed| parsed.values)
+    }
+
+    fn parse_test_sparse(text: &str, rows: usize, columns: usize) -> Result<Vec<i128>, String> {
+        let path = std::env::temp_dir().join(format!(
+            "ezkl-loader-sparse-test-{}-{}.txt",
+            std::process::id(),
+            NEXT_NPY.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, text).unwrap();
+        let meta = DatasetMeta {
+            name: "cora".into(),
+            num_nodes: rows,
+            num_features: columns,
+            num_classes: 1,
+            graph_count: 1,
+            input_preprocess_id: "row_normalize".into(),
+            feature_format: None,
+            feature_dtype: None,
+            feature_shape: None,
+            feature_order: None,
+            feature_length: None,
+            feature_sha256: None,
+        };
+        let scales = ScaleChain::default();
+        let result = parse_features(&path, &meta, &scales);
+        let _ = fs::remove_file(path);
+        result
+    }
 
     #[test]
     fn normalizes_deduplicates_and_adds_each_missing_self_loop_stably() {
@@ -1273,5 +1417,62 @@ mod canonical_graph_tests {
     #[test]
     fn rejects_edges_that_cross_graph_boundaries() {
         assert!(normalize_graph_edges(vec![(0, 0, 2)], &[0, 2, 4]).is_err());
+    }
+
+    #[test]
+    fn npy_row_normalization_matches_float32_order_zero_and_negative_sums() {
+        let payload = f32_payload(&[1.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.25, -0.5, 0.0]);
+        let values = parse_test_npy("<f4", 3, 3, &payload, 2, "row_normalize").unwrap();
+        assert_eq!(values, vec![4, -4, 0, 2, 2, 0, -4, 8, 0]);
+    }
+
+    #[test]
+    fn npy_raw_float32_uses_ties_away_without_row_normalization() {
+        let payload = f32_payload(&[0.125, -0.125]);
+        let values = parse_test_npy("<f4", 1, 2, &payload, 2, "ogbn_arxiv_raw_float32").unwrap();
+        assert_eq!(values, vec![1, -1]);
+    }
+
+    #[test]
+    fn npy_float64_row_normalization_matches_feature_order_quantization() {
+        let mut payload = Vec::new();
+        for value in [1.0_f64, 1.0, 2.0, -2.0] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        let values = parse_test_npy("<f8", 2, 2, &payload, 1, "row_normalize").unwrap();
+        assert_eq!(values, vec![1, 1, 4, -4]);
+    }
+
+    #[test]
+    fn npy_rejects_unsupported_byte_order_and_preprocess_id() {
+        let payload = f32_payload(&[1.0, 2.0]);
+        for descr in [">f4", "=f4", "|f4"] {
+            assert!(parse_test_npy(descr, 1, 2, &payload, 0, "row_normalize").is_err());
+        }
+        assert!(parse_test_npy("<f4", 1, 2, &payload, 0, "unknown").is_err());
+    }
+
+    #[test]
+    fn npy_feature_quantization_rejects_signed_i64_overflow() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&2.0_f64.powi(64).to_le_bytes());
+        payload.extend_from_slice(&0.0_f64.to_le_bytes());
+        assert!(parse_test_npy("<f8", 1, 2, &payload, 0, "ogbn_arxiv_raw_float32").is_err());
+    }
+
+    #[test]
+    fn sparse_features_follow_dense_order_and_reject_duplicate_indices() {
+        let values = parse_test_sparse(
+            "3 4\n2:-10000000000000000 0:10000000000000000 1:1 3:1\n1:1 0:-2\n0:4 1:-4\n",
+            3,
+            4,
+        )
+        .unwrap();
+        assert_eq!(values, vec![
+            10_000_000_000_000_000_i128, 1, -10_000_000_000_000_000_i128, 1,
+            2, -1, 0, 0,
+            4, -4, 0, 0,
+        ]);
+        assert!(parse_test_sparse("1 2\n0:1 0:2\n", 1, 2).is_err());
     }
 }

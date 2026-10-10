@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one bounded, native ezkl/Halo2 tiny CPU/GPU E2E cell.
+"""Run one bounded, native ezkl/Halo2 tiny formal-GPU E2E cell.
 
 The script is intentionally self-contained at the orchestration boundary.  It
 stages a temporary baseline-local checkout, creates a two-node/four-edge
@@ -20,17 +20,21 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fcntl
 import hashlib
 import json
+import math
 import os
 import selectors
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -54,13 +58,14 @@ TINY_MODEL_ARCH = (
 TINY_EDGES = ((0, 0), (1, 0), (0, 1), (1, 1))
 DEFAULT_STAGE_TIMEOUT = 45.0
 DEFAULT_OVERALL_TIMEOUT = 300.0
-DEFAULT_MAX_SRS_LOGROWS = 18
+DEFAULT_MAX_SRS_LOGROWS = 17
 SRS_HASH_RE = "0123456789abcdef"
 FORMAL_PATH_FLAGS = frozenset(
     {
         "--resource-manifest",
         "--output-dir",
         "--srs-path",
+        "--admission-dir",
         "--public-statement",
         "--public-output",
         "--producer-manifest",
@@ -84,6 +89,117 @@ FORMAL_PATH_FLAGS = frozenset(
 
 class TinyE2EError(RuntimeError):
     """A bounded tiny run failed at a named phase."""
+
+
+def _raise_on_sigterm(signum: int, _frame: Any) -> None:
+    """Turn SIGTERM into a catchable exit so stage and SRS cleanup can run."""
+
+    # A repeated external signal must not interrupt process-group/SRS cleanup.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    print(f"[tiny-e2e] received signal {signum}; stopping the active stage", file=sys.stderr, flush=True)
+    raise SystemExit(128 + signum)
+
+
+def _terminate_stage_process_group(process: subprocess.Popen[bytes], grace_seconds: float = 0.4) -> None:
+    """Stop the complete isolated stage group, including surviving grandchildren."""
+
+    process_group_id = process.pid  # Popen uses start_new_session=True below.
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(min(0.025, max(0.0, deadline - time.monotonic())))
+
+    # The leader may have exited while a grandchild ignored SIGTERM. Always
+    # address the group, then reap the direct child before returning.
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+
+def acquire_tiny_formal_lock(source_root: Path) -> int:
+    """Take the same nonblocking lock as formal sessions without creating one.
+
+    Tiny SRS staging may hard-link the shared official SRS, which changes the
+    inode ctime. Keep this lock through all consumers and unlink cleanup so a
+    formal session never observes that temporary identity transition.
+    """
+
+    lock_dir = source_root / "runs"
+    if lock_dir.is_symlink() or (lock_dir.exists() and not lock_dir.is_dir()):
+        raise TinyE2EError(f"formal lock directory is not a regular directory: {lock_dir}")
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / ".ezkl-formal.lock"
+    if lock_path.is_symlink():
+        raise TinyE2EError(f"formal session lock must not be a symlink: {lock_path}")
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        lock_fd = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise TinyE2EError(f"cannot open the formal session lock: {exc}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+            raise TinyE2EError(f"formal session lock is not a regular file: {lock_path}")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        os.close(lock_fd)
+        raise TinyE2EError("another formal ezkl session currently holds the baseline lock") from exc
+    except BaseException:
+        os.close(lock_fd)
+        raise
+    return lock_fd
+
+
+def release_tiny_formal_lock(lock_fd: int) -> None:
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
+def unlink_staged_srs_hardlink(source: Path, staged_srs: Path) -> bool:
+    """Unlink only the staged directory entry when it still shares the source inode."""
+
+    try:
+        source_stat = source.lstat()
+        staged_stat = staged_srs.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(source_stat.st_mode):
+        raise TinyE2EError(f"official SRS source is not a regular file: {source}")
+    if not stat.S_ISREG(staged_stat.st_mode):
+        raise TinyE2EError(f"staged SRS path is not a regular file: {staged_srs}")
+    if (source_stat.st_dev, source_stat.st_ino) != (staged_stat.st_dev, staged_stat.st_ino):
+        return False
+    staged_srs.unlink()
+    return True
+
+
+def validate_tiny_admission_logrows(admission: dict[str, Any], max_logrows: int) -> int:
+    """Reject an admitted circuit above the bounded tiny k before capacity/setup."""
+
+    logrows = admission.get("logrows")
+    if isinstance(logrows, bool) or not isinstance(logrows, int) or logrows < 1 or logrows > max_logrows:
+        raise TinyE2EError(
+            f"native tiny admission selected k={logrows!r}, above the configured tiny maximum {max_logrows}"
+        )
+    return logrows
 
 
 def sha256(path: Path) -> str:
@@ -574,7 +690,7 @@ def write_tiny_dataset(root: Path, dataset: str, preprocess: str) -> None:
     ]
     if dataset in {"ppi", "ogbn_arxiv"}:
         feature = cache / "features.npy"
-        feature.write_bytes(npy_bytes((TINY_NODE_COUNT, TINY_FEATURE_DIM), [0.25, 0.75]))
+        feature.write_bytes(npy_bytes((TINY_NODE_COUNT, TINY_FEATURE_DIM), [0.25, -0.75]))
         meta.extend(
             [
                 "feature_format = npy",
@@ -586,7 +702,7 @@ def write_tiny_dataset(root: Path, dataset: str, preprocess: str) -> None:
             ]
         )
     else:
-        (cache / "features.txt").write_text(f"{TINY_NODE_COUNT} {TINY_FEATURE_DIM}\n0:0.25\n0:0.75\n")
+        (cache / "features.txt").write_text(f"{TINY_NODE_COUNT} {TINY_FEATURE_DIM}\n0:0.25\n0:-0.75\n")
     if dataset == "ppi":
         (cache / "edges.txt").write_text("".join(f"0 {src} {dst}\n" for src, dst in TINY_EDGES))
         (cache / "node_ptr.txt").write_text(f"0 {TINY_NODE_COUNT}\n")
@@ -653,7 +769,7 @@ def create_tiny_resources(root: Path) -> None:
     scale_updates, quantization_scale_chain = tiny_scale_chain(source_scale)
     update_cfg(scale_config, scale_updates)
     for dataset in DATASETS:
-        preprocess = "none"
+        preprocess = "ogbn_arxiv_raw_float32" if dataset == "ogbn_arxiv" else "row_normalize"
         write_tiny_dataset(root, dataset, preprocess)
         write_tiny_checkpoint(root, dataset, preprocess, quantization_scale_chain)
         write_tiny_config(root, dataset, preprocess)
@@ -762,19 +878,20 @@ def stage_source_snapshot(source_root: Path, root: Path) -> None:
     for source in sorted(set(source_files), key=lambda path: tuple(path.relative_to(source_root).parts)):
         destination = root / source.relative_to(source_root)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.link(source, destination)
-        except OSError:
-            shutil.copy2(source, destination)
+        # A staged source tree must not share mutable inodes with the active
+        # checkout: later edits must not silently change an archived session.
+        shutil.copy2(source, destination)
 
 
 def stage_baseline(root: Path, backend: str) -> Path:
     source_root = Path(__file__).resolve().parents[1]
     stage_source_snapshot(source_root, root)
-    binary_relative = Path("target/release/ezkl") if backend == "cpu" else Path("target/gpu/release/ezkl")
+    if backend != "gpu":
+        raise TinyE2EError("tiny production-chain validation uses the formal GPU backend")
+    binary_relative = Path("target/gpu/release/ezkl")
     binary = source_root / binary_relative
     if not binary.is_file() or binary.is_symlink():
-        raise TinyE2EError(f"missing already-built official {backend} binary: {binary}")
+        raise TinyE2EError(f"missing already-built official formal-GPU binary: {binary}")
     copy_tree_item(binary, root / binary_relative)
     staged_binary = root / binary_relative
     staged_binary.chmod(0o755)
@@ -782,17 +899,13 @@ def stage_baseline(root: Path, backend: str) -> Path:
         source_root / "artifacts/gat_adapter/formal_cli.json",
         root / "artifacts/gat_adapter/formal_cli.json",
     )
-    if backend == "cpu":
-        copy_tree_item(
-            source_root / "artifacts/build/cpu/build_receipt.json",
-            root / "artifacts/build/cpu/build_receipt.json",
-        )
-    else:
-        # The GPU binary validates the manifest and source it was linked
-        # against at runtime. Stage those exact authenticated inputs beside
-        # the tiny fixture; do not manufacture a new build receipt for the
-        # fixture's modified resource manifest.
-        copy_tree_item(source_root / "artifacts/build/icicle-cuda", root / "artifacts/build/icicle-cuda")
+    # Stage the exact production build receipt and backend that admit and
+    # consume the fixture. Never rewrite a receipt to bless synthetic inputs.
+    copy_tree_item(
+        source_root / "artifacts/build/gpu/build_receipt.json",
+        root / "artifacts/build/gpu/build_receipt.json",
+    )
+    copy_tree_item(source_root / "artifacts/build/icicle-cuda", root / "artifacts/build/icicle-cuda")
     create_tiny_resources(root)
     return staged_binary
 
@@ -838,33 +951,34 @@ def run_stage(
     assert process.stdout is not None
     selector.register(process.stdout, selectors.EVENT_READ)
     chunks: list[bytes] = []
-    with log_path.open("wb") as log:
-        while True:
-            elapsed = time.monotonic() - started
-            if elapsed >= hard_timeout:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
-                selector.close()
-                raise TinyE2EError(f"{name}: hard timeout after {hard_timeout:.1f}s")
-            events = selector.select(min(0.25, hard_timeout - elapsed))
-            if events:
-                for key, _ in events:
-                    data = os.read(key.fd, 8192)
-                    if data:
-                        chunks.append(data)
-                        log.write(data)
-                        log.flush()
-                        sys.stdout.write(data.decode("utf-8", errors="replace"))
-                        sys.stdout.flush()
-                    else:
-                        selector.unregister(key.fileobj)
-            if process.poll() is not None and not selector.get_map():
-                break
-        returncode = process.wait()
-    selector.close()
+    try:
+        with log_path.open("wb") as log:
+            while True:
+                elapsed = time.monotonic() - started
+                if elapsed >= hard_timeout:
+                    raise TinyE2EError(f"{name}: hard timeout after {hard_timeout:.1f}s")
+                events = selector.select(min(0.25, hard_timeout - elapsed))
+                if events:
+                    for key, _ in events:
+                        data = os.read(key.fd, 8192)
+                        if data:
+                            chunks.append(data)
+                            log.write(data)
+                            log.flush()
+                            sys.stdout.write(data.decode("utf-8", errors="replace"))
+                            sys.stdout.flush()
+                        else:
+                            selector.unregister(key.fileobj)
+                if process.poll() is not None and not selector.get_map():
+                    break
+            returncode = process.wait()
+    except BaseException:
+        _terminate_stage_process_group(process)
+        raise
+    finally:
+        selector.close()
+        if process.stdout is not None:
+            process.stdout.close()
     elapsed = time.monotonic() - started
     output = b"".join(chunks).decode("utf-8", errors="replace")
     if expect_success and returncode != 0:
@@ -926,20 +1040,13 @@ def create_tiny_workspace() -> Path:
     return root
 
 
-def copy_manifest_and_update_receipt(root: Path, backend: str) -> None:
-    manifest = root / "resources/resource_manifest.json"
-    if backend == "gpu":
-        return
-    receipt_path = root / "artifacts/build/cpu/build_receipt.json"
-    receipt = json.loads(receipt_path.read_text())
-    receipt["binary_sha256"] = sha256(root / "target/release/ezkl")
-    receipt["source_tree_sha256"] = source_tree_hash(root)
-    receipt["resource_manifest_sha256"] = sha256(manifest)
-    write_json(receipt_path, receipt)
-
-
-def stage_trusted_full_srs(source_root: Path, root: Path) -> tuple[Path, str, str, int]:
-    """Copy the authenticated shared maximum-domain SRS into the fixture.
+def stage_trusted_full_srs(
+    source_root: Path,
+    root: Path,
+    *,
+    allow_hardlink: bool = True,
+) -> tuple[Path, str, str, int, int]:
+    """Stage the authenticated shared maximum-domain SRS into the fixture.
 
     The native formal loader authenticates the full trusted k26 file and
     downsizes its in-memory parameters to the tiny circuit's requested domain.
@@ -976,38 +1083,66 @@ def stage_trusted_full_srs(source_root: Path, root: Path) -> tuple[Path, str, st
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     source_before = source.stat()
-    copied_bytes = 0
+    read_bytes = 0
     digest = hashlib.sha256()
     destination_created = False
     manifest_created = False
     try:
-        with source.open("rb") as source_file, destination.open("xb") as destination_file:
+        def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+            return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+        same_filesystem = allow_hardlink and source_before.st_dev == destination.parent.stat().st_dev
+        if same_filesystem:
+            # The official SRS is an immutable input to all tiny stages; only
+            # unlink this extra directory entry during cleanup, never write it.
+            os.link(source, destination, follow_symlinks=False)
             destination_created = True
-            while True:
-                block = source_file.read(4 * 1024 * 1024)
-                if not block:
-                    break
-                digest.update(block)
-                destination_file.write(block)
-                copied_bytes += len(block)
-            destination_file.flush()
-            os.fsync(destination_file.fileno())
-            source_after = os.fstat(source_file.fileno())
-        source_path_after = source.stat()
-        source_identity_before = (source_before.st_dev, source_before.st_ino, source_before.st_size, source_before.st_mtime_ns)
-        source_identity_after = (source_after.st_dev, source_after.st_ino, source_after.st_size, source_after.st_mtime_ns)
-        source_identity_path_after = (
-            source_path_after.st_dev,
-            source_path_after.st_ino,
-            source_path_after.st_size,
-            source_path_after.st_mtime_ns,
-        )
-        if source_identity_before != source_identity_after or source_identity_after != source_identity_path_after:
-            raise TinyE2EError("official SRS source changed while the fixture copy was being staged")
-        if copied_bytes != entry["size"] or digest.hexdigest() != expected_sha256:
-            raise TinyE2EError("copied SRS bytes do not match the authenticated native maximum-domain digest")
-        if destination.stat().st_size != entry["size"]:
-            raise TinyE2EError("staged trusted SRS copy has an unexpected size")
+            linked_source = source.stat()
+            linked_destination = destination.stat()
+            stable_link_id = identity(linked_source)
+            if (
+                (source_before.st_dev, source_before.st_ino, source_before.st_size, source_before.st_mtime_ns)
+                != (linked_source.st_dev, linked_source.st_ino, linked_source.st_size, linked_source.st_mtime_ns)
+                or stable_link_id != identity(linked_destination)
+                or linked_source.st_ino != linked_destination.st_ino
+            ):
+                raise TinyE2EError("staged SRS hard link does not share a stable official source inode")
+            with source.open("rb") as source_file:
+                opened_before = os.fstat(source_file.fileno())
+                if identity(opened_before) != stable_link_id:
+                    raise TinyE2EError("official SRS changed before its bounded hard-link digest check")
+                for block in iter(lambda: source_file.read(4 * 1024 * 1024), b""):
+                    digest.update(block)
+                    read_bytes += len(block)
+                opened_after = os.fstat(source_file.fileno())
+            source_after = source.stat()
+            destination_after = destination.stat()
+            if not all(identity(item) == stable_link_id for item in (opened_after, source_after, destination_after)):
+                raise TinyE2EError("official SRS hard link changed while its content was authenticated")
+        else:
+            with source.open("rb") as source_file, destination.open("xb") as destination_file:
+                destination_created = True
+                opened_before = os.fstat(source_file.fileno())
+                if identity(opened_before) != identity(source_before):
+                    raise TinyE2EError("official SRS changed before the cross-filesystem fixture copy")
+                while True:
+                    block = source_file.read(4 * 1024 * 1024)
+                    if not block:
+                        break
+                    digest.update(block)
+                    destination_file.write(block)
+                    read_bytes += len(block)
+                destination_file.flush()
+                os.fsync(destination_file.fileno())
+                opened_after = os.fstat(source_file.fileno())
+            source_after = source.stat()
+            destination_after = destination.stat()
+            if not all(identity(item) == identity(source_before) for item in (opened_after, source_after)):
+                raise TinyE2EError("official SRS source changed while the fixture copy was being staged")
+            if destination_after.st_size != entry["size"]:
+                raise TinyE2EError("staged trusted SRS copy has an unexpected size")
+        if read_bytes != entry["size"] or digest.hexdigest() != expected_sha256:
+            raise TinyE2EError("staged trusted SRS bytes do not match the authenticated native maximum-domain digest")
         with manifest_source.open("rb") as source_manifest, manifest_destination.open("xb") as copied_manifest:
             manifest_created = True
             shutil.copyfileobj(source_manifest, copied_manifest, length=64 * 1024)
@@ -1021,7 +1156,185 @@ def stage_trusted_full_srs(source_root: Path, root: Path) -> tuple[Path, str, st
         if manifest_created:
             manifest_destination.unlink(missing_ok=True)
         raise
-    return destination, expected_sha256, entry["srs_id"], max_logrows
+    return destination, expected_sha256, entry["srs_id"], max_logrows, entry["size"]
+
+
+def run_tiny_setup_capacity_gate(
+    root: Path,
+    output_root: Path,
+    session_dir: Path,
+    session_id: str,
+    admission: dict[str, Any],
+    runtime_identity: dict[str, Any],
+    selected_device: dict[str, Any],
+    build_environment: dict[str, Any],
+    gpu_identity: dict[str, Any],
+    source_srs_path: Path,
+    source_srs_size_bytes: int,
+) -> dict[str, Any]:
+    """Evaluate one real tiny Admission with the production capacity functions."""
+    from run_hybrid_formal import (
+        _build_native_cub_workspace_query,
+        _authenticated_srs_copy_size_bytes,
+        _check_dataset_capacity,
+        _disk_budget_components,
+        _native_capacity_requirements,
+        _pending_srs_copy_disk_budget,
+        _sample_native_cuda_memory,
+    )
+
+    memory = admission["native_memory_model"]
+    query_receipt = _build_native_cub_workspace_query(
+        session_dir,
+        session_id,
+        runtime_identity,
+        selected_device,
+        build_environment,
+        gpu_identity,
+    )
+    query = query_receipt["query"]
+    if (
+        not isinstance(query, dict)
+        or query.get("device_uuid") != selected_device.get("uuid")
+        or query.get("total_memory_bytes") != memory.get("cuda_total_memory_bytes")
+        or not isinstance(query.get("native_type_sizes"), dict)
+        or query["native_type_sizes"].get("scalar_bytes") != memory.get("size_of_fr_bytes")
+    ):
+        raise TinyE2EError("tiny Admission and fresh native CUB query disagree on device or scalar identity")
+    requirements = _native_capacity_requirements(
+        admission,
+        query["native_type_sizes"],
+    )
+    srs_copy_size = _authenticated_srs_copy_size_bytes(
+        source_srs_path,
+        expected_size_bytes=source_srs_size_bytes,
+    )
+    srs_budget = _pending_srs_copy_disk_budget(srs_copy_size, {TINY_DATASET})
+    disk_components = _disk_budget_components(
+        pending_srs=srs_budget,
+        setup_key_artifact_upper_bytes=requirements["setup_key_artifact_upper_bytes"],
+        setup_mapped_peak_bytes=requirements["setup_mapped_peak_bytes"],
+    )
+    live_sample = _sample_native_cuda_memory(
+        query_receipt,
+        session_dir=session_dir,
+        session_id=session_id,
+        selected_device=selected_device,
+        gpu_identity=gpu_identity,
+        build_environment=build_environment,
+    )
+    setup_check = _check_dataset_capacity(
+        TINY_DATASET,
+        requirements,
+        output_root=output_root,
+        remaining_known_disk_bytes=int(disk_components["total_required_bytes"]),
+        phase="tiny_setup",
+        device_sample=live_sample,
+        workspace_query=query,
+        disk_budget_components=disk_components,
+    )
+    return {
+        "query_receipt": query_receipt,
+        "workspace_query": query,
+        "requirements": requirements,
+        "setup_check": setup_check,
+        "source_srs_copy_path": str(source_srs_path),
+        "source_srs_copy_size_bytes": srs_copy_size,
+        "pending_output_srs_copy_count": srs_budget["pending_output_srs_copy_count"],
+        "pending_output_srs_copy_bytes": srs_budget["pending_output_srs_copy_bytes"],
+    }
+
+
+def run_tiny_prove_capacity_gate(
+    root: Path,
+    output_root: Path,
+    session_dir: Path,
+    session_id: str,
+    admission: dict[str, Any],
+    capacity: dict[str, Any],
+    selected_device: dict[str, Any],
+    build_environment: dict[str, Any],
+    gpu_identity: dict[str, Any],
+    source_srs_path: Path,
+    source_srs_size_bytes: int,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Refresh device/host capacity before final prepare, witness, and proving."""
+    from run_hybrid_formal import (
+        _check_dataset_capacity,
+        _authenticated_srs_copy_size_bytes,
+        _disk_budget_components,
+        _native_prepare_budget,
+        _pending_srs_copy_disk_budget,
+        _sample_native_cuda_memory,
+        _validated_native_prepare_exports,
+    )
+
+    live_sample = _sample_native_cuda_memory(
+        capacity["query_receipt"],
+        session_dir=session_dir,
+        session_id=session_id,
+        selected_device=selected_device,
+        gpu_identity=gpu_identity,
+        build_environment=build_environment,
+    )
+    requirements = capacity["requirements"]
+    query = capacity["workspace_query"]
+    srs_copy_size = _authenticated_srs_copy_size_bytes(
+        source_srs_path,
+        expected_size_bytes=source_srs_size_bytes,
+    )
+    srs_budget = _pending_srs_copy_disk_budget(srs_copy_size, {TINY_DATASET})
+    disk_components = _disk_budget_components(
+        pending_srs=srs_budget,
+        proof_spill_known_bytes=requirements["proof_spill_known_bytes"],
+    )
+    prove_check = _check_dataset_capacity(
+        TINY_DATASET,
+        requirements,
+        output_root=output_root,
+        remaining_known_disk_bytes=int(disk_components["total_required_bytes"]),
+        phase="tiny_witness_prove_verify",
+        device_sample=live_sample,
+        workspace_query=query,
+        disk_budget_components=disk_components,
+    )
+    budget = _native_prepare_budget(
+        requirements,
+        initial_available_bytes=int(prove_check["host_available_bytes"]),
+        workspace_query=query,
+    )
+    memory = admission["native_memory_model"]
+    taskcap, device_headroom, cardinality = _validated_native_prepare_exports(
+        budget,
+        memory["lookup_table_cardinality_upper_bounds"],
+        domain_size=int(admission["domain_size"]),
+        expected_lookup_groups=int(admission["constraint_system"]["num_unique_lookup_table_expression_groups"]),
+    )
+    prove_check["native_prepare_budget"] = budget
+    exports = {
+        "EZKL_NATIVE_PREPARE_BUDGET_BYTES": taskcap,
+        "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES": device_headroom,
+        "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS": cardinality,
+    }
+    report = {
+        "schema": "ezkl.synthetic_bounded_tiny_capacity.v1",
+        "scope": "synthetic_bounded_tiny",
+        "dataset": TINY_DATASET,
+        "admission_sha256": admission["sha256"],
+        "logrows": admission["logrows"],
+        "domain_size": admission["domain_size"],
+        "minimum_rows": admission["constraint_system"]["minimum_rows"],
+        "scalar_domain_vector_bytes": admission.get("scalar_domain_vector_bytes"),
+        "device_uuid": selected_device["uuid"],
+        "setup_check": capacity["setup_check"],
+        "prove_check": prove_check,
+        "source_srs_copy_path": str(source_srs_path),
+        "source_srs_copy_size_bytes": srs_copy_size,
+        "pending_output_srs_copy_count": srs_budget["pending_output_srs_copy_count"],
+        "pending_output_srs_copy_bytes": srs_budget["pending_output_srs_copy_bytes"],
+        "native_prepare_exports": exports,
+    }
+    return exports, report
 
 
 def update_tiny_srs_config(root: Path, path: Path, srs_id: str, digest: str) -> None:
@@ -1037,13 +1350,21 @@ def update_tiny_srs_config(root: Path, path: Path, srs_id: str, digest: str) -> 
         )
 
 
-def build_chain_commands(root: Path, output: Path, binary: Path, srs: Path, backend: str) -> dict[str, list[str]]:
+def build_chain_commands(
+    root: Path,
+    output: Path,
+    binary: Path,
+    admission_dir: Path,
+    srs: Path,
+    backend: str,
+) -> dict[str, list[str]]:
     """Mirror run_single_dataset.py's official command construction exactly."""
 
     py = sys.executable
     resource_manifest = "resources/resource_manifest.json"
     config = f"resources/canonical/configs/{TINY_DATASET}_secure.cfg"
     b = relative(root, binary)
+    admitted = relative(root, admission_dir)
     out = relative(root, output)
     srs_rel = relative(root, srs)
     statement = relative(root, output / "statement.json")
@@ -1056,6 +1377,21 @@ def build_chain_commands(root: Path, output: Path, binary: Path, srs: Path, back
     settings = relative(root, output / "settings.json")
     vk = relative(root, output / "vk.key")
     commands = {
+        "admission": [
+            b,
+            "gat-prepare",
+            "--dataset",
+            TINY_DATASET,
+            "--phase",
+            "admission",
+            "--resource-manifest",
+            resource_manifest,
+            "--output-dir",
+            admitted,
+            "--srs-path",
+            srs_rel,
+            "--gpu",
+        ],
         "initial_prepare": [
             b,
             "gat-prepare",
@@ -1067,6 +1403,8 @@ def build_chain_commands(root: Path, output: Path, binary: Path, srs: Path, back
             resource_manifest,
             "--output-dir",
             out,
+            "--admission-dir",
+            admitted,
             "--srs-path",
             srs_rel,
             *( ["--gpu"] if backend == "gpu" else [] ),
@@ -1331,12 +1669,74 @@ def negative_collector_cell(root: Path, output: Path, mutation: str, backend: st
         result_path.write_bytes(original)
 
 
+def negative_admission_consumer(
+    root: Path,
+    admission_dir: Path,
+    setup_command: list[str],
+    output_root: Path,
+    log_dir: Path,
+    timeout: float,
+    deadline: float,
+    env: dict[str, str],
+) -> tuple[str, ...]:
+    """Prove the native setup consumer rejects semantic receipt drift."""
+    receipt_path = admission_dir / "admission.json"
+    original = receipt_path.read_bytes()
+    original_doc = json.loads(original)
+    cases: list[tuple[str, dict[str, Any], str]] = []
+
+    minimum_doc = copy.deepcopy(original_doc)
+    minimum = minimum_doc["constraint_system"]["minimum_rows"]
+    domain = minimum_doc["domain_size"]
+    changed_minimum = minimum + 1 if minimum + 1 < domain else minimum - 1
+    if changed_minimum <= 0 or changed_minimum == minimum:
+        raise TinyE2EError("tiny admission domain has no in-domain minimum_rows mutation for a semantic negative")
+    minimum_doc["constraint_system"]["minimum_rows"] = changed_minimum
+    cases.append(("minimum_rows", minimum_doc, "minimum_rows"))
+
+    phase_doc = copy.deepcopy(original_doc)
+    phase_ids = phase_doc["native_memory_model"]["advice_column_phase_ids"]
+    if not isinstance(phase_ids, list) or not phase_ids:
+        raise TinyE2EError("tiny admission has no advice phase IDs for a semantic negative")
+    phase_ids[0] += 1
+    cases.append(("advice-phase", phase_doc, "advice-column phases"))
+
+    successes: list[str] = []
+    try:
+        for label, mutated, expected_field in cases:
+            receipt_path.write_text(json.dumps(mutated, indent=2) + "\n", encoding="utf-8")
+            negative_output = output_root / f"admission-negative-{label}"
+            command = list(setup_command)
+            output_flag = command.index("--output-dir")
+            command[output_flag + 1] = relative(root, negative_output)
+            _, _, output = run_stage(
+                f"admission-reject-{label}",
+                command,
+                root=root,
+                log_dir=log_dir,
+                env=env,
+                timeout=timeout,
+                overall_deadline=deadline,
+                expect_success=False,
+            )
+            if expected_field.lower() not in output.lower():
+                raise TinyE2EError(
+                    f"native setup rejected {label} admission mutation without naming its semantic field: {output[-1200:]}"
+                )
+            successes.append(label)
+    finally:
+        receipt_path.write_bytes(original)
+    if sha256(receipt_path) != sha256_bytes(original):
+        raise TinyE2EError("native Admission receipt was not restored byte-for-byte after semantic negatives")
+    return tuple(successes)
+
+
 def parse_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=("cpu", "gpu"), default="cpu")
+    parser.add_argument("--backend", choices=("gpu",), default="gpu", help="run the formal GPU production backend")
     parser.add_argument("--stage-timeout", type=float, default=DEFAULT_STAGE_TIMEOUT)
     parser.add_argument("--overall-timeout", type=float, default=DEFAULT_OVERALL_TIMEOUT)
-    parser.add_argument("--max-srs-logrows", type=int, default=DEFAULT_MAX_SRS_LOGROWS)
+    parser.add_argument("--max-srs-logrows", type=int, default=DEFAULT_MAX_SRS_LOGROWS, help="maximum tiny circuit k (1-17); the full SRS remains the authenticated official k26 object")
     parser.add_argument(
         "--cleanup",
         choices=("success", "always", "never"),
@@ -1349,9 +1749,9 @@ def parse_args() -> argparse.ArgumentParser:
 
 def print_plan() -> None:
     print("tiny fixture: mktemp baseline root; two nodes, four edges, nonzero checkpoint tensors")
-    print("official chain: authenticate/copy full trusted SRS -> gat-prepare setup with native downsize -> external producer -> gat-prepare final -> gat-witness -> prove -> verify")
+    print("official chain: production GPU Admission -> fresh native capacity/budget gate -> setup with --admission-dir -> external producer -> final prepare -> witness -> prove -> independent verify")
     print("post-chain: statement/Y/producer-manifest tamper rejection -> backend-local collector/final -> opposite-backend/fallback/stale/missing rejection")
-    print("local collector: --datasets cora --local-backends cpu|gpu; formal entry collects five dataset results")
+    print("collector scope: one local synthetic cora cell; formal entry remains the only five-dataset result path")
 
 
 def main(args: argparse.Namespace) -> int:
@@ -1360,272 +1760,346 @@ def main(args: argparse.Namespace) -> int:
         return 0
     if args.stage_timeout <= 0 or args.overall_timeout <= 0:
         raise TinyE2EError("timeouts must be positive")
-    if args.max_srs_logrows < 1 or args.max_srs_logrows >= 26:
-        raise TinyE2EError("--max-srs-logrows must be in [1,25]; k26 is forbidden")
+    if args.max_srs_logrows < 1 or args.max_srs_logrows > DEFAULT_MAX_SRS_LOGROWS:
+        raise TinyE2EError(f"--max-srs-logrows must be in [1,{DEFAULT_MAX_SRS_LOGROWS}]; tiny setup must stay small")
 
     started = time.monotonic()
     deadline = started + args.overall_timeout
     backend = args.backend
     source_root = Path(__file__).resolve().parents[1]
-    gpu_environment: dict[str, Any] | None = None
-    if backend == "gpu":
-        sys.path.insert(0, str(source_root / "scripts"))
+    session_id = uuid.uuid4().hex
+    sys.path.insert(0, str(source_root / "scripts"))
+    try:
         from formal_common import native_backend_identity
         from run_hybrid_formal import _formal_gpu_environment, reusable_build
 
-        runtime, selected, build_environment, gpu_identity = _formal_gpu_environment("0" * 32)
+        runtime, selected_device, build_environment, gpu_identity = _formal_gpu_environment(session_id)
         official_binary = source_root / "target/gpu/release/ezkl"
         if not reusable_build(official_binary, "gpu", runtime, build_environment):
             raise TinyE2EError("formal GPU build receipt is stale or does not authenticate the current binary/source/DSO")
-        identity = native_backend_identity()
-        gpu_environment = {
-            "selected_cuda_device": selected,
-            "gpu_identity": gpu_identity,
-            "native_backend_manifest_sha256": identity["native_backend_manifest_sha256"],
-            "cuda_architecture": identity["cuda_architecture"],
-        }
+        gpu_backend = native_backend_identity()
+    except Exception as exc:
+        print(f"[tiny-e2e] BLOCKED/FAIL before fixture staging: {exc}", file=sys.stderr, flush=True)
+        return 2
+
     temp_root = create_tiny_workspace()
     success = False
+    formal_lock_fd: int | None = None
+    staged_srs_source: Path | None = None
+    staged_srs_path: Path | None = None
+    previous_sigterm_handler = signal.signal(signal.SIGTERM, _raise_on_sigterm)
     print(f"[tiny-e2e] temporary baseline: {temp_root}", flush=True)
     try:
         binary = stage_baseline(temp_root, backend)
         staged_source_sha256 = source_tree_hash(temp_root)
         origin_source_sha256 = source_tree_hash(source_root)
         if staged_source_sha256 != origin_source_sha256:
-            raise TinyE2EError(
-                "staged temporary source files do not match the official source-tree content identity"
-            )
+            raise TinyE2EError("staged temporary source files do not match the official source-tree content identity")
         print(f"[tiny-e2e] staged source identity PASS: {staged_source_sha256}", flush=True)
+
         create_log = temp_root / "logs/tiny-bootstrap"
         create_log.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         for name in (
-            "ENABLE_ICICLE_GPU",
-            "EZKL_GAT_BACKEND",
-            "ICICLE_SMALL_K",
-            "ICICLE_SMALL_K_FFT",
-            "ICICLE_BACKEND_INSTALL_DIR",
-            "ICICLE_NATIVE_LIB_DIR",
-            "ICICLE_NATIVE_MANIFEST_SHA256",
-            "CUDA_ARCH",
-            "EZKL_FORMAL_SESSION_ID",
-            "EZKL_FORMAL_BUILD_RECEIPT_SHA256",
-            "EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256",
-            "EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID",
-            "EZKL_FORMAL_SELECTED_CUDA_DEVICE",
+            "ENABLE_ICICLE_GPU", "EZKL_GAT_BACKEND", "ICICLE_SMALL_K", "ICICLE_SMALL_K_FFT",
+            "ICICLE_BACKEND_INSTALL_DIR", "ICICLE_NATIVE_LIB_DIR", "ICICLE_NATIVE_MANIFEST_SHA256",
+            "CUDA_ARCH", "EZKL_FORMAL_SESSION_ID", "EZKL_FORMAL_BUILD_RECEIPT_SHA256",
+            "EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256", "EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID",
+            "EZKL_FORMAL_SELECTED_CUDA_DEVICE", "EZKL_NATIVE_PREPARE_BUDGET_BYTES",
+            "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES", "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS",
         ):
             env.pop(name, None)
         env.update({
             "EZKL_WORKING_DIR": ".",
-            "EZKL_GAT_BACKEND": backend,
+            "EZKL_GAT_BACKEND": "gpu",
             "EZKL_ALLOW_TINY_FIXTURE": "1",
+            "EZKL_FORMAL_SESSION_ID": session_id,
+            "EZKL_FORMAL_BUILD_RECEIPT_SHA256": sha256(source_root / "artifacts/build/gpu/build_receipt.json"),
+            "EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256": str(build_environment["build_environment_sha256"]),
+            "EZKL_FORMAL_SELECTED_CUDA_DEVICE": json.dumps(selected_device, sort_keys=True, separators=(",", ":")),
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": str(selected_device["uuid"]),
+            "ICICLE_DEVICE_ID": "0",
+            "ENABLE_ICICLE_GPU": "1",
+            "EZKL_GAT_REQUIRE_GPU_EVIDENCE": "1",
         })
-        if backend == "gpu":
-            assert gpu_environment is not None
-            gpu_root = temp_root / "artifacts/build/icicle-cuda"
-            env.update({
-                "ICICLE_BACKEND_INSTALL_DIR": str(gpu_root),
-                "ICICLE_NATIVE_LIB_DIR": str(gpu_root / "lib"),
-                "ICICLE_NATIVE_MANIFEST_SHA256": gpu_environment["native_backend_manifest_sha256"],
-                "CUDA_ARCH": str(gpu_environment["cuda_architecture"]).removeprefix("sm_"),
-                "ICICLE_DEVICE_ID": str(gpu_environment["selected_cuda_device"]["logical_device_id"]),
-                "EZKL_GAT_REQUIRE_GPU_EVIDENCE": "1",
-            })
+        gpu_root = temp_root / "artifacts/build/icicle-cuda"
+        env.update({
+            "ICICLE_BACKEND_INSTALL_DIR": str(gpu_root),
+            "ICICLE_NATIVE_LIB_DIR": str(gpu_root / "lib"),
+            "ICICLE_NATIVE_MANIFEST_SHA256": str(gpu_backend["native_backend_manifest_sha256"]),
+            "CUDA_ARCH": str(gpu_backend["cuda_architecture"]).removeprefix("sm_"),
+        })
+
         generate = [sys.executable, "scripts/generate_gat_resources.py"]
         for dataset in DATASETS:
             generate.extend(("--dataset", dataset))
         run_stage(
-            "generate-tiny-resources",
-            generate,
-            root=temp_root,
-            log_dir=create_log,
-            env=env,
-            timeout=args.stage_timeout,
-            overall_deadline=deadline,
+            "generate-tiny-resources", generate, root=temp_root, log_dir=create_log,
+            env=env, timeout=args.stage_timeout, overall_deadline=deadline,
         )
         seed_tiny_resource_manifest(temp_root)
         run_stage(
             "validate-tiny-resources",
             [sys.executable, "scripts/validate_resources.py", "--write-manifest", "--require-complete"],
-            root=temp_root,
-            log_dir=create_log,
-            env=env,
-            timeout=args.stage_timeout,
-            overall_deadline=deadline,
+            root=temp_root, log_dir=create_log, env=env, timeout=args.stage_timeout, overall_deadline=deadline,
         )
-        copy_manifest_and_update_receipt(temp_root, backend)
 
-        chosen_srs, chosen_srs_sha256, chosen_srs_id, trusted_source_k = stage_trusted_full_srs(
+        allow_hardlink = args.cleanup != "never"
+        if allow_hardlink:
+            formal_lock_fd = acquire_tiny_formal_lock(source_root)
+        chosen_srs, chosen_srs_sha256, chosen_srs_id, trusted_source_k, source_srs_size_bytes = stage_trusted_full_srs(
             source_root,
             temp_root,
+            allow_hardlink=allow_hardlink,
         )
+        staged_srs_path = chosen_srs
+        staged_srs_source = source_root / chosen_srs.relative_to(temp_root)
         update_tiny_srs_config(temp_root, chosen_srs, chosen_srs_id, chosen_srs_sha256)
         seed_tiny_resource_manifest(temp_root)
         run_stage(
             "refresh-tiny-resource-manifest",
             [sys.executable, "scripts/validate_resources.py", "--write-manifest", "--require-complete"],
-            root=temp_root,
-            log_dir=create_log,
-            env=env,
-            timeout=args.stage_timeout,
-            overall_deadline=deadline,
+            root=temp_root, log_dir=create_log, env=env, timeout=args.stage_timeout, overall_deadline=deadline,
         )
-        copy_manifest_and_update_receipt(temp_root, backend)
-        setup_output = temp_root / f"runs/tiny/cora/{backend}"
-        setup_output.mkdir(parents=True, exist_ok=False)
-        commands = build_chain_commands(temp_root, setup_output, binary, chosen_srs, backend)
-        _, initial_setup_elapsed, _ = run_stage(
-            "initial-prepare",
+
+        output_root = temp_root / "runs/tiny"
+        session_dir = output_root / ".sessions" / session_id
+        admission_log_dir = temp_root / "logs/tiny-admission"
+        admission_elapsed = 0.0
+
+        def run_admission(command: list[str], label: str) -> None:
+            nonlocal admission_elapsed
+            _, elapsed, _ = run_stage(
+                "native-admission", command, root=temp_root, log_dir=admission_log_dir,
+                env=env, timeout=args.stage_timeout, overall_deadline=deadline,
+            )
+            admission_elapsed += elapsed
+            print(f"[tiny-e2e] {label}: actual production admission command completed", flush=True)
+
+        from run_hybrid_formal import native_admit_all_datasets
+
+        admissions = native_admit_all_datasets(
+            binary,
+            chosen_srs,
+            output_root,
+            session_id,
+            selected_device,
+            datasets=(TINY_DATASET,),
+            baseline_root=temp_root,
+            command_runner=run_admission,
+        )
+        admission = admissions[TINY_DATASET]
+        validate_tiny_admission_logrows(admission, args.max_srs_logrows)
+        admission_dir = session_dir / "admission" / TINY_DATASET
+        setup_output = output_root / TINY_DATASET / backend
+        setup_output.parent.mkdir(parents=True, exist_ok=True)
+        capacity = run_tiny_setup_capacity_gate(
+            temp_root, output_root, session_dir, session_id, admission,
+            runtime, selected_device, build_environment, gpu_identity,
+            chosen_srs, source_srs_size_bytes,
+        )
+        write_json(temp_root / "logs/tiny-setup-capacity.json", {
+            "scope": "synthetic_bounded_tiny", "admission_sha256": admission["sha256"],
+            "device_uuid": selected_device["uuid"], "setup_check": capacity["setup_check"],
+            "source_srs_copy_path": capacity["source_srs_copy_path"],
+            "source_srs_copy_size_bytes": capacity["source_srs_copy_size_bytes"],
+            "pending_output_srs_copy_count": capacity["pending_output_srs_copy_count"],
+            "pending_output_srs_copy_bytes": capacity["pending_output_srs_copy_bytes"],
+            "workspace_query": capacity["workspace_query"], "requirements": capacity["requirements"],
+        })
+        commands = build_chain_commands(temp_root, setup_output, binary, admission_dir, chosen_srs, backend)
+        admission_negative_cases = negative_admission_consumer(
+            temp_root,
+            admission_dir,
             commands["initial_prepare"],
-            root=temp_root,
-            log_dir=setup_output / "logs",
-            env={**env, "EZKL_GAT_RUN_DIR": str(setup_output), **({"ENABLE_ICICLE_GPU": "1"} if backend == "gpu" else {})},
-            timeout=args.stage_timeout,
-            overall_deadline=deadline,
+            output_root,
+            temp_root / "logs/tiny-admission-negative",
+            args.stage_timeout,
+            deadline,
+            env,
+        )
+        setup_output.mkdir(parents=True, exist_ok=False)
+        _, initial_setup_elapsed, _ = run_stage(
+            "initial-prepare", commands["initial_prepare"], root=temp_root, log_dir=setup_output / "logs",
+            env={**env, "EZKL_GAT_RUN_DIR": str(setup_output)}, timeout=args.stage_timeout, overall_deadline=deadline,
         )
         settings_doc = json.loads((setup_output / "settings.json").read_text())
         run_args = settings_doc.get("run_args")
-        if not isinstance(run_args, dict) or not isinstance(run_args.get("logrows"), int):
+        if not isinstance(run_args, dict) or isinstance(run_args.get("logrows"), bool) or not isinstance(run_args.get("logrows"), int):
             raise TinyE2EError("tiny setup emitted no native target logrows in settings.json")
         target_logrows = run_args["logrows"]
-        if target_logrows < 1 or target_logrows > args.max_srs_logrows or target_logrows >= trusted_source_k:
-            raise TinyE2EError(
-                f"tiny circuit target k={target_logrows} exceeds the requested bound or is not below trusted source k={trusted_source_k}"
-            )
-        initial_setup_ms = initial_setup_elapsed * 1000.0
-        timings: dict[str, float] = {}
-        for phase in ("producer", "final_prepare", "witness", "prove", "verify"):
-            phase_env = {**env, "EZKL_GAT_RUN_DIR": str(setup_output)}
-            if backend == "gpu" and phase == "prove":
-                phase_env["ENABLE_ICICLE_GPU"] = "1"
+        if (
+            target_logrows != admission["logrows"]
+            or admission["domain_size"] != 1 << target_logrows
+            or admission["domain_size"] < admission["constraint_system"]["minimum_rows"]
+            or target_logrows < 1
+            or target_logrows > args.max_srs_logrows
+            or target_logrows >= trusted_source_k
+        ):
+            raise TinyE2EError("tiny setup settings disagree with the admitted Halo2 domain/minimum-row geometry")
+
+        timings: dict[str, float] = {"admission": admission_elapsed * 1000.0}
+        _, elapsed, _ = run_stage(
+            "producer", commands["producer"], root=temp_root, log_dir=setup_output / "logs",
+            env={**env, "EZKL_GAT_RUN_DIR": str(setup_output)}, timeout=args.stage_timeout, overall_deadline=deadline,
+        )
+        timings["producer"] = elapsed * 1000.0
+
+        native_exports, prove_capacity_report = run_tiny_prove_capacity_gate(
+            temp_root, output_root, session_dir, session_id, admission, capacity,
+            selected_device, build_environment, gpu_identity,
+            chosen_srs, source_srs_size_bytes,
+        )
+        write_json(temp_root / "logs/tiny-prove-capacity.json", prove_capacity_report)
+        phase_env = {**env, **native_exports, "EZKL_GAT_RUN_DIR": str(setup_output)}
+        for phase in ("final_prepare", "witness", "prove"):
             _, elapsed, _ = run_stage(
-                phase,
-                commands[phase],
-                root=temp_root,
-                log_dir=setup_output / "logs",
-                env=phase_env,
-                timeout=args.stage_timeout,
-                overall_deadline=deadline,
+                phase, commands[phase], root=temp_root, log_dir=setup_output / "logs",
+                env=phase_env, timeout=args.stage_timeout, overall_deadline=deadline,
             )
             timings[phase] = elapsed * 1000.0
+        proof_path = setup_output / "proof.json"
+        proof_evidence_path = setup_output / "gpu_evidence.json"
+        proof_record_path = setup_output / "gpu_prover_record.json"
+        proof_evidence = json.loads(proof_evidence_path.read_text())
+        proof_record = json.loads(proof_record_path.read_text())
+        if proof_record.get("proof_sha256") != sha256(proof_path):
+            raise TinyE2EError("native GPU prover record does not bind the just-produced tiny proof")
+        if proof_record.get("evidence") != proof_evidence:
+            raise TinyE2EError("tiny proof-stage GPU evidence differs from its native prover record")
+        proof_evidence_sha256 = sha256(proof_evidence_path)
+        # The formal proof is produced on GPU, while the independent native
+        # verifier runs on CPU while retaining the GPU proof/cell identity.
+        # The native GPU evidence reader rejects ENABLE_ICICLE_GPU by presence;
+        # EZKL_GAT_BACKEND selects the proof backend and must remain "gpu".
+        verify_env = dict(phase_env)
+        verify_env.pop("ENABLE_ICICLE_GPU", None)
+        _, elapsed, _ = run_stage(
+            "verify", commands["verify"], root=temp_root, log_dir=setup_output / "logs",
+            env=verify_env, timeout=args.stage_timeout, overall_deadline=deadline,
+        )
+        timings["verify"] = elapsed * 1000.0
+        if sha256(proof_evidence_path) != proof_evidence_sha256:
+            raise TinyE2EError("independent verifier modified the immutable tiny Prove-stage GPU evidence")
+        verified_core = json.loads((setup_output / "core_run_manifest.json").read_text())
+        if verified_core.get("backend") != backend or verified_core.get("native_verify_result") is not True:
+            raise TinyE2EError("independent verifier did not attest the GPU proof cell as successfully verified")
+
         public_output_doc = json.loads((setup_output / "public_output.json").read_text())
         public_y = public_output_doc.get("Y")
         if not isinstance(public_y, list) or not public_y or not any(int(value) != 0 for value in public_y):
             raise TinyE2EError("tiny producer emitted an all-zero public Y")
         if not (setup_output / "artifact_manifest.json").is_file():
             raise TinyE2EError("final prepare did not emit artifact_manifest.json")
-        final_output = temp_root / f"runs/tiny/cora/{backend}"
-        final_output.parent.mkdir(parents=True, exist_ok=True)
-        setup_output.rename(final_output)
-        setup_output = final_output
-        commands = build_chain_commands(temp_root, setup_output, binary, chosen_srs, backend)
         make_result(
-            temp_root, setup_output, binary, chosen_srs, {
-                "initial_prepare": initial_setup_ms,
+            temp_root, setup_output, binary, chosen_srs,
+            {
+                "initial_prepare": initial_setup_elapsed * 1000.0,
                 "final_prepare": timings["final_prepare"],
-                "witness": timings["witness"],
-                "prove": timings["prove"],
-                "verify": timings["verify"],
-            }, backend
+                "witness": timings["witness"], "prove": timings["prove"], "verify": timings["verify"],
+            }, backend,
         )
 
-        original_statement = mutate_json(setup_output / "statement.json", "statement_digest")
-        try:
-            run_stage(
-                "verify-reject-statement-tamper",
-                commands["verify"],
-                root=temp_root,
-                log_dir=setup_output / "logs",
-                env={
-                    **env, "EZKL_GAT_RUN_DIR": str(setup_output)
-                },
-                timeout=args.stage_timeout,
-                overall_deadline=deadline,
-                expect_success=False,
-            )
-        finally:
-            (setup_output / "statement.json").write_bytes(original_statement)
-        original_output = mutate_json(setup_output / "public_output.json", "Y")
-        try:
-            run_stage(
-                "verify-reject-public-output-tamper",
-                commands["verify"],
-                root=temp_root,
-                log_dir=setup_output / "logs",
-                env={
-                    **env, "EZKL_GAT_RUN_DIR": str(setup_output)
-                },
-                timeout=args.stage_timeout,
-                overall_deadline=deadline,
-                expect_success=False,
-            )
-        finally:
-            (setup_output / "public_output.json").write_bytes(original_output)
-        original_producer = mutate_json(setup_output / "producer_manifest.json", "producer_id")
-        try:
-            run_stage(
-                "verify-reject-producer-manifest-tamper",
-                commands["verify"],
-                root=temp_root,
-                log_dir=setup_output / "logs",
-                env={
-                    **env, "EZKL_GAT_RUN_DIR": str(setup_output)
-                },
-                timeout=args.stage_timeout,
-                overall_deadline=deadline,
-                expect_success=False,
-            )
-        finally:
-            (setup_output / "producer_manifest.json").write_bytes(original_producer)
+        for name, key in (
+            ("verify-reject-statement-tamper", "statement_digest"),
+            ("verify-reject-public-output-tamper", "Y"),
+            ("verify-reject-producer-manifest-tamper", "producer_id"),
+        ):
+            path = setup_output / ("public_output.json" if key == "Y" else "statement.json" if key == "statement_digest" else "producer_manifest.json")
+            original = mutate_json(path, key)
+            try:
+                run_stage(
+                    name, commands["verify"], root=temp_root, log_dir=setup_output / "logs",
+                    env=verify_env, timeout=args.stage_timeout,
+                    overall_deadline=deadline, expect_success=False,
+                )
+            finally:
+                path.write_bytes(original)
 
         run_stage(
             f"collect-tiny-{backend}",
-            [
-                sys.executable,
-                "scripts/collect_results.py",
-                "--runs-root",
-                "runs/tiny",
-                "--output",
-                "results/tiny_matrix.json",
-                "--datasets",
-                TINY_DATASET,
-                "--local-backends",
-                backend,
-            ],
-            root=temp_root,
-            log_dir=setup_output / "logs",
-            env=env,
-            timeout=args.stage_timeout,
-            overall_deadline=deadline,
+            [sys.executable, "scripts/collect_results.py", "--runs-root", "runs/tiny", "--output",
+             "results/tiny_matrix.json", "--datasets", TINY_DATASET, "--local-backends", backend],
+            root=temp_root, log_dir=setup_output / "logs", env=env,
+            timeout=args.stage_timeout, overall_deadline=deadline,
         )
         run_stage(
             f"validate-tiny-{backend}",
-            [
-                sys.executable,
-                "-c",
-                "import sys; from pathlib import Path; sys.path.insert(0, 'scripts'); "
-                "from validate_final import validate_matrix; "
-                "sys.exit(validate_matrix(Path('results/tiny_matrix.json'), "
-                f"selected_datasets=('cora',), selected_backends=('{backend}',)))",
-            ],
-            root=temp_root,
-            log_dir=setup_output / "logs",
-            env=env,
-            timeout=args.stage_timeout,
-            overall_deadline=deadline,
+            [sys.executable, "-c",
+             "import sys; from pathlib import Path; sys.path.insert(0, 'scripts'); "
+             "from validate_final import validate_matrix; "
+             "sys.exit(validate_matrix(Path('results/tiny_matrix.json'), "
+             f"selected_datasets=('cora',), selected_backends=('{backend}',)))"],
+            root=temp_root, log_dir=setup_output / "logs", env=env,
+            timeout=args.stage_timeout, overall_deadline=deadline,
         )
         for mutation in ("backend", "fallback", "stale", "missing"):
             negative_collector_cell(temp_root, setup_output, mutation, backend, args.stage_timeout, deadline, env)
+
+        gpu_evidence = json.loads((setup_output / "gpu_evidence.json").read_text())
+        kernel_count = gpu_evidence.get("gpu_kernel_invocation_count")
+        if isinstance(kernel_count, bool) or not isinstance(kernel_count, int) or kernel_count <= 0:
+            raise TinyE2EError("tiny proof has no positive proof-bound GPU kernel invocation evidence")
+        summary = {
+            "schema": "ezkl.synthetic_bounded_tiny_validation.v1",
+            "scope": "synthetic_bounded_tiny; not a formal dataset result",
+            "dataset": TINY_DATASET,
+            "session_id": session_id,
+            "shape": {
+                "nodes": TINY_NODE_COUNT, "features": TINY_FEATURE_DIM,
+                "directed_edges_with_loops": len(TINY_EDGES), "hidden_layers": TINY_HIDDEN_LAYERS,
+                "hidden_heads": list(TINY_HIDDEN_HEAD_COUNTS), "output_heads": TINY_OUTPUT_HEADS,
+                "classes": TINY_CLASSES,
+            },
+            "source_tree_sha256": staged_source_sha256,
+            "admission": {
+                "production_native_admission": True, "admission_sha256": admission["sha256"],
+                "logrows": admission["logrows"], "domain_size": admission["domain_size"],
+                "minimum_rows": admission["constraint_system"]["minimum_rows"],
+                "scalar_domain_vector_bytes": admission["scalar_domain_vector_bytes"],
+            },
+            "capacity": prove_capacity_report,
+            "completed_phases_ms": timings | {"setup": initial_setup_elapsed * 1000.0},
+            "proof": {
+                "status": json.loads((setup_output / "result.json").read_text())["status"],
+                "proof_sha256": sha256(setup_output / "proof.json"),
+                "gpu_kernel_invocation_count": kernel_count,
+                "independent_verify_metrics": str(setup_output / "native_verify_metrics.json"),
+                "result_path": str(setup_output / "result.json"),
+            },
+            "negative_cases": {
+                "semantic_admission_mutations_rejected": list(admission_negative_cases),
+                "tampered_verify_inputs_rejected": 3,
+                "tampered_collector_cells_rejected": 4,
+                "collector_and_final_validation_passed": True,
+            },
+            "total_elapsed_seconds": time.monotonic() - started,
+        }
+        summary_path = temp_root / "logs/tiny-validation-summary.json"
+        write_json(summary_path, summary)
         success = True
-        print(f"[tiny-e2e] PASS: native tiny {backend.upper()} E2E completed in {time.monotonic() - started:.3f}s", flush=True)
+        print(f"[tiny-e2e] PASS: synthetic bounded GPU chain completed in {time.monotonic() - started:.3f}s", flush=True)
+        print(f"[tiny-e2e] bounded validation summary: {summary_path}", flush=True)
         return 0
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, TinyE2EError) as exc:
+    except Exception as exc:
         print(f"[tiny-e2e] BLOCKED/FAIL: {exc}", file=sys.stderr, flush=True)
         print(f"[tiny-e2e] retained temporary root: {temp_root}", file=sys.stderr, flush=True)
         return 2
     finally:
-        if args.cleanup == "always" or (args.cleanup == "success" and success):
-            shutil.rmtree(temp_root, ignore_errors=True)
+        try:
+            if staged_srs_source is not None and staged_srs_path is not None:
+                unlink_staged_srs_hardlink(staged_srs_source, staged_srs_path)
+        finally:
+            try:
+                if args.cleanup == "always" or (args.cleanup == "success" and success):
+                    shutil.rmtree(temp_root, ignore_errors=True)
+            finally:
+                try:
+                    if formal_lock_fd is not None:
+                        release_tiny_formal_lock(formal_lock_fd)
+                finally:
+                    signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
 
 if __name__ == "__main__":

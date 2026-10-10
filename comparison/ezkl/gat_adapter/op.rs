@@ -23,6 +23,14 @@ use super::schema::{scale_exponent_to_multiplier, BoundFamily, CanonicalGat, Exa
 
 const MAX_GAT_EDGE_CHUNK_CELLS: usize = 1 << 18;
 
+fn checked_shape_len(shape: &[usize]) -> Option<usize> {
+    shape.iter().try_fold(1usize, |len, dimension| len.checked_mul(*dimension))
+}
+
+fn is_exact_single_shape(shapes: &[Vec<usize>], expected: &[usize]) -> bool {
+    shapes.len() == 1 && shapes[0].as_slice() == expected
+}
+
 /// Input positions used by [`GatOp`].
 pub const FEATURE_INPUT: usize = 0;
 /// Public node-id input position.
@@ -399,19 +407,16 @@ impl GatOp {
             return Err("formal GAT parameter tensor shape/scale metadata is not canonical".into());
         }
         let output_shape = vec![graph.n, spec.model.classes];
-        if output_shapes != [output_shape.clone()] || output_scales != [spec.scales.s_out] {
+        if !is_exact_single_shape(output_shapes, &output_shape) || output_scales != [spec.scales.s_out] {
             return Err(format!("formal GAT output metadata {:?}/{:?} does not match {:?}/{}", output_shapes, output_scales, output_shape, spec.scales.s_out));
         }
-        let formal_output_shape = output_shapes[0].clone();
-        let formal_output_scale = output_scales[0];
-        let mut output_scalar = Self::constant_i128(&[1], &[1]).map_err(|e| e.to_string())?;
-        output_scalar.set_scale(formal_output_scale);
-        let repeated = Self::repeated_scalar(&output_scalar, &formal_output_shape).map_err(|e| e.to_string())?;
-        if repeated.dims() != formal_output_shape.as_slice() || repeated.scale() != formal_output_scale {
-            return Err(format!("formal output scalar repeat produced shape {:?}, scale {}; expected {:?}, {}", repeated.dims(), repeated.scale(), formal_output_shape, formal_output_scale));
-        }
-        let mut broadcast = repeated.clone();
-        broadcast.expand(&formal_output_shape).map_err(|e| e.to_string())?;
+        let formal_output_shape = output_shapes[0].as_slice();
+        // The actual layout repeats this scalar later.  This early probe only
+        // needs to prove that the target tensor size is representable; building
+        // and expanding a full dummy output here duplicates an O(nodes ×
+        // classes) allocation before synthesis.
+        checked_shape_len(formal_output_shape)
+            .ok_or_else(|| "formal output scalar repeat shape overflow".to_string())?;
         let shape = |label: &str, actual: &[usize], expected: &[usize]| -> Result<(), String> {
             if actual != expected {
                 return Err(format!("{} shape {:?} does not match {:?}", label, actual, expected));
@@ -1948,6 +1953,16 @@ mod bounded_range_tests;
 #[cfg(test)]
 mod flat_slice_tests {
     use super::*;
+
+    #[test]
+    fn pre_synthesis_shape_probe_checks_rank_zero_and_overflow_without_allocating() {
+        assert_eq!(checked_shape_len(&[2, 3]), Some(6));
+        assert_eq!(checked_shape_len(&[2, 0]), Some(0));
+        assert_eq!(checked_shape_len(&[usize::MAX, 2]), None);
+        assert!(is_exact_single_shape(&[vec![2, 3]], &[2, 3]));
+        assert!(!is_exact_single_shape(&[vec![2]], &[2, 3]));
+        assert!(!is_exact_single_shape(&[vec![2, 0]], &[2, 3]));
+    }
 
     #[test]
     fn flat_slice_matches_existing_multidimensional_range_and_keeps_values() {

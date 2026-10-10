@@ -1463,6 +1463,65 @@ impl CanonicalGat {
         if self.ledger.families.len() != expected {
             return Err(format!("bound ledger has {} families, expected {}", self.ledger.families.len(), expected));
         }
+        let max_degree = self
+            .graph
+            .destination_groups_validated()
+            .iter()
+            .map(|(_, start, end)| end - start)
+            .max()
+            .and_then(|degree| i128::try_from(degree).ok())
+            .ok_or_else(|| "maximum graph degree does not fit the integer ledger".to_string())?;
+        // A maximum-score edge in every nonempty destination group has
+        // delta = 0, so the exponential row at zero is necessarily consumed.
+        // This checks only that concrete reachable row; it does not assume
+        // that any table covers the ledger's entire signed interval.
+        let exp_zero_output = self
+            .tables
+            .exp
+            .rows
+            .iter()
+            .find(|(input, _)| *input == 0)
+            .map(|(_, output)| *output)
+            .ok_or_else(|| "exponential table is missing the reachable zero-delta row".to_string())?;
+        let check_aggregation_budget = |family: &BoundFamily, projected_scale: i32, is_output: bool, label: &str| -> Result<(), String> {
+            if family.max_exp < exp_zero_output {
+                return Err(format!(
+                    "{}.max_exp {} is below the required zero-delta exponential output {}",
+                    label, family.max_exp, exp_zero_output
+                ));
+            }
+            let required_sum = max_degree
+                .checked_mul(family.max_exp)
+                .ok_or_else(|| format!("{}.max_degree*max_exp overflows the integer ledger", label))?;
+            if family.max_sum < required_sum {
+                return Err(format!(
+                    "{}.max_sum {} is below max_degree*max_exp {}",
+                    label, family.max_sum, required_sum
+                ));
+            }
+            let denominator_multiplier = scale_exponent_to_multiplier(projected_scale)?;
+            let denominator_multiplier = i128::try_from(denominator_multiplier)
+                .map_err(|_| format!("{}.scaled denominator multiplier exceeds i128", label))?;
+            let scaled_denominator = family
+                .max_sum
+                .checked_mul(denominator_multiplier)
+                .ok_or_else(|| format!("{}.scaled denominator bound overflows i128", label))?;
+            let required_divisor = if is_output {
+                let output_alignment_multiplier = scale_exponent_to_multiplier(self.scales.s_out_pre)?;
+                let output_alignment_multiplier = i128::try_from(output_alignment_multiplier)
+                    .map_err(|_| format!("{}.output alignment multiplier exceeds i128", label))?;
+                scaled_denominator.max(output_alignment_multiplier)
+            } else {
+                scaled_denominator
+            };
+            if family.max_divisor < required_divisor {
+                return Err(format!(
+                    "{}.max_divisor {} is below the required scaled divisor {}",
+                    label, family.max_divisor, required_divisor
+                ));
+            }
+            Ok(())
+        };
         for (layer, spec) in self.model.hidden_layers.iter().enumerate() {
             for head in 0..spec.heads.len() {
                 let family = self
@@ -1472,6 +1531,12 @@ impl CanonicalGat {
                     .find(|family| { family.layer == layer && family.head == head && !family.is_output})
                     .ok_or_else(|| format!("missing hidden bound family {}:{}", layer, head))?;
                 validate_param_bounds(family, &spec.heads[head], false, &format!("hidden {}:{}", layer, head),)?;
+                check_aggregation_budget(
+                    family,
+                    self.scales.s_h_prime[layer][head],
+                    false,
+                    &format!("hidden {}:{}", layer, head),
+                )?;
             }
         }
         let output_layer = usize::MAX;
@@ -1483,6 +1548,7 @@ impl CanonicalGat {
                 .find(|family| { family.layer == output_layer && family.head == head && family.is_output})
                 .ok_or_else(|| format!("missing output bound family {}", head))?;
             validate_param_bounds(family, &self.model.output_heads[head], true, &format!("output {}", head),)?;
+            check_aggregation_budget(family, self.scales.s_y_prime[head], true, &format!("output {}", head))?;
         }
         Ok(())
     }

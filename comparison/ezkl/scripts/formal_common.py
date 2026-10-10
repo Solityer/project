@@ -10,6 +10,7 @@ import os
 import re
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -112,42 +113,74 @@ def abort(message: str) -> NoReturn:
     raise ContractError(message)
 
 
-def sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            h.update(block)
-    return h.hexdigest()
+_SHA256_CACHE: dict[tuple[str, int, int, int, int, int], str] = {}
 
 
-def sha256_with_progress(path: Path, label: str, *, timeout_seconds: int = 1800) -> str:
-    """Authenticate a large formal prerequisite with visible bounded progress."""
-    require_file(path, label)
-    total = path.stat().st_size
+def _file_stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+
+def _assert_hash_file_stable(path: Path, resolved: Path, stream: Any, before: os.stat_result, label: str) -> tuple[str, int, int, int, int, int]:
+    try:
+        resolved_after = path.resolve(strict=True)
+        path_after = resolved_after.stat()
+        after = os.fstat(stream.fileno())
+    except OSError as exc:
+        abort(f"{label} changed while its SHA-256 was being authenticated: {exc}")
+    before_identity = _file_stat_identity(before)
+    if not stat.S_ISREG(before.st_mode) or resolved_after != resolved or _file_stat_identity(path_after) != before_identity or _file_stat_identity(after) != before_identity:
+        abort(f"{label} changed while its SHA-256 was being authenticated")
+    return (str(resolved), *before_identity)
+
+
+def _sha256_stable(path: Path, *, label: str, timeout_seconds: int | None = None, progress: bool = False) -> str:
+    resolved = path.resolve(strict=True)
     started = time.monotonic()
-    next_report = started + 20
-    print(f"[ezkl-formal] authenticating {label} SHA-256 ({total:,} bytes; timeout={timeout_seconds}s)", flush=True)
-    hasher = hashlib.sha256()
-    processed = 0
-    with path.open("rb") as stream:
+    with resolved.open("rb") as stream:
         before = os.fstat(stream.fileno())
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+        if not stat.S_ISREG(before.st_mode) or _file_stat_identity(resolved.stat()) != _file_stat_identity(before):
+            abort(f"{label} changed before its SHA-256 was being authenticated")
+        total = before.st_size
+        if progress:
+            print(f"[ezkl-formal] authenticating {label} SHA-256 ({total:,} bytes; timeout={timeout_seconds}s)", flush=True)
+        key = (str(resolved), *_file_stat_identity(before))
+        cached = _SHA256_CACHE.get(key)
+        if cached is not None:
+            _assert_hash_file_stable(path, resolved, stream, before, label)
+            if progress:
+                print(f"[ezkl-formal] {label} SHA-256 reused stable process-local digest", flush=True)
+            return cached
+        hasher = hashlib.sha256()
+        processed = 0
+        next_report = started + 20
+        block_size = 8 * 1024 * 1024 if progress else 1024 * 1024
+        for block in iter(lambda: stream.read(block_size), b""):
             hasher.update(block)
             processed += len(block)
             now = time.monotonic()
-            if now - started > timeout_seconds:
+            if timeout_seconds is not None and now - started > timeout_seconds:
                 abort(f"{label} SHA-256 authentication exceeded {timeout_seconds}s after {processed:,}/{total:,} bytes")
-            if now >= next_report:
+            if progress and now >= next_report:
                 print(f"[ezkl-formal] {label} SHA-256 progress {processed:,}/{total:,} bytes", flush=True)
                 next_report = now + 20
-        after = os.fstat(stream.fileno())
-    identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-    identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-    if processed != total or identity_before != identity_after:
-        abort(f"{label} changed while its SHA-256 was being authenticated")
-    value = hasher.hexdigest()
-    print(f"[ezkl-formal] {label} SHA-256 authenticated ({processed:,} bytes)", flush=True)
-    return value
+        identity = _assert_hash_file_stable(path, resolved, stream, before, label)
+        if processed != total:
+            abort(f"{label} changed while its SHA-256 was being authenticated")
+        value = hasher.hexdigest()
+        _SHA256_CACHE[identity] = value
+        if progress:
+            print(f"[ezkl-formal] {label} SHA-256 authenticated ({processed:,} bytes)", flush=True)
+        return value
+
+
+def sha256(path: Path) -> str:
+    return _sha256_stable(path, label=str(path))
+
+
+def sha256_with_progress(path: Path, label: str, *, timeout_seconds: int = 1800) -> str:
+    """Authenticate a large formal prerequisite and reuse only stable local digests."""
+    require_file(path, label)
+    return _sha256_stable(path, label=label, timeout_seconds=timeout_seconds, progress=True)
 
 
 _FORMAL_CONTEXT_SEAL = object()

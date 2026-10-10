@@ -20,11 +20,15 @@ from run_hybrid_formal import (  # noqa: E402
     DATASETS,
     NATIVE_FORMAL_BACKEND,
     _CUB_QUERY_COUNTS,
+    _admit_local_capacity,
+    _authenticated_srs_copy_size_bytes,
     _check_dataset_capacity,
+    _disk_budget_components,
     _formal_dataset_command_plan,
     _native_capacity_requirements,
     _main,
     _native_prepare_budget,
+    _pending_srs_copy_disk_budget,
     _recheck_local_phase_capacity,
     _remaining_setup_disk_bytes,
     _validate_cub_workspace_query,
@@ -254,6 +258,109 @@ class LocalFormalEntryTest(unittest.TestCase):
                         workspace_query=query,
                 )
 
+    def test_native_srs_copy_budget_counts_pending_cells_and_fails_closed_at_disk_boundary(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ezkl-srs-budget-") as temporary:
+            srs_path = Path(temporary) / "trusted.srs"
+            srs_path.write_bytes(b"1234567")
+            source_bytes = _authenticated_srs_copy_size_bytes(srs_path, expected_size_bytes=7)
+            self.assertEqual(source_bytes, 7)
+            with self.assertRaisesRegex(formal_common.ContractError, "differs from its validated manifest"):
+                _authenticated_srs_copy_size_bytes(srs_path, expected_size_bytes=8)
+
+            all_pending = _pending_srs_copy_disk_budget(source_bytes, set(DATASETS))
+            self.assertEqual(all_pending["pending_output_srs_copy_count"], 5)
+            self.assertEqual(all_pending["pending_output_srs_copy_bytes"], 35)
+            partially_completed = _pending_srs_copy_disk_budget(source_bytes, set(DATASETS[2:]))
+            self.assertEqual(partially_completed["pending_output_srs_copy_count"], 3)
+            self.assertEqual(partially_completed["pending_output_srs_copy_bytes"], 21)
+            self.assertEqual(partially_completed["pending_output_srs_copy_datasets"], list(DATASETS[2:]))
+
+            components = _disk_budget_components(
+                pending_srs=partially_completed,
+                setup_key_artifact_upper_bytes=10,
+                setup_mapped_peak_bytes=4,
+            )
+            self.assertEqual(components["total_required_bytes"], 35)
+            requirements = {"host_known_bytes": 1}
+            sample = {"free_memory_bytes": 100, "total_memory_bytes": 200, "device_uuid": "GPU-test"}
+            query = {"device_workspace_peak_bytes": 1, "integrated_device": False}
+            for available in (35, 34):
+                with self.subTest(disk_available=available), \
+                     mock.patch("run_hybrid_formal._effective_host_memory_available_bytes", return_value=(100, {})), \
+                     mock.patch("run_hybrid_formal._host_os_diagnostic_reserve_bytes", return_value=(0, {})), \
+                     mock.patch("run_hybrid_formal._filesystem_available_bytes", return_value=(available, {})):
+                    if available == 35:
+                        check = _check_dataset_capacity(
+                            "cora", requirements, output_root=Path("/capacity/formal"),
+                            remaining_known_disk_bytes=int(components["total_required_bytes"]),
+                            phase="setup", device_sample=sample, workspace_query=query,
+                            disk_budget_components=components,
+                        )
+                        self.assertEqual(check["disk_required_known_bytes"], 35)
+                        self.assertEqual(check["disk_budget_components"]["pending_output_srs_copy_bytes"], 21)
+                    else:
+                        with self.assertRaisesRegex(formal_common.ContractError, "mapped/key artifact gate"):
+                            _check_dataset_capacity(
+                                "cora", requirements, output_root=Path("/capacity/formal"),
+                                remaining_known_disk_bytes=int(components["total_required_bytes"]),
+                                phase="setup", device_sample=sample, workspace_query=query,
+                                disk_budget_components=components,
+                            )
+
+    def test_formal_initial_gate_consumes_pending_srs_copies_after_completed_cell_validation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ezkl-srs-initial-gate-") as temporary:
+            srs_path = Path(temporary) / "trusted.srs"
+            srs_path.write_bytes(b"1234567")
+            query = {
+                "device_uuid": "GPU-test",
+                "free_memory_bytes": 100,
+                "total_memory_bytes": 200,
+                "integrated_device": False,
+                "device_workspace_peak_bytes": 1,
+                "native_type_sizes": {"scalar_bytes": 32, "affine_bytes": 64},
+            }
+            receipt = {"query": query, "result_sha256": "a" * 64}
+            admissions = {
+                name: {"native_memory_model": {"size_of_fr_bytes": 32, "cuda_total_memory_bytes": 200}}
+                for name in DATASETS
+            }
+            per_dataset = {
+                "setup_key_artifact_upper_bytes": 10,
+                "setup_mapped_peak_bytes": 20,
+                "proof_host_peak_bytes": 1,
+                "host_known_bytes": 2,
+            }
+            active = set(DATASETS[2:])
+            setup_required = {DATASETS[2], DATASETS[4]}
+            with mock.patch("run_hybrid_formal._build_native_cub_workspace_query", return_value=receipt), \
+                 mock.patch("run_hybrid_formal._validate_native_cub_workspace_receipt", return_value=receipt), \
+                 mock.patch("run_hybrid_formal._native_capacity_requirements", return_value=per_dataset), \
+                 mock.patch("run_hybrid_formal._check_dataset_capacity", side_effect=lambda *_args, **kwargs: {
+                     "dataset": _args[0], "disk_required_known_bytes": kwargs["remaining_known_disk_bytes"],
+                     "disk_budget_components": kwargs["disk_budget_components"],
+                 }) as gate:
+                _receipt, _requirements, profile = _admit_local_capacity(
+                    admissions,
+                    output_root=Path(temporary) / "runs/formal",
+                    session_dir=Path(temporary) / "session",
+                    session_id="a" * 32,
+                    runtime_identity={},
+                    selected_device={"uuid": "GPU-test"},
+                    build_environment={},
+                    gpu_identity={},
+                    srs_copy_size_bytes=7,
+                    active_datasets=active,
+                    setup_required_datasets=setup_required,
+                    pending_finalize_datasets=active,
+                )
+            self.assertEqual(gate.call_count, 3)
+            # Two setup key artifacts + one setup peak map + three pending output copies.
+            self.assertEqual(profile["initial_disk_budget_components"]["total_required_bytes"], 61)
+            self.assertEqual(profile["initial_disk_budget_components"]["pending_output_srs_copy_count"], 3)
+            self.assertEqual(profile["pending_finalize_datasets"], list(DATASETS[2:]))
+            self.assertTrue(all(call.kwargs["remaining_known_disk_bytes"] == 61 for call in gate.call_args_list))
+            self.assertTrue(all(call.kwargs["disk_budget_components"]["pending_output_srs_copy_count"] == 3 for call in gate.call_args_list))
+
     def test_native_prepare_budget_charges_baseline_and_table_cache_once(self) -> None:
         requirements = _native_capacity_requirements(
             self._capacity_admission(), {"scalar_bytes": 32, "affine_bytes": 64}
@@ -363,6 +470,28 @@ class LocalFormalEntryTest(unittest.TestCase):
             }, 1, include_current_transient=False),
             sum(range(2, len(DATASETS) + 1)),
         )
+        filtered_requirements = {
+            dataset: {"setup_key_artifact_upper_bytes": index + 1, "setup_mapped_peak_bytes": 20}
+            for index, dataset in enumerate(DATASETS)
+        }
+        self.assertEqual(
+            _remaining_setup_disk_bytes(
+                filtered_requirements,
+                1,
+                include_current_transient=True,
+                setup_required_datasets={"citeseer", "ppi"},
+            ),
+            26,
+        )
+        self.assertEqual(
+            _remaining_setup_disk_bytes(
+                filtered_requirements,
+                2,
+                include_current_transient=False,
+                setup_required_datasets={"citeseer", "ppi"},
+            ),
+            4,
+        )
         sample = {
             "session_id": "a" * 32,
             "device_uuid": selected["uuid"],
@@ -388,7 +517,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             output_root = root / "runs" / "formal"
             matrix = root / "results" / "formal_matrix.json"
             with mock.patch("run_hybrid_formal.ROOT", root), mock.patch.object(formal_common, "ROOT", root):
-                args = Namespace(binary=None, output_root="runs/formal", matrix="results/formal_matrix.json", preflight_only=False, _from_ezkl_entry=True)
+                args = Namespace(binary=None, output_root="runs/formal", matrix="results/formal_matrix.json", preflight_only=False, resume_session=None, _from_ezkl_entry=True)
                 with mock.patch("run_hybrid_formal._run_session", side_effect=RuntimeError("bounded injected failure")) as run_session:
                     with self.assertRaisesRegex(RuntimeError, "bounded injected failure"):
                         _main(args)
@@ -437,7 +566,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             }) + "\n", encoding="utf-8")
 
             with mock.patch("run_hybrid_formal.ROOT", root), mock.patch.object(formal_common, "ROOT", root):
-                args = Namespace(binary=None, output_root="runs/formal", matrix="results/formal_matrix.json", preflight_only=False, _from_ezkl_entry=True)
+                args = Namespace(binary=None, output_root="runs/formal", matrix="results/formal_matrix.json", preflight_only=False, resume_session=None, _from_ezkl_entry=True)
                 with mock.patch("run_hybrid_formal._run_session", side_effect=RuntimeError("bounded injected failure")):
                     with self.assertRaisesRegex(RuntimeError, "bounded injected failure"):
                         _main(args)

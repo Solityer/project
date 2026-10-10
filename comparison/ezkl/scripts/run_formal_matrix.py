@@ -21,7 +21,7 @@ def restart_without_inherited_preload() -> None:
 
 restart_without_inherited_preload()
 
-from formal_common import ContractError, ROOT, abort, print_error  # noqa: E402
+from formal_common import FORMAL_SESSION_ID, ContractError, ROOT, abort, print_error  # noqa: E402
 
 
 def parser() -> argparse.ArgumentParser:
@@ -32,6 +32,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--binary", default="target/gpu/release/ezkl")
     result.add_argument("--output-root", default="runs/formal")
     result.add_argument("--matrix", default="results/formal_matrix.json")
+    result.add_argument("--resume-session", help="resume this exact interrupted/failed formal session")
     result.add_argument("--_ld-preload-cleared", action="store_true", help=argparse.SUPPRESS)
     return result
 
@@ -39,6 +40,11 @@ def parser() -> argparse.ArgumentParser:
 def main(args: argparse.Namespace) -> int:
     if args.dry_run and (args.execute_formal or args.preflight_only):
         abort("--dry-run cannot be combined with --execute-formal or --preflight-only")
+    if args.resume_session is not None:
+        if not args.execute_formal or args.dry_run or args.preflight_only:
+            abort("--resume-session requires --execute-formal and cannot be combined with --dry-run or --preflight-only")
+        if FORMAL_SESSION_ID.fullmatch(args.resume_session) is None:
+            abort("--resume-session must be one exact 32-character lowercase hexadecimal session id")
     command = [
         sys.executable,
         str(ROOT / "scripts" / "run_hybrid_formal.py"),
@@ -52,6 +58,8 @@ def main(args: argparse.Namespace) -> int:
     ]
     if args.preflight_only:
         command.append("--preflight-only")
+    if args.resume_session is not None:
+        command.extend(("--resume-session", args.resume_session))
     if not args.execute_formal and not args.preflight_only:
         print("five-dataset EZKL/Halo2 formal chain: no setup/prove/verify was run")
         print("the EZKL-local production command is:")

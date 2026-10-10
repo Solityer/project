@@ -88,6 +88,18 @@ def i128_bytes(value: int) -> bytes:
         raise AssertionError from exc
 
 
+def _update_i128_digest(hasher: Any, values: Iterable[int]) -> None:
+    """Hash canonical little-endian i128 values with a fixed-size buffer."""
+    chunk = bytearray()
+    for value in values:
+        chunk.extend(i128_bytes(int(value)))
+        if len(chunk) >= 1 << 20:
+            hasher.update(chunk)
+            chunk.clear()
+    if chunk:
+        hasher.update(chunk)
+
+
 def u64_bytes(value: int) -> bytes:
     if value < 0 or value >= 1 << 64:
         fail(f"unsigned identity value is outside u64: {value}")
@@ -95,19 +107,28 @@ def u64_bytes(value: int) -> bytes:
 
 
 def digest_i128(values: Iterable[int]) -> str:
-    payload = bytearray(b"ezkl-gat-public-y-v1")
-    for value in values:
-        payload.extend(i128_bytes(value))
-    return sha256_bytes(bytes(payload))
+    hasher = hashlib.sha256()
+    hasher.update(b"ezkl-gat-public-y-v1")
+    _update_i128_digest(hasher, values)
+    return hasher.hexdigest()
+
+
+def digest_public_input(features: np.ndarray, topology_digest_value: str) -> str:
+    """Hash feature values without a Python list or full joined payload copy."""
+    hasher = hashlib.sha256()
+    hasher.update(b"ezkl-gat-public-input-v1")
+    _update_i128_digest(hasher, features.flat)
+    hasher.update(bytes.fromhex(topology_digest_value))
+    return hasher.hexdigest()
 
 
 def canonical_model_digest(values: Iterable[int], hash_domain: str) -> str:
     if not hash_domain:
         fail("authenticated model hash domain is empty")
-    payload = bytearray(hash_domain.encode())
-    for value in values:
-        payload.extend(i128_bytes(value))
-    return sha256_bytes(bytes(payload))
+    hasher = hashlib.sha256()
+    hasher.update(hash_domain.encode())
+    _update_i128_digest(hasher, values)
+    return hasher.hexdigest()
 
 
 def authenticated_model_binding(context: dict[str, Any]) -> tuple[str, str, str]:
@@ -186,7 +207,10 @@ def quantize(value: float, exponent: int) -> int:
     scaled = float(value) * float(2**exponent)
     if not math.isfinite(scaled):
         fail("non-finite scaled value in canonical quantization")
-    return round_away(scaled)
+    quantized = round_away(scaled)
+    if quantized < -(1 << 63) or quantized >= (1 << 63):
+        fail("canonical quantized value exceeds signed int64 range")
+    return quantized
 
 
 def parse_shape(value: str) -> list[int]:
@@ -399,7 +423,31 @@ def graph_from_resources(data_dir: Path, meta: dict[str, str]) -> tuple[list[int
     return node_ids, src, dst, node_ptr, edge_ptr
 
 
-def feature_values(data_dir: Path, meta: dict[str, str], exponent: int, preprocess_id: str) -> tuple[np.ndarray, Path]:
+def preprocess_npy_feature_row(values: np.ndarray, dataset: str, preprocess_id: str) -> np.ndarray:
+    row = np.asarray(values, dtype=np.float64)
+    if dataset == "ppi" and preprocess_id == "row_normalize":
+        if not np.all(np.isfinite(row)):
+            fail("row normalization rejects NaN/Inf")
+        rowsum = 0.0
+        for value in row:
+            rowsum += float(value)
+        if not math.isfinite(rowsum):
+            fail("row normalization sum is not finite")
+        if rowsum != 0.0:
+            row = np.asarray([float(value) / rowsum for value in row], dtype=np.float64)
+        if not np.all(np.isfinite(row)):
+            fail("row normalization produced NaN/Inf")
+        return row
+    if dataset == "ogbn_arxiv" and preprocess_id == "ogbn_arxiv_raw_float32":
+        with np.errstate(over="ignore", invalid="ignore"):
+            row = np.asarray(values, dtype=np.float32).astype(np.float64, copy=False)
+        if not np.all(np.isfinite(row)):
+            fail("raw float32 input preprocessing rejects NaN/Inf")
+        return row
+    fail(f"unsupported NPY feature preprocessing identity for {dataset}: {preprocess_id!r}")
+
+
+def feature_values(data_dir: Path, meta: dict[str, str], exponent: int, preprocess_id: str, dataset: str) -> tuple[np.ndarray, Path]:
     nodes, columns = int(meta["num_nodes"]), int(meta["num_features"])
     npy_path = data_dir / "features.npy"
     text_path = data_dir / "features.txt"
@@ -410,11 +458,13 @@ def feature_values(data_dir: Path, meta: dict[str, str], exponent: int, preproce
             fail("authenticated feature NPY shape/dtype mismatch")
         result = np.empty((nodes, columns), dtype=np.int64)
         for row in range(nodes):
-            values = np.asarray(raw[row], dtype=np.float64)
+            values = preprocess_npy_feature_row(raw[row], dataset, preprocess_id)
             scaled = values * float(2**exponent)
             quantized = np.where(scaled >= 0.0, np.floor(scaled + 0.5), np.ceil(scaled - 0.5))
             if not np.all(np.isfinite(quantized)):
                 fail("feature NPY contains a non-finite value")
+            if np.any(quantized < -(1 << 63)) or np.any(quantized >= (1 << 63)):
+                fail("canonical quantized feature exceeds signed int64 range")
             result[row, :] = quantized.astype(np.int64, copy=False)
         return result, feature_path
     if not text_path.is_file():
@@ -428,19 +478,34 @@ def feature_values(data_dir: Path, meta: dict[str, str], exponent: int, preproce
         for row, line in enumerate(stream):
             if row >= nodes:
                 fail("sparse feature file has too many rows")
-            raw: list[tuple[int, float]] = []
+            dense = [0.0] * columns
+            seen: set[int] = set()
             for token in line.split():
-                index, value = token.split(":", 1)
-                raw.append((int(index), float(value)))
-            normalizer = sum(value for _, value in raw) if preprocess_id == "row_normalize" else 1.0
-            if not math.isfinite(normalizer) or normalizer < 0.0:
+                try:
+                    index_text, value_text = token.split(":", 1)
+                    index = int(index_text)
+                    value = float(value_text)
+                except ValueError as exc:
+                    fail(f"malformed sparse feature at row {row}: {token!r}")
+                    raise AssertionError from exc
+                if index < 0 or index >= columns:
+                    fail(f"feature index outside shape at row {row}")
+                if index in seen:
+                    fail(f"duplicate sparse feature column at row {row}: {index}")
+                if not math.isfinite(value):
+                    fail(f"non-finite sparse feature at row {row}, column {index}")
+                seen.add(index)
+                dense[index] = value
+            normalizer = 1.0
+            if preprocess_id == "row_normalize":
+                normalizer = 0.0
+                for value in dense:
+                    normalizer += value
+            if not math.isfinite(normalizer):
                 fail(f"invalid sparse feature normalization at row {row}")
             if normalizer == 0.0:
                 normalizer = 1.0
-            for index, value in raw:
-                if index < 0 or index >= columns:
-                    fail(f"feature index outside shape at row {row}")
-                result[row, index] = quantize(value / normalizer, exponent)
+            result[row, :] = [quantize(value / normalizer, exponent) for value in dense]
             row_count += 1
         if row_count != nodes:
             fail("sparse feature row count mismatch")
@@ -522,7 +587,8 @@ def canonical_forward(
     output_y_prime: list[int],
     output_head: int,
 ) -> list[int]:
-    current = features[np.asarray(node_ids, dtype=np.int64)].copy()
+    identity_nodes = len(node_ids) == features.shape[0] and all(node_id == index for index, node_id in enumerate(node_ids))
+    current = features if identity_nodes else features[np.asarray(node_ids, dtype=np.int64)]
     for layer_index, layer in enumerate(hidden):
         heads: list[np.ndarray] = []
         for head_index, (projection, a_src, a_dst) in enumerate(layer):
@@ -715,7 +781,7 @@ def main(
     if (scales_cfg.get("quant_cfg_id") != context["quant_cfg_id"] or secure.get("quant_cfg_id") != context["quant_cfg_id"]):
         fail("quantization config identity mismatch")
     s_input = scale_value(scales_cfg, "s_input")
-    features, feature_path = feature_values(data_dir, meta, s_input, preprocess_id)
+    features, feature_path = feature_values(data_dir, meta, s_input, preprocess_id, args.dataset)
     node_ids, src, dst, node_ptr, edge_ptr = graph_from_resources(data_dir, meta)
     topo_digest = topology_digest(len(features), len(node_ids), len(src), len(node_ptr) - 1, node_ids, src, dst, node_ptr, edge_ptr)
     if context["topology"]["digest"] != topo_digest or context["topology"]["id"] != f"topology:{args.dataset}:{len(node_ptr)-1}":
@@ -854,7 +920,7 @@ def main(
                 "hash_domain": model_hash_domain,
                 "canonical_model_digest": model_digest_sha256_expected,
             },
-            "feature_table": [int(x) for x in features.ravel().tolist()],
+            "feature_table": features.ravel().tolist(),
             "node_ids": node_ids,
             "src": src,
             "dst": dst,
@@ -900,7 +966,7 @@ def main(
         "hash_domain": model_hash_domain,
         "canonical_model_digest": model_digest_sha256_expected,
         "circuit_ref": circuit,
-        "input_digest": sha256_bytes(b"ezkl-gat-public-input-v1" + b"".join(i128_bytes(int(x)) for x in features.ravel().tolist()) + bytes.fromhex(topo_digest)),
+        "input_digest": digest_public_input(features, topo_digest),
         "output_digest": output_digest,
         "public_output_sha256": public_output_sha,
         "statement_sha256": sha256_bytes((json.dumps(statement, indent=2, ensure_ascii=False) + "\n").encode()),

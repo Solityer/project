@@ -82,6 +82,18 @@ fn validate_record(record: &ProofRecord) -> Result<u64, EZKLError> {
 /// Persist successful native GPU operation counters after the proof is saved.
 pub fn write_proof_record(directory: &Path, proof_path: &Path) -> Result<(), EZKLError> {
     let (msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id) = halo2_proofs::icicle::execution_stats();
+    write_proof_record_with_stats(
+        directory,
+        proof_path,
+        (msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id),
+    )
+}
+
+fn write_proof_record_with_stats(
+    directory: &Path,
+    proof_path: &Path,
+    (msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id): (u64, u64, u64, u64, u64, usize),
+) -> Result<(), EZKLError> {
     let (provenance, _) = manifest()?;
     let policy = halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY.to_owned();
     let invocations = gpu_msm_chunk_calls.checked_add(ntt_calls).ok_or("native GPU invocation counter overflow")?;
@@ -90,6 +102,10 @@ pub fn write_proof_record(directory: &Path, proof_path: &Path) -> Result<(), EZK
     validate_record(&record)?;
     record.evidence.invocation_trace_sha256 = invocation_digest(&record)?;
     std::fs::write(directory.join("gpu_prover_record.json"), serde_json::to_vec_pretty(&record)?)?;
+    // This sidecar describes the operation that produced the proof. The
+    // independent verifier validates it against the immutable proof record,
+    // but never replaces it with verifier-runtime evidence.
+    std::fs::write(directory.join("gpu_evidence.json"), serde_json::to_vec_pretty(&record.evidence)?)?;
     Ok(())
 }
 
@@ -102,5 +118,55 @@ pub fn read_proof_evidence(directory: &Path, proof_path: &Path) -> Result<GpuEvi
     let (provenance, _) = manifest()?;
     let count = validate_record(&record)?;
     if record.proof_sha256 != crate::execute::get_file_hash(proof_path)? || record.evidence.provenance.as_ref() != Some(&provenance) || !record.evidence.backend_loaded || !record.evidence.device_synchronized || record.evidence.cpu_fallback || record.evidence.backend != "CUDA" || record.evidence.gpu_backend != "icicle-cuda" || record.evidence.invocation_trace_sha256 != invocation_digest(&record)? || count != record.gpu_msm_chunk_calls { return Err("GPU native prover execution evidence is inconsistent with the verified proof".into()); }
+    let evidence_path = directory.join("gpu_evidence.json");
+    if evidence_path.is_symlink() { return Err("GPU prover evidence must not be a symlink".into()); }
+    let evidence: GpuEvidence = serde_json::from_slice(&std::fs::read(&evidence_path)?)?;
+    if evidence != record.evidence { return Err("GPU prover evidence sidecar differs from the proof-bound native record".into()); }
     Ok(record.evidence)
+}
+
+#[cfg(test)]
+mod proof_evidence_tests {
+    use super::{read_proof_evidence, write_proof_record_with_stats, ProofRecord};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_directory() -> PathBuf {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("ezkl-gpu-proof-evidence-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn prove_writes_record_bound_sidecar_and_verify_is_read_only_fail_closed() {
+        assert!(std::env::var_os("ENABLE_ICICLE_GPU").is_none(), "independent verifier test requires the CPU-only guard environment");
+        let directory = temporary_directory();
+        let proof_path = directory.join("proof.json");
+        std::fs::write(&proof_path, b"synthetic proof bytes for evidence binding").unwrap();
+
+        // Exercise the same production writer as Prove, with a small valid
+        // native counter sample so the regression never initializes a GPU.
+        write_proof_record_with_stats(&directory, &proof_path, (1, 1, 0, 1, 1, 0)).unwrap();
+        let record_path = directory.join("gpu_prover_record.json");
+        let evidence_path = directory.join("gpu_evidence.json");
+        let record_bytes = std::fs::read(&record_path).unwrap();
+        let evidence_bytes = std::fs::read(&evidence_path).unwrap();
+        let record: ProofRecord = serde_json::from_slice(&record_bytes).unwrap();
+        let evidence = serde_json::from_slice::<super::GpuEvidence>(&evidence_bytes).unwrap();
+        assert_eq!(record.proof_sha256, crate::execute::get_file_hash(&proof_path).unwrap());
+        assert_eq!(record.evidence, evidence);
+
+        let verified_evidence = read_proof_evidence(&directory, &proof_path).unwrap();
+        assert_eq!(verified_evidence, evidence);
+        assert_eq!(std::fs::read(&record_path).unwrap(), record_bytes);
+        assert_eq!(std::fs::read(&evidence_path).unwrap(), evidence_bytes);
+
+        let mut tampered = evidence;
+        tampered.gpu_kernel_invocation_count += 1;
+        std::fs::write(&evidence_path, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
+        assert!(read_proof_evidence(&directory, &proof_path).is_err());
+        assert_eq!(std::fs::read(&record_path).unwrap(), record_bytes);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

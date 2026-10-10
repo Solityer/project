@@ -189,10 +189,16 @@ def quantized_model(root: Path, dataset: str) -> dict[str, int]:
 def graph_info(root: Path, dataset: str, meta: dict[str, str]) -> tuple[int, int, int]:
     nodes = int(meta["num_nodes"])
     graph_count = int(meta.get("graph_count", "1"))
+    if nodes <= 0 or graph_count <= 0 or graph_count > nodes:
+        raise ValueError(f"invalid graph dimensions in {dataset}: nodes={nodes}, graph_count={graph_count}")
     if dataset == "ppi":
         node_ptr = [int(x) for x in (root / "resources/canonical/cache/ppi/node_ptr.txt").read_text().split()]
     else:
+        if graph_count != 1:
+            raise ValueError(f"non-PPI dataset {dataset} must contain exactly one graph")
         node_ptr = [0, nodes]
+    if len(node_ptr) != graph_count + 1 or node_ptr[0] != 0 or node_ptr[-1] != nodes or any(start >= end for start, end in zip(node_ptr, node_ptr[1:])):
+        raise ValueError(f"node_ptr does not match graph metadata in {dataset}")
     graph_for_node = [0] * nodes
     for graph in range(graph_count):
         for node in range(node_ptr[graph], node_ptr[graph + 1]):
@@ -200,43 +206,62 @@ def graph_info(root: Path, dataset: str, meta: dict[str, str]) -> tuple[int, int
     edges = root / "resources/canonical/cache" / dataset / "edges.txt"
     print(f"[resource-preparation] {dataset}: reading graph edges from {edges} ({edges.stat().st_size:,} bytes)", flush=True)
     raw: list[tuple[int, int, int]] = []
-    incoming: set[int] = set()
-    edge_lines = edges.read_text().splitlines()
-    for line_number, line in enumerate(edge_lines, 1):
-        if line_number % (1 << 20) == 0:
-            print(f"[resource-preparation] {dataset}: graph edges {line_number:,}/{len(edge_lines):,}", flush=True)
-        if not line.strip():
+    with edges.open() as stream:
+        for line_number, line in enumerate(stream, 1):
+            if line_number % (1 << 20) == 0:
+                print(f"[resource-preparation] {dataset}: graph edges processed {line_number:,} lines", flush=True)
+            if not line.strip():
+                continue
+            parts = line.split()
+            try:
+                values = [int(x) for x in parts]
+            except ValueError as exc:
+                raise ValueError(f"invalid edge integer at line {line_number} in {dataset}") from exc
+            if dataset == "ppi":
+                if len(values) != 3:
+                    raise ValueError(f"invalid PPI edge row at line {line_number} in {dataset}")
+                declared_graph, source, destination = values
+            else:
+                if len(values) != 2:
+                    raise ValueError(f"invalid edge row at line {line_number} in {dataset}")
+                declared_graph = None
+                source, destination = values
+            if source < 0 or source >= nodes or destination < 0 or destination >= nodes:
+                raise ValueError(f"edge endpoint outside node range at line {line_number} in {dataset}")
+            graph = graph_for_node[source]
+            if declared_graph is not None and declared_graph != graph:
+                raise ValueError(f"edge graph id disagrees at line {line_number} in {dataset}")
+            if graph_for_node[destination] != graph:
+                raise ValueError(f"edge crosses graph boundary at line {line_number} in {dataset}")
+            raw.append((graph, source, destination))
+    raw.sort(key=lambda item: (item[0], item[2]))
+    active_destination: tuple[int, int] | None = None
+    seen_sources: set[int] = set()
+    write = 0
+    for edge in raw:
+        graph, source, destination = edge
+        key = (graph, destination)
+        if active_destination != key:
+            active_destination = key
+            seen_sources.clear()
+        if source in seen_sources:
             continue
-        parts = [int(x) for x in line.split()]
-        if dataset == "ppi":
-            if len(parts) != 3:
-                raise ValueError(f"invalid PPI edge row in {dataset}")
-            declared_graph, source, destination = parts
-        else:
-            if len(parts) != 2:
-                raise ValueError(f"invalid edge row in {dataset}")
-            declared_graph = None
-            source, destination = parts
-        graph = graph_for_node[source]
-        if declared_graph is not None and declared_graph != graph:
-            raise ValueError(f"edge graph id disagrees in {dataset}")
-        if graph_for_node[destination] != graph:
-            raise ValueError(f"edge crosses graph boundary in {dataset}")
-        raw.append((graph, source, destination))
-        incoming.add(destination)
+        seen_sources.add(source)
+        raw[write] = edge
+        write += 1
+    del raw[write:]
+    has_self_loop = [False] * nodes
+    for _graph, source, destination in raw:
+        if source == destination:
+            has_self_loop[source] = True
     for node in range(nodes):
-        if node not in incoming:
+        if not has_self_loop[node]:
             raw.append((graph_for_node[node], node, node))
     raw.sort(key=lambda item: (item[0], item[2]))
-    degree = 0
-    cursor = 0
-    for graph in range(graph_count):
-        counts: dict[int, int] = {}
-        while cursor < len(raw) and raw[cursor][0] == graph:
-            counts[raw[cursor][2]] = counts.get(raw[cursor][2], 0) + 1
-            cursor += 1
-        degree = max(degree, max(counts.values(), default=0))
-    return nodes, len(raw), max(1, degree)
+    degrees = [0] * nodes
+    for _graph, _source, destination in raw:
+        degrees[destination] += 1
+    return nodes, len(raw), max(degrees)
 
 
 def npy_contract(path: Path) -> dict[str, Any]:
@@ -329,29 +354,107 @@ def feature_bound(root: Path, dataset: str, meta: dict[str, str]) -> int:
     if dataset in {"ppi", "ogbn_arxiv"}:
         feature_path = path / "features.npy"
         contract = npy_contract(feature_path)
+        expected_shape = [int(meta["num_nodes"]), int(meta["num_features"])]
+        if contract["shape"] != expected_shape:
+            raise ValueError(f"{dataset} feature NPY shape does not match metadata")
+        preprocess_id = meta.get("input_preprocess_id", "")
+        expected_preprocess = "row_normalize" if dataset == "ppi" else "ogbn_arxiv_raw_float32"
+        if preprocess_id != expected_preprocess:
+            raise ValueError(f"{dataset} feature input preprocessing identity is invalid: {preprocess_id!r}")
         maximum = 1
+        rows, columns = contract["shape"]
         total = int(contract["length"])
         print(f"[resource-preparation] {dataset}: scanning NPY feature bound ({total:,} values)", flush=True)
-        for index, value in enumerate(iter_npy_values(feature_path, contract), 1):
-            maximum = max(maximum, abs(round_away(value * scale)))
-            if index % (1 << 20) == 0:
-                print(f"[resource-preparation] {dataset}: NPY feature bound {index:,}/{total:,}", flush=True)
+        values = iter_npy_values(feature_path, contract)
+        processed = 0
+        for _row_index in range(rows):
+            row = [next(values) for _column_index in range(columns)]
+            row = preprocess_npy_feature_row(row, dataset, preprocess_id)
+            for value in row:
+                maximum = max(maximum, _quantized_feature_abs(value, scale))
+                processed += 1
+                if processed % (1 << 20) == 0:
+                    print(f"[resource-preparation] {dataset}: NPY feature bound {processed:,}/{total:,}", flush=True)
         return maximum
     maximum = 0
-    lines = (path / "features.txt").read_text().splitlines()
     preprocess = meta.get("input_preprocess_id", "")
-    for line in lines[1:]:
-        entries = []
-        for token in line.split():
-            _index, value = token.split(":", 1)
-            entries.append(float(value))
-        norm = sum(entries) if preprocess == "row_normalize" else 1.0
-        if norm < 0 or not math.isfinite(norm):
-            raise ValueError(f"invalid feature normalization in {dataset}")
-        if norm == 0:
+    if preprocess not in {"row_normalize", "none"}:
+        raise ValueError(f"unsupported sparse feature preprocessing identity in {dataset}: {preprocess!r}")
+    expected_nodes, expected_features = int(meta["num_nodes"]), int(meta["num_features"])
+    with (path / "features.txt").open(encoding="utf-8") as stream:
+        header = stream.readline().split()
+        if len(header) != 2 or tuple(int(value) for value in header) != (expected_nodes, expected_features):
+            raise ValueError(f"{dataset} sparse feature shape does not match metadata")
+        rows = 0
+        for line in stream:
+            if rows >= expected_nodes:
+                raise ValueError(f"{dataset} sparse feature row count does not match metadata")
+            dense = [0.0] * expected_features
+            seen: set[int] = set()
+            for token in line.split():
+                try:
+                    index_text, value_text = token.split(":", 1)
+                    index = int(index_text)
+                    value = float(value_text)
+                except ValueError as exc:
+                    raise ValueError(f"malformed sparse feature at row {rows} in {dataset}: {token!r}") from exc
+                if index < 0 or index >= expected_features:
+                    raise ValueError(f"sparse feature index outside shape at row {rows} in {dataset}")
+                if index in seen:
+                    raise ValueError(f"duplicate sparse feature column at row {rows} in {dataset}: {index}")
+                if not math.isfinite(value):
+                    raise ValueError(f"non-finite sparse feature at row {rows}, column {index} in {dataset}")
+                seen.add(index)
+                dense[index] = value
             norm = 1.0
-        maximum = max(maximum, max((abs(round_away(value / norm * scale)) for value in entries), default=0))
+            if preprocess == "row_normalize":
+                norm = 0.0
+                for value in dense:
+                    norm += value
+            if not math.isfinite(norm):
+                raise ValueError(f"invalid feature normalization in {dataset}")
+            if norm == 0:
+                norm = 1.0
+            normalized = [value / norm for value in dense]
+            if any(not math.isfinite(value) for value in normalized):
+                raise ValueError(f"feature normalization produced NaN/Inf in {dataset} row {rows}")
+            maximum = max(maximum, max((_quantized_feature_abs(value, scale) for value in normalized), default=0))
+            rows += 1
+        if rows != expected_nodes:
+            raise ValueError(f"{dataset} sparse feature row count does not match metadata")
     return max(1, maximum)
+
+
+def _quantized_feature_abs(value: float, scale: int) -> int:
+    quantized = round_away(value * scale)
+    if quantized < -(1 << 63) or quantized >= (1 << 63):
+        raise ValueError("canonical quantized feature exceeds signed int64 range")
+    return abs(quantized)
+
+
+def preprocess_npy_feature_row(values: list[float], dataset: str, preprocess_id: str) -> list[float]:
+    if dataset == "ppi" and preprocess_id == "row_normalize":
+        row = [float(value) for value in values]
+        if any(not math.isfinite(value) for value in row):
+            raise ValueError("row normalization rejects NaN/Inf")
+        rowsum = 0.0
+        for value in row:
+            rowsum += float(value)
+        if not math.isfinite(rowsum):
+            raise ValueError("row normalization sum is not finite")
+        normalized = row if rowsum == 0.0 else [float(value) / rowsum for value in row]
+        if any(not math.isfinite(value) for value in normalized):
+            raise ValueError("row normalization produced NaN/Inf")
+        return normalized
+    if dataset == "ogbn_arxiv" and preprocess_id == "ogbn_arxiv_raw_float32":
+        try:
+            row = [struct.unpack("<f", struct.pack("<f", float(value)))[0] for value in values]
+        except OverflowError as exc:
+            raise ValueError("raw float32 input preprocessing produced NaN/Inf") from exc
+        if any(not math.isfinite(value) for value in row):
+            raise ValueError("raw float32 input preprocessing rejects NaN/Inf")
+        return row
+    raise ValueError(f"unsupported NPY feature preprocessing identity for {dataset}: {preprocess_id!r}")
 
 
 def table_value(table: dict[str, Any], input_value: int) -> int:

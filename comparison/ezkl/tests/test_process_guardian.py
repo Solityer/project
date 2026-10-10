@@ -20,6 +20,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import process_guardian
 from process_guardian import ProcessGuardian, finish_guarded_process, spawn_guarded_process
+import formal_common
 import run_hybrid_formal
 
 
@@ -31,15 +32,16 @@ class ProcessGuardianTest(unittest.TestCase):
             self.assertTrue(process_guardian._owner_identity_matches(42, 9001))
 
     def test_guardian_start_failure_marks_session_failed_and_releases_lock(self) -> None:
-        root = run_hybrid_formal.ROOT
-        with tempfile.TemporaryDirectory(prefix=".ezkl-guardian-start-failure-", dir=root / "runs") as temp:
-            output_root = Path(temp)
+        with tempfile.TemporaryDirectory(prefix="ezkl-guardian-start-failure-") as temp:
+            root = Path(temp)
+            output_root = root / "runs" / "formal"
+            output_root.mkdir(parents=True)
             # Path composition is written explicitly below to keep the temporary
             # session and lock wholly inside this test directory.
             session_file = output_root / ".sessions" / ("d" * 32 + ".json")
             lock_path = output_root / ".test-owner.lock"
 
-            def begin_session(_output: Path, _matrix: Path) -> tuple[str, Path, int]:
+            def begin_session(_output: Path, _matrix: Path, _resume_session: str | None = None) -> tuple[str, Path, int]:
                 session_file.parent.mkdir(parents=True)
                 session_file.write_text(json.dumps({"baseline": "ezkl", "session_id": "d" * 32, "status": "PREFLIGHT_STARTED", "stage": "session_created"}))
                 fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -54,11 +56,13 @@ class ProcessGuardianTest(unittest.TestCase):
                 matrix=relative_matrix,
                 binary=None,
                 preflight_only=False,
+                resume_session=None,
             )
-            with mock.patch.object(run_hybrid_formal, "begin_formal_session", side_effect=begin_session):
-                with mock.patch.object(run_hybrid_formal.ProcessGuardian, "start", side_effect=OSError("injected guardian startup failure")):
-                    with self.assertRaisesRegex(OSError, "injected guardian startup failure"):
-                        run_hybrid_formal._main(args)
+            with mock.patch.object(run_hybrid_formal, "ROOT", root), mock.patch.object(formal_common, "ROOT", root):
+                with mock.patch.object(run_hybrid_formal, "begin_formal_session", side_effect=begin_session):
+                    with mock.patch.object(run_hybrid_formal.ProcessGuardian, "start", side_effect=OSError("injected guardian startup failure")):
+                        with self.assertRaisesRegex(OSError, "injected guardian startup failure"):
+                            run_hybrid_formal._main(args)
             document = json.loads(session_file.read_text())
             self.assertEqual(document.get("status"), "FAILED")
             self.assertEqual(document.get("stage"), "guardian_start")

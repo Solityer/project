@@ -2290,6 +2290,24 @@ fn build_canonical_gat_circuit(
         loaded.spec.graph.e * 2,
     );
     let circuit = GraphCircuit::new(model, &run_args)?;
+    let settings = circuit.settings();
+    let settings_minimum_logrows = [
+        settings.log2_total_instances_with_blinding(),
+        settings.module_constraint_logrows_with_blinding(),
+        settings.dynamic_lookup_and_shuffle_logrows_with_blinding(),
+        settings.min_dynamic_lookup_and_shuffle_logrows_with_blinding(),
+        crate::graph::MIN_LOGROWS,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(crate::graph::MIN_LOGROWS);
+    if run_args.logrows < settings_minimum_logrows {
+        return Err(format!(
+            "canonical GAT settings require logrows at least {}, selected {}",
+            settings_minimum_logrows, run_args.logrows
+        )
+        .into());
+    }
     println!(
         "EZKL_NATIVE_PHASE DONE stage=gen_params_dummy_layout dataset={} elapsed_ms={:.3} num_rows={} total_assignments={} dynamic_lookup_coord={} max_dynamic_input_len={} dynamic_lookups={}",
         loaded.dataset,
@@ -2796,6 +2814,7 @@ fn gat_prepare_admission(
         "module_sizes": settings.module_sizes,
         "constraint_system": {
             "degree": degree,
+            "minimum_rows": cs.minimum_rows(),
             "num_fixed_columns": cs.num_fixed_columns(),
             "num_custom_gate_groups": evaluation_shape.custom_gate_dependency_columns.len(),
             "selector_fixed_column_count": selector_fixed_column_count,
@@ -2980,6 +2999,7 @@ fn load_native_admission_circuit(
     }
     for (name, current) in [
         ("degree", current_cs.degree()),
+        ("minimum_rows", current_cs.minimum_rows()),
         ("num_fixed_columns", current_cs.num_fixed_columns()),
         ("num_advice_columns", current_cs.num_advice_columns()),
         ("num_instance_columns", current_cs.num_instance_columns()),
@@ -3007,6 +3027,10 @@ fn load_native_admission_circuit(
             != Some("streamed_one_polynomial_chunked_v1")
     {
         return Err("native admission memory model version or polynomial reader mode is unsupported".into());
+    }
+    let current_advice_phases = JsonValue::from(current_cs.advice_column_phase());
+    if memory_model.get("advice_column_phase_ids") != Some(&current_advice_phases) {
+        return Err("native admission advice-column phases disagree with the current constraint system".into());
     }
     let n = 1u128
         .checked_shl(settings.run_args.logrows)
@@ -4242,6 +4266,41 @@ pub(crate) fn setup(
     Ok(String::new())
 }
 
+fn native_cpu_proof_evidence() -> Result<GpuEvidence, EZKLError> {
+    Ok(GpuEvidence {
+        backend: "CPU".into(),
+        gpu_backend: "none".into(),
+        backend_loaded: true,
+        cpu_fallback: false,
+        device_synchronized: true,
+        gpu_kernel_invocation_count: 0,
+        provenance: None,
+        invocation_trace_sha256: crate::gat_adapter::schema::sha256_digest(b"ezkl-native-cpu")
+            .map_err(EZKLError::from)?,
+    })
+}
+
+fn write_native_cpu_proof_evidence(directory: &Path) -> Result<(), EZKLError> {
+    let evidence = native_cpu_proof_evidence()?;
+    std::fs::write(
+        directory.join("gpu_evidence.json"),
+        serde_json::to_vec_pretty(&evidence)?,
+    )?;
+    Ok(())
+}
+
+fn validate_native_cpu_proof_evidence(directory: &Path) -> Result<(), EZKLError> {
+    let evidence_path = directory.join("gpu_evidence.json");
+    if evidence_path.is_symlink() {
+        return Err("CPU prover evidence must not be a symlink".into());
+    }
+    let evidence: GpuEvidence = serde_json::from_slice(&std::fs::read(&evidence_path)?)?;
+    if evidence != native_cpu_proof_evidence()? {
+        return Err("CPU prover evidence does not match the completed proof stage".into());
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prove(
     data_path: PathBuf,
@@ -4329,10 +4388,23 @@ pub(crate) fn prove(
                 serde_json::to_vec_pretty(&metrics)?,
             )?;
         }
-        #[cfg(feature = "gpu-accelerated")]
-        if std::env::var("EZKL_GAT_BACKEND").as_deref() == Ok("gpu") {
-            let directory = std::env::var("EZKL_GAT_RUN_DIR").map(PathBuf::from).map_err(|_| "GPU formal proof requires EZKL_GAT_RUN_DIR")?;
+        let backend = std::env::var("EZKL_GAT_BACKEND").unwrap_or_else(|_| "cpu".into());
+        if backend != "cpu" && backend != "gpu" {
+            return Err(format!("unsupported formal backend: {}", backend).into());
+        }
+        if backend == "gpu" {
+            let directory = std::env::var("EZKL_GAT_RUN_DIR")
+                .map(PathBuf::from)
+                .map_err(|_| "GPU formal proof requires EZKL_GAT_RUN_DIR")?;
+            #[cfg(feature = "gpu-accelerated")]
             crate::gat_adapter::gpu::write_proof_record(&directory, &proof_path)?;
+            #[cfg(not(feature = "gpu-accelerated"))]
+            return Err("GPU formal proof requires the matching GPU-capable native binary".into());
+        } else if formal_srs_sha256.is_some() {
+            let directory = std::env::var("EZKL_GAT_RUN_DIR")
+                .map(PathBuf::from)
+                .map_err(|_| "formal CPU proof requires EZKL_GAT_RUN_DIR")?;
+            write_native_cpu_proof_evidence(&directory)?;
         }
         if let Ok(run_dir) = std::env::var("EZKL_GAT_RUN_DIR") {
             let artifact_path = PathBuf::from(run_dir).join("artifact_manifest.json");
@@ -4616,6 +4688,25 @@ pub(crate) fn verify_with_formal_inputs(
         require_formal_regular_file(&proof_path, "proof")?;
         require_formal_regular_file(&settings_path, "settings")?;
         require_formal_regular_file(&vk_path, "verification key")?;
+        // Check the Prove-stage evidence as soon as the proof path and run
+        // identity are available. This catches a missing/mismatched GPU
+        // record (or an accidentally GPU-enabled verifier environment) before
+        // authenticating/loading the large SRS or running cryptographic Verify.
+        let backend = std::env::var("EZKL_GAT_BACKEND").unwrap_or_else(|_| "cpu".into());
+        if backend != "cpu" && backend != "gpu" {
+            return Err(format!("unsupported formal backend: {}", backend).into());
+        }
+        let run_dir = std::env::var("EZKL_GAT_RUN_DIR")
+            .map(PathBuf::from)
+            .map_err(|_| "formal verify requires EZKL_GAT_RUN_DIR for native attestations")?;
+        if backend == "gpu" {
+            #[cfg(feature = "gpu-accelerated")]
+            { crate::gat_adapter::gpu::read_proof_evidence(&run_dir, &proof_path)?; }
+            #[cfg(not(feature = "gpu-accelerated"))]
+            { return Err("GPU formal verifier requires the matching GPU-capable native binary".into()); }
+        } else {
+            validate_native_cpu_proof_evidence(&run_dir)?;
+        }
         let authenticated_srs_path = srs_path
             .as_deref()
             .ok_or("formal verify requires an explicit authenticated SRS path")?;
@@ -4835,12 +4926,6 @@ pub(crate) fn verify_with_formal_inputs(
             run_dir.join("native_verify_metrics.json"),
             serde_json::to_vec_pretty(&metrics)?,
         )?;
-        if backend == "gpu" {
-            enforce_gat_gpu(true)?;
-        }
-        if backend != "cpu" && backend != "gpu" {
-            return Err(format!("unsupported formal backend: {}", backend).into());
-        }
         let core = CoreRunManifest {
             schema_version: 1,
             relation_id: "R_GAT-ezkl".into(),
@@ -4863,18 +4948,6 @@ pub(crate) fn verify_with_formal_inputs(
         std::fs::write(
             run_dir.join("core_run_manifest.json"),
             serde_json::to_vec_pretty(&core)?,
-        )?;
-        let evidence = if backend == "gpu" {
-            #[cfg(feature = "gpu-accelerated")]
-            { crate::gat_adapter::gpu::read_proof_evidence(&run_dir, &proof_path)? }
-            #[cfg(not(feature = "gpu-accelerated"))]
-            { return Err("GPU formal verifier requires the matching GPU-capable native binary".into()); }
-        } else {
-            GpuEvidence { backend: "CPU".into(), gpu_backend: "none".into(), backend_loaded: true, cpu_fallback: false, device_synchronized: true, gpu_kernel_invocation_count: 0, provenance: None, invocation_trace_sha256: crate::gat_adapter::schema::sha256_digest(b"ezkl-native-cpu").map_err(EZKLError::from)? }
-        };
-        std::fs::write(
-            run_dir.join("gpu_evidence.json"),
-            serde_json::to_vec_pretty(&evidence)?,
         )?;
     }
     Ok(verified)
