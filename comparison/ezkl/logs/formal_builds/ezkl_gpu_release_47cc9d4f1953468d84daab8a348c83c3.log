@@ -1,9 +1,12 @@
+[ezkl-formal] GPU_BUILD_STAGE=prerequisite-authentication
+[ezkl-formal] BUILD_STAGE=rust-release-build backend=gpu default_features=disabled features=formal-gpu
 warning: unused manifest key: target.wasm32-unknown-unknown.runner
 warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
 help: Check that the patched package version and available features are compatible
       with the dependency requirements. If the patch has a different version from
       what is locked in the Cargo.lock file, run `cargo update` to use the new
       version. This may also occur with an optional dependency that is not enabled.
+   Compiling openssl-sys v0.9.117
 warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
    --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
     |
@@ -125,26 +128,18 @@ help: consistently use `'params`
    |                                           ++++++++
 
 warning: `halo2_proofs` (lib) generated 12 warnings (run `cargo fix --lib -p halo2_proofs` to apply 4 suggestions)
+   Compiling tract-linalg v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling tract-core v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling tract-nnef v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling tract-onnx-opl v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling tract-hir v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling openssl v0.10.81
+   Compiling native-tls v0.2.18
+   Compiling tokio-native-tls v0.3.1
+   Compiling hyper-tls v0.6.0
+   Compiling reqwest v0.12.28
+   Compiling tract-onnx v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
    Compiling ezkl v0.0.0 (/home/pzh/project/comparison/ezkl)
-error: unused import: `RegionCtx`
-  --> src/graph/mod.rs:37:44
-   |
-37 | use crate::circuit::region::{ConstantsMap, RegionCtx, RegionSettings};
-   |                                            ^^^^^^^^^
-   |
-note: the lint level is defined here
-  --> src/lib.rs:11:5
-   |
-11 |     unused,
-   |     ^^^^^^
-   = note: `#[deny(unused_imports)]` implied by `#[deny(unused)]`
-
-error: unused import: `Input`
-  --> src/graph/mod.rs:39:33
-   |
-39 | use crate::circuit::{CheckMode, Input, InputType};
-   |                                 ^^^^^
-
 warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
    --> src/../gat_adapter/loader.rs:629:30
     |
@@ -154,4 +149,8 @@ warning: use of deprecated function `sha256::digest_file`: Use new function `try
     = note: `#[warn(deprecated)]` on by default
 
 warning: `ezkl` (lib) generated 1 warning
-error: could not compile `ezkl` (lib) due to 2 previous errors; 1 warning emitted
+    Finished `release` profile [optimized] target(s) in 6m 49s
+[ezkl-formal] BUILD_STAGE=verify-native-cli-contract binary=/home/pzh/project/comparison/ezkl/target/gpu/release/ezkl
+[*] [2026-10-10 08:50:52:654, ezkl] - succeeded
+[ezkl-formal] wrote current GPU build receipt /home/pzh/project/comparison/ezkl/artifacts/build/gpu/build_receipt.json
+[ezkl-formal] BUILD_STAGE=complete backend=gpu binary=/home/pzh/project/comparison/ezkl/target/gpu/release/ezkl

@@ -2455,6 +2455,34 @@ fn native_mv_lookup_shape(
     })
 }
 
+fn cap_native_selector_resource_shape(
+    mut shape: plonk::NativeEvaluationShape,
+    cs: &plonk::ConstraintSystem<Fr>,
+    selector_fixed_columns: usize,
+) -> Result<plonk::NativeEvaluationShape, EZKLError> {
+    if selector_fixed_columns > cs.num_selectors() {
+        return Err("native selector compression exceeds configured selector count".into());
+    }
+
+    let max_columns = cs
+        .num_fixed_columns()
+        .checked_add(selector_fixed_columns)
+        .and_then(|n| n.checked_add(cs.num_advice_columns()))
+        .and_then(|n| n.checked_add(cs.num_instance_columns()))
+        .ok_or_else(|| "native evaluation resource column count overflow".to_string())?;
+
+    for count in shape
+        .custom_gate_dependency_columns
+        .iter_mut()
+        .chain(shape.lookup_dependency_columns.iter_mut())
+        .chain(shape.shuffle_dependency_columns.iter_mut())
+    {
+        *count = (*count).min(max_columns);
+    }
+
+    Ok(shape)
+}
+
 #[cfg(feature = "gpu-accelerated")]
 fn gat_prepare_admission(
     loaded: crate::gat_adapter::LoadedGat,
@@ -2479,6 +2507,14 @@ fn gat_prepare_admission(
         1u64 << settings.run_args.logrows,
     );
     let cs = configure_canonical_constraint_system(&circuit);
+
+    let (selector_evaluation_cs, _) = cs
+        .clone()
+        .directly_convert_selectors_to_fixed(vec![Vec::new(); cs.num_selectors()], false);
+    let unshared_evaluation_shape =
+        plonk::native_evaluation_resource_shape::<G1Affine>(&selector_evaluation_cs);
+    drop(selector_evaluation_cs);
+
     let logrows = settings.run_args.logrows;
     let selector_count_started = Instant::now();
     println!(
@@ -2497,7 +2533,11 @@ fn gat_prepare_admission(
         .checked_shl(logrows)
         .ok_or_else(|| format!("invalid native GAT logrows for admission: {}", logrows))?;
     let lookup_shape = native_mv_lookup_shape(&cs, &shape_census, domain_size)?;
-    let evaluation_shape = plonk::native_evaluation_resource_shape::<G1Affine>(&cs);
+    let evaluation_shape = cap_native_selector_resource_shape(
+        unshared_evaluation_shape,
+        &cs,
+        shape_census.selector_fixed_column_count,
+    )?;
     let lookup_table_group_count = lookup_shape.table_cardinality_upper_bounds.len();
     let graph_witness_scalar_element_count = shape_scalar_elements(
         &circuit.model().graph.input_shapes()?
@@ -2585,14 +2625,18 @@ fn gat_prepare_admission(
     let quotient_piece_count = fft_cache_domain.get_quotient_poly_degree();
     let fft_cache_entry_count = fft_cache_domain.fft_cache_entry_count();
     let fft_cache_entry_capacity = fft_cache_domain.fft_cache_entry_capacity();
+    let shplonk_resource_cs = cs
+        .clone()
+        .with_native_selector_resource_columns(shape_census.selector_fixed_column_count);
     let shplonk_shape = plonk::native_shplonk_resource_shape::<Fr>(
-        &cs,
+        &shplonk_resource_cs,
         domain_size,
         usize::try_from(lookup_shape.argument_count)
             .map_err(|_| "native mv-lookup argument count exceeds host index width")?,
         1,
         quotient_piece_count,
     );
+    drop(shplonk_resource_cs);
     drop(fft_cache_domain);
     let srs_fft_cache_domain = halo2_proofs::poly::EvaluationDomain::<Fr>::new(1, logrows);
     let srs_fft_cache_entry_count = srs_fft_cache_domain.fft_cache_entry_count();
@@ -2863,24 +2907,6 @@ fn load_native_admission_circuit(
     }
     assert_native_gat_identity(&circuit, &loaded.spec)?;
     let current_cs = configure_canonical_constraint_system(&circuit);
-    let current_evaluation_shape =
-        plonk::native_evaluation_resource_shape::<G1Affine>(&current_cs);
-    let current_shplonk_domain = halo2_proofs::poly::EvaluationDomain::<Fr>::new(
-        u32::try_from(current_cs.degree())
-            .map_err(|_| "native admission degree exceeds u32".to_string())?,
-        settings.run_args.logrows,
-    );
-    let current_quotient_piece_count = current_shplonk_domain.get_quotient_poly_degree();
-    let current_shplonk_shape = plonk::native_shplonk_resource_shape::<Fr>(
-        &current_cs,
-        1u64
-            .checked_shl(settings.run_args.logrows)
-            .ok_or_else(|| "native admission domain size overflow".to_string())?,
-        current_cs.lookups().len(),
-        1,
-        current_quotient_piece_count,
-    );
-    drop(current_shplonk_domain);
     let admission_cs = admission
         .get("constraint_system")
         .and_then(JsonValue::as_object)
@@ -2893,8 +2919,43 @@ fn load_native_admission_circuit(
         usize::try_from(value)
             .map_err(|_| format!("native admission {} exceeds host index width", name).into())
     };
-    let precompression_fixed = admission_count("num_fixed_columns")?;
+
     let selector_fixed = admission_count("selector_fixed_column_count")?;
+    let (current_evaluation_cs, _) = current_cs
+        .clone()
+        .directly_convert_selectors_to_fixed(
+            vec![Vec::new(); current_cs.num_selectors()],
+            false,
+        );
+    let current_evaluation_shape = cap_native_selector_resource_shape(
+        plonk::native_evaluation_resource_shape::<G1Affine>(&current_evaluation_cs),
+        &current_cs,
+        selector_fixed,
+    )?;
+    drop(current_evaluation_cs);
+
+    let current_shplonk_domain = halo2_proofs::poly::EvaluationDomain::<Fr>::new(
+        u32::try_from(current_cs.degree())
+            .map_err(|_| "native admission degree exceeds u32".to_string())?,
+        settings.run_args.logrows,
+    );
+    let current_quotient_piece_count = current_shplonk_domain.get_quotient_poly_degree();
+    let current_shplonk_cs = current_cs
+        .clone()
+        .with_native_selector_resource_columns(selector_fixed);
+    let current_shplonk_shape = plonk::native_shplonk_resource_shape::<Fr>(
+        &current_shplonk_cs,
+        1u64
+            .checked_shl(settings.run_args.logrows)
+            .ok_or_else(|| "native admission domain size overflow".to_string())?,
+        current_cs.lookups().len(),
+        1,
+        current_quotient_piece_count,
+    );
+    drop(current_shplonk_cs);
+    drop(current_shplonk_domain);
+
+    let precompression_fixed = admission_count("num_fixed_columns")?;
     let fixed_post_compression = admission_count("fixed_column_count_post_compression")?;
     let permutation_copy_call_count = admission_count("permutation_copy_call_count")?;
     let permutation_successor_entry_count_upper =

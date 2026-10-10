@@ -2469,6 +2469,17 @@ impl<F: Field> ConstraintSystem<F> {
         (self, polys)
     }
 
+    /// Add fixed-column queries corresponding to compressed selector columns
+    /// for resource accounting only. This must be used on a cloned
+    /// constraint system, never on the proving constraint system.
+    pub fn with_native_selector_resource_columns(mut self, count: usize) -> Self {
+        for _ in 0..count {
+            let column = self.fixed_column();
+            self.query_fixed_index(column, Rotation::cur());
+        }
+        self
+    }
+
     fn replace_selectors_with_fixed(&mut self, selector_replacements: &[Expression<F>]) {
         fn replace_selectors<F: Field>(
             expr: &mut Expression<F>,
