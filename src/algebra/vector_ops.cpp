@@ -1179,7 +1179,14 @@ namespace gatzk::algebra
 
         constexpr std::size_t kCudaInttMaximumSize = std::size_t{1} << 26;
 
-        if (!util::route2_options().cuda_field_hotspots || size < kCudaInttMinimumSize || size > kCudaInttMaximumSize)
+        const auto &options = util::route2_options();
+        if (options.cuda_force_ntt_for_mechanism)
+        {
+            if (!options.cuda_field_hotspots || size < 2 || size > kCudaInttMaximumSize || !cuda_field_hotspots_available())
+                throw std::runtime_error("mechanism forced CUDA INTT is unavailable for the requested supported size");
+            return true;
+        }
+        if (!options.cuda_field_hotspots || size < kCudaInttMinimumSize || size > kCudaInttMaximumSize)
         {
             return false;
         }
@@ -1197,7 +1204,14 @@ namespace gatzk::algebra
 
         constexpr std::size_t kCudaNttMaximumSize = std::size_t{1} << 26;
 
-        if (!util::route2_options().cuda_field_hotspots || size < kCudaNttMinimumSize || size > kCudaNttMaximumSize)
+        const auto &options = util::route2_options();
+        if (options.cuda_force_ntt_for_mechanism)
+        {
+            if (!options.cuda_field_hotspots || size < 2 || size > kCudaNttMaximumSize || !cuda_field_hotspots_available())
+                throw std::runtime_error("mechanism forced CUDA NTT is unavailable for the requested supported size");
+            return true;
+        }
+        if (!options.cuda_field_hotspots || size < kCudaNttMinimumSize || size > kCudaNttMaximumSize)
         {
             return false;
         }

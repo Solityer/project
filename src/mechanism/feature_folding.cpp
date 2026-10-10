@@ -61,15 +61,15 @@ namespace gatzk::mechanism::internal
 
             std::vector<bool> self_edge(s.nodes, false);
             std::vector<std::size_t> outdegree(s.nodes, 0);
-            std::tuple<std::uint64_t, std::uint64_t, std::uint64_t> previous{};
+            std::tuple<std::uint64_t, std::uint64_t> previous{};
             for (std::size_t edge_index = 0; edge_index < s.topology.size(); ++edge_index)
             {
                 const auto &edge = s.topology[edge_index];
                 require(edge.graph < s.graphs && edge.src >= s.node_ptr[edge.graph] && edge.src < s.node_ptr[edge.graph + 1] &&
                             edge.dst >= s.node_ptr[edge.graph] && edge.dst < s.node_ptr[edge.graph + 1],
                         "Feature Folding topology contains a cross-graph or out-of-range edge");
-                const auto current = std::make_tuple(edge.graph, edge.dst, edge.src);
-                require(edge_index == 0 || previous <= current, "Feature Folding topology is not in canonical graph/destination/source order");
+                const auto current = std::make_tuple(edge.graph, edge.dst);
+                require(edge_index == 0 || previous <= current, "Feature Folding topology is not in canonical graph/destination group order");
                 previous = current;
                 ++outdegree[static_cast<std::size_t>(edge.src)];
                 if (edge.src == edge.dst)
@@ -103,6 +103,26 @@ namespace gatzk::mechanism::internal
             RawWitness raw;
             raw.node.resize(s.width);
             raw.edge.resize(s.width);
+            if (context.real_input != nullptr)
+            {
+                const auto &w = context.real_input->witness;
+                require(w.width == 8 && w.node_count == s.nodes && w.edge_count == s.edges && w.node_ptr == s.node_ptr &&
+                            w.edge_ptr == s.edge_ptr && s.width <= w.width,
+                        "Feature Folding real input does not match the statement or formal first-head width");
+                for (std::size_t edge = 0; edge < s.edges; ++edge)
+                    require(w.edge_src_indices[edge] == s.topology[edge].src && w.edge_dst_indices[edge] == s.topology[edge].dst,
+                            "Feature Folding real input topology differs from the public statement");
+                for (std::size_t lane = 0; lane < s.width; ++lane)
+                {
+                    raw.node[lane].reserve(s.nodes);
+                    for (std::size_t node = 0; node < s.nodes; ++node)
+                        raw.node[lane].push_back(w.h_prime[node][lane]);
+                    raw.edge[lane].resize(s.edges, FieldElement::zero());
+                    for (std::size_t edge = 0; edge < s.edges; ++edge)
+                        raw.edge[lane][edge] = raw.node[lane].at(static_cast<std::size_t>(s.topology[edge].src));
+                }
+                return raw;
+            }
             for (std::size_t lane = 0; lane < s.width; ++lane)
             {
                 raw.node[lane] = derive_witness_fields(context.witness_seed, node_label(lane), s.nodes);

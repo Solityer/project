@@ -751,9 +751,23 @@ namespace gatzk::data
 
     LocalGraph normalize_graph_input(const GraphDataset &dataset, const util::AppConfig &config)
     {
+        return normalize_graph_input(dataset, config, selected_graph_ids(dataset, config));
+    }
+
+    LocalGraph normalize_graph_input(const GraphDataset &dataset, const util::AppConfig &config,
+                                    const std::vector<std::size_t> &selected_components)
+    {
         if (dataset.num_nodes == 0)
         {
             throw std::runtime_error("cannot normalize an empty dataset");
+        }
+        if (selected_components.empty() || selected_components.size() > dataset.graph_count ||
+            !std::is_sorted(selected_components.begin(), selected_components.end()) ||
+            std::adjacent_find(selected_components.begin(), selected_components.end()) != selected_components.end() ||
+            std::any_of(selected_components.begin(), selected_components.end(), [&](std::size_t graph_id)
+                        { return graph_id >= dataset.graph_count; }))
+        {
+            throw std::runtime_error("explicit graph component selection must be non-empty, sorted, unique, and in range");
         }
 
         LocalGraph local;
@@ -775,8 +789,8 @@ namespace gatzk::data
         local.graph_count = 0;
         local.public_input.N_total = dataset.num_nodes;
 
-        const auto graph_ids = selected_graph_ids(dataset, config);
-        const auto total_batch_graphs = graph_ids.empty() ? 1 : graph_ids.size();
+        const auto &graph_ids = selected_components;
+        const auto total_batch_graphs = graph_ids.size();
 
         std::vector<std::size_t> batch_node_ptr = {0};
         std::vector<std::size_t> batch_edge_ptr = {0};

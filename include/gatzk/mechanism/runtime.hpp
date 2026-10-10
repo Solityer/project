@@ -38,6 +38,16 @@ namespace gatzk::mechanism
 
     struct PublicStatement
     {
+        std::string dataset_id;
+        std::string input_preprocess_id;
+        std::string real_input_bundle_sha256;
+        std::string real_input_witness_sha256;
+        std::string real_input_metadata_sha256;
+        std::string checkpoint_bundle_sha256;
+        std::string input_source_manifest_sha256;
+        std::size_t source_layer = 0;
+        std::size_t source_head = 0;
+        std::size_t formal_head_width = 0;
         Mechanism mechanism = Mechanism::FeatureFolding;
         Variant variant = Variant::Original;
         std::size_t nodes = 0;
@@ -104,6 +114,8 @@ namespace gatzk::mechanism
         std::size_t graphs = 0;
         std::uint64_t seed = 0;
         std::filesystem::path witness_seed_file;
+        std::filesystem::path real_input_path;
+        std::filesystem::path real_input_metadata_path;
         std::filesystem::path srs_path;
         std::filesystem::path proof_out;
         std::filesystem::path statement_out;
@@ -130,6 +142,7 @@ namespace gatzk::mechanism
         std::string srs_manifest_sha256;
         std::string parent_protocol_schema_id;
         bool actual_cuda = false;
+        bool cuda_ntt_forced = false;
         int device = -1;
         std::string device_name;
         std::uint64_t cuda_kernel_invocations_delta = 0;
@@ -150,6 +163,23 @@ namespace gatzk::mechanism
         std::uint64_t cuda_resident_misses_delta = 0;
         std::string security_budget_ledger_sha256;
         std::string security_budget_ledger_json;
+        bool real_input = false;
+        std::string real_input_dataset;
+        std::string real_input_preprocess_id;
+        std::string real_input_bundle_sha256;
+        std::string real_input_witness_sha256;
+        std::string real_input_metadata_sha256;
+        std::string real_input_checkpoint_bundle_sha256;
+        std::string real_input_source_manifest_sha256;
+        std::size_t real_input_nodes = 0;
+        std::size_t real_input_edges = 0;
+        std::size_t real_input_graphs = 0;
+        std::size_t real_input_selected_width = 0;
+        std::size_t real_input_layer = 0;
+        std::size_t real_input_head = 0;
+        std::size_t real_input_formal_head_width = 0;
+        double cuda_warmup_time_ms = 0.0;
+        std::uint64_t cuda_warmup_kernel_invocations = 0;
     };
 
     struct VerifyReceipt
@@ -165,6 +195,23 @@ namespace gatzk::mechanism
         std::uint64_t verifier_cuda_kernel_invocations_delta = 0;
     };
 
+    struct PrepareRealOptions
+    {
+        std::filesystem::path config_path;
+        std::filesystem::path bundle_out;
+        std::filesystem::path metadata_out;
+        std::vector<std::size_t> selected_components;
+    };
+
+    struct PrepareRealReceipt
+    {
+        std::size_t nodes = 0;
+        std::size_t edges = 0;
+        std::size_t graphs = 0;
+        std::string bundle_sha256;
+        std::string metadata_sha256;
+    };
+
     Mechanism parse_mechanism(const std::string &value);
     Variant parse_variant(const std::string &value);
     Backend parse_backend(const std::string &value);
@@ -174,4 +221,5 @@ namespace gatzk::mechanism
 
     RunReceipt run(const RunOptions &options);
     VerifyReceipt verify(const VerifyOptions &options);
+    PrepareRealReceipt prepare_real_input(const PrepareRealOptions &options);
 }

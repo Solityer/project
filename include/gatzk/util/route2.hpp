@@ -15,6 +15,7 @@ namespace gatzk::util
         bool fast_verify_pairing = GATZK_ENABLE_FAST_VERIFY_PAIRING_DEFAULT != 0;
         bool cuda_trace_hotspots = false;
         bool cuda_field_hotspots = false;
+        bool cuda_force_ntt_for_mechanism = false;
     };
 
     const Route2Options &route2_options();

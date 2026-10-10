@@ -1,6 +1,7 @@
 #include "gatzk/mechanism/internal.hpp"
 
 #include "codec.hpp"
+#include "real_input.hpp"
 
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -16,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <set>
 #include <tuple>
 #include <optional>
 
@@ -24,6 +27,7 @@
 #endif
 
 #include "gatzk/algebra/vector_ops.hpp"
+#include "gatzk/crypto/curve.hpp"
 #include "gatzk/util/route2.hpp"
 
 namespace gatzk::mechanism
@@ -65,6 +69,44 @@ namespace gatzk::mechanism
         bool starts_with(const std::string &value, std::string_view prefix)
         {
             return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+        }
+
+        std::string json_escape_string(const std::string &value)
+        {
+            static constexpr char hex[] = "0123456789abcdef";
+            std::string escaped;
+            escaped.reserve(value.size());
+            for (const unsigned char byte : value)
+            {
+                switch (byte)
+                {
+                case '"': escaped += "\\\""; break;
+                case '\\': escaped += "\\\\"; break;
+                case '\b': escaped += "\\b"; break;
+                case '\f': escaped += "\\f"; break;
+                case '\n': escaped += "\\n"; break;
+                case '\r': escaped += "\\r"; break;
+                case '\t': escaped += "\\t"; break;
+                default:
+                    if (byte < 0x20)
+                    {
+                        escaped += "\\u00";
+                        escaped.push_back(hex[byte >> 4]);
+                        escaped.push_back(hex[byte & 0x0f]);
+                    }
+                    else
+                        escaped.push_back(static_cast<char>(byte));
+                }
+            }
+            return escaped;
+        }
+
+        bool is_sha256_hex(const std::string &value)
+        {
+            return value.size() == 64 && std::all_of(value.begin(), value.end(), [](unsigned char c)
+            {
+                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            });
         }
 
         std::string uint192_decimal(std::array<std::uint64_t, 3> limbs)
@@ -712,6 +754,7 @@ namespace gatzk::mechanism
                 throw std::runtime_error("mechanism workload exceeds the supported topology index width");
 
             PublicStatement statement;
+            statement.dataset_id = "synthetic";
             statement.mechanism = options.mechanism;
             statement.variant = options.variant;
             statement.nodes = options.nodes;
@@ -802,6 +845,72 @@ namespace gatzk::mechanism
             return statement;
         }
 
+        PublicStatement generate_real_statement(const RunOptions &options, const crypto::KZGKeyPair &key,
+                                                const internal::RealMechanismInput &input)
+        {
+            const auto &w = input.witness;
+            require(input.dataset == "cora" || input.dataset == "citeseer" || input.dataset == "ppi",
+                    "real mechanism input dataset is not registered for formal experiments");
+            const auto expected_n = input.dataset == "ppi" ? 65536U : 4096U;
+            const auto expected_e = input.dataset == "ppi" ? 8388608U : 32768U;
+            require(key.manifest.domain_sizes.at("N") == expected_n && key.manifest.domain_sizes.at("edge") == expected_e,
+                    "authenticated SRS domains do not match the real dataset catalog");
+            require((options.mechanism == Mechanism::FeatureFolding &&
+                     (options.width == 1 || options.width == 2 || options.width == 4 || options.width == 8)) ||
+                        (options.mechanism == Mechanism::SharedNeighborhood && options.width == 8),
+                    "real mechanism width must match a registered feature-folding prefix or eight-lane shared neighborhood");
+            require(w.width == 8 && w.node_count == options.nodes && w.edge_count == options.edges &&
+                        w.node_ptr.size() == options.graphs + 1,
+                    "real mechanism workload flags disagree with the prepared first-head witness");
+            require(input.input_preprocess_id == "row_normalize" && input.model_arch_id.size() != 0 && input.model_param_id.size() != 0 &&
+                        input.quant_cfg_id.size() != 0 && input.static_table_id.size() != 0,
+                    "real mechanism input has incomplete formal model identities");
+            require(is_sha256_hex(input.config_sha256) && is_sha256_hex(input.checkpoint_bundle_sha256) &&
+                        is_sha256_hex(input.source_manifest_sha256) && is_sha256_hex(input.bundle_sha256) &&
+                        is_sha256_hex(input.metadata_sha256) && is_sha256_hex(input.witness_sha256),
+                    "real mechanism input provenance digest is missing or malformed");
+            require(w.node_ptr.size() == w.edge_ptr.size() && w.node_ptr.front() == 0 && w.node_ptr.back() == w.node_count &&
+                        w.edge_ptr.front() == 0 && w.edge_ptr.back() == w.edge_count,
+                    "real mechanism input graph pointer endpoints do not match its workload");
+
+            PublicStatement statement;
+            statement.dataset_id = input.dataset;
+            statement.input_preprocess_id = input.input_preprocess_id;
+            statement.real_input_bundle_sha256 = input.bundle_sha256;
+            statement.real_input_witness_sha256 = input.witness_sha256;
+            statement.real_input_metadata_sha256 = input.metadata_sha256;
+            statement.checkpoint_bundle_sha256 = input.checkpoint_bundle_sha256;
+            statement.input_source_manifest_sha256 = input.source_manifest_sha256;
+            statement.source_layer = 0;
+            statement.source_head = 0;
+            statement.formal_head_width = 8;
+            statement.mechanism = options.mechanism;
+            statement.variant = options.variant;
+            statement.nodes = w.node_count;
+            statement.edges = w.edge_count;
+            statement.width = options.width;
+            statement.graphs = w.node_ptr.size() - 1;
+            statement.seed = options.seed;
+            statement.node_ptr.assign(w.node_ptr.begin(), w.node_ptr.end());
+            statement.edge_ptr.assign(w.edge_ptr.begin(), w.edge_ptr.end());
+            statement.topology.reserve(w.edge_count);
+            for (std::size_t graph = 0; graph < statement.graphs; ++graph)
+                for (std::size_t edge = statement.edge_ptr[graph]; edge < statement.edge_ptr[graph + 1]; ++edge)
+                    statement.topology.push_back(Edge{graph, w.edge_src_indices[edge], w.edge_dst_indices[edge]});
+            statement.srs_id = key.manifest.srs_id;
+            statement.srs_manifest_sha256 = key.manifest.manifest_hash;
+            statement.parent_protocol_schema_id = key.manifest.protocol_schema_id;
+            statement.parent_srs_degree_bound = static_cast<std::size_t>(key.manifest.kzg_assumption_degree_bound);
+            statement.node_domain = "N";
+            statement.node_domain_size = key.manifest.domain_sizes.at("N");
+            statement.edge_domain = "edge";
+            statement.edge_domain_size = key.manifest.domain_sizes.at("edge");
+            statement.pair_input_commitment_sha256 = internal::real_mechanism_relation_digest(input, options.mechanism, options.width);
+            statement.security_budget_ledger_sha256 = internal::compute_security_budget_ledger_sha256(statement);
+            statement.mechanism_schema_id = internal::compute_mechanism_schema_id(statement);
+            return statement;
+        }
+
         void validate_statement(const PublicStatement &s, const crypto::KZGKeyPair &key)
         {
             require(s.nodes > 0 && s.edges >= s.nodes && s.graphs > 0 && s.graphs <= s.nodes && s.width > 0 && s.width <= 32,
@@ -820,6 +929,28 @@ namespace gatzk::mechanism
             require(s.node_domain == "N" && s.edge_domain == "edge" && s.node_domain_size == key.manifest.domain_sizes.at("N") &&
                         s.edge_domain_size == key.manifest.domain_sizes.at("edge"),
                     "mechanism statement domain catalog differs from authenticated SRS domains");
+            if (s.dataset_id == "synthetic")
+            {
+                require(s.input_preprocess_id.empty() && s.real_input_bundle_sha256.empty() && s.real_input_metadata_sha256.empty() &&
+                            s.real_input_witness_sha256.empty() && s.checkpoint_bundle_sha256.empty() && s.input_source_manifest_sha256.empty() && s.formal_head_width == 0,
+                        "synthetic mechanism statement unexpectedly carries real-input provenance");
+                require(s.node_domain_size == 4096 && s.edge_domain_size == 32768,
+                        "synthetic mechanism statement is restricted to its legacy native test domain");
+            }
+            else
+            {
+                const auto expected_n = s.dataset_id == "ppi" ? 65536U : 4096U;
+                const auto expected_e = s.dataset_id == "ppi" ? 8388608U : 32768U;
+                require((s.dataset_id == "cora" || s.dataset_id == "citeseer" || s.dataset_id == "ppi") &&
+                            s.node_domain_size == expected_n && s.edge_domain_size == expected_e && s.input_preprocess_id == "row_normalize" &&
+                            s.source_layer == 0 && s.source_head == 0 && s.formal_head_width == 8 && s.width <= 8 &&
+                            (s.mechanism != Mechanism::SharedNeighborhood || s.width == 8) &&
+                            (s.mechanism != Mechanism::FeatureFolding || s.width == 1 || s.width == 2 || s.width == 4 || s.width == 8) &&
+                            is_sha256_hex(s.real_input_bundle_sha256) && is_sha256_hex(s.real_input_witness_sha256) &&
+                            is_sha256_hex(s.real_input_metadata_sha256) && is_sha256_hex(s.checkpoint_bundle_sha256) &&
+                            is_sha256_hex(s.input_source_manifest_sha256),
+                        "real mechanism statement has invalid dataset, source-head, width, or provenance identities");
+            }
             require(s.nodes < s.node_domain_size && s.edges < s.edge_domain_size, "mechanism workload leaves no route terminal row");
             require(s.node_ptr.size() == s.graphs + 1 && s.edge_ptr.size() == s.graphs + 1 && s.topology.size() == s.edges,
                     "mechanism statement pointer/topology shape mismatch");
@@ -836,7 +967,8 @@ namespace gatzk::mechanism
                             "mechanism edge_ptr slice does not match the graph identity of its topology rows");
             }
             std::vector<bool> self_edge(s.nodes, false);
-            std::uint64_t prior_graph = 0, prior_dst = 0, prior_src = 0;
+            std::uint64_t prior_graph = 0, prior_dst = 0;
+            std::set<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>> unique_edges;
             for (std::size_t i = 0; i < s.topology.size(); ++i)
             {
                 const auto &e = s.topology[i];
@@ -844,11 +976,11 @@ namespace gatzk::mechanism
                             e.dst < s.node_ptr[e.graph + 1],
                         "mechanism topology contains a cross-graph or out-of-range edge");
                 if (i != 0)
-                    require(std::tie(prior_graph, prior_dst, prior_src) <= std::tie(e.graph, e.dst, e.src),
-                            "mechanism topology is not in canonical graph/destination/source order");
+                    require(std::tie(prior_graph, prior_dst) <= std::tie(e.graph, e.dst),
+                            "mechanism topology is not in canonical graph/destination group order");
+                require(unique_edges.emplace(e.graph, e.src, e.dst).second, "mechanism topology contains a duplicate edge");
                 prior_graph = e.graph;
                 prior_dst = e.dst;
-                prior_src = e.src;
                 if (e.src == e.dst)
                     self_edge[e.src] = true;
             }
@@ -859,12 +991,58 @@ namespace gatzk::mechanism
                     "mechanism statement schema/security ledger digest mismatch");
         }
 
-        crypto::KZGKeyPair load_mechanism_key(const std::filesystem::path &srs_path)
+        crypto::KZGKeyPair load_mechanism_key(const std::filesystem::path &srs_path, std::size_t node_domain_size = 4096,
+                                              std::size_t edge_domain_size = 32768, const std::string &expected_srs_id = {})
         {
-            constexpr std::size_t kNativeNodeDomain = 4096;
-            constexpr std::size_t kNativeEdgeDomain = 32768;
-            return crypto::KZG::load_keys_for_domains(srs_path.string(), "trusted_srs", "", {{"N", kNativeNodeDomain}, {"edge", kNativeEdgeDomain}},
-                                                      4 * kNativeEdgeDomain + 256);
+            require(edge_domain_size <= (std::numeric_limits<std::size_t>::max() - 14) / 2,
+                    "mechanism registered edge domain overflows the trusted coefficient prefix");
+            const auto required_coefficients = 2 * edge_domain_size + 14;
+            return crypto::KZG::load_keys_for_domains(srs_path.string(), "trusted_srs", expected_srs_id,
+                                                      {{"N", node_domain_size}, {"edge", edge_domain_size}},
+                                                      required_coefficients);
+        }
+
+        std::string registered_srs_id(const std::string &dataset)
+        {
+            if (dataset == "cora")
+                return "cora_formal_srs";
+            if (dataset == "citeseer")
+                return "citeseer_formal_srs";
+            if (dataset == "ppi")
+                return "ppi_formal_srs";
+            throw std::runtime_error("real mechanism input does not have a registered trusted SRS identity: " + dataset);
+        }
+
+        std::pair<std::size_t, std::size_t> statement_domain_catalog_prefix(const std::string &bytes)
+        {
+            constexpr std::string_view marker = ",\"domains\":{\"node\":\"N\",\"node_size\":";
+            const auto start = bytes.find(marker);
+            if (start == std::string::npos)
+                throw std::runtime_error("mechanism statement has no canonical registered-domain prefix");
+            auto parse_number = [&](std::size_t &offset, char terminator)
+            {
+                const auto end = bytes.find(terminator, offset);
+                if (end == std::string::npos || end == offset)
+                    throw std::runtime_error("mechanism statement registered-domain prefix is malformed");
+                std::uint64_t value = 0;
+                const auto parsed = std::from_chars(bytes.data() + offset, bytes.data() + end, value, 10);
+                if (parsed.ec != std::errc{} || parsed.ptr != bytes.data() + end || value > std::numeric_limits<std::size_t>::max())
+                    throw std::runtime_error("mechanism statement registered-domain size is invalid");
+                offset = end + 1;
+                return static_cast<std::size_t>(value);
+            };
+            auto offset = start + marker.size();
+            const auto nodes = parse_number(offset, ',');
+            constexpr std::string_view edge_marker = "\"edge\":\"edge\",\"edge_size\":";
+            if (bytes.compare(offset, edge_marker.size(), edge_marker) != 0)
+                throw std::runtime_error("mechanism statement registered edge-domain prefix is malformed");
+            offset += edge_marker.size();
+            const auto edges = parse_number(offset, '}');
+            const bool cora = nodes == 4096 && edges == 32768;
+            const bool ppi = nodes == 65536 && edges == 8388608;
+            if (!cora && !ppi)
+                throw std::runtime_error("mechanism statement requests a domain catalog outside the trusted registry");
+            return {nodes, edges};
         }
 
         crypto::Transcript mechanism_transcript(const PublicStatement &statement, const MechanismProof &proof)
@@ -925,6 +1103,7 @@ namespace gatzk::mechanism
             auto options = util::route2_options();
             options.cuda_field_hotspots = backend == Backend::Cuda && !verifier;
             options.cuda_trace_hotspots = false;
+            options.cuda_force_ntt_for_mechanism = backend == Backend::Cuda && !verifier;
             util::set_route2_options(options);
             if (backend == Backend::Cpu || verifier)
                 return;
@@ -1236,11 +1415,127 @@ namespace gatzk::mechanism
     {
         const auto secret = read_witness_seed(options.witness_seed_file);
         configure_backend(options.backend, options.device, false);
-        const auto key = load_mechanism_key(options.srs_path);
-        const auto statement = generate_statement(options, key, secret);
+        std::optional<internal::RealMechanismInput> real_input;
+        if (options.real_input_path.empty() != options.real_input_metadata_path.empty())
+            throw std::runtime_error("real mechanism runs require both --real-input and --real-input-metadata");
+        if (!options.real_input_path.empty())
+        {
+            if (options.backend != Backend::Cuda)
+                throw std::runtime_error("real-graph mechanism proving is CUDA-only; CPU proving remains available for synthetic mechanism tests");
+            const auto bundle_link = std::filesystem::symlink_status(options.real_input_path);
+            const auto metadata_link = std::filesystem::symlink_status(options.real_input_metadata_path);
+            if (std::filesystem::is_symlink(bundle_link) || !std::filesystem::is_regular_file(bundle_link) ||
+                std::filesystem::is_symlink(metadata_link) || !std::filesystem::is_regular_file(metadata_link))
+                throw std::runtime_error("real mechanism bundle and metadata must be regular non-symlink files");
+            real_input = internal::read_real_mechanism_input(options.real_input_path);
+            const auto metadata_bytes = internal::read_text_file(options.real_input_metadata_path, 64U << 20);
+            real_input->metadata_sha256 = internal::sha256_hex(metadata_bytes);
+            const auto dataset = real_input->dataset;
+            const auto expected_srs_id = registered_srs_id(dataset);
+            const auto registered_n_domain = dataset == "ppi" ? 65536U : 4096U;
+            const auto registered_e_domain = dataset == "ppi" ? 8388608U : 32768U;
+            const auto required_coefficients = 2U * registered_e_domain + 14U;
+            const auto bundle_path = json_escape_string(std::filesystem::absolute(options.real_input_path).string());
+            const auto g = real_input->witness.node_ptr.size() - 1;
+            const bool has_component_zero = metadata_bytes.find("{\"canonical_id\":0,") != std::string::npos;
+            const bool has_component_nine = metadata_bytes.find("{\"canonical_id\":9,") != std::string::npos;
+            const auto checkpoint_marker = metadata_bytes.find("\"checkpoint_bundle\":{\"path\":");
+            const auto checkpoint_hash_marker = checkpoint_marker == std::string::npos ? std::string::npos :
+                metadata_bytes.find("\"sha256\":\"" + real_input->checkpoint_bundle_sha256 + "\",\"files\":", checkpoint_marker);
+            if (dataset != "cora" && dataset != "citeseer" && dataset != "ppi")
+                throw std::runtime_error("real mechanism bundle dataset is outside the registered formal catalog");
+            if (metadata_bytes.find("\"schema\":\"zkgat_real_mechanism_input_v1\"") == std::string::npos ||
+                metadata_bytes.find("\"dataset\":\"" + dataset + "\"") == std::string::npos ||
+                metadata_bytes.find("\"input_preprocess_id\":\"" + real_input->input_preprocess_id + "\"") == std::string::npos ||
+                real_input->input_preprocess_id != "row_normalize" ||
+                metadata_bytes.find("\"model_arch_id\":\"" + real_input->model_arch_id + "\"") == std::string::npos ||
+                metadata_bytes.find("\"model_param_id\":\"" + real_input->model_param_id + "\"") == std::string::npos ||
+                metadata_bytes.find("\"quant_cfg_id\":\"" + real_input->quant_cfg_id + "\"") == std::string::npos ||
+                metadata_bytes.find("\"static_table_id\":\"" + real_input->static_table_id + "\"") == std::string::npos ||
+                metadata_bytes.find("\"bundle\":{\"path\":\"" + bundle_path + "\",\"sha256\":\"" + real_input->bundle_sha256 + "\"}") == std::string::npos ||
+                checkpoint_hash_marker == std::string::npos ||
+                metadata_bytes.find("\"witness_sha256\":\"" + real_input->witness_sha256 + "\"") == std::string::npos ||
+                metadata_bytes.find("\"source_manifest_sha256\":\"" + real_input->source_manifest_sha256 + "\"") == std::string::npos ||
+                metadata_bytes.find("\"config_sha256\":\"" + real_input->config_sha256 + "\"") == std::string::npos ||
+                metadata_bytes.find("\"layer\":0,\"head\":0,\"formal_head_width\":8") == std::string::npos ||
+                metadata_bytes.find("\"actual\":{\"N\":" + std::to_string(real_input->witness.node_count) + ",\"E\":" +
+                                   std::to_string(real_input->witness.edge_count) + ",\"G\":" + std::to_string(g) + "}") == std::string::npos ||
+                metadata_bytes.find("\"srs_expectation\":{\"dataset_id\":\"" + dataset + "\",\"srs_id\":\"" +
+                                   expected_srs_id + "\",\"n_domain\":" + std::to_string(registered_n_domain) +
+                                   ",\"e_domain\":" + std::to_string(registered_e_domain) +
+                                   ",\"required_coefficient_count\":" + std::to_string(required_coefficients) + "}") == std::string::npos ||
+                !has_component_zero || (dataset == "ppi" && g == 2 && !has_component_nine) ||
+                ((dataset != "ppi" || g == 1) && has_component_nine))
+                throw std::runtime_error("real mechanism metadata does not match the canonical witness bundle and data identity");
+        }
+        const auto node_domain_size = real_input.has_value() ? (real_input->dataset == "ppi" ? 65536U : 4096U) : 4096U;
+        const auto edge_domain_size = real_input.has_value() ? (real_input->dataset == "ppi" ? 8388608U : 32768U) : 32768U;
+        const auto expected_srs_id = real_input.has_value() ? registered_srs_id(real_input->dataset) : std::string{};
+        const auto key = load_mechanism_key(options.srs_path, node_domain_size, edge_domain_size, expected_srs_id);
+        const auto statement = real_input.has_value() ? generate_real_statement(options, key, *real_input) : generate_statement(options, key, secret);
         validate_statement(statement, key);
         const auto statement_bytes = statement.canonical_json();
         const auto statement_hash = internal::sha256_hex(statement_bytes);
+
+        double cuda_warmup_time_ms = 0.0;
+        std::uint64_t cuda_warmup_kernel_invocations = 0;
+        if (options.backend == Backend::Cuda)
+        {
+            const auto warmup_start = Clock::now();
+            const auto warmup_before = algebra::cuda_execution_stats_snapshot();
+            const auto warmup_kernel_before = algebra::cuda_kernel_invocation_count();
+            constexpr std::size_t kWarmupSize = 32768;
+            constexpr std::size_t kWarmupMsmSize = 1U << 16U;
+            std::vector<algebra::FieldElement> coefficients(kWarmupSize, algebra::FieldElement::zero());
+            if (real_input.has_value())
+            {
+                const auto &warm_source = real_input->witness.h_prime;
+                for (std::size_t i = 0; i < coefficients.size(); ++i)
+                    coefficients[i] = warm_source[i % warm_source.size()][i % 8] + algebra::FieldElement::one();
+            }
+            else
+            {
+                for (std::size_t i = 0; i < coefficients.size(); ++i)
+                    coefficients[i] = algebra::FieldElement(i + 1);
+            }
+            auto transform = coefficients;
+            algebra::ntt_in_place(algebra::FieldElement::mutable_native_array_data(transform.data()), transform.size());
+            algebra::intt_in_place(algebra::FieldElement::mutable_native_array_data(transform.data()), transform.size());
+            if (transform != coefficients)
+                throw std::runtime_error("mechanism CUDA warmup NTT/INTT roundtrip changed its field vector");
+            crypto::G1Point ephemeral_base = crypto::g1_zero();
+            mcl::bn::hashAndMapToG1(ephemeral_base.value, "zkgat:mechanism:untimed-msm-warmup:v1");
+            std::vector<crypto::G1Point> ephemeral_points;
+            std::vector<algebra::FieldElement> ephemeral_scalars;
+            ephemeral_points.reserve(kWarmupMsmSize);
+            ephemeral_scalars.reserve(kWarmupMsmSize);
+            auto point = ephemeral_base;
+            for (std::size_t i = 0; i < kWarmupMsmSize; ++i)
+            {
+                ephemeral_points.push_back(point);
+                ephemeral_scalars.emplace_back(static_cast<std::uint64_t>(i + 1));
+                point = crypto::g1_add(point, ephemeral_base);
+            }
+            const crypto::G1MSMExecutionOptions warmup_msm_options{
+                .stable_srs_bases = false,
+                .stable_srs_capacity = 0,
+            };
+            crypto::G1MSMProfile warmup_msm_profile;
+            (void)crypto::g1_multi_scalar_mul_profiled(ephemeral_points.data(), ephemeral_scalars.data(), kWarmupMsmSize,
+                                                       &warmup_msm_profile, &warmup_msm_options);
+            const auto warmup_after = algebra::cuda_execution_stats_snapshot();
+            const auto warmup_kernel_after = algebra::cuda_kernel_invocation_count();
+            if (warmup_kernel_after < warmup_kernel_before)
+                throw std::runtime_error("mechanism CUDA warmup kernel counter moved backwards");
+            cuda_warmup_kernel_invocations = warmup_kernel_after - warmup_kernel_before;
+            if (cuda_warmup_kernel_invocations == 0 || warmup_after.ntt_calls == warmup_before.ntt_calls ||
+                warmup_after.intt_calls == warmup_before.intt_calls ||
+                (warmup_after.msm_single_calls == warmup_before.msm_single_calls && warmup_after.msm_batch_calls == warmup_before.msm_batch_calls) ||
+                warmup_msm_profile.input_count != kWarmupMsmSize || warmup_msm_profile.nonzero_scalar_count != kWarmupMsmSize ||
+                warmup_msm_profile.effective_scalar_count != kWarmupMsmSize)
+                throw std::runtime_error("CUDA warmup did not exercise NTT, inverse NTT, and a non-SRS ephemeral CUDA MSM before the timed proof");
+            cuda_warmup_time_ms = elapsed_ms(warmup_start, Clock::now());
+        }
 
         MechanismProof proof;
         initialize_proof_metadata(statement, proof);
@@ -1249,7 +1544,8 @@ namespace gatzk::mechanism
         const auto cuda_kernels_before = algebra::cuda_kernel_invocation_count();
         double commitment_time_ms = 0.0;
         const auto proof_start = Clock::now();
-        internal::ProofBuildContext context{statement, key, transcript, secret, proof, commitment_time_ms, {}};
+        internal::ProofBuildContext context{statement, key, transcript, secret, proof, commitment_time_ms, {},
+                                             real_input.has_value() ? &*real_input : nullptr};
         if (options.mechanism == Mechanism::FeatureFolding)
             internal::prove_feature_folding(context);
         else
@@ -1287,6 +1583,7 @@ namespace gatzk::mechanism
         receipt.srs_manifest_sha256 = key.manifest.manifest_hash;
         receipt.parent_protocol_schema_id = key.manifest.protocol_schema_id;
         receipt.actual_cuda = actual_cuda;
+        receipt.cuda_ntt_forced = options.backend == Backend::Cuda;
         receipt.device = options.backend == Backend::Cuda ? options.device : -1;
         receipt.device_name = options.backend == Backend::Cuda ? cuda_device_name(options.device) : "cpu";
         receipt.cuda_kernel_invocations_delta = cuda_kernel_delta;
@@ -1312,8 +1609,32 @@ namespace gatzk::mechanism
              receipt.cuda_t_fh_calls_delta != 0 || receipt.cuda_opening_fold_calls_delta != 0 || receipt.cuda_msm_single_calls_delta != 0 ||
              receipt.cuda_msm_batch_calls_delta != 0 || receipt.cuda_resident_hits_delta != 0 || receipt.cuda_resident_misses_delta != 0))
             throw std::runtime_error("CPU proving unexpectedly changed native CUDA execution counters");
+        if (options.backend == Backend::Cuda &&
+            (receipt.cuda_ntt_calls_delta == 0 || receipt.cuda_intt_calls_delta == 0 ||
+             (receipt.cuda_msm_single_calls_delta == 0 && receipt.cuda_msm_batch_calls_delta == 0)))
+            throw std::runtime_error("CUDA mechanism proof did not execute the required NTT, inverse NTT, and MSM primitives");
         receipt.security_budget_ledger_sha256 = statement.security_budget_ledger_sha256;
         receipt.security_budget_ledger_json = internal::security_budget_ledger_json(statement);
+        receipt.real_input = real_input.has_value();
+        if (real_input.has_value())
+        {
+            receipt.real_input_dataset = real_input->dataset;
+            receipt.real_input_preprocess_id = real_input->input_preprocess_id;
+            receipt.real_input_bundle_sha256 = real_input->bundle_sha256;
+            receipt.real_input_witness_sha256 = real_input->witness_sha256;
+            receipt.real_input_metadata_sha256 = real_input->metadata_sha256;
+            receipt.real_input_checkpoint_bundle_sha256 = real_input->checkpoint_bundle_sha256;
+            receipt.real_input_source_manifest_sha256 = real_input->source_manifest_sha256;
+            receipt.real_input_nodes = real_input->witness.node_count;
+            receipt.real_input_edges = real_input->witness.edge_count;
+            receipt.real_input_graphs = real_input->witness.node_ptr.size() - 1;
+            receipt.real_input_selected_width = options.width;
+            receipt.real_input_layer = 0;
+            receipt.real_input_head = 0;
+            receipt.real_input_formal_head_width = 8;
+        }
+        receipt.cuda_warmup_time_ms = cuda_warmup_time_ms;
+        receipt.cuda_warmup_kernel_invocations = cuda_warmup_kernel_invocations;
         internal::write_text_file(options.result_json, internal::run_receipt_json(options, receipt));
         return receipt;
     }
@@ -1321,9 +1642,10 @@ namespace gatzk::mechanism
     VerifyReceipt verify(const VerifyOptions &options)
     {
         configure_backend(Backend::Cpu, 0, true);
-        const auto statement_bytes = internal::read_text_file(options.statement_path, 64U << 20);
+        const auto statement_bytes = internal::read_text_file(options.statement_path, 1U << 30);
         const auto proof_bytes = internal::read_binary_file(options.proof_path, 1U << 30);
-        const auto key = load_mechanism_key(options.srs_path);
+        const auto [node_domain_size, edge_domain_size] = statement_domain_catalog_prefix(statement_bytes);
+        const auto key = load_mechanism_key(options.srs_path, node_domain_size, edge_domain_size);
         const auto verifier_cuda_kernels_before = algebra::cuda_kernel_invocation_count();
         const auto verify_start = Clock::now();
         const auto statement = PublicStatement::parse_canonical_json(statement_bytes);
@@ -1372,11 +1694,15 @@ namespace gatzk::mechanism
         std::string compute_mechanism_schema_id(const PublicStatement &s)
         {
             std::ostringstream canonical;
-            canonical << "zkgat-independent-mechanism-schema-v7|mechanism=" << to_string(s.mechanism) << "|variant=" << to_string(s.variant)
+            canonical << "zkgat-independent-mechanism-schema-v8|dataset=" << s.dataset_id << "|input_preprocess_id=" << s.input_preprocess_id
+                      << "|real_input_bundle_sha256=" << s.real_input_bundle_sha256 << "|real_input_metadata_sha256=" << s.real_input_metadata_sha256
+                      << "|checkpoint_bundle_sha256=" << s.checkpoint_bundle_sha256 << "|source_manifest_sha256=" << s.input_source_manifest_sha256
+                      << "|source_layer=" << s.source_layer << "|source_head=" << s.source_head << "|formal_head_width=" << s.formal_head_width
+                      << "|mechanism=" << to_string(s.mechanism) << "|variant=" << to_string(s.variant)
                       << "|N=" << s.node_domain << ':' << s.node_domain_size << "|E=" << s.edge_domain << ':' << s.edge_domain_size << "|nodes=" << s.nodes
                       << "|edges=" << s.edges << "|width=" << s.width << "|graphs=" << s.graphs << "|parent_manifest=" << s.srs_manifest_sha256
                       << "|parent_schema=" << s.parent_protocol_schema_id << "|parent_srs_degree_bound=" << s.parent_srs_degree_bound
-                      << "|codec=GZKMECH2-v2|fiat_shamir=Transcript-SHA256-reject-zero-v3"
+                      << "|statement_codec=zkgat_mechanism_statement_v8|proof_codec=GZKMECH2-v2|fiat_shamir=Transcript-SHA256-reject-zero-v3"
                       << "|open_fold=ordered-label-point-commitments-claims-before-challenge-v3"
                       << "|route=LogUp-inverse+accumulator+masked-quotient+Taylor-terminal-CRPC|security_ledger=numerical-union-bound-v5-global-SRS-degree-QFS"
                       << "|quotient_mask=Qzk=Q+(X^D-1)RQ;commit-Qzk-and-RQ;verify-residual=Z*(Qzk-Z*RQ);independent-csprng-rank8"

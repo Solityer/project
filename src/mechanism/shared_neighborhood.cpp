@@ -62,15 +62,15 @@ namespace gatzk::mechanism::internal
                 for (std::size_t edge_index = s.edge_ptr[graph]; edge_index < s.edge_ptr[graph + 1]; ++edge_index)
                     require(s.topology[edge_index].graph == graph, "Shared Neighborhood edge pointer disagrees with edge graph id");
             }
-            std::tuple<std::uint64_t, std::uint64_t, std::uint64_t> previous{};
+            std::tuple<std::uint64_t, std::uint64_t> previous{};
             for (std::size_t i = 0; i < s.topology.size(); ++i)
             {
                 const auto &edge = s.topology[i];
                 require(edge.graph < s.graphs && edge.src >= s.node_ptr[edge.graph] && edge.src < s.node_ptr[edge.graph + 1] &&
                             edge.dst >= s.node_ptr[edge.graph] && edge.dst < s.node_ptr[edge.graph + 1],
                         "Shared Neighborhood topology contains a cross-graph or out-of-range edge");
-                const auto current = std::make_tuple(edge.graph, edge.dst, edge.src);
-                require(i == 0 || previous <= current, "Shared Neighborhood topology is not in canonical graph/destination/source order");
+                const auto current = std::make_tuple(edge.graph, edge.dst);
+                require(i == 0 || previous <= current, "Shared Neighborhood topology is not in canonical graph/destination group order");
                 previous = current;
                 ++indegree[edge.dst];
                 if (edge.src == edge.dst)
@@ -106,6 +106,27 @@ namespace gatzk::mechanism::internal
         {
             const auto &s = context.statement;
             RawWitness out;
+            if (context.real_input != nullptr)
+            {
+                const auto &w = context.real_input->witness;
+                require(w.width == 8 && s.width == 8 && w.node_count == s.nodes && w.edge_count == s.edges &&
+                            w.node_ptr == s.node_ptr && w.edge_ptr == s.edge_ptr,
+                        "Shared Neighborhood real input does not match the formal width-8 statement");
+                for (std::size_t edge = 0; edge < s.edges; ++edge)
+                    require(w.edge_src_indices[edge] == s.topology[edge].src && w.edge_dst_indices[edge] == s.topology[edge].dst,
+                            "Shared Neighborhood real input topology differs from the public statement");
+                out.u = w.u;
+                out.sum = w.sum;
+                out.v.assign(s.width, std::vector<FieldElement>(s.edges, FieldElement::zero()));
+                out.hagg.assign(s.width, std::vector<FieldElement>(s.nodes, FieldElement::zero()));
+                for (std::size_t edge = 0; edge < s.edges; ++edge)
+                    for (std::size_t lane = 0; lane < s.width; ++lane)
+                        out.v[lane][edge] = w.weighted_edge_features[edge][lane];
+                for (std::size_t node = 0; node < s.nodes; ++node)
+                    for (std::size_t lane = 0; lane < s.width; ++lane)
+                        out.hagg[lane][node] = w.aggregate_pre_activation[node][lane];
+                return out;
+            }
             out.u = derive_witness_fields(context.witness_seed, kU, s.edges);
             out.v.reserve(s.width);
             out.hagg.assign(s.width, std::vector<FieldElement>(s.nodes, FieldElement::zero()));

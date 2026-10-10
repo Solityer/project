@@ -1,5 +1,6 @@
 #include "gatzk/mechanism/runtime.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <filesystem>
@@ -17,6 +18,7 @@
 namespace
 {
     using gatzk::mechanism::RunOptions;
+    using gatzk::mechanism::PrepareRealOptions;
     using gatzk::mechanism::VerifyOptions;
 
     class CliError : public std::runtime_error
@@ -30,7 +32,9 @@ namespace
         out << "Usage:\n"
             << "  gatzk_mechanism run --mechanism feature_folding|shared_neighborhood --variant original|control \\\n"
             << "    --nodes N --edges E --width D --graphs G --seed S --backend cpu|cuda [--device INDEX] \\\n"
-            << "    --witness-seed-file PATH --srs PATH --proof-out PATH --statement-out PATH --result-json PATH\n"
+            << "    --witness-seed-file PATH [--real-input PATH --real-input-metadata PATH] --srs PATH \\\n"
+            << "    --proof-out PATH --statement-out PATH --result-json PATH\n"
+            << "  gatzk_mechanism prepare-real --config PATH --components ID[,ID...] --real-input-out PATH --metadata-out PATH\n"
             << "  gatzk_mechanism verify --proof PATH --statement PATH --srs PATH --result-json PATH\n"
             << "  gatzk_mechanism --help\n";
     }
@@ -117,7 +121,7 @@ namespace
     {
         const std::set<std::string> allowed{
             "--mechanism", "--variant", "--nodes", "--edges", "--width", "--graphs", "--seed", "--backend",
-            "--device", "--witness-seed-file", "--srs", "--proof-out", "--statement-out", "--result-json",
+            "--device", "--witness-seed-file", "--real-input", "--real-input-metadata", "--srs", "--proof-out", "--statement-out", "--result-json",
         };
         const auto values = parse_flags(argc, argv, 2, allowed);
         RunOptions options;
@@ -130,6 +134,15 @@ namespace
         options.graphs = parse_size(required(values, "--graphs"), "--graphs");
         options.seed = parse_u64(required(values, "--seed"), "--seed");
         options.witness_seed_file = required_path(values, "--witness-seed-file");
+        const auto real_input = values.find("--real-input");
+        const auto real_metadata = values.find("--real-input-metadata");
+        if ((real_input == values.end()) != (real_metadata == values.end()))
+            throw CliError("--real-input and --real-input-metadata must be supplied together");
+        if (real_input != values.end())
+        {
+            options.real_input_path = real_input->second;
+            options.real_input_metadata_path = real_metadata->second;
+        }
         options.srs_path = required_path(values, "--srs");
         options.proof_out = required_path(values, "--proof-out");
         options.statement_out = required_path(values, "--statement-out");
@@ -157,6 +170,33 @@ namespace
         return options;
     }
 
+    PrepareRealOptions parse_prepare_real_options(int argc, char **argv)
+    {
+        const std::set<std::string> allowed{"--config", "--components", "--real-input-out", "--metadata-out"};
+        const auto values = parse_flags(argc, argv, 2, allowed);
+        PrepareRealOptions options;
+        options.config_path = required_path(values, "--config");
+        options.bundle_out = required_path(values, "--real-input-out");
+        options.metadata_out = required_path(values, "--metadata-out");
+        const auto &components = required(values, "--components");
+        std::size_t start = 0;
+        while (start < components.size())
+        {
+            const auto comma = components.find(',', start);
+            const auto end = comma == std::string::npos ? components.size() : comma;
+            if (end == start)
+                throw CliError("--components must be a comma-separated list of non-negative graph IDs");
+            options.selected_components.push_back(parse_size(components.substr(start, end - start), "--components"));
+            if (comma == std::string::npos)
+                break;
+            start = comma + 1;
+        }
+        if (options.selected_components.empty() || !std::is_sorted(options.selected_components.begin(), options.selected_components.end()) ||
+            std::adjacent_find(options.selected_components.begin(), options.selected_components.end()) != options.selected_components.end())
+            throw CliError("--components must be non-empty, sorted, and unique");
+        return options;
+    }
+
     VerifyOptions parse_verify_options(int argc, char **argv)
     {
         const std::set<std::string> allowed{"--proof", "--statement", "--srs", "--result-json"};
@@ -177,7 +217,7 @@ namespace
             return argc < 2 ? 2 : 0;
         }
         const std::string command = argv[1];
-        if ((command == "run" || command == "verify") && argc == 3 && std::string_view(argv[2]) == "--help")
+        if ((command == "run" || command == "verify" || command == "prepare-real") && argc == 3 && std::string_view(argv[2]) == "--help")
         {
             print_usage(std::cout);
             return 0;
@@ -194,6 +234,14 @@ namespace
                       << " prove_time_ms=" << receipt.prove_time_ms
                       << " proof_size_bytes=" << receipt.proof_size_bytes
                       << " proof_sha256=" << receipt.proof_sha256 << '\n';
+            return 0;
+        }
+        if (command == "prepare-real")
+        {
+            const auto options = parse_prepare_real_options(argc, argv);
+            const auto receipt = gatzk::mechanism::prepare_real_input(options);
+            std::cout << "REAL_MECHANISM_INPUT_WRITTEN nodes=" << receipt.nodes << " edges=" << receipt.edges << " graphs=" << receipt.graphs
+                      << " bundle_sha256=" << receipt.bundle_sha256 << " metadata_sha256=" << receipt.metadata_sha256 << '\n';
             return 0;
         }
         if (command == "verify")

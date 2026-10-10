@@ -3,6 +3,7 @@
 
 #include <openssl/sha.h>
 
+#include <algorithm>
 #include <array>
 #include <fstream>
 #include <limits>
@@ -23,6 +24,14 @@ namespace gatzk::mechanism
         }
 
         void append_u64(std::string &out, std::uint64_t value) { out += std::to_string(value); }
+
+        bool is_sha256_hex(const std::string &value)
+        {
+            return value.size() == 64 && std::all_of(value.begin(), value.end(), [](unsigned char c)
+            {
+                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            });
+        }
 
         class JsonReader
         {
@@ -240,7 +249,27 @@ namespace gatzk::mechanism
         const auto ledger_digest = internal::compute_security_budget_ledger_sha256(*this);
         if (!security_budget_ledger_sha256.empty() && security_budget_ledger_sha256 != ledger_digest)
             throw std::runtime_error("mechanism statement security ledger digest is stale");
-        out += "{\"format\":\"zkgat_mechanism_statement_v7\",\"mechanism\":";
+        out += "{\"format\":\"zkgat_mechanism_statement_v8\",\"dataset\":";
+        append_string(out, dataset_id);
+        out += ",\"input_preprocess_id\":";
+        append_string(out, input_preprocess_id);
+        out += ",\"real_input\":{\"bundle_sha256\":";
+        append_string(out, real_input_bundle_sha256);
+        out += ",\"witness_sha256\":";
+        append_string(out, real_input_witness_sha256);
+        out += ",\"metadata_sha256\":";
+        append_string(out, real_input_metadata_sha256);
+        out += ",\"checkpoint_bundle_sha256\":";
+        append_string(out, checkpoint_bundle_sha256);
+        out += ",\"source_manifest_sha256\":";
+        append_string(out, input_source_manifest_sha256);
+        out += ",\"layer\":";
+        append_u64(out, source_layer);
+        out += ",\"head\":";
+        append_u64(out, source_head);
+        out += ",\"formal_head_width\":";
+        append_u64(out, formal_head_width);
+        out += "},\"mechanism\":";
         append_string(out, to_string(mechanism));
         out += ",\"variant\":";
         append_string(out, to_string(variant));
@@ -301,7 +330,27 @@ namespace gatzk::mechanism
     {
         JsonReader r(bytes);
         PublicStatement s;
-        r.token("{\"format\":\"zkgat_mechanism_statement_v7\",\"mechanism\":");
+        r.token("{\"format\":\"zkgat_mechanism_statement_v8\",\"dataset\":");
+        s.dataset_id = r.string();
+        r.token(",\"input_preprocess_id\":");
+        s.input_preprocess_id = r.string();
+        r.token(",\"real_input\":{\"bundle_sha256\":");
+        s.real_input_bundle_sha256 = r.string();
+        r.token(",\"witness_sha256\":");
+        s.real_input_witness_sha256 = r.string();
+        r.token(",\"metadata_sha256\":");
+        s.real_input_metadata_sha256 = r.string();
+        r.token(",\"checkpoint_bundle_sha256\":");
+        s.checkpoint_bundle_sha256 = r.string();
+        r.token(",\"source_manifest_sha256\":");
+        s.input_source_manifest_sha256 = r.string();
+        r.token(",\"layer\":");
+        s.source_layer = static_cast<std::size_t>(r.u64());
+        r.token(",\"head\":");
+        s.source_head = static_cast<std::size_t>(r.u64());
+        r.token(",\"formal_head_width\":");
+        s.formal_head_width = static_cast<std::size_t>(r.u64());
+        r.token("},\"mechanism\":");
         s.mechanism = parse_mechanism(r.string());
         r.token(",\"variant\":");
         s.variant = parse_variant(r.string());
@@ -366,9 +415,11 @@ namespace gatzk::mechanism
         s.edge_domain = r.string();
         r.token(",\"edge_size\":");
         s.edge_domain_size = static_cast<std::size_t>(r.u64());
-        if (s.node_domain != "N" || s.edge_domain != "edge" || s.node_domain_size != 4096 || s.edge_domain_size != 32768 ||
-            s.nodes >= s.node_domain_size || s.edges >= s.edge_domain_size)
-            throw std::runtime_error("mechanism statement domain catalog is outside the native Cora envelope");
+        const bool cora_catalog = s.node_domain_size == 4096 && s.edge_domain_size == 32768;
+        const bool ppi_catalog = s.node_domain_size == 65536 && s.edge_domain_size == 8388608;
+        if (s.node_domain != "N" || s.edge_domain != "edge" || (!cora_catalog && !ppi_catalog) || s.nodes >= s.node_domain_size ||
+            s.edges >= s.edge_domain_size)
+            throw std::runtime_error("mechanism statement domain catalog is outside the registered trusted datasets");
         r.token("},\"mechanism_schema_id\":");
         s.mechanism_schema_id = r.string();
         r.token(",\"security\":");
@@ -377,6 +428,26 @@ namespace gatzk::mechanism
         r.token(",\"pair_input_commitment_sha256\":");
         s.pair_input_commitment_sha256 = r.string();
         r.token("}");
+        if (s.dataset_id == "synthetic")
+        {
+            if (!s.input_preprocess_id.empty() || !s.real_input_bundle_sha256.empty() || !s.real_input_metadata_sha256.empty() ||
+                !s.real_input_witness_sha256.empty() || !s.checkpoint_bundle_sha256.empty() || !s.input_source_manifest_sha256.empty() || s.formal_head_width != 0 ||
+                s.node_domain_size != 4096 || s.edge_domain_size != 32768)
+                throw std::runtime_error("synthetic mechanism statement has real-input provenance or a nonlegacy domain");
+        }
+        else
+        {
+            const bool cora = s.dataset_id == "cora" || s.dataset_id == "citeseer";
+            const bool ppi = s.dataset_id == "ppi";
+            if ((!cora && !ppi) || s.input_preprocess_id != "row_normalize" || s.source_layer != 0 || s.source_head != 0 ||
+                s.formal_head_width != 8 || s.width > 8 || (s.mechanism == Mechanism::SharedNeighborhood && s.width != 8) ||
+                (s.mechanism == Mechanism::FeatureFolding && s.width != 1 && s.width != 2 && s.width != 4 && s.width != 8) ||
+                !is_sha256_hex(s.real_input_bundle_sha256) || !is_sha256_hex(s.real_input_witness_sha256) || !is_sha256_hex(s.real_input_metadata_sha256) ||
+                !is_sha256_hex(s.checkpoint_bundle_sha256) || !is_sha256_hex(s.input_source_manifest_sha256) ||
+                (cora && (s.node_domain_size != 4096 || s.edge_domain_size != 32768)) ||
+                (ppi && (s.node_domain_size != 65536 || s.edge_domain_size != 8388608)))
+                throw std::runtime_error("real mechanism statement dataset or source provenance is invalid");
+        }
         if (!r.done() || s.canonical_json() != bytes)
             throw std::runtime_error("mechanism statement is not in its unique canonical encoding");
         return s;
@@ -554,6 +625,8 @@ namespace gatzk::mechanism
             out += o.backend == Backend::Cuda ? std::to_string(r.device) : "null";
             out += ",\"verifier\":\"cpu\",\"actual_cuda\":";
             out += r.actual_cuda ? "true" : "false";
+            out += ",\"cuda_ntt_forced\":";
+            out += r.cuda_ntt_forced ? "true" : "false";
             out += ",\"device_name\":";
             append_string(out, r.device_name);
             out += ",\"cuda_kernel_invocations_delta\":" + std::to_string(r.cuda_kernel_invocations_delta) + ",\"cuda_stats_delta\":{";
@@ -573,7 +646,22 @@ namespace gatzk::mechanism
                    r.parent_protocol_schema_id + "\"},\"pair_input_commitment_sha256\":\"" + r.pair_input_commitment_sha256 + "\",\"statement_sha256\":\"" +
                    r.statement_sha256 + "\",\"proof\":{\"path\":\"" + o.proof_out.string() + "\",\"sha256\":\"" + r.proof_sha256 + "\",\"size_bytes\":" +
                    std::to_string(r.proof_size_bytes) + "},\"metrics\":{\"commitment_time_ms\":" + std::to_string(r.commitment_time_ms) + ",\"prove_time_ms\":" +
-                   std::to_string(r.prove_time_ms) + "},\"timing_schema\":\"mechanism_commitment_disjoint_verify_parse_accept_v2\"}";
+                   std::to_string(r.prove_time_ms) + "},\"cuda_warmup_time_ms\":" + std::to_string(r.cuda_warmup_time_ms) +
+                   ",\"cuda_warmup_kernel_invocations\":" + std::to_string(r.cuda_warmup_kernel_invocations) + ",\"dataset\":\"" +
+                   (r.real_input ? r.real_input_dataset : std::string("synthetic")) + "\",\"real_input\":" +
+                   (r.real_input ? ("{\"schema\":\"zkgat_real_mechanism_input_v1\",\"dataset\":\"" + r.real_input_dataset +
+                                    "\",\"input_preprocess_id\":\"" + r.real_input_preprocess_id + "\",\"bundle_sha256\":\"" +
+                                    r.real_input_bundle_sha256 + "\",\"witness_sha256\":\"" + r.real_input_witness_sha256 +
+                                    "\",\"metadata_sha256\":\"" + r.real_input_metadata_sha256 +
+                                    "\",\"checkpoint_bundle_sha256\":\"" + r.real_input_checkpoint_bundle_sha256 +
+                                    "\",\"source_manifest_sha256\":\"" + r.real_input_source_manifest_sha256 +
+                                    "\",\"pair_input_commitment_sha256\":\"" + r.pair_input_commitment_sha256 + "\",\"layer\":" +
+                                    std::to_string(r.real_input_layer) + ",\"head\":" + std::to_string(r.real_input_head) +
+                                    ",\"formal_head_width\":" + std::to_string(r.real_input_formal_head_width) +
+                                    ",\"selected_width\":" + std::to_string(r.real_input_selected_width) + ",\"actual\":{\"N\":" +
+                                    std::to_string(r.real_input_nodes) + ",\"E\":" + std::to_string(r.real_input_edges) +
+                                    ",\"G\":" + std::to_string(r.real_input_graphs) + "}}")
+                            : "null") + ",\"timing_schema\":\"mechanism_commitment_disjoint_verify_parse_accept_v2\"}";
             return out;
         }
         std::string verify_receipt_json(const VerifyReceipt &r)

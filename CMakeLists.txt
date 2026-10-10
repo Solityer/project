@@ -69,7 +69,7 @@ set(GATZK_SOURCES
     src/protocol/quotients.cpp src/protocol/schema.cpp src/protocol/schema_labels.cpp src/protocol/trace.cpp src/protocol/verifier.cpp
     src/protocol/verifier_context.cpp src/protocol/verifier_registration_artifact.cpp src/protocol/zkmap.cpp src/util/config.cpp src/util/logging.cpp
     src/util/route2.cpp src/protocol/cuda_t_edge_stub.cpp src/protocol/cuda_t_fh_stub.cpp src/mechanism/runtime.cpp src/mechanism/route.cpp src/mechanism/codec.cpp
-    src/mechanism/feature_folding.cpp src/mechanism/shared_neighborhood.cpp)
+    src/mechanism/feature_folding.cpp src/mechanism/shared_neighborhood.cpp src/mechanism/real_input.cpp)
 
 if(GATZK_ENABLE_CUDA_BACKEND)
     list(APPEND GATZK_SOURCES src/algebra/cuda_backend.cu src/algebra/cuda_ntt.cu src/crypto/cuda_msm.cu src/protocol/cuda_t_edge.cu src/protocol/cuda_t_fh.cu)
@@ -184,4 +184,10 @@ option(GATZK_BUILD_MECHANISM_SECURITY_REGRESSION "Build mechanism transcript sec
 if(GATZK_BUILD_MECHANISM_SECURITY_REGRESSION)
     add_executable(gatzk_mechanism_security_regression EXCLUDE_FROM_ALL tests/mechanism_security_regression.cpp)
     target_link_libraries(gatzk_mechanism_security_regression PRIVATE gatzkml)
+endif()
+
+option(GATZK_BUILD_REAL_MECHANISM_INPUT_REGRESSION "Build real mechanism input relation and codec regression" OFF)
+if(GATZK_BUILD_REAL_MECHANISM_INPUT_REGRESSION)
+    add_executable(gatzk_real_mechanism_input_regression EXCLUDE_FROM_ALL tests/real_mechanism_input_regression.cpp)
+    target_link_libraries(gatzk_real_mechanism_input_regression PRIVATE gatzkml)
 endif()

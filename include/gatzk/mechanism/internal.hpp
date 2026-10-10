@@ -8,12 +8,30 @@
 #include "gatzk/algebra/polynomial.hpp"
 #include "gatzk/crypto/transcript.hpp"
 #include "gatzk/mechanism/runtime.hpp"
+#include "gatzk/protocol/trace.hpp"
 
 namespace gatzk::mechanism::internal
 {
     using FieldElement = algebra::FieldElement;
     using Polynomial = algebra::Polynomial;
     using Commitment = crypto::Commitment;
+
+    struct RealMechanismInput
+    {
+        protocol::Layer0Head0MechanismWitness witness;
+        std::string dataset;
+        std::string input_preprocess_id;
+        std::string model_arch_id;
+        std::string model_param_id;
+        std::string quant_cfg_id;
+        std::string static_table_id;
+        std::string config_sha256;
+        std::string checkpoint_bundle_sha256;
+        std::string source_manifest_sha256;
+        std::string bundle_sha256;
+        std::string metadata_sha256;
+        std::string witness_sha256;
+    };
 
     struct ProofBuildContext
     {
@@ -24,6 +42,7 @@ namespace gatzk::mechanism::internal
         MechanismProof &proof;
         double &commitment_time_ms;
         std::map<std::string, Commitment> objects;
+        const RealMechanismInput *real_input = nullptr;
     };
 
     struct ProofVerifyContext
