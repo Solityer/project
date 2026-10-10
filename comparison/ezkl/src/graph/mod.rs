@@ -39,7 +39,7 @@ use crate::circuit::table::{num_cols_required, Range, Table, RESERVED_BLINDING_R
 use crate::circuit::{CheckMode, Input, InputType};
 use crate::fieldutils::{felt_to_f64, IntegerRep};
 use crate::pfsys::PrettyElements;
-use crate::tensor::{Tensor, ValTensor};
+use crate::tensor::{Tensor, ValTensor, VarTensor};
 use crate::{RunArgs, EZKL_BUF_CAPACITY};
 
 use halo2_proofs::{
@@ -1252,6 +1252,7 @@ impl GraphSettings {
 #[derive(Clone, Debug)]
 pub struct GraphConfig {
     model_config: ModelConfig,
+    runtime_param_advice: Option<VarTensor>,
     module_configs: ModuleConfigs,
     circuit_size: CircuitSize,
 }
@@ -2129,6 +2130,11 @@ impl Circuit<Fp> for GraphCircuit {
         let base = Model::configure(cs, &vars, &params).unwrap();
 
         let model_config = ModelConfig { base, vars };
+        let runtime_param_advice = if params.run_args.param_visibility.is_hashed_public() {
+            Some(VarTensor::new_advice(cs, params.run_args.logrows as usize, 1, 1))
+        } else {
+            None
+        };
 
         debug!(
             "degree: {}, log2_ceil of degrees: {:?}",
@@ -2150,6 +2156,7 @@ impl Circuit<Fp> for GraphCircuit {
 
         GraphConfig {
             model_config,
+            runtime_param_advice,
             module_configs,
             circuit_size,
         }
@@ -2301,47 +2308,16 @@ impl Circuit<Fp> for GraphCircuit {
             parameter.set_visibility(param_visibility);
             let parameter: ValTensor<Fp> = parameter.try_into().map_err(|_| PlonkError::Synthesis)?;
 
-            let challenges = if let Some(einsum_config) = &config.model_config.base.einsums {
-                einsum_config
-                    .challenges()
-                    .map_err(|_| PlonkError::Synthesis)?
-                    .iter()
-                    .map(|c| layouter.get_challenge(*c))
-                    .collect_vec()
-            } else {
-                vec![]
-            };
+            let param_advice = config.runtime_param_advice.as_ref().ok_or(PlonkError::Synthesis)?;
+            if parameter.len() > param_advice.col_size() {
+                error!("runtime parameter input exceeds its dedicated Halo2 Advice column: values={} available_rows={}", parameter.len(), param_advice.col_size());
+                return Err(PlonkError::Synthesis);
+            }
             layouter.assign_region(|| "_enter_module_2", |_| Ok(()))?;
-            let (assigned_parameter, assigned_constants) = layouter.assign_region(
+            let assigned_parameter = layouter.assign_region(
                 || "runtime_parameter_input",
-                |region| {
-                    let mut thread_safe_region = RegionCtx::new_with_challenges(
-                        region,
-                        0,
-                        self.settings().run_args.num_inner_cols,
-                        self.settings().run_args.decomp_base,
-                        self.settings().run_args.decomp_legs,
-                        challenges.clone(),
-                    );
-                    thread_safe_region.update_constants(constants.clone());
-                    let assigned = config
-                        .model_config
-                        .base
-                        .layout(
-                            &mut thread_safe_region,
-                            &[&parameter],
-                            Box::new(Input {
-                                scale: parameter.scale(),
-                                datum_type: InputType::F32,
-                                decomp: false,
-                            }),
-                        )
-                        .map_err(|_| PlonkError::Synthesis)?
-                        .ok_or(PlonkError::Synthesis)?;
-                    Ok((assigned, thread_safe_region.assigned_constants().clone()))
-                },
+                |mut region| param_advice.assign(&mut region, 0, &parameter, &mut ConstantsMap::new()),
             )?;
-            constants = assigned_constants;
             let mut module_values = vec![assigned_parameter.clone()];
             graph_modules.layout(
                 &mut layouter,

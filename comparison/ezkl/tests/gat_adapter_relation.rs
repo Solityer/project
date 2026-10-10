@@ -5,6 +5,26 @@ use ezkl::gat_adapter::{
 };
 
 #[test]
+fn region_bulk_increment_matches_elementwise_next_at_column_boundaries() {
+    use ezkl::circuit::ops::region::{RegionCtx, RegionSettings};
+    use halo2curves::bn256::Fr;
+
+    for columns in [1usize, 2, 3, 7, 16] {
+        for initial_row in [0usize, 1, 3, 15] {
+            for steps in [0usize, 1, 2, 3, 15, 31, 1023] {
+                let settings = RegionSettings::all_false(2, 16);
+                let mut ordinary = RegionCtx::<Fr>::new_dummy(initial_row, columns, settings.clone());
+                let mut bulk = RegionCtx::<Fr>::new_dummy(initial_row, columns, settings);
+                for _ in 0..steps { ordinary.next(); }
+                bulk.increment(steps);
+                assert_eq!(bulk.row(), ordinary.row());
+                assert_eq!(bulk.linear_coord(), ordinary.linear_coord());
+            }
+        }
+    }
+}
+
+#[test]
 fn signed_round_division_covers_sign_zero_tie_and_toward_zero() {
     let positive = evaluate_signed_division(5, 2, RoundingMode::NearestTiesAway).unwrap();
     assert_eq!(positive.quotient, 3);

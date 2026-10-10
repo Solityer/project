@@ -1001,9 +1001,9 @@ impl<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash> RegionCtx<'a
 
     /// Increment the offset
     pub fn increment(&mut self, n: usize) {
-        for _ in 0..n {
-            self.next()
-        }
+        let previous_rows = self.linear_coord / self.num_inner_cols;
+        self.linear_coord += n;
+        self.row += self.linear_coord / self.num_inner_cols - previous_rows;
     }
 
     /// flush row to the next row
