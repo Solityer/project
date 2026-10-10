@@ -1,0 +1,120 @@
+{
+  "cancellation_evidence": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/incidents/reverify_cancelled_20261010T085441Z_c57bc5f351/evidence_manifest.json",
+    "sha256": "862968ed7602840117f85b468a55a37a64e44456883f0ed264b19136765a4e01"
+  },
+  "created_utc": "2026-10-10T09:25:01.161702Z",
+  "format": "zkgat_mechanism_initial_only_report_integrity_v1",
+  "full_reverification_status": "CANCELLED_BY_USER_AFTER_13_OF_66",
+  "generator_command": "/usr/bin/python3 /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/report_initial_only.py",
+  "platform": "Linux-6.17.0-1014-nvidia-aarch64-with-glibc2.39",
+  "publication_documents_initial_only": {
+    "files": {
+      "README.md": {
+        "path": "/home/pzh/project/README.md",
+        "sha256": "56517d8b36dac65d864a99b69f78b0826cc7967882ad1c75616c6c3603669f1d",
+        "size_bytes": 31904
+      },
+      "docs/mechanism_ablation.md": {
+        "path": "/home/pzh/project/docs/mechanism_ablation.md",
+        "sha256": "aa09fc2ae6e214b22577b51257406000877c77eb885041811bb35d6b4f8c85ac",
+        "size_bytes": 24132
+      }
+    },
+    "reason": "record-publication-docs is gated by a full passing audit_reverify archive, which was not committed because the user cancelled full re-verification.",
+    "strict_runner_receipt": "NOT_CREATED"
+  },
+  "python": "3.12.3 (main, Mar  3 2026, 12:15:18) [GCC 13.3.0]",
+  "receipt_audit": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/audit.json",
+    "sha256": "517bb84238e9c75359a8641120217192d16cc3aa1438402d234f60d2566bd952",
+    "status": "PASS"
+  },
+  "report_files": {
+    "feature_folding_csv": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding_summary_initial_only.csv",
+      "sha256": "e74edff47503292bbf232d3025dfd7d0eca65f15279719f62f29bcdd2ad783c2",
+      "size_bytes": 7100
+    },
+    "feature_folding_markdown": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding_summary_initial_only.md",
+      "sha256": "ba5f90ec30b34238da2fe2111d08bef1a3eeda4d7afe179f12019851bc9e1c0e",
+      "size_bytes": 6560
+    },
+    "pairs_csv": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/initial_only_pairs.csv",
+      "sha256": "9ccdcd0e0b28c72443fb80f8e8a392affa0644a53184bc9c9aef204be48bee5c",
+      "size_bytes": 14458
+    },
+    "pairs_json": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/initial_only_pairs.json",
+      "sha256": "c7e2ab101cb5a2d24b45f93d15e7eefcae2532fa13e42fffa0742510777593c1",
+      "size_bytes": 86815
+    },
+    "raw_csv": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/initial_only_cells.csv",
+      "sha256": "4a70c0c8414f0808a3ec5ceec7a33c8c96567fbf32bf77cddfcc68729bbdaf37",
+      "size_bytes": 981868
+    },
+    "raw_json": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/initial_only_cells.json",
+      "sha256": "01aaf02d35e2e7ebc4efd4a32e633024ad801e5f7664954b1694d68df2a53adf",
+      "size_bytes": 1097362
+    },
+    "shared_neighborhood_csv": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood_summary_initial_only.csv",
+      "sha256": "793090d285f23288a0f318077b89365d41491bcdc3ec8a064cd09d5d28010c8e",
+      "size_bytes": 4275
+    },
+    "shared_neighborhood_markdown": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood_summary_initial_only.md",
+      "sha256": "58c34320e71ae4479e24e6868c633c8295448c19d6d7d79bc1bc85d0dac49f90",
+      "size_bytes": 4452
+    },
+    "statistics_json": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/initial_only_statistics.json",
+      "sha256": "026b4c019ec6db176cecbcf7dd11162927c8c24c4ab58315a919a86a2319f824",
+      "size_bytes": 157562
+    }
+  },
+  "report_script": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/report_initial_only.py",
+    "sha256": "3c3e603b1ffab841b35bb1c7a4c0173d15f74a81d2381e72e1ba29e559611b43"
+  },
+  "session_id": "mechanism_20261010T063825Z_9fe0a93c236b",
+  "source_inputs": {
+    "audit.json": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/audit.json",
+      "sha256": "517bb84238e9c75359a8641120217192d16cc3aa1438402d234f60d2566bd952"
+    },
+    "build_source_manifest.json": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/build_source_manifest.json",
+      "sha256": "85c96da5f59bc76689f9fa85c9152254e2a6746a20c246082fb2408cf8f8dfaa"
+    },
+    "cells.csv": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/cells.csv",
+      "sha256": "4a70c0c8414f0808a3ec5ceec7a33c8c96567fbf32bf77cddfcc68729bbdaf37"
+    },
+    "configuration_and_srs_manifest.json": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/configuration_and_srs_manifest.json",
+      "sha256": "2252dacdfc0ae1bb492d38a1f749e40b80d461ea456ef7573b1db864d718cde2"
+    },
+    "cuda_activity_samples.jsonl": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/cuda_activity_samples.jsonl",
+      "sha256": "ba84382b0e7581e33ccd336eca109f741e7c2a6660cb045c1efed5a3f9aebc34"
+    },
+    "results_manifest.json": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/results_manifest.json",
+      "sha256": "16a2d58ecc94f9e5348901ff00c467a2facb1bf39bd08a7188f4976fe59f8c4d"
+    },
+    "source_manifest.json": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/source_manifest.json",
+      "sha256": "974e42594535642426b807725f0b5ff3a09e294ef4e725973411ee6c53949ce2"
+    },
+    "summary.json": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/summary.json",
+      "sha256": "d5f676fbcb375e54ee4414bdece812ac8e9cc8c95a244007d2ba9c26dc7048c3"
+    }
+  },
+  "validation_scope": "initial-verification-receipt-and-hash-audit-only"
+}

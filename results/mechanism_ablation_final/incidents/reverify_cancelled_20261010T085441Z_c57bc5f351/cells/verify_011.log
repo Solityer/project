@@ -1,0 +1,9 @@
+stage=post-session-independent-cpu-verifier
+start_utc=2026-10-10T08:55:21Z
+command=/home/pzh/project/build_cuda/gatzk_mechanism verify --proof /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0_d8_g1/rep_001/control/proof.bin --statement /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0_d8_g1/rep_001/control/public_statement.json --srs /home/pzh/project/artifacts/srs/ppi_formal_srs --result-json /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_011.json
+VERIFY_OK proof_sha256=94752d614a10dedf93a558d9bc0d67cb6cc88080a37d4fd69c763d1d2690a23f statement_sha256=e4eae1d5f5725b59439ac8536efb2112a35632bd7c6fe307e4e56c82b99ba70e verify_time_ms=5751.83
+end_utc=2026-10-10T08:57:17Z
+process_pid=1219677
+return_code=0
+timed_out=false
+wall_time_seconds=115.699345

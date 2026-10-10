@@ -1,0 +1,21 @@
+{
+  "build_manifest_listed_in_results_manifest": false,
+  "build_source": "/home/pzh/project/build_cuda/generated/gatzk/source_manifest.json",
+  "build_source_sha256": "85c96da5f59bc76689f9fa85c9152254e2a6746a20c246082fb2408cf8f8dfaa",
+  "byte_identical_to_build_after": true,
+  "command": "python3 /home/pzh/project/results/mechanism_ablation_final/repair_build_manifest_copy.py --session /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b --build-manifest /home/pzh/project/build_cuda/generated/gatzk/source_manifest.json",
+  "format": "zkgat_mechanism_build_manifest_copy_repair_v1",
+  "json_semantically_equal_after": true,
+  "json_semantically_equal_before": true,
+  "new_session_bytes": 27740,
+  "new_session_sha256": "85c96da5f59bc76689f9fa85c9152254e2a6746a20c246082fb2408cf8f8dfaa",
+  "old_pretty_sha_referenced_by_summary_or_results_manifest": false,
+  "old_session_bytes": 34904,
+  "old_session_sha256": "974e42594535642426b807725f0b5ff3a09e294ef4e725973411ee6c53949ce2",
+  "operation": "atomically replace only session build_source_manifest.json with original build manifest bytes",
+  "session_destination": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/build_source_manifest.json",
+  "session_id": "mechanism_20261010T063825Z_9fe0a93c236b",
+  "summary_and_results_manifest_unchanged": true,
+  "summary_predeclared_source_manifest_sha256": "85c96da5f59bc76689f9fa85c9152254e2a6746a20c246082fb2408cf8f8dfaa",
+  "timestamp_utc": "2026-10-10T08:51:38.495533Z"
+}

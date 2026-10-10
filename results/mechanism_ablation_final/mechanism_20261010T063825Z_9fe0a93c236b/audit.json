@@ -1,0 +1,420 @@
+{
+  "cell_count": 66,
+  "cells": [
+    {
+      "config_id": "ff_cora_full_d1_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d1_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d2_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d2_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d4_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d4_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_citeseer_full_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_citeseer_full_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_ppi_components-0_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_ppi_components-0_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "sn_cora_full_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "sn_cora_full_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_citeseer_full_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_citeseer_full_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "sn_ppi_components-0_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "sn_ppi_components-0_d8_g1",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_ppi_components-0-9_d8_g2",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_ppi_components-0-9_d8_g2",
+      "repetition": 1,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_citeseer_full_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_citeseer_full_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_ppi_components-0_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_ppi_components-0_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_cora_full_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_cora_full_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "sn_citeseer_full_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "sn_citeseer_full_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_ppi_components-0_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_ppi_components-0_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "sn_ppi_components-0-9_d8_g2",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "sn_ppi_components-0-9_d8_g2",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d1_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d1_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d2_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d2_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d4_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d4_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d8_g1",
+      "repetition": 2,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_citeseer_full_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_citeseer_full_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "sn_ppi_components-0_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "sn_ppi_components-0_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_ppi_components-0-9_d8_g2",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_ppi_components-0-9_d8_g2",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d1_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d1_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d2_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d2_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d4_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_cora_full_d4_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_cora_full_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_citeseer_full_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_citeseer_full_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_ppi_components-0_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "ff_ppi_components-0_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    },
+    {
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_cora_full_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "original"
+    },
+    {
+      "config_id": "sn_cora_full_d8_g1",
+      "repetition": 3,
+      "status": "RECEIPT_VERIFIED",
+      "variant": "control"
+    }
+  ],
+  "created_utc": "2026-10-10T09:25:00Z",
+  "format": "zkgat_real_mechanism_result_audit_v1",
+  "provenance_bindings": {
+    "binary_sha256": "1410547bd6f8437de3e39f85a84d14a0b7bd964383487581a9f5ede2ac181cf6",
+    "build_source_manifest_sha256": "85c96da5f59bc76689f9fa85c9152254e2a6746a20c246082fb2408cf8f8dfaa",
+    "git_diff_sha256": "f65a5c4261d51770da710c6bcfd740036603966cc263f7c5aaa71ac23633b1da",
+    "results_manifest_sha256": "16a2d58ecc94f9e5348901ff00c467a2facb1bf39bd08a7188f4976fe59f8c4d",
+    "source_tree_hash": "b014f2e34acf840da37d15d09973c871153a5d3bf873f7a6918c1ef234a22a3b",
+    "srs_manifest_sha256": {
+      "citeseer": "b9ebe4d4cba8c333c83ab1d31f2c9b328199a2e1dd20153647631a73a7b4839f",
+      "cora": "0734f359deac2c145bab22ed3ed40de7310eda95e732de9aa45f66919108fcf3",
+      "ppi": "859f59973e1c917303adc7015eac2472250b58cd5508b59dcba62b00b2419e34"
+    }
+  },
+  "reverified_independently": false,
+  "session_id": "mechanism_20261010T063825Z_9fe0a93c236b",
+  "status": "PASS",
+  "summary_sha256": "d5f676fbcb375e54ee4414bdece812ac8e9cc8c95a244007d2ba9c26dc7048c3",
+  "verified_cells": 66
+}

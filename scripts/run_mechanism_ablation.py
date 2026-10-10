@@ -33,7 +33,8 @@ from typing import Any, BinaryIO
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "runs" / "mechanism_ablation_real"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "results" / "mechanism_ablation_final"
+ALLOWED_TEMP_OUTPUT_ROOTS: tuple[pathlib.Path, ...] = ()
 MECHANISMS = ("feature_folding", "shared_neighborhood")
 VARIANTS = ("original", "control")
 METRIC_FIELDS = (
@@ -55,6 +56,7 @@ RUN_FORMAT = "zkgat_mechanism_result_v1"
 TIMING_SCHEMA = "mechanism_commitment_disjoint_verify_parse_accept_v2"
 REAL_INPUT_SCHEMA = "zkgat_real_mechanism_input_v1"
 DEFAULT_EXPERIMENT_REPETITIONS = 3
+GPU_ACTIVITY_SAMPLE_INTERVAL_SECONDS = 30
 PUBLICATION_DOC_PATHS = ("README.md", "docs/mechanism_ablation.md")
 FORMAL_WIDTH = 8
 DATASETS: dict[str, dict[str, Any]] = {
@@ -131,6 +133,13 @@ def atomic_write_text(path: pathlib.Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
     temporary.write_text(value, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def atomic_write_bytes(path: pathlib.Path, value: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
+    temporary.write_bytes(value)
     os.replace(temporary, path)
 
 
@@ -234,6 +243,8 @@ def source_snapshot() -> dict[str, Any]:
     manifest = provenance.source_manifest_document(PROJECT_ROOT)
     require(manifest.get("excluded_reporting_paths") == list(PUBLICATION_DOC_PATHS),
             "build provenance does not exclude exactly the registered publication documents")
+    require(manifest.get("excluded_generated_output_paths") == ["results/mechanism_ablation_final"],
+            "build provenance does not exclude exactly the final mechanism artifact subtree")
     diff = git_output_excluding_identity_paths("diff", "--binary", "HEAD")
     status = git_output_excluding_identity_paths("status", "--porcelain=v1", "--untracked-files=all")
     return {
@@ -744,30 +755,268 @@ def cuda_snapshot(device: int) -> dict[str, Any]:
     }
 
 
-def assert_no_external_cuda_compute(device_snapshot: dict[str, Any]) -> None:
+def cuda_activity_snapshot(device_snapshot: dict[str, Any]) -> dict[str, Any]:
     selected = device_snapshot.get("selected_device")
     require(isinstance(selected, dict) and isinstance(selected.get("uuid"), str),
             "selected CUDA device has no stable UUID for compute-activity checks")
-    result = subprocess.run(
-        ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid,used_memory", "--format=csv,noheader,nounits"],
-        check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    gpu_result = subprocess.run(
+        ["nvidia-smi", f"--id={selected['uuid']}",
+         "--query-gpu=uuid,name,utilization.gpu,utilization.memory,memory.used,memory.total",
+         "--format=csv,noheader,nounits"],
+        check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15,
     )
-    require(result.returncode == 0,
-            f"cannot inspect external CUDA compute activity: {result.stderr.strip()}")
+    require(gpu_result.returncode == 0,
+            f"cannot inspect selected CUDA device activity: {gpu_result.stderr.strip()}")
+    gpu_rows = [line for line in gpu_result.stdout.splitlines() if line.strip()]
+    require(len(gpu_rows) == 1, f"selected CUDA device activity query returned {len(gpu_rows)} rows")
+    gpu_fields = [field.strip() for field in gpu_rows[0].split(",", 5)]
+    require(len(gpu_fields) == 6 and gpu_fields[0] == selected["uuid"],
+            f"malformed selected CUDA activity row: {gpu_rows[0]!r}")
+
+    process_result = subprocess.run(
+        ["nvidia-smi", "--query-compute-apps=pid,process_name,gpu_uuid,used_memory",
+         "--format=csv,noheader,nounits"],
+        check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15,
+    )
+    require(process_result.returncode == 0,
+            f"cannot inspect external CUDA compute activity: {process_result.stderr.strip()}")
     active: list[dict[str, str]] = []
-    for line in result.stdout.splitlines():
-        fields = [field.strip() for field in line.split(",")]
-        require(len(fields) == 3, f"malformed CUDA compute-process row: {line!r}")
-        if fields[1] == selected["uuid"]:
-            active.append({"pid": fields[0], "gpu_uuid": fields[1], "used_memory": fields[2]})
+    for line in process_result.stdout.splitlines():
+        if not line.strip():
+            continue
+        fields = [field.strip() for field in line.split(",", 3)]
+        require(len(fields) == 4, f"malformed CUDA compute-process row: {line!r}")
+        if fields[2] == selected["uuid"]:
+            active.append({"pid": fields[0], "process_name": fields[1],
+                           "gpu_uuid": fields[2], "used_memory_mib": fields[3]})
+    return {
+        "sampled_utc": utc_now(), "gpu_uuid": selected["uuid"],
+        "gpu_name": gpu_fields[1], "gpu_utilization_percent": gpu_fields[2],
+        "memory_utilization_percent": gpu_fields[3], "gpu_memory_used_mib": gpu_fields[4],
+        "gpu_memory_total_mib": gpu_fields[5], "external_compute_processes": active,
+    }
+
+
+def assert_no_external_cuda_compute(
+    device_snapshot: dict[str, Any], activity_snapshot: dict[str, Any] | None = None,
+) -> None:
+    selected = device_snapshot.get("selected_device")
+    require(isinstance(selected, dict) and isinstance(selected.get("uuid"), str),
+            "selected CUDA device has no stable UUID for compute-activity checks")
+    activity = activity_snapshot if activity_snapshot is not None else cuda_activity_snapshot(device_snapshot)
+    active = activity.get("external_compute_processes")
+    require(isinstance(active, list), "CUDA activity snapshot has no compute-process inventory")
     require(not active,
             "selected CUDA device already has external compute processes; refusing to share the formal experiment GPU: "
             + json.dumps(active, sort_keys=True))
 
 
+def gpu_sharing_provenance(device_snapshot: dict[str, Any], initial_activity: dict[str, Any],
+                           allow_shared_gpu: bool) -> dict[str, Any]:
+    selected = device_snapshot.get("selected_device")
+    require(isinstance(selected, dict) and isinstance(selected.get("uuid"), str),
+            "selected CUDA device has no stable UUID for sharing provenance")
+    validate_cuda_activity_snapshot(initial_activity, selected["uuid"], "initial CUDA activity snapshot")
+    if not allow_shared_gpu:
+        assert_no_external_cuda_compute(device_snapshot, initial_activity)
+    return {
+        "mode": "authorized_shared_external_compute" if allow_shared_gpu else "exclusive_required",
+        "explicit_shared_gpu_authorization": allow_shared_gpu,
+        "gpu_uuid": selected["uuid"], "initial_activity_snapshot": initial_activity,
+        "sampling_interval_seconds": GPU_ACTIVITY_SAMPLE_INTERVAL_SECONDS if allow_shared_gpu else None,
+    }
+
+
+class CudaActivitySampler:
+    """Record shared-GPU activity outside every proof timing interval."""
+
+    def __init__(self, device_snapshot: dict[str, Any], path: pathlib.Path,
+                 interval_seconds: int = GPU_ACTIVITY_SAMPLE_INTERVAL_SECONDS) -> None:
+        self.device_snapshot = device_snapshot
+        self.path = path
+        self.interval_seconds = interval_seconds
+        self._stop = threading.Event()
+        self._write_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._failure: str | None = None
+        self._count = 0
+        self._thread = threading.Thread(target=self._sample_periodically, name="zkgat-gpu-activity", daemon=True)
+        self._started = False
+        self._stopped = False
+        self.final_snapshot: dict[str, Any] | None = None
+
+    def _record(self, sample: dict[str, Any]) -> None:
+        encoded = (json.dumps(sample, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        with self._write_lock:
+            fd = os.open(self.path, flags, 0o600)
+            try:
+                view = memoryview(encoded)
+                while view:
+                    written = os.write(fd, view)
+                    require(written > 0, "failed to append CUDA activity snapshot")
+                    view = view[written:]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            self._count += 1
+
+    def sample(self, kind: str, cell: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.check_health()
+        sample = cuda_activity_snapshot(self.device_snapshot)
+        sample["sample_kind"] = kind
+        if cell is not None:
+            sample["cell"] = {
+                "config_id": cell.get("config_id"), "repetition": cell.get("repetition"),
+                "variant": cell.get("variant"),
+            }
+        self._record(sample)
+        return sample
+
+    def start(self, initial_snapshot: dict[str, Any]) -> None:
+        require(not self._started and not self._stopped, "CUDA activity sampler cannot be restarted")
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        initial = dict(initial_snapshot)
+        initial["sample_kind"] = "session_start"
+        self._record(initial)
+        self._started = True
+        self._thread.start()
+
+    def _sample_periodically(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            try:
+                self.sample("periodic")
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                with self._state_lock:
+                    self._failure = str(exc) or type(exc).__name__
+                return
+
+    def check_health(self) -> None:
+        with self._state_lock:
+            failure = self._failure
+        require(failure is None, f"CUDA activity sampling failed: {failure}")
+
+    def stop(self) -> dict[str, Any]:
+        if self._stopped:
+            return self.receipt()
+        self._stop.set()
+        if self._started:
+            self._thread.join(timeout=20)
+            require(not self._thread.is_alive(), "CUDA activity sampler did not stop cleanly")
+        self.check_health()
+        self.final_snapshot = self.sample("session_end")
+        self._stopped = True
+        return self.receipt()
+
+    def receipt(self) -> dict[str, Any]:
+        require(self.path.is_file() and not self.path.is_symlink(), "CUDA activity trace is missing")
+        return {
+            "format": "zkgat_cuda_activity_trace_v1", "path": str(self.path),
+            "sha256": sha256_file(self.path), "size_bytes": self.path.stat().st_size,
+            "sample_count": self._count, "sampling_interval_seconds": self.interval_seconds,
+            "gpu_uuid": self.device_snapshot["selected_device"]["uuid"],
+        }
+
+
+def validate_cuda_activity_snapshot(snapshot: Any, gpu_uuid: str, label: str) -> dict[str, Any]:
+    require(isinstance(snapshot, dict), f"{label} is missing")
+    require(snapshot.get("gpu_uuid") == gpu_uuid, f"{label} names a different CUDA device")
+    sampled_utc = snapshot.get("sampled_utc")
+    require(isinstance(sampled_utc, str), f"{label} has no sampling timestamp")
+    try:
+        parsed = datetime.fromisoformat(sampled_utc.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{label} has an invalid UTC timestamp") from exc
+    require(parsed.tzinfo is not None, f"{label} timestamp has no timezone")
+    for field in ("gpu_name", "gpu_utilization_percent", "memory_utilization_percent",
+                  "gpu_memory_used_mib", "gpu_memory_total_mib"):
+        require(isinstance(snapshot.get(field), str) and snapshot[field],
+                f"{label} has an invalid {field}")
+    processes = snapshot.get("external_compute_processes")
+    require(isinstance(processes, list), f"{label} has no external process list")
+    for process in processes:
+        require(isinstance(process, dict) and process.get("gpu_uuid") == gpu_uuid and
+                isinstance(process.get("pid"), str) and process["pid"] and
+                isinstance(process.get("process_name"), str) and
+                isinstance(process.get("used_memory_mib"), str),
+                f"{label} contains a malformed external compute process")
+    return snapshot
+
+
+def validate_cuda_activity_trace(session_root: pathlib.Path, document: dict[str, Any]) -> dict[tuple[str, int, str, str], dict[str, Any]]:
+    sharing = document.get("provenance", {}).get("gpu_sharing", {})
+    require(sharing.get("explicit_shared_gpu_authorization") is True and
+            sharing.get("mode") == "authorized_shared_external_compute" and
+            document.get("gpu_sharing_mode") == sharing.get("mode"),
+            "shared CUDA activity trace is not bound to an explicit session authorization")
+    gpu_uuid = sharing.get("gpu_uuid")
+    require(isinstance(gpu_uuid, str) and gpu_uuid, "shared CUDA provenance has no selected GPU UUID")
+    monitor = document.get("cuda_activity_monitor")
+    require(isinstance(monitor, dict) and monitor.get("format") == "zkgat_cuda_activity_trace_v1" and
+            monitor.get("gpu_uuid") == gpu_uuid and type(monitor.get("sample_count")) is int and
+            monitor["sample_count"] >= 1 + 2 * document.get("expected_cell_count", 0),
+            "shared CUDA activity monitor receipt is incomplete")
+    trace_path = require_session_artifact(session_root, monitor.get("path", ""),
+                                          monitor.get("sha256", ""), "shared CUDA activity trace")
+    lines = trace_path.read_text(encoding="utf-8").splitlines()
+    require(len(lines) == monitor["sample_count"], "shared CUDA activity sample count differs from its trace")
+    samples: list[dict[str, Any]] = []
+    for index, line in enumerate(lines):
+        try:
+            sample = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"shared CUDA activity trace row {index + 1} is invalid JSON") from exc
+        require(isinstance(sample, dict), f"shared CUDA activity trace row {index + 1} is not an object")
+        samples.append(sample)
+    for index, sample in enumerate(samples):
+        validate_cuda_activity_snapshot(sample, gpu_uuid, f"shared CUDA activity sample {index + 1}")
+        require(sample.get("sample_kind") in {
+            "session_start", "periodic", "cell_before", "cell_after", "session_matrix_complete", "session_end",
+        }, f"shared CUDA activity sample {index + 1} has an unknown kind")
+    initial = dict(samples[0])
+    require(initial.pop("sample_kind", None) == "session_start" and
+            initial == sharing.get("initial_activity_snapshot"),
+            "shared CUDA activity trace does not start with the recorded initial GPU snapshot")
+    require(sharing.get("activity_trace") == monitor,
+            "shared CUDA provenance and activity trace receipt differ")
+    final_snapshot = sharing.get("final_activity_snapshot")
+    validate_cuda_activity_snapshot(final_snapshot, gpu_uuid, "shared CUDA final activity snapshot")
+    require(final_snapshot.get("sample_kind") == "session_end" and
+            samples[-1] == final_snapshot,
+            "shared CUDA activity trace does not end with the recorded final GPU snapshot")
+
+    cell_samples: dict[tuple[str, int, str, str], dict[str, Any]] = {}
+    for sample in samples:
+        if sample.get("sample_kind") not in ("cell_before", "cell_after"):
+            continue
+        cell = sample.get("cell")
+        require(isinstance(cell, dict) and isinstance(cell.get("config_id"), str) and
+                type(cell.get("repetition")) is int and cell.get("variant") in VARIANTS,
+                "shared CUDA per-cell activity sample has a malformed cell identity")
+        key = (cell["config_id"], cell["repetition"], cell["variant"], sample["sample_kind"])
+        require(key not in cell_samples, f"shared CUDA activity trace has a duplicate per-cell sample {key}")
+        cell_samples[key] = sample
+    cells = document.get("cells", [])
+    for cell in cells:
+        identity = (cell.get("config_id"), cell.get("repetition"), cell.get("variant"))
+        for kind, field in (("cell_before", "cuda_activity_before"), ("cell_after", "cuda_activity_after")):
+            key = (*identity, kind)
+            snapshot = validate_cuda_activity_snapshot(cell.get(field), gpu_uuid, f"cell {identity} {field}")
+            require(snapshot.get("sample_kind") == kind and snapshot.get("cell") == {
+                "config_id": identity[0], "repetition": identity[1], "variant": identity[2],
+            } and cell_samples.get(key) == snapshot,
+                f"cell {identity} {field} does not match the hashed shared CUDA activity trace")
+    require(len(cell_samples) == 2 * len(cells),
+            "shared CUDA activity trace has unexpected or missing per-cell snapshots")
+    return cell_samples
+
+
 def acquire_cuda_lock(device: int) -> BinaryIO:
-    DEFAULT_OUTPUT_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock_path = DEFAULT_OUTPUT_ROOT / f".cuda-device-{device}.lock"
+    lock_root = DEFAULT_OUTPUT_ROOT
+    lock_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_path = lock_root / f".cuda-device-{device}.lock"
     flags = os.O_RDWR | os.O_CREAT
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -786,20 +1035,37 @@ def acquire_cuda_lock(device: int) -> BinaryIO:
 
 
 def safe_output_root(value: pathlib.Path) -> pathlib.Path:
-    allowed_root = DEFAULT_OUTPUT_ROOT.resolve()
+    allowed_roots = (DEFAULT_OUTPUT_ROOT, *ALLOWED_TEMP_OUTPUT_ROOTS)
     candidate = value.expanduser()
     if not candidate.is_absolute():
         candidate = PROJECT_ROOT / candidate
-    require(not candidate.is_symlink(), "output root cannot be a symlink")
-    resolved = candidate.resolve()
+    lexical = pathlib.Path(os.path.abspath(candidate))
+    root_resolved = PROJECT_ROOT.resolve()
+    matching_root: pathlib.Path | None = None
+    for allowed in allowed_roots:
+        canonical = pathlib.Path(os.path.abspath(allowed))
+        try:
+            lexical.relative_to(canonical)
+            matching_root = canonical
+            break
+        except ValueError:
+            continue
+    require(matching_root is not None,
+            "output root must be inside results/mechanism_ablation_final")
     try:
-        resolved.relative_to(allowed_root)
+        lexical.relative_to(root_resolved)
     except ValueError as exc:
-        raise ValueError(f"output root must be inside the isolated {allowed_root} tree") from exc
+        raise ValueError("output root must remain inside the project workspace") from exc
+    current = root_resolved
+    for part in lexical.relative_to(root_resolved).parts:
+        current = current / part
+        require(not current.is_symlink(), f"output root path cannot traverse a symlink: {current}")
+    resolved = lexical.resolve(strict=False)
+    require(resolved == lexical, "output root path resolution changed through a symlink")
     forbidden = (PROJECT_ROOT / "results" / "paper_secure").resolve()
     require(resolved != forbidden and forbidden not in resolved.parents and resolved not in forbidden.parents,
             "mechanism output cannot overlap results/paper_secure")
-    if resolved != allowed_root:
+    if resolved != matching_root:
         require(not resolved.exists(), "custom output root must be new; existing run directories are immutable")
     return resolved
 
@@ -1320,6 +1586,7 @@ def publish_progress(session_root: pathlib.Path, document: dict[str, Any], cells
         "verified_cells": document["verified_cells"], "complete_pairs": document["complete_pairs"],
         "expected_cell_count": document["expected_cell_count"],
         "expected_pair_count": document["expected_pair_count"], "repetitions": document["repetitions"],
+        "gpu_sharing_mode": document.get("gpu_sharing_mode"),
         "failure_reason": document.get("failure_reason"),
     })
 
@@ -1461,6 +1728,7 @@ def run_real_cell(
     input_record: dict[str, Any], srs_info: dict[str, Any], device: int,
     timeout_seconds: int, pair_index: int, repetition: int, variant: str,
     used_seed_tokens: set[bytes], device_snapshot: dict[str, Any],
+    allow_shared_gpu: bool, activity_sampler: CudaActivitySampler | None,
     session_log: pathlib.Path,
 ) -> dict[str, Any]:
     cfgid = matrix_config_id(spec)
@@ -1493,6 +1761,8 @@ def run_real_cell(
         "data_sources": input_record["metadata"]["data_sources"],
         "srs_id": srs_info["manifest_srs_id"], "srs_manifest_sha256": srs_info["manifest_sha256"],
         "backend": "cuda", "device": device,
+        "gpu_sharing_mode": "authorized_shared_external_compute" if allow_shared_gpu else "exclusive_required",
+        "gpu_uuid": device_snapshot["selected_device"]["uuid"],
         "cell_status": "failed", "pair_status": "incomplete", "verification_status": "NOT_RUN",
         "proof_path": str(proof_path), "statement_path": str(statement_path),
         "prover_result_path": str(prover_result_path), "verifier_result_path": str(verifier_result_path),
@@ -1513,7 +1783,10 @@ def run_real_cell(
     started = time.monotonic()
     try:
         require(_INTERRUPT_SIGNAL is None, "formal mechanism run received a stop signal")
-        assert_no_external_cuda_compute(device_snapshot)
+        if activity_sampler is not None:
+            common["cuda_activity_before"] = activity_sampler.sample("cell_before", common)
+        elif not allow_shared_gpu:
+            assert_no_external_cuda_compute(device_snapshot)
         require(len(seed_bytes) == 64, "private mask seed has an unexpected encoding")
         prover_proc = run_process(run_command, prover_log, remaining_timeout(started, timeout_seconds, "prover"),
                                   "real-mechanism-prover", seed_bytes)
@@ -1614,6 +1887,13 @@ def run_real_cell(
             if output_path.is_file() and not output_path.is_symlink():
                 common[key] = sha256_file(output_path)
     finally:
+        if activity_sampler is not None:
+            try:
+                common["cuda_activity_after"] = activity_sampler.sample("cell_after", common)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                common["cell_status"] = "failed"
+                common["failure_reason"] = common.get("failure_reason") or (
+                    f"CUDA activity snapshot failed after the cell: {str(exc) or type(exc).__name__}")
         seed_path.unlink(missing_ok=True)
         ACTIVE_SECRET_FILES.discard(seed_path)
     common["mask_seed_file_removed"] = not seed_path.exists()
@@ -1783,6 +2063,7 @@ def write_cells_csv(path: pathlib.Path, cells: list[dict[str, Any]]) -> None:
         "mechanism", "variant", "dataset", "config_id", "N", "E", "D", "G", "component_ids",
         "node_ptr", "edge_ptr", "nonself_neighbor_stats", "repetition", "pair_order_index",
         "backend", "device", "device_name", "cell_status", "pair_status", "verification_status",
+        "gpu_sharing_mode", "gpu_uuid", "cuda_activity_before", "cuda_activity_after",
         *METRIC_FIELDS, "pair_input_commitment_sha256", "input_bundle_sha256", "input_metadata_sha256",
         "input_witness_sha256", "data_identity_sha256", "config_path", "config_sha256", "checkpoint_bundle",
         "data_sources", "srs_id", "srs_manifest_sha256", "protocol_schema_id", "security_budget_ledger_sha256",
@@ -1799,7 +2080,8 @@ def write_cells_csv(path: pathlib.Path, cells: list[dict[str, Any]]) -> None:
         writer.writeheader()
         for cell in cells:
             row = dict(cell)
-            for field in ("component_ids", "node_ptr", "edge_ptr", "nonself_neighbor_stats", "checkpoint_bundle", "data_sources", "cuda_stats_delta"):
+            for field in ("component_ids", "node_ptr", "edge_ptr", "nonself_neighbor_stats", "checkpoint_bundle",
+                          "data_sources", "cuda_stats_delta", "cuda_activity_before", "cuda_activity_after"):
                 if field in row:
                     row[field] = json.dumps(row[field], sort_keys=True, separators=(",", ":"))
             writer.writerow({field: row.get(field, "") for field in fields})
@@ -1977,13 +2259,21 @@ def generate_reports(session_root: pathlib.Path, document: dict[str, Any]) -> di
         paths[f"{mechanism}_csv"] = str(csv_path)
     document["result_files"] = paths
     atomic_write_json(session_root / "summary.json", document)
-    atomic_write_json(session_root / "results_manifest.json", {
+    manifest = {
         "session_id": document["session_id"], "session_status": document["session_status"],
         "files": {key: {"path": value, "sha256": sha256_file(pathlib.Path(value))}
                   for key, value in paths.items()},
         "cells_csv": {"path": str(session_root / "cells.csv"), "sha256": sha256_file(session_root / "cells.csv")},
         "summary_json": {"path": str(session_root / "summary.json"), "sha256": sha256_file(session_root / "summary.json")},
-    })
+    }
+    monitor = document.get("cuda_activity_monitor")
+    if isinstance(monitor, dict):
+        monitor_path = pathlib.Path(monitor["path"])
+        manifest["cuda_activity_trace"] = {
+            "path": str(monitor_path), "sha256": sha256_file(monitor_path),
+            "sample_count": monitor["sample_count"],
+        }
+    atomic_write_json(session_root / "results_manifest.json", manifest)
     return paths
 
 
@@ -2028,18 +2318,22 @@ def execute_formal(args: argparse.Namespace) -> int:
     require(0 <= args.timeout_seconds <= 599, "--timeout-seconds must be 0 (unlimited) or between 1 and 599")
     require(0 <= args.prepare_timeout_seconds <= 599,
             "--prepare-timeout-seconds must be 0 (unlimited) or between 1 and 599")
-    output_root = safe_output_root(DEFAULT_OUTPUT_ROOT)
+    output_root = safe_output_root(args.output_root)
     session_id, session_root = create_session_dir(output_root)
     os.umask(0o077)
     document = empty_summary(session_id, session_root, args.repetitions)
+    allow_shared_gpu = bool(getattr(args, "allow_shared_gpu", False))
+    document["gpu_sharing_mode"] = (
+        "authorized_shared_external_compute" if allow_shared_gpu else "exclusive_required")
     cells: list[dict[str, Any]] = []
     prepared: list[dict[str, Any]] = []
     lock_stream: BinaryIO | None = None
+    activity_sampler: CudaActivitySampler | None = None
     session_log = session_root / "session.log"
     atomic_write_json(session_root / "status.json", {
         "session_id": session_id, "session_status": "preflight", "expected_cell_count": document["expected_cell_count"],
         "started_utc": document["created_utc"], "timeout_seconds": args.timeout_seconds,
-        "repetitions": args.repetitions,
+        "repetitions": args.repetitions, "gpu_sharing_mode": document["gpu_sharing_mode"],
     })
     atomic_write_json(session_root / "summary.json", document)
     emit(f"MECHANISM_SESSION_STARTED session_id={session_id} output={session_root}", session_log)
@@ -2048,7 +2342,16 @@ def execute_formal(args: argparse.Namespace) -> int:
         require(type(device) is int and device >= 0, "CUDA formal experiment requires a non-negative --device")
         lock_stream = acquire_cuda_lock(device)
         device_snapshot = cuda_snapshot(device)
-        assert_no_external_cuda_compute(device_snapshot)
+        initial_activity = cuda_activity_snapshot(device_snapshot)
+        sharing_record = gpu_sharing_provenance(device_snapshot, initial_activity, allow_shared_gpu)
+        if allow_shared_gpu:
+            activity_sampler = CudaActivitySampler(
+                device_snapshot, session_root / "cuda_activity_samples.jsonl")
+            activity_sampler.start(initial_activity)
+        document["provenance"] = {
+            "device": device_snapshot,
+            "gpu_sharing": sharing_record,
+        }
         binary = resolve_cuda_binary(args.binary)
         source_start = source_snapshot()
         build = build_snapshot(binary, "cuda")
@@ -2077,6 +2380,7 @@ def execute_formal(args: argparse.Namespace) -> int:
             "source": {key: value for key, value in source_start.items() if key != "source_manifest"},
             "build": {key: value for key, value in build.items() if key != "source_manifest"},
             "device": device_snapshot,
+            "gpu_sharing": sharing_record,
             "datasets": {
                 name: {
                     "config_path": info["config_path"], "config_sha256": info["config_sha256"],
@@ -2097,9 +2401,15 @@ def execute_formal(args: argparse.Namespace) -> int:
             "pair_order_schedule": "global alternating Original-Control / Control-Original; configuration order rotates by repetition",
             "process_warmup": "each prover process performs an untimed CUDA NTT/INTT plus ephemeral non-SRS non-stable MSM warmup before proof counters; actual SRS/KZG bases remain cold until commitment timing",
         })
+        emit(
+            f"GPU_SHARING mode={document['gpu_sharing_mode']} uuid={device_snapshot['selected_device']['uuid']} "
+            f"initial_external_compute={json.dumps(initial_activity['external_compute_processes'], sort_keys=True)}",
+            session_log,
+        )
         prepared_by_key: dict[str, dict[str, Any]] = {}
         for key, dataset, components in unique_bundle_specs():
-            assert_no_external_cuda_compute(device_snapshot)
+            if not allow_shared_gpu:
+                assert_no_external_cuda_compute(device_snapshot)
             try:
                 record = prepare_real_bundle(
                     binary=binary, session_root=session_root, dataset=dataset, components=components,
@@ -2140,7 +2450,8 @@ def execute_formal(args: argparse.Namespace) -> int:
                     srs_info=dataset_info[spec["dataset"]]["srs"], device=args.device,
                     timeout_seconds=args.timeout_seconds, pair_index=pair_index, repetition=repetition,
                     variant=variant, used_seed_tokens=used_seed_tokens,
-                    device_snapshot=device_snapshot, session_log=session_log,
+                    device_snapshot=device_snapshot, allow_shared_gpu=allow_shared_gpu,
+                    activity_sampler=activity_sampler, session_log=session_log,
                 )
                 cells.append(cell)
                 if cell["cell_status"] != "complete":
@@ -2170,6 +2481,9 @@ def execute_formal(args: argparse.Namespace) -> int:
                 raise ValueError(document["failure_reason"])
             pair_index += 1
 
+        if activity_sampler is not None:
+            document["provenance"]["gpu_sharing"]["matrix_complete_activity_snapshot"] = activity_sampler.sample(
+                "session_matrix_complete")
         source_end = source_snapshot()
         build_end = build_snapshot(binary, "cuda")
         configs_end = {name: config_snapshot(name) for name in dataset_info}
@@ -2209,6 +2523,19 @@ def execute_formal(args: argparse.Namespace) -> int:
             document["failure_reason"] = str(exc) or "interrupted"
         document["session_status"] = "incomplete"
     finally:
+        if activity_sampler is not None:
+            activity_error: str | None = None
+            try:
+                monitor_receipt = activity_sampler.stop()
+                document["cuda_activity_monitor"] = monitor_receipt
+                document["provenance"]["gpu_sharing"]["activity_trace"] = monitor_receipt
+                document["provenance"]["gpu_sharing"]["final_activity_snapshot"] = activity_sampler.final_snapshot
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                activity_error = str(exc) or type(exc).__name__
+            if activity_error is not None:
+                document["session_status"] = "incomplete"
+                document["failure_reason"] = document.get("failure_reason") or (
+                    f"shared CUDA activity evidence failed: {activity_error}")
         document["prepared_inputs"] = prepared
         update_summary_counts(document, cells)
         if document.get("session_status") != "complete":
@@ -2242,12 +2569,165 @@ def check_regular_digest(path_text: str, expected_digest: str, label: str) -> No
     require(sha256_file(path) == expected_digest, f"{label} SHA-256 mismatch: {path}")
 
 
+def require_session_artifact(session_root: pathlib.Path, path_text: str, expected_digest: str, label: str) -> pathlib.Path:
+    path = pathlib.Path(path_text)
+    if not path.is_absolute():
+        path = session_root / path
+    lexical = pathlib.Path(os.path.abspath(path))
+    try:
+        lexical.relative_to(session_root)
+    except ValueError as exc:
+        raise ValueError(f"{label} path escapes its immutable session: {path}") from exc
+    current = session_root
+    for part in lexical.relative_to(session_root).parts:
+        current = current / part
+        require(not current.is_symlink(), f"{label} path traverses a symlink: {current}")
+    check_regular_digest(str(lexical), expected_digest, label)
+    return lexical
+
+
+def validate_results_manifest(session_root: pathlib.Path, document: dict[str, Any]) -> tuple[pathlib.Path, dict[str, Any]]:
+    manifest_path = session_root / "results_manifest.json"
+    require(manifest_path.is_file() and not manifest_path.is_symlink(),
+            "formal results manifest is missing")
+    manifest = load_json(manifest_path, "formal results manifest")
+    summary_sha = sha256_file(session_root / "summary.json")
+    require(manifest.get("session_id") == document.get("session_id") and
+            manifest.get("session_status") == "complete" and
+            manifest.get("summary_json", {}).get("path") == str(session_root / "summary.json") and
+            manifest.get("summary_json", {}).get("sha256") == summary_sha,
+            "formal results manifest does not bind the current completed summary")
+    result_files = document.get("result_files")
+    manifest_files = manifest.get("files")
+    require(isinstance(result_files, dict) and isinstance(manifest_files, dict) and
+            set(result_files) == set(manifest_files),
+            "formal results manifest is missing a paper result file")
+    for key, path_text in result_files.items():
+        item = manifest_files.get(key)
+        require(isinstance(item, dict) and item.get("path") == path_text,
+                f"formal results manifest path differs from summary for {key}")
+        require_session_artifact(session_root, path_text, item.get("sha256", ""), f"paper result {key}")
+    require(manifest.get("cells_csv", {}).get("path") == str(session_root / "cells.csv"),
+            "formal results manifest has an invalid cells.csv path")
+    require_session_artifact(session_root, manifest["cells_csv"]["path"],
+                             manifest["cells_csv"].get("sha256", ""), "cells.csv")
+    require_session_artifact(session_root, manifest["summary_json"]["path"], summary_sha, "summary.json")
+    sharing = document.get("provenance", {}).get("gpu_sharing", {})
+    monitor = document.get("cuda_activity_monitor")
+    trace = manifest.get("cuda_activity_trace")
+    if sharing.get("explicit_shared_gpu_authorization") is True:
+        require(isinstance(monitor, dict) and isinstance(trace, dict),
+                "shared CUDA run is missing its activity trace receipt")
+        require(trace.get("path") == monitor.get("path") and trace.get("sha256") == monitor.get("sha256") and
+                trace.get("sample_count") == monitor.get("sample_count"),
+                "results manifest does not bind the shared CUDA activity trace")
+        require_session_artifact(session_root, trace["path"], trace["sha256"], "shared CUDA activity trace")
+    else:
+        require(monitor is None and trace is None,
+                "exclusive CUDA run unexpectedly contains a shared activity trace")
+    return manifest_path, manifest
+
+
+def validate_reverify_archive(session_root: pathlib.Path, document: dict[str, Any]) -> dict[str, Any]:
+    archive_path = session_root / "audit_reverify.json"
+    digest_path = session_root / "audit_reverify.sha256"
+    require(archive_path.is_file() and not archive_path.is_symlink(),
+            "a full independent re-verification archive is required before result publication")
+    require(digest_path.is_file() and not digest_path.is_symlink(),
+            "independent re-verification archive SHA-256 sidecar is missing")
+    archive_sha = sha256_file(archive_path)
+    expected_sidecar = f"{archive_sha}  audit_reverify.json\n"
+    require(digest_path.read_text(encoding="ascii") == expected_sidecar,
+            "independent re-verification archive SHA-256 sidecar does not match its bytes")
+    archive = load_json(archive_path, "independent re-verification archive")
+    summary_path = session_root / "summary.json"
+    summary_sha = sha256_file(summary_path)
+    expected_count = document.get("expected_cell_count")
+    require(archive.get("format") == "zkgat_real_mechanism_result_audit_v1" and
+            archive.get("status") == "PASS" and archive.get("reverified_independently") is True and
+            archive.get("session_id") == document.get("session_id") and
+            archive.get("summary_sha256") == summary_sha and
+            archive.get("cell_count") == expected_count and archive.get("verified_cells") == expected_count,
+            "independent re-verification archive is not a complete passing audit for the current summary")
+    cells = document.get("cells")
+    audit_cells = archive.get("cells")
+    require(isinstance(cells, list) and len(cells) == expected_count and
+            isinstance(audit_cells, list) and len(audit_cells) == expected_count,
+            "independent re-verification archive has an incomplete cell inventory")
+    cell_fields = ("proof_sha256", "statement_file_sha256", "prover_result_sha256", "verifier_result_sha256")
+    expected_by_key = {
+        (cell.get("config_id"), cell.get("repetition"), cell.get("variant")): cell for cell in cells
+    }
+    archived_by_key = {
+        (cell.get("config_id"), cell.get("repetition"), cell.get("variant")): cell for cell in audit_cells
+    }
+    require(len(expected_by_key) == expected_count and len(archived_by_key) == expected_count and
+            expected_by_key.keys() == archived_by_key.keys(),
+            "independent re-verification archive cell keys do not match the formal matrix")
+    for key, cell in expected_by_key.items():
+        archived = archived_by_key[key]
+        require(archived.get("status") == "VERIFY_OK" and archived.get("exit_code") == 0 and
+                all(archived.get(field) == cell.get(field) for field in cell_fields),
+                f"independent re-verification archive does not bind the verified proof identity: {key}")
+        require_session_artifact(session_root, archived.get("receipt_path", ""),
+                                 archived.get("receipt_sha256", ""), "re-verification receipt")
+        require_session_artifact(session_root, archived.get("log_path", ""),
+                                 archived.get("log_sha256", ""), "re-verification log")
+    attempt = archive.get("reverification_attempt")
+    require(isinstance(attempt, dict), "independent re-verification archive has no attempt log/time record")
+    log_path = require_session_artifact(session_root, attempt.get("log_path", ""),
+                                        attempt.get("log_sha256", ""), "re-verification audit log")
+    time_path = pathlib.Path(attempt.get("time_path", ""))
+    if not time_path.is_absolute():
+        time_path = session_root / time_path
+    time_path = pathlib.Path(os.path.abspath(time_path))
+    try:
+        time_path.relative_to(session_root)
+    except ValueError as exc:
+        raise ValueError("re-verification timing record path escapes its immutable session") from exc
+    current = session_root
+    for part in time_path.relative_to(session_root).parts:
+        current = current / part
+        require(not current.is_symlink(), f"re-verification timing record path traverses a symlink: {current}")
+    time_sidecar = time_path.with_suffix(time_path.suffix + ".sha256")
+    require(time_sidecar.is_file() and not time_sidecar.is_symlink(),
+            "independent re-verification timing record SHA-256 sidecar is missing")
+    time_sha = sha256_file(time_path) if time_path.is_file() and not time_path.is_symlink() else ""
+    require(time_sidecar.read_text(encoding="ascii") == f"{time_sha}  {time_path.name}\n",
+            "independent re-verification timing record SHA-256 sidecar does not match its bytes")
+    check_regular_digest(str(time_path), time_sha, "re-verification timing record")
+    timing = load_json(time_path, "re-verification timing record")
+    require(timing.get("format") == "zkgat_mechanism_reverify_timing_v1" and
+            timing.get("session_id") == document.get("session_id") and
+            timing.get("status") == "PASS" and timing.get("audit_sha256") == archive_sha and
+            timing.get("log_sha256") == sha256_file(log_path) and
+            isinstance(timing.get("wall_time_seconds"), (int, float)) and
+            math.isfinite(float(timing["wall_time_seconds"])) and timing["wall_time_seconds"] >= 0,
+            "independent re-verification timing record does not bind the archived successful audit")
+    provenance = document.get("provenance", {})
+    source = provenance.get("source", {})
+    build = provenance.get("build", {})
+    datasets = provenance.get("datasets", {})
+    bindings = archive.get("provenance_bindings", {})
+    result_manifest, _ = validate_results_manifest(session_root, document)
+    require(bindings.get("source_tree_hash") == source.get("source_tree_hash") and
+            bindings.get("git_diff_sha256") == source.get("git_diff_sha256") and
+            bindings.get("binary_sha256") == build.get("binary_sha256") and
+            bindings.get("build_source_manifest_sha256") == build.get("source_manifest_sha256") and
+            bindings.get("srs_manifest_sha256") == {
+                name: info.get("srs", {}).get("manifest_sha256") for name, info in datasets.items()
+            } and bindings.get("results_manifest_sha256") == sha256_file(result_manifest),
+            "independent re-verification archive provenance bindings do not match the current session")
+    return archive
+
+
 def record_publication_documents(args: argparse.Namespace) -> int:
     session_root = args.session.expanduser().resolve()
     require(session_root.is_dir() and not args.session.is_symlink(),
             "session path is missing, not a directory, or a symlink")
     document = load_json(session_root / "summary.json", "mechanism summary")
     require(document.get("session_status") == "complete", "publication docs cannot be bound to an incomplete session")
+    validate_reverify_archive(session_root, document)
     source = document.get("provenance", {}).get("source", {})
     before = source.get("publication_document_snapshot")
     require(isinstance(before, dict) and before.get("paths") == list(PUBLICATION_DOC_PATHS),
@@ -2268,7 +2748,7 @@ def record_publication_documents(args: argparse.Namespace) -> int:
     return 0
 
 
-def audit_session(args: argparse.Namespace) -> int:
+def _audit_session_impl(args: argparse.Namespace) -> int:
     session_root = args.session.expanduser().resolve()
     require(session_root.is_dir() and not args.session.is_symlink(), "session path is missing, not a directory, or a symlink")
     document = load_json(session_root / "summary.json", "mechanism summary")
@@ -2286,6 +2766,25 @@ def audit_session(args: argparse.Namespace) -> int:
             f"session summary does not contain {expected_cells} independently verified cells and "
             f"{expected_pairs} paired configurations")
     require(document.get("provenance_stable") is True, "formal session did not close with stable source/build/data provenance")
+    provenance = document.get("provenance", {})
+    sharing = provenance.get("gpu_sharing", {})
+    device_record = provenance.get("device", {}).get("selected_device", {})
+    gpu_uuid = device_record.get("uuid")
+    require(isinstance(gpu_uuid, str) and gpu_uuid and sharing.get("gpu_uuid") == gpu_uuid,
+            "formal CUDA sharing provenance has no stable selected GPU UUID")
+    authorized_sharing = sharing.get("explicit_shared_gpu_authorization") is True
+    expected_sharing_mode = "authorized_shared_external_compute" if authorized_sharing else "exclusive_required"
+    require(sharing.get("mode") == expected_sharing_mode and
+            document.get("gpu_sharing_mode") == expected_sharing_mode,
+            "formal GPU sharing mode is inconsistent with its explicit authorization")
+    initial_activity = validate_cuda_activity_snapshot(
+        sharing.get("initial_activity_snapshot"), gpu_uuid, "initial CUDA activity snapshot")
+    if authorized_sharing:
+        validate_cuda_activity_trace(session_root, document)
+    else:
+        require(not initial_activity.get("external_compute_processes") and
+                document.get("cuda_activity_monitor") is None,
+                "exclusive CUDA session records external compute or an unexpected activity trace")
     source_expected = document.get("provenance", {}).get("source", {})
     excluded_doc_snapshot = source_expected.get("publication_document_snapshot")
     require(isinstance(excluded_doc_snapshot, dict) and
@@ -2330,6 +2829,16 @@ def audit_session(args: argparse.Namespace) -> int:
         require(cell.get("backend") == "cuda" and cell.get("cuda_actual") is True and
                 cell.get("cuda_kernel_invocations_delta", 0) > 0,
                 f"cell lacks actual CUDA proof evidence: {key}")
+        require(cell.get("gpu_sharing_mode") == expected_sharing_mode and cell.get("gpu_uuid") == gpu_uuid,
+                f"cell CUDA sharing mode or UUID differs from session provenance: {key}")
+        if authorized_sharing:
+            validate_cuda_activity_snapshot(cell.get("cuda_activity_before"), gpu_uuid,
+                                            f"cell {key} pre-run CUDA activity")
+            validate_cuda_activity_snapshot(cell.get("cuda_activity_after"), gpu_uuid,
+                                            f"cell {key} post-run CUDA activity")
+        else:
+            require("cuda_activity_before" not in cell and "cuda_activity_after" not in cell,
+                    f"exclusive CUDA cell unexpectedly contains shared activity snapshots: {key}")
         require(cell.get("mask_seed_file_removed") is True and cell.get("private_mask_seed_file_mode") == "0600",
                 f"cell private mask seed was not handled securely: {key}")
         for field in ("proof_path", "proof_sha256", "statement_path", "statement_file_sha256",
@@ -2355,7 +2864,7 @@ def audit_session(args: argparse.Namespace) -> int:
     if args.reverify:
         binary = pathlib.Path(document["binary_path"])
         require(binary.is_file() and not binary.is_symlink(), f"session prover/verifier binary is missing: {binary}")
-        audit_root = session_root / "independent_reaudit"
+        audit_root = args.reverify_attempt_root / "cells"
         audit_root.mkdir(mode=0o700, exist_ok=True)
         audit_cells: list[dict[str, Any]] = []
         for index, cell in enumerate(cells, start=1):
@@ -2376,8 +2885,12 @@ def audit_session(args: argparse.Namespace) -> int:
             audit_cells.append({
                 "config_id": cell["config_id"], "repetition": cell["repetition"], "variant": cell["variant"],
                 "status": "VERIFY_OK", "verify_time_ms": checked["verify_time_ms"],
+                "proof_sha256": cell["proof_sha256"],
+                "statement_file_sha256": cell["statement_file_sha256"],
+                "prover_result_sha256": cell["prover_result_sha256"],
+                "verifier_result_sha256": cell["verifier_result_sha256"],
                 "receipt_path": str(result_path), "receipt_sha256": sha256_file(result_path),
-                "log_path": str(log_path), "exit_code": proc["return_code"],
+                "log_path": str(log_path), "log_sha256": sha256_file(log_path), "exit_code": proc["return_code"],
             })
         require(len(audit_cells) == expected_cells,
                 f"post-session verifier re-audit did not cover all {expected_cells} proofs")
@@ -2391,6 +2904,19 @@ def audit_session(args: argparse.Namespace) -> int:
         "summary_sha256": sha256_file(session_root / "summary.json"),
         "cell_count": len(audit_cells), "verified_cells": sum(item["status"] == "VERIFY_OK" for item in audit_cells)
         if args.reverify else expected_cells, "cells": audit_cells,
+    }
+    result_manifest_path, _ = validate_results_manifest(session_root, document)
+    provenance = document.get("provenance", {})
+    datasets = provenance.get("datasets", {})
+    audit["provenance_bindings"] = {
+        "source_tree_hash": provenance.get("source", {}).get("source_tree_hash"),
+        "git_diff_sha256": provenance.get("source", {}).get("git_diff_sha256"),
+        "binary_sha256": provenance.get("build", {}).get("binary_sha256"),
+        "build_source_manifest_sha256": provenance.get("build", {}).get("source_manifest_sha256"),
+        "srs_manifest_sha256": {
+            name: info.get("srs", {}).get("manifest_sha256") for name, info in datasets.items()
+        },
+        "results_manifest_sha256": sha256_file(result_manifest_path),
     }
     publication_receipt_path = session_root / "publication_document_receipt.json"
     if publication_receipt_path.exists():
@@ -2408,9 +2934,135 @@ def audit_session(args: argparse.Namespace) -> int:
         audit["publication_document_receipt"] = {
             "path": str(publication_receipt_path), "sha256": sha256_file(publication_receipt_path),
         }
-    atomic_write_json(session_root / "audit.json", audit)
+    if args.reverify:
+        require(audit["verified_cells"] == expected_cells and all(cell.get("status") == "VERIFY_OK" for cell in audit_cells),
+                "full independent audit is not complete; refusing to archive it")
+        attempt_root: pathlib.Path = args.reverify_attempt_root
+        attempt_log = attempt_root / "audit_reverify.log"
+        attempt_time = attempt_root / "audit_reverify.time.json"
+        started_utc: str = args.reverify_started_utc
+        elapsed = time.monotonic() - args.reverify_started_monotonic
+        log_lines = [
+            "stage=full-independent-reverification-audit",
+            f"session_id={document['session_id']}",
+            f"start_utc={started_utc}",
+            f"command={shlex.join([sys.executable, str(pathlib.Path(__file__).resolve()), 'audit', str(session_root), '--reverify'])}",
+            f"status=PASS cells={len(audit_cells)}/{expected_cells}",
+        ]
+        for item in audit_cells:
+            log_lines.append(
+                f"cell={item['config_id']} rep={item['repetition']} variant={item['variant']} "
+                f"status={item['status']} receipt_sha256={item['receipt_sha256']} log_sha256={item['log_sha256']}"
+            )
+        log_lines.append(f"wall_time_seconds={elapsed:.6f}")
+        atomic_write_text(attempt_log, "\n".join(log_lines) + "\n")
+        audit["reverification_attempt"] = {
+            "started_utc": started_utc, "ended_utc": utc_now(), "wall_time_seconds": elapsed,
+            "log_path": str(attempt_log), "log_sha256": sha256_file(attempt_log),
+            "time_path": str(attempt_time),
+        }
+        audit_bytes = (json.dumps(audit, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+        audit_sha = sha256_bytes(audit_bytes)
+        timing = {
+            "format": "zkgat_mechanism_reverify_timing_v1", "session_id": document["session_id"],
+            "status": "PASS", "started_utc": started_utc, "ended_utc": audit["reverification_attempt"]["ended_utc"],
+            "wall_time_seconds": elapsed, "audit_sha256": audit_sha,
+            "log_sha256": audit["reverification_attempt"]["log_sha256"],
+            "verified_cells": len(audit_cells),
+        }
+        atomic_write_json(attempt_time, timing)
+        atomic_write_text(attempt_time.with_suffix(attempt_time.suffix + ".sha256"),
+                          f"{sha256_file(attempt_time)}  {attempt_time.name}\n")
+        archive_path = session_root / "audit_reverify.json"
+        if archive_path.exists():
+            existing = validate_reverify_archive(session_root, document)
+            require(existing.get("summary_sha256") == audit.get("summary_sha256") and
+                    existing.get("provenance_bindings") == audit.get("provenance_bindings") and
+                    {(cell.get("config_id"), cell.get("repetition"), cell.get("variant"), cell.get("proof_sha256"),
+                      cell.get("statement_file_sha256")) for cell in existing.get("cells", [])} ==
+                    {(cell.get("config_id"), cell.get("repetition"), cell.get("variant"), cell.get("proof_sha256"),
+                      cell.get("statement_file_sha256")) for cell in audit_cells},
+                    "existing successful independent audit archive does not match this session identity")
+            atomic_write_bytes(session_root / "audit.json", audit_bytes)
+        else:
+            atomic_write_bytes(session_root / "audit.json", audit_bytes)
+            atomic_write_text(session_root / "audit_reverify.sha256", f"{audit_sha}  audit_reverify.json\n")
+            # This rename is the commit point: a visible archive always has its log,
+            # timing receipt, and digest sidecar already durably written.
+            atomic_write_bytes(archive_path, audit_bytes)
+            validate_reverify_archive(session_root, document)
+    else:
+        atomic_write_json(session_root / "audit.json", audit)
     print(f"RESULT_AUDIT_PASS session={session_root} cells={len(audit_cells)} reverified={str(args.reverify).lower()}")
     return 0
+
+
+def audit_session(args: argparse.Namespace) -> int:
+    session_root = args.session.expanduser().resolve()
+    attempt_root: pathlib.Path | None = None
+    started_monotonic = time.monotonic()
+    started_utc = utc_now()
+    if args.reverify:
+        require(session_root.is_dir() and not args.session.is_symlink(),
+                "session path is missing, not a directory, or a symlink")
+        audit_parent = session_root / "independent_reaudit"
+        attempts_parent = audit_parent / "attempts"
+        for path in (audit_parent, attempts_parent):
+            require(not path.is_symlink(), f"re-verification output path cannot be a symlink: {path}")
+        attempts_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        attempt_root = attempts_parent / (
+            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:10]
+        )
+        attempt_root.mkdir(mode=0o700)
+        args.reverify_attempt_root = attempt_root
+        args.reverify_started_utc = started_utc
+        args.reverify_started_monotonic = started_monotonic
+    try:
+        return _audit_session_impl(args)
+    except (OSError, ValueError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
+        reason = str(exc) or "interrupted"
+        failure: dict[str, Any] = {
+            "format": "zkgat_real_mechanism_result_audit_v1",
+            "session_id": None, "created_utc": utc_now(), "status": "FAIL",
+            "reverified_independently": bool(args.reverify), "failure_reason": reason,
+        }
+        summary_path = session_root / "summary.json"
+        if summary_path.is_file() and not summary_path.is_symlink():
+            try:
+                prior = load_json(summary_path, "mechanism summary")
+                failure["session_id"] = prior.get("session_id")
+                failure["summary_sha256"] = sha256_file(summary_path)
+            except (OSError, ValueError):
+                pass
+        if args.reverify and attempt_root is not None:
+            log_path = attempt_root / "audit_reverify.log"
+            time_path = attempt_root / "audit_reverify.time.json"
+            elapsed = time.monotonic() - started_monotonic
+            log_text = (
+                "stage=full-independent-reverification-audit\n"
+                f"session={session_root}\nstart_utc={started_utc}\n"
+                f"command={shlex.join([sys.executable, str(pathlib.Path(__file__).resolve()), 'audit', str(session_root), '--reverify'])}\n"
+                f"status=FAIL\nreason={reason}\nwall_time_seconds={elapsed:.6f}\n"
+            )
+            atomic_write_text(log_path, log_text)
+            timing = {
+                "format": "zkgat_mechanism_reverify_timing_v1",
+                "session_id": failure["session_id"], "status": "FAIL",
+                "started_utc": started_utc, "ended_utc": utc_now(),
+                "wall_time_seconds": elapsed, "failure_reason": reason,
+                "log_sha256": sha256_file(log_path),
+            }
+            atomic_write_json(time_path, timing)
+            atomic_write_text(time_path.with_suffix(time_path.suffix + ".sha256"),
+                              f"{sha256_file(time_path)}  {time_path.name}\n")
+            failure["reverification_attempt"] = {
+                "log_path": str(log_path), "log_sha256": sha256_file(log_path),
+                "time_path": str(time_path), "time_sha256": sha256_file(time_path),
+                "wall_time_seconds": elapsed,
+            }
+        if session_root.is_dir() and not session_root.is_symlink():
+            atomic_write_json(session_root / "audit.json", failure)
+        raise
 
 
 def regenerate_summary(args: argparse.Namespace) -> int:
@@ -2422,6 +3074,10 @@ def regenerate_summary(args: argparse.Namespace) -> int:
             "results can be regenerated only after a passing audit for this session")
     require(audit.get("summary_sha256") == sha256_file(session_root / "summary.json"),
             "summary changed after result audit")
+    require(audit.get("reverified_independently") is False and
+            audit.get("verified_cells") == document.get("expected_cell_count"),
+            "paper tables require the final receipt audit; the archived full CPU re-verification is tracked separately")
+    validate_reverify_archive(session_root, document)
     require(document.get("session_status") == "complete" and
             document.get("cell_count") == document.get("expected_cell_count") and
             document.get("expected_config_count") == len(FORMAL_CONFIGS),
@@ -2432,11 +3088,249 @@ def regenerate_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def integrity_session_file(session_root: pathlib.Path, path_text: str, expected_digest: str | None, label: str) -> dict[str, Any]:
+    path = require_session_artifact(session_root, path_text, expected_digest or "", label) if expected_digest is not None else None
+    if path is None:
+        raw = pathlib.Path(path_text)
+        if not raw.is_absolute():
+            raw = session_root / raw
+        raw = pathlib.Path(os.path.abspath(raw))
+        try:
+            raw.relative_to(session_root)
+        except ValueError as exc:
+            raise ValueError(f"{label} path escapes its immutable session: {raw}") from exc
+        path = raw
+        require(path.is_file() and not path.is_symlink(), f"{label} is missing or not regular: {path}")
+        current = session_root
+        for part in path.relative_to(session_root).parts:
+            current = current / part
+            require(not current.is_symlink(), f"{label} path traverses a symlink: {current}")
+        expected_digest = sha256_file(path)
+    return {"path": str(path), "sha256": expected_digest, "size_bytes": path.stat().st_size}
+
+
+def build_publication_integrity(session_root: pathlib.Path, created_utc: str) -> dict[str, Any]:
+    document = load_json(session_root / "summary.json", "mechanism summary")
+    require(document.get("session_status") == "complete" and
+            document.get("cell_count") == document.get("expected_cell_count"),
+            "publication integrity requires a complete formal session")
+    archive = validate_reverify_archive(session_root, document)
+    archive_path = session_root / "audit_reverify.json"
+    audit_path = session_root / "audit.json"
+    final_audit = load_json(audit_path, "final mechanism result audit")
+    summary_sha = sha256_file(session_root / "summary.json")
+    expected_count = document["expected_cell_count"]
+    require(final_audit.get("status") == "PASS" and final_audit.get("session_id") == document["session_id"] and
+            final_audit.get("reverified_independently") is False and
+            final_audit.get("summary_sha256") == summary_sha and
+            final_audit.get("cell_count") == expected_count and
+            final_audit.get("verified_cells") == expected_count,
+            "publication integrity requires the passing final receipt-only audit for the current summary")
+    require(isinstance(final_audit.get("cells"), list) and
+            len(final_audit["cells"]) == expected_count and
+            all(cell.get("status") == "RECEIPT_VERIFIED" for cell in final_audit["cells"]),
+            "final receipt-only audit does not cover every formal cell")
+    result_manifest_path, result_manifest = validate_results_manifest(session_root, document)
+    source = document.get("provenance", {}).get("source", {})
+    build = document.get("provenance", {}).get("build", {})
+    datasets = document.get("provenance", {}).get("datasets", {})
+    source_manifest_path = session_root / "source_manifest.json"
+    build_manifest_path = session_root / "build_source_manifest.json"
+    configuration_manifest_path = session_root / "configuration_and_srs_manifest.json"
+    source_manifest = load_json(source_manifest_path, "formal source manifest")
+    build_manifest = load_json(build_manifest_path, "formal build source manifest")
+    require(source_manifest.get("source_tree_hash") == source.get("source_tree_hash") and
+            source_manifest.get("inventory_id") == source.get("source_inventory_id") and
+            source_manifest.get("excluded_reporting_paths") == list(PUBLICATION_DOC_PATHS) and
+            source_manifest.get("excluded_generated_output_paths") == ["results/mechanism_ablation_final"],
+            "formal source manifest does not bind the recorded executable source identity")
+    require(sha256_file(build_manifest_path) == build.get("source_manifest_sha256") and
+            build_manifest.get("source_tree_hash") == build.get("built_source_tree_hash"),
+            "formal build source manifest does not match the recorded CUDA build")
+    require(load_json(configuration_manifest_path, "configuration/SRS manifest") == datasets,
+            "configuration/SRS manifest differs from the formal summary")
+
+    receipt_path = session_root / "publication_document_receipt.json"
+    receipt = load_json(receipt_path, "publication document receipt")
+    docs = publication_document_snapshot()["files"]
+    require(receipt.get("format") == "zkgat_mechanism_publication_document_receipt_v1" and
+            receipt.get("session_id") == document["session_id"] and
+            receipt.get("summary_sha256") == summary_sha and
+            receipt.get("published_files") == docs and
+            receipt.get("excluded_from_executable_source_identity") == list(PUBLICATION_DOC_PATHS),
+            "publication document receipt does not match the final README and mechanism report")
+    audit_receipt = final_audit.get("publication_document_receipt", {})
+    require(audit_receipt.get("path") == str(receipt_path) and
+            audit_receipt.get("sha256") == sha256_file(receipt_path),
+            "final receipt-only audit does not bind the publication document receipt")
+
+    named_files: dict[str, dict[str, Any]] = {}
+    for name, path in (
+        ("summary", session_root / "summary.json"),
+        ("results_manifest", result_manifest_path),
+        ("cells_csv", session_root / "cells.csv"),
+        ("source_manifest", source_manifest_path),
+        ("build_source_manifest", build_manifest_path),
+        ("configuration_and_srs_manifest", configuration_manifest_path),
+        ("final_audit", audit_path),
+        ("publication_document_receipt", receipt_path),
+        ("reverify_archive", archive_path),
+        ("reverify_archive_sha256", session_root / "audit_reverify.sha256"),
+    ):
+        named_files[name] = integrity_session_file(session_root, str(path), None, name)
+    activity_monitor = document.get("cuda_activity_monitor")
+    if isinstance(activity_monitor, dict):
+        named_files["cuda_activity_trace"] = integrity_session_file(
+            session_root, activity_monitor["path"], activity_monitor["sha256"], "shared CUDA activity trace")
+    named_files["reverify_audit_log"] = integrity_session_file(
+        session_root, archive["reverification_attempt"]["log_path"], archive["reverification_attempt"]["log_sha256"],
+        "full re-verification audit log")
+    time_path_text = archive["reverification_attempt"]["time_path"]
+    time_path = pathlib.Path(time_path_text)
+    if not time_path.is_absolute():
+        time_path = session_root / time_path
+    named_files["reverify_timing"] = integrity_session_file(session_root, str(time_path), None,
+                                                             "full re-verification timing record")
+    named_files["reverify_timing_sha256"] = integrity_session_file(
+        session_root, str(time_path.with_suffix(time_path.suffix + ".sha256")), None,
+        "full re-verification timing SHA-256 sidecar")
+    for key, entry in result_manifest["files"].items():
+        named_files[f"paper_{key}"] = integrity_session_file(
+            session_root, entry["path"], entry["sha256"], f"paper result {key}")
+
+    prepared_bindings: list[dict[str, Any]] = []
+    for bundle in document.get("prepared_inputs", []):
+        prepared_bindings.append({
+            "bundle_key": bundle["bundle_key"], "dataset": bundle["dataset"],
+            "components": bundle["components"], "N": bundle["actual"]["N"],
+            "E": bundle["actual"]["E"], "G": bundle["actual"]["G"],
+            "bundle": integrity_session_file(session_root, bundle["input_bundle_path"], bundle["bundle_sha256"],
+                                              "real input bundle"),
+            "metadata": integrity_session_file(session_root, bundle["metadata_path"], bundle["metadata_sha256"],
+                                                "real input metadata"),
+            "prepare_log": integrity_session_file(session_root, bundle["command_log"],
+                                                   bundle["command_log_sha256"], "real input preparation log"),
+            "prepare_status": integrity_session_file(session_root, bundle["prepare_status_path"], None,
+                                                       "real input preparation status"),
+            "data_source_manifest_sha256": bundle["metadata"]["source_manifest_sha256"],
+            "checkpoint_bundle_sha256": bundle["metadata"]["checkpoint_bundle_sha256"],
+        })
+
+    cell_bindings: list[dict[str, Any]] = []
+    for cell in document.get("cells", []):
+        artifacts = {
+            "proof": (cell["proof_path"], cell["proof_sha256"]),
+            "statement": (cell["statement_path"], cell["statement_file_sha256"]),
+            "prover_result_cuda_receipt": (cell["prover_result_path"], cell["prover_result_sha256"]),
+            "initial_independent_verifier_receipt": (cell["verifier_result_path"], cell["verifier_result_sha256"]),
+            "prover_log": (cell["prover_log"], cell["prover_log_sha256"]),
+            "initial_verifier_log": (cell["verifier_log"], cell["verifier_log_sha256"]),
+            "input_bundle": (cell["input_bundle_path"], cell["input_bundle_sha256"]),
+            "input_metadata": (cell["input_metadata_path"], cell["input_metadata_sha256"]),
+            "cell_record": (cell["cell_json_path"], None),
+        }
+        cell_bindings.append({
+            "config_id": cell["config_id"], "repetition": cell["repetition"], "variant": cell["variant"],
+            "backend": cell["backend"], "cuda_actual": cell["cuda_actual"],
+            "gpu_sharing_mode": cell.get("gpu_sharing_mode"), "gpu_uuid": cell.get("gpu_uuid"),
+            "cuda_activity_before": cell.get("cuda_activity_before"),
+            "cuda_activity_after": cell.get("cuda_activity_after"),
+            "cuda_kernel_invocations_delta": cell["cuda_kernel_invocations_delta"],
+            "cuda_stats_delta": cell["cuda_stats_delta"],
+            "proof_sha256": cell["proof_sha256"], "statement_file_sha256": cell["statement_file_sha256"],
+            "artifacts": {name: integrity_session_file(session_root, path, digest, name)
+                          for name, (path, digest) in artifacts.items()},
+        })
+    reverify_bindings = [
+        {key: item[key] for key in (
+            "config_id", "repetition", "variant", "status", "proof_sha256", "statement_file_sha256",
+            "prover_result_sha256", "verifier_result_sha256", "receipt_path", "receipt_sha256", "log_path", "log_sha256",
+        )}
+        for item in archive["cells"]
+    ]
+    external_provenance = {
+        "source_tree_hash": source.get("source_tree_hash"), "source_inventory_id": source.get("source_inventory_id"),
+        "git_head": source.get("git_head"), "git_diff_sha256": source.get("git_diff_sha256"),
+        "git_status_sha256": source.get("git_status_sha256"),
+        "build_binary_path": build.get("binary_path"), "binary_sha256": build.get("binary_sha256"),
+        "cmake_cache_sha256": build.get("cmake_cache_sha256"),
+        "build_source_manifest_sha256": build.get("source_manifest_sha256"),
+        "datasets": {
+            name: {
+                "config_path": info.get("config_path"), "config_sha256": info.get("config_sha256"),
+                "checkpoint_path": info.get("checkpoint_path"),
+                "srs_path": info.get("srs", {}).get("path"),
+                "srs_id": info.get("srs", {}).get("manifest_srs_id"),
+                "srs_manifest_sha256": info.get("srs", {}).get("manifest_sha256"),
+            } for name, info in datasets.items()
+        },
+        "cuda_device": document.get("provenance", {}).get("device", {}),
+        "gpu_sharing": document.get("provenance", {}).get("gpu_sharing", {}),
+    }
+    return {
+        "format": "zkgat_mechanism_publication_integrity_v1",
+        "session_id": document["session_id"], "created_utc": created_utc,
+        "expected_cell_count": expected_count,
+        "repetition_count_per_configuration": document.get("repetitions"),
+        "archived_full_reverification": {
+            "path": str(archive_path), "sha256": sha256_file(archive_path),
+            "verified_cells": archive.get("verified_cells"), "reverified_independently": True,
+        },
+        "final_receipt_audit": {
+            "path": str(audit_path), "sha256": sha256_file(audit_path),
+            "status": final_audit["status"], "reverified_independently": False,
+        },
+        "publication_documents": {
+            "receipt": integrity_session_file(session_root, str(receipt_path), sha256_file(receipt_path),
+                                               "publication document receipt"),
+            "files": docs,
+        },
+        "provenance": external_provenance,
+        "session_files": named_files,
+        "prepared_inputs": prepared_bindings,
+        "proof_cells": cell_bindings,
+        "independent_reverification_cells": reverify_bindings,
+    }
+
+
+def publication_integrity_command(args: argparse.Namespace) -> int:
+    session_root = args.session.expanduser().resolve()
+    require(session_root.is_dir() and not args.session.is_symlink(),
+            "session path is missing, not a directory, or a symlink")
+    integrity_path = session_root / "publication_integrity.json"
+    digest_path = session_root / "publication_integrity.sha256"
+    if args.check:
+        current = load_json(integrity_path, "publication integrity receipt")
+        require(current.get("format") == "zkgat_mechanism_publication_integrity_v1" and
+                current.get("session_id") == load_json(session_root / "summary.json", "mechanism summary").get("session_id"),
+                "publication integrity receipt has an unsupported format or session")
+        rebuilt = build_publication_integrity(session_root, current.get("created_utc", ""))
+        require(current == rebuilt, "publication integrity receipt does not match current formal artifacts")
+        require(digest_path.is_file() and not digest_path.is_symlink() and
+                digest_path.read_text(encoding="ascii") ==
+                f"{sha256_file(integrity_path)}  publication_integrity.json\n",
+                "publication integrity SHA-256 sidecar does not match its bytes")
+        print(f"PUBLICATION_INTEGRITY_CHECK_OK session={session_root} sha256={sha256_file(integrity_path)}")
+        return 0
+    require(not integrity_path.exists() and not integrity_path.is_symlink(),
+            "publication integrity receipt already exists; use --check to verify the immutable receipt")
+    require(not digest_path.exists() and not digest_path.is_symlink(),
+            "publication integrity SHA-256 sidecar already exists without a fresh receipt")
+    integrity = build_publication_integrity(session_root, utc_now())
+    payload = (json.dumps(integrity, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+    digest = sha256_bytes(payload)
+    atomic_write_text(digest_path, f"{digest}  publication_integrity.json\n")
+    # Publish the receipt last. A visible receipt therefore always has its digest sidecar.
+    atomic_write_bytes(integrity_path, payload)
+    print(f"PUBLICATION_INTEGRITY_RECORDED session={session_root} sha256={sha256_file(integrity_path)}")
+    return 0
+
+
 def launch_formal(args: argparse.Namespace) -> int:
     require(type(args.repetitions) is int and args.repetitions > 0, "--repetitions must be a positive integer")
     require(0 <= args.timeout_seconds <= 599 and 0 <= args.prepare_timeout_seconds <= 599,
             "formal runner timeouts must be 0 (unlimited) or at most 599 seconds")
-    output_root = safe_output_root(DEFAULT_OUTPUT_ROOT)
+    output_root = safe_output_root(args.output_root)
     launch_root = output_root / "launchers"
     launch_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -2444,8 +3338,11 @@ def launch_formal(args: argparse.Namespace) -> int:
     launch_dir.mkdir(mode=0o700)
     log_path = launch_dir / "runner.log"
     command = [sys.executable, str(pathlib.Path(__file__).resolve()), "run", "--device", str(args.device),
+               "--output-root", str(output_root),
                "--repetitions", str(args.repetitions),
                "--timeout-seconds", str(args.timeout_seconds), "--prepare-timeout-seconds", str(args.prepare_timeout_seconds)]
+    if getattr(args, "allow_shared_gpu", False):
+        command.append("--allow-shared-gpu")
     if args.binary is not None:
         command.extend(["--binary", str(args.binary.expanduser().resolve())])
     if args.timeout_seconds == 0:
@@ -2481,7 +3378,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     run = subparsers.add_parser("run", help="prepare all real inputs and run the paired formal CUDA proof matrix")
     run.add_argument("--binary", type=pathlib.Path, help="CUDA gatzk_mechanism binary; defaults to build_cuda/gatzk_mechanism")
-    run.add_argument("--device", type=integer_arg, required=True, help="exclusive CUDA device index")
+    run.add_argument("--output-root", type=pathlib.Path, default=DEFAULT_OUTPUT_ROOT,
+                     help="isolated formal artifact root; use results/mechanism_ablation_final")
+    run.add_argument("--device", type=integer_arg, required=True, help="selected CUDA device index")
+    run.add_argument("--allow-shared-gpu", action="store_true",
+                     help="explicitly authorize sharing with external CUDA compute processes and record their activity")
     run.add_argument("--repetitions", type=integer_arg, default=DEFAULT_EXPERIMENT_REPETITIONS,
                      help="positive paired measurement count per configuration; default 3, official single run uses 1")
     run.add_argument("--timeout-seconds", type=integer_arg, default=0,
@@ -2491,7 +3392,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     launch = subparsers.add_parser("launch", help="start the complete CUDA run in a detached SSH-resilient session")
     launch.add_argument("--binary", type=pathlib.Path, help="CUDA gatzk_mechanism binary; defaults to build_cuda/gatzk_mechanism")
-    launch.add_argument("--device", type=integer_arg, required=True, help="exclusive CUDA device index")
+    launch.add_argument("--output-root", type=pathlib.Path, default=DEFAULT_OUTPUT_ROOT,
+                        help="isolated formal artifact root; use results/mechanism_ablation_final")
+    launch.add_argument("--device", type=integer_arg, required=True, help="selected CUDA device index")
+    launch.add_argument("--allow-shared-gpu", action="store_true",
+                        help="explicitly authorize sharing with external CUDA compute processes and record their activity")
     launch.add_argument("--repetitions", type=integer_arg, default=DEFAULT_EXPERIMENT_REPETITIONS,
                         help="positive paired measurement count per configuration; default 3, official single run uses 1")
     launch.add_argument("--timeout-seconds", type=integer_arg, default=0,
@@ -2508,6 +3413,11 @@ def build_parser() -> argparse.ArgumentParser:
     publication_docs = subparsers.add_parser(
         "record-publication-docs", help="record final README and mechanism report hashes without changing proof source identity")
     publication_docs.add_argument("session", type=pathlib.Path, help="session directory printed by the runner")
+    publication_integrity = subparsers.add_parser(
+        "publication-integrity", help="write or read-only verify the final publication integrity receipt")
+    publication_integrity.add_argument("session", type=pathlib.Path, help="session directory printed by the runner")
+    publication_integrity.add_argument("--check", action="store_true",
+                                        help="verify the existing receipt without writing files")
     return parser
 
 
@@ -2525,6 +3435,8 @@ def main() -> int:
             return regenerate_summary(args)
         if args.command == "record-publication-docs":
             return record_publication_documents(args)
+        if args.command == "publication-integrity":
+            return publication_integrity_command(args)
         raise ValueError(f"unsupported command: {args.command}")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"mechanism-runner: {exc}", file=sys.stderr)

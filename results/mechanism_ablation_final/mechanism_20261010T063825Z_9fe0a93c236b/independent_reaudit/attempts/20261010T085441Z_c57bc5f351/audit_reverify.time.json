@@ -1,0 +1,10 @@
+{
+  "ended_utc": "2026-10-10T09:01:09Z",
+  "failure_reason": "post-session independent verifier failed for ('ff_ppi_components-0-9_d8_g2', 1, 'control')",
+  "format": "zkgat_mechanism_reverify_timing_v1",
+  "log_sha256": "a8129d88ae8004295fa3f6b209dffbc5175607c87aa277542f0bfdbf351db352",
+  "session_id": "mechanism_20261010T063825Z_9fe0a93c236b",
+  "started_utc": "2026-10-10T08:54:41Z",
+  "status": "FAIL",
+  "wall_time_seconds": 387.5961367790005
+}

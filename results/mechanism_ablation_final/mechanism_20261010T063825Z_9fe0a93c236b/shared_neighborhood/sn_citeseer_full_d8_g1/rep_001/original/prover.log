@@ -1,0 +1,9 @@
+stage=real-mechanism-prover
+start_utc=2026-10-10T07:02:00Z
+command=/home/pzh/project/build_cuda/gatzk_mechanism run --mechanism shared_neighborhood --variant original --nodes 3327 --edges 12431 --width 8 --graphs 1 --seed 0 --backend cuda --device 0 --real-input /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/citeseer_full_graph/real_input.bin --real-input-metadata /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/citeseer_full_graph/metadata.json --srs /home/pzh/project/artifacts/srs/citeseer_formal_srs --witness-seed-file '<private-seed-file>' --proof-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_001/original/proof.bin --statement-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_001/original/public_statement.json --result-json /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_001/original/prover_result.json
+MECHANISM_PROOF_WRITTEN mechanism=shared_neighborhood variant=original backend=cuda actual_cuda=true commitment_time_ms=206.516 prove_time_ms=360.203 proof_size_bytes=6433 proof_sha256=64bb739ef9c237d2d0fad113b3ec8f69c1eab16dc67d4e8ee1ce273125b1f2e5
+end_utc=2026-10-10T07:02:07Z
+process_pid=1007578
+return_code=0
+timed_out=false
+wall_time_seconds=6.617332

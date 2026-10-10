@@ -1,0 +1,16 @@
+{
+  "created_utc": "2026-10-10T09:01:09Z",
+  "failure_reason": "post-session independent verifier failed for ('ff_ppi_components-0-9_d8_g2', 1, 'control')",
+  "format": "zkgat_real_mechanism_result_audit_v1",
+  "reverification_attempt": {
+    "log_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/audit_reverify.log",
+    "log_sha256": "a8129d88ae8004295fa3f6b209dffbc5175607c87aa277542f0bfdbf351db352",
+    "time_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/audit_reverify.time.json",
+    "time_sha256": "177cdae2fe7615f1613a942b91de5e62067c3275f2faa9043ba4879a5c5f8db5",
+    "wall_time_seconds": 387.5961367790005
+  },
+  "reverified_independently": true,
+  "session_id": "mechanism_20261010T063825Z_9fe0a93c236b",
+  "status": "FAIL",
+  "summary_sha256": "d5f676fbcb375e54ee4414bdece812ac8e9cc8c95a244007d2ba9c26dc7048c3"
+}

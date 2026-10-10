@@ -1,0 +1,4080 @@
+{
+  "created_utc": "2026-10-10T09:25:01.117983Z",
+  "experiment": {
+    "backend": "cuda",
+    "configuration_count": 11,
+    "formal_head_width": 8,
+    "gpu_sharing_mode": "authorized_shared_external_compute",
+    "mechanisms": [
+      "feature_folding",
+      "shared_neighborhood"
+    ],
+    "pair_count": 33,
+    "paired_repetitions_per_configuration": 3,
+    "proof_count": 66,
+    "provenance": {
+      "build": {
+        "binary_path": "/home/pzh/project/build_cuda/gatzk_mechanism",
+        "binary_sha256": "1410547bd6f8437de3e39f85a84d14a0b7bd964383487581a9f5ede2ac181cf6",
+        "binary_size_bytes": 16700432,
+        "build_root": "/home/pzh/project/build_cuda",
+        "build_type": "Release",
+        "built_source_tree_hash": "b014f2e34acf840da37d15d09973c871153a5d3bf873f7a6918c1ef234a22a3b",
+        "cmake_cache_sha256": "58cd7db89f92e67345c77389a08ffbd6d7d77e4c9369a001a67c69222710884a",
+        "cmake_cache_size_bytes": 35335,
+        "cmake_generator": "Unix Makefiles",
+        "cuda_enabled": "ON",
+        "cxx_compiler": "/usr/bin/c++",
+        "cxx_compiler_id": null,
+        "source_manifest_path": "/home/pzh/project/build_cuda/generated/gatzk/source_manifest.json",
+        "source_manifest_sha256": "85c96da5f59bc76689f9fa85c9152254e2a6746a20c246082fb2408cf8f8dfaa"
+      },
+      "datasets": {
+        "citeseer": {
+          "checkpoint_path": "/home/pzh/project/artifacts/checkpoints/citeseer_gat",
+          "config_path": "/home/pzh/project/configs/citeseer_secure.cfg",
+          "config_sha256": "50be73f5569a1e18c743f1b1b5c6fb2730750270cbe4b00b40099037c644235e",
+          "srs": {
+            "ceremony_transcript_hash": "224e5f4c370b126b06f7da5c05ce1547b278aa38ce49f8636aaed0cc6f31ec7d",
+            "domain_sizes": {
+              "C": 8,
+              "FH": 16777216,
+              "N": 4096,
+              "cat": 128,
+              "d": 16,
+              "edge": 32768,
+              "in": 4096
+            },
+            "manifest_degree_bound": 67108863,
+            "manifest_manifest_hash": "d12b137ddff8c9b9cf46aa2b45ca2d318d368210c7e361d14921d2bda6373b85",
+            "manifest_path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/srs_manifest.json",
+            "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "manifest_sha256": "b9ebe4d4cba8c333c83ab1d31f2c9b328199a2e1dd20153647631a73a7b4839f",
+            "manifest_size_bytes": 4508,
+            "manifest_srs_id": "citeseer_formal_srs",
+            "max_instance_envelope": {
+              "max_classes": 6,
+              "max_coefficient_chunks": 376,
+              "max_coefficient_object_length": 12319881,
+              "max_concat_dim": 64,
+              "max_edges": 12431,
+              "max_graphs": 1,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 3703,
+              "max_layers": 3,
+              "max_nodes": 3327,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 12,
+              "max_total_nodes": 3327,
+              "security_target_bits": 120
+            },
+            "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs",
+            "security_level": "120-bit",
+            "srs_type": "trusted_srs"
+          },
+          "srs_manifest": {
+            "ceremony_transcript_hash": "224e5f4c370b126b06f7da5c05ce1547b278aa38ce49f8636aaed0cc6f31ec7d",
+            "curve_id": "bls12_381",
+            "degree_bound": 67108863,
+            "domain_generator_catalog_hash": "287d18c0759fd099cf171cb4c20b5d332148159e232707cb91765c92bc436927",
+            "domain_generators": {
+              "C": "87c08b68cb02d78dfea4ea78408232a0225bca983ab233a76016a3255d40963f",
+              "FH": "2c0eb71a3a15905bb80afb7531faef8d950c904623ae53c58c11d36bdcdc311d",
+              "N": "05eea87e979f0d45c06fd53771f15a56ace9f99348cb55e11b10e9c8d0eb0c11",
+              "cat": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007",
+              "d": "73fe1104364bdf95bbe1c1eb72e6f41e4acaaf60c4a9926ecc4f3e756e592c4f",
+              "edge": "d4cc7ea9dd54a3e657bcfb882e9d9239c8b1e7d63da62ba2437ff0f51129c242",
+              "in": "05eea87e979f0d45c06fd53771f15a56ace9f99348cb55e11b10e9c8d0eb0c11"
+            },
+            "domain_sizes": {
+              "C": 8,
+              "FH": 16777216,
+              "N": 4096,
+              "cat": 128,
+              "d": 16,
+              "edge": 32768,
+              "in": 4096
+            },
+            "encoding": "canonical_mcl_bls12_381_fixed",
+            "field_modulus_id": "bls12_381_fr",
+            "generator_id": "zkgat_srs_setup_tool",
+            "kzg_assumption_degree_bound": 67108863,
+            "kzg_assumption_domain_catalog_hash": "44d0e84a69eaaa1a50f5fb6a99abe19c85c7dce55e796a60afd96704b3c2833d",
+            "kzg_assumption_profile_id": "shifted_kzg_divisibility",
+            "kzg_assumption_security_bits": 128,
+            "manifest_format": "zkgat_srs_manifest",
+            "manifest_hash": "d12b137ddff8c9b9cf46aa2b45ca2d318d368210c7e361d14921d2bda6373b85",
+            "max_instance_envelope": {
+              "max_classes": 6,
+              "max_coefficient_chunks": 376,
+              "max_coefficient_object_length": 12319881,
+              "max_concat_dim": 64,
+              "max_edges": 12431,
+              "max_graphs": 1,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 3703,
+              "max_layers": 3,
+              "max_nodes": 3327,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 12,
+              "max_total_nodes": 3327,
+              "security_target_bits": 120
+            },
+            "max_instance_envelope_hash": "d90aa40cf56a068fe058b80329fba12912c3763fe6b2059423011fe8ef420db1",
+            "max_instance_envelope_id": "d90aa40cf56a068fe058b80329fba12912c3763fe6b2059423011fe8ef420db1",
+            "observation_ledger_hash": "3000bbbdf60dd59a64c33f2275d9c7788842384553464cfb97cbbb763eae67ec",
+            "pk_coef_hash": "1fd2950eac6287254976691cf88ee6f7d4aad940dd5ef82193f8c82f50d3f432",
+            "pk_coef_path": "pk_coef.bin",
+            "pk_lagrange_hashes": {
+              "C": "2216845ad50a0a4740d2efa6d0948bf377697df30f532fbd9ee48767e4b66822",
+              "FH": "ba53d4ebf7d13831bf0995995f83e7d8ff659e37a56857103666c15fca429301",
+              "N": "af6fc9c6f4b123e810d9309173b3687160fb5aa938b3e7e49c1bae5a12a84572",
+              "cat": "7244b68365e79ea3f372ed778e31b645e6bef504e631a6eebae31791bd6f6aa9",
+              "d": "ba895f769377d220e29db87dbf61bcd69c2a086b6e12c635d001216a5a885d3e",
+              "edge": "a497b2ea77292b2f86cb6a73bc8d87d41d2a19ef64196dc6d30ba8ff7cef2e51",
+              "in": "af6fc9c6f4b123e810d9309173b3687160fb5aa938b3e7e49c1bae5a12a84572"
+            },
+            "pk_lagrange_paths": {
+              "C": "pk_lagrange_C.bin",
+              "FH": "pk_lagrange_FH.bin",
+              "N": "pk_lagrange_N.bin",
+              "cat": "pk_lagrange_cat.bin",
+              "d": "pk_lagrange_d.bin",
+              "edge": "pk_lagrange_edge.bin",
+              "in": "pk_lagrange_in.bin"
+            },
+            "proof_schema_template_hash": "e84296df98ebb0a8aeb2f2b31b1075a2756fab3a7c08cb31c46dc8c1388175ff",
+            "protocol_compiler_artifact_hash": "eab4fa780425452f33476d99e4953afd2d85136636da64233439cf3980640397",
+            "protocol_compiler_artifact_path": "protocol_compiler_artifact.txt",
+            "protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "random_identity_ledger_hash": "2c9254dac9fd94f74ec6f1e8494d273b5b49455db9b055081a6d9582974d8ac6",
+            "root_derivation_id": "bls12_381_fr_generator_5",
+            "row_order": "ascending_powers_from_one",
+            "security_budget_ledger_hash": "ec94f0dd5b4080176786f5eb5790cd3b3d2c6e977ff7b24bd16145510c12602e",
+            "security_level": "120-bit",
+            "setup_transcript_hash": "224e5f4c370b126b06f7da5c05ce1547b278aa38ce49f8636aaed0cc6f31ec7d",
+            "srs_audit_report_hash": "73bcaac5f660cafa790d0f5d8eb09afb791f90f4ed39f80e739eb3e607134fef",
+            "srs_audit_report_path": "srs_audit_report.txt",
+            "srs_consistency_hash": "73bcaac5f660cafa790d0f5d8eb09afb791f90f4ed39f80e739eb3e607134fef",
+            "srs_id": "citeseer_formal_srs",
+            "srs_type": "trusted_srs",
+            "vanishing_g2_hash": "ff66e6a9e8a54df7598b37f85aafd2e9767a1a3a492dfb910d45ae28fd29844e",
+            "vk_hash": "ebbe924127f07af1d21dbd1a513e74c224c60b1b8d52b72b9ac6a01b80dd1801",
+            "vk_path": "vk.bin"
+          }
+        },
+        "cora": {
+          "checkpoint_path": "/home/pzh/project/artifacts/checkpoints/cora_gat",
+          "config_path": "/home/pzh/project/configs/cora_secure.cfg",
+          "config_sha256": "d9502db858a2691d58eda5c296785e9fc4e8d442f8c2ba870257d05e4081093a",
+          "srs": {
+            "ceremony_transcript_hash": "45bda92466b68f561e4f3d11f860471b7aeb80c22d7c03578f1345581a02b1a8",
+            "domain_sizes": {
+              "C": 16,
+              "FH": 4194304,
+              "N": 4096,
+              "cat": 128,
+              "d": 16,
+              "edge": 32768,
+              "in": 2048
+            },
+            "manifest_degree_bound": 16777215,
+            "manifest_manifest_hash": "b7070131e452ad6c1eacc8c2e587ef354969f8b168543f23d5ec02dce41e9229",
+            "manifest_path": "/home/pzh/project/artifacts/srs/cora_formal_srs/srs_manifest.json",
+            "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "manifest_sha256": "0734f359deac2c145bab22ed3ed40de7310eda95e732de9aa45f66919108fcf3",
+            "manifest_size_bytes": 4503,
+            "manifest_srs_id": "cora_formal_srs",
+            "max_instance_envelope": {
+              "max_classes": 7,
+              "max_coefficient_chunks": 119,
+              "max_coefficient_object_length": 3880564,
+              "max_concat_dim": 64,
+              "max_edges": 13264,
+              "max_graphs": 1,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 1433,
+              "max_layers": 3,
+              "max_nodes": 2708,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 12,
+              "max_total_nodes": 2708,
+              "security_target_bits": 120
+            },
+            "path": "/home/pzh/project/artifacts/srs/cora_formal_srs",
+            "security_level": "120-bit",
+            "srs_type": "trusted_srs"
+          },
+          "srs_manifest": {
+            "ceremony_transcript_hash": "45bda92466b68f561e4f3d11f860471b7aeb80c22d7c03578f1345581a02b1a8",
+            "curve_id": "bls12_381",
+            "degree_bound": 16777215,
+            "domain_generator_catalog_hash": "86828e48d7bfacf84d46f2555d0944f5e6c9097b096a19a42bb094725a76a71f",
+            "domain_generators": {
+              "C": "73fe1104364bdf95bbe1c1eb72e6f41e4acaaf60c4a9926ecc4f3e756e592c4f",
+              "FH": "d1563aa5ee70b6c57b7d0353421f7d12e2c222a77e25d45738d8cb33a326ae03",
+              "N": "05eea87e979f0d45c06fd53771f15a56ace9f99348cb55e11b10e9c8d0eb0c11",
+              "cat": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007",
+              "d": "73fe1104364bdf95bbe1c1eb72e6f41e4acaaf60c4a9926ecc4f3e756e592c4f",
+              "edge": "d4cc7ea9dd54a3e657bcfb882e9d9239c8b1e7d63da62ba2437ff0f51129c242",
+              "in": "7704138c71f6a174be0a1eb614af34a5d79008621a4a67eb722425ca8b7a5243"
+            },
+            "domain_sizes": {
+              "C": 16,
+              "FH": 4194304,
+              "N": 4096,
+              "cat": 128,
+              "d": 16,
+              "edge": 32768,
+              "in": 2048
+            },
+            "encoding": "canonical_mcl_bls12_381_fixed",
+            "field_modulus_id": "bls12_381_fr",
+            "generator_id": "zkgat_srs_setup_tool",
+            "kzg_assumption_degree_bound": 16777215,
+            "kzg_assumption_domain_catalog_hash": "719d60bce819f0725aae8494b39f41f497814b8921ad3016e3bc944e198bb93e",
+            "kzg_assumption_profile_id": "shifted_kzg_divisibility",
+            "kzg_assumption_security_bits": 128,
+            "manifest_format": "zkgat_srs_manifest",
+            "manifest_hash": "b7070131e452ad6c1eacc8c2e587ef354969f8b168543f23d5ec02dce41e9229",
+            "max_instance_envelope": {
+              "max_classes": 7,
+              "max_coefficient_chunks": 119,
+              "max_coefficient_object_length": 3880564,
+              "max_concat_dim": 64,
+              "max_edges": 13264,
+              "max_graphs": 1,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 1433,
+              "max_layers": 3,
+              "max_nodes": 2708,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 12,
+              "max_total_nodes": 2708,
+              "security_target_bits": 120
+            },
+            "max_instance_envelope_hash": "4afc59cc5f7fda2a841a62dd3d5ea64d2d32a65810a894d4820cc398bec66a3b",
+            "max_instance_envelope_id": "4afc59cc5f7fda2a841a62dd3d5ea64d2d32a65810a894d4820cc398bec66a3b",
+            "observation_ledger_hash": "3000bbbdf60dd59a64c33f2275d9c7788842384553464cfb97cbbb763eae67ec",
+            "pk_coef_hash": "5abcbc2ec7f506d8d63fd95209d3afa752fe064913bbd8c7df34d1b866b8cddd",
+            "pk_coef_path": "pk_coef.bin",
+            "pk_lagrange_hashes": {
+              "C": "3d5fee3f53134f4b3f5b5e30adc6ec95eefd7247e6791a4466acb8f175d105fb",
+              "FH": "bb9a00f543cc5b96999ab35271384f4726642589e6ff3262e038696105c4650c",
+              "N": "8f098e69fe4c9fa47fb71f06ba1dfdd9b3be9a56dddd347581ce463dcc4386a1",
+              "cat": "bdc07a6d4a80997d333448106108eae49bac8ffdd56f317b40ff722d83fa567f",
+              "d": "3d5fee3f53134f4b3f5b5e30adc6ec95eefd7247e6791a4466acb8f175d105fb",
+              "edge": "4f2dd8c8b015d4e064664e839f93708b248a46d41d644d55313952c6e4cc69f9",
+              "in": "66c0718c79871c707c64134b0378fad29bce20ccf6751c28eb4ec55cd79bf3b1"
+            },
+            "pk_lagrange_paths": {
+              "C": "pk_lagrange_C.bin",
+              "FH": "pk_lagrange_FH.bin",
+              "N": "pk_lagrange_N.bin",
+              "cat": "pk_lagrange_cat.bin",
+              "d": "pk_lagrange_d.bin",
+              "edge": "pk_lagrange_edge.bin",
+              "in": "pk_lagrange_in.bin"
+            },
+            "proof_schema_template_hash": "e84296df98ebb0a8aeb2f2b31b1075a2756fab3a7c08cb31c46dc8c1388175ff",
+            "protocol_compiler_artifact_hash": "d7eda50252a69a1692bd2554075a7a54f122288564ce8f0718dcc979afdae7c4",
+            "protocol_compiler_artifact_path": "protocol_compiler_artifact.txt",
+            "protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "random_identity_ledger_hash": "2c9254dac9fd94f74ec6f1e8494d273b5b49455db9b055081a6d9582974d8ac6",
+            "root_derivation_id": "bls12_381_fr_generator_5",
+            "row_order": "ascending_powers_from_one",
+            "security_budget_ledger_hash": "ec94f0dd5b4080176786f5eb5790cd3b3d2c6e977ff7b24bd16145510c12602e",
+            "security_level": "120-bit",
+            "setup_transcript_hash": "45bda92466b68f561e4f3d11f860471b7aeb80c22d7c03578f1345581a02b1a8",
+            "srs_audit_report_hash": "48f3f010a641711dc1e6b7794357ae3fa4d58760d93dea1b100b32b852baa20c",
+            "srs_audit_report_path": "srs_audit_report.txt",
+            "srs_consistency_hash": "48f3f010a641711dc1e6b7794357ae3fa4d58760d93dea1b100b32b852baa20c",
+            "srs_id": "cora_formal_srs",
+            "srs_type": "trusted_srs",
+            "vanishing_g2_hash": "ecd4b32af596ba5aa8fa13213e708d3cf25d3a51277adf37ba55b4439b6af45b",
+            "vk_hash": "6f9c017bc7ad7d6f903ab3400c7463a74c9b16bae9dcf75a3cceebfa5050b407",
+            "vk_path": "vk.bin"
+          }
+        },
+        "ppi": {
+          "checkpoint_path": "/home/pzh/project/artifacts/checkpoints/ppi_gat",
+          "config_path": "/home/pzh/project/configs/ppi_secure.cfg",
+          "config_sha256": "ca0d4f29915c258d5a032000835f68025f9b343094b31cd2fd3522448d92d8d2",
+          "srs": {
+            "ceremony_transcript_hash": "3d68e1e926b76e0a08a83c868a763de5be843542f05a19676c6de6c45aaa3ee3",
+            "domain_sizes": {
+              "C": 128,
+              "FH": 4194304,
+              "N": 65536,
+              "cat": 128,
+              "d": 16,
+              "edge": 8388608,
+              "in": 128
+            },
+            "manifest_degree_bound": 33554431,
+            "manifest_manifest_hash": "43ac65afb57f841be4e5b575eeaa58eecad18608a291089a7096fc964d490eab",
+            "manifest_path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/srs_manifest.json",
+            "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "manifest_sha256": "859f59973e1c917303adc7015eac2472250b58cd5508b59dcba62b00b2419e34",
+            "manifest_size_bytes": 4508,
+            "manifest_srs_id": "ppi_formal_srs",
+            "max_instance_envelope": {
+              "max_classes": 121,
+              "max_coefficient_chunks": 7,
+              "max_coefficient_object_length": 6890224,
+              "max_concat_dim": 64,
+              "max_edges": 875660,
+              "max_graphs": 295,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 64,
+              "max_layers": 3,
+              "max_nodes": 56944,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 14,
+              "max_total_nodes": 56944,
+              "security_target_bits": 120
+            },
+            "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs",
+            "security_level": "120-bit",
+            "srs_type": "trusted_srs"
+          },
+          "srs_manifest": {
+            "ceremony_transcript_hash": "3d68e1e926b76e0a08a83c868a763de5be843542f05a19676c6de6c45aaa3ee3",
+            "curve_id": "bls12_381",
+            "degree_bound": 33554431,
+            "domain_generator_catalog_hash": "04ef333279c27c00e11595eef1b978c4ced9301f7d3cf29151728f60ace3dfb6",
+            "domain_generators": {
+              "C": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007",
+              "FH": "d1563aa5ee70b6c57b7d0353421f7d12e2c222a77e25d45738d8cb33a326ae03",
+              "N": "7a5fc3cf8a457b13061bc0293aa6ab0c2c40027a98ee09045b72aa56cdc60967",
+              "cat": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007",
+              "d": "73fe1104364bdf95bbe1c1eb72e6f41e4acaaf60c4a9926ecc4f3e756e592c4f",
+              "edge": "f84c50764848911e02dd3eb61ebfbb5502aa554ec8fedabcb0bec02dcdc44551",
+              "in": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007"
+            },
+            "domain_sizes": {
+              "C": 128,
+              "FH": 4194304,
+              "N": 65536,
+              "cat": 128,
+              "d": 16,
+              "edge": 8388608,
+              "in": 128
+            },
+            "encoding": "canonical_mcl_bls12_381_fixed",
+            "field_modulus_id": "bls12_381_fr",
+            "generator_id": "zkgat_srs_setup_tool",
+            "kzg_assumption_degree_bound": 33554431,
+            "kzg_assumption_domain_catalog_hash": "972f142da695be19fa8dfcf6502568a8aa20a0b1b8c260327e2b3bddd495bf00",
+            "kzg_assumption_profile_id": "shifted_kzg_divisibility",
+            "kzg_assumption_security_bits": 128,
+            "manifest_format": "zkgat_srs_manifest",
+            "manifest_hash": "43ac65afb57f841be4e5b575eeaa58eecad18608a291089a7096fc964d490eab",
+            "max_instance_envelope": {
+              "max_classes": 121,
+              "max_coefficient_chunks": 7,
+              "max_coefficient_object_length": 6890224,
+              "max_concat_dim": 64,
+              "max_edges": 875660,
+              "max_graphs": 295,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 64,
+              "max_layers": 3,
+              "max_nodes": 56944,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 14,
+              "max_total_nodes": 56944,
+              "security_target_bits": 120
+            },
+            "max_instance_envelope_hash": "337568101324ae20d2d1c92d06e74a15aa7eb0e968255d913bdeb5af0fff14a6",
+            "max_instance_envelope_id": "337568101324ae20d2d1c92d06e74a15aa7eb0e968255d913bdeb5af0fff14a6",
+            "observation_ledger_hash": "3000bbbdf60dd59a64c33f2275d9c7788842384553464cfb97cbbb763eae67ec",
+            "pk_coef_hash": "b7802ed2d6edadc3d8063dff3d84a9e377a4d55d129c8cfc8067b4991464d653",
+            "pk_coef_path": "pk_coef.bin",
+            "pk_lagrange_hashes": {
+              "C": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c",
+              "FH": "18963c42cd1391c1585e440f8585350e96bb6f36852b43f00936e2a8287930e0",
+              "N": "46f495d2486b4ca66abcde71851a426d57f1f72959cc4e7f5b04bd915e307c6b",
+              "cat": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c",
+              "d": "d3397d568f592275d9dd235ba83a022242c2fb361a476f4b837fa2a962e8f3c3",
+              "edge": "b08e41f69e2eb809acb16d9eab47c1a3bdc925fabb5b166184f9998846e19953",
+              "in": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c"
+            },
+            "pk_lagrange_paths": {
+              "C": "pk_lagrange_C.bin",
+              "FH": "pk_lagrange_FH.bin",
+              "N": "pk_lagrange_N.bin",
+              "cat": "pk_lagrange_cat.bin",
+              "d": "pk_lagrange_d.bin",
+              "edge": "pk_lagrange_edge.bin",
+              "in": "pk_lagrange_in.bin"
+            },
+            "proof_schema_template_hash": "e84296df98ebb0a8aeb2f2b31b1075a2756fab3a7c08cb31c46dc8c1388175ff",
+            "protocol_compiler_artifact_hash": "7342a56d3eac4dc771cddf2c76f4584149b98d08b05bfbbd8af5f1e0e790a442",
+            "protocol_compiler_artifact_path": "protocol_compiler_artifact.txt",
+            "protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "random_identity_ledger_hash": "2c9254dac9fd94f74ec6f1e8494d273b5b49455db9b055081a6d9582974d8ac6",
+            "root_derivation_id": "bls12_381_fr_generator_5",
+            "row_order": "ascending_powers_from_one",
+            "security_budget_ledger_hash": "ec94f0dd5b4080176786f5eb5790cd3b3d2c6e977ff7b24bd16145510c12602e",
+            "security_level": "120-bit",
+            "setup_transcript_hash": "3d68e1e926b76e0a08a83c868a763de5be843542f05a19676c6de6c45aaa3ee3",
+            "srs_audit_report_hash": "b8b7659dc2b27c239a68d940fa75341772414d449c7a1b94b603add0023b0fbb",
+            "srs_audit_report_path": "srs_audit_report.txt",
+            "srs_consistency_hash": "b8b7659dc2b27c239a68d940fa75341772414d449c7a1b94b603add0023b0fbb",
+            "srs_id": "ppi_formal_srs",
+            "srs_type": "trusted_srs",
+            "vanishing_g2_hash": "8259edd8036935469cd17bb282c4f6372e8986347bb9f9a057e01d5b0f5e3edf",
+            "vk_hash": "64a40983e575086e38d11d3681ac2dc11bcbb5e98d08ff462d5b7b8f5abd7783",
+            "vk_path": "vk.bin"
+          }
+        }
+      },
+      "device": {
+        "backend": "cuda",
+        "cuda_visible_devices": null,
+        "inventory": [
+          {
+            "driver_version": "580.142",
+            "index": "0",
+            "name": "NVIDIA GB10",
+            "uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71"
+          }
+        ],
+        "selected_device": {
+          "driver_version": "580.142",
+          "index": "0",
+          "name": "NVIDIA GB10",
+          "uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71"
+        },
+        "selected_device_index": 0,
+        "selected_device_token": "0"
+      },
+      "gpu_sharing": {
+        "activity_trace": {
+          "format": "zkgat_cuda_activity_trace_v1",
+          "gpu_uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71",
+          "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/cuda_activity_samples.jsonl",
+          "sample_count": 394,
+          "sampling_interval_seconds": 30,
+          "sha256": "ba84382b0e7581e33ccd336eca109f741e7c2a6660cb045c1efed5a3f9aebc34",
+          "size_bytes": 191316
+        },
+        "explicit_shared_gpu_authorization": true,
+        "final_activity_snapshot": {
+          "external_compute_processes": [
+            {
+              "gpu_uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71",
+              "pid": "1089566",
+              "process_name": "/usr/bin/python3",
+              "used_memory_mib": "669"
+            }
+          ],
+          "gpu_memory_total_mib": "[N/A]",
+          "gpu_memory_used_mib": "[N/A]",
+          "gpu_name": "NVIDIA GB10",
+          "gpu_utilization_percent": "21",
+          "gpu_uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71",
+          "memory_utilization_percent": "0",
+          "sample_kind": "session_end",
+          "sampled_utc": "2026-10-10T08:48:32Z"
+        },
+        "gpu_uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71",
+        "initial_activity_snapshot": {
+          "external_compute_processes": [],
+          "gpu_memory_total_mib": "[N/A]",
+          "gpu_memory_used_mib": "[N/A]",
+          "gpu_name": "NVIDIA GB10",
+          "gpu_utilization_percent": "0",
+          "gpu_uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71",
+          "memory_utilization_percent": "0",
+          "sampled_utc": "2026-10-10T06:38:25Z"
+        },
+        "matrix_complete_activity_snapshot": {
+          "external_compute_processes": [
+            {
+              "gpu_uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71",
+              "pid": "1089566",
+              "process_name": "/usr/bin/python3",
+              "used_memory_mib": "669"
+            }
+          ],
+          "gpu_memory_total_mib": "[N/A]",
+          "gpu_memory_used_mib": "[N/A]",
+          "gpu_name": "NVIDIA GB10",
+          "gpu_utilization_percent": "21",
+          "gpu_uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71",
+          "memory_utilization_percent": "0",
+          "sample_kind": "session_matrix_complete",
+          "sampled_utc": "2026-10-10T08:48:27Z"
+        },
+        "mode": "authorized_shared_external_compute",
+        "sampling_interval_seconds": 30
+      },
+      "source": {
+        "git_diff_sha256": "f65a5c4261d51770da710c6bcfd740036603966cc263f7c5aaa71ac23633b1da",
+        "git_head": "da794083ede26f1ff881b718e61c73c27eb48300",
+        "git_status_sha256": "ed9a6a26e5aaebd4c39fbcd55e8e6a4380e31fca9c6cc2c3c34bbd7ebe29862c",
+        "publication_document_snapshot": {
+          "excluded_from_executable_source_identity": true,
+          "files": [
+            {
+              "path": "README.md",
+              "sha256": "25b1aaa36b87ac3b580f94d4066de206e163da8b887edeb164e8189d545134fb",
+              "size": 33458
+            },
+            {
+              "path": "docs/mechanism_ablation.md",
+              "sha256": "f7b871ebd31b625f12fbe84bdcdb8a96021a51f0e27d60ba713561c87a626bed",
+              "size": 16012
+            }
+          ],
+          "paths": [
+            "README.md",
+            "docs/mechanism_ablation.md"
+          ]
+        },
+        "source_file_count": 209,
+        "source_inventory_id": "zkgat:source-inventory-v3:mechanism-reporting-docs-and-final-ablation-output-excluded",
+        "source_tree_hash": "b014f2e34acf840da37d15d09973c871153a5d3bf873f7a6918c1ef234a22a3b"
+      }
+    },
+    "selected_head": 0,
+    "selected_layer": 0,
+    "timing_semantics": {
+      "commitment_time_ms": "cold native KZG commitment work only, including first-use static-base preparation invoked inside commitment; Taylor-shift coefficient materialization is excluded",
+      "proof_size_bytes": "actual canonical serialized mechanism proof bytes",
+      "prove_time_ms": "native online proof work, Taylor-shift coefficient materialization, and canonical proof encoding, excluding KZG commitment work and artifact file I/O",
+      "verify_time_ms": "independent verifier parsing through accept/reject"
+    }
+  },
+  "format": "zkgat_real_mechanism_initial_only_statistics_v1",
+  "formulae": {
+    "aggregate": "compute each pair first, then report mean and sample standard deviation over n=3",
+    "improvement_factor": "Control / Original",
+    "paired_original_minus_control": "Original - Control",
+    "saving_percent": "(Control - Original) / Control * 100"
+  },
+  "groups": [
+    {
+      "D": 1,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d1_g1",
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 129.553191,
+            "n": 3,
+            "sample_sd": 6.699432255589727
+          },
+          "improvement_factor": {
+            "mean": 0.980740033361531,
+            "n": 3,
+            "sample_sd": 0.016142403660945468
+          },
+          "original": {
+            "mean": 132.19601566666665,
+            "n": 3,
+            "sample_sd": 9.003068229617076
+          },
+          "paired_original_minus_control": {
+            "mean": 2.6428246666666646,
+            "n": 3,
+            "sample_sd": 2.3040185308721624
+          },
+          "saving_percent": {
+            "mean": -1.9822200713334777,
+            "n": 3,
+            "sample_sd": 1.676954790915366
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 3743.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 0.9727130977130977,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 3848.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": 105.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": -2.8052364413572,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 220.837092,
+            "n": 3,
+            "sample_sd": 12.584711849399678
+          },
+          "improvement_factor": {
+            "mean": 1.0308641755368,
+            "n": 3,
+            "sample_sd": 0.022253895406777743
+          },
+          "original": {
+            "mean": 214.14392966666665,
+            "n": 3,
+            "sample_sd": 8.569871488987825
+          },
+          "paired_original_minus_control": {
+            "mean": -6.693162333333343,
+            "n": 3,
+            "sample_sd": 5.0523540567367355
+          },
+          "saving_percent": {
+            "mean": 2.964140605151364,
+            "n": 3,
+            "sample_sd": 2.075518618652904
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 35.768942,
+            "n": 3,
+            "sample_sd": 0.9244229508590751
+          },
+          "improvement_factor": {
+            "mean": 1.0198644588096535,
+            "n": 3,
+            "sample_sd": 0.01814103051482043
+          },
+          "original": {
+            "mean": 35.07108466666667,
+            "n": 3,
+            "sample_sd": 0.5538684675320786
+          },
+          "paired_original_minus_control": {
+            "mean": -0.6978573333333339,
+            "n": 3,
+            "sample_sd": 0.64289218364072
+          },
+          "saving_percent": {
+            "mean": 1.9272200417534056,
+            "n": 3,
+            "sample_sd": 1.7316975426443286
+          }
+        }
+      },
+      "requested_repetitions": 3
+    },
+    {
+      "D": 2,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d2_g1",
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 238.89199233333335,
+            "n": 3,
+            "sample_sd": 15.519219669470502
+          },
+          "improvement_factor": {
+            "mean": 1.8210317673080751,
+            "n": 3,
+            "sample_sd": 0.04121643255329688
+          },
+          "original": {
+            "mean": 131.10391466666667,
+            "n": 3,
+            "sample_sd": 5.701118547560849
+          },
+          "paired_original_minus_control": {
+            "mean": -107.78807766666668,
+            "n": 3,
+            "sample_sd": 9.8710841607239
+          },
+          "saving_percent": {
+            "mean": 45.06710260621926,
+            "n": 3,
+            "sample_sd": 1.257459661691101
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 7105.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 1.7842792566549472,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 3982.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": -3123.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": 43.95496129486277,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 407.19056066666667,
+            "n": 3,
+            "sample_sd": 22.72525655921214
+          },
+          "improvement_factor": {
+            "mean": 1.8549532377332794,
+            "n": 3,
+            "sample_sd": 0.07194875716398186
+          },
+          "original": {
+            "mean": 219.42552899999998,
+            "n": 3,
+            "sample_sd": 4.594433038359682
+          },
+          "paired_original_minus_control": {
+            "mean": -187.7650316666667,
+            "n": 3,
+            "sample_sd": 18.73991220506549
+          },
+          "saving_percent": {
+            "mean": 46.03539700553274,
+            "n": 3,
+            "sample_sd": 2.1229847491676943
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 49.84389433333333,
+            "n": 3,
+            "sample_sd": 0.5927787306106178
+          },
+          "improvement_factor": {
+            "mean": 1.377546627299352,
+            "n": 3,
+            "sample_sd": 0.019580405498697592
+          },
+          "original": {
+            "mean": 36.18394166666667,
+            "n": 3,
+            "sample_sd": 0.11726568215097265
+          },
+          "paired_original_minus_control": {
+            "mean": -13.659952666666667,
+            "n": 3,
+            "sample_sd": 0.6741492213934046
+          },
+          "saving_percent": {
+            "mean": 27.397476562183147,
+            "n": 3,
+            "sample_sd": 1.02357139527109
+          }
+        }
+      },
+      "requested_repetitions": 3
+    },
+    {
+      "D": 4,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d4_g1",
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 450.02508033333334,
+            "n": 3,
+            "sample_sd": 24.400004829020844
+          },
+          "improvement_factor": {
+            "mean": 3.4165485827370476,
+            "n": 3,
+            "sample_sd": 0.04708403948608037
+          },
+          "original": {
+            "mean": 131.69375066666666,
+            "n": 3,
+            "sample_sd": 6.1812488109051476
+          },
+          "paired_original_minus_control": {
+            "mean": -318.3313296666667,
+            "n": 3,
+            "sample_sd": 18.439423848547488
+          },
+          "saving_percent": {
+            "mean": 70.72701503374029,
+            "n": 3,
+            "sample_sd": 0.4006259300541107
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 13829.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 3.2538823529411767,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 4250.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": -9579.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": 69.26748137970931,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 781.0564673333333,
+            "n": 3,
+            "sample_sd": 29.611887460185926
+          },
+          "improvement_factor": {
+            "mean": 3.563745746570581,
+            "n": 3,
+            "sample_sd": 0.015255167362601598
+          },
+          "original": {
+            "mean": 219.19253799999998,
+            "n": 3,
+            "sample_sd": 9.18747155372418
+          },
+          "paired_original_minus_control": {
+            "mean": -561.8639293333334,
+            "n": 3,
+            "sample_sd": 20.430254741573208
+          },
+          "saving_percent": {
+            "mean": 71.93929482222902,
+            "n": 3,
+            "sample_sd": 0.11983382216177485
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 77.34575366666667,
+            "n": 3,
+            "sample_sd": 2.032159240526764
+          },
+          "improvement_factor": {
+            "mean": 2.1221809879625235,
+            "n": 3,
+            "sample_sd": 0.04194098964982204
+          },
+          "original": {
+            "mean": 36.44325333333333,
+            "n": 3,
+            "sample_sd": 0.2356598385922681
+          },
+          "paired_original_minus_control": {
+            "mean": -40.902500333333336,
+            "n": 3,
+            "sample_sd": 1.7968182464652103
+          },
+          "saving_percent": {
+            "mean": 52.8664919285063,
+            "n": 3,
+            "sample_sd": 0.9239963293060584
+          }
+        }
+      },
+      "requested_repetitions": 3
+    },
+    {
+      "D": 8,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d8_g1",
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 896.2987523333334,
+            "n": 3,
+            "sample_sd": 94.413616280692
+          },
+          "improvement_factor": {
+            "mean": 6.238243392342283,
+            "n": 3,
+            "sample_sd": 0.8400905941743977
+          },
+          "original": {
+            "mean": 144.34181033333334,
+            "n": 3,
+            "sample_sd": 12.02054488491775
+          },
+          "paired_original_minus_control": {
+            "mean": -751.956942,
+            "n": 3,
+            "sample_sd": 95.83846875317727
+          },
+          "saving_percent": {
+            "mean": 83.77961450614667,
+            "n": 3,
+            "sample_sd": 2.124320345638491
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 27277.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 5.699331383201003,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 4786.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": -22491.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": 82.45408219378963,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 1578.7829576666666,
+            "n": 3,
+            "sample_sd": 141.4724823413026
+          },
+          "improvement_factor": {
+            "mean": 6.9956526725462425,
+            "n": 3,
+            "sample_sd": 0.5448626996146267
+          },
+          "original": {
+            "mean": 225.57214833333333,
+            "n": 3,
+            "sample_sd": 5.226328664200648
+          },
+          "paired_original_minus_control": {
+            "mean": -1353.2108093333334,
+            "n": 3,
+            "sample_sd": 138.42123721206485
+          },
+          "saving_percent": {
+            "mean": 85.6498087596695,
+            "n": 3,
+            "sample_sd": 1.0708404526774367
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 135.91051466666667,
+            "n": 3,
+            "sample_sd": 2.9161206519268528
+          },
+          "improvement_factor": {
+            "mean": 3.6437824260774097,
+            "n": 3,
+            "sample_sd": 0.08223248607178592
+          },
+          "original": {
+            "mean": 37.300290333333336,
+            "n": 3,
+            "sample_sd": 0.21217956826549741
+          },
+          "paired_original_minus_control": {
+            "mean": -98.61022433333332,
+            "n": 3,
+            "sample_sd": 2.936428590659453
+          },
+          "saving_percent": {
+            "mean": 72.54659927823229,
+            "n": 3,
+            "sample_sd": 0.6242250555365164
+          }
+        }
+      },
+      "requested_repetitions": 3
+    },
+    {
+      "D": 8,
+      "E": 12431,
+      "G": 1,
+      "N": 3327,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_citeseer_full_d8_g1",
+      "dataset": "citeseer",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 939.0626656666667,
+            "n": 3,
+            "sample_sd": 105.13379894133223
+          },
+          "improvement_factor": {
+            "mean": 6.531187987459126,
+            "n": 3,
+            "sample_sd": 0.6374029948010588
+          },
+          "original": {
+            "mean": 143.77785833333334,
+            "n": 3,
+            "sample_sd": 8.72750550261977
+          },
+          "paired_original_minus_control": {
+            "mean": -795.2848073333333,
+            "n": 3,
+            "sample_sd": 100.69873845875952
+          },
+          "saving_percent": {
+            "mean": 84.59217625463782,
+            "n": 3,
+            "sample_sd": 1.4881144563636632
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 27281.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 5.695407098121086,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 4790.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": -22491.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": 82.44199259557934,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 1639.1470556666666,
+            "n": 3,
+            "sample_sd": 153.79806854890305
+          },
+          "improvement_factor": {
+            "mean": 7.1195778023214285,
+            "n": 3,
+            "sample_sd": 0.5556093639417156
+          },
+          "original": {
+            "mean": 230.11067333333332,
+            "n": 3,
+            "sample_sd": 8.586204343748895
+          },
+          "paired_original_minus_control": {
+            "mean": -1409.0363823333334,
+            "n": 3,
+            "sample_sd": 148.6063789034247
+          },
+          "saving_percent": {
+            "mean": 85.89536699629514,
+            "n": 3,
+            "sample_sd": 1.132013813981497
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 131.52848566666665,
+            "n": 3,
+            "sample_sd": 9.996152060580972
+          },
+          "improvement_factor": {
+            "mean": 3.686114498887035,
+            "n": 3,
+            "sample_sd": 0.19138817001529002
+          },
+          "original": {
+            "mean": 35.661619333333334,
+            "n": 3,
+            "sample_sd": 1.396812968063491
+          },
+          "paired_original_minus_control": {
+            "mean": -95.86686633333333,
+            "n": 3,
+            "sample_sd": 8.92534890336687
+          },
+          "saving_percent": {
+            "mean": 72.82197162141904,
+            "n": 3,
+            "sample_sd": 1.4217296188922535
+          }
+        }
+      },
+      "requested_repetitions": 3
+    },
+    {
+      "D": 8,
+      "E": 17699,
+      "G": 1,
+      "N": 1546,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_ppi_components-0_d8_g1",
+      "dataset": "ppi",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 29139.920116999998,
+            "n": 3,
+            "sample_sd": 283.26566117297114
+          },
+          "improvement_factor": {
+            "mean": 6.033758917094528,
+            "n": 3,
+            "sample_sd": 0.39323146198281245
+          },
+          "original": {
+            "mean": 4841.685374,
+            "n": 3,
+            "sample_sd": 283.54606626493586
+          },
+          "paired_original_minus_control": {
+            "mean": -24298.234743,
+            "n": 3,
+            "sample_sd": 472.85532533310027
+          },
+          "saving_percent": {
+            "mean": 83.38115361069428,
+            "n": 3,
+            "sample_sd": 1.0456844892821928
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 27276.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 5.700313479623825,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 4785.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": -22491.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": 82.45710514738232,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 169974.39639133334,
+            "n": 3,
+            "sample_sd": 1270.8126741314225
+          },
+          "improvement_factor": {
+            "mean": 6.875222424033974,
+            "n": 3,
+            "sample_sd": 0.5133413372803897
+          },
+          "original": {
+            "mean": 24803.08396666667,
+            "n": 3,
+            "sample_sd": 1616.2333414973248
+          },
+          "paired_original_minus_control": {
+            "mean": -145171.31242466666,
+            "n": 3,
+            "sample_sd": 2811.463832780648
+          },
+          "saving_percent": {
+            "mean": 85.40298400424348,
+            "n": 3,
+            "sample_sd": 1.0453238927750006
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 5554.053955333333,
+            "n": 3,
+            "sample_sd": 145.49637272597224
+          },
+          "improvement_factor": {
+            "mean": 7.597069417153256,
+            "n": 3,
+            "sample_sd": 0.3662310628070328
+          },
+          "original": {
+            "mean": 732.656534,
+            "n": 3,
+            "sample_sd": 50.9276082696664
+          },
+          "paired_original_minus_control": {
+            "mean": -4821.397421333333,
+            "n": 3,
+            "sample_sd": 101.56058972922453
+          },
+          "saving_percent": {
+            "mean": 86.81703595264146,
+            "n": 3,
+            "sample_sd": 0.6222164290269994
+          }
+        }
+      },
+      "requested_repetitions": 3
+    },
+    {
+      "D": 8,
+      "E": 33928,
+      "G": 2,
+      "N": 2923,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0,
+        9
+      ],
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "dataset": "ppi",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 28847.553515666666,
+            "n": 3,
+            "sample_sd": 398.0542261252671
+          },
+          "improvement_factor": {
+            "mean": 6.009286074067099,
+            "n": 3,
+            "sample_sd": 0.3271894865556123
+          },
+          "original": {
+            "mean": 4810.942342666666,
+            "n": 3,
+            "sample_sd": 292.27982699046834
+          },
+          "paired_original_minus_control": {
+            "mean": -24036.611173,
+            "n": 3,
+            "sample_sd": 330.0472813070065
+          },
+          "saving_percent": {
+            "mean": 83.32621266086817,
+            "n": 3,
+            "sample_sd": 0.9061501020927364
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 27276.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 5.700313479623825,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 4785.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": -22491.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": 82.45710514738232,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 169608.46530166667,
+            "n": 3,
+            "sample_sd": 3804.602369857046
+          },
+          "improvement_factor": {
+            "mean": 6.815417209781426,
+            "n": 3,
+            "sample_sd": 0.30865071190916143
+          },
+          "original": {
+            "mean": 24924.81823033333,
+            "n": 3,
+            "sample_sd": 1392.6392620248268
+          },
+          "paired_original_minus_control": {
+            "mean": -144683.64707133334,
+            "n": 3,
+            "sample_sd": 3038.0839698640802
+          },
+          "saving_percent": {
+            "mean": 85.30780506312168,
+            "n": 3,
+            "sample_sd": 0.6484934868822453
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 5284.680328333334,
+            "n": 3,
+            "sample_sd": 197.8206286851212
+          },
+          "improvement_factor": {
+            "mean": 7.060845548000931,
+            "n": 3,
+            "sample_sd": 0.5545920285174862
+          },
+          "original": {
+            "mean": 750.784711,
+            "n": 3,
+            "sample_sd": 49.95293877561372
+          },
+          "paired_original_minus_control": {
+            "mean": -4533.895617333334,
+            "n": 3,
+            "sample_sd": 211.99651992218762
+          },
+          "saving_percent": {
+            "mean": 85.77635458037487,
+            "n": 3,
+            "sample_sd": 1.1658156307604846
+          }
+        }
+      },
+      "requested_repetitions": 3
+    },
+    {
+      "D": 8,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_cora_full_d8_g1",
+      "dataset": "cora",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 353.6346403333333,
+            "n": 3,
+            "sample_sd": 24.946646906546395
+          },
+          "improvement_factor": {
+            "mean": 1.710607307352692,
+            "n": 3,
+            "sample_sd": 0.1007093932751107
+          },
+          "original": {
+            "mean": 206.70269866666666,
+            "n": 3,
+            "sample_sd": 7.120459864978549
+          },
+          "paired_original_minus_control": {
+            "mean": -146.93194166666666,
+            "n": 3,
+            "sample_sd": 21.817174936095196
+          },
+          "saving_percent": {
+            "mean": 41.41027539500362,
+            "n": 3,
+            "sample_sd": 3.336514643781783
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 10512.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 1.6350909939337377,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 6429.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": -4083.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": 38.84132420091324,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 677.1176076666667,
+            "n": 3,
+            "sample_sd": 50.813144218461936
+          },
+          "improvement_factor": {
+            "mean": 1.9578910992876737,
+            "n": 3,
+            "sample_sd": 0.08533406789723023
+          },
+          "original": {
+            "mean": 345.5340776666667,
+            "n": 3,
+            "sample_sd": 10.972563567189292
+          },
+          "paired_original_minus_control": {
+            "mean": -331.58353,
+            "n": 3,
+            "sample_sd": 40.0083039780637
+          },
+          "saving_percent": {
+            "mean": 48.86026842054212,
+            "n": 3,
+            "sample_sd": 2.215928734596369
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 68.51189733333334,
+            "n": 3,
+            "sample_sd": 0.7811485211035909
+          },
+          "improvement_factor": {
+            "mean": 1.541166498621092,
+            "n": 3,
+            "sample_sd": 0.03327768230009111
+          },
+          "original": {
+            "mean": 44.467823333333335,
+            "n": 3,
+            "sample_sd": 1.0555291424277822
+          },
+          "paired_original_minus_control": {
+            "mean": -24.044074,
+            "n": 3,
+            "sample_sd": 1.0248619783722062
+          },
+          "saving_percent": {
+            "mean": 35.09391491796766,
+            "n": 3,
+            "sample_sd": 1.4012228702847735
+          }
+        }
+      },
+      "requested_repetitions": 3
+    },
+    {
+      "D": 8,
+      "E": 12431,
+      "G": 1,
+      "N": 3327,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_citeseer_full_d8_g1",
+      "dataset": "citeseer",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 349.32346666666666,
+            "n": 3,
+            "sample_sd": 20.621232839302326
+          },
+          "improvement_factor": {
+            "mean": 1.6505709440964051,
+            "n": 3,
+            "sample_sd": 0.08068574061700684
+          },
+          "original": {
+            "mean": 212.14317,
+            "n": 3,
+            "sample_sd": 19.51730704873884
+          },
+          "paired_original_minus_control": {
+            "mean": -137.18029666666666,
+            "n": 3,
+            "sample_sd": 10.696459689088542
+          },
+          "saving_percent": {
+            "mean": 39.317027002177,
+            "n": 3,
+            "sample_sd": 3.004325901025616
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 10516.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 1.6346960982434322,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 6433.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": -4083.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": 38.82655001901864,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 653.8367723333333,
+            "n": 3,
+            "sample_sd": 23.80991788601129
+          },
+          "improvement_factor": {
+            "mean": 1.8583111690312948,
+            "n": 3,
+            "sample_sd": 0.02500051719703369
+          },
+          "original": {
+            "mean": 351.77246733333334,
+            "n": 3,
+            "sample_sd": 8.066595484565369
+          },
+          "paired_original_minus_control": {
+            "mean": -302.064305,
+            "n": 3,
+            "sample_sd": 15.749699904736184
+          },
+          "saving_percent": {
+            "mean": 46.18122793463051,
+            "n": 3,
+            "sample_sd": 0.7215163115855722
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 67.25229766666666,
+            "n": 3,
+            "sample_sd": 3.1145168224375244
+          },
+          "improvement_factor": {
+            "mean": 1.512946651293178,
+            "n": 3,
+            "sample_sd": 0.06787245630668944
+          },
+          "original": {
+            "mean": 44.44937733333333,
+            "n": 3,
+            "sample_sd": 0.15697370500925614
+          },
+          "paired_original_minus_control": {
+            "mean": -22.802920333333333,
+            "n": 3,
+            "sample_sd": 3.046450878871568
+          },
+          "saving_percent": {
+            "mean": 33.812658391842014,
+            "n": 3,
+            "sample_sd": 3.048004991455659
+          }
+        }
+      },
+      "requested_repetitions": 3
+    },
+    {
+      "D": 8,
+      "E": 17699,
+      "G": 1,
+      "N": 1546,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_ppi_components-0_d8_g1",
+      "dataset": "ppi",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 12725.005278999999,
+            "n": 3,
+            "sample_sd": 842.7706149035138
+          },
+          "improvement_factor": {
+            "mean": 1.7909529571439375,
+            "n": 3,
+            "sample_sd": 0.018136216011489723
+          },
+          "original": {
+            "mean": 7102.556513666666,
+            "n": 3,
+            "sample_sd": 402.2146944767271
+          },
+          "paired_original_minus_control": {
+            "mean": -5622.448765333333,
+            "n": 3,
+            "sample_sd": 441.4431966349591
+          },
+          "saving_percent": {
+            "mean": 44.159988425835586,
+            "n": 3,
+            "sample_sd": 0.5652203131636828
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 10511.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 1.6351897946484133,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 6428.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": -4083.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": 38.845019503377415,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 86174.995114,
+            "n": 3,
+            "sample_sd": 3064.169238959089
+          },
+          "improvement_factor": {
+            "mean": 1.8790670748763658,
+            "n": 3,
+            "sample_sd": 0.012813844649673516
+          },
+          "original": {
+            "mean": 45863.157337,
+            "n": 3,
+            "sample_sd": 1714.35295112542
+          },
+          "paired_original_minus_control": {
+            "mean": -40311.837777,
+            "n": 3,
+            "sample_sd": 1413.9866777773593
+          },
+          "saving_percent": {
+            "mean": 46.78045357890097,
+            "n": 3,
+            "sample_sd": 0.36258935636760453
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 2883.187508666667,
+            "n": 3,
+            "sample_sd": 175.3509533826052
+          },
+          "improvement_factor": {
+            "mean": 2.002695718657355,
+            "n": 3,
+            "sample_sd": 0.06784504791869582
+          },
+          "original": {
+            "mean": 1439.5599556666666,
+            "n": 3,
+            "sample_sd": 71.14489832770649
+          },
+          "paired_original_minus_control": {
+            "mean": -1443.627553,
+            "n": 3,
+            "sample_sd": 121.73106911294207
+          },
+          "saving_percent": {
+            "mean": 50.02913921879283,
+            "n": 3,
+            "sample_sd": 1.6901036213686287
+          }
+        }
+      },
+      "requested_repetitions": 3
+    },
+    {
+      "D": 8,
+      "E": 33928,
+      "G": 2,
+      "N": 2923,
+      "complete_repetitions": 3,
+      "component_ids": [
+        0,
+        9
+      ],
+      "config_id": "sn_ppi_components-0-9_d8_g2",
+      "dataset": "ppi",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": 12787.07505,
+            "n": 3,
+            "sample_sd": 766.6811563746318
+          },
+          "improvement_factor": {
+            "mean": 1.7735486091843575,
+            "n": 3,
+            "sample_sd": 0.005352260037899233
+          },
+          "original": {
+            "mean": 7209.160185666667,
+            "n": 3,
+            "sample_sd": 414.03024157770693
+          },
+          "paired_original_minus_control": {
+            "mean": -5577.914864333334,
+            "n": 3,
+            "sample_sd": 352.939877417179
+          },
+          "saving_percent": {
+            "mean": 43.61552478508838,
+            "n": 3,
+            "sample_sd": 0.1702825778989969
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": 10511.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "improvement_factor": {
+            "mean": 1.6351897946484133,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "original": {
+            "mean": 6428.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "paired_original_minus_control": {
+            "mean": -4083.0,
+            "n": 3,
+            "sample_sd": 0.0
+          },
+          "saving_percent": {
+            "mean": 38.845019503377415,
+            "n": 3,
+            "sample_sd": 0.0
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": 87017.48273966667,
+            "n": 3,
+            "sample_sd": 2819.556229707509
+          },
+          "improvement_factor": {
+            "mean": 1.8893296965139514,
+            "n": 3,
+            "sample_sd": 0.0180421177254595
+          },
+          "original": {
+            "mean": 46051.17631733333,
+            "n": 3,
+            "sample_sd": 1091.9909952773125
+          },
+          "paired_original_minus_control": {
+            "mean": -40966.306422333335,
+            "n": 3,
+            "sample_sd": 1745.0862027836333
+          },
+          "saving_percent": {
+            "mean": 47.06796271823188,
+            "n": 3,
+            "sample_sd": 0.5046539688851068
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": 2832.875936,
+            "n": 3,
+            "sample_sd": 179.5665686679938
+          },
+          "improvement_factor": {
+            "mean": 1.9664875845182779,
+            "n": 3,
+            "sample_sd": 0.10801206521479985
+          },
+          "original": {
+            "mean": 1440.2695913333332,
+            "n": 3,
+            "sample_sd": 25.401856348536015
+          },
+          "paired_original_minus_control": {
+            "mean": -1392.6063446666667,
+            "n": 3,
+            "sample_sd": 166.59674840368533
+          },
+          "saving_percent": {
+            "mean": 49.047690026366226,
+            "n": 3,
+            "sample_sd": 2.737668110077837
+          }
+        }
+      },
+      "requested_repetitions": 3
+    }
+  ],
+  "pairs": [
+    {
+      "D": 1,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d1_g1",
+      "control": {
+        "commitment_time_ms": 122.945351,
+        "proof_size_bytes": 3743.0,
+        "prove_time_ms": 210.027417,
+        "verify_time_ms": 35.624687
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 0.9972293010560681,
+          "original_minus_control": 0.341590999999994,
+          "saving_percent": -0.2778397045692228
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 0.9727130977130977,
+          "original_minus_control": 105.0,
+          "saving_percent": -2.8052364413572
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.0236648708778542,
+          "original_minus_control": -4.855370000000022,
+          "saving_percent": 2.3117791331024278
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.0051908653433357,
+          "original_minus_control": -0.18396800000000013,
+          "saving_percent": 0.5164059406332472
+        }
+      },
+      "original": {
+        "commitment_time_ms": 123.286942,
+        "proof_size_bytes": 3848.0,
+        "prove_time_ms": 205.172047,
+        "verify_time_ms": 35.440719
+      },
+      "pair_input_commitment_sha256": "9464768a3b552881d8bc267f6f4af7c7c8c9a50b54aada9f99dadbb402a6ed32",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d1_g1/rep_001/control/proof.bin",
+          "proof_sha256": "9e468e27b89bc04e8c6c37449fb34d61ff31f298aa9cf2e781e32d5033521068",
+          "prover_result_sha256": "47c0d3450f9e3dee7c73ac99aec1874f40276943681f7edf324ec0c8570f5535",
+          "statement_sha256": "be1a51b3a5f796563d03c82cf131e2bf721ae3fb23b913fa79e2f92329c19bae",
+          "verifier_result_sha256": "05d454ba1acc0771ed12d1f07158cff6b6bc7c1109a33e2a2729f94615a33718"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d1_g1/rep_001/original/proof.bin",
+          "proof_sha256": "cbe319a3b530aafcdce629da1b6afb67866d70d0e65543b5d1ff370b803dedfd",
+          "prover_result_sha256": "cfd454c7a1fffabd531129a53caad7626f958dfe3c5f4e707048a724ac92634a",
+          "statement_sha256": "fc878bdf104c0ff4a2ea8b969b0d56b615ec2cc136e30ecd4bef2f13ae4c957a",
+          "verifier_result_sha256": "7138088c2447adafa9447acaa70db8a40853d70810d5ff647c836706cd22046d"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 1,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d1_g1",
+      "control": {
+        "commitment_time_ms": 129.373617,
+        "proof_size_bytes": 3743.0,
+        "prove_time_ms": 217.831331,
+        "verify_time_ms": 34.925127
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 0.9800223666409561,
+          "original_minus_control": 2.6372650000000135,
+          "saving_percent": -2.038487491618955
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 0.9727130977130977,
+          "original_minus_control": 105.0,
+          "saving_percent": -2.8052364413572
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.013101164874582,
+          "original_minus_control": -2.816939000000019,
+          "saving_percent": 1.2931743964783555
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.0142547799904247,
+          "original_minus_control": -0.4908530000000013,
+          "saving_percent": 1.405443708193248
+        }
+      },
+      "original": {
+        "commitment_time_ms": 132.010882,
+        "proof_size_bytes": 3848.0,
+        "prove_time_ms": 215.014392,
+        "verify_time_ms": 34.434274
+      },
+      "pair_input_commitment_sha256": "9464768a3b552881d8bc267f6f4af7c7c8c9a50b54aada9f99dadbb402a6ed32",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d1_g1/rep_002/control/proof.bin",
+          "proof_sha256": "f9f20991bff2d5ca67b5f48912f4f607161a1fe408cd4602674cc531223866c5",
+          "prover_result_sha256": "f63b75c79b5f08a72558c85ea76374df860a2f4e13728c097438bf537debc272",
+          "statement_sha256": "be1a51b3a5f796563d03c82cf131e2bf721ae3fb23b913fa79e2f92329c19bae",
+          "verifier_result_sha256": "a82367ea0a86ee3bb5371a0ddec0cfa0f42e20d9b50f95164be409b008f1f661"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d1_g1/rep_002/original/proof.bin",
+          "proof_sha256": "b790913b6e2cb228ecdf237c50cbe747ecb0cdd9e486e3fd8306560f62346dc2",
+          "prover_result_sha256": "e9c1bceef223713e00b6f4e2aedf6b852814eec8c2e853b97c2ed7e9be9a94d5",
+          "statement_sha256": "fc878bdf104c0ff4a2ea8b969b0d56b615ec2cc136e30ecd4bef2f13ae4c957a",
+          "verifier_result_sha256": "b39be021539cdda70d38fd4a5e7f07436afd115574c02b39b934e713eb619dd4"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 1,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d1_g1",
+      "control": {
+        "commitment_time_ms": 136.340605,
+        "proof_size_bytes": 3743.0,
+        "prove_time_ms": 234.652528,
+        "verify_time_ms": 36.757012
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 0.9649684323875688,
+          "original_minus_control": 4.949617999999987,
+          "saving_percent": -3.6303330178122555
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 0.9727130977130977,
+          "original_minus_control": 105.0,
+          "saving_percent": -2.8052364413572
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.055826490857964,
+          "original_minus_control": -12.407177999999988,
+          "saving_percent": 5.2874682858733095
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.0401477310952,
+          "original_minus_control": -1.4187510000000003,
+          "saving_percent": 3.8598104764337213
+        }
+      },
+      "original": {
+        "commitment_time_ms": 141.290223,
+        "proof_size_bytes": 3848.0,
+        "prove_time_ms": 222.24535,
+        "verify_time_ms": 35.338261
+      },
+      "pair_input_commitment_sha256": "9464768a3b552881d8bc267f6f4af7c7c8c9a50b54aada9f99dadbb402a6ed32",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d1_g1/rep_003/control/proof.bin",
+          "proof_sha256": "5c2f0c0399cbf5be2df031e729b5daf2e385542d0fd8e874f05c8babfe902995",
+          "prover_result_sha256": "9c06764b7bf919e6e5a3666c73be99387195bfaff03db8fa5e46e73af735153b",
+          "statement_sha256": "be1a51b3a5f796563d03c82cf131e2bf721ae3fb23b913fa79e2f92329c19bae",
+          "verifier_result_sha256": "58e866362cd3bafa738b519f69f4415779e4c68d672d0873fa78e68d7e8b4dba"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d1_g1/rep_003/original/proof.bin",
+          "proof_sha256": "32135be46c1d5d6a7e2cf7c99949c9d02977e07c411088361add38844140007b",
+          "prover_result_sha256": "dab488c9d38fa6ce576f3b33e3a3bcac414b4ab7073f0c594f967d2e0dcf38ba",
+          "statement_sha256": "fc878bdf104c0ff4a2ea8b969b0d56b615ec2cc136e30ecd4bef2f13ae4c957a",
+          "verifier_result_sha256": "c7ff97b11a821f0491d808f71d65ad97e514d58772acdb89316bedff98f43744"
+        }
+      },
+      "repetition": 3
+    },
+    {
+      "D": 2,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d2_g1",
+      "control": {
+        "commitment_time_ms": 222.491846,
+        "proof_size_bytes": 7105.0,
+        "prove_time_ms": 380.996398,
+        "verify_time_ms": 50.518627
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.7742235990099422,
+          "original_minus_control": -97.08947500000001,
+          "saving_percent": 43.63731828626205
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.7842792566549472,
+          "original_minus_control": -3123.0,
+          "saving_percent": 43.95496129486277
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.775738586064338,
+          "original_minus_control": -166.439818,
+          "saving_percent": 43.685404605846166
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.4001557729489813,
+          "original_minus_control": -14.437908,
+          "saving_percent": 28.579375286664067
+        }
+      },
+      "original": {
+        "commitment_time_ms": 125.402371,
+        "proof_size_bytes": 3982.0,
+        "prove_time_ms": 214.55658,
+        "verify_time_ms": 36.080719
+      },
+      "pair_input_commitment_sha256": "b0709571957cada303859ebeff979acd2e971e6f8c2fe5005d295b86449a6632",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d2_g1/rep_001/control/proof.bin",
+          "proof_sha256": "22347764b35a13082b71ffbddbb0adf4ac01989c0a4858cc20d57fd35982c150",
+          "prover_result_sha256": "74440f5e9cbd2c0c2ebc6001c2d95e5fb722499d90d08771d057462bb7d941e2",
+          "statement_sha256": "a1b44395f4a1acc75032d7cd466c32dfb30a75d0f37fd64b775fc73de2443ea4",
+          "verifier_result_sha256": "16830bee8033ef0d0a923912ce8371e7d042bbf48ac14c33ee9b64f0fb2d7488"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d2_g1/rep_001/original/proof.bin",
+          "proof_sha256": "2be2adc2e948195d6afcff6cfcac27eee1cbad8a0be188ac6216d5aa01a2ced0",
+          "prover_result_sha256": "3b9b42f37d579abc80941e817d0b7ef55ecce1d9a8494ed8c26f40ab759578b3",
+          "statement_sha256": "b9d328a258bb1869b16bb9acc6b70e63d541d53f92952889fb128f2d1d09e9dd",
+          "verifier_result_sha256": "aa6cb37fdb28e04d9714162b280d61db96ee735f69cf2781e45a9b745c92a521"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 2,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d2_g1",
+      "control": {
+        "commitment_time_ms": 253.34687,
+        "proof_size_bytes": 7105.0,
+        "prove_time_ms": 421.642879,
+        "verify_time_ms": 49.60622
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.8518884246939986,
+          "original_minus_control": -116.542262,
+          "saving_percent": 46.00106644301546
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.7842792566549472,
+          "original_minus_control": -3123.0,
+          "saving_percent": 43.95496129486277
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.9162493366581728,
+          "original_minus_control": -201.60738,
+          "saving_percent": 47.814724270488625
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.3661316948858664,
+          "original_minus_control": -13.294772000000002,
+          "saving_percent": 26.80061492288669
+        }
+      },
+      "original": {
+        "commitment_time_ms": 136.804608,
+        "proof_size_bytes": 3982.0,
+        "prove_time_ms": 220.035499,
+        "verify_time_ms": 36.311448
+      },
+      "pair_input_commitment_sha256": "b0709571957cada303859ebeff979acd2e971e6f8c2fe5005d295b86449a6632",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d2_g1/rep_002/control/proof.bin",
+          "proof_sha256": "cd548da1e43e98a9814a8b58d8273b2301a6e9abb8334f7136b7b6f7796a800d",
+          "prover_result_sha256": "918f85efc54cf871a529a15e7f698ffea922b92a6fcb26c9111ae2f9b7d9b6d5",
+          "statement_sha256": "a1b44395f4a1acc75032d7cd466c32dfb30a75d0f37fd64b775fc73de2443ea4",
+          "verifier_result_sha256": "20590880496ba4d018f5cfe590b9600125623f12edc092c219b3b18202718e91"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d2_g1/rep_002/original/proof.bin",
+          "proof_sha256": "bcf049a265c03d65ec6f674d649c212c0c1c180acc4c14e56810f71b9d5a9b20",
+          "prover_result_sha256": "78bb286186e90dc3ee150cc11f245db265c5c117af995ed891a60cdb4ea501c2",
+          "statement_sha256": "b9d328a258bb1869b16bb9acc6b70e63d541d53f92952889fb128f2d1d09e9dd",
+          "verifier_result_sha256": "231e63af99a0b763cdb9f48d00da4e520e71003963500d4ba92ccc4cff3781f8"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 2,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d2_g1",
+      "control": {
+        "commitment_time_ms": 240.837261,
+        "proof_size_bytes": 7105.0,
+        "prove_time_ms": 418.932405,
+        "verify_time_ms": 49.406836
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.8369832782202846,
+          "original_minus_control": -109.73249600000003,
+          "saving_percent": 45.56292308938027
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.7842792566549472,
+          "original_minus_control": -3123.0,
+          "saving_percent": 43.95496129486277
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.8728717904773273,
+          "original_minus_control": -195.24789700000002,
+          "saving_percent": 46.60606214026342
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.3663524140632082,
+          "original_minus_control": -13.247177999999998,
+          "saving_percent": 26.812439476998684
+        }
+      },
+      "original": {
+        "commitment_time_ms": 131.104765,
+        "proof_size_bytes": 3982.0,
+        "prove_time_ms": 223.684508,
+        "verify_time_ms": 36.159658
+      },
+      "pair_input_commitment_sha256": "b0709571957cada303859ebeff979acd2e971e6f8c2fe5005d295b86449a6632",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d2_g1/rep_003/control/proof.bin",
+          "proof_sha256": "f026efc668565c606085b861a16933aebe41c00433f049a5eab98d95a796b3d9",
+          "prover_result_sha256": "f6b40ee2c31718e947db74bf876de9db3d618eb9b234629d9bc8475fed91c413",
+          "statement_sha256": "a1b44395f4a1acc75032d7cd466c32dfb30a75d0f37fd64b775fc73de2443ea4",
+          "verifier_result_sha256": "e17c841b8a71d9773df6e88524a5ee0081b4d55269ff780bedd562ca0344ff44"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d2_g1/rep_003/original/proof.bin",
+          "proof_sha256": "12cbe81217b868e51fea7b97a4ecdc9d24e74a0105d34c3387626c9ebef4aa71",
+          "prover_result_sha256": "7792f463f850aaa2394df56993701c7301ed22ab8ba5a8301ec8f61f3b4f16e7",
+          "statement_sha256": "b9d328a258bb1869b16bb9acc6b70e63d541d53f92952889fb128f2d1d09e9dd",
+          "verifier_result_sha256": "a498cc41897ae8e476d3027a5aca448767036b147b9be4477ed97af29ba1ae03"
+        }
+      },
+      "repetition": 3
+    },
+    {
+      "D": 4,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d4_g1",
+      "control": {
+        "commitment_time_ms": 421.851081,
+        "proof_size_bytes": 13829.0,
+        "prove_time_ms": 747.596621,
+        "verify_time_ms": 75.728192
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 3.3819439816346604,
+          "original_minus_control": -297.11481000000003,
+          "saving_percent": 70.43120745256547
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 3.2538823529411767,
+          "original_minus_control": -9579.0,
+          "saving_percent": 69.26748137970931
+        },
+        "prove_time_ms": {
+          "improvement_factor": 3.5812831819590043,
+          "original_minus_control": -538.8455720000001,
+          "saving_percent": 72.07704754995142
+        },
+        "verify_time_ms": {
+          "improvement_factor": 2.0881586308279028,
+          "original_minus_control": -39.46265600000001,
+          "saving_percent": 52.110917952458195
+        }
+      },
+      "original": {
+        "commitment_time_ms": 124.736271,
+        "proof_size_bytes": 4250.0,
+        "prove_time_ms": 208.751049,
+        "verify_time_ms": 36.265536
+      },
+      "pair_input_commitment_sha256": "fd413112a4eb13f32aa408c3298ffd63e4750ce6ce283cb92581e57dfcb6740f",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d4_g1/rep_001/control/proof.bin",
+          "proof_sha256": "4ca2f701be9f4809ac237472adeb3a042b165e86f8eb546d5c382674f7dc60e4",
+          "prover_result_sha256": "3b06d7bddbd31a8c91378c7e55c39aa9ad10dca9d7b6965962449849d0824f1f",
+          "statement_sha256": "f8c485a76b33b11c49110789d74bdbf7a36517e6cdea1ce6f227b5123bcbf934",
+          "verifier_result_sha256": "3d540898f417081caab9e9db1f19d144e7771c137c2ca5144d98ee620c0e1509"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d4_g1/rep_001/original/proof.bin",
+          "proof_sha256": "caf36971de413b7d0e31f936e9ca701c48de9127a09f9ae31d738ed6c8bbc59e",
+          "prover_result_sha256": "e3c2025a1c9957f752fc5560b2af03ef6f85a0885e13e4f92d1789594bea97e8",
+          "statement_sha256": "fea309980418fae0af36a1e3a606cc19a26c92a3ca2cf3da253e9a9845a0bc04",
+          "verifier_result_sha256": "b27fb7ca3d958f1edb0c272a6c47c9bea35c11d7821d71dc172261b3e538ea35"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 4,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d4_g1",
+      "control": {
+        "commitment_time_ms": 464.284001,
+        "proof_size_bytes": 13829.0,
+        "prove_time_ms": 791.687793,
+        "verify_time_ms": 79.626707
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 3.4701661412555924,
+          "original_minus_control": -330.490983,
+          "saving_percent": 71.1829359375233
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 3.2538823529411767,
+          "original_minus_control": -9579.0,
+          "saving_percent": 69.26748137970931
+        },
+        "prove_time_ms": {
+          "improvement_factor": 3.5535456305185957,
+          "original_minus_control": -568.899661,
+          "saving_percent": 71.85909218635635
+        },
+        "verify_time_ms": {
+          "improvement_factor": 2.1690402154452944,
+          "original_minus_control": -42.916135,
+          "saving_percent": 53.89665932059704
+        }
+      },
+      "original": {
+        "commitment_time_ms": 133.793018,
+        "proof_size_bytes": 4250.0,
+        "prove_time_ms": 222.788132,
+        "verify_time_ms": 36.710572
+      },
+      "pair_input_commitment_sha256": "fd413112a4eb13f32aa408c3298ffd63e4750ce6ce283cb92581e57dfcb6740f",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d4_g1/rep_002/control/proof.bin",
+          "proof_sha256": "ca3c5f1c3f756ba0b06a3e52ff19976bad9310269b8fdd38c3bdfb12bf20f862",
+          "prover_result_sha256": "5477d7db2162a4e685305f906a4143e8e521900d8f52cfc487cd3ceeafa3da51",
+          "statement_sha256": "f8c485a76b33b11c49110789d74bdbf7a36517e6cdea1ce6f227b5123bcbf934",
+          "verifier_result_sha256": "a075c60086c875dbc5463c2e94f956c0e7f976d71c351a6481a92aff2e6a6026"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d4_g1/rep_002/original/proof.bin",
+          "proof_sha256": "e6629589332f77c901468c9bb7c10bb9155ef6dcdac8f1abe6b5954421a9190d",
+          "prover_result_sha256": "822e6be64839960211338435c2dedddbc34126c02268e44a99e5c76d761f3419",
+          "statement_sha256": "fea309980418fae0af36a1e3a606cc19a26c92a3ca2cf3da253e9a9845a0bc04",
+          "verifier_result_sha256": "cbfd574946559d45735cf4700f5fb744cea3c62efa2a738ff35cf9cb043ee2ce"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 4,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d4_g1",
+      "control": {
+        "commitment_time_ms": 463.940159,
+        "proof_size_bytes": 13829.0,
+        "prove_time_ms": 803.884988,
+        "verify_time_ms": 76.682362
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 3.3975356253208897,
+          "original_minus_control": -327.388196,
+          "saving_percent": 70.5669017111321
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 3.2538823529411767,
+          "original_minus_control": -9579.0,
+          "saving_percent": 69.26748137970931
+        },
+        "prove_time_ms": {
+          "improvement_factor": 3.556408427234142,
+          "original_minus_control": -577.8465550000001,
+          "saving_percent": 71.88174473037927
+        },
+        "verify_time_ms": {
+          "improvement_factor": 2.1093441176143735,
+          "original_minus_control": -40.32871,
+          "saving_percent": 52.591898512463665
+        }
+      },
+      "original": {
+        "commitment_time_ms": 136.551963,
+        "proof_size_bytes": 4250.0,
+        "prove_time_ms": 226.038433,
+        "verify_time_ms": 36.353652
+      },
+      "pair_input_commitment_sha256": "fd413112a4eb13f32aa408c3298ffd63e4750ce6ce283cb92581e57dfcb6740f",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d4_g1/rep_003/control/proof.bin",
+          "proof_sha256": "4c9b88fefacc47f0a4e9a921be206dfeee0d5f627c7bdbee0b7fba825a22fd2f",
+          "prover_result_sha256": "7da67094b23e571226a87303c7cd65442b51b51b1c0dda7320e336c5431db4c7",
+          "statement_sha256": "f8c485a76b33b11c49110789d74bdbf7a36517e6cdea1ce6f227b5123bcbf934",
+          "verifier_result_sha256": "e250b255431efe0050f5d3712cc686ed4c4ff0373f7364d705c05f378abfb399"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d4_g1/rep_003/original/proof.bin",
+          "proof_sha256": "0c68ba043aa2ea17b58f407f21ab3ad3acb946e17847396203f0827313ae57c1",
+          "prover_result_sha256": "6f14606c19ad3f6bd7fb12bebac0ee582caf2a9763f1e5d808d2378674b37aeb",
+          "statement_sha256": "fea309980418fae0af36a1e3a606cc19a26c92a3ca2cf3da253e9a9845a0bc04",
+          "verifier_result_sha256": "c98c756c98e16833f8392b54a870283faf1d597f2293a9d7121be3bcb62c7c1b"
+        }
+      },
+      "repetition": 3
+    },
+    {
+      "D": 8,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 820.696935,
+        "proof_size_bytes": 27277.0,
+        "prove_time_ms": 1458.891568,
+        "verify_time_ms": 137.788797
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 6.0840240515482975,
+          "original_minus_control": -685.803166,
+          "saving_percent": 83.56351007939368
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.699331383201003,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.45408219378963
+        },
+        "prove_time_ms": {
+          "improvement_factor": 6.642166925672002,
+          "original_minus_control": -1239.250661,
+          "saving_percent": 84.94467225545031
+        },
+        "verify_time_ms": {
+          "improvement_factor": 3.7150699289358258,
+          "original_minus_control": -100.69964399999998,
+          "saving_percent": 73.08260627313553
+        }
+      },
+      "original": {
+        "commitment_time_ms": 134.893769,
+        "proof_size_bytes": 4786.0,
+        "prove_time_ms": 219.640907,
+        "verify_time_ms": 37.089153
+      },
+      "pair_input_commitment_sha256": "794848e7f8239693e087216e83b738cf63d33b058c31d1fa3f7a936711b7dd30",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d8_g1/rep_001/control/proof.bin",
+          "proof_sha256": "34d789becb6c5a5dd1aafc8d4eb28fcfce7d0cfc8c9439f1aca5d8d254be42c5",
+          "prover_result_sha256": "a191246030aee98c4606e2c7e2d49a0227b4276466ad1ce7394f0f53c09862fe",
+          "statement_sha256": "191d7fa22941211f38d112df4628edd2e90fb5bcff3733653c356c0eaffa63ea",
+          "verifier_result_sha256": "4c80d7d18e39f5f9398582fcc51390f11fa3f1682d9298fc30008f03ae593494"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d8_g1/rep_001/original/proof.bin",
+          "proof_sha256": "858823463b9fdad6151f351aff582d4f069c2564e2f9b3accc050e561aa088f2",
+          "prover_result_sha256": "960bd906dd552748b257634a7308bf046130a4960676174b90abf8c023b36415",
+          "statement_sha256": "23d9ce20e231cfd1e75966909e39080c59679a5cca6435ae3f2e01572156c04c",
+          "verifier_result_sha256": "88326702b4239a016e78af45a9c54d76e5bc5308b264ff05be17b624bad2caf9"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 8,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 866.0761,
+        "proof_size_bytes": 27277.0,
+        "prove_time_ms": 1542.634926,
+        "verify_time_ms": 132.551084
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 5.485946948333255,
+          "original_minus_control": -708.20434,
+          "saving_percent": 81.77160644428359
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.699331383201003,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.45408219378963
+        },
+        "prove_time_ms": {
+          "improvement_factor": 6.721661443103507,
+          "original_minus_control": -1313.132899,
+          "saving_percent": 85.1227258548404
+        },
+        "verify_time_ms": {
+          "improvement_factor": 3.5538178617151743,
+          "original_minus_control": -95.252863,
+          "saving_percent": 71.86124784916885
+        }
+      },
+      "original": {
+        "commitment_time_ms": 157.87176,
+        "proof_size_bytes": 4786.0,
+        "prove_time_ms": 229.502027,
+        "verify_time_ms": 37.298221
+      },
+      "pair_input_commitment_sha256": "794848e7f8239693e087216e83b738cf63d33b058c31d1fa3f7a936711b7dd30",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d8_g1/rep_002/control/proof.bin",
+          "proof_sha256": "daf6a0db9d76b22eeedd8c7edf9ddeef935f7badfd86f9d11360dc3196429f70",
+          "prover_result_sha256": "a673805d764c7df19bbb1f6ad5fce922e29309b640ac0d9ad0604e727188ad1d",
+          "statement_sha256": "191d7fa22941211f38d112df4628edd2e90fb5bcff3733653c356c0eaffa63ea",
+          "verifier_result_sha256": "5ba28915a6f1d56b843ec2746a22a8bd896b634b9af00b582647e158886cd2ef"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d8_g1/rep_002/original/proof.bin",
+          "proof_sha256": "ebad3012ec94d646f1233bcc78fe79ce358ae2b0bfbe004116342c8327cda819",
+          "prover_result_sha256": "bbebb9c63a7336e6578066e6e7abf7c9d3e0516988e6a2168358d2030ebaf142",
+          "statement_sha256": "23d9ce20e231cfd1e75966909e39080c59679a5cca6435ae3f2e01572156c04c",
+          "verifier_result_sha256": "e3647f0d909d4d26b3bfb9a844c4e5400019c23b047a359bb8dbeaf4eb4addbd"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 8,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_cora_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 1002.123222,
+        "proof_size_bytes": 27277.0,
+        "prove_time_ms": 1734.822379,
+        "verify_time_ms": 137.391663
+      },
+      "dataset": "cora",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 7.144759177145297,
+          "original_minus_control": -861.86332,
+          "saving_percent": 86.00372699476273
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.699331383201003,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.45408219378963
+        },
+        "prove_time_ms": {
+          "improvement_factor": 7.62312964886322,
+          "original_minus_control": -1507.248868,
+          "saving_percent": 86.88202816871778
+        },
+        "verify_time_ms": {
+          "improvement_factor": 3.6624594875812293,
+          "original_minus_control": -99.878166,
+          "saving_percent": 72.6959437123925
+        }
+      },
+      "original": {
+        "commitment_time_ms": 140.259902,
+        "proof_size_bytes": 4786.0,
+        "prove_time_ms": 227.573511,
+        "verify_time_ms": 37.513497
+      },
+      "pair_input_commitment_sha256": "794848e7f8239693e087216e83b738cf63d33b058c31d1fa3f7a936711b7dd30",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d8_g1/rep_003/control/proof.bin",
+          "proof_sha256": "b202238aa7dc2d93089785f8f7729f945555b55b346b2f60fb72c94021430066",
+          "prover_result_sha256": "9840493121ec7d5aaca613e8da93efaa8b2f3e925c17a12fca9bd8103c80d3b7",
+          "statement_sha256": "191d7fa22941211f38d112df4628edd2e90fb5bcff3733653c356c0eaffa63ea",
+          "verifier_result_sha256": "1597b9e578edb83042590fb9da0f84923e9a7b58dddb2b93dde3a6df9b014977"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d8_g1/rep_003/original/proof.bin",
+          "proof_sha256": "1e16be2d6a92e9b4115d34f903a3741793e6f8970e9ab796738df830ec5f6f8b",
+          "prover_result_sha256": "78ccf7712998a486794c7a394554d8a8d9fdd6d7a5ca4362134fdec9a79e209c",
+          "statement_sha256": "23d9ce20e231cfd1e75966909e39080c59679a5cca6435ae3f2e01572156c04c",
+          "verifier_result_sha256": "d7ad1b41efb8c4ebd78232c7d730475d2153250cafc552183af042547ce2c6c2"
+        }
+      },
+      "repetition": 3
+    },
+    {
+      "D": 8,
+      "E": 12431,
+      "G": 1,
+      "N": 3327,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_citeseer_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 817.818258,
+        "proof_size_bytes": 27281.0,
+        "prove_time_ms": 1462.091804,
+        "verify_time_ms": 137.029417
+      },
+      "dataset": "citeseer",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 5.929383962142983,
+          "original_minus_control": -679.891913,
+          "saving_percent": 83.13484155546941
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.695407098121086,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.44199259557934
+        },
+        "prove_time_ms": {
+          "improvement_factor": 6.510888191169156,
+          "original_minus_control": -1237.530767,
+          "saving_percent": 84.64111238530683
+        },
+        "verify_time_ms": {
+          "improvement_factor": 3.86939503616317,
+          "original_minus_control": -101.61576299999999,
+          "saving_percent": 74.15616677402926
+        }
+      },
+      "original": {
+        "commitment_time_ms": 137.926345,
+        "proof_size_bytes": 4790.0,
+        "prove_time_ms": 224.561037,
+        "verify_time_ms": 35.413654
+      },
+      "pair_input_commitment_sha256": "ad1a821609de47e2cfd4429e26c7d53cf8edab2f85d004eb5757b23b97304e1c",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_citeseer_full_d8_g1/rep_001/control/proof.bin",
+          "proof_sha256": "fc1b6c24bd3a061771c742f611dde2f43dd3927f655c14cd9eb4576684903b26",
+          "prover_result_sha256": "5799fbbcf9d21e08a6cbe2dbada05c67342d89085bbf3d89e14f1874d4f306dc",
+          "statement_sha256": "9b32e154acc7bf550180686aea50e3dcd5b988a1a8ae52ff487f60cfc902bf3d",
+          "verifier_result_sha256": "f29d12e15465393be5020b1a3435a755fdaf1a079afcd9d7a4609089a22691f3"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_citeseer_full_d8_g1/rep_001/original/proof.bin",
+          "proof_sha256": "0fb4b2ee23b84b36941cb665d4bcc59a750f7cf81984e9a2888845b7ff300738",
+          "prover_result_sha256": "d9cdc2ce756c0992fc2b5156cb52d26ac71104064e16398557d9a93355bf9d16",
+          "statement_sha256": "6bbdfe44c24a46217ed18ac81a52d990b9567a94fd8d497fc3e865f9619ea35d",
+          "verifier_result_sha256": "613018e85fb81d3949a1584c3d17af01a0237f3afe97ebc41cffe98293eb3077"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 8,
+      "E": 12431,
+      "G": 1,
+      "N": 3327,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_citeseer_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 994.397064,
+        "proof_size_bytes": 27281.0,
+        "prove_time_ms": 1739.608846,
+        "verify_time_ms": 137.565959
+      },
+      "dataset": "citeseer",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 6.465134261483335,
+          "original_minus_control": -840.587874,
+          "saving_percent": 84.53241712306585
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.695407098121086,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.44199259557934
+        },
+        "prove_time_ms": {
+          "improvement_factor": 7.248353580856377,
+          "original_minus_control": -1499.608296,
+          "saving_percent": 86.20376353271315
+        },
+        "verify_time_ms": {
+          "improvement_factor": 3.7014116657597844,
+          "original_minus_control": -100.40015,
+          "saving_percent": 72.98328069664386
+        }
+      },
+      "original": {
+        "commitment_time_ms": 153.80919,
+        "proof_size_bytes": 4790.0,
+        "prove_time_ms": 240.00055,
+        "verify_time_ms": 37.165809
+      },
+      "pair_input_commitment_sha256": "ad1a821609de47e2cfd4429e26c7d53cf8edab2f85d004eb5757b23b97304e1c",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_citeseer_full_d8_g1/rep_002/control/proof.bin",
+          "proof_sha256": "8da71e1b0c218ee8b359c99545eeb4a2e5a4a23870093cbff7a17bfd3c16e4e7",
+          "prover_result_sha256": "c72038b208207edb50a98502641eb98261c9bf038eae4d47889f006758b937d8",
+          "statement_sha256": "9b32e154acc7bf550180686aea50e3dcd5b988a1a8ae52ff487f60cfc902bf3d",
+          "verifier_result_sha256": "7f1d7f9905cfc0b1a9112878fad9188895df3bd566b0f4eeec9f83a62cc63faa"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_citeseer_full_d8_g1/rep_002/original/proof.bin",
+          "proof_sha256": "06cc783c9d524e8689c9b9dff5b5ae5695d8b847f151f3e24de02576e8f0d2cb",
+          "prover_result_sha256": "a6c3af70177e75bf65aec416d5e7dd168722d9bd30d24a0915f264a1812d3f8c",
+          "statement_sha256": "6bbdfe44c24a46217ed18ac81a52d990b9567a94fd8d497fc3e865f9619ea35d",
+          "verifier_result_sha256": "9319945a91bd8da48c2c990ed47751ce458376c45f9c90109ca65bdf0dc4e1f1"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 8,
+      "E": 12431,
+      "G": 1,
+      "N": 3327,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_citeseer_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 1004.972675,
+        "proof_size_bytes": 27281.0,
+        "prove_time_ms": 1715.740517,
+        "verify_time_ms": 119.990081
+      },
+      "dataset": "citeseer",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 7.19904573875106,
+          "original_minus_control": -865.374635,
+          "saving_percent": 86.1092700853782
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.695407098121086,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.44199259557934
+        },
+        "prove_time_ms": {
+          "improvement_factor": 7.599491634938752,
+          "original_minus_control": -1489.970084,
+          "saving_percent": 86.84122507086542
+        },
+        "verify_time_ms": {
+          "improvement_factor": 3.4875367947381513,
+          "original_minus_control": -85.584686,
+          "saving_percent": 71.32646739358398
+        }
+      },
+      "original": {
+        "commitment_time_ms": 139.59804,
+        "proof_size_bytes": 4790.0,
+        "prove_time_ms": 225.770433,
+        "verify_time_ms": 34.405395
+      },
+      "pair_input_commitment_sha256": "ad1a821609de47e2cfd4429e26c7d53cf8edab2f85d004eb5757b23b97304e1c",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_citeseer_full_d8_g1/rep_003/control/proof.bin",
+          "proof_sha256": "7748654dffd0fb315da2b4e853d252ab8b5f43cdef3bba18fc1119c19f43bb13",
+          "prover_result_sha256": "48278ea9e2df86ea47baf64a23029e571dd1830bcc91c90200befb2874087969",
+          "statement_sha256": "9b32e154acc7bf550180686aea50e3dcd5b988a1a8ae52ff487f60cfc902bf3d",
+          "verifier_result_sha256": "8cbe3a7ed212c0dd54c737faa9802adc9ca725696727b11a835745870a740187"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_citeseer_full_d8_g1/rep_003/original/proof.bin",
+          "proof_sha256": "13f1f340efda9ef8644f97509160a8ddcebf21da5474b2ae1375fe793611b464",
+          "prover_result_sha256": "40b7320dca738a7144077297156dcaecd663bc059d63a3c71b39c0e4b3b1b14c",
+          "statement_sha256": "6bbdfe44c24a46217ed18ac81a52d990b9567a94fd8d497fc3e865f9619ea35d",
+          "verifier_result_sha256": "a802c5ba5525e9bb45ed1a3d581d3e6d0919898ba9a1b84c366c35507e9f6a61"
+        }
+      },
+      "repetition": 3
+    },
+    {
+      "D": 8,
+      "E": 17699,
+      "G": 1,
+      "N": 1546,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_ppi_components-0_d8_g1",
+      "control": {
+        "commitment_time_ms": 29326.680245,
+        "proof_size_bytes": 27276.0,
+        "prove_time_ms": 169738.390333,
+        "verify_time_ms": 5452.968559
+      },
+      "dataset": "ppi",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 5.846962545710611,
+          "original_minus_control": -24310.968238,
+          "saving_percent": 82.89710268909437
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.700313479623825,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.45710514738232
+        },
+        "prove_time_ms": {
+          "improvement_factor": 6.555415260455705,
+          "original_minus_control": -143845.539371,
+          "saving_percent": 84.74543624974746
+        },
+        "verify_time_ms": {
+          "improvement_factor": 8.009477022669659,
+          "original_minus_control": -4772.154001,
+          "saving_percent": 87.51479032688843
+        }
+      },
+      "original": {
+        "commitment_time_ms": 5015.712007,
+        "proof_size_bytes": 4785.0,
+        "prove_time_ms": 25892.850962,
+        "verify_time_ms": 680.814558
+      },
+      "pair_input_commitment_sha256": "5eecb4663908fec294e6a382cfd4a0886045a5ea6cfe214b5fb62bd60f75d995",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0_d8_g1/rep_001/control/proof.bin",
+          "proof_sha256": "94752d614a10dedf93a558d9bc0d67cb6cc88080a37d4fd69c763d1d2690a23f",
+          "prover_result_sha256": "584d13c3171fa36585e44cd45c2c9292524e32880135f945c300872035b285df",
+          "statement_sha256": "e4eae1d5f5725b59439ac8536efb2112a35632bd7c6fe307e4e56c82b99ba70e",
+          "verifier_result_sha256": "8d9e416052026f9447662354ed3bc04355a8c3a0ebd6a1edf945da6d423a23f3"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0_d8_g1/rep_001/original/proof.bin",
+          "proof_sha256": "86426d11d3dc637378a0e3ee7a8fb524595f6f6def4ca7f5b3b89678fc745b18",
+          "prover_result_sha256": "35a754a7b0bf3ffbf597fa7a412b7755ed4649acef29b46848ac27a464295467",
+          "statement_sha256": "b107a217f13199cda4af5853e9e255ba0b1490713e83ebf3e904821f2e44aa2d",
+          "verifier_result_sha256": "f825bb120bec3ee3b47d721aab1eefd2abf51f985580893d165a200e8d9fcc37"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 8,
+      "E": 17699,
+      "G": 1,
+      "N": 1546,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_ppi_components-0_d8_g1",
+      "control": {
+        "commitment_time_ms": 28813.989143,
+        "proof_size_bytes": 27276.0,
+        "prove_time_ms": 168838.130427,
+        "verify_time_ms": 5488.383481
+      },
+      "dataset": "ppi",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 5.768742092747158,
+          "original_minus_control": -23819.141274999998,
+          "saving_percent": 82.6651983409474
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.700313479623825,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.45710514738232
+        },
+        "prove_time_ms": {
+          "improvement_factor": 6.602908627466066,
+          "original_minus_control": -143267.864359,
+          "saving_percent": 84.85515919695892
+        },
+        "verify_time_ms": {
+          "improvement_factor": 7.471891329750979,
+          "original_minus_control": -4753.846101,
+          "saving_percent": 86.61650771046041
+        }
+      },
+      "original": {
+        "commitment_time_ms": 4994.847868,
+        "proof_size_bytes": 4785.0,
+        "prove_time_ms": 25570.266068,
+        "verify_time_ms": 734.53738
+      },
+      "pair_input_commitment_sha256": "5eecb4663908fec294e6a382cfd4a0886045a5ea6cfe214b5fb62bd60f75d995",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0_d8_g1/rep_002/control/proof.bin",
+          "proof_sha256": "9779422e3000c0f0183790dd256eb7607d3fc1b22e498a9fb9f15dcdb0c63417",
+          "prover_result_sha256": "5e4ebc6542d856701a72d4a7cc5e94d1afdfc2c07c0e041b80c4e5c82b0439ea",
+          "statement_sha256": "e4eae1d5f5725b59439ac8536efb2112a35632bd7c6fe307e4e56c82b99ba70e",
+          "verifier_result_sha256": "4a4a527d5d12e698f74af3bf6b897dc2a53437a403163488aea5c0da06a7cb7d"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0_d8_g1/rep_002/original/proof.bin",
+          "proof_sha256": "1cc0d960e54badb712ac3a8885569573372926b926508e7b30179ff50ffab05c",
+          "prover_result_sha256": "503b4aa446b0b726aa6d71412ca14a1c77ca3ffb92d56525599a09f0f95356a2",
+          "statement_sha256": "b107a217f13199cda4af5853e9e255ba0b1490713e83ebf3e904821f2e44aa2d",
+          "verifier_result_sha256": "2dc8659c21cd48ebd53ba99a81e8d357e1923018ad300c8317b26e218cc4c93b"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 8,
+      "E": 17699,
+      "G": 1,
+      "N": 1546,
+      "component_ids": [
+        0
+      ],
+      "config_id": "ff_ppi_components-0_d8_g1",
+      "control": {
+        "commitment_time_ms": 29279.090963,
+        "proof_size_bytes": 27276.0,
+        "prove_time_ms": 171346.668414,
+        "verify_time_ms": 5720.809826
+      },
+      "dataset": "ppi",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 6.485572112825814,
+          "original_minus_control": -24764.594716,
+          "saving_percent": 84.58115980204109
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.700313479623825,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.45710514738232
+        },
+        "prove_time_ms": {
+          "improvement_factor": 7.467343384180152,
+          "original_minus_control": -148400.533544,
+          "saving_percent": 86.60835656602404
+        },
+        "verify_time_ms": {
+          "improvement_factor": 7.3098398990391305,
+          "original_minus_control": -4938.192161999999,
+          "saving_percent": 86.31980982057556
+        }
+      },
+      "original": {
+        "commitment_time_ms": 4514.496247,
+        "proof_size_bytes": 4785.0,
+        "prove_time_ms": 22946.13487,
+        "verify_time_ms": 782.617664
+      },
+      "pair_input_commitment_sha256": "5eecb4663908fec294e6a382cfd4a0886045a5ea6cfe214b5fb62bd60f75d995",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0_d8_g1/rep_003/control/proof.bin",
+          "proof_sha256": "0bc12b920ee00ecf447036153b207cfca2a9234cfd623b1f9b688f7b80f09f9a",
+          "prover_result_sha256": "3d07b2477e8f401de42b0696b76e25b1e4ba534d1e6df8b2bbd02bb04a7e9539",
+          "statement_sha256": "e4eae1d5f5725b59439ac8536efb2112a35632bd7c6fe307e4e56c82b99ba70e",
+          "verifier_result_sha256": "8ba9b86297f8b06528a35ad8fc174e0f23f86145348f300e1353137ca6162e4f"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0_d8_g1/rep_003/original/proof.bin",
+          "proof_sha256": "3e1a9da6fce7ac58ab9d068565051a17c5209da7bbae1144f799a17003b01633",
+          "prover_result_sha256": "931220494c8ca94b09a7cf3c6a4a998451286994eea927cf84dd1db0323ff889",
+          "statement_sha256": "b107a217f13199cda4af5853e9e255ba0b1490713e83ebf3e904821f2e44aa2d",
+          "verifier_result_sha256": "981f5abdf2ecdbcf6ed5f92498f550ad8586d7500f39bba462436db84a5e9c9f"
+        }
+      },
+      "repetition": 3
+    },
+    {
+      "D": 8,
+      "E": 33928,
+      "G": 2,
+      "N": 2923,
+      "component_ids": [
+        0,
+        9
+      ],
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "control": {
+        "commitment_time_ms": 28794.409948,
+        "proof_size_bytes": 27276.0,
+        "prove_time_ms": 166897.72101,
+        "verify_time_ms": 5512.986388
+      },
+      "dataset": "ppi",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 5.6890063256625565,
+          "original_minus_control": -23732.997058,
+          "saving_percent": 82.4222378609583
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.700313479623825,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.45710514738232
+        },
+        "prove_time_ms": {
+          "improvement_factor": 6.627578959648381,
+          "original_minus_control": -141715.415069,
+          "saving_percent": 84.91153396906411
+        },
+        "verify_time_ms": {
+          "improvement_factor": 7.457105489128035,
+          "original_minus_control": -4773.693321000001,
+          "saving_percent": 86.58997111603244
+        }
+      },
+      "original": {
+        "commitment_time_ms": 5061.41289,
+        "proof_size_bytes": 4785.0,
+        "prove_time_ms": 25182.305941,
+        "verify_time_ms": 739.293067
+      },
+      "pair_input_commitment_sha256": "10cc7d6148307019a437f46dbbde907c5442c60d738a7d97a6c66033352d1e9c",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0-9_d8_g2/rep_001/control/proof.bin",
+          "proof_sha256": "bec9b3cc97080a3093289361a256d320430e71da70947aed34b5e1f0be22dea6",
+          "prover_result_sha256": "3736d951a61a8a8c7cdb72e5c0b5674cd84f78e18addd0d4ba18049cf156f881",
+          "statement_sha256": "b38735a2ac9b131cc0fabed3874a3daa3ae49fde1656b35251484b9190aa4242",
+          "verifier_result_sha256": "65b382e261a6452374f78d04a1c4cc7b28ccdb20b75f02e24064108e5dfcbf8b"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0-9_d8_g2/rep_001/original/proof.bin",
+          "proof_sha256": "3c7eb43e57d869b2571d6a353bb10067bacdaf8e0f3ce0519166a52da4ef1e61",
+          "prover_result_sha256": "cc5a81430d62d968bd4a67aea8367f40e560543a36c27b1e370449042a605aac",
+          "statement_sha256": "81db58fe69f471ce0fa5fb9f18f16c8361f63bd2a453fabdedef741da90cd9a1",
+          "verifier_result_sha256": "9ad93e87e16975c6edca6a8f07fcefc422257187b21cc625aa60d572d7a7e6ad"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 8,
+      "E": 33928,
+      "G": 2,
+      "N": 2923,
+      "component_ids": [
+        0,
+        9
+      ],
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "control": {
+        "commitment_time_ms": 28478.740692,
+        "proof_size_bytes": 27276.0,
+        "prove_time_ms": 167969.860455,
+        "verify_time_ms": 5164.182342
+      },
+      "dataset": "ppi",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 6.34297312394206,
+          "original_minus_control": -23988.931238999998,
+          "saving_percent": 84.2345225108172
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.700313479623825,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.45710514738232
+        },
+        "prove_time_ms": {
+          "improvement_factor": 7.171639319585539,
+          "original_minus_control": -144548.456649,
+          "saving_percent": 86.05618666196683
+        },
+        "verify_time_ms": {
+          "improvement_factor": 7.298382723764249,
+          "original_minus_control": -4456.603343,
+          "saving_percent": 86.29833433174308
+        }
+      },
+      "original": {
+        "commitment_time_ms": 4489.809453,
+        "proof_size_bytes": 4785.0,
+        "prove_time_ms": 23421.403806,
+        "verify_time_ms": 707.578999
+      },
+      "pair_input_commitment_sha256": "10cc7d6148307019a437f46dbbde907c5442c60d738a7d97a6c66033352d1e9c",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0-9_d8_g2/rep_002/control/proof.bin",
+          "proof_sha256": "b13bd5ce73f20f8d1379f8b48604210a622272e5d364e2dd92d77cbdd11f1e91",
+          "prover_result_sha256": "6fef847382247673594f3e60623b2e87c1b1f5633ab94b9cad02303b72051440",
+          "statement_sha256": "b38735a2ac9b131cc0fabed3874a3daa3ae49fde1656b35251484b9190aa4242",
+          "verifier_result_sha256": "c85b17fc8f336cb1848c00fa5daf029b1d3c0c6deb5f33421b29e293a7a2895b"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0-9_d8_g2/rep_002/original/proof.bin",
+          "proof_sha256": "29c5de25c6a925f09d1fbf9625c1f46ac153298adbb153c53bb366482156174a",
+          "prover_result_sha256": "d0d1242cbb2f7de39c7c3d8c5347e1bbb103dfeaf54861346529b2adbbc50b6b",
+          "statement_sha256": "81db58fe69f471ce0fa5fb9f18f16c8361f63bd2a453fabdedef741da90cd9a1",
+          "verifier_result_sha256": "1c6c9566ee23daf538a33a94d899070368f20ee2dcbdde2c506cdde1de0c9225"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 8,
+      "E": 33928,
+      "G": 2,
+      "N": 2923,
+      "component_ids": [
+        0,
+        9
+      ],
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "control": {
+        "commitment_time_ms": 29269.509907,
+        "proof_size_bytes": 27276.0,
+        "prove_time_ms": 173957.81444,
+        "verify_time_ms": 5176.872255
+      },
+      "dataset": "ppi",
+      "mechanism": "feature_folding",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 5.995878772596679,
+          "original_minus_control": -24387.905222,
+          "saving_percent": 83.32187761082898
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 5.700313479623825,
+          "original_minus_control": -22491.0,
+          "saving_percent": 82.45710514738232
+        },
+        "prove_time_ms": {
+          "improvement_factor": 6.647033350110357,
+          "original_minus_control": -147787.06949599998,
+          "saving_percent": 84.95569455833409
+        },
+        "verify_time_ms": {
+          "improvement_factor": 6.427048431110509,
+          "original_minus_control": -4371.390188,
+          "saving_percent": 84.44075829334908
+        }
+      },
+      "original": {
+        "commitment_time_ms": 4881.604685,
+        "proof_size_bytes": 4785.0,
+        "prove_time_ms": 26170.744944,
+        "verify_time_ms": 805.482067
+      },
+      "pair_input_commitment_sha256": "10cc7d6148307019a437f46dbbde907c5442c60d738a7d97a6c66033352d1e9c",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0-9_d8_g2/rep_003/control/proof.bin",
+          "proof_sha256": "928f96da5d9db74ec6fffca75487ab22694630d47d0d8b320323614405fec02e",
+          "prover_result_sha256": "3fcab3a625233687d2e493b36b029c6a83e95a49f54a3e31d50ddf9f6258aad8",
+          "statement_sha256": "b38735a2ac9b131cc0fabed3874a3daa3ae49fde1656b35251484b9190aa4242",
+          "verifier_result_sha256": "03383b4c3600bf4fb6bb210b53a37d58689327f8c58dc819da4d9cb09b39a413"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_ppi_components-0-9_d8_g2/rep_003/original/proof.bin",
+          "proof_sha256": "2185c656d04b5e026ba21a9dc44077e649ed2c8a930cbd0beac231cd1fd102bc",
+          "prover_result_sha256": "685b429c8607aebbcc7c6e92e1c4e2b8258656fbec0e8545a3500a1051e37f98",
+          "statement_sha256": "81db58fe69f471ce0fa5fb9f18f16c8361f63bd2a453fabdedef741da90cd9a1",
+          "verifier_result_sha256": "d6532b96eab7f404e33a30ca1e0cc5412c0afee5093181fa0bf96622973d5ccc"
+        }
+      },
+      "repetition": 3
+    },
+    {
+      "D": 8,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_cora_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 378.64051,
+        "proof_size_bytes": 10512.0,
+        "prove_time_ms": 733.06732,
+        "verify_time_ms": 69.023124
+      },
+      "dataset": "cora",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.82684048672168,
+          "original_minus_control": -171.375282,
+          "saving_percent": 45.26068327976846
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6350909939337377,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.84132420091324
+        },
+        "prove_time_ms": {
+          "improvement_factor": 2.0473289603125786,
+          "original_minus_control": -375.006972,
+          "saving_percent": 51.155870923287104
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.57465846320883,
+          "original_minus_control": -25.189412999999995,
+          "saving_percent": 36.49416534667425
+        }
+      },
+      "original": {
+        "commitment_time_ms": 207.265228,
+        "proof_size_bytes": 6429.0,
+        "prove_time_ms": 358.060348,
+        "verify_time_ms": 43.833711
+      },
+      "pair_input_commitment_sha256": "5b4049d706a7061af8a5e7ecb5f54e0494f69ecb25e0cd3762dbda55ea0d2734",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_cora_full_d8_g1/rep_001/control/proof.bin",
+          "proof_sha256": "9fd4ed49dfc5e6b83700596010ac5e1aeb219e606659f5d01bf3ffe6637f1c45",
+          "prover_result_sha256": "a5fa3f70b289b39a399e1529057758b1ab1cbb6ba01a9167ae7c64187493af84",
+          "statement_sha256": "e77f8e4d0928b86c0be4dd61f492963f5e7b25550da6ca1270b6aa9f1c39c349",
+          "verifier_result_sha256": "7b607b3d632646e5de245c112997ae29e0ed670f4439969eb18d9c00940a24be"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_cora_full_d8_g1/rep_001/original/proof.bin",
+          "proof_sha256": "c193e9acf1f5a26f6449616f12f9bb3a7d77e2efe75a61954d76ecf53f9a5024",
+          "prover_result_sha256": "62af865e666a618252755c68e6831aaff32d6730de642a45c16ac1b6b2b82889",
+          "statement_sha256": "1a4c3997d8bb8f68bd06a2cdaa6edc7d5984b95bb7eebb40521e8544ee2dbce2",
+          "verifier_result_sha256": "8270c0270e4c8626a7944d2bbd9c586adb9082b9ceb476788f4ee6b1eb2b749a"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 8,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_cora_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 328.747641,
+        "proof_size_bytes": 10512.0,
+        "prove_time_ms": 633.839226,
+        "verify_time_ms": 68.899851
+      },
+      "dataset": "cora",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.649365353021731,
+          "original_minus_control": -129.429982,
+          "saving_percent": 39.37061924042825
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6350909939337377,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.84132420091324
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.8773593930470478,
+          "original_minus_control": -296.21648400000004,
+          "saving_percent": 46.73369394780878
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.5081073201258015,
+          "original_minus_control": -23.213546,
+          "saving_percent": 33.69172162650976
+        }
+      },
+      "original": {
+        "commitment_time_ms": 199.317659,
+        "proof_size_bytes": 6429.0,
+        "prove_time_ms": 337.622742,
+        "verify_time_ms": 45.686305
+      },
+      "pair_input_commitment_sha256": "5b4049d706a7061af8a5e7ecb5f54e0494f69ecb25e0cd3762dbda55ea0d2734",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_cora_full_d8_g1/rep_002/control/proof.bin",
+          "proof_sha256": "49e9b655f921e8cf649feaaec12724c92586bacbe167de62144a130088897560",
+          "prover_result_sha256": "49b2301df27bed12ce9f0f4b0ac9145546b3ec687e7c955d55c1d6cc2849d1a5",
+          "statement_sha256": "e77f8e4d0928b86c0be4dd61f492963f5e7b25550da6ca1270b6aa9f1c39c349",
+          "verifier_result_sha256": "b9a7c19e5ba0d40712fb2d51c5e2fcfb4a6c865733b069c4c5476f26adf4f6eb"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_cora_full_d8_g1/rep_002/original/proof.bin",
+          "proof_sha256": "c1af4b018edd993630c9f4adfb07cb12ee5daf4ee3c792a9a7ecceb6f4bcfaeb",
+          "prover_result_sha256": "622e655e1fa1df74163f73b260ea6d10fb506fe466d0e1b74c02ad8fc25377a5",
+          "statement_sha256": "1a4c3997d8bb8f68bd06a2cdaa6edc7d5984b95bb7eebb40521e8544ee2dbce2",
+          "verifier_result_sha256": "773c46a35001b7286e3ddf798e04091443398ae278bda4088893324471e7c022"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 8,
+      "E": 13264,
+      "G": 1,
+      "N": 2708,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_cora_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 353.51577,
+        "proof_size_bytes": 10512.0,
+        "prove_time_ms": 664.446277,
+        "verify_time_ms": 67.612717
+      },
+      "dataset": "cora",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.6556160823146648,
+          "original_minus_control": -139.99056099999999,
+          "saving_percent": 39.59952366481416
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6350909939337377,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.84132420091324
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.9489849445033949,
+          "original_minus_control": -323.527134,
+          "saving_percent": 48.691240390530474
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.5407337125286447,
+          "original_minus_control": -23.729263000000003,
+          "saving_percent": 35.09585778071897
+        }
+      },
+      "original": {
+        "commitment_time_ms": 213.525209,
+        "proof_size_bytes": 6429.0,
+        "prove_time_ms": 340.919143,
+        "verify_time_ms": 43.883454
+      },
+      "pair_input_commitment_sha256": "5b4049d706a7061af8a5e7ecb5f54e0494f69ecb25e0cd3762dbda55ea0d2734",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_cora_full_d8_g1/rep_003/control/proof.bin",
+          "proof_sha256": "b02c75ba781a6de9139669b8d9e07ef41cbcb5698932256e6931402c3cf8d4be",
+          "prover_result_sha256": "5dca8fceefe9fd19f429a1559d1297d91fd0336458ad63b88050b0552ebade03",
+          "statement_sha256": "e77f8e4d0928b86c0be4dd61f492963f5e7b25550da6ca1270b6aa9f1c39c349",
+          "verifier_result_sha256": "633dfea41720a544fb5dbbc7cabbde842251776b61e7a6087d33eaf6b9c1dc85"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_cora_full_d8_g1/rep_003/original/proof.bin",
+          "proof_sha256": "3dee1f9b88117d47b611ea89580f77aee39c1e3057ac7325b20f55d31e662e44",
+          "prover_result_sha256": "ce23323922e14b493b40ec054cec679bfeb3a993466cb9285b6279ce9ce5f346",
+          "statement_sha256": "1a4c3997d8bb8f68bd06a2cdaa6edc7d5984b95bb7eebb40521e8544ee2dbce2",
+          "verifier_result_sha256": "9387de96dd9058eaa16804d5c665c77d7b551990583507b5b8b5cb6e5b6a8f1e"
+        }
+      },
+      "repetition": 3
+    },
+    {
+      "D": 8,
+      "E": 12431,
+      "G": 1,
+      "N": 3327,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_citeseer_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 356.003946,
+        "proof_size_bytes": 10516.0,
+        "prove_time_ms": 679.084561,
+        "verify_time_ms": 63.660255
+      },
+      "dataset": "citeseer",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.7238593655284873,
+          "original_minus_control": -149.48829099999998,
+          "saving_percent": 41.99062754208909
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6346960982434322,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.82655001901864
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.8852854406900217,
+          "original_minus_control": -318.882044,
+          "saving_percent": 46.95763419071458
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.4345954206978162,
+          "original_minus_control": -19.285196999999997,
+          "saving_percent": 30.29393614587311
+        }
+      },
+      "original": {
+        "commitment_time_ms": 206.515655,
+        "proof_size_bytes": 6433.0,
+        "prove_time_ms": 360.202517,
+        "verify_time_ms": 44.375058
+      },
+      "pair_input_commitment_sha256": "e840f9feb971efccfb8c020021d1b41178d458372d37b4fb435121bb0074e438",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_001/control/proof.bin",
+          "proof_sha256": "f127d68126c3025b97051cd0d41274e745903b0164f4b1e7d082c8483c48974b",
+          "prover_result_sha256": "82c1ef41b59ed5fea36b47f291cc6f68711bf29428fa1e1b95146be1c86a2926",
+          "statement_sha256": "932c7becfa1d7878afe5a01066717c7294f8c1a68aac6249cb58f575ebf3d214",
+          "verifier_result_sha256": "89342e04dff3ec3078dd5448cf21261903fe44c96932830a70fa21d83dc282b4"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_001/original/proof.bin",
+          "proof_sha256": "64bb739ef9c237d2d0fad113b3ec8f69c1eab16dc67d4e8ee1ce273125b1f2e5",
+          "prover_result_sha256": "5bb733242667e81690298e41e09a98ad11d8754c4cc6487a4354b7114919cdbd",
+          "statement_sha256": "80a734b82e601709f3fc61d44dc5bf26291380560a85086cd7a394b4f2d38b8c",
+          "verifier_result_sha256": "acc9f04a4d2b81ee39ab7d2e694f103a24f6563a62cb3a949bc52caf1035ec97"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 8,
+      "E": 12431,
+      "G": 1,
+      "N": 3327,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_citeseer_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 326.190207,
+        "proof_size_bytes": 10516.0,
+        "prove_time_ms": 631.788226,
+        "verify_time_ms": 69.200428
+      },
+      "dataset": "citeseer",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.663744342735993,
+          "original_minus_control": -130.13231599999997,
+          "saving_percent": 39.894611550983804
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6346960982434322,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.82655001901864
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.835918003700516,
+          "original_minus_control": -287.661623,
+          "saving_percent": 45.53133647666299
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.5505462516011477,
+          "original_minus_control": -24.570719000000004,
+          "saving_percent": 35.50659975686856
+        }
+      },
+      "original": {
+        "commitment_time_ms": 196.057891,
+        "proof_size_bytes": 6433.0,
+        "prove_time_ms": 344.126603,
+        "verify_time_ms": 44.629709
+      },
+      "pair_input_commitment_sha256": "e840f9feb971efccfb8c020021d1b41178d458372d37b4fb435121bb0074e438",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_002/control/proof.bin",
+          "proof_sha256": "9393a4b6a4c98390d65e50ada203cea8e482ef6b1ad3ec19115c149b7f5a4246",
+          "prover_result_sha256": "9909f9593dda2a9dc6ba84ecaf62e4086948422ec429b19a582ebe65736e7f97",
+          "statement_sha256": "932c7becfa1d7878afe5a01066717c7294f8c1a68aac6249cb58f575ebf3d214",
+          "verifier_result_sha256": "10c7f94957f9fcbe760a420eb26a3051ee28113f2acc81f74f5013872054e086"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_002/original/proof.bin",
+          "proof_sha256": "55c6ec00ba1beb5a97476cbd0704df7b2df4b5b23989dab7fa7146c591f6a0e1",
+          "prover_result_sha256": "c3761076f519710fcc85519f21dcfa971980f6a35aa4374059040d9af40500f2",
+          "statement_sha256": "80a734b82e601709f3fc61d44dc5bf26291380560a85086cd7a394b4f2d38b8c",
+          "verifier_result_sha256": "474bf3271d3dc1e34e4595c08d71b2f446c3745b9be7f4313950275615b26f86"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 8,
+      "E": 12431,
+      "G": 1,
+      "N": 3327,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_citeseer_full_d8_g1",
+      "control": {
+        "commitment_time_ms": 365.776247,
+        "proof_size_bytes": 10516.0,
+        "prove_time_ms": 650.63753,
+        "verify_time_ms": 68.89621
+      },
+      "dataset": "citeseer",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.5641091240247351,
+          "original_minus_control": -131.920283,
+          "saving_percent": 36.065841913458094
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6346960982434322,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.82655001901864
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.8537300627033466,
+          "original_minus_control": -299.64924799999994,
+          "saving_percent": 46.05471313651396
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.5536982815805702,
+          "original_minus_control": -24.552844999999998,
+          "saving_percent": 35.63743927278438
+        }
+      },
+      "original": {
+        "commitment_time_ms": 233.855964,
+        "proof_size_bytes": 6433.0,
+        "prove_time_ms": 350.988282,
+        "verify_time_ms": 44.343365
+      },
+      "pair_input_commitment_sha256": "e840f9feb971efccfb8c020021d1b41178d458372d37b4fb435121bb0074e438",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_003/control/proof.bin",
+          "proof_sha256": "bb0c51f4c8e4f0ca11242b0eb4b4b7bf8a58ba2b3e8ef2011ae4a95274de6317",
+          "prover_result_sha256": "1b97cee9ba1373d6584f30305fed300eb192a2733ab8f26f5c41e0190648de8d",
+          "statement_sha256": "932c7becfa1d7878afe5a01066717c7294f8c1a68aac6249cb58f575ebf3d214",
+          "verifier_result_sha256": "8ef4b2c47edff2f70cb723140431ea489de048d696535243ad0ce5f9d5db8d4f"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_003/original/proof.bin",
+          "proof_sha256": "3d83f05eff103fc9effb5431ef91fefdae4154ffbcdbdf5976d1a5041fc999b0",
+          "prover_result_sha256": "bf4e3f0bf39b7d39099da7a057d6aae43299f049c8572e2aa78442aab81911ab",
+          "statement_sha256": "80a734b82e601709f3fc61d44dc5bf26291380560a85086cd7a394b4f2d38b8c",
+          "verifier_result_sha256": "851d93a1b8606541bff905aa272dbacb0026dbe11c499e19bb914bd12a926c6b"
+        }
+      },
+      "repetition": 3
+    },
+    {
+      "D": 8,
+      "E": 17699,
+      "G": 1,
+      "N": 1546,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_ppi_components-0_d8_g1",
+      "control": {
+        "commitment_time_ms": 12931.255919,
+        "proof_size_bytes": 10511.0,
+        "prove_time_ms": 87163.750672,
+        "verify_time_ms": 2912.074825
+      },
+      "dataset": "ppi",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.7903683863531503,
+          "original_minus_control": -5708.577045999999,
+          "saving_percent": 44.14557318916209
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6351897946484133,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.845019503377415
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.8924267913657369,
+          "original_minus_control": -41104.504908999996,
+          "saving_percent": 47.15779735509268
+        },
+        "verify_time_ms": {
+          "improvement_factor": 2.071962446395157,
+          "original_minus_control": -1506.6078340000001,
+          "saving_percent": 51.73657699540739
+        }
+      },
+      "original": {
+        "commitment_time_ms": 7222.678873,
+        "proof_size_bytes": 6428.0,
+        "prove_time_ms": 46059.245763,
+        "verify_time_ms": 1405.466991
+      },
+      "pair_input_commitment_sha256": "9af2aa3fb4b0e3c6bf46fb04f440375451b43468797f53c81a777fe8893851fa",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0_d8_g1/rep_001/control/proof.bin",
+          "proof_sha256": "bb277376316293d47ec05653794f40e6584fbfb02ef84aa6025b42875e4dab22",
+          "prover_result_sha256": "daff34b09a8bf6cbe293ac032b7b34e4e0c7ff39b556b52199fee01a00f4bf20",
+          "statement_sha256": "58ddc469c426f99fcbb29e1db3223242ab31ef245caa844216784fb510e18030",
+          "verifier_result_sha256": "1d2711a65272ff676f46021061cd8ada3c9f692223a00dac857a284d901be846"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0_d8_g1/rep_001/original/proof.bin",
+          "proof_sha256": "4677a41292ab1502e12ff288642ef13126452c23dbc9f41791aebe79da6fdef0",
+          "prover_result_sha256": "451699dbf7b83a4325ba71003ecb7fd09ccb836b8e34c5401318a064dc589f28",
+          "statement_sha256": "3183800425dfa2ea3f48ad39be83e7082e78e6929edf2a3d7981573ec01b40e1",
+          "verifier_result_sha256": "a631ae0d743567da31926a09063ccc45fb0ad05f157c3c8cd9d22f24dfe30af5"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 8,
+      "E": 17699,
+      "G": 1,
+      "N": 1546,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_ppi_components-0_d8_g1",
+      "control": {
+        "commitment_time_ms": 11798.255157,
+        "proof_size_bytes": 10511.0,
+        "prove_time_ms": 82738.525399,
+        "verify_time_ms": 2695.186658
+      },
+      "dataset": "ppi",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.7731160936636023,
+          "original_minus_control": -5144.288618,
+          "saving_percent": 43.60211361379019
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6351897946484133,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.845019503377415
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.877894765650862,
+          "original_minus_control": -38679.33373800001,
+          "saving_percent": 46.74887974069151
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.9363678623889369,
+          "original_minus_control": -1303.309262,
+          "saving_percent": 48.356920220402785
+        }
+      },
+      "original": {
+        "commitment_time_ms": 6653.966539,
+        "proof_size_bytes": 6428.0,
+        "prove_time_ms": 44059.191661,
+        "verify_time_ms": 1391.877396
+      },
+      "pair_input_commitment_sha256": "9af2aa3fb4b0e3c6bf46fb04f440375451b43468797f53c81a777fe8893851fa",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0_d8_g1/rep_002/control/proof.bin",
+          "proof_sha256": "124a2f299a33db6a484baa20e150ecc4da27a12b1ada7dc95e574349ebf1b6bb",
+          "prover_result_sha256": "5533d3b6482a402e668ff65284dc5df55a8887992c6586828fa1e7dcb4c7cd35",
+          "statement_sha256": "58ddc469c426f99fcbb29e1db3223242ab31ef245caa844216784fb510e18030",
+          "verifier_result_sha256": "e9aae767b5aa4b0e826b0065cfb211c0c2a71fe659e2be7a93afb5e800eeef64"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0_d8_g1/rep_002/original/proof.bin",
+          "proof_sha256": "c6eb902df741232938bbb44a72eb9db3d837a870e3bb9bd43f1fce4807a94c1a",
+          "prover_result_sha256": "c65477f0a89ecae85e59c6aceb609ef2221c113f75fcde9ba1aaf4900d114ab7",
+          "statement_sha256": "3183800425dfa2ea3f48ad39be83e7082e78e6929edf2a3d7981573ec01b40e1",
+          "verifier_result_sha256": "113a8c14cf35efa68c548c5b7e355fbf25d52e66ede6490b7c78ae451417875b"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 8,
+      "E": 17699,
+      "G": 1,
+      "N": 1546,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_ppi_components-0_d8_g1",
+      "control": {
+        "commitment_time_ms": 13445.504761,
+        "proof_size_bytes": 10511.0,
+        "prove_time_ms": 88622.709271,
+        "verify_time_ms": 3042.301043
+      },
+      "dataset": "ppi",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.8093743914150597,
+          "original_minus_control": -6014.480632,
+          "saving_percent": 44.73227847455447
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6351897946484133,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.845019503377415
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.8668796676124988,
+          "original_minus_control": -41151.674684,
+          "saving_percent": 46.43468364091872
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.999756847187972,
+          "original_minus_control": -1520.965563,
+          "saving_percent": 49.99392044056831
+        }
+      },
+      "original": {
+        "commitment_time_ms": 7431.024129,
+        "proof_size_bytes": 6428.0,
+        "prove_time_ms": 47471.034587,
+        "verify_time_ms": 1521.33548
+      },
+      "pair_input_commitment_sha256": "9af2aa3fb4b0e3c6bf46fb04f440375451b43468797f53c81a777fe8893851fa",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0_d8_g1/rep_003/control/proof.bin",
+          "proof_sha256": "bdfbff8ef8dd897e29beec7b8fd4d63fa76adb877ed0c6ed3491dcd58e7e4ca3",
+          "prover_result_sha256": "f63e7a219dc6cc2d334294b3337c10f25aaed31fe789bbbf98687f5d65f3972a",
+          "statement_sha256": "58ddc469c426f99fcbb29e1db3223242ab31ef245caa844216784fb510e18030",
+          "verifier_result_sha256": "394bd027ec145d642cea5e8eb74f0d3119879992db19d3196670b65d1d3ede87"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0_d8_g1/rep_003/original/proof.bin",
+          "proof_sha256": "e52aba62848f16789d411e890c468e667c94c67a17a3e746ca7c996efd8387d1",
+          "prover_result_sha256": "4c34d8fbbca5529dc180614e88dd8eed7271ca938b39e6a6b4c557a0156add7d",
+          "statement_sha256": "3183800425dfa2ea3f48ad39be83e7082e78e6929edf2a3d7981573ec01b40e1",
+          "verifier_result_sha256": "1433572e6fdb0c924166bcf3920251523eb56ae87d93abc05a6ba7b1a238f041"
+        }
+      },
+      "repetition": 3
+    },
+    {
+      "D": 8,
+      "E": 33928,
+      "G": 2,
+      "N": 2923,
+      "component_ids": [
+        0,
+        9
+      ],
+      "config_id": "sn_ppi_components-0-9_d8_g2",
+      "control": {
+        "commitment_time_ms": 13317.038148,
+        "proof_size_bytes": 10511.0,
+        "prove_time_ms": 87793.655367,
+        "verify_time_ms": 2730.742074
+      },
+      "dataset": "ppi",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.7744295601756594,
+          "original_minus_control": -5812.069539,
+          "saving_percent": 43.64386040204351
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6351897946484133,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.845019503377415
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.8872024018649989,
+          "original_minus_control": -41273.125676999996,
+          "saving_percent": 47.01151296693109
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.879077286733338,
+          "original_minus_control": -1277.5064389999998,
+          "saving_percent": 46.78239117357225
+        }
+      },
+      "original": {
+        "commitment_time_ms": 7504.968609,
+        "proof_size_bytes": 6428.0,
+        "prove_time_ms": 46520.52969,
+        "verify_time_ms": 1453.235635
+      },
+      "pair_input_commitment_sha256": "0cfd9225874310bcce0ca8341cefe4892dded3f12348a1827a0af3ec04cca8b4",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0-9_d8_g2/rep_001/control/proof.bin",
+          "proof_sha256": "283886b5ce670580a7da227f3dee6a8f25b8e28005a5f962680c678eb40b71ec",
+          "prover_result_sha256": "0faf32bf007093ba046297142d9e6bc1a588034f6e8b379e60f24b860838f761",
+          "statement_sha256": "e2e99c61d8d8b456de1cac2c0a1f5976c6a3280e764b6dac8339a524e05362aa",
+          "verifier_result_sha256": "df44e92bb2e689f6a8b4120b23b23456d13f5d6cbdbae719889334659dbb4fe1"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0-9_d8_g2/rep_001/original/proof.bin",
+          "proof_sha256": "2e8d0a5f428610ff46ee12bff8c2986371ac8c415267deb9a47f22eb0963953a",
+          "prover_result_sha256": "8a175ba6ce99e7f547ad4fe3a6fc5d6ea07da83a1c08492a914c8ed9ae177a9a",
+          "statement_sha256": "412f67634c7025092f8fb0efaf9854382a0be7512aa3664015725d7edb9ec0a5",
+          "verifier_result_sha256": "41fe18f2ba89be0860aa057adecaf9b07c4d68626aa79b3754d174c5299bf953"
+        }
+      },
+      "repetition": 1
+    },
+    {
+      "D": 8,
+      "E": 33928,
+      "G": 2,
+      "N": 2923,
+      "component_ids": [
+        0,
+        9
+      ],
+      "config_id": "sn_ppi_components-0-9_d8_g2",
+      "control": {
+        "commitment_time_ms": 11907.96458,
+        "proof_size_bytes": 10511.0,
+        "prove_time_ms": 83891.137057,
+        "verify_time_ms": 2727.671762
+      },
+      "dataset": "ppi",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.767810527481514,
+          "original_minus_control": -5171.968615,
+          "saving_percent": 43.432851855190854
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6351897946484133,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.845019503377415
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.8724455312940884,
+          "original_minus_control": -39088.158463,
+          "saving_percent": 46.59390709705302
+        },
+        "verify_time_ms": {
+          "improvement_factor": 1.9331460844711132,
+          "original_minus_control": -1316.670398,
+          "saving_percent": 48.27085195304375
+        }
+      },
+      "original": {
+        "commitment_time_ms": 6735.995965,
+        "proof_size_bytes": 6428.0,
+        "prove_time_ms": 44802.978594,
+        "verify_time_ms": 1411.001364
+      },
+      "pair_input_commitment_sha256": "0cfd9225874310bcce0ca8341cefe4892dded3f12348a1827a0af3ec04cca8b4",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0-9_d8_g2/rep_002/control/proof.bin",
+          "proof_sha256": "acda15e553d5f0f879d47ed786f339ae8a42840fee21d0413c48dfcfad2d0559",
+          "prover_result_sha256": "9497658157ffa4fc7484c2b0994bc688457a45e85ff177390c29ce91a1afb696",
+          "statement_sha256": "e2e99c61d8d8b456de1cac2c0a1f5976c6a3280e764b6dac8339a524e05362aa",
+          "verifier_result_sha256": "00a5494969445e939392301b1a4a0ce97c3e8d80dedb47104370dc87ff195abf"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0-9_d8_g2/rep_002/original/proof.bin",
+          "proof_sha256": "72b77c11e23dc8bc1c77913ca986b750e73e49b42cddf7a9d19dbde6b058cbc9",
+          "prover_result_sha256": "6e6bd6804efd7a298b794cde779fc28dfbc0e4421fa84ea102aa0e320ef32f4f",
+          "statement_sha256": "412f67634c7025092f8fb0efaf9854382a0be7512aa3664015725d7edb9ec0a5",
+          "verifier_result_sha256": "8dce44da21f6313cc1c63fc75bfc73928dd7ecaf5a8330a2082184f0e0a4b5b7"
+        }
+      },
+      "repetition": 2
+    },
+    {
+      "D": 8,
+      "E": 33928,
+      "G": 2,
+      "N": 2923,
+      "component_ids": [
+        0,
+        9
+      ],
+      "config_id": "sn_ppi_components-0-9_d8_g2",
+      "control": {
+        "commitment_time_ms": 13136.222422,
+        "proof_size_bytes": 10511.0,
+        "prove_time_ms": 89367.655795,
+        "verify_time_ms": 3040.213972
+      },
+      "dataset": "ppi",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "improvement_factor": 1.7784057398958992,
+          "original_minus_control": -5749.7064390000005,
+          "saving_percent": 43.769862098030785
+        },
+        "proof_size_bytes": {
+          "improvement_factor": 1.6351897946484133,
+          "original_minus_control": -4083.0,
+          "saving_percent": 38.845019503377415
+        },
+        "prove_time_ms": {
+          "improvement_factor": 1.908341156382767,
+          "original_minus_control": -42537.635127,
+          "saving_percent": 47.59846809071154
+        },
+        "verify_time_ms": {
+          "improvement_factor": 2.0872393823503823,
+          "original_minus_control": -1583.6421970000001,
+          "saving_percent": 52.089826952482674
+        }
+      },
+      "original": {
+        "commitment_time_ms": 7386.515983,
+        "proof_size_bytes": 6428.0,
+        "prove_time_ms": 46830.020668,
+        "verify_time_ms": 1456.571775
+      },
+      "pair_input_commitment_sha256": "0cfd9225874310bcce0ca8341cefe4892dded3f12348a1827a0af3ec04cca8b4",
+      "proofs": {
+        "control": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0-9_d8_g2/rep_003/control/proof.bin",
+          "proof_sha256": "37c003df978c3fa486701209697e88f1645dec2d26fdb7878df247970efb3783",
+          "prover_result_sha256": "07e3e68b193bb83d54b7b16ab844f785a05ec920ed04cea86ffa7edc14f48f32",
+          "statement_sha256": "e2e99c61d8d8b456de1cac2c0a1f5976c6a3280e764b6dac8339a524e05362aa",
+          "verifier_result_sha256": "882f2788b05016bc3f88e9c06c9bc6632fe41022c1853fae0fcc6821010f4587"
+        },
+        "original": {
+          "proof_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0-9_d8_g2/rep_003/original/proof.bin",
+          "proof_sha256": "53b59bc1ab7def536163acf385aa29d422a68a1caaed2399e77e842e6699286c",
+          "prover_result_sha256": "74b06e98ea41fdf12ca249862121b9c5f78882372cb3ae0e0ab35ec52b1ca237",
+          "statement_sha256": "412f67634c7025092f8fb0efaf9854382a0be7512aa3664015725d7edb9ec0a5",
+          "verifier_result_sha256": "402003ef1ddffc6d964c9c707403d9d01d881a46b589ad06c7e1e32a437b4465"
+        }
+      },
+      "repetition": 3
+    }
+  ],
+  "session_id": "mechanism_20261010T063825Z_9fe0a93c236b",
+  "session_root": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b",
+  "verification_policy": {
+    "full_reverification_archive": null,
+    "initial_cells": 66,
+    "initial_verify_ok": 66,
+    "limitations": [
+      "No claim is made that all 66 proofs passed a second independent verification.",
+      "Three repetitions are descriptive; no statistical significance is claimed.",
+      "The measurements are mechanism-level proof costs, not end-to-end GAT proof performance."
+    ],
+    "ordinary_audit": {
+      "reverified_independently": false,
+      "status": "PASS",
+      "verified_cells": 66
+    },
+    "post_session_full_reverification": "CANCELLED_BY_EXPLICIT_USER_INSTRUCTION",
+    "post_session_reverification_expected": 66,
+    "post_session_reverification_verify_ok": 13,
+    "publication_integrity_pass": false,
+    "validation_scope": "initial-verification-receipt-and-hash-audit-only"
+  }
+}

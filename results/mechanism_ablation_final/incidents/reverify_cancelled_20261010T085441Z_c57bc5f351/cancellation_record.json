@@ -1,0 +1,235 @@
+{
+  "created_utc": "2026-10-10T09:04:22.859438Z",
+  "evidence_files": [
+    {
+      "path": "audit.json",
+      "sha256": "ac49171a1375e3d0e997fa056c3028c146e7b5df60afa01ff5fb5d2fb11da579",
+      "size_bytes": 1043,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/audit.json"
+    },
+    {
+      "path": "audit_reverify.log",
+      "sha256": "a8129d88ae8004295fa3f6b209dffbc5175607c87aa277542f0bfdbf351db352",
+      "size_bytes": 498,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/audit_reverify.log"
+    },
+    {
+      "path": "audit_reverify.time.json",
+      "sha256": "177cdae2fe7615f1613a942b91de5e62067c3275f2faa9043ba4879a5c5f8db5",
+      "size_bytes": 452,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/audit_reverify.time.json"
+    },
+    {
+      "path": "audit_reverify.time.json.sha256",
+      "sha256": "42ffccb28db535af013ee2dded72d40cde4afbf12a995ae95b05ead0dada7d6e",
+      "size_bytes": 91,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/audit_reverify.time.json.sha256"
+    },
+    {
+      "path": "outer_command.stdout.log",
+      "sha256": "b5da655d32f25ebf68ed28ade015d3aec8bf6646672d71d495bae5a8d4187a28",
+      "size_bytes": 109,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/audit_reverify_command_20261010T085251Z_retry.stdout.log"
+    },
+    {
+      "path": "outer_command.wall_seconds",
+      "sha256": "e1982beaf21fc35088c7e2b790385c97aaa2d47f3f7a53b58084ad0123b5c9c0",
+      "size_bytes": 35,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/audit_reverify_command_20261010T085251Z_retry.wall_seconds"
+    },
+    {
+      "path": "outer_command.exitcode",
+      "sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+      "size_bytes": 2,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/audit_reverify_command_20261010T085251Z_retry.exitcode"
+    },
+    {
+      "path": "cells/verify_001.json",
+      "sha256": "6cdbc43f34f16b58f221441b0d23b05e50f770e6080685c05b2641f60f12a1f0",
+      "size_bytes": 10507,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_001.json"
+    },
+    {
+      "path": "cells/verify_001.log",
+      "sha256": "96335a83f95af90a71499fcc42bdbd1620bcb8702f8709f3010a40537f2615ea",
+      "size_bytes": 1010,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_001.log"
+    },
+    {
+      "path": "cells/verify_002.json",
+      "sha256": "eb39d03340d92c1330ff70b9b97acaa456a429fba8ce49ffb762c886d2f86e88",
+      "size_bytes": 10278,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_002.json"
+    },
+    {
+      "path": "cells/verify_002.log",
+      "sha256": "a12fb83f07e0735960caa6c39d3da9d3fef2684abc9602abdf44d68bf2c8cc2f",
+      "size_bytes": 1008,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_002.log"
+    },
+    {
+      "path": "cells/verify_003.json",
+      "sha256": "2a294b1cbb42ab6ffcf5358b8a536fd7800f3d820cf9620d642cb9ec2b9d5337",
+      "size_bytes": 16956,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_003.json"
+    },
+    {
+      "path": "cells/verify_003.log",
+      "sha256": "b769eaaecccec7f9a0bb07aefcb31b721a8eb3d83fc72800174ffeb31f0eadd9",
+      "size_bytes": 1008,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_003.log"
+    },
+    {
+      "path": "cells/verify_004.json",
+      "sha256": "ccb5f5b0a8c52dd513a34d26fe731df348cc717c5acf56e503a3ec7ae44711fa",
+      "size_bytes": 10739,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_004.json"
+    },
+    {
+      "path": "cells/verify_004.log",
+      "sha256": "e7998212540ab718ab403f9aae07a1496438884db5e4c0688c4184e2e4137396",
+      "size_bytes": 1010,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_004.log"
+    },
+    {
+      "path": "cells/verify_005.json",
+      "sha256": "642f18afcd3b72fdb921e83dccdd431bd8d1b763f2dc44f8bbf4e4662c5de443",
+      "size_bytes": 11203,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_005.json"
+    },
+    {
+      "path": "cells/verify_005.log",
+      "sha256": "f4027a39daa3658fc74b4252c81eb93807a9cf842d08d61786f3e915d659fb2a",
+      "size_bytes": 1010,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_005.log"
+    },
+    {
+      "path": "cells/verify_006.json",
+      "sha256": "3d63e971fa43ad108cbaf2a03ee7a037de1de60dd3d5c0eefdb6d335393b65db",
+      "size_bytes": 30306,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_006.json"
+    },
+    {
+      "path": "cells/verify_006.log",
+      "sha256": "9792c525aa1797ba7ec2b3990570cb4b777260a55652c9c5c9aa964de2545997",
+      "size_bytes": 1008,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_006.log"
+    },
+    {
+      "path": "cells/verify_007.json",
+      "sha256": "ce098ecea9079ed36a4cd056c0e922b589ff89d48357aee7b55d66c1f49041aa",
+      "size_bytes": 57004,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_007.json"
+    },
+    {
+      "path": "cells/verify_007.log",
+      "sha256": "ec9b0598cc8162a0a2d2264837547ca87da47c54249237235e4a01bc438ef6e5",
+      "size_bytes": 1008,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_007.log"
+    },
+    {
+      "path": "cells/verify_008.json",
+      "sha256": "a4158e33221d1f37229af2afb693154c705e7dac34b98004bdb7970e8630ec15",
+      "size_bytes": 12131,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_008.json"
+    },
+    {
+      "path": "cells/verify_008.log",
+      "sha256": "18b9c1e933e29420cfa4804844d96de9ec05c4c283efcc2c9bdc8c5b0339f54f",
+      "size_bytes": 1010,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_008.log"
+    },
+    {
+      "path": "cells/verify_009.json",
+      "sha256": "7a521003970b793c45dd9a3ad5db8172fa8c95df3f29f4b172d8bba92b5f2666",
+      "size_bytes": 12141,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_009.json"
+    },
+    {
+      "path": "cells/verify_009.log",
+      "sha256": "2cbe2df3e6c0a94e932147735bbb666d779bad0f0bd4cecdcdc37fedf04b233c",
+      "size_bytes": 1022,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_009.log"
+    },
+    {
+      "path": "cells/verify_010.json",
+      "sha256": "141ec564c4f79b71c8f38a2ae0188a84a0921294a042e3fa49fe2d6cb2f19b08",
+      "size_bytes": 57015,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_010.json"
+    },
+    {
+      "path": "cells/verify_010.log",
+      "sha256": "ff7502b6feea55d0661605faad51ec4702042b1eca0ba11603092a3b758396e9",
+      "size_bytes": 1020,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_010.log"
+    },
+    {
+      "path": "cells/verify_011.json",
+      "sha256": "b71ea084f571946034b1ee3dce9e1ee3e480fef580e599d344eb29dbf7c657f6",
+      "size_bytes": 57375,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_011.json"
+    },
+    {
+      "path": "cells/verify_011.log",
+      "sha256": "25abfa40498f1b0f98549bcc3ff1293aba37118a32dac64549926f1ecc01c208",
+      "size_bytes": 1023,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_011.log"
+    },
+    {
+      "path": "cells/verify_012.json",
+      "sha256": "d3194ec8b436675f6239636b5f018033220f380a1678066e98f9be08f3e324a5",
+      "size_bytes": 12207,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_012.json"
+    },
+    {
+      "path": "cells/verify_012.log",
+      "sha256": "48e4b3f6de1f8ef552b5cd5dd01f3518c3ad3eb9de2c966c8a0092d45af3e432",
+      "size_bytes": 1025,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_012.log"
+    },
+    {
+      "path": "cells/verify_013.json",
+      "sha256": "433e9fabaf10bbd8bab297d243fa01857b9b40ca058449c7b09c33ed55b41332",
+      "size_bytes": 12207,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_013.json"
+    },
+    {
+      "path": "cells/verify_013.log",
+      "sha256": "2a899c4f43bdd5755e69cf32755bb74284400eac6628dc5525cb7ff58ebee6a7",
+      "size_bytes": 1029,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_013.log"
+    },
+    {
+      "path": "cells/verify_014.log",
+      "sha256": "e27a07ddcca134b309ae906569f3a64ca09fe19e556aa709945adc7832053210",
+      "size_bytes": 834,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/independent_reaudit/attempts/20261010T085441Z_c57bc5f351/cells/verify_014.log"
+    }
+  ],
+  "formal_initial_verification": {
+    "cells": 66,
+    "initial_verify_ok": 66,
+    "session_status": "complete"
+  },
+  "format": "zkgat_mechanism_reverification_cancellation_v1",
+  "post_session_independent_reverification": {
+    "attempt_id": "20261010T085441Z_c57bc5f351",
+    "audit_command_exit_code": 2,
+    "cancelled_at_cell": {
+      "config_id": "ff_ppi_components-0-9_d8_g2",
+      "repetition": 1,
+      "variant": "control"
+    },
+    "cancelled_verifier_return_code": -15,
+    "completed_verify_ok": 13,
+    "end_utc": "2026-10-10T09:01:09Z",
+    "expected_cells": 66,
+    "failed_proofs": 0,
+    "full_reverify_archive_committed": false,
+    "interpretation": "The audit failure is caused by explicit cancellation of the still-running verifier; it is not evidence that the underlying proof is invalid. No full re-verification PASS is claimed.",
+    "start_utc": "2026-10-10T08:54:41Z",
+    "wall_time_seconds": 387.5961367790005
+  },
+  "session_id": "mechanism_20261010T063825Z_9fe0a93c236b",
+  "status": "CANCELLED_BY_EXPLICIT_USER_INSTRUCTION"
+}

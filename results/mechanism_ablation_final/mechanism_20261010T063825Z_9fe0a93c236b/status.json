@@ -1,0 +1,13 @@
+{
+  "cell_count": 66,
+  "complete_pairs": 33,
+  "expected_cell_count": 66,
+  "expected_pair_count": 33,
+  "failure_reason": null,
+  "gpu_sharing_mode": "authorized_shared_external_compute",
+  "repetitions": 3,
+  "session_id": "mechanism_20261010T063825Z_9fe0a93c236b",
+  "session_status": "complete",
+  "updated_utc": "2026-10-10T08:48:32Z",
+  "verified_cells": 66
+}

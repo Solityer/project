@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/pzh/project/scripts/run_mechanism_ablation.py",
+    "run",
+    "--device",
+    "0",
+    "--output-root",
+    "/home/pzh/project/results/mechanism_ablation_final",
+    "--repetitions",
+    "3",
+    "--timeout-seconds",
+    "0",
+    "--prepare-timeout-seconds",
+    "0",
+    "--allow-shared-gpu",
+    "--binary",
+    "/home/pzh/project/build_cuda/gatzk_mechanism"
+  ],
+  "created_utc": "2026-10-10T06:38:25Z",
+  "format": "zkgat_mechanism_detached_launcher_v1",
+  "log_path": "/home/pzh/project/results/mechanism_ablation_final/launchers/cuda_20261010T063825Z_289d2209cd/runner.log",
+  "pid": 972159,
+  "process_group": 972159,
+  "runner_output_root": "/home/pzh/project/results/mechanism_ablation_final"
+}

@@ -1,0 +1,9 @@
+stage=prepare-real
+start_utc=2026-10-10T06:38:42Z
+command=/home/pzh/project/build_cuda/gatzk_mechanism prepare-real --config /home/pzh/project/configs/ppi_secure.cfg --components 0,9 --real-input-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/ppi_components_0_9/real_input.bin --metadata-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/ppi_components_0_9/metadata.json
+REAL_MECHANISM_INPUT_WRITTEN nodes=2923 edges=33928 graphs=2 bundle_sha256=7d9e54854960deb75a02c07db3fcad2e67ae5ece063403c220ba3dcc684f7fd4 metadata_sha256=fa5642335aae93672e7e20c8da59e6f4244c7e665bdf307968b9a5916aa418ab
+end_utc=2026-10-10T06:38:43Z
+process_pid=972579
+return_code=0
+timed_out=false
+wall_time_seconds=1.031973

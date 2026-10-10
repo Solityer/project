@@ -1,0 +1,25 @@
+{
+  "attempt_timestamp_utc": "2026-10-10T08:52:51Z",
+  "command": "nohup /usr/bin/time -p -o <unique_outer_wall_file> python3 scripts/run_mechanism_ablation.py audit <official_session> --reverify > <unique_outer_stdout_log> 2>&1 < /dev/null",
+  "files_before_cleanup": {
+    "pid_file": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/audit_reverify_command_20261010T085251Z.pid",
+      "sha256": "6a8105d75f0ad30bf52deeabe7c833fa1c80d79757cc4b8ae9397f80ee160f96",
+      "size_bytes": 8
+    },
+    "stdout_log": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/audit_reverify_command_20261010T085251Z.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    "wall_seconds_file": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/audit_reverify_command_20261010T085251Z.wall_seconds",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    }
+  },
+  "format": "zkgat_mechanism_audit_detached_startup_incident_v1",
+  "observation": "The shell returned a PID, but a later process check found no matching audit/verifier process; the outer stdout and wall files remained zero bytes; no re-verification attempt directory or result was created by this attempt. A cause was not established and is not inferred. A later managed audit attempt was used.",
+  "pid": 1218324,
+  "recorded_utc": "2026-10-10T09:15:58.245527Z"
+}
