@@ -5,6 +5,48 @@ use ezkl::gat_adapter::{
 };
 
 #[test]
+fn native_selector_resource_shape_handles_virtual_selectors() {
+    use halo2_proofs::plonk::{self, ConstraintSystem};
+    use halo2_proofs::poly::Rotation;
+    use halo2curves::bn256::{Fr, G1Affine};
+
+    let mut cs = ConstraintSystem::<Fr>::default();
+    let advice = cs.advice_column();
+    let selector_a = cs.complex_selector();
+    let selector_b = cs.complex_selector();
+
+    cs.create_gate("virtual selector resource shape", |meta| {
+        let left = meta.query_selector(selector_a);
+        let right = meta.query_selector(selector_b);
+        let value = meta.query_advice(advice, Rotation::cur());
+        vec![(left + right) * value]
+    });
+
+    let (evaluation_cs, _) = cs
+        .clone()
+        .directly_convert_selectors_to_fixed(vec![Vec::new(); cs.num_selectors()], false);
+    let evaluation_shape = plonk::native_evaluation_resource_shape::<G1Affine>(&evaluation_cs);
+    assert_eq!(evaluation_shape.custom_gate_dependency_columns, vec![3]);
+
+    let original_shplonk = plonk::native_shplonk_resource_shape::<Fr>(&cs, 16, 0, 1, 2);
+    let compressed_shplonk = plonk::native_shplonk_resource_shape::<Fr>(
+        &cs.with_native_selector_resource_columns(1),
+        16,
+        0,
+        1,
+        2,
+    );
+    assert_eq!(
+        compressed_shplonk.fixed_query_polynomial_count,
+        original_shplonk.fixed_query_polynomial_count + 1
+    );
+    assert_eq!(
+        compressed_shplonk.query_polynomial_count,
+        original_shplonk.query_polynomial_count + 1
+    );
+}
+
+#[test]
 fn region_bulk_increment_matches_elementwise_next_at_column_boundaries() {
     use ezkl::circuit::ops::region::{RegionCtx, RegionSettings};
     use halo2curves::bn256::Fr;

@@ -79,7 +79,6 @@ from process_guardian import (
 )
 from finalization_capacity import FinalizationCapacityError, check_finalization_capacity
 
-
 _PROCESS_GUARDIAN: ProcessGuardian | None = None
 
 
@@ -129,9 +128,7 @@ def _sample_process_resources(pid: int, profile: dict[str, object]) -> None:
     try:
         meminfo = Path("/proc/meminfo").read_text().splitlines()
         host_values = {
-            line.split(":", 1)[0]: int(line.split()[1]) * 1024
-            for line in meminfo
-            if ":" in line and len(line.split()) >= 2 and line.split()[1].isdigit()
+            line.split(":", 1)[0]: int(line.split()[1]) * 1024 for line in meminfo if ":" in line and len(line.split()) >= 2 and line.split()[1].isdigit()
         }
         for key, source in (("host_memory_total_bytes", "MemTotal"), ("host_mem_available_bytes_min", "MemAvailable")):
             if source in host_values:
@@ -149,9 +146,7 @@ def _sample_process_resources(pid: int, profile: dict[str, object]) -> None:
         try:
             current_text = (base / "memory.current").read_text().strip()
             current = int(current_text)
-            profile["cgroup_memory_current_peak_bytes"] = max(
-                int(profile.get("cgroup_memory_current_peak_bytes", 0)), current
-            )
+            profile["cgroup_memory_current_peak_bytes"] = max(int(profile.get("cgroup_memory_current_peak_bytes", 0)), current)
             sample: dict[str, object] = {"path": str(base), "current_bytes": current}
             for name in ("memory.peak", "memory.low", "memory.high", "memory.min", "memory.max"):
                 try:
@@ -205,14 +200,7 @@ def _sample_process_resources(pid: int, profile: dict[str, object]) -> None:
         profile["effective_memory_limit_source"] = source
 
 
-def run(
-    command: list[str],
-    label: str,
-    *,
-    gpu: bool = False,
-    log_path: Path | None = None,
-    memory_profile: dict[str, object] | None = None,
-) -> float:
+def run(command: list[str], label: str, *, gpu: bool = False, log_path: Path | None = None, memory_profile: dict[str, object] | None = None) -> float:
     print(f"[ezkl-formal] {label}: {' '.join(command)}", flush=True)
     log_stream = None
     if log_path is not None:
@@ -222,14 +210,7 @@ def run(
         log_stream = log_path.open("a", encoding="utf-8")
         print(f"[ezkl-formal] independent build log: {log_path}", flush=True)
     env = os.environ.copy()
-    for key in (
-        "ENABLE_ICICLE_GPU",
-        "EZKL_GAT_BACKEND",
-        "ICICLE_BACKEND_INSTALL_DIR",
-        "ICICLE_NATIVE_LIB_DIR",
-        "ICICLE_NATIVE_MANIFEST_SHA256",
-        "CUDA_ARCH",
-    ):
+    for key in ("ENABLE_ICICLE_GPU", "EZKL_GAT_BACKEND", "ICICLE_BACKEND_INSTALL_DIR", "ICICLE_NATIVE_LIB_DIR", "ICICLE_NATIVE_MANIFEST_SHA256", "CUDA_ARCH"):
         env.pop(key, None)
     if gpu:
         identity = native_backend_identity()
@@ -242,10 +223,7 @@ def run(
         env["CUDA_ARCH"] = str(identity["cuda_architecture"]).removeprefix("sm_")
     started = time.monotonic()
     try:
-        process = spawn_guarded_process(
-            command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
-        )
+        process = spawn_guarded_process(command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     except BaseException:
         if log_stream is not None:
             log_stream.close()
@@ -267,17 +245,19 @@ def run(
     monitor_stop = threading.Event()
     monitor = None
     if memory_profile is not None:
-        memory_profile.update({
-            "schema_version": 1,
-            "process_pid": process.pid,
-            "process_peak_rss_bytes": 0,
-            "process_peak_vms_bytes": 0,
-            "host_memory_total_bytes": 0,
-            "host_mem_available_bytes_min": None,
-            "effective_memory_limit_bytes": None,
-            "effective_memory_limit_source": "host",
-            "cgroup_memory_current_peak_bytes": 0,
-        })
+        memory_profile.update(
+            {
+                "schema_version": 1,
+                "process_pid": process.pid,
+                "process_peak_rss_bytes": 0,
+                "process_peak_vms_bytes": 0,
+                "host_memory_total_bytes": 0,
+                "host_mem_available_bytes_min": None,
+                "effective_memory_limit_bytes": None,
+                "effective_memory_limit_source": "host",
+                "cgroup_memory_current_peak_bytes": 0,
+            }
+        )
         _sample_process_resources(process.pid, memory_profile)
 
         def sample_until_stop() -> None:
@@ -346,10 +326,7 @@ def run_prerequisite(command: list[str], label: str, *, timeout_seconds: int, lo
         print(f"[ezkl-formal] independent build log: {log_path}", flush=True)
     try:
         process = spawn_guarded_process(
-            command,
-            cwd=ROOT,
-            stdout=log_stream if log_stream is not None else None,
-            stderr=subprocess.STDOUT if log_stream is not None else None,
+            command, cwd=ROOT, stdout=log_stream if log_stream is not None else None, stderr=subprocess.STDOUT if log_stream is not None else None
         )
     except BaseException:
         if log_stream is not None:
@@ -400,31 +377,14 @@ def _build_log_path(session_id: str) -> Path:
     return ROOT / "logs" / "formal_builds" / f"ezkl_gpu_release_{session_id}.log"
 
 
-def run_resource_prepare_with_auth_handoff(
-    command: list[str],
-    *,
-    session_id: str,
-    timeout_seconds: int,
-) -> dict[str, object]:
+def run_resource_prepare_with_auth_handoff(command: list[str], *, session_id: str, timeout_seconds: int) -> dict[str, object]:
     """Stream the official auto-preparer and capture its one complete-auth result."""
     marker_prefix = "EZKL_FORMAL_RESOURCE_AUTH_V1="
-    print(
-        f"[ezkl-formal] prerequisite official resource preparation/authentication "
-        f"(timeout={timeout_seconds}s): {' '.join(command)}",
-        flush=True,
-    )
+    print(f"[ezkl-formal] prerequisite official resource preparation/authentication " f"(timeout={timeout_seconds}s): {' '.join(command)}", flush=True)
     env = os.environ.copy()
     env.pop("EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID", None)
     env["EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID"] = session_id
-    process = spawn_guarded_process(
-        command,
-        cwd=ROOT,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+    process = spawn_guarded_process(command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     if process.stdout is None:
         _terminate_process_group(process)
         abort("formal resource preparation has no output stream")
@@ -465,7 +425,7 @@ def run_resource_prepare_with_auth_handoff(
                 if marker is not None:
                     abort("official resource preparation emitted multiple authentication handoffs")
                 try:
-                    parsed = json.loads(line[len(marker_prefix):])
+                    parsed = json.loads(line[len(marker_prefix) :])
                 except json.JSONDecodeError as exc:
                     abort(f"official resource preparation emitted an invalid authentication handoff: {exc}")
                 if not isinstance(parsed, dict):
@@ -537,10 +497,7 @@ def validate_resource_auth_handoff(
 
 
 def _prepare_and_authenticate_resources(
-    python: str,
-    *,
-    session_id: str,
-    preflight_config_sha256s: tuple[tuple[str, str], ...],
+    python: str, *, session_id: str, preflight_config_sha256s: tuple[tuple[str, str], ...]
 ) -> tuple[tuple[tuple[str, tuple[int, int, int, int, int]], ...], tuple[tuple[str, str], ...]]:
     """Run official auto-preparation and accept only its current-session auth handoff."""
     prepare_script = ROOT / "scripts" / "prepare_gat_resources.py"
@@ -549,16 +506,9 @@ def _prepare_and_authenticate_resources(
     config_before = tuple(preflight_config_sha256s)
     if any(sha256(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg") != digest for dataset, digest in config_before):
         abort("secure config changed before official resource preparation")
-    marker = run_resource_prepare_with_auth_handoff(
-        [python, "-u", str(prepare_script), "--formal-auto"],
-        session_id=session_id,
-        timeout_seconds=21600,
-    )
+    marker = run_resource_prepare_with_auth_handoff([python, "-u", str(prepare_script), "--formal-auto"], session_id=session_id, timeout_seconds=21600)
     _preflight_dataset_configs()
-    config_after = tuple(
-        (dataset, sha256(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg"))
-        for dataset in DATASETS
-    )
+    config_after = tuple((dataset, sha256(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg")) for dataset in DATASETS)
     identities_after = resource_file_identities()
     source_after = source_tree_hash()
     if source_after != source_before:
@@ -571,11 +521,7 @@ def _prepare_and_authenticate_resources(
         resource_manifest_sha256=resource_manifest_hash(),
         resource_identities=identities_after,
     )
-    print(
-        f"[ezkl-formal] resource-authentication=PASS files={len(identities_after)} "
-        "handoff=official-formal-auto current-session",
-        flush=True,
-    )
+    print(f"[ezkl-formal] resource-authentication=PASS files={len(identities_after)} " "handoff=official-formal-auto current-session", flush=True)
     return identities_after, config_after
 
 
@@ -643,12 +589,7 @@ def formal_local_path(value: str, label: str) -> Path:
     return local_path(value, label)
 
 
-def reusable_build(
-    binary: Path,
-    backend: str,
-    runtime_identity: dict[str, object],
-    build_environment: dict[str, object] | None = None,
-) -> bool:
+def reusable_build(binary: Path, backend: str, runtime_identity: dict[str, object], build_environment: dict[str, object] | None = None) -> bool:
     receipt_path = ROOT / "artifacts" / "build" / backend / "build_receipt.json"
     if not binary.is_file() or binary.is_symlink() or not os.access(binary, os.X_OK):
         return False
@@ -660,12 +601,19 @@ def reusable_build(
         return False
     contract = load_cli_contract()
     expected = {
-        "backend": backend, "binary_path": binary.relative_to(ROOT).as_posix(), "binary_sha256": sha256(binary),
-        "source_tree_sha256": source_tree_hash(), "resource_manifest_sha256": resource_manifest_hash(),
-        "adapter_contract_id": contract["contract_id"], "adapter_contract_sha256": sha256(CONTRACT),
-        "rustc": runtime_identity["rustc"], "cargo": runtime_identity["cargo"],
-        "rustc_path": runtime_identity["rustc_path"], "cargo_path": runtime_identity["cargo_path"],
-        "rustdoc": runtime_identity["rustdoc"], "rustdoc_path": runtime_identity["rustdoc_path"],
+        "backend": backend,
+        "binary_path": binary.relative_to(ROOT).as_posix(),
+        "binary_sha256": sha256(binary),
+        "source_tree_sha256": source_tree_hash(),
+        "resource_manifest_sha256": resource_manifest_hash(),
+        "adapter_contract_id": contract["contract_id"],
+        "adapter_contract_sha256": sha256(CONTRACT),
+        "rustc": runtime_identity["rustc"],
+        "cargo": runtime_identity["cargo"],
+        "rustc_path": runtime_identity["rustc_path"],
+        "cargo_path": runtime_identity["cargo_path"],
+        "rustdoc": runtime_identity["rustdoc"],
+        "rustdoc_path": runtime_identity["rustdoc_path"],
     }
     if backend == "gpu":
         if build_environment is None:
@@ -771,13 +719,20 @@ def begin_formal_session(output_root: Path, matrix: Path) -> tuple[str, Path, in
             abort(f"formal session history path must be a regular directory: {session_dir}")
         session_dir.mkdir(parents=True, exist_ok=True)
         session_file = session_dir / f"{session_id}.json"
-        lock_payload = json.dumps({
-            "schema_version": 1,
-            "baseline": "ezkl",
-            "pid": os.getpid(),
-            "session_id": session_id,
-            "session_file": session_file.relative_to(ROOT).as_posix(),
-        }, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        lock_payload = (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "baseline": "ezkl",
+                    "pid": os.getpid(),
+                    "session_id": session_id,
+                    "session_file": session_file.relative_to(ROOT).as_posix(),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
         os.ftruncate(lock_fd, 0)
         os.lseek(lock_fd, 0, os.SEEK_SET)
         os.write(lock_fd, lock_payload)
@@ -833,39 +788,71 @@ def archive_prior_outputs(output_root: Path, matrix: Path, session_id: str, sess
     _write_session_record(session_file, document)
 
 
-def native_admit_all_datasets(
-    binary: Path,
-    srs: Path,
-    output_root: Path,
-    session_id: str,
-    selected_device: dict[str, object],
-) -> dict[str, dict[str, object]]:
+def native_admit_all_datasets(binary: Path, srs: Path, output_root: Path, session_id: str, selected_device: dict[str, object]) -> dict[str, dict[str, object]]:
     admission_root = output_root / ".sessions" / session_id / "admission"
     admission_root.mkdir(parents=True, exist_ok=False)
     admissions: dict[str, dict[str, object]] = {}
     expected_keys = {
-        "schema_version", "relation_id", "dataset", "model_arch_id", "quant_cfg_id", "logrows",
-        "domain_size", "max_public_srs_logrows", "num_rows", "total_assignments", "total_const_size",
-        "total_dynamic_col_size", "max_dynamic_input_len", "num_dynamic_lookups", "num_shuffles",
-        "module_sizes", "constraint_system", "scalar_domain_vector_bytes", "resource_manifest_sha256",
-        "relation_identity", "settings_sha256", "compiled_circuit_sha256", "native_memory_model",
+        "schema_version",
+        "relation_id",
+        "dataset",
+        "model_arch_id",
+        "quant_cfg_id",
+        "logrows",
+        "domain_size",
+        "max_public_srs_logrows",
+        "num_rows",
+        "total_assignments",
+        "total_const_size",
+        "total_dynamic_col_size",
+        "max_dynamic_input_len",
+        "num_dynamic_lookups",
+        "num_shuffles",
+        "module_sizes",
+        "constraint_system",
+        "scalar_domain_vector_bytes",
+        "resource_manifest_sha256",
+        "relation_identity",
+        "settings_sha256",
+        "compiled_circuit_sha256",
+        "native_memory_model",
     }
     cs_keys = {
-        "degree", "num_fixed_columns", "num_advice_columns", "num_instance_columns", "num_selectors",
+        "degree",
+        "num_fixed_columns",
+        "num_advice_columns",
+        "num_instance_columns",
+        "num_selectors",
         "num_custom_gate_groups",
-        "num_lookup_arguments", "num_shuffle_arguments", "num_permutation_columns", "num_blinding_factors",
-        "selector_fixed_column_count", "fixed_column_count_post_compression",
-        "permutation_copy_call_count", "permutation_successor_entry_count_upper",
-        "num_lookup_query_polynomials", "max_lookup_query_polynomials_per_argument",
+        "num_lookup_arguments",
+        "num_shuffle_arguments",
+        "num_permutation_columns",
+        "num_blinding_factors",
+        "selector_fixed_column_count",
+        "fixed_column_count_post_compression",
+        "permutation_copy_call_count",
+        "permutation_successor_entry_count_upper",
+        "num_lookup_query_polynomials",
+        "max_lookup_query_polynomials_per_argument",
         "num_unique_lookup_table_expression_groups",
     }
     for dataset in DATASETS:
         admission_dir = admission_root / dataset
         admission_dir.mkdir()
         command = [
-            local_cli(binary, "binary"), "gat-prepare", "--dataset", dataset, "--phase", "admission",
-            "--resource-manifest", "resources/resource_manifest.json", "--output-dir",
-            local_cli(admission_dir, "admission output"), "--srs-path", local_cli(srs, "SRS"), "--gpu",
+            local_cli(binary, "binary"),
+            "gat-prepare",
+            "--dataset",
+            dataset,
+            "--phase",
+            "admission",
+            "--resource-manifest",
+            "resources/resource_manifest.json",
+            "--output-dir",
+            local_cli(admission_dir, "admission output"),
+            "--srs-path",
+            local_cli(srs, "SRS"),
+            "--gpu",
         ]
         run(command, f"{dataset} native full-relation/capacity admission", gpu=True)
         admission_path = admission_dir / "admission.json"
@@ -895,99 +882,140 @@ def native_admit_all_datasets(
             or re.fullmatch(r"[0-9a-f]{64}", admission["compiled_circuit_sha256"]) is None
         ):
             abort(f"{dataset} native admission does not bind its canonical resources and handoff files")
-        for name, expected_digest in (
-            ("settings.json", admission["settings_sha256"]),
-            ("compiled.circuit", admission["compiled_circuit_sha256"]),
-        ):
+        for name, expected_digest in (("settings.json", admission["settings_sha256"]), ("compiled.circuit", admission["compiled_circuit_sha256"])):
             handoff_file = admission_dir / name
             require_file(handoff_file, f"{dataset} admitted {name}")
             if sha256(handoff_file) != expected_digest:
                 abort(f"{dataset} native admission {name} digest mismatch")
         cs = admission["constraint_system"]
-        if not isinstance(cs, dict) or set(cs) != cs_keys or any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in cs.values()
-        ):
+        if not isinstance(cs, dict) or set(cs) != cs_keys or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in cs.values()):
             abort(f"{dataset} native admission has malformed exact Halo2 constraint-shape counts")
-        if cs["fixed_column_count_post_compression"] != (
-            cs["num_fixed_columns"] + cs["selector_fixed_column_count"]
-        ):
+        if cs["fixed_column_count_post_compression"] != (cs["num_fixed_columns"] + cs["selector_fixed_column_count"]):
             abort(f"{dataset} native admission post-compression fixed-column count is inconsistent")
-        expected_successor_entries = min(
-            cs["num_permutation_columns"] * admission["domain_size"],
-            2 * cs["permutation_copy_call_count"],
-        )
+        expected_successor_entries = min(cs["num_permutation_columns"] * admission["domain_size"], 2 * cs["permutation_copy_call_count"])
         if cs["permutation_successor_entry_count_upper"] != expected_successor_entries:
             abort(f"{dataset} native admission compact permutation entry bound is inconsistent")
         memory = admission["native_memory_model"]
         memory_keys = {
-            "schema", "native_target_arch", "uses_recursive_fft", "proof_logrows", "proof_domain_size",
-            "recursive_fft_cached_domain_lengths", "recursive_fft_twiddle_field_elements",
-            "fft_cache_supported_length_count", "fft_cache_entry_capacity", "fft_parallel_thread_count",
-            "srs_fft_cache_supported_length_count", "srs_fft_cache_entry_capacity",
-            "parallel_fft_lookup_table_elements", "size_of_fftdata_bytes",
-            "size_of_fftdata_once_lock_bytes", "size_of_fftdata_cache_entry_bytes",
-            "size_of_fftdata_cache_map_bytes", "size_of_arc_header_bytes", "custom_gate_dependency_columns",
-            "lookup_dependency_columns", "lookup_query_polynomial_counts", "shuffle_dependency_columns",
+            "schema",
+            "native_target_arch",
+            "uses_recursive_fft",
+            "proof_logrows",
+            "proof_domain_size",
+            "recursive_fft_cached_domain_lengths",
+            "recursive_fft_twiddle_field_elements",
+            "fft_cache_supported_length_count",
+            "fft_cache_entry_capacity",
+            "fft_parallel_thread_count",
+            "srs_fft_cache_supported_length_count",
+            "srs_fft_cache_entry_capacity",
+            "parallel_fft_lookup_table_elements",
+            "size_of_fftdata_bytes",
+            "size_of_fftdata_once_lock_bytes",
+            "size_of_fftdata_cache_entry_bytes",
+            "size_of_fftdata_cache_map_bytes",
+            "size_of_arc_header_bytes",
+            "custom_gate_dependency_columns",
+            "lookup_dependency_columns",
+            "lookup_query_polynomial_counts",
+            "shuffle_dependency_columns",
             "advice_column_phase_ids",
-            "size_of_fr_bytes", "size_of_assigned_fr_bytes", "size_of_option_fr_bytes",
-            "size_of_batch_invert_entry_bytes", "size_of_usize_bytes", "size_of_usize_pair_bytes",
-            "size_of_g1_affine_bytes", "size_of_g1_projective_bytes", "size_of_g2_affine_bytes",
+            "size_of_fr_bytes",
+            "size_of_assigned_fr_bytes",
+            "size_of_option_fr_bytes",
+            "size_of_batch_invert_entry_bytes",
+            "size_of_usize_bytes",
+            "size_of_usize_pair_bytes",
+            "size_of_g1_affine_bytes",
+            "size_of_g1_projective_bytes",
+            "size_of_g2_affine_bytes",
             "size_of_fft_stage_bytes",
-            "size_of_atomic_u64_bytes", "size_of_lookup_map_entry_bytes",
-            "size_of_lookup_map_header_bytes", "size_of_vec_u8_bytes",
-            "size_of_lookup_repr_bytes", "lookup_table_cardinality_upper_bounds",
-            "size_of_vec_header_bytes", "size_of_polynomial_header_bytes",
-            "size_of_mv_lookup_prepared_bytes", "size_of_mv_lookup_prepared_table_bytes",
+            "size_of_atomic_u64_bytes",
+            "size_of_lookup_map_entry_bytes",
+            "size_of_lookup_map_header_bytes",
+            "size_of_vec_u8_bytes",
+            "size_of_lookup_repr_bytes",
+            "lookup_table_cardinality_upper_bounds",
+            "size_of_vec_header_bytes",
+            "size_of_polynomial_header_bytes",
+            "size_of_mv_lookup_prepared_bytes",
+            "size_of_mv_lookup_prepared_table_bytes",
             "size_of_mv_lookup_committed_bytes",
             "size_of_shplonk_commitment_extension_bytes",
             "size_of_shplonk_rotation_set_extension_bytes",
             "size_of_coeff_polynomial_header_bytes",
             "shplonk_rotation_set_commitment_counts",
-            "shplonk_query_polynomial_count", "shplonk_rotation_set_count",
-            "shplonk_max_rotation_count", "shplonk_unique_opening_point_count",
+            "shplonk_query_polynomial_count",
+            "shplonk_rotation_set_count",
+            "shplonk_max_rotation_count",
+            "shplonk_unique_opening_point_count",
             "shplonk_max_commitments_per_rotation_set",
             "shplonk_permutation_product_set_count",
             "shplonk_advice_query_polynomial_count",
             "shplonk_fixed_query_polynomial_count",
-            "shplonk_lookup_argument_count", "shplonk_shuffle_argument_count",
-            "shplonk_proof_instance_count", "shplonk_quotient_piece_count",
-            "graph_witness_scalar_element_count", "size_of_graph_witness_scalar_bytes",
-            "cuda_uuid", "cuda_free_bytes_at_admission", "cuda_total_memory_bytes",
-            "selector_activation_bitmap_bytes", "fixed_polynomial_read_mode",
-            "fixed_polynomial_read_chunk_fields_upper", "fixed_polynomial_read_raw_chunk_bytes_upper",
-            "fixed_polynomial_read_decoded_chunk_bytes_upper", "fixed_polynomial_read_heap_scratch_bytes_upper",
+            "shplonk_lookup_argument_count",
+            "shplonk_shuffle_argument_count",
+            "shplonk_proof_instance_count",
+            "shplonk_quotient_piece_count",
+            "graph_witness_scalar_element_count",
+            "size_of_graph_witness_scalar_bytes",
+            "cuda_uuid",
+            "cuda_free_bytes_at_admission",
+            "cuda_total_memory_bytes",
+            "selector_activation_bitmap_bytes",
+            "fixed_polynomial_read_mode",
+            "fixed_polynomial_read_chunk_fields_upper",
+            "fixed_polynomial_read_raw_chunk_bytes_upper",
+            "fixed_polynomial_read_decoded_chunk_bytes_upper",
+            "fixed_polynomial_read_heap_scratch_bytes_upper",
         }
         if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-memory-model-v4":
             abort(f"{dataset} native admission has an incompatible source memory model")
         positive_memory_keys = {
-            "proof_logrows", "proof_domain_size", "size_of_fr_bytes",
-            "size_of_assigned_fr_bytes", "size_of_option_fr_bytes",
-            "size_of_batch_invert_entry_bytes", "size_of_usize_bytes",
-            "size_of_usize_pair_bytes", "size_of_g1_affine_bytes",
-            "size_of_g1_projective_bytes", "size_of_g2_affine_bytes", "size_of_fft_stage_bytes",
-            "size_of_atomic_u64_bytes", "size_of_lookup_map_entry_bytes",
-            "size_of_lookup_map_header_bytes", "size_of_vec_u8_bytes",
-            "size_of_lookup_repr_bytes", "size_of_graph_witness_scalar_bytes",
-            "size_of_vec_header_bytes", "size_of_polynomial_header_bytes",
-            "size_of_mv_lookup_prepared_bytes", "size_of_mv_lookup_prepared_table_bytes",
+            "proof_logrows",
+            "proof_domain_size",
+            "size_of_fr_bytes",
+            "size_of_assigned_fr_bytes",
+            "size_of_option_fr_bytes",
+            "size_of_batch_invert_entry_bytes",
+            "size_of_usize_bytes",
+            "size_of_usize_pair_bytes",
+            "size_of_g1_affine_bytes",
+            "size_of_g1_projective_bytes",
+            "size_of_g2_affine_bytes",
+            "size_of_fft_stage_bytes",
+            "size_of_atomic_u64_bytes",
+            "size_of_lookup_map_entry_bytes",
+            "size_of_lookup_map_header_bytes",
+            "size_of_vec_u8_bytes",
+            "size_of_lookup_repr_bytes",
+            "size_of_graph_witness_scalar_bytes",
+            "size_of_vec_header_bytes",
+            "size_of_polynomial_header_bytes",
+            "size_of_mv_lookup_prepared_bytes",
+            "size_of_mv_lookup_prepared_table_bytes",
             "size_of_mv_lookup_committed_bytes",
             "size_of_shplonk_commitment_extension_bytes",
             "size_of_shplonk_rotation_set_extension_bytes",
             "size_of_coeff_polynomial_header_bytes",
-            "size_of_fftdata_bytes", "size_of_fftdata_once_lock_bytes",
-            "size_of_fftdata_cache_entry_bytes", "size_of_fftdata_cache_map_bytes",
-            "fft_cache_supported_length_count", "fft_cache_entry_capacity", "fft_parallel_thread_count",
-            "srs_fft_cache_supported_length_count", "srs_fft_cache_entry_capacity",
+            "size_of_fftdata_bytes",
+            "size_of_fftdata_once_lock_bytes",
+            "size_of_fftdata_cache_entry_bytes",
+            "size_of_fftdata_cache_map_bytes",
+            "fft_cache_supported_length_count",
+            "fft_cache_entry_capacity",
+            "fft_parallel_thread_count",
+            "srs_fft_cache_supported_length_count",
+            "srs_fft_cache_entry_capacity",
             "size_of_arc_header_bytes",
             "parallel_fft_lookup_table_elements",
             "cuda_total_memory_bytes",
-            "fixed_polynomial_read_chunk_fields_upper", "fixed_polynomial_read_raw_chunk_bytes_upper",
-            "fixed_polynomial_read_decoded_chunk_bytes_upper", "fixed_polynomial_read_heap_scratch_bytes_upper",
+            "fixed_polynomial_read_chunk_fields_upper",
+            "fixed_polynomial_read_raw_chunk_bytes_upper",
+            "fixed_polynomial_read_decoded_chunk_bytes_upper",
+            "fixed_polynomial_read_heap_scratch_bytes_upper",
         }
-        if any(
-            isinstance(memory.get(key), bool) or not isinstance(memory.get(key), int) or memory[key] <= 0
-            for key in positive_memory_keys
-        ) or (
+        if any(isinstance(memory.get(key), bool) or not isinstance(memory.get(key), int) or memory[key] <= 0 for key in positive_memory_keys) or (
             isinstance(memory.get("cuda_free_bytes_at_admission"), bool)
             or not isinstance(memory.get("cuda_free_bytes_at_admission"), int)
             or memory["cuda_free_bytes_at_admission"] < 0
@@ -1003,32 +1031,16 @@ def native_admit_all_datasets(
         if (
             not isinstance(cardinality_bounds, list)
             or len(cardinality_bounds) != cs["num_unique_lookup_table_expression_groups"]
-            or any(
-                isinstance(bound, bool)
-                or not isinstance(bound, int)
-                or bound <= 0
-                or bound > admission["domain_size"]
-                for bound in cardinality_bounds
-            )
+            or any(isinstance(bound, bool) or not isinstance(bound, int) or bound <= 0 or bound > admission["domain_size"] for bound in cardinality_bounds)
             or cs["num_lookup_query_polynomials"] < cs["num_lookup_arguments"]
             or cs["max_lookup_query_polynomials_per_argument"] > cs["num_lookup_query_polynomials"]
             or cs["num_unique_lookup_table_expression_groups"] > cs["num_lookup_arguments"]
         ):
             abort(f"{dataset} native mv-lookup shape bounds are malformed or inconsistent")
-        expected_proof_logrows = (
-            admission["domain_size"] * (cs["degree"] - 1) - 1
-        ).bit_length()
+        expected_proof_logrows = (admission["domain_size"] * (cs["degree"] - 1) - 1).bit_length()
         expected_recursive_fft = platform.machine() != "x86_64"
-        expected_twiddle_elements = (
-            2 * (memory["proof_domain_size"] - 1 + expected_proof_logrows)
-            if expected_recursive_fft
-            else 0
-        )
-        expected_parallel_lut_elements = (
-            1 << expected_proof_logrows
-            if expected_proof_logrows < 10
-            else (1 << 10) + (1 << (expected_proof_logrows - 10))
-        )
+        expected_twiddle_elements = 2 * (memory["proof_domain_size"] - 1 + expected_proof_logrows) if expected_recursive_fft else 0
+        expected_parallel_lut_elements = 1 << expected_proof_logrows if expected_proof_logrows < 10 else (1 << 10) + (1 << (expected_proof_logrows - 10))
         if (
             memory["proof_domain_size"] != 1 << expected_proof_logrows
             or memory["proof_logrows"] != expected_proof_logrows
@@ -1036,17 +1048,14 @@ def native_admit_all_datasets(
             or not isinstance(memory["uses_recursive_fft"], bool)
             or memory["uses_recursive_fft"] != expected_recursive_fft
             or memory["recursive_fft_twiddle_field_elements"] != expected_twiddle_elements
-            or memory["recursive_fft_cached_domain_lengths"]
-            != ([memory["proof_domain_size"]] if expected_recursive_fft else [])
-            or memory["fft_cache_supported_length_count"]
-            != expected_proof_logrows - admission["logrows"] + 1
+            or memory["recursive_fft_cached_domain_lengths"] != ([memory["proof_domain_size"]] if expected_recursive_fft else [])
+            or memory["fft_cache_supported_length_count"] != expected_proof_logrows - admission["logrows"] + 1
             or memory["fft_cache_entry_capacity"] < memory["fft_cache_supported_length_count"]
             or memory["srs_fft_cache_supported_length_count"] != 1
             or memory["srs_fft_cache_entry_capacity"] < 1
             or memory["parallel_fft_lookup_table_elements"] != expected_parallel_lut_elements
             or memory["size_of_usize_pair_bytes"] != 2 * memory["size_of_usize_bytes"]
-            or memory["size_of_lookup_map_entry_bytes"]
-            != memory["size_of_vec_u8_bytes"] + memory["size_of_usize_bytes"]
+            or memory["size_of_lookup_map_entry_bytes"] != memory["size_of_vec_u8_bytes"] + memory["size_of_usize_bytes"]
             or memory["size_of_lookup_repr_bytes"] != memory["size_of_fr_bytes"]
             or memory["size_of_graph_witness_scalar_bytes"] != memory["size_of_fr_bytes"]
             or memory["size_of_vec_header_bytes"] != memory["size_of_vec_u8_bytes"]
@@ -1081,15 +1090,14 @@ def native_admit_all_datasets(
                     isinstance(value, bool)
                     or not isinstance(value, int)
                     or value < (0 if allow_zero else 1)
-                    or value > cs["num_fixed_columns"] + cs["num_advice_columns"] + cs["num_instance_columns"]
+                    or value > (cs["fixed_column_count_post_compression"] + cs["num_advice_columns"] + cs["num_instance_columns"])
                     for value in values
                 )
             ):
                 abort(f"{dataset} native admission has malformed {name} source geometry")
         if (
             sum(memory["lookup_query_polynomial_counts"]) != cs["num_lookup_query_polynomials"]
-            or max(memory["lookup_query_polynomial_counts"], default=0)
-            != cs["max_lookup_query_polynomials_per_argument"]
+            or max(memory["lookup_query_polynomial_counts"], default=0) != cs["max_lookup_query_polynomials_per_argument"]
         ):
             abort(f"{dataset} native admission lookup dependency/query counts do not match chunked arguments")
         shplonk_counts = memory["shplonk_rotation_set_commitment_counts"]
@@ -1109,30 +1117,16 @@ def native_admit_all_datasets(
         )
         if (
             not isinstance(shplonk_counts, list)
-            or any(
-                isinstance(value, bool) or not isinstance(value, int) or value <= 0
-                for value in shplonk_counts
-            )
-            or any(
-                isinstance(memory.get(name), bool)
-                or not isinstance(memory.get(name), int)
-                or memory[name] <= 0
-                for name in shplonk_count_fields
-            )
+            or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in shplonk_counts)
+            or any(isinstance(memory.get(name), bool) or not isinstance(memory.get(name), int) or memory[name] <= 0 for name in shplonk_count_fields)
         ):
             abort(f"{dataset} native admission has malformed SHPLONK shape counts")
         shplonk_permutation_chunk = max(cs["degree"] - 2, 1)
-        expected_shplonk_permutation_sets = (
-            cs["num_permutation_columns"] + shplonk_permutation_chunk - 1
-        ) // shplonk_permutation_chunk
+        expected_shplonk_permutation_sets = (cs["num_permutation_columns"] + shplonk_permutation_chunk - 1) // shplonk_permutation_chunk
         expected_shplonk_queries = (
             memory["shplonk_advice_query_polynomial_count"]
             + memory["shplonk_fixed_query_polynomial_count"]
-            + (
-                expected_shplonk_permutation_sets
-                + 2 * cs["num_lookup_arguments"]
-                + cs["num_shuffle_arguments"]
-            ) * memory["shplonk_proof_instance_count"]
+            + (expected_shplonk_permutation_sets + 2 * cs["num_lookup_arguments"] + cs["num_shuffle_arguments"]) * memory["shplonk_proof_instance_count"]
             + cs["num_permutation_columns"]
             + (cs["degree"] - 1)
             + 1
@@ -1140,20 +1134,16 @@ def native_admit_all_datasets(
         if (
             len(shplonk_counts) != memory["shplonk_rotation_set_count"]
             or sum(shplonk_counts) != memory["shplonk_query_polynomial_count"]
-            or max(shplonk_counts, default=0)
-            != memory["shplonk_max_commitments_per_rotation_set"]
+            or max(shplonk_counts, default=0) != memory["shplonk_max_commitments_per_rotation_set"]
             or memory["shplonk_query_polynomial_count"] != expected_shplonk_queries
-            or memory["shplonk_permutation_product_set_count"]
-            != expected_shplonk_permutation_sets
+            or memory["shplonk_permutation_product_set_count"] != expected_shplonk_permutation_sets
             or memory["shplonk_advice_query_polynomial_count"] > cs["num_advice_columns"]
-            or memory["shplonk_fixed_query_polynomial_count"]
-            > cs["fixed_column_count_post_compression"]
+            or memory["shplonk_fixed_query_polynomial_count"] > cs["fixed_column_count_post_compression"]
             or memory["shplonk_lookup_argument_count"] != cs["num_lookup_arguments"]
             or memory["shplonk_shuffle_argument_count"] != cs["num_shuffle_arguments"]
             or memory["shplonk_proof_instance_count"] != 1
             or memory["shplonk_quotient_piece_count"] != cs["degree"] - 1
-            or memory["shplonk_max_rotation_count"]
-            > memory["shplonk_unique_opening_point_count"]
+            or memory["shplonk_max_rotation_count"] > memory["shplonk_unique_opening_point_count"]
             or memory["shplonk_unique_opening_point_count"] > admission["domain_size"]
         ):
             abort(f"{dataset} native SHPLONK opening shape is inconsistent with Halo2 geometry")
@@ -1163,13 +1153,10 @@ def native_admit_all_datasets(
             memory["selector_activation_bitmap_bytes"] != expected_bitmap
             or memory["fixed_polynomial_read_mode"] != "streamed_one_polynomial_chunked_v1"
             or read_chunk_fields != 16 * 1024
-            or memory["fixed_polynomial_read_raw_chunk_bytes_upper"]
-            != read_chunk_fields * memory["size_of_fr_bytes"]
-            or memory["fixed_polynomial_read_decoded_chunk_bytes_upper"]
-            != read_chunk_fields * memory["size_of_fr_bytes"]
+            or memory["fixed_polynomial_read_raw_chunk_bytes_upper"] != read_chunk_fields * memory["size_of_fr_bytes"]
+            or memory["fixed_polynomial_read_decoded_chunk_bytes_upper"] != read_chunk_fields * memory["size_of_fr_bytes"]
             or memory["fixed_polynomial_read_heap_scratch_bytes_upper"]
-            != memory["fixed_polynomial_read_raw_chunk_bytes_upper"]
-            + memory["fixed_polynomial_read_decoded_chunk_bytes_upper"]
+            != memory["fixed_polynomial_read_raw_chunk_bytes_upper"] + memory["fixed_polynomial_read_decoded_chunk_bytes_upper"]
         ):
             abort(f"{dataset} native admission fixed-polynomial streaming bounds are inconsistent")
         phase_ids = memory["advice_column_phase_ids"]
@@ -1212,19 +1199,34 @@ _CUB_QUERY_COUNTS = {
 
 
 def _validate_cub_workspace_query(
-    value: object,
-    *,
-    source_sha256: str,
-    backend_manifest_sha256: str,
-    selected_device: dict[str, object],
-    session_id: str,
+    value: object, *, source_sha256: str, backend_manifest_sha256: str, selected_device: dict[str, object], session_id: str
 ) -> dict[str, object]:
     keys = {
-        "schema", "session_id", "icicle_source_tree_sha256", "native_backend_manifest_sha256", "device_uuid",
-        "free_memory_bytes", "total_memory_bytes", "integrated_device", "scalar_bits", "c", "chunk_scalars", "window_count", "M", "B",
-        "H_max", "L_max", "cuda_runtime_version", "cuda_driver_version", "cuda_toolkit_version",
-        "cub_version", "device_compute_capability", "native_type_sizes", "device_workspace_peak_bytes",
-        "queries", "scratch_bytes_sum",
+        "schema",
+        "session_id",
+        "icicle_source_tree_sha256",
+        "native_backend_manifest_sha256",
+        "device_uuid",
+        "free_memory_bytes",
+        "total_memory_bytes",
+        "integrated_device",
+        "scalar_bits",
+        "c",
+        "chunk_scalars",
+        "window_count",
+        "M",
+        "B",
+        "H_max",
+        "L_max",
+        "cuda_runtime_version",
+        "cuda_driver_version",
+        "cuda_toolkit_version",
+        "cub_version",
+        "device_compute_capability",
+        "native_type_sizes",
+        "device_workspace_peak_bytes",
+        "queries",
+        "scratch_bytes_sum",
     }
     if not isinstance(value, dict) or set(value) != keys:
         abort("native CUB workspace query has an incompatible exact schema")
@@ -1247,18 +1249,25 @@ def _validate_cub_workspace_query(
     for key, expected in expected_constants.items():
         if value.get(key) != expected:
             abort(f"native CUB workspace query identity/constant mismatch: {key}")
-    for key in ("free_memory_bytes", "total_memory_bytes", "cuda_runtime_version", "cuda_driver_version", "cub_version", "device_workspace_peak_bytes", "scratch_bytes_sum"):
+    for key in (
+        "free_memory_bytes",
+        "total_memory_bytes",
+        "cuda_runtime_version",
+        "cuda_driver_version",
+        "cub_version",
+        "device_workspace_peak_bytes",
+        "scratch_bytes_sum",
+    ):
         item = value.get(key)
         if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
             abort(f"native CUB workspace query has invalid {key}")
     if value["free_memory_bytes"] > value["total_memory_bytes"] or not isinstance(value.get("integrated_device"), bool):
         abort("native CUB workspace query has invalid live CUDA capacity values")
     type_sizes = value.get("native_type_sizes")
-    if not isinstance(type_sizes, dict) or set(type_sizes) != {
-        "scalar_bytes", "affine_bytes", "projective_bytes", "unsigned_bytes",
-    } or any(
-        isinstance(item, bool) or not isinstance(item, int) or item <= 0
-        for item in type_sizes.values()
+    if (
+        not isinstance(type_sizes, dict)
+        or set(type_sizes) != {"scalar_bytes", "affine_bytes", "projective_bytes", "unsigned_bytes"}
+        or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in type_sizes.values())
     ):
         abort("native CUB workspace query has invalid native sizeof values")
     toolkit = value.get("cuda_toolkit_version")
@@ -1283,16 +1292,9 @@ def _validate_cub_workspace_query(
 
 
 def _validate_cuda_memory_sample(
-    value: object,
-    *,
-    session_id: str,
-    selected_device: dict[str, object],
-    workspace_query: dict[str, object],
+    value: object, *, session_id: str, selected_device: dict[str, object], workspace_query: dict[str, object]
 ) -> dict[str, object]:
-    fields = {
-        "schema", "session_id", "device_uuid", "free_memory_bytes", "total_memory_bytes",
-        "integrated_device",
-    }
+    fields = {"schema", "session_id", "device_uuid", "free_memory_bytes", "total_memory_bytes", "integrated_device"}
     if not isinstance(value, dict) or set(value) != fields:
         abort("EZKL CUDA memory sample has an incompatible exact schema")
     if (
@@ -1314,25 +1316,23 @@ def _validate_cuda_memory_sample(
     return value
 
 
-def _gpu_query_environment(
-    selected_device: dict[str, object],
-    gpu_identity: dict[str, object],
-    build_environment: dict[str, object],
-) -> dict[str, str]:
+def _gpu_query_environment(selected_device: dict[str, object], gpu_identity: dict[str, object], build_environment: dict[str, object]) -> dict[str, str]:
     env = os.environ.copy()
     for name in ("LD_PRELOAD", "ICICLE_SMALL_K", "ICICLE_SMALL_K_FFT", "EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID"):
         env.pop(name, None)
-    env.update({
-        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
-        "CUDA_VISIBLE_DEVICES": str(selected_device["uuid"]),
-        "ICICLE_DEVICE_ID": "0",
-        "ENABLE_ICICLE_GPU": "1",
-        "EZKL_GAT_BACKEND": "gpu",
-        "ICICLE_BACKEND_INSTALL_DIR": str(ROOT / "artifacts/build/icicle-cuda"),
-        "ICICLE_NATIVE_LIB_DIR": str(ROOT / "artifacts/build/icicle-cuda/lib"),
-        "ICICLE_NATIVE_MANIFEST_SHA256": str(gpu_identity["native_backend_manifest_sha256"]),
-        "CUDA_ARCH": str(build_environment["cuda_architecture"]).removeprefix("sm_"),
-    })
+    env.update(
+        {
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": str(selected_device["uuid"]),
+            "ICICLE_DEVICE_ID": "0",
+            "ENABLE_ICICLE_GPU": "1",
+            "EZKL_GAT_BACKEND": "gpu",
+            "ICICLE_BACKEND_INSTALL_DIR": str(ROOT / "artifacts/build/icicle-cuda"),
+            "ICICLE_NATIVE_LIB_DIR": str(ROOT / "artifacts/build/icicle-cuda/lib"),
+            "ICICLE_NATIVE_MANIFEST_SHA256": str(gpu_identity["native_backend_manifest_sha256"]),
+            "CUDA_ARCH": str(build_environment["cuda_architecture"]).removeprefix("sm_"),
+        }
+    )
     return env
 
 
@@ -1375,16 +1375,19 @@ def _build_native_cub_workspace_query(
         abort("native CUB workspace query refuses to overwrite an existing session artifact")
     env = _gpu_query_environment(selected_device, gpu_identity, build_environment)
     build_command = [
-        nvcc, "-O2", "-std=c++17", f"-arch={arch}",
-        "-I", local_cli(ROOT / "vendor/icicle/icicle/include", "ICICLE source headers"),
+        nvcc,
+        "-O2",
+        "-std=c++17",
+        f"-arch={arch}",
+        "-I",
+        local_cli(ROOT / "vendor/icicle/icicle/include", "ICICLE source headers"),
         local_cli(source, "CUB query source"),
-        "-o", local_cli(binary_path, "CUB query binary"),
+        "-o",
+        local_cli(binary_path, "CUB query binary"),
     ]
     print(f"[ezkl-formal] build session-bound CUB workspace query: {' '.join(build_command)}", flush=True)
     try:
-        built = run_guarded_capture(
-            build_command, cwd=ROOT, env=env, timeout=120,
-        )
+        built = run_guarded_capture(build_command, cwd=ROOT, env=env, timeout=120)
     except subprocess.TimeoutExpired as exc:
         build_log_path.write_text((exc.stdout or "") + (exc.stderr or ""), encoding="utf-8")
         abort("native CUB workspace query build exceeded its 120 second bound")
@@ -1394,9 +1397,12 @@ def _build_native_cub_workspace_query(
 
     command = [
         local_cli(binary_path, "CUB query binary"),
-        "--session-id", session_id,
-        "--icicle-source-tree-sha256", icicle_source_sha256,
-        "--native-backend-manifest-sha256", str(gpu_identity["native_backend_manifest_sha256"]),
+        "--session-id",
+        session_id,
+        "--icicle-source-tree-sha256",
+        icicle_source_sha256,
+        "--native-backend-manifest-sha256",
+        str(gpu_identity["native_backend_manifest_sha256"]),
     ]
     print(f"[ezkl-formal] run session-bound CUB workspace query: {' '.join(command)}", flush=True)
     try:
@@ -1436,16 +1442,23 @@ def _build_native_cub_workspace_query(
 
 
 def _validate_native_cub_workspace_receipt(
-    receipt: object,
-    session_dir: Path,
-    selected_device: dict[str, object],
-    gpu_identity: dict[str, object],
-    session_id: str,
+    receipt: object, session_dir: Path, selected_device: dict[str, object], gpu_identity: dict[str, object], session_id: str
 ) -> dict[str, object]:
     fields = {
-        "schema", "session_id", "source_path", "source_sha256", "binary_path", "binary_sha256", "build_log_path",
-        "build_log_sha256", "result_path", "result_sha256", "native_backend_manifest_path",
-        "native_backend_manifest_sha256", "icicle_source_tree_sha256", "query",
+        "schema",
+        "session_id",
+        "source_path",
+        "source_sha256",
+        "binary_path",
+        "binary_sha256",
+        "build_log_path",
+        "build_log_sha256",
+        "result_path",
+        "result_sha256",
+        "native_backend_manifest_path",
+        "native_backend_manifest_sha256",
+        "icicle_source_tree_sha256",
+        "query",
     }
     if not isinstance(receipt, dict) or set(receipt) != fields or receipt.get("schema") != "ezkl.icicle.cub_msm_workspace_query_receipt.v2":
         abort("EZKL session has no complete CUB workspace query source/binary receipt")
@@ -1471,9 +1484,8 @@ def _validate_native_cub_workspace_receipt(
     ):
         if not isinstance(digest, str) or sha256(path) != digest:
             abort(f"EZKL session CUB workspace query {label} digest changed")
-    if (
-        source != ROOT / "tools/native_msm_workspace_query.cu"
-        or receipt["native_backend_manifest_sha256"] != gpu_identity.get("native_backend_manifest_sha256")
+    if source != ROOT / "tools/native_msm_workspace_query.cu" or receipt["native_backend_manifest_sha256"] != gpu_identity.get(
+        "native_backend_manifest_sha256"
     ):
         abort("EZKL session CUB workspace query is bound to a stale helper/backend source")
     backend_manifest = load_json(manifest_path, "native ICICLE manifest")
@@ -1501,9 +1513,7 @@ def _sample_native_cuda_memory(
     gpu_identity: dict[str, object],
     build_environment: dict[str, object],
 ) -> dict[str, object]:
-    receipt = _validate_native_cub_workspace_receipt(
-        receipt, session_dir, selected_device, gpu_identity, session_id
-    )
+    receipt = _validate_native_cub_workspace_receipt(receipt, session_dir, selected_device, gpu_identity, session_id)
     binary = local_path(receipt.get("binary_path"), "CUB query binary")
     env = _gpu_query_environment(selected_device, gpu_identity, build_environment)
     command = [local_cli(binary, "CUB query binary"), "--memory-only", "--session-id", session_id]
@@ -1519,10 +1529,7 @@ def _sample_native_cuda_memory(
         abort(f"EZKL live CUDA memory recheck emitted malformed JSON: {exc}")
     workspace_query = receipt.get("query")
     sample = _validate_cuda_memory_sample(
-        raw,
-        session_id=session_id,
-        selected_device=selected_device,
-        workspace_query=workspace_query if isinstance(workspace_query, dict) else {},
+        raw, session_id=session_id, selected_device=selected_device, workspace_query=workspace_query if isinstance(workspace_query, dict) else {}
     )
     sample["sampled_at_utc"] = datetime.now(timezone.utc).isoformat()
     return sample
@@ -1557,10 +1564,7 @@ def _effective_host_memory_available_bytes() -> tuple[int, dict[str, object]]:
             abort(f"malformed cgroup memory.max at {base}")
         available = max(0, int(maximum) - current)
         effective = min(effective, available)
-        accounting["cgroup_limits"].append({
-            "path": str(base), "limit_bytes": int(maximum), "current_bytes": current,
-            "available_bytes": available,
-        })
+        accounting["cgroup_limits"].append({"path": str(base), "limit_bytes": int(maximum), "current_bytes": current, "available_bytes": available})
     accounting["effective_available_bytes"] = effective
     return effective, accounting
 
@@ -1593,11 +1597,7 @@ def _effective_host_memory_limit_bytes() -> tuple[int, dict[str, object]]:
         value_bytes = int(value)
         limit = min(limit, value_bytes)
         cgroup_limits.append({"path": str(base), "limit_bytes": value_bytes})
-    return limit, {
-        "host_mem_total_bytes": total,
-        "effective_memory_limit_bytes": limit,
-        "cgroup_limits": cgroup_limits,
-    }
+    return limit, {"host_mem_total_bytes": total, "effective_memory_limit_bytes": limit, "cgroup_limits": cgroup_limits}
 
 
 def _host_os_diagnostic_reserve_bytes() -> tuple[int, dict[str, object]]:
@@ -1618,10 +1618,7 @@ def _filesystem_available_bytes(path: Path) -> tuple[int, dict[str, int]]:
     return available, {"available_bytes": available, "device_id": device_id}
 
 
-def _native_capacity_requirements(
-    admission: dict[str, object],
-    icicle_type_sizes: dict[str, object],
-) -> dict[str, int]:
+def _native_capacity_requirements(admission: dict[str, object], icicle_type_sizes: dict[str, object]) -> dict[str, int]:
     cs = admission.get("constraint_system")
     memory = admission.get("native_memory_model")
     domain_size = admission.get("domain_size")
@@ -1687,13 +1684,23 @@ def _native_capacity_requirements(
     selectors = int(memory["selector_activation_bitmap_bytes"])
     read_scratch = int(memory["fixed_polynomial_read_heap_scratch_bytes_upper"])
     for label, number in (
-        ("Fr", fr), ("Assigned<Fr>", assigned), ("Option<Fr>", option_fr),
-        ("ICICLE scalar", icicle_scalar_bytes), ("ICICLE affine", icicle_affine_bytes),
-        ("AtomicU64", atomic_u64), ("lookup entry", map_entry), ("lookup map header", map_header),
-        ("lookup repr", repr_bytes), ("Vec header", vec_header), ("Polynomial header", polynomial_header),
-        ("Prepared header", prepared_header), ("PreparedTable header", prepared_table_header),
-        ("Committed header", committed_header), ("G1 projective", g1_projective),
-        ("G2 affine", g2_affine), ("FFT stage", fft_stage),
+        ("Fr", fr),
+        ("Assigned<Fr>", assigned),
+        ("Option<Fr>", option_fr),
+        ("ICICLE scalar", icicle_scalar_bytes),
+        ("ICICLE affine", icicle_affine_bytes),
+        ("AtomicU64", atomic_u64),
+        ("lookup entry", map_entry),
+        ("lookup map header", map_header),
+        ("lookup repr", repr_bytes),
+        ("Vec header", vec_header),
+        ("Polynomial header", polynomial_header),
+        ("Prepared header", prepared_header),
+        ("PreparedTable header", prepared_table_header),
+        ("Committed header", committed_header),
+        ("G1 projective", g1_projective),
+        ("G2 affine", g2_affine),
+        ("FFT stage", fft_stage),
         ("SHPLONK query polynomials", shplonk_query_polynomials),
         ("SHPLONK rotation sets", shplonk_rotation_sets),
         ("SHPLONK rotations", shplonk_max_rotations),
@@ -1724,10 +1731,7 @@ def _native_capacity_requirements(
             not isinstance(values, list)
             or len(values) != expected_count
             or any(
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value < (0 if allow_zero else 1)
-                or value > fixed_uncompressed + advice + instances
+                isinstance(value, bool) or not isinstance(value, int) or value < (0 if allow_zero else 1) or value > fixed_uncompressed + advice + instances
                 for value in values
             )
         ):
@@ -1772,12 +1776,7 @@ def _native_capacity_requirements(
         )
 
     proof_fft_twiddle_elements = int(memory["recursive_fft_twiddle_field_elements"])
-    proof_fft_cache_bytes = fft_cache_payload(
-        fft_supported_lengths,
-        fft_cache_capacity,
-        proof_logrows,
-        proof_fft_twiddle_elements if uses_recursive_fft else 0,
-    )
+    proof_fft_cache_bytes = fft_cache_payload(fft_supported_lengths, fft_cache_capacity, proof_logrows, proof_fft_twiddle_elements if uses_recursive_fft else 0)
     # Source-derived known mapped setup allocations: fixed assignment maps,
     # fixed-value and coefficient maps, permutation polynomials, three
     # extended-domain selector polynomials retained by the PK, plus the live
@@ -1791,28 +1790,14 @@ def _native_capacity_requirements(
     # plus its bounded headers/commitment metadata and the separately saved VK.
     selector_vk_bytes = selectors
     commitment_vk_bytes = (fixed_post + permutation) * int(memory["size_of_g1_affine_bytes"])
-    permutation_mapping_bytes = (
-        8 + 8 + 10 * permutation
-        + 16 * int(cs["permutation_successor_entry_count_upper"]) + 32
-    )
-    setup_key_artifact_upper = (
-        setup_persisted_maps
-        + selector_vk_bytes
-        + commitment_vk_bytes
-        + permutation_mapping_bytes
-        + 8 + 12 + 2 * (4 + 4 * fixed_post)
-    )
+    permutation_mapping_bytes = 8 + 8 + 10 * permutation + 16 * int(cs["permutation_successor_entry_count_upper"]) + 32
+    setup_key_artifact_upper = setup_persisted_maps + selector_vk_bytes + commitment_vk_bytes + permutation_mapping_bytes + 8 + 12 + 2 * (4 + 4 * fixed_post)
     quotient_coefficients = n * (degree - 1)
     lookup_query_spill_bytes = lookup_queries * n * fr
     lookup_m_spill_bytes = lookup_arguments * n * fr
     lookup_table_spill_bytes = table_group_count * n * fr
     lookup_phi_spill_bytes = lookup_arguments * n * fr
-    lookup_spill_known = (
-        lookup_query_spill_bytes
-        + lookup_m_spill_bytes
-        + lookup_table_spill_bytes
-        + lookup_phi_spill_bytes
-    )
+    lookup_spill_known = lookup_query_spill_bytes + lookup_m_spill_bytes + lookup_table_spill_bytes + lookup_phi_spill_bytes
     max_gate_dependencies = max(custom_gate_dependencies, default=0)
     max_lookup_dependencies = max(lookup_dependencies, default=0)
     max_shuffle_dependencies = max(shuffle_dependencies, default=0)
@@ -1835,11 +1820,7 @@ def _native_capacity_requirements(
     # `evaluate_h` always keeps the three PK boundary-selector cosets and the
     # quotient accumulator mapped; only the current expression group's exact
     # source dependencies and their cosets are additionally touched.
-    proof_eval_hot_mmap = (
-        4 * proof_domain * fr
-        + evaluation_temporary_mapped_bytes
-        + evaluation_source_hot_bytes
-    )
+    proof_eval_hot_mmap = 4 * proof_domain * fr + evaluation_temporary_mapped_bytes + evaluation_source_hot_bytes
     proof_spill_known = (
         setup_persisted_maps
         + advice * n * fr
@@ -1879,99 +1860,41 @@ def _native_capacity_requirements(
     srs_loaded = 2 * n * g1_affine + 2 * g2_affine
     srs_fft_twiddle_elements = 2 * (n - 1 + admission["logrows"])
     srs_fft_data = srs_fft_twiddle_elements * fr
-    srs_fft_metadata = (
-        admission["logrows"] * fft_stage
-        + 2 * admission["logrows"] * vec_header
-    )
+    srs_fft_metadata = admission["logrows"] * fft_stage + 2 * admission["logrows"] * vec_header
     srs_fft_cache_metadata = fft_cache_payload(
-        srs_fft_supported_lengths,
-        srs_fft_cache_capacity,
-        admission["logrows"],
-        srs_fft_twiddle_elements if uses_recursive_fft else 0,
+        srs_fft_supported_lengths, srs_fft_cache_capacity, admission["logrows"], srs_fft_twiddle_elements if uses_recursive_fft else 0
     )
     srs_fft_twiddle_lut = parallel_lut_elements * fr
     if uses_recursive_fft:
-        srs_fft_transform_peak = (
-            n * g1_affine
-            + 3 * n * g1_projective
-            + srs_fft_cache_metadata
-            + 2 * g2_affine
-        )
-        srs_fft_output_peak = (
-            2 * n * g1_affine
-            + n * g1_projective
-            + srs_fft_cache_metadata
-            + 2 * g2_affine
-        )
-        srs_fft_cache_build_peak = (
-            n * g1_affine
-            + n * g1_projective
-            + srs_fft_cache_metadata
-            + n * fr
-            + 2 * g2_affine
-        )
+        srs_fft_transform_peak = n * g1_affine + 3 * n * g1_projective + srs_fft_cache_metadata + 2 * g2_affine
+        srs_fft_output_peak = 2 * n * g1_affine + n * g1_projective + srs_fft_cache_metadata + 2 * g2_affine
+        srs_fft_cache_build_peak = n * g1_affine + n * g1_projective + srs_fft_cache_metadata + n * fr + 2 * g2_affine
     else:
-        srs_fft_transform_peak = (
-            n * g1_affine
-            + 2 * n * g1_projective
-            + srs_fft_cache_metadata
-            + srs_fft_twiddle_lut
-            + 2 * g2_affine
-        )
-        srs_fft_output_peak = (
-            2 * n * g1_affine
-            + n * g1_projective
-            + srs_fft_cache_metadata
-            + srs_fft_twiddle_lut
-            + 2 * g2_affine
-        )
-        srs_fft_cache_build_peak = (
-            n * g1_affine
-            + n * g1_projective
-            + srs_fft_cache_metadata
-            + n * fr
-            + srs_fft_twiddle_lut
-            + 2 * g2_affine
-        )
+        srs_fft_transform_peak = n * g1_affine + 2 * n * g1_projective + srs_fft_cache_metadata + srs_fft_twiddle_lut + 2 * g2_affine
+        srs_fft_output_peak = 2 * n * g1_affine + n * g1_projective + srs_fft_cache_metadata + srs_fft_twiddle_lut + 2 * g2_affine
+        srs_fft_cache_build_peak = n * g1_affine + n * g1_projective + srs_fft_cache_metadata + n * fr + srs_fft_twiddle_lut + 2 * g2_affine
     srs_downsize_peak = max(srs_fft_transform_peak, srs_fft_output_peak, srs_fft_cache_build_peak)
     srs_setup_peak = graph_witness_scalars * fr + srs_downsize_peak
     srs_loaded_and_witness = graph_witness_scalars * fr + srs_loaded
     # While the proof owns the key and SRS, advice and public instance maps
     # remain mapped. The sparse permutation successor vector is heap-backed.
-    permutation_mapping_host = (
-        int(cs["permutation_successor_entry_count_upper"]) * int(memory["size_of_usize_pair_bytes"])
-        + vec_header
-    )
+    permutation_mapping_host = int(cs["permutation_successor_entry_count_upper"]) * int(memory["size_of_usize_pair_bytes"]) + vec_header
     selector_bitmap_host = selectors
-    proof_nonprepare_heap = (
-        graph_witness_scalars * fr
-        + selector_bitmap_host
-        + permutation_mapping_host
-        + srs_loaded
-    )
+    proof_nonprepare_heap = graph_witness_scalars * fr + selector_bitmap_host + permutation_mapping_host + srs_loaded
     # The three PK selector cosets are persistent in the loaded key. Other
     # proof polynomials are mmap-backed but are touched one exact evaluator
     # group at a time and are bounded by proof_eval_hot_mmap below.
     proof_nonprepare_hot_mmap = 3 * proof_domain * fr
-    proof_nonprepare_resident = (
-        proof_nonprepare_heap + proof_nonprepare_hot_mmap
-    )
+    proof_nonprepare_resident = proof_nonprepare_heap + proof_nonprepare_hot_mmap
     lookup_map_allocations: list[int] = []
     previous_bucket_growth: list[int] = []
     for upper in table_bounds:
         required_buckets = (upper * 8 + 6) // 7
         bucket_count = max(4, 1 << (required_buckets - 1).bit_length())
-        map_allocation = (
-            map_header
-            + bucket_count * (map_entry + 1)
-            + 16
-            + upper * (repr_bytes + 32)
-        )
+        map_allocation = map_header + bucket_count * (map_entry + 1) + 16 + upper * (repr_bytes + 32)
         lookup_map_allocations.append(map_allocation)
         previous_bucket_count = bucket_count // 2 if bucket_count > 4 else 0
-        previous_bucket_growth.append(
-            previous_bucket_count * (map_entry + 1) + (16 if previous_bucket_count else 0)
-        )
+        previous_bucket_growth.append(previous_bucket_count * (map_entry + 1) + (16 if previous_bucket_count else 0))
     lookup_maps_retained = sum(lookup_map_allocations)
     lookup_map_growth_peak = max(previous_bucket_growth, default=0)
     lookup_table_polynomials = lookup_table_spill_bytes
@@ -1982,27 +1905,17 @@ def _native_capacity_requirements(
         + lookup_queries * polynomial_header
         + 2 * vec_header
     )
-    lookup_table_cache_retained_host = (
-        lookup_maps_retained + lookup_table_polynomials + lookup_metadata_retained
-    )
+    lookup_table_cache_retained_host = lookup_maps_retained + lookup_table_polynomials + lookup_metadata_retained
     # `Expression::evaluate` and the dense polynomial fold can have three
     # N-element field vectors live while one unique table group is built.
-    lookup_table_build_peak = (
-        3 * n * fr + lookup_map_growth_peak + (repr_bytes + 32)
-    ) if table_group_count else 0
+    lookup_table_build_peak = (3 * n * fr + lookup_map_growth_peak + (repr_bytes + 32)) if table_group_count else 0
     lookup_table_cache_peak_host = lookup_table_cache_retained_host + lookup_table_build_peak
     lookup_prepare_task_bytes = (
-        n * (max_lookup_queries * fr + atomic_u64 + 2 * fr)
-        + max_lookup_queries * polynomial_header
-        + prepared_header
-        + 2 * vec_header
-    ) if lookup_arguments else 0
-    lookup_prepare_host_peak = (
-        proof_nonprepare_resident
-        + lookup_table_cache_peak_host
-        + lookup_prepare_task_bytes
-        + icicle_msm_staging
+        (n * (max_lookup_queries * fr + atomic_u64 + 2 * fr) + max_lookup_queries * polynomial_header + prepared_header + 2 * vec_header)
+        if lookup_arguments
+        else 0
     )
+    lookup_prepare_host_peak = proof_nonprepare_resident + lookup_table_cache_peak_host + lookup_prepare_task_bytes + icicle_msm_staging
     # Source lifetimes in commit_grand_sum: the largest heap phase is either
     # the accumulator + current input + BatchInvert's (Fr, &mut Fr) prefix,
     # or three dense vectors while constructing log_derivatives_diff. The
@@ -2010,51 +1923,20 @@ def _native_capacity_requirements(
     # Add only the touched input/m/phi mapping window per concurrent task.
     lookup_commit_heap_per_task = n * max(2 * fr + batch_invert_entry, 3 * fr)
     lookup_commit_active_map_per_task = 3 * n * fr
-    lookup_commit_task_bytes = (
-        lookup_commit_heap_per_task + lookup_commit_active_map_per_task + 5 * vec_header
-    ) if lookup_arguments else 0
+    lookup_commit_task_bytes = (lookup_commit_heap_per_task + lookup_commit_active_map_per_task + 5 * vec_header) if lookup_arguments else 0
     # Includes the one shared table-expression group mapping in addition to
     # the per-task input, m, and phi windows.
-    lookup_commit_active_map_window = (
-        4 * n * fr
-    ) if lookup_arguments else 0
-    lookup_commit_host_peak = (
-        proof_nonprepare_resident
-        + lookup_table_polynomials
-        + lookup_metadata_retained
-        + lookup_commit_task_bytes
-        + icicle_msm_staging
-    )
+    lookup_commit_active_map_window = (4 * n * fr) if lookup_arguments else 0
+    lookup_commit_host_peak = proof_nonprepare_resident + lookup_table_polynomials + lookup_metadata_retained + lookup_commit_task_bytes + icicle_msm_staging
     parallel_split_m = 1 << (parallel_threads.bit_length() - 1)
     parallel_task_elements = parallel_threads * parallel_split_m
-    parallel_fft_transient = (
-        proof_domain * fr
-        + parallel_lut_elements * fr
-        + parallel_task_elements * fr
-    )
+    parallel_fft_transient = proof_domain * fr + parallel_lut_elements * fr + parallel_task_elements * fr
     recursive_fft_transient = 2 * proof_domain * fr if uses_recursive_fft else 0
     fft_cache_build_scratch = proof_domain * fr if uses_recursive_fft else 0
-    proof_fft_transient = max(
-        parallel_fft_transient,
-        recursive_fft_transient,
-        fft_cache_build_scratch,
-    )
-    lookup_eval_workers = min(
-        parallel_threads,
-        max(1, (proof_domain + 4095) // 4096),
-    ) if lookup_arguments else 0
-    lookup_eval_task_host_peak = (
-        lookup_eval_workers
-        * 4096
-        * max_lookup_input_count
-        * (fr + batch_invert_entry)
-    ) if lookup_arguments else 0
-    proof_eval_h_host_peak = (
-        proof_nonprepare_heap
-        + proof_eval_hot_mmap
-        + proof_fft_cache_bytes
-        + max(proof_fft_transient, lookup_eval_task_host_peak)
-    )
+    proof_fft_transient = max(parallel_fft_transient, recursive_fft_transient, fft_cache_build_scratch)
+    lookup_eval_workers = min(parallel_threads, max(1, (proof_domain + 4095) // 4096)) if lookup_arguments else 0
+    lookup_eval_task_host_peak = (lookup_eval_workers * 4096 * max_lookup_input_count * (fr + batch_invert_entry)) if lookup_arguments else 0
+    proof_eval_h_host_peak = proof_nonprepare_heap + proof_eval_hot_mmap + proof_fft_cache_bytes + max(proof_fft_transient, lookup_eval_task_host_peak)
     shplonk_host_peak = (
         proof_nonprepare_heap
         + proof_eval_hot_mmap
@@ -2065,15 +1947,8 @@ def _native_capacity_requirements(
         + shplonk_fixed_workspace_bytes
         + shplonk_batch_width_upper * shplonk_task_bytes
     )
-    proof_host_peak = max(
-        lookup_prepare_host_peak,
-        lookup_commit_host_peak,
-        proof_eval_h_host_peak,
-        shplonk_host_peak,
-    )
-    setup_keygen_host_peak = srs_loaded_and_witness + max(
-        selector_phase, pk_phase, read_scratch, icicle_msm_staging, permutation_vk_phase
-    )
+    proof_host_peak = max(lookup_prepare_host_peak, lookup_commit_host_peak, proof_eval_h_host_peak, shplonk_host_peak)
+    setup_keygen_host_peak = srs_loaded_and_witness + max(selector_phase, pk_phase, read_scratch, icicle_msm_staging, permutation_vk_phase)
     host_known = max(setup_keygen_host_peak, srs_setup_peak, proof_host_peak)
     return {
         "fixed_assignment_mapped_bytes": fixed_assignment_maps,
@@ -2128,10 +2003,7 @@ def _native_capacity_requirements(
         "lookup_commit_host_peak_bytes": lookup_commit_host_peak,
         "proof_host_peak_bytes": proof_host_peak,
         "lookup_map_bounds": [int(item) for item in table_bounds],
-        "lookup_map_bucket_count_upper": [
-            max(4, 1 << (((int(item) * 8 + 6) // 7 - 1).bit_length()))
-            for item in table_bounds
-        ],
+        "lookup_map_bucket_count_upper": [max(4, 1 << (((int(item) * 8 + 6) // 7 - 1).bit_length())) for item in table_bounds],
         "setup_key_artifact_upper_bytes": setup_key_artifact_upper,
         "quotient_extended_backing_bytes": proof_domain * fr,
         "quotient_piece_bytes": quotient_coefficients * fr,
@@ -2205,12 +2077,7 @@ def _check_dataset_capacity(
     }
 
 
-def _native_prepare_budget(
-    requirements: dict[str, int],
-    *,
-    initial_available_bytes: int,
-    workspace_query: dict[str, object],
-) -> dict[str, int]:
+def _native_prepare_budget(requirements: dict[str, int], *, initial_available_bytes: int, workspace_query: dict[str, object]) -> dict[str, int]:
     """Derive the native lookup task cap before native proof objects are loaded."""
     total_limit, _ = _effective_host_memory_limit_bytes()
     reserve, _ = _host_os_diagnostic_reserve_bytes()
@@ -2223,21 +2090,12 @@ def _native_prepare_budget(
     icicle_staging = requirements["icicle_msm_host_staging_bytes"]
     shplonk_extensions = requirements["shplonk_extension_host_upper_bytes"]
     task_envelope = max(
-        0,
-        initial_available_bytes
-        - baseline_heap
-        - baseline_hot_mmap
-        - tablecache
-        - shplonk_extensions
-        - icicle_staging
-        - device_headroom
-        - reserve,
+        0, initial_available_bytes - baseline_heap - baseline_hot_mmap - tablecache - shplonk_extensions - icicle_staging - device_headroom - reserve
     )
     minimum_task = max(
         requirements["lookup_prepare_task_host_bytes"],
         requirements["lookup_commit_task_host_bytes"],
-        requirements["shplonk_fixed_workspace_host_bytes"]
-        + requirements["shplonk_task_host_bytes"],
+        requirements["shplonk_fixed_workspace_host_bytes"] + requirements["shplonk_task_host_bytes"],
     )
     if minimum_task <= 0 or task_envelope < minimum_task:
         abort(
@@ -2255,10 +2113,7 @@ def _native_prepare_budget(
         "icicle_staging_bytes": icicle_staging,
         "device_headroom_bytes": device_headroom,
         "reserve_bytes": reserve,
-        "incremental_envelope_bytes": max(
-            0,
-            initial_available_bytes - baseline_heap - baseline_hot_mmap - device_headroom - reserve,
-        ),
+        "incremental_envelope_bytes": max(0, initial_available_bytes - baseline_heap - baseline_hot_mmap - device_headroom - reserve),
         "future_phase_increment_bytes": tablecache + shplonk_extensions + icicle_staging + task_envelope,
         "minimum_task_bytes": minimum_task,
         "taskcap_bytes": task_envelope,
@@ -2280,12 +2135,7 @@ def _recheck_local_phase_capacity(
     build_environment: dict[str, object],
 ) -> dict[str, object]:
     sample = _sample_native_cuda_memory(
-        receipt,
-        session_dir=session_dir,
-        session_id=session_id,
-        selected_device=selected_device,
-        gpu_identity=gpu_identity,
-        build_environment=build_environment,
+        receipt, session_dir=session_dir, session_id=session_id, selected_device=selected_device, gpu_identity=gpu_identity, build_environment=build_environment
     )
     return _check_dataset_capacity(
         dataset,
@@ -2309,32 +2159,17 @@ def _admit_local_capacity(
     build_environment: dict[str, object],
     gpu_identity: dict[str, object],
 ) -> tuple[dict[str, object], dict[str, dict[str, int]], dict[str, object]]:
-    receipt = _build_native_cub_workspace_query(
-        session_dir,
-        session_id,
-        runtime_identity,
-        selected_device,
-        build_environment,
-        gpu_identity,
-    )
-    receipt = _validate_native_cub_workspace_receipt(
-        receipt, session_dir, selected_device, gpu_identity, session_id
-    )
+    receipt = _build_native_cub_workspace_query(session_dir, session_id, runtime_identity, selected_device, build_environment, gpu_identity)
+    receipt = _validate_native_cub_workspace_receipt(receipt, session_dir, selected_device, gpu_identity, session_id)
     query = receipt["query"]
     if not isinstance(query, dict):
         abort("EZKL CUB workspace receipt has no decoded query object")
     sizes = query["native_type_sizes"]
     for dataset, admission in admissions.items():
         model = admission["native_memory_model"]
-        if (
-            sizes["scalar_bytes"] != model["size_of_fr_bytes"]
-            or model["cuda_total_memory_bytes"] != query["total_memory_bytes"]
-        ):
+        if sizes["scalar_bytes"] != model["size_of_fr_bytes"] or model["cuda_total_memory_bytes"] != query["total_memory_bytes"]:
             abort(f"{dataset} native admission scalar/device values disagree with compiled ICICLE identity")
-    requirements = {
-        dataset: _native_capacity_requirements(admission, sizes)
-        for dataset, admission in admissions.items()
-    }
+    requirements = {dataset: _native_capacity_requirements(admission, sizes) for dataset, admission in admissions.items()}
     future_key_artifacts = sum(item["setup_key_artifact_upper_bytes"] for item in requirements.values())
     max_setup_map_peak = max(item["setup_mapped_peak_bytes"] for item in requirements.values())
     initial_disk_required = future_key_artifacts + max_setup_map_peak
@@ -2347,34 +2182,35 @@ def _admit_local_capacity(
     }
     checks: list[dict[str, object]] = []
     for dataset in DATASETS:
-        checks.append(_check_dataset_capacity(
-            dataset,
-            requirements[dataset],
-            output_root=output_root,
-            remaining_known_disk_bytes=initial_disk_required,
-            phase="initial_five_dataset_admission",
-            device_sample=initial_sample,
-            workspace_query=query,
-        ))
-    return receipt, requirements, {
-        "schema": "ezkl.local_known_capacity_gate.v1",
-        "coverage": "source-derived-known-allocation-gates; not a complete phase peak estimate",
-        "native_cub_workspace_query_sha256": receipt["result_sha256"],
-        "session_id": session_id,
-        "selected_device_uuid": selected_device["uuid"],
-        "device_workspace_peak_bytes": query["device_workspace_peak_bytes"],
-        "integrated_device": query["integrated_device"],
-        "datasets": requirements,
-        "initial_checks": checks,
-    }
+        checks.append(
+            _check_dataset_capacity(
+                dataset,
+                requirements[dataset],
+                output_root=output_root,
+                remaining_known_disk_bytes=initial_disk_required,
+                phase="initial_five_dataset_admission",
+                device_sample=initial_sample,
+                workspace_query=query,
+            )
+        )
+    return (
+        receipt,
+        requirements,
+        {
+            "schema": "ezkl.local_known_capacity_gate.v1",
+            "coverage": "source-derived-known-allocation-gates; not a complete phase peak estimate",
+            "native_cub_workspace_query_sha256": receipt["result_sha256"],
+            "session_id": session_id,
+            "selected_device_uuid": selected_device["uuid"],
+            "device_workspace_peak_bytes": query["device_workspace_peak_bytes"],
+            "integrated_device": query["integrated_device"],
+            "datasets": requirements,
+            "initial_checks": checks,
+        },
+    )
 
 
-def _remaining_setup_disk_bytes(
-    requirements: dict[str, dict[str, int]],
-    dataset_index: int,
-    *,
-    include_current_transient: bool,
-) -> int:
+def _remaining_setup_disk_bytes(requirements: dict[str, dict[str, int]], dataset_index: int, *, include_current_transient: bool) -> int:
     remaining = DATASETS[dataset_index:]
     retained = sum(requirements[name]["setup_key_artifact_upper_bytes"] for name in remaining)
     if include_current_transient:
@@ -2382,13 +2218,7 @@ def _remaining_setup_disk_bytes(
     return retained
 
 
-def update_session_record(
-    path: Path,
-    *,
-    status: str,
-    stage: str,
-    error: str | None = None,
-) -> None:
+def update_session_record(path: Path, *, status: str, stage: str, error: str | None = None) -> None:
     document = json.loads(path.read_text())
     document["status"] = status
     document["stage"] = stage
@@ -2440,19 +2270,14 @@ def _preflight_dataset_configs() -> dict[str, dict[str, str]]:
             require_file(data_dir / "node_ptr.txt", f"{dataset} canonical graph boundaries")
         checked[dataset] = values
         print(
-            f"[ezkl-formal] dataset preflight PASS: {dataset} config, dataset-scoped metadata, "
-            "checkpoint manifest/tensors, graph files, and schema",
+            f"[ezkl-formal] dataset preflight PASS: {dataset} config, dataset-scoped metadata, " "checkpoint manifest/tensors, graph files, and schema",
             flush=True,
         )
     return checked
 
 
 def _authenticate_or_prepare_resources(
-    python: str,
-    *,
-    allow_prepare: bool,
-    session_id: str,
-    preflight_config_sha256s: tuple[tuple[str, str], ...],
+    python: str, *, allow_prepare: bool, session_id: str, preflight_config_sha256s: tuple[tuple[str, str], ...]
 ) -> tuple[tuple[tuple[str, tuple[int, int, int, int, int]], ...], tuple[tuple[str, str], ...]]:
     try:
         identities_before = resource_file_identities()
@@ -2467,11 +2292,7 @@ def _authenticate_or_prepare_resources(
         print(f"[ezkl-formal] complete resource validation needs repair: {exc}", flush=True)
         if not allow_prepare:
             raise
-    return _prepare_and_authenticate_resources(
-        python,
-        session_id=session_id,
-        preflight_config_sha256s=tuple(preflight_config_sha256s),
-    )
+    return _prepare_and_authenticate_resources(python, session_id=session_id, preflight_config_sha256s=tuple(preflight_config_sha256s))
 
 
 def _authenticate_or_provision_srs(python: str, *, allow_provision: bool) -> dict[str, object]:
@@ -2483,60 +2304,71 @@ def _authenticate_or_provision_srs(python: str, *, allow_provision: bool) -> dic
             raise
     provisioner = ROOT / "scripts" / "provision_srs.py"
     require_file(provisioner, "official native SRS provisioner")
-    run_prerequisite(
-        [python, "-u", str(provisioner)],
-        "provision and authenticate official native get-srs material",
-        timeout_seconds=21600,
-    )
+    run_prerequisite([python, "-u", str(provisioner)], "provision and authenticate official native get-srs material", timeout_seconds=21600)
     return validate_native_srs_manifest()
 
 
-def _formal_dataset_command_plan(
-    binary: Path,
-    srs: Path,
-    output_root: Path,
-    admissions: dict[str, dict[str, object]],
-) -> list[dict[str, object]]:
+def _formal_dataset_command_plan(binary: Path, srs: Path, output_root: Path, admissions: dict[str, dict[str, object]]) -> list[dict[str, object]]:
     """Build the exact baseline-local setup/producer/prove command sequence."""
     plan: list[dict[str, object]] = []
     for dataset in DATASETS:
         output = output_root / dataset
-        admission_dir = local_path(
-            str(admissions[dataset]["prepared_dir"]), f"{dataset} admitted circuit directory"
-        )
+        admission_dir = local_path(str(admissions[dataset]["prepared_dir"]), f"{dataset} admitted circuit directory")
         setup = [
             local_cli(binary, "binary"),
             "gat-prepare",
-            "--dataset", dataset,
-            "--phase", "setup",
-            "--resource-manifest", "resources/resource_manifest.json",
-            "--output-dir", local_cli(output, "output-dir"),
-            "--admission-dir", local_cli(admission_dir, "admitted circuit"),
-            "--srs-path", local_cli(srs, "SRS"),
+            "--dataset",
+            dataset,
+            "--phase",
+            "setup",
+            "--resource-manifest",
+            "resources/resource_manifest.json",
+            "--output-dir",
+            local_cli(output, "output-dir"),
+            "--admission-dir",
+            local_cli(admission_dir, "admitted circuit"),
+            "--srs-path",
+            local_cli(srs, "SRS"),
         ]
         if NATIVE_FORMAL_BACKEND == "gpu":
             setup.append("--gpu")
         producer = [
-            "--dataset", dataset,
-            "--resource-manifest", "resources/resource_manifest.json",
-            "--setup-context", local_cli(output / "producer_context.json", "producer setup context"),
-            "--output-dir", local_cli(output, "output-dir"),
-            "--config", local_cli(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg", "config"),
-            "--statement", local_cli(output / "statement.json", "public statement"),
-            "--public-output", local_cli(output / "public_output.json", "public output"),
-            "--producer-manifest", local_cli(output / "producer_manifest.json", "producer manifest"),
+            "--dataset",
+            dataset,
+            "--resource-manifest",
+            "resources/resource_manifest.json",
+            "--setup-context",
+            local_cli(output / "producer_context.json", "producer setup context"),
+            "--output-dir",
+            local_cli(output, "output-dir"),
+            "--config",
+            local_cli(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg", "config"),
+            "--statement",
+            local_cli(output / "statement.json", "public statement"),
+            "--public-output",
+            local_cli(output / "public_output.json", "public output"),
+            "--producer-manifest",
+            local_cli(output / "producer_manifest.json", "producer manifest"),
         ]
         single = [
-            "--dataset", dataset,
-            "--backend", NATIVE_FORMAL_BACKEND,
+            "--dataset",
+            dataset,
+            "--backend",
+            NATIVE_FORMAL_BACKEND,
             "--execute-formal",
             "--reuse-setup",
-            "--config", local_cli(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg", "config"),
-            "--public-statement", local_cli(output / "statement.json", "public statement"),
-            "--public-output", local_cli(output / "public_output.json", "public output"),
-            "--producer-manifest", local_cli(output / "producer_manifest.json", "producer manifest"),
-            "--binary", local_cli(binary, "binary"),
-            "--output-dir", local_cli(output, "output-dir"),
+            "--config",
+            local_cli(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg", "config"),
+            "--public-statement",
+            local_cli(output / "statement.json", "public statement"),
+            "--public-output",
+            local_cli(output / "public_output.json", "public output"),
+            "--producer-manifest",
+            local_cli(output / "producer_manifest.json", "producer manifest"),
+            "--binary",
+            local_cli(binary, "binary"),
+            "--output-dir",
+            local_cli(output, "output-dir"),
         ]
         plan.append({"dataset": dataset, "setup": setup, "producer": producer, "single": single})
     return plan
@@ -2568,9 +2400,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     _set_stage(session_file, "runtime_identity")
     runtime_identity = validate_formal_python_environment()
     selected_device = select_formal_cuda_device(runtime_identity["nvidia_smi_path"])
-    os.environ["EZKL_FORMAL_SELECTED_CUDA_DEVICE"] = json.dumps(
-        selected_device, sort_keys=True, separators=(",", ":")
-    )
+    os.environ["EZKL_FORMAL_SELECTED_CUDA_DEVICE"] = json.dumps(selected_device, sort_keys=True, separators=(",", ":"))
     build_environment = formal_build_environment_identity(runtime_identity, selected_device)
     session_document = json.loads(session_file.read_text())
     session_document["python_environment"] = runtime_identity
@@ -2598,19 +2428,10 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
 
     _set_stage(session_file, "five_dataset_config_preflight")
     config_values = _preflight_dataset_configs()
-    preflight_config_sha256s = tuple(
-        (
-            dataset,
-            sha256(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg"),
-        )
-        for dataset in DATASETS
-    )
+    preflight_config_sha256s = tuple((dataset, sha256(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg")) for dataset in DATASETS)
     _set_stage(session_file, "canonical_resource_authentication")
     authenticated_resource_file_identities, preflight_config_sha256s = _authenticate_or_prepare_resources(
-        python,
-        allow_prepare=not args.preflight_only,
-        session_id=session_id,
-        preflight_config_sha256s=preflight_config_sha256s,
+        python, allow_prepare=not args.preflight_only, session_id=session_id, preflight_config_sha256s=preflight_config_sha256s
     )
     print("[ezkl-formal] authenticated complete five-dataset canonical resources", flush=True)
 
@@ -2637,14 +2458,25 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             else:
                 run_prerequisite(
                     [
-                        "bash", "setup-gpu.sh", "--yes", "--python", python,
-                        "--nvcc", runtime_identity["nvcc_path"],
-                        "--cmake", runtime_identity["cmake_path"],
-                        "--make", runtime_identity["make_path"],
-                        "--cc", runtime_identity["cc_path"],
-                        "--cxx", runtime_identity["cxx_path"],
-                        "--nvidia-smi", runtime_identity["nvidia_smi_path"],
-                        "--selected-device-json", json.dumps(selected_device, sort_keys=True, separators=(",", ":")),
+                        "bash",
+                        "setup-gpu.sh",
+                        "--yes",
+                        "--python",
+                        python,
+                        "--nvcc",
+                        runtime_identity["nvcc_path"],
+                        "--cmake",
+                        runtime_identity["cmake_path"],
+                        "--make",
+                        runtime_identity["make_path"],
+                        "--cc",
+                        runtime_identity["cc_path"],
+                        "--cxx",
+                        runtime_identity["cxx_path"],
+                        "--nvidia-smi",
+                        runtime_identity["nvidia_smi_path"],
+                        "--selected-device-json",
+                        json.dumps(selected_device, sort_keys=True, separators=(",", ":")),
                     ],
                     "prepare source-matched native ICICLE CUDA libraries once",
                     timeout_seconds=21600,
@@ -2673,24 +2505,35 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         if binary != ROOT / "target" / NATIVE_FORMAL_BACKEND / "release/ezkl":
             abort(f"stale custom --binary cannot be rebuilt; use target/{NATIVE_FORMAL_BACKEND}/release/ezkl")
         build_args = [
-            "bash", local_cli(build, "build script"), f"--{NATIVE_FORMAL_BACKEND}", "--python", python,
-            "--cargo", str(runtime_identity["cargo_path"]),
-            "--rustc", str(runtime_identity["rustc_path"]),
-            "--rustdoc", str(runtime_identity["rustdoc_path"]),
-            "--cmake", str(runtime_identity["cmake_path"]),
-            "--make", str(runtime_identity["make_path"]),
-            "--nvcc", str(runtime_identity["nvcc_path"]),
-            "--cc", str(runtime_identity["cc_path"]),
-            "--cxx", str(runtime_identity["cxx_path"]),
-            "--nvidia-smi", str(runtime_identity["nvidia_smi_path"]),
-            "--selected-device-json", json.dumps(selected_device, sort_keys=True, separators=(",", ":")),
-            "--build-environment-json", json.dumps(build_environment, sort_keys=True, separators=(",", ":")),
+            "bash",
+            local_cli(build, "build script"),
+            f"--{NATIVE_FORMAL_BACKEND}",
+            "--python",
+            python,
+            "--cargo",
+            str(runtime_identity["cargo_path"]),
+            "--rustc",
+            str(runtime_identity["rustc_path"]),
+            "--rustdoc",
+            str(runtime_identity["rustdoc_path"]),
+            "--cmake",
+            str(runtime_identity["cmake_path"]),
+            "--make",
+            str(runtime_identity["make_path"]),
+            "--nvcc",
+            str(runtime_identity["nvcc_path"]),
+            "--cc",
+            str(runtime_identity["cc_path"]),
+            "--cxx",
+            str(runtime_identity["cxx_path"]),
+            "--nvidia-smi",
+            str(runtime_identity["nvidia_smi_path"]),
+            "--selected-device-json",
+            json.dumps(selected_device, sort_keys=True, separators=(",", ":")),
+            "--build-environment-json",
+            json.dumps(build_environment, sort_keys=True, separators=(",", ":")),
         ]
-        run(
-            build_args,
-            "build source-matched official ezkl native binary",
-            log_path=_build_log_path(session_id),
-        )
+        run(build_args, "build source-matched official ezkl native binary", log_path=_build_log_path(session_id))
         if not reusable_build(binary, NATIVE_FORMAL_BACKEND, runtime_identity, build_environment):
             abort("native build did not produce a matching binary/resource/adapter receipt")
     else:
@@ -2750,9 +2593,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     session_document["source_tree_sha256"] = source_tree_hash()
     session_document["binary_sha256"] = sha256(binary)
     _write_session_record(session_file, session_document)
-    cub_receipt = _validate_native_cub_workspace_receipt(
-        cub_receipt, session_dir, selected_device, gpu_identity, session_id
-    )
+    cub_receipt = _validate_native_cub_workspace_receipt(cub_receipt, session_dir, selected_device, gpu_identity, session_id)
     archive_prior_outputs(output_root, matrix, session_id, session_file)
 
     for dataset_index, item in enumerate(_formal_dataset_command_plan(binary, srs, output_root, admissions)):
@@ -2762,9 +2603,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             dataset,
             capacity_requirements[dataset],
             output_root=output_root,
-            remaining_known_disk_bytes=_remaining_setup_disk_bytes(
-                capacity_requirements, dataset_index, include_current_transient=True
-            ),
+            remaining_known_disk_bytes=_remaining_setup_disk_bytes(capacity_requirements, dataset_index, include_current_transient=True),
             phase="setup",
             receipt=cub_receipt,
             session_dir=session_dir,
@@ -2780,16 +2619,10 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         setup_ms = run(item["setup"], f"{dataset} native setup", gpu=NATIVE_FORMAL_BACKEND == "gpu")
         (output / "setup_timing.json").write_text(json.dumps({"duration_ms": setup_ms}) + "\n")
         invoke_python_entrypoint(
-            "produce_public_statement",
-            item["producer"],
-            f"{dataset} independent public statement/Y producer",
-            context=context,
-            session_id=session_id,
+            "produce_public_statement", item["producer"], f"{dataset} independent public statement/Y producer", context=context, session_id=session_id
         )
         proof_disk_required = (
-            _remaining_setup_disk_bytes(
-                capacity_requirements, dataset_index + 1, include_current_transient=False
-            )
+            _remaining_setup_disk_bytes(capacity_requirements, dataset_index + 1, include_current_transient=False)
             + capacity_requirements[dataset]["proof_spill_known_bytes"]
         )
         prove_check = _recheck_local_phase_capacity(
@@ -2808,9 +2641,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         session_document = json.loads(session_file.read_text())
         session_document.setdefault("capacity_checks", []).append(prove_check)
         prepare_budget = _native_prepare_budget(
-            capacity_requirements[dataset],
-            initial_available_bytes=int(prove_check["host_available_bytes"]),
-            workspace_query=cub_receipt["query"],
+            capacity_requirements[dataset], initial_available_bytes=int(prove_check["host_available_bytes"]), workspace_query=cub_receipt["query"]
         )
         prove_check["native_prepare_budget"] = prepare_budget
         session_document.setdefault("capacity_checks", [])[-1] = prove_check
@@ -2818,23 +2649,13 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         cardinality_bounds = admissions[dataset]["native_memory_model"]["lookup_table_cardinality_upper_bounds"]
         os.environ["EZKL_NATIVE_PREPARE_BUDGET_BYTES"] = str(prepare_budget["taskcap_bytes"])
         os.environ["EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES"] = str(prepare_budget["device_headroom_bytes"])
-        os.environ["EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS"] = ",".join(
-            str(bound) for bound in cardinality_bounds
-        )
+        os.environ["EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS"] = ",".join(str(bound) for bound in cardinality_bounds)
         try:
             invoke_python_entrypoint(
-                "run_single_dataset",
-                item["single"],
-                f"{dataset} final/witness/prove/independent verify",
-                context=context,
-                session_id=session_id,
+                "run_single_dataset", item["single"], f"{dataset} final/witness/prove/independent verify", context=context, session_id=session_id
             )
         finally:
-            for name in (
-                "EZKL_NATIVE_PREPARE_BUDGET_BYTES",
-                "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES",
-                "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS",
-            ):
+            for name in ("EZKL_NATIVE_PREPARE_BUDGET_BYTES", "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES", "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS"):
                 os.environ.pop(name, None)
 
     _set_stage(session_file, "collect_five_results")
@@ -2883,14 +2704,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     session_document["final_validation_capacity"] = validation_capacity
     _write_session_record(session_file, session_document)
     run(
-        [
-            python,
-            local_cli(validate, "result validator"),
-            "--matrix",
-            local_cli(matrix, "matrix"),
-            "--session-id",
-            session_id,
-        ],
+        [python, local_cli(validate, "result validator"), "--matrix", local_cli(matrix, "matrix"), "--session-id", session_id],
         "validate five-dataset result matrix",
     )
     print(f"validated five formal results: {matrix.relative_to(ROOT)}")
@@ -2926,12 +2740,7 @@ def _main(args: argparse.Namespace) -> int:
         guardian = ProcessGuardian.start(root=ROOT, session_id=session_id, session_file=session_file, lock_fd=lock_fd)
     except BaseException as exc:
         try:
-            update_session_record(
-                session_file,
-                status="FAILED",
-                stage="guardian_start",
-                error=f"{type(exc).__name__}: {exc}",
-            )
+            update_session_record(session_file, status="FAILED", stage="guardian_start", error=f"{type(exc).__name__}: {exc}")
         except BaseException as record_exc:
             print(f"[ezkl-formal] could not record guardian startup failure: {record_exc}", file=sys.stderr, flush=True)
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -2954,10 +2763,7 @@ def _main(args: argparse.Namespace) -> int:
         if session_file.exists() and not session_file.is_symlink():
             try:
                 update_session_record(
-                    session_file,
-                    status="FAILED",
-                    stage=str(json.loads(session_file.read_text()).get("stage", "failed")),
-                    error=f"{type(exc).__name__}: {exc}",
+                    session_file, status="FAILED", stage=str(json.loads(session_file.read_text()).get("stage", "failed")), error=f"{type(exc).__name__}: {exc}"
                 )
             except BaseException as record_exc:
                 print(f"[ezkl-formal] could not record failed session state: {record_exc}", file=sys.stderr, flush=True)
