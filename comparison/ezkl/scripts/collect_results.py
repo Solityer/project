@@ -46,6 +46,8 @@ from formal_common import (
     sha256,
     source_tree_hash,
     validate_artifact_identity,
+    validate_canonical_public_inputs,
+    validate_config,
     validate_native_proof_metrics,
     validate_native_verify_metrics,
     validate_gpu_evidence,
@@ -214,6 +216,7 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         abort(f"{path} is not a verified native result")
     dataset = result["dataset"]
     formal = "formal_session_id" in result
+    secure_config = None
     backend = result.get("backend")
     if dataset not in DATASETS:
         abort(f"{path} has an unknown dataset")
@@ -232,6 +235,9 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
             abort(f"{path} belongs to a different formal session")
         if path.parent.name != dataset:
             abort(f"{path} is outside its canonical dataset result directory")
+        secure_config = validate_config(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg", dataset)
+        if result["quant_cfg_id"] != secure_config["quant_cfg_id"] or result["static_tables_id"] != secure_config["static_table_id"]:
+            abort(f"{path} quantization/static-table identities differ from the canonical config")
         for field in formal_gpu_identity_fields:
             if field not in result:
                 abort(f"{path} is missing current-session GPU identity field {field}")
@@ -327,8 +333,10 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         dataset=dataset,
         circuit_ref=circuit_ref,
         public_output_sha256=result["public_output_sha256"],
-        quant_cfg_id=result["quant_cfg_id"],
-        static_tables_id=result["static_tables_id"],
+        quant_cfg_id=secure_config["quant_cfg_id"] if secure_config is not None else result["quant_cfg_id"],
+        static_tables_id=secure_config["static_table_id"] if secure_config is not None else result["static_tables_id"],
+        degree_bound_id=secure_config["degree_bound_id"] if secure_config is not None else None,
+        degree_bound_digest=secure_config["degree_bound_digest"] if secure_config is not None else None,
     )
     if public_output_values(public_output, dataset=dataset) != statement_document["public_ezkl"]["y"]:
         abort(f"{path} public output Y disagrees element-by-element with statement")
@@ -372,6 +380,14 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         vk=path_from_result(result["vk_path"], "verification key"),
         pk=path_from_result(result["pk_path"], "proving key"),
     )
+    if secure_config is not None:
+        validate_canonical_public_inputs(
+            statement_document,
+            dataset=dataset,
+            secure_config=secure_config,
+            setup_context_path=artifact_manifest.parent / "producer_context.json",
+            expected_resource_manifest_sha256=result["resource_manifest_sha256"],
+        )
     if artifact["statement_sha256"] != result["public_statement_sha256"]:
         abort(f"{path} artifact statement identity is not externally bound")
     artifact_records = {record["path"]: record for record in artifact["files"]}

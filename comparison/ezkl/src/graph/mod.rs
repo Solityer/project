@@ -1028,7 +1028,15 @@ impl GraphSettings {
             module_sizes,
             ..Default::default()
         };
-        Ok(settings.log2_total_instances_with_blinding())
+        // Select a domain that can hold both the complete public instance
+        // column and the independently laid out public-hash module rows. The
+        // latter is also checked after GraphCircuit::new, but must be part of
+        // this source-only floor so an undersized domain fails before dummy
+        // synthesis.
+        Ok(std::cmp::max(
+            settings.log2_total_instances_with_blinding(),
+            settings.module_constraint_logrows_with_blinding(),
+        ))
     }
 
     /// Calc the number of rows required for lookup tables

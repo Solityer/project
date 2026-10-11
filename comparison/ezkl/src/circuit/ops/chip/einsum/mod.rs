@@ -110,7 +110,7 @@ impl<F: PrimeField + TensorType + PartialOrd + std::hash::Hash> Einsums<F> {
         output_tensor: &ValTensor<F>,
         equation: &str,
         check_mode: &CheckMode,
-    ) -> Result<(), CircuitError> {
+    ) -> Result<ValTensor<F>, CircuitError> {
         region.set_num_einsum_inner_cols(self.contraction_gate.block_width());
 
         let (input_exprs, _) = equation.split_once("->").unwrap();
@@ -118,6 +118,7 @@ impl<F: PrimeField + TensorType + PartialOrd + std::hash::Hash> Einsums<F> {
         assert_eq!(input_exprs.len(), input_tensors.len());
 
         let mut input_tensors = input_tensors.iter().copied().cloned().collect_vec();
+        let output_shape = output_tensor.dims().to_vec();
         let mut output_tensor = output_tensor.clone();
 
         let mut input_axes_to_dim: HashMap<char, usize> = HashMap::new();
@@ -148,14 +149,29 @@ impl<F: PrimeField + TensorType + PartialOrd + std::hash::Hash> Einsums<F> {
             equation_analysis.strategy,
             analysis::EinsumStrategy::BaseOps
         ) {
-            let _ = einsum_with_base_ops(
+            let mut output = einsum_with_base_ops(
                 base_config,
                 region,
                 &input_tensors.iter().collect_vec(),
                 &equation,
             )?;
-            return Ok(());
+            output.reshape(&output_shape)?;
+            return Ok(output);
         }
+
+        // The accumulated host result is only a witness proposal. Materialize
+        // each element in the main advice region before the Freivalds output
+        // RLC, so the RLC copies these exact cells and the result returned to
+        // later GAT operations remains bound to the contraction relation.
+        // This is deliberately before trivial-axis removal: it preserves the
+        // caller-visible row-major output shape while the RLC uses its compact
+        // contraction shape below.
+        let assigned_output = crate::circuit::ops::layouts::identity(
+            base_config,
+            region,
+            &[&output_tensor],
+        )?;
+        output_tensor = assigned_output.clone();
 
         let output_shape = equation_analysis
             .output_indices
@@ -296,7 +312,9 @@ impl<F: PrimeField + TensorType + PartialOrd + std::hash::Hash> Einsums<F> {
             check_mode,
         )?;
 
-        region.constrain_equal(&squashed_input, &squashed_output)
+        region.constrain_equal(&squashed_input, &squashed_output)?;
+
+        Ok(assigned_output)
     }
 
     fn assign_output(

@@ -2190,6 +2190,18 @@ fn gat_backend(gpu: bool) -> Result<String, EZKLError> {
     Ok(backend)
 }
 
+fn native_capacity_logrows_with_blinding(rows: usize) -> Result<u32, EZKLError> {
+    let rows_with_blinding = rows
+        .checked_add(crate::graph::RESERVED_BLINDING_ROWS)
+        .ok_or_else(|| EZKLError::from("native GAT capacity row count overflow"))?;
+    let ceil_log2 = if rows_with_blinding <= 1 {
+        1
+    } else {
+        usize::BITS - (rows_with_blinding - 1).leading_zeros()
+    };
+    Ok(ceil_log2)
+}
+
 fn build_canonical_gat_circuit(
     loaded: &crate::gat_adapter::LoadedGat,
 ) -> Result<GraphCircuit, EZKLError> {
@@ -2234,9 +2246,48 @@ fn build_canonical_gat_circuit(
         model_build_started.elapsed().as_secs_f64() * 1000.0,
     );
     let shape_started = Instant::now();
-    let required_logrows = GraphSettings::required_logrows_for_model(&model, &run_args)?;
-    run_args.logrows = run_args.logrows.max(required_logrows);
-    run_args.validate().map_err(EZKLError::from)?;
+    let model_floor_logrows = GraphSettings::required_logrows_for_model(&model, &run_args)?;
+    let exact_table_rows = [
+        loaded.spec.tables.lrelu.rows.len(),
+        loaded.spec.tables.exp.rows.len(),
+        loaded.spec.tables.elu.rows.len(),
+        loaded.spec.tables.max_relu.rows.len(),
+    ];
+    let exact_table_total_rows = exact_table_rows.iter().try_fold(0usize, |total, rows| {
+        total
+            .checked_add(*rows)
+            .ok_or_else(|| EZKLError::from("native GAT exact-table row count overflow"))
+    })?;
+    let max_exact_table_rows = exact_table_rows.iter().copied().max().unwrap_or(0);
+    let exact_table_total_floor_logrows =
+        native_capacity_logrows_with_blinding(exact_table_total_rows)?;
+    let exact_table_max_floor_logrows =
+        native_capacity_logrows_with_blinding(max_exact_table_rows)?;
+    let selected_logrows = run_args
+        .logrows
+        .max(model_floor_logrows)
+        .max(exact_table_total_floor_logrows)
+        .max(exact_table_max_floor_logrows);
+    let domain_size = 1u64
+        .checked_shl(selected_logrows)
+        .ok_or_else(|| EZKLError::from("native GAT selected domain size overflow"))?;
+    let official_srs_domain_size = 1u64
+        .checked_shl(crate::graph::MAX_PUBLIC_SRS)
+        .ok_or_else(|| EZKLError::from("official native GAT SRS domain size overflow"))?;
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=static_capacity_preflight dataset={} model_instance_module_floor_k={} exact_table_rows_total={} exact_table_total_floor_k={} exact_table_rows_max={} exact_table_max_floor_k={} selected_k={} domain={} official_srs_max_k={} official_srs_domain={}",
+        loaded.dataset,
+        model_floor_logrows,
+        exact_table_total_rows,
+        exact_table_total_floor_logrows,
+        max_exact_table_rows,
+        exact_table_max_floor_logrows,
+        selected_logrows,
+        domain_size,
+        crate::graph::MAX_PUBLIC_SRS,
+        official_srs_domain_size,
+    );
+    run_args.logrows = selected_logrows;
     if run_args.logrows > crate::graph::MAX_PUBLIC_SRS {
         return Err(format!(
             "canonical GAT setup requires logrows {}, exceeding official SRS maximum {}",
@@ -2245,6 +2296,7 @@ fn build_canonical_gat_circuit(
         )
         .into());
     }
+    run_args.validate().map_err(EZKLError::from)?;
     let formal_inputs = gat_input_tensors(&loaded.spec)?;
     let formal_params = gat_parameter_tensor(&loaded.spec)?;
     let input_shapes = model.graph.input_shapes()?;
@@ -2701,7 +2753,7 @@ fn gat_prepare_admission(
     >();
     let shplonk_rotation_set_count = shplonk_shape.rotation_set_commitment_counts.len();
     let memory_model = serde_json::json!({
-        "schema": "ezkl-halo2-memory-model-v4",
+        "schema": "ezkl-halo2-memory-model-v5",
         "native_target_arch": std::env::consts::ARCH,
         "uses_recursive_fft": uses_recursive_fft,
         "proof_logrows": proof_logrows,
@@ -2726,6 +2778,7 @@ fn gat_prepare_admission(
         "size_of_batch_invert_entry_bytes": std::mem::size_of::<(Fr, &mut Fr)>(),
         "size_of_usize_bytes": std::mem::size_of::<usize>(),
         "size_of_usize_pair_bytes": std::mem::size_of::<(usize, usize)>(),
+        "size_of_permutation_hashmap_header_bytes": std::mem::size_of::<std::collections::HashMap<usize, usize>>(),
         "size_of_g1_affine_bytes": std::mem::size_of::<G1Affine>(),
         "size_of_g1_projective_bytes": std::mem::size_of::<<G1Affine as halo2curves::group::prime::PrimeCurveAffine>::Curve>(),
         "size_of_g2_affine_bytes": std::mem::size_of::<halo2curves::bn256::G2Affine>(),
@@ -2792,7 +2845,7 @@ fn gat_prepare_admission(
     let compiled_circuit_sha256 = get_file_hash(&compiled_path)?;
     let relation_identity = native_admission_relation_identity(&loaded)?;
     let admission = serde_json::json!({
-        "schema_version": 4,
+        "schema_version": 5,
         "relation_id": "R_GAT-ezkl",
         "dataset": loaded.dataset,
         "model_arch_id": loaded.spec.model.model_arch_id,
@@ -2855,6 +2908,7 @@ fn native_admission_relation_identity(loaded: &crate::gat_adapter::LoadedGat) ->
         .map_err(EZKLError::from)?;
     Ok(serde_json::json!({
         "schema_version": loaded.spec.schema_version,
+        "native_layout_revision": "gat_fixed_topology_routing_v1",
         "dataset": loaded.dataset,
         "resource_manifest_sha256": loaded.resource_manifest_sha256,
         "model_arch_id": loaded.spec.model.model_arch_id,
@@ -2902,7 +2956,7 @@ fn load_native_admission_circuit(
     }
     let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
     let expected_relation_identity = native_admission_relation_identity(loaded)?;
-    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(4)
+    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(5)
         || admission.get("relation_id").and_then(JsonValue::as_str) != Some("R_GAT-ezkl")
         || admission.get("dataset").and_then(JsonValue::as_str) != Some(loaded.dataset.as_str())
         || admission.get("resource_manifest_sha256").and_then(JsonValue::as_str)
@@ -3022,7 +3076,7 @@ fn load_native_admission_circuit(
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "native admission has no memory model".to_string())?;
     if memory_model.get("schema").and_then(JsonValue::as_str)
-        != Some("ezkl-halo2-memory-model-v4")
+        != Some("ezkl-halo2-memory-model-v5")
         || memory_model.get("fixed_polynomial_read_mode").and_then(JsonValue::as_str)
             != Some("streamed_one_polynomial_chunked_v1")
     {
@@ -3237,6 +3291,10 @@ fn load_native_admission_circuit(
         ("size_of_batch_invert_entry_bytes", batch_invert_entry_bytes),
         ("size_of_usize_bytes", std::mem::size_of::<usize>() as u128),
         ("size_of_usize_pair_bytes", std::mem::size_of::<(usize, usize)>() as u128),
+        (
+            "size_of_permutation_hashmap_header_bytes",
+            std::mem::size_of::<std::collections::HashMap<usize, usize>>() as u128,
+        ),
         ("size_of_g1_affine_bytes", std::mem::size_of::<G1Affine>() as u128),
         (
             "size_of_g1_projective_bytes",

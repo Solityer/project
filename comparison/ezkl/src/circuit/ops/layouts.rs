@@ -908,7 +908,7 @@ pub fn einsum<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(
         crate::tensor::ops::accumulated::einsum(equation, &input_values.iter().collect_vec())?.0
     };
 
-    config.einsums.as_ref().unwrap().assign_einsum(
+    let output = config.einsums.as_ref().unwrap().assign_einsum(
         config,
         region,
         inputs,
@@ -916,8 +916,6 @@ pub fn einsum<F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(
         equation,
         &config.check_mode,
     )?;
-
-    let output: ValTensor<F> = output_tensor.into();
 
     region.increment_einsum_index(1);
 

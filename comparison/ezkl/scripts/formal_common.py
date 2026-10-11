@@ -1119,6 +1119,8 @@ def validate_public_statement(
     public_output_sha256: str | None = None,
     quant_cfg_id: str | None = None,
     static_tables_id: str | None = None,
+    degree_bound_id: str | None = None,
+    degree_bound_digest: str | None = None,
 ) -> dict[str, Any]:
     statement = load_json(path, "external public statement")
     required = {
@@ -1215,7 +1217,7 @@ def validate_public_statement(
         abort("statement node_ids is empty")
     if not isinstance(public["y"], list) or not public["y"]:
         abort("statement public Y is empty")
-    for key in ("feature_table", "node_ids", "src", "dst", "node_ptr", "edge_ptr"):
+    for key in ("node_ids", "src", "dst", "node_ptr", "edge_ptr"):
         values = public[key]
         if not isinstance(values, list) or not values:
             abort(f"statement {key} is empty")
@@ -1223,6 +1225,10 @@ def validate_public_statement(
             abort(f"statement {key} must contain integers")
         if any(value < 0 for value in values):
             abort(f"statement {key} contains a negative value")
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in public["feature_table"]):
+        abort("statement feature_table must contain integers")
+    if any(value < -(1 << 63) or value >= (1 << 63) for value in public["feature_table"]):
+        abort("statement feature_table contains an out-of-range i64")
     if len(public["src"]) != len(public["dst"]):
         abort("statement src/dst lengths disagree")
     if len(public["node_ptr"]) < 2 or len(public["edge_ptr"]) < 2:
@@ -1258,12 +1264,138 @@ def validate_public_statement(
         abort("external public statement quant_cfg_id does not match the canonical config")
     if static_tables_id is not None and statement["static_table_id"] != static_tables_id:
         abort("external public statement static_table_id does not match the canonical config")
+    if degree_bound_id is not None and statement["degree_bound_id"] != degree_bound_id:
+        abort("external public statement degree_bound_id does not match the canonical config")
+    if degree_bound_digest is not None and public["ledger"]["digest"] != degree_bound_digest:
+        abort("external public statement degree_bound_digest does not match the canonical config")
     require_digest(statement["public_output_sha256"], "external public statement public_output_sha256")
     if public_output_sha256 is not None and statement["public_output_sha256"] != public_output_sha256:
         abort("external public statement does not bind the selected public output Y")
     if circuit_ref is not None and parsed_ref != circuit_ref:
         abort("external public statement circuit_ref does not match the run circuit")
     return statement
+
+
+def _verify_canonical_resource_file(path: Path, *, dataset: str, role: str, manifest: dict[str, Any]) -> str:
+    relative = path.relative_to(ROOT).as_posix()
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        abort("canonical resource manifest has no file records")
+    matches = [record for record in files if isinstance(record, dict) and record.get("path") == relative]
+    if len(matches) != 1:
+        abort(f"canonical resource manifest must contain exactly one record for {relative}")
+    record = matches[0]
+    if record.get("dataset") != dataset or record.get("role") != role:
+        abort(f"canonical resource manifest identity mismatch for {relative}")
+    expected_size = record.get("size")
+    if isinstance(expected_size, bool) or not isinstance(expected_size, int) or expected_size <= 0:
+        abort(f"canonical resource manifest has an invalid size for {relative}")
+    expected_digest = require_digest(record.get("sha256"), f"canonical resource manifest {relative} sha256")
+    cursor = ROOT
+    for component in Path(relative).parts:
+        cursor = cursor / component
+        if cursor.is_symlink():
+            abort(f"canonical resource path contains a symlink: {relative}")
+    require_file(path, f"canonical resource {relative}")
+    if path.stat().st_size != expected_size or sha256(path) != expected_digest:
+        abort(f"canonical resource digest/size mismatch: {relative}")
+    return expected_digest
+
+
+def validate_canonical_public_inputs(
+    statement: dict[str, Any],
+    *,
+    dataset: str,
+    secure_config: dict[str, str],
+    setup_context_path: Path,
+    expected_resource_manifest_sha256: str,
+) -> None:
+    """Cross-check a formal public statement against canonical inputs and setup identity."""
+    if resource_manifest_hash() != expected_resource_manifest_sha256:
+        abort("formal public input audit is bound to a stale resource manifest")
+    manifest = load_json(MANIFEST, "canonical resource manifest")
+    if manifest.get("baseline") != "ezkl" or manifest.get("resource_root") != "resources/canonical":
+        abort("canonical resource manifest baseline/root mismatch")
+    config_path = ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg"
+    metadata_path = ROOT / "resources/canonical/cache" / dataset / "meta.cfg"
+    scales_path = ROOT / "resources/canonical/configs/quantization_scale_chain.cfg"
+    _verify_canonical_resource_file(config_path, dataset=dataset, role="canonical_secure_config", manifest=manifest)
+    _verify_canonical_resource_file(metadata_path, dataset=dataset, role="canonical_dataset_cache", manifest=manifest)
+    _verify_canonical_resource_file(scales_path, dataset="all", role="canonical_quantization_config", manifest=manifest)
+    if secure_config.get("dataset") != dataset or secure_config.get("data_root") != "resources/canonical/cache":
+        abort("canonical public input audit received a non-canonical secure config")
+    metadata = validate_dataset_metadata(metadata_path, dataset, secure_config)
+    nodes, features, classes, graphs = (int(metadata[key]) for key in ("num_nodes", "num_features", "num_classes", "graph_count"))
+    public = statement["public_ezkl"]
+    if len(public["node_ids"]) != nodes or len(public["feature_table"]) != nodes * features or len(public["y"]) != nodes * classes:
+        abort(f"{dataset} public statement dimensions do not cover the complete canonical dataset")
+    if len(public["node_ptr"]) != graphs + 1 or len(public["edge_ptr"]) != graphs + 1:
+        abort(f"{dataset} public statement graph pointers do not cover all canonical graphs")
+    if any(node_id != index for index, node_id in enumerate(public["node_ids"])):
+        abort(f"{dataset} public statement node_ids are not the complete canonical ordering")
+    if (
+        secure_config.get("quant_cfg_id") != statement["quant_cfg_id"] or secure_config.get("static_table_id") != statement["static_table_id"] or
+        secure_config.get("model_arch_id") != statement["model_arch_id"] or secure_config.get("ezkl_security_profile_id") != statement["ezkl_security_profile_id"]
+    ):
+        abort(f"{dataset} public statement quant/table identity differs from the canonical config")
+    if secure_config.get("degree_bound_id") != statement["degree_bound_id"]:
+        abort(f"{dataset} public statement degree_bound_id differs from the canonical config")
+    ledger = require_exact_keys(public["ledger"], {"id", "digest"}, f"{dataset} statement ledger")
+    if ledger["id"] != secure_config.get("degree_bound_id") or ledger["digest"] != secure_config.get("degree_bound_digest"):
+        abort(f"{dataset} public statement ledger identity differs from the canonical config")
+    tables = require_exact_keys(public["static_tables"], {"id", "digest"}, f"{dataset} statement static tables")
+    if tables["id"] != secure_config.get("static_table_id") or tables["digest"] != secure_config.get("static_table_digest"):
+        abort(f"{dataset} public statement static-table identity differs from the canonical config")
+    scales = parse_cfg(scales_path)
+    if scales.get("quant_cfg_id") != secure_config.get("quant_cfg_id") or public["quant"]["id"] != scales["quant_cfg_id"]:
+        abort(f"{dataset} public statement quantization identity differs from the canonical scale chain")
+    context = load_json(setup_context_path, "authenticated native setup context")
+    required_context = {"schema_version", "relation_id", "dataset", "model_arch_id", "quant_cfg_id", "quantization", "static_tables", "ledger", "topology", "model", "circuit", "ezkl_security_profile_id"}
+    require_exact_keys(context, required_context, "authenticated native setup context")
+    if (
+        context["schema_version"] != 1 or context["relation_id"] != CANONICAL_RELATION or context["dataset"] != dataset or
+        context["model_arch_id"] != secure_config.get("model_arch_id") or context["quant_cfg_id"] != secure_config.get("quant_cfg_id") or
+        context["ezkl_security_profile_id"] != secure_config.get("ezkl_security_profile_id") or context["topology"] != public["topology"] or
+        context["static_tables"] != public["static_tables"] or context["ledger"] != public["ledger"] or context["quantization"] != public["quant"]
+    ):
+        abort(f"{dataset} public statement differs from the authenticated native setup context")
+    if public["topology"]["id"] != f"topology:{dataset}:{graphs}":
+        abort(f"{dataset} public statement topology id does not identify the complete canonical graph set")
+    data_dir = ROOT / secure_config["data_root"] / dataset
+    # Match the native loader's dataset-specific feature path exactly.  A second
+    # file with a plausible name must not silently change which canonical input
+    # is being audited.
+    feature_path = data_dir / ("features.txt" if dataset in {"cora", "citeseer", "pubmed"} else "features.npy")
+    feature_digest = _verify_canonical_resource_file(feature_path, dataset=dataset, role="canonical_dataset_cache", manifest=manifest)
+    if feature_path.suffix == ".npy" and metadata.get("feature_sha256") != sha256(feature_path):
+        abort(f"{dataset} canonical feature digest differs from authenticated metadata")
+    edges_path = data_dir / "edges.txt"
+    _verify_canonical_resource_file(edges_path, dataset=dataset, role="canonical_dataset_cache", manifest=manifest)
+    producer_manifest = load_json(setup_context_path.parent / "producer_manifest.json", "authenticated external producer manifest")
+    if (
+        producer_manifest.get("dataset") != dataset or producer_manifest.get("relation_id") != CANONICAL_RELATION or
+        producer_manifest.get("resource_manifest_sha256") != expected_resource_manifest_sha256 or
+        producer_manifest.get("resource_manifest_path") != MANIFEST.relative_to(ROOT).as_posix() or
+        producer_manifest.get("config_path") != config_path.relative_to(ROOT).as_posix() or
+        producer_manifest.get("config_sha256") != sha256(config_path) or
+        producer_manifest.get("feature_path") != feature_path.relative_to(ROOT).as_posix() or
+        producer_manifest.get("feature_sha256") != feature_digest or
+        producer_manifest.get("setup_context_path") != setup_context_path.relative_to(ROOT).as_posix() or
+        producer_manifest.get("setup_context_sha256") != sha256(setup_context_path)
+    ):
+        abort(f"{dataset} producer manifest does not bind setup/topology identity to canonical resources")
+    try:
+        from produce_public_statement import feature_values, scale_value
+        canonical_features, producer_feature_path = feature_values(
+            data_dir, metadata, scale_value(scales, "s_input"), metadata["input_preprocess_id"], dataset,
+        )
+    except (ImportError, KeyError, OSError, SystemExit, ValueError) as exc:
+        abort(f"{dataset} canonical features could not be reconstructed: {exc}")
+    if producer_feature_path != feature_path or canonical_features.shape != (nodes, features):
+        abort(f"{dataset} canonical feature shape/path differs from the formal public statement")
+    for index, expected in enumerate(canonical_features.flat):
+        if public["feature_table"][index] != int(expected):
+            abort(f"{dataset} public feature_table differs from canonical quantized features at index {index}")
 
 
 def validate_public_output(path: Path, *, dataset: str) -> Any:

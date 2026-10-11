@@ -57,6 +57,7 @@ class LocalFormalEntryTest(unittest.TestCase):
                 "num_shuffle_arguments": 1,
                 "num_permutation_columns": 2,
                 "fixed_column_count_post_compression": 5,
+                "permutation_copy_call_count": 4,
                 "permutation_successor_entry_count_upper": 8,
             },
             "native_memory_model": {
@@ -87,6 +88,7 @@ class LocalFormalEntryTest(unittest.TestCase):
                 "size_of_batch_invert_entry_bytes": 40,
                 "size_of_usize_bytes": 8,
                 "size_of_usize_pair_bytes": 16,
+                "size_of_permutation_hashmap_header_bytes": 48,
                 "size_of_atomic_u64_bytes": 8,
                 "size_of_lookup_map_entry_bytes": 32,
                 "size_of_lookup_map_header_bytes": 24,
@@ -214,7 +216,10 @@ class LocalFormalEntryTest(unittest.TestCase):
         )
         self.assertEqual(
             requirements["permutation_vk_msm_host_known_bytes"],
-            100 + 2 * 16 * 32 + (32 + 64) * (1 << 20),
+            100
+            + 2 * 16 * 32
+            + (32 + 64) * (1 << 20)
+            + requirements["permutation_hashmap_heap_peak_bytes"],
         )
         self.assertEqual(
             requirements["host_known_bytes"],

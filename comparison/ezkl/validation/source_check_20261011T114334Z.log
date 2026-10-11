@@ -1,0 +1,211 @@
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+    Checking num-bigint v0.4.8
+    Checking pasta_curves v0.5.2
+   Compiling icicle-bn254 v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-curves/icicle-bn254)
+    Checking icicle-core v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-core)
+   Compiling liquid v0.26.11
+    Checking substrate-bn v0.6.0
+    Checking tract-data v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling openssl v0.10.81
+    Checking openssl-sys v0.9.117
+   Compiling native-tls v0.2.18
+    Checking fixed-hash v0.8.0
+    Checking revm-interpreter v10.0.3
+    Checking revm-interpreter v1.3.0
+    Checking rand_distr v0.4.3
+    Checking askama v0.12.1
+    Checking clap v4.6.6
+    Checking prost v0.11.9
+   Compiling ezkl v0.0.0 (/home/pzh/project/comparison/ezkl)
+    Checking tabled v0.12.2
+    Checking sha256 v1.6.0
+   Compiling unzip-n v0.1.4
+    Checking colored v2.2.0
+    Checking semver v1.0.28
+    Checking ethbloom v0.13.0
+    Checking primitive-types v0.12.2
+    Checking clap_complete v4.6.9
+   Compiling tract-linalg v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+    Checking num-rational v0.4.2
+    Checking halo2curves v0.7.0 (https://github.com/privacy-scaling-explorations/halo2curves?rev=b753a832e92d5c86c5c997327a9cf9de86a18851#b753a832)
+    Checking halo2curves v0.3.2 (https://github.com/privacy-scaling-explorations/halo2curves.git?tag=0.3.2#9f5c5081)
+    Checking halo2curves v0.6.1
+    Checking halo2curves v0.1.0
+    Checking ethereum-types v0.14.1
+    Checking num v0.4.3
+    Checking aurora-engine-modexp v1.2.0
+    Checking revm-precompile v2.2.0
+    Checking ethabi v18.0.0
+    Checking revm-precompile v11.0.3
+    Checking revm v3.5.0
+    Checking revm v14.0.3
+    Checking poseidon v0.2.0 (https://github.com/privacy-scaling-explorations/poseidon.git?tag=v2023_04_20#807f8f55)
+    Checking tokio-native-tls v0.3.1
+    Checking hyper-tls v0.6.0
+    Checking reqwest v0.12.28
+    Checking halo2_proofs v0.3.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs)
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+    Checking tract-core v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+warning: variants `Y` and `PreviousValue` are never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:56:5
+   |
+36 | pub enum ValueSource {
+   |          ----------- variants in this enum
+...
+56 |     Y(),
+   |     ^
+57 |     /// Previous value
+58 |     PreviousValue(),
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `ValueSource` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `successors` and `domain_size` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:290:19
+    |
+258 | impl<C: CurveAffine> ProvingKey<C> {
+    | ---------------------------------- methods in this implementation
+...
+290 |     pub(super) fn successors(&self) -> &[(u64, u64)] {
+    |                   ^^^^^^^^^^
+...
+294 |     pub(super) fn domain_size(&self) -> u64 {
+    |                   ^^^^^^^^^^^
+
+warning: function `batch_invert_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:402:15
+    |
+402 | pub(crate) fn batch_invert_assigned<F: Field>(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `invert` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:448:19
+    |
+431 | impl<F: Field> Polynomial<Assigned<F>, LagrangeCoeff> {
+    | ----------------------------------------------------- method in this implementation
+...
+448 |     pub(crate) fn invert(
+    |                   ^^^^^^
+
+warning: method `empty_lagrange_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/domain.rs:287:19
+    |
+ 45 | impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
+    | ------------------------------------------------------ method in this implementation
+...
+287 |     pub(crate) fn empty_lagrange_assigned(&self) -> Polynomial<Assigned<F>, LagrangeCoeff> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `write_value` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/spill.rs:325:19
+    |
+324 | impl<F: Copy> SpillBuilder<F> {
+    | ----------------------------- method in this implementation
+325 |     pub(super) fn write_value(&mut self, value: F) -> io::Result<()> {
+    |                   ^^^^^^^^^^^
+
+warning: function `pack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:108:8
+    |
+108 | pub fn pack(bits: &[bool]) -> u8 {
+    |        ^^^^
+
+warning: function `unpack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:118:8
+    |
+118 | pub fn unpack(byte: u8, bits: &mut [bool]) {
+    |        ^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/halo2/halo2_proofs/src/plonk/vanishing/verifier.rs:123:9
+    |
+123 |         &self,
+    |         ^^^^^ the lifetime is elided here
+124 |         x: ChallengeX<C>,
+125 |     ) -> impl Iterator<Item = VerifierQuery<C, M>> + Clone {
+    |                               ^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+125 |     ) -> impl Iterator<Item = VerifierQuery<'_, C, M>> + Clone {
+    |                                             +++
+
+warning: hiding a lifetime that's named elsewhere is confusing
+  --> vendor/halo2/halo2_proofs/src/poly/ipa/commitment.rs:81:36
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<C> {
+   |                   -------          ^^^^^^^^^ the same lifetime is hidden here
+   |                   |
+   |                   the lifetime is named here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'params`
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<'params, C> {
+   |                                           ++++++++
+
+warning: `halo2_proofs` (lib) generated 12 warnings (run `cargo fix --lib -p halo2_proofs` to apply 4 suggestions)
+    Checking halo2wrong v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+    Checking halo2_solidity_verifier v0.1.0 (https://github.com/zkonduit/ezkl-verifier?branch=main#a518a917)
+    Checking halo2_gadgets v0.2.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_gadgets)
+    Checking maingate v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+    Checking integer v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+    Checking ecc v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+    Checking snark-verifier v0.1.1 (https://github.com/zkonduit/snark-verifier?branch=ac%2Fchunked-mv-lookup#508d96b2)
+    Checking tract-nnef v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+    Checking tract-hir v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+    Checking tract-onnx-opl v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+    Checking tract-onnx v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
+   --> src/../gat_adapter/loader.rs:637:30
+    |
+637 |         let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
+    |                              ^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+error: unused variable: `chunk_rows`
+    --> src/../gat_adapter/op.rs:1324:17
+     |
+1324 |             let chunk_rows = chunk_end - chunk_start;
+     |                 ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_chunk_rows`
+     |
+note: the lint level is defined here
+    --> src/lib.rs:11:5
+     |
+  11 |     unused,
+     |     ^^^^^^
+     = note: `#[deny(unused_variables)]` implied by `#[deny(unused)]`
+
+warning: `ezkl` (lib) generated 1 warning
+error: could not compile `ezkl` (lib) due to 1 previous error; 1 warning emitted
+
+SOURCE_CHECK_ENV_IDENTITY=MATCH
+SOURCE_CHECK_EXIT_STATUS=101
+SOURCE_CHECK_DURATION_MS=11517

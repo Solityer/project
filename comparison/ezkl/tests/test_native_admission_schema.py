@@ -61,6 +61,74 @@ class NativeAdmissionSchemaTest(unittest.TestCase):
         with self.assertRaises(ContractError):
             _validate_native_shplonk_shape("cora", memory, self.cs, self.domain_size)
 
+    def test_permutation_keygen_hashmap_budget_scales_and_rejects_old_schema(self) -> None:
+        small = copy.deepcopy(self.admission)
+        small_requirements = formal_runner._native_capacity_requirements(
+            small, {"scalar_bytes": 32, "affine_bytes": 64}
+        )
+
+        larger = copy.deepcopy(small)
+        cs = larger["constraint_system"]
+        cs["permutation_copy_call_count"] *= 2
+        cs["permutation_successor_entry_count_upper"] = min(
+            cs["num_permutation_columns"] * larger["domain_size"],
+            2 * cs["permutation_copy_call_count"],
+        )
+        larger_requirements = formal_runner._native_capacity_requirements(
+            larger, {"scalar_bytes": 32, "affine_bytes": 64}
+        )
+
+        self.assertEqual(
+            small_requirements["permutation_hashmap_heap_peak_bytes"],
+            3 * self.memory["size_of_permutation_hashmap_header_bytes"]
+            + small_requirements["permutation_hashmap_backing_bytes"]
+            + small_requirements["permutation_hashmap_resize_old_bytes_upper"],
+        )
+        self.assertEqual(
+            small_requirements["permutation_mapping_entries_upper"],
+            small["constraint_system"]["permutation_successor_entry_count_upper"],
+        )
+        self.assertEqual(
+            small_requirements["permutation_aux_entries_upper"],
+            small_requirements["permutation_mapping_entries_upper"],
+        )
+        self.assertEqual(
+            small_requirements["permutation_sizes_entries_upper"],
+            small["constraint_system"]["permutation_copy_call_count"],
+        )
+        self.assertGreater(
+            larger_requirements["permutation_hashmap_heap_peak_bytes"],
+            small_requirements["permutation_hashmap_heap_peak_bytes"],
+        )
+        self.assertGreater(
+            larger_requirements["permutation_pk_host_phase_bytes"],
+            small_requirements["permutation_pk_host_phase_bytes"],
+        )
+        self.assertGreater(
+            larger_requirements["permutation_vk_msm_host_known_bytes"],
+            small_requirements["permutation_vk_msm_host_known_bytes"],
+        )
+        self.assertEqual(
+            small_requirements["setup_keygen_host_peak_bytes"],
+            small_requirements["srs_loaded_host_bytes"]
+            + self.memory["graph_witness_scalar_element_count"]
+            * self.memory["size_of_graph_witness_scalar_bytes"]
+            + max(
+                small_requirements["selector_keygen_host_phase_bytes"],
+                small_requirements["permutation_pk_host_phase_bytes"],
+                small_requirements["fixed_polynomial_read_heap_scratch_bytes"],
+                small_requirements["icicle_msm_host_staging_bytes"],
+                small_requirements["permutation_vk_msm_host_known_bytes"],
+            ),
+        )
+
+        old_schema = copy.deepcopy(self.admission)
+        old_schema["schema_version"] = 4
+        old_schema["native_memory_model"]["schema"] = "ezkl-halo2-memory-model-v4"
+        old_schema["native_memory_model"].pop("size_of_permutation_hashmap_header_bytes")
+        with self.assertRaises(ContractError):
+            self._run_full_native_admission_parser(old_schema)
+
     def _run_full_native_admission_parser(self, admission: dict[str, object]) -> dict[str, dict[str, object]]:
         """Exercise the production receipt parser without invoking the native binary."""
         with tempfile.TemporaryDirectory() as temporary:

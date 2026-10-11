@@ -272,9 +272,9 @@
     {
       "path": "resources/canonical/checkpoints/citeseer_gat/manifest.json",
       "size": 17443,
-      "sha256": "948f6413582e68c7dcce2be7dbd1962b4ef854f33538fbee5c50e6ffe8e5c819",
+      "sha256": "976baea671db85885fdeee25b89b94d87aaa921b1a93da294c3ff0857e7606ca",
       "source_path": "/home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/manifest.json",
-      "source_sha256": "948f6413582e68c7dcce2be7dbd1962b4ef854f33538fbee5c50e6ffe8e5c819",
+      "source_sha256": "976baea671db85885fdeee25b89b94d87aaa921b1a93da294c3ff0857e7606ca",
       "dataset": "citeseer",
       "role": "canonical_checkpoint_bundle"
     },
@@ -317,9 +317,9 @@
     {
       "path": "resources/canonical/checkpoints/cora_gat/manifest.json",
       "size": 17427,
-      "sha256": "cef83a18b5ce355274368f785466e6431cfa588903f95e2dde19605e2bf0dee2",
+      "sha256": "220fa1094f3872eaf51acaacd6a7a5a4108e1b8b55095af9357a739b3f5d9729",
       "source_path": "/home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/manifest.json",
-      "source_sha256": "cef83a18b5ce355274368f785466e6431cfa588903f95e2dde19605e2bf0dee2",
+      "source_sha256": "220fa1094f3872eaf51acaacd6a7a5a4108e1b8b55095af9357a739b3f5d9729",
       "dataset": "cora",
       "role": "canonical_checkpoint_bundle"
     },
@@ -362,9 +362,9 @@
     {
       "path": "resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json",
       "size": 17451,
-      "sha256": "d5f029ac43f4c103865805f47ac44182946c7d9fe8f079f8abbc318b894240d1",
+      "sha256": "bf1ff43d75ca2c7b345bae4487e210ab4e5b5419380c8fa62a136a9ba25b7da4",
       "source_path": "/home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json",
-      "source_sha256": "d5f029ac43f4c103865805f47ac44182946c7d9fe8f079f8abbc318b894240d1",
+      "source_sha256": "bf1ff43d75ca2c7b345bae4487e210ab4e5b5419380c8fa62a136a9ba25b7da4",
       "dataset": "ogbn_arxiv",
       "role": "canonical_checkpoint_bundle"
     },
@@ -407,9 +407,9 @@
     {
       "path": "resources/canonical/checkpoints/ppi_gat/manifest.json",
       "size": 17425,
-      "sha256": "013fff51d87e26a4ecbf24ea712377a8cc1c754bed799acb85a1eea16849c43b",
+      "sha256": "79edea411bb8b75f682028f9ef6a8a5d056b6304378fb10213a43e8b68b3465d",
       "source_path": "/home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/manifest.json",
-      "source_sha256": "013fff51d87e26a4ecbf24ea712377a8cc1c754bed799acb85a1eea16849c43b",
+      "source_sha256": "79edea411bb8b75f682028f9ef6a8a5d056b6304378fb10213a43e8b68b3465d",
       "dataset": "ppi",
       "role": "canonical_checkpoint_bundle"
     },
@@ -452,9 +452,9 @@
     {
       "path": "resources/canonical/checkpoints/pubmed_gat/manifest.json",
       "size": 17425,
-      "sha256": "5f270df0e1d7123071c006f19c9e12f467daa527ae5dad38c81b782467c75851",
+      "sha256": "64adf02f16bbf3e0b26536226da30be3769ac6b51492dba63aa70be3038c2827",
       "source_path": "/home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/manifest.json",
-      "source_sha256": "5f270df0e1d7123071c006f19c9e12f467daa527ae5dad38c81b782467c75851",
+      "source_sha256": "64adf02f16bbf3e0b26536226da30be3769ac6b51492dba63aa70be3038c2827",
       "dataset": "pubmed",
       "role": "canonical_checkpoint_bundle"
     },
@@ -488,45 +488,45 @@
     {
       "path": "resources/canonical/configs/citeseer_secure.cfg",
       "size": 1437,
-      "sha256": "1d5eee97983ea3dc1b15dd0ea5390ccc299a58a14b425efe8814d0d39a522909",
+      "sha256": "aa16d5d267690adfa8adb911c262771fe704b924eace6d0d43e68539c21ce6b1",
       "source_path": "/home/pzh/project/comparison/ezkl/resources/canonical/configs/citeseer_secure.cfg",
-      "source_sha256": "1d5eee97983ea3dc1b15dd0ea5390ccc299a58a14b425efe8814d0d39a522909",
+      "source_sha256": "aa16d5d267690adfa8adb911c262771fe704b924eace6d0d43e68539c21ce6b1",
       "dataset": "citeseer",
       "role": "canonical_secure_config"
     },
     {
       "path": "resources/canonical/configs/cora_secure.cfg",
       "size": 1413,
-      "sha256": "b0e737b8481950816985616c9a5dd8903c71ba671b00806047d6643d267435c8",
+      "sha256": "9a9568eb779c74864c93ea1123254f3605a648f03450e17dde604464d929437d",
       "source_path": "/home/pzh/project/comparison/ezkl/resources/canonical/configs/cora_secure.cfg",
-      "source_sha256": "b0e737b8481950816985616c9a5dd8903c71ba671b00806047d6643d267435c8",
+      "source_sha256": "9a9568eb779c74864c93ea1123254f3605a648f03450e17dde604464d929437d",
       "dataset": "cora",
       "role": "canonical_secure_config"
     },
     {
       "path": "resources/canonical/configs/ogbn_arxiv_secure.cfg",
       "size": 1474,
-      "sha256": "d051abf01e23a8b82ebf91fcd658a066c2aa502e11124ac4354bd47c58a37242",
+      "sha256": "cf5d30041daa5e42de8a9834df15e7af4fa23bf8168e076a650612108b395f9b",
       "source_path": "/home/pzh/project/comparison/ezkl/resources/canonical/configs/ogbn_arxiv_secure.cfg",
-      "source_sha256": "d051abf01e23a8b82ebf91fcd658a066c2aa502e11124ac4354bd47c58a37242",
+      "source_sha256": "cf5d30041daa5e42de8a9834df15e7af4fa23bf8168e076a650612108b395f9b",
       "dataset": "ogbn_arxiv",
       "role": "canonical_secure_config"
     },
     {
       "path": "resources/canonical/configs/ppi_secure.cfg",
       "size": 1431,
-      "sha256": "83008787b56912f4f387c7a63c1fb9dc131a4af8acf8947cf0cdc0490429a83e",
+      "sha256": "ef41317f8f850c9b6c35ee7f91aa218cc47a10d666aa6ae0974a17eac73b914c",
       "source_path": "/home/pzh/project/comparison/ezkl/resources/canonical/configs/ppi_secure.cfg",
-      "source_sha256": "83008787b56912f4f387c7a63c1fb9dc131a4af8acf8947cf0cdc0490429a83e",
+      "source_sha256": "ef41317f8f850c9b6c35ee7f91aa218cc47a10d666aa6ae0974a17eac73b914c",
       "dataset": "ppi",
       "role": "canonical_secure_config"
     },
     {
       "path": "resources/canonical/configs/pubmed_secure.cfg",
       "size": 1424,
-      "sha256": "7a3fed109927ef06d5650f9c36e930701fd62b4610a588bfdcc7db50f68b9137",
+      "sha256": "f5ac44aa5e332f085b269857d7299eb3bc29a6b794112b2086b62f75d4a5c480",
       "source_path": "/home/pzh/project/comparison/ezkl/resources/canonical/configs/pubmed_secure.cfg",
-      "source_sha256": "7a3fed109927ef06d5650f9c36e930701fd62b4610a588bfdcc7db50f68b9137",
+      "source_sha256": "f5ac44aa5e332f085b269857d7299eb3bc29a6b794112b2086b62f75d4a5c480",
       "dataset": "pubmed",
       "role": "canonical_secure_config"
     },
@@ -541,91 +541,91 @@
     },
     {
       "path": "resources/canonical/ledgers/citeseer/gat_integer_ledger.json",
-      "size": 8264,
-      "sha256": "7740fcbb549cb4f46e86150df4cadf294f1018741dde475ae1a09e6a42b04a81",
+      "size": 7715,
+      "sha256": "627677d51747b2ed762a4f2bda94e310d5a891671f6731d672562d6c9daa24bd",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "3f8a3fe496e1b0248e9218c80be0dfbd7b82bbd3f521c45870c9475d5b695c96",
+      "source_sha256": "39d082bc1360a4e79226f817fd19b9b5281e4c15ed70bc929208d9467f1f9870",
       "dataset": "citeseer",
       "role": "baseline_local_integer_bound_ledger"
     },
     {
       "path": "resources/canonical/ledgers/cora/gat_integer_ledger.json",
-      "size": 8279,
-      "sha256": "1b2e68280caa0988af60a51a05d4e6d941f480e5cad16e9f4899ddbb08e4d866",
+      "size": 7711,
+      "sha256": "1162302d8c4ce2a362da72f96ddedec15e6d6264b30a1ea986aaba41dd75c749",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "3f8a3fe496e1b0248e9218c80be0dfbd7b82bbd3f521c45870c9475d5b695c96",
+      "source_sha256": "39d082bc1360a4e79226f817fd19b9b5281e4c15ed70bc929208d9467f1f9870",
       "dataset": "cora",
       "role": "baseline_local_integer_bound_ledger"
     },
     {
       "path": "resources/canonical/ledgers/ogbn_arxiv/gat_integer_ledger.json",
-      "size": 8739,
-      "sha256": "255eddbc91e0cc58f46a085def0cda23a607ac8f4a8260557f38ff123593d99e",
+      "size": 7871,
+      "sha256": "29afa5cb1ad3e94d97e5d25c55ca5e35a76b75355b9787f8b9ae45ed4d04c98f",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "3f8a3fe496e1b0248e9218c80be0dfbd7b82bbd3f521c45870c9475d5b695c96",
+      "source_sha256": "39d082bc1360a4e79226f817fd19b9b5281e4c15ed70bc929208d9467f1f9870",
       "dataset": "ogbn_arxiv",
       "role": "baseline_local_integer_bound_ledger"
     },
     {
       "path": "resources/canonical/ledgers/ppi/gat_integer_ledger.json",
-      "size": 8346,
-      "sha256": "088196e074fee42d34c94ecf19438d6e8dd717eeae37871baf2febc54245ad7d",
+      "size": 8081,
+      "sha256": "b556012532711db0f0b4c1e7d8d5ac61062a9817241c2654f1170362ee66e779",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "3f8a3fe496e1b0248e9218c80be0dfbd7b82bbd3f521c45870c9475d5b695c96",
+      "source_sha256": "39d082bc1360a4e79226f817fd19b9b5281e4c15ed70bc929208d9467f1f9870",
       "dataset": "ppi",
       "role": "baseline_local_integer_bound_ledger"
     },
     {
       "path": "resources/canonical/ledgers/pubmed/gat_integer_ledger.json",
-      "size": 8265,
-      "sha256": "c1469fe2438fdb30be5efb21e5f827d17f4e7f03c02908f008709bd4f617f2a7",
+      "size": 7713,
+      "sha256": "de0ae18af5492c4d51deed0d7383cc99af924a099c3f8da80f2ede2e3d98df9e",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "3f8a3fe496e1b0248e9218c80be0dfbd7b82bbd3f521c45870c9475d5b695c96",
+      "source_sha256": "39d082bc1360a4e79226f817fd19b9b5281e4c15ed70bc929208d9467f1f9870",
       "dataset": "pubmed",
       "role": "baseline_local_integer_bound_ledger"
     },
     {
       "path": "resources/canonical/tables/citeseer/gat_static_tables.bin",
-      "size": 1312709,
-      "sha256": "46c1f2318a2a59926a938b02b7b30a492b4d48550205daee8ba47473860e8a80",
+      "size": 8348,
+      "sha256": "f5d21b990c61026e50520e5b2f81453c5883d14c9271af83d5f57e9b1fbf569b",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "3f8a3fe496e1b0248e9218c80be0dfbd7b82bbd3f521c45870c9475d5b695c96",
+      "source_sha256": "39d082bc1360a4e79226f817fd19b9b5281e4c15ed70bc929208d9467f1f9870",
       "dataset": "citeseer",
       "role": "baseline_local_exact_static_tables"
     },
     {
       "path": "resources/canonical/tables/cora/gat_static_tables.bin",
-      "size": 1312669,
-      "sha256": "242244de105694bf4cb7eafb00015841673069c7a3a11638a8c78587636081d4",
+      "size": 12725,
+      "sha256": "b0abed497903fa605b9134ed7d04ecff4f2f9671d7b2b37d30d82c7f2305ee68",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "3f8a3fe496e1b0248e9218c80be0dfbd7b82bbd3f521c45870c9475d5b695c96",
+      "source_sha256": "39d082bc1360a4e79226f817fd19b9b5281e4c15ed70bc929208d9467f1f9870",
       "dataset": "cora",
       "role": "baseline_local_exact_static_tables"
     },
     {
       "path": "resources/canonical/tables/ogbn_arxiv/gat_static_tables.bin",
-      "size": 1795163492,
-      "sha256": "5be271931c65f8b8ecd1a0139a2d92058b6cd591aff733681c4e5e658129ceed",
+      "size": 843956,
+      "sha256": "6ebd02b3b5039dcb7317583cedfacb222dcb5e2233cf213f9a7dba119f131489",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "3f8a3fe496e1b0248e9218c80be0dfbd7b82bbd3f521c45870c9475d5b695c96",
+      "source_sha256": "39d082bc1360a4e79226f817fd19b9b5281e4c15ed70bc929208d9467f1f9870",
       "dataset": "ogbn_arxiv",
       "role": "baseline_local_exact_static_tables"
     },
     {
       "path": "resources/canonical/tables/ppi/gat_static_tables.bin",
-      "size": 5244833,
-      "sha256": "5d7c92c8ae93e879e76e29de7f712b9edc86bbbff565353646e6f0bafb2f4214",
+      "size": 10728354,
+      "sha256": "d7d2f8e8c39367096c3c862e940ec60967f73f2e3e3ab1df8f2da5ae6bd85987",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "3f8a3fe496e1b0248e9218c80be0dfbd7b82bbd3f521c45870c9475d5b695c96",
+      "source_sha256": "39d082bc1360a4e79226f817fd19b9b5281e4c15ed70bc929208d9467f1f9870",
       "dataset": "ppi",
       "role": "baseline_local_exact_static_tables"
     },
     {
       "path": "resources/canonical/tables/pubmed/gat_static_tables.bin",
-      "size": 1312689,
-      "sha256": "27a32239582900939be41c3dda553f89e9dfc2f1dd48e34153e3eb8fd7cdf089",
+      "size": 12937,
+      "sha256": "e009be204682a088c33aa3181b3007cdcf5b6f6f2ab0494b71e323a81207ee0b",
       "source_path": "/home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py",
-      "source_sha256": "3f8a3fe496e1b0248e9218c80be0dfbd7b82bbd3f521c45870c9475d5b695c96",
+      "source_sha256": "39d082bc1360a4e79226f817fd19b9b5281e4c15ed70bc929208d9467f1f9870",
       "dataset": "pubmed",
       "role": "baseline_local_exact_static_tables"
     }

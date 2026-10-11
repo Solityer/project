@@ -2,9 +2,10 @@
 //!
 //! The operation is deliberately one graph node so the adapter can preserve
 //! the official `GraphCircuit`/`SupportedOp`/settings path.  Internally it is
-//! composed from ezkl's existing einsum, polynomial, shuffle/max, dynamic
-//! lookup and equality layouts.  No witness is accepted without a matching
-//! circuit relation.
+//! composed from ezkl's existing einsum, polynomial, shuffle/max, exact
+//! dynamic lookup and equality layouts. Public graph routing uses fixed
+//! topology wiring after the statement inputs are bound to the circuit graph.
+//! No witness is accepted without a matching circuit relation.
 
 use std::collections::HashMap;
 
@@ -531,6 +532,38 @@ impl GatOp {
                 Ok(slice)
             }
         }
+    }
+
+    /// Route row-major tensor cells through compile-time public topology.
+    /// Cloning `ValType` entries preserves unknown witnesses and existing
+    /// assigned cells; downstream native layouts make the required cell copies.
+    fn fixed_route_rows(value: &ValTensor<Fp>, rows: &[usize], width: usize,) -> Result<ValTensor<Fp>, CircuitError> {
+        if value.dims().len() != 2 || value.dims()[1] != width || width == 0 {
+            return Err(CircuitError::DimMismatch("fixed GAT route requires a rank-two tensor with the canonical row width".into()));
+        }
+        let source_rows = value.dims()[0];
+        let output_len = rows.len().checked_mul(width).ok_or(CircuitError::UnsupportedOp)?;
+        let source = value.get_inner_tensor()?;
+        let mut routed = Vec::with_capacity(output_len);
+        for row in rows {
+            if *row >= source_rows {
+                return Err(CircuitError::DimMismatch("fixed GAT route index is outside the compiled tensor".into()));
+            }
+            let start = row.checked_mul(width).ok_or(CircuitError::UnsupportedOp)?;
+            for column in 0..width {
+                routed.push(source.get_flat_index(start.checked_add(column).ok_or(CircuitError::UnsupportedOp)?));
+            }
+        }
+        let mut output: ValTensor<Fp> = Tensor::new(Some(&routed), &[rows.len(), width])?.into();
+        output.set_scale(value.scale());
+        Ok(output)
+    }
+
+    fn fixed_route_rows_owned(value: ValTensor<Fp>, rows: &[usize], width: usize,) -> Result<ValTensor<Fp>, CircuitError> {
+        if value.dims().len() == 2 && value.dims()[0] == rows.len() && value.dims()[1] == width && rows.iter().enumerate().all(|(expected, actual)| expected == *actual) {
+            return Ok(value);
+        }
+        Self::fixed_route_rows(&value, rows, width)
     }
 
     fn append_tensors(tensors: &[ValTensor<Fp>], dims: &[usize],) -> Result<ValTensor<Fp>, CircuitError> {
@@ -1288,17 +1321,16 @@ impl GatOp {
         );
         for chunk_start in (0..graph.e).step_by(edge_chunk_rows) {
             let chunk_end = chunk_start.saturating_add(edge_chunk_rows).min(graph.e);
-            let chunk_rows = chunk_end - chunk_start;
             {
-                let source_chunk = Self::flatten_slice(source, chunk_start, chunk_end, &[chunk_rows])?;
+                let source_rows = graph.src.get(chunk_start..chunk_end).ok_or_else(|| CircuitError::DimMismatch("compiled GAT source topology does not cover an edge chunk".into()))?;
                 let gather_started = std::time::Instant::now();
-                let mut src_values = layouts::gather(config, region, &[projected, &source_chunk], 0)?;
+                let mut src_values = Self::fixed_route_rows(projected, source_rows, channels)?;
                 source_gather_ms += gather_started.elapsed().as_secs_f64() * 1000.0;
                 src_values.set_scale(projected_scale);
 
-                let destination_chunk = Self::flatten_slice(dst, chunk_start, chunk_end, &[chunk_rows])?;
+                let destination_rows = graph.dst.get(chunk_start..chunk_end).ok_or_else(|| CircuitError::DimMismatch("compiled GAT destination topology does not cover an edge chunk".into()))?;
                 let gather_started = std::time::Instant::now();
-                let mut dst_values = layouts::gather(config, region, &[projected, &destination_chunk], 0)?;
+                let mut dst_values = Self::fixed_route_rows(projected, destination_rows, channels)?;
                 destination_gather_ms += gather_started.elapsed().as_secs_f64() * 1000.0;
                 dst_values.set_scale(projected_scale);
 
@@ -1496,8 +1528,8 @@ impl GatOp {
             let chunk_end = chunk_start.saturating_add(edge_chunk_rows).min(graph.e);
             let chunk_rows = chunk_end - chunk_start;
             {
-                let source_chunk = Self::flatten_slice(source, chunk_start, chunk_end, &[chunk_rows])?;
-                let mut src_values = layouts::gather(config, region, &[projected, &source_chunk], 0)?;
+                let source_rows = graph.src.get(chunk_start..chunk_end).ok_or_else(|| CircuitError::DimMismatch("compiled GAT source topology does not cover an edge chunk".into()))?;
+                let mut src_values = Self::fixed_route_rows(projected, source_rows, channels)?;
                 src_values.set_scale(projected_scale);
 
                 let alpha_chunk = Self::flatten_slice(&alpha, chunk_start, chunk_end, &[chunk_rows])?;
@@ -1694,10 +1726,9 @@ impl Op<Fp> for GatOp {
         Self::require_scale(values[FEATURE_INPUT], self.spec.scales.s_input, "feature input",)?;
         let mut features = layouts::identity(config, region, &[values[FEATURE_INPUT]])?;
         features.set_scale(self.spec.scales.s_input);
-        let mut node_ids = self.bind_topology(config, region, values[NODE_ID_INPUT], NODE_ID_INPUT)?;
+        let _node_ids = self.bind_topology(config, region, values[NODE_ID_INPUT], NODE_ID_INPUT)?;
         let mut src = self.bind_topology(config, region, values[SRC_INPUT], SRC_INPUT)?;
         let mut dst = self.bind_topology(config, region, values[DST_INPUT], DST_INPUT)?;
-        node_ids.set_scale(0);
         src.set_scale(0);
         dst.set_scale(0);
         let _node_ptr = self.bind_topology(config, region, values[NODE_PTR_INPUT], NODE_PTR_INPUT)?;
@@ -1713,7 +1744,7 @@ impl Op<Fp> for GatOp {
             features.len(),
         );
         let feature_gather_started = std::time::Instant::now();
-        let mut current = layouts::gather(config, region, &[&features, &node_ids], 0)?;
+        let mut current = Self::fixed_route_rows_owned(features, &graph.node_ids, self.spec.feature_dim)?;
         println!("EZKL_NATIVE_WITNESS stage=feature_gather unknown={}", current.any_unknowns()?);
         println!(
             "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=feature model_arch_id={} output_values={} elapsed_ms={:.3}",
@@ -2515,6 +2546,8 @@ mod segmented_batch_tests {
         let mut spec = CanonicalGat::default();
         spec.graph.n = 2;
         spec.graph.e = 3;
+        spec.graph.src = vec![0, 1, 0];
+        spec.graph.dst = vec![0, 0, 1];
         spec.tables.lrelu = exact_table("lrelu", &[(0, 0)]);
         spec.tables.exp = exact_table("exp", &[(0, 1)]);
         spec.tables.max_relu = exact_table("max_relu", &[(-1, 0), (0, 0), (1, 1)]);

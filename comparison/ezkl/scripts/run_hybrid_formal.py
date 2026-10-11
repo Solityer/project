@@ -1175,7 +1175,7 @@ def native_admit_all_datasets(
             abort(f"{dataset} native admission JSON has an incompatible schema")
         _validate_native_admission_domain(dataset, admission, native_srs_max_logrows)
         if (
-            admission["schema_version"] != 4
+            admission["schema_version"] != 5
             or admission["relation_id"] != "R_GAT-ezkl"
             or admission["dataset"] != dataset
         ):
@@ -1238,6 +1238,7 @@ def native_admit_all_datasets(
             "size_of_batch_invert_entry_bytes",
             "size_of_usize_bytes",
             "size_of_usize_pair_bytes",
+            "size_of_permutation_hashmap_header_bytes",
             "size_of_g1_affine_bytes",
             "size_of_g1_projective_bytes",
             "size_of_g2_affine_bytes",
@@ -1281,7 +1282,7 @@ def native_admit_all_datasets(
             "fixed_polynomial_read_decoded_chunk_bytes_upper",
             "fixed_polynomial_read_heap_scratch_bytes_upper",
         }
-        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-memory-model-v4":
+        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-memory-model-v5":
             abort(f"{dataset} native admission has an incompatible source memory model")
         positive_memory_keys = {
             "proof_logrows",
@@ -1292,6 +1293,7 @@ def native_admit_all_datasets(
             "size_of_batch_invert_entry_bytes",
             "size_of_usize_bytes",
             "size_of_usize_pair_bytes",
+            "size_of_permutation_hashmap_header_bytes",
             "size_of_g1_affine_bytes",
             "size_of_g1_projective_bytes",
             "size_of_g2_affine_bytes",
@@ -1896,6 +1898,88 @@ def _filesystem_available_bytes(path: Path) -> tuple[int, dict[str, int]]:
     return available, {"available_bytes": available, "device_id": device_id}
 
 
+def _std_hashmap_bucket_count_for_capacity(entry_capacity: int) -> int:
+    """Return std HashMap's source-derived bucket count for the formal targets."""
+    if isinstance(entry_capacity, bool) or not isinstance(entry_capacity, int) or entry_capacity < 0:
+        abort("EZKL permutation HashMap capacity is malformed")
+    if entry_capacity == 0:
+        return 0
+    if entry_capacity < 4:
+        return 4
+    if entry_capacity < 8:
+        return 8
+    # Rust's std HashMap raw table leaves one eighth of buckets empty, rounds
+    # bucket count up to a power of two, and rejects capacities whose
+    # intermediate `capacity * 8` would overflow usize.
+    if entry_capacity > sys.maxsize // 8:
+        abort("EZKL permutation HashMap capacity exceeds the native usize growth bound")
+    adjusted_capacity = entry_capacity * 8 // 7
+    if adjusted_capacity <= 0:
+        abort("EZKL permutation HashMap capacity cannot be represented")
+    bucket_count = 1 << (adjusted_capacity - 1).bit_length()
+    if bucket_count > sys.maxsize:
+        abort("EZKL permutation HashMap bucket count exceeds the native usize range")
+    return bucket_count
+
+
+def _std_hashmap_table_bytes(bucket_count: int, entry_bytes: int, usize_bytes: int) -> int:
+    """Upper-bound a HashMap raw-table allocation, including ctrl bytes/group trailer."""
+    if bucket_count == 0:
+        return 0
+    if (
+        isinstance(bucket_count, bool)
+        or not isinstance(bucket_count, int)
+        or bucket_count < 4
+        or bucket_count & (bucket_count - 1)
+        or isinstance(entry_bytes, bool)
+        or not isinstance(entry_bytes, int)
+        or entry_bytes <= 0
+        or isinstance(usize_bytes, bool)
+        or not isinstance(usize_bytes, int)
+        or usize_bytes <= 0
+    ):
+        abort("EZKL permutation HashMap raw-table layout inputs are malformed")
+    if bucket_count > sys.maxsize // entry_bytes:
+        abort("EZKL permutation HashMap entry backing exceeds the native address range")
+    entry_payload = bucket_count * entry_bytes
+    # RawTable aligns its control-byte array after the entry array to at least
+    # the 16-byte SIMD group width and appends one full group as a sentinel.
+    # The formal x86_64/aarch64 builds use 16-byte groups.
+    control_alignment = max(16, usize_bytes)
+    if entry_payload > sys.maxsize - (control_alignment - 1):
+        abort("EZKL permutation HashMap control offset exceeds the native address range")
+    control_offset = (entry_payload + control_alignment - 1) & ~(control_alignment - 1)
+    trailer_bytes = bucket_count + 16
+    if control_offset > sys.maxsize - trailer_bytes:
+        abort("EZKL permutation HashMap raw-table allocation exceeds the native address range")
+    return control_offset + trailer_bytes
+
+
+def _permutation_hashmap_heap_upper(
+    *, mapping_entries: int, aux_entries: int, sizes_entries: int, entry_bytes: int, usize_bytes: int, map_header_bytes: int
+) -> tuple[int, int, int, int]:
+    """Bound the three std HashMaps and one old table during a resize."""
+    entry_bounds = (mapping_entries, aux_entries, sizes_entries)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in entry_bounds):
+        abort("EZKL permutation Assembly HashMap entry bound is malformed")
+    if isinstance(map_header_bytes, bool) or not isinstance(map_header_bytes, int) or map_header_bytes <= 0:
+        abort("EZKL permutation Assembly HashMap header size is invalid")
+    buckets = [_std_hashmap_bucket_count_for_capacity(value) for value in entry_bounds]
+    backing_bytes = sum(_std_hashmap_table_bytes(value, entry_bytes, usize_bytes) for value in buckets)
+    # In each individual insertion only one map can resize. Count the largest
+    # possible old table alongside all three final table upper bounds.
+    prior_buckets = [value // 2 if value > 4 else 0 for value in buckets]
+    rehash_old_bytes = max(
+        (_std_hashmap_table_bytes(value, entry_bytes, usize_bytes) for value in prior_buckets),
+        default=0,
+    )
+    headers_bytes = 3 * map_header_bytes
+    rehash_transient_bytes = backing_bytes + rehash_old_bytes
+    if headers_bytes > sys.maxsize - rehash_transient_bytes:
+        abort("EZKL permutation Assembly HashMap heap bound exceeds the native address range")
+    return headers_bytes + rehash_transient_bytes, backing_bytes, rehash_old_bytes, sum(buckets)
+
+
 def _native_capacity_requirements(admission: dict[str, object], icicle_type_sizes: dict[str, object]) -> dict[str, int]:
     cs = admission.get("constraint_system")
     memory = admission.get("native_memory_model")
@@ -1936,6 +2020,24 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
     fixed_post = int(cs["fixed_column_count_post_compression"])
     fixed_uncompressed = int(cs["num_fixed_columns"])
     permutation = int(cs["num_permutation_columns"])
+    copy_calls = cs.get("permutation_copy_call_count")
+    successor_entries = cs.get("permutation_successor_entry_count_upper")
+    if (
+        isinstance(copy_calls, bool)
+        or not isinstance(copy_calls, int)
+        or copy_calls < 0
+        or copy_calls > sys.maxsize
+        or isinstance(successor_entries, bool)
+        or not isinstance(successor_entries, int)
+        or successor_entries < 0
+        or successor_entries > sys.maxsize
+    ):
+        abort("EZKL native admission has malformed permutation-copy bounds for the local capacity gate")
+    permutation_cells = permutation * n
+    expected_successor_entries = min(permutation_cells, 2 * copy_calls)
+    if permutation_cells > sys.maxsize or successor_entries != expected_successor_entries:
+        abort("EZKL native admission permutation-copy bound is inconsistent with the local capacity gate")
+    permutation_hashmap_header = int(memory["size_of_permutation_hashmap_header_bytes"])
     advice = int(cs["num_advice_columns"])
     instances = int(cs["num_instance_columns"])
     degree = int(cs["degree"])
@@ -1970,6 +2072,7 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
         ("AtomicU64", atomic_u64),
         ("lookup entry", map_entry),
         ("lookup map header", map_header),
+        ("permutation HashMap header", permutation_hashmap_header),
         ("lookup repr", repr_bytes),
         ("Vec header", vec_header),
         ("Polynomial header", polynomial_header),
@@ -2112,15 +2215,48 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
     # Native save_pk also emits a separate VK file; include its known selector
     # bitmaps and commitments in the retained-artifact reservation.
     setup_key_artifact_upper += selector_vk_bytes + commitment_vk_bytes
-    # Source-confirmed heap allocations in keygen: all selector activation
-    # bitmaps, one dense selector field vector, the PK denominator Option<Fr>
-    # vector, and the streamed fixed-polynomial chunk buffers.
-    selector_phase = selectors + n * fr + read_scratch
+    # In the active non-thread-safe Halo2 build, permutation::keygen::Assembly
+    # retains three std HashMaps: mapping and aux have at most two new cell
+    # keys per copy call, while sizes has at most one representative per call.
+    # Its table capacities are power-of-two/7-of-8 HashBrown capacities; during
+    # a grow the old table remains live while the new table is allocated.
+    # build_vk retains Assembly while building permutation polynomials, and
+    # build_pk additionally materializes the sparse mapping successor Vec.
+    # Keep this heap separate from the file-backed polynomial/mapping bytes.
+    # Source-confirmed selector allocations and fixed-polynomial chunks remain
+    # live alongside those maps in the corresponding keygen phases.
+    # These phases include selector bitmaps, a dense selector field vector,
+    # the PK denominator Option<Fr> vector, and streamed fixed-polynomial
+    # buffers.
+    permutation_aux_entries = expected_successor_entries
+    permutation_sizes_entries = min(permutation_cells, copy_calls)
+    (
+        permutation_hashmap_heap_peak,
+        permutation_hashmap_backing_bytes,
+        permutation_hashmap_resize_old_bytes,
+        permutation_hashmap_bucket_count,
+    ) = _permutation_hashmap_heap_upper(
+        mapping_entries=expected_successor_entries,
+        aux_entries=permutation_aux_entries,
+        sizes_entries=permutation_sizes_entries,
+        entry_bytes=int(memory["size_of_usize_pair_bytes"]),
+        usize_bytes=int(memory["size_of_usize_bytes"]),
+        map_header_bytes=permutation_hashmap_header,
+    )
+    permutation_mapping_host = expected_successor_entries * int(memory["size_of_usize_pair_bytes"]) + vec_header
+    selector_phase = selectors + n * fr + read_scratch + permutation_hashmap_heap_peak
     # Native keygen supplies an exact-size iterator to the pinned batch
     # inversion implementation, so its prefix Vec reserves exactly N entries.
     # Count those native-sized (Fr, &mut Fr) entries alongside Option<Fr>.
     batch_invert_heap_upper = n * batch_invert_entry
-    pk_phase = selectors + n * option_fr + batch_invert_heap_upper + read_scratch
+    pk_phase = (
+        selectors
+        + n * option_fr
+        + batch_invert_heap_upper
+        + read_scratch
+        + permutation_hashmap_heap_peak
+        + permutation_mapping_host
+    )
     # `icicle.rs` materializes one scalar and one affine host Vec per <=2^20
     # MSM chunk. Their exact element sizes come from the compiled BN254 CUB
     # helper; this component is a distinct proof/setup MSM phase.
@@ -2129,7 +2265,7 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
     # During permutation VK commitments, keygen retains the selector bitmap
     # Vecs, omega powers, and the current dense permutation column as well as
     # the ICICLE conversion Vecs.
-    permutation_vk_phase = selectors + 2 * n * fr + icicle_msm_staging
+    permutation_vk_phase = selectors + 2 * n * fr + icicle_msm_staging + permutation_hashmap_heap_peak
     # Native SRS loading keeps the target G1 monomial vector while deriving
     # Lagrange points. On aarch64, recursive::fft copies its projective input
     # and allocates a second projective scratch vector, so the transform peak
@@ -2156,7 +2292,6 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
     srs_loaded_and_witness = graph_witness_scalars * fr + srs_loaded
     # While the proof owns the key and SRS, advice and public instance maps
     # remain mapped. The sparse permutation successor vector is heap-backed.
-    permutation_mapping_host = int(cs["permutation_successor_entry_count_upper"]) * int(memory["size_of_usize_pair_bytes"]) + vec_header
     selector_bitmap_host = selectors
     proof_nonprepare_heap = graph_witness_scalars * fr + selector_bitmap_host + permutation_mapping_host + srs_loaded
     # The three PK selector cosets are persistent in the loaded key. Other
@@ -2251,6 +2386,17 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
         "srs_fft_twiddle_lut_bytes_upper": srs_fft_twiddle_lut,
         "srs_setup_host_peak_bytes": srs_setup_peak,
         "setup_keygen_host_peak_bytes": setup_keygen_host_peak,
+        "permutation_hashmap_heap_peak_bytes": permutation_hashmap_heap_peak,
+        "permutation_hashmap_header_bytes_upper": 3 * permutation_hashmap_header,
+        "permutation_hashmap_backing_bytes": permutation_hashmap_backing_bytes,
+        "permutation_hashmap_resize_old_bytes_upper": permutation_hashmap_resize_old_bytes,
+        "permutation_hashmap_bucket_count_upper": permutation_hashmap_bucket_count,
+        "permutation_mapping_entries_upper": expected_successor_entries,
+        "permutation_aux_entries_upper": permutation_aux_entries,
+        "permutation_sizes_entries_upper": permutation_sizes_entries,
+        "permutation_mapping_host_bytes": permutation_mapping_host,
+        "selector_keygen_host_phase_bytes": selector_phase,
+        "permutation_pk_host_phase_bytes": pk_phase,
         "proof_nonprepare_resident_host_bytes": proof_nonprepare_resident,
         "proof_nonprepare_heap_host_bytes": proof_nonprepare_heap,
         "proof_nonprepare_hot_mmap_host_bytes": proof_nonprepare_hot_mmap,
