@@ -588,6 +588,118 @@ def make_table(
     return table
 
 
+def derive_bound_plan(
+    meta: dict[str, str],
+    checkpoint: dict[str, Any],
+    scales: dict[str, str],
+    maxima: dict[str, int],
+    feature_max: int,
+    degree: int,
+) -> dict[str, Any]:
+    hidden_layers = checkpoint.get("hidden_layers")
+    if not isinstance(hidden_layers, list) or not hidden_layers:
+        raise ValueError("checkpoint hidden_layers must be a non-empty list")
+    if int(checkpoint.get("L", 0)) != len(hidden_layers) + 1:
+        raise ValueError("checkpoint layer count is not closed")
+    output_heads = int(checkpoint.get("K_out", 0))
+    if output_heads <= 0:
+        raise ValueError("checkpoint output head count must be positive")
+    s_agg_pre = scale_list(scales, "s_agg_pre")
+    if len(s_agg_pre) != len(hidden_layers):
+        raise ValueError("hidden aggregation scale count does not match checkpoint")
+    s_h_prime = [scale_list(scales, f"s_h_prime_hidden_{layer_idx}") for layer_idx in range(len(hidden_layers))]
+    if any(len(layer_scales) != int(layer["head_count"]) for layer_scales, layer in zip(s_h_prime, hidden_layers)):
+        raise ValueError("hidden projection scale count does not match checkpoint")
+    s_y_prime = scale_list(scales, "s_y_prime")
+    if len(s_y_prime) != output_heads:
+        raise ValueError("output projection scale count does not match checkpoint")
+    s_out_pre = scale_value(scales, "s_out_pre")
+    if degree <= 0 or feature_max < 0 or any(value <= 0 for value in s_agg_pre + s_y_prime + [s_out_pre]):
+        raise ValueError("graph, feature, and output scale bounds must be non-negative/positive")
+
+    exp_zero_output = table_value({"function_id": "exp_neg"}, 0)
+    current_bound = feature_max
+    current_dim = int(meta["num_features"])
+    families: list[dict[str, Any]] = []
+    hidden_post_bounds: list[int] = []
+    for layer_idx, layer_meta in enumerate(hidden_layers):
+        layer = int(layer_meta["layer_index"])
+        if layer != layer_idx:
+            raise ValueError("checkpoint hidden layer indices are not contiguous")
+        input_dim = int(layer_meta["input_dim"])
+        head_count = int(layer_meta["head_count"])
+        head_dim = int(layer_meta["head_dim"])
+        if input_dim != current_dim or head_count <= 0 or head_dim <= 0:
+            raise ValueError("checkpoint hidden dimensions are not closed")
+        layer_post_bound = 0
+        for head in range(head_count):
+            weight = max(0, maxima.get(f"hidden/layer{layer}/head{head}/seq", 0))
+            attention = max(
+                0,
+                maxima.get(f"hidden/layer{layer}/head{head}/attn_src", 0),
+                maxima.get(f"hidden/layer{layer}/head{head}/attn_dst", 0),
+            )
+            projected = input_dim * current_bound * weight
+            score = 2 * head_dim * projected * attention
+            aggregation_num = degree * exp_zero_output * projected
+            divisor_min = exp_zero_output * s_h_prime[layer_idx][head]
+            post_bound = round_ratio_away(aggregation_num * s_agg_pre[layer_idx], divisor_min)
+            layer_post_bound = max(layer_post_bound, post_bound)
+            families.append(
+                {
+                    "layer": layer,
+                    "head": head,
+                    "is_output": False,
+                    "projected": projected,
+                    "score": score,
+                    "weight": weight,
+                    "attention": attention,
+                    "bias": 0,
+                    "recovery_scale": s_agg_pre[layer_idx],
+                    "denominator_scale": s_h_prime[layer_idx][head],
+                }
+            )
+        hidden_post_bounds.append(layer_post_bound)
+        current_dim = head_count * head_dim
+        current_bound = layer_post_bound
+
+    classes = int(checkpoint["C"])
+    if classes != int(meta["num_classes"]):
+        raise ValueError("checkpoint class count disagrees with dataset metadata")
+    for head in range(output_heads):
+        weight = max(0, maxima.get(f"output/head{head}/seq", 0))
+        attention = max(
+            0,
+            maxima.get(f"output/head{head}/attn_src", 0),
+            maxima.get(f"output/head{head}/attn_dst", 0),
+        )
+        bias = max(0, maxima.get(f"output/head{head}", 0))
+        projected = current_dim * current_bound * weight
+        score = 2 * classes * projected * attention
+        families.append(
+            {
+                "layer": U64_MAX,
+                "head": head,
+                "is_output": True,
+                "projected": projected,
+                "score": score,
+                "weight": weight,
+                "attention": attention,
+                "bias": bias,
+                "recovery_scale": s_out_pre,
+                "denominator_scale": s_y_prime[head],
+            }
+        )
+
+    return {
+        "families": families,
+        "lrelu_bound": max((family["score"] for family in families), default=0),
+        "elu_bound": max(hidden_post_bounds, default=0),
+        "hidden_post_bounds": hidden_post_bounds,
+        "exp_zero_output": exp_zero_output,
+    }
+
+
 def build_tables(
     dataset: str,
     range_bits: int,
@@ -596,34 +708,17 @@ def build_tables(
     edges: int,
     degree: int,
     whole_graph_single: bool,
+    lrelu_bound: int,
+    elu_bound: int,
 ) -> dict[str, Any]:
-    configured = 1 << range_bits
     large = whole_graph_single and (edges >= (1 << 18) or nodes * features >= (1 << 24))
-    if large:
-        negative_rows = 3 << 18
-        interval_rows = (1 << 23) - 2
-        lrelu_low = -negative_rows
-        lrelu_high = interval_rows - negative_rows - 1
-        elu_bound = 1 << 20
-    else:
-        lrelu_low = -configured
-        lrelu_high = configured
-        elu_bound = configured
-    lrelu_probe = {
-        "function_id": "lrelu",
-        "input_min": lrelu_low,
-        "input_max": lrelu_high,
-    }
-    lrelu_output_bound = max(
-        abs(table_value(lrelu_probe, lrelu_low)),
-        abs(table_value(lrelu_probe, lrelu_high)),
-    )
+    lrelu_low = -lrelu_bound
+    lrelu_high = lrelu_bound
+    lrelu_probe = {"function_id": "lrelu", "input_min": lrelu_low, "input_max": lrelu_high}
+    lrelu_output_bound = max(abs(table_value(lrelu_probe, lrelu_low)), abs(table_value(lrelu_probe, lrelu_high)))
     exp_bound = 2 * lrelu_output_bound
     elu_probe = {"function_id": "elu", "input_min": -elu_bound, "input_max": elu_bound}
-    elu_output_bound = max(
-        abs(table_value(elu_probe, -elu_bound)),
-        abs(table_value(elu_probe, elu_bound)),
-    )
+    elu_output_bound = max(abs(table_value(elu_probe, -elu_bound)), abs(table_value(elu_probe, elu_bound)))
     max_relu_bound = max(2 * lrelu_output_bound, degree)
     domain_id = (f"dataset:{dataset}:range_bits:{range_bits}:large:{str(large).lower()}")
     generator_id = "ezkl_baseline_local_static_table_generator_v1"
@@ -680,19 +775,15 @@ def build_tables(
 def build_ledger(
     dataset: str,
     tables: dict[str, Any],
-    meta: dict[str, str],
     checkpoint: dict[str, Any],
     scales: dict[str, str],
-    maxima: dict[str, int],
-    feature_max: int,
     degree: int,
+    bound_plan: dict[str, Any],
 ) -> dict[str, Any]:
-    lrelu_input = max(abs(tables["lrelu"]["input_min"]), abs(tables["lrelu"]["input_max"]))
     lrelu_output = max(
         abs(table_value(tables["lrelu"], tables["lrelu"]["input_min"])),
         abs(table_value(tables["lrelu"], tables["lrelu"]["input_max"])),
     )
-    exp_input = tables["exp"]["input_max"]
     exp_output = table_value(tables["exp"], tables["exp"]["input_min"])
     elu_input = max(abs(tables["elu"]["input_min"]), abs(tables["elu"]["input_max"]))
     elu_output = max(
@@ -701,111 +792,42 @@ def build_ledger(
     )
     max_relu_input = max(abs(tables["max_relu"]["input_min"]), abs(tables["max_relu"]["input_max"]))
     table_output = max(lrelu_output, elu_output, max_relu_input)
-    hidden_layers = checkpoint.get("hidden_layers")
-    if not isinstance(hidden_layers, list) or not hidden_layers:
-        raise ValueError("checkpoint hidden_layers must be a non-empty list")
-    if int(checkpoint.get("L", 0)) != len(hidden_layers) + 1:
-        raise ValueError("checkpoint layer count is not closed")
-    output_heads = int(checkpoint.get("K_out", 0))
-    if output_heads <= 0:
-        raise ValueError("checkpoint output head count must be positive")
-    s_agg_pre = scale_list(scales, "s_agg_pre")
-    if len(s_agg_pre) != len(hidden_layers):
-        raise ValueError("hidden aggregation scale count does not match checkpoint")
-    s_h_prime = [scale_list(scales, f"s_h_prime_hidden_{layer_idx}") for layer_idx in range(len(hidden_layers))]
-    if any(len(layer_scales) != int(layer["head_count"]) for layer_scales, layer in zip(s_h_prime, hidden_layers)):
-        raise ValueError("hidden projection scale count does not match checkpoint")
-    s_y_prime = scale_list(scales, "s_y_prime")
-    if len(s_y_prime) != output_heads:
-        raise ValueError("output projection scale count does not match checkpoint")
     s_out_pre = scale_value(scales, "s_out_pre")
     families: list[dict[str, Any]] = []
-    current_bound = max(1, feature_max)
-    current_dim = int(meta["num_features"])
-    for layer_idx, layer_meta in enumerate(hidden_layers):
-        layer = int(layer_meta["layer_index"])
-        if layer != layer_idx:
-            raise ValueError("checkpoint hidden layer indices are not contiguous")
-        input_dim = int(layer_meta["input_dim"])
-        head_count = int(layer_meta["head_count"])
-        head_dim = int(layer_meta["head_dim"])
-        if input_dim != current_dim or head_count <= 0 or head_dim <= 0:
-            raise ValueError("checkpoint hidden dimensions are not closed")
-        for head in range(head_count):
-            weight = max(1, maxima.get(f"hidden/layer{layer}/head{head}/seq", 1))
-            attention = max(
-                1,
-                maxima.get(f"hidden/layer{layer}/head{head}/attn_src", 1),
-                maxima.get(f"hidden/layer{layer}/head{head}/attn_dst", 1),
-            )
-            projected = max(1, input_dim * current_bound * weight)
-            score = max(lrelu_input, 2 * projected * attention)
-            summation = max(1, degree * exp_output)
-            numerator = max(1, summation * projected)
-            dividend = max(elu_input, numerator * s_agg_pre[layer_idx])
-            divisor = max(1, summation * s_h_prime[layer_idx][head])
-            quotient = max(1, (dividend + divisor // 2) // divisor)
-            aux = max(
-                max_relu_input,
-                2 * dividend + divisor,
-                2 * divisor * (quotient + 1),
-            )
-            families.append(
-                {
-                    "layer": layer,
-                    "head": head,
-                    "is_output": False,
-                    "max_score_abs": score,
-                    "max_weight_abs": weight,
-                    "max_attention_abs": attention,
-                    "max_bias_abs": 0,
-                    "max_table_output_abs": table_output,
-                    "max_delta": max(exp_input, 2 * lrelu_output),
-                    "max_exp": exp_output,
-                    "max_sum": summation,
-                    "max_aggregation_num": numerator,
-                    "max_dividend_abs": dividend,
-                    "max_aux_abs": aux,
-                    "max_divisor": divisor,
-                }
-            )
-        current_dim = head_count * head_dim
-        current_bound = max(1, elu_output)
     classes = int(checkpoint["C"])
-    if classes != int(meta["num_classes"]):
-        raise ValueError("checkpoint class count disagrees with dataset metadata")
-    for head in range(output_heads):
-        weight = max(1, maxima.get(f"output/head{head}/seq", 1))
-        attention = max(
-            1,
-            maxima.get(f"output/head{head}/attn_src", 1),
-            maxima.get(f"output/head{head}/attn_dst", 1),
-        )
-        bias = max(0, maxima.get(f"output/head{head}", 0))
-        projected = max(1, current_dim * current_bound * weight)
-        score = max(lrelu_input, 2 * projected * attention)
-        summation = max(1, degree * exp_output)
-        numerator = max(1, summation * projected)
-        dividend = max(1, numerator * s_out_pre, elu_input)
-        divisor = max(1, summation * s_y_prime[head], s_out_pre)
-        quotient = max(1, (dividend + divisor // 2) // divisor)
+    exp_zero_output = int(bound_plan["exp_zero_output"])
+    for planned in bound_plan["families"]:
+        projected = int(planned["projected"])
+        recovery_scale = int(planned["recovery_scale"])
+        denominator_scale = int(planned["denominator_scale"])
+        summation = degree * exp_output
+        numerator = summation * projected
+        dividend = max(elu_input, numerator * recovery_scale)
+        divisor = max(1, summation * denominator_scale)
+        minimum_divisor = exp_zero_output * denominator_scale
+        if planned["is_output"]:
+            divisor = max(divisor, s_out_pre)
+            minimum_divisor = min(minimum_divisor, s_out_pre)
+        if minimum_divisor <= 0:
+            raise ValueError("the reachable exponential denominator must be positive")
+        quotient = round_ratio_away(numerator * recovery_scale, minimum_divisor)
         aux = max(
             max_relu_input,
             2 * dividend + divisor,
             2 * divisor * (quotient + 1),
-            classes,
+            classes if planned["is_output"] else 0,
         )
         families.append(
             {
-                "layer": U64_MAX,
-                "head": head,
-                "is_output": True,
-                "max_score_abs": score,
-                "max_weight_abs": weight,
-                "max_attention_abs": attention,
-                "max_bias_abs": bias,
+                "layer": int(planned["layer"]),
+                "head": int(planned["head"]),
+                "is_output": bool(planned["is_output"]),
+                "max_score_abs": int(planned["score"]),
+                "max_weight_abs": int(planned["weight"]),
+                "max_attention_abs": int(planned["attention"]),
+                "max_bias_abs": int(planned["bias"]),
                 "max_table_output_abs": table_output,
-                "max_delta": max(exp_input, 2 * lrelu_output),
+                "max_delta": 2 * int(planned["score"]),
                 "max_exp": exp_output,
                 "max_sum": summation,
                 "max_aggregation_num": numerator,
@@ -825,17 +847,8 @@ def build_ledger(
         "max_aux_abs",
         "max_divisor",
     )
-    ledger = {key: max([int(family[key]) for family in families] + [1]) for key in fields}
-    ledger.update(
-        {
-            "max_score_abs": max(ledger["max_score_abs"], lrelu_input),
-            "max_table_output_abs": max(ledger["max_table_output_abs"], table_output),
-            "max_delta": max(ledger["max_delta"], exp_input),
-            "max_exp": max(ledger["max_exp"], exp_output),
-            "max_dividend_abs": max(ledger["max_dividend_abs"], elu_input),
-            "max_aux_abs": max(ledger["max_aux_abs"], max_relu_input),
-        }
-    )
+    ledger = {key: max(int(family[key]) for family in families) for key in fields}
+    ledger["max_table_output_abs"] = max(ledger["max_table_output_abs"], table_output)
     ledger["field_modulus"] = BN254_MODULUS
     ledger["ledger_id"] = f"ledger:gat:{dataset}:v1"
     ledger["ledger_digest"] = ""
@@ -926,6 +939,7 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
     nodes, edges, degree = graph_info(root, dataset, meta)
     maxima = quantized_model(root, dataset)
     feature_max = feature_bound(root, dataset, meta)
+    bound_plan = derive_bound_plan(meta, checkpoint, scales, maxima, feature_max, degree)
     tables = build_tables(
         dataset,
         int(config["range_bits"]),
@@ -934,8 +948,10 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
         edges,
         degree,
         config.get("batching_rule") == "whole_graph_single",
+        int(bound_plan["lrelu_bound"]),
+        int(bound_plan["elu_bound"]),
     )
-    ledger = build_ledger(dataset, tables, meta, checkpoint, scales, maxima, feature_max, degree)
+    ledger = build_ledger(dataset, tables, checkpoint, scales, degree, bound_plan)
     table_path = root / "resources/canonical/tables" / dataset / "gat_static_tables.bin"
     ledger_path = root / "resources/canonical/ledgers" / dataset / "gat_integer_ledger.json"
     write_table_archive(table_path, tables)

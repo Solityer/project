@@ -1442,6 +1442,98 @@ impl CanonicalGat {
     }
 
     fn validate_table_bounds(&self) -> Result<(), String> {
+        let score_bound = self.ledger.max_score_abs;
+        let delta_bound = self.ledger.max_delta;
+        if score_bound < 0 || delta_bound < 0 {
+            return Err("score and delta ledger bounds must be non-negative".into());
+        }
+        let score_low = score_bound.checked_neg().ok_or_else(|| "score ledger bound overflows i128".to_string())?;
+        if self.tables.lrelu.input_min > score_low || self.tables.lrelu.input_max < score_bound {
+            return Err(format!(
+                "lrelu table domain [{}, {}] does not cover ledger score interval [{}, {}]",
+                self.tables.lrelu.input_min, self.tables.lrelu.input_max, score_low, score_bound
+            ));
+        }
+        if self.tables.exp.input_min > 0 || self.tables.exp.input_max < delta_bound {
+            return Err(format!(
+                "exp table domain [{}, {}] does not cover ledger delta interval [0, {}]",
+                self.tables.exp.input_min, self.tables.exp.input_max, delta_bound
+            ));
+        }
+
+        let exp_zero_output = self
+            .tables
+            .exp
+            .rows
+            .iter()
+            .find(|(input, _)| *input == 0)
+            .map(|(_, output)| *output)
+            .ok_or_else(|| "exponential table is missing the reachable zero-delta row".to_string())?;
+        let mut required_elu_bound = 0_i128;
+        for family in self.ledger.families.iter().filter(|family| !family.is_output) {
+            let recovery_scale = *self
+                .scales
+                .s_agg_pre
+                .get(family.layer)
+                .ok_or_else(|| format!("missing hidden aggregation scale for layer {}", family.layer))?;
+            let projected_scale = *self
+                .scales
+                .s_h_prime
+                .get(family.layer)
+                .and_then(|layer| layer.get(family.head))
+                .ok_or_else(|| format!("missing hidden projection scale for {}:{}", family.layer, family.head))?;
+            let recovery_multiplier = scale_exponent_to_multiplier(recovery_scale)?;
+            let recovery_multiplier = i128::try_from(recovery_multiplier)
+                .map_err(|_| "hidden aggregation multiplier exceeds i128".to_string())?;
+            let denominator_multiplier = scale_exponent_to_multiplier(projected_scale)?;
+            let denominator_multiplier = i128::try_from(denominator_multiplier)
+                .map_err(|_| "hidden projection multiplier exceeds i128".to_string())?;
+            let numerator = family
+                .max_aggregation_num
+                .checked_mul(recovery_multiplier)
+                .ok_or_else(|| "hidden activation numerator bound overflows i128".to_string())?;
+            let minimum_divisor = exp_zero_output
+                .checked_mul(denominator_multiplier)
+                .filter(|value| *value > 0)
+                .ok_or_else(|| "hidden activation denominator lower bound is not positive".to_string())?;
+            let required = numerator
+                .checked_add(minimum_divisor / 2)
+                .ok_or_else(|| "hidden activation quotient bound overflows i128".to_string())?
+                / minimum_divisor;
+            required_elu_bound = required_elu_bound.max(required);
+        }
+        let elu_low = required_elu_bound
+            .checked_neg()
+            .ok_or_else(|| "ELU ledger input bound overflows i128".to_string())?;
+        if self.tables.elu.input_min > elu_low || self.tables.elu.input_max < required_elu_bound {
+            return Err(format!(
+                "elu table domain [{}, {}] does not cover hidden quotient interval [{}, {}]",
+                self.tables.elu.input_min, self.tables.elu.input_max, elu_low, required_elu_bound
+            ));
+        }
+
+        let max_degree = self
+            .graph
+            .destination_groups_validated()
+            .iter()
+            .map(|(_, start, end)| end - start)
+            .max()
+            .and_then(|degree| i128::try_from(degree).ok())
+            .ok_or_else(|| "maximum graph degree does not fit the integer ledger".to_string())?;
+        let max_relu_bound = score_bound
+            .checked_mul(2)
+            .ok_or_else(|| "max-ReLU score difference bound overflows i128".to_string())?
+            .max(max_degree);
+        let max_relu_low = max_relu_bound
+            .checked_neg()
+            .ok_or_else(|| "max-ReLU input bound overflows i128".to_string())?;
+        if self.tables.max_relu.input_min > max_relu_low || self.tables.max_relu.input_max < max_relu_bound {
+            return Err(format!(
+                "max-ReLU table domain [{}, {}] does not cover required interval [{}, {}]",
+                self.tables.max_relu.input_min, self.tables.max_relu.input_max, max_relu_low, max_relu_bound
+            ));
+        }
+
         let check = |table: &ExactTable, label: &str, input_bound: i128, output_bound: i128| -> Result<(), String> {
             if input_bound < 0 || output_bound < 0 {
                 return Err(format!("{} has a negative ledger bound", label));
