@@ -946,6 +946,7 @@ def validate_dataset_metadata(path: Path, dataset: str, config: dict[str, str]) 
     expected_graph_count = 295 if dataset == "ppi" else 1
     if int(graph_count_text) != expected_graph_count:
         abort(f"{dataset} canonical metadata graph_count must be {expected_graph_count}")
+    values["graph_count"] = graph_count_text
     feature_keys = {"feature_format", "feature_dtype", "feature_shape", "feature_order", "feature_length", "feature_sha256"}
     present_feature_keys = feature_keys & set(values)
     if dataset in {"ppi", "ogbn_arxiv"}:
