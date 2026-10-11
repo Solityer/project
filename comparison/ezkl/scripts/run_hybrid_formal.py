@@ -503,17 +503,20 @@ def validate_resource_auth_handoff(
         abort("resource manifest changed after official complete authentication")
 
 
-def _prepare_and_authenticate_resources(
-    python: str, *, session_id: str, preflight_config_sha256s: tuple[tuple[str, str], ...]
+def _authenticate_resources_with_handoff(
+    python: str,
+    *,
+    session_id: str,
+    preflight_config_sha256s: tuple[tuple[str, str], ...],
+    command: list[str],
+    label: str,
 ) -> tuple[tuple[tuple[str, tuple[int, int, int, int, int]], ...], tuple[tuple[str, str], ...]]:
-    """Run official auto-preparation and accept only its current-session auth handoff."""
-    prepare_script = ROOT / "scripts" / "prepare_gat_resources.py"
-    require_file(prepare_script, "canonical resource preparation entrypoint")
+    """Run one complete resource authentication and accept its current-session handoff."""
     source_before = source_tree_hash()
     config_before = tuple(preflight_config_sha256s)
     if any(sha256(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg") != digest for dataset, digest in config_before):
-        abort("secure config changed before official resource preparation")
-    marker = run_resource_prepare_with_auth_handoff([python, "-u", str(prepare_script), "--formal-auto"], session_id=session_id, timeout_seconds=21600)
+        abort(f"secure config changed before {label}")
+    marker = run_resource_prepare_with_auth_handoff(command, session_id=session_id, timeout_seconds=21600)
     _preflight_dataset_configs()
     config_after = tuple((dataset, sha256(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg")) for dataset in DATASETS)
     identities_after = resource_file_identities()
@@ -528,8 +531,51 @@ def _prepare_and_authenticate_resources(
         resource_manifest_sha256=resource_manifest_hash(),
         resource_identities=identities_after,
     )
-    print(f"[ezkl-formal] resource-authentication=PASS files={len(identities_after)} " "handoff=official-formal-auto current-session", flush=True)
+    print(f"[ezkl-formal] resource-authentication=PASS files={len(identities_after)} handoff={label} current-session", flush=True)
     return identities_after, config_after
+
+
+def _prepare_and_authenticate_resources(
+    python: str, *, session_id: str, preflight_config_sha256s: tuple[tuple[str, str], ...]
+) -> tuple[tuple[tuple[str, tuple[int, int, int, int, int]], ...], tuple[tuple[str, str], ...]]:
+    prepare_script = ROOT / "scripts" / "prepare_gat_resources.py"
+    require_file(prepare_script, "canonical resource preparation entrypoint")
+    return _authenticate_resources_with_handoff(
+        python,
+        session_id=session_id,
+        preflight_config_sha256s=preflight_config_sha256s,
+        command=[python, "-u", str(prepare_script), "--formal-auto"],
+        label="official-formal-auto",
+    )
+
+
+def _authenticate_current_resources(
+    python: str, *, session_id: str, preflight_config_sha256s: tuple[tuple[str, str], ...]
+) -> tuple[tuple[tuple[str, tuple[int, int, int, int, int]], ...], tuple[tuple[str, str], ...]]:
+    validator = ROOT / "scripts" / "validate_resources.py"
+    require_file(validator, "canonical resource validator")
+    return _authenticate_resources_with_handoff(
+        python,
+        session_id=session_id,
+        preflight_config_sha256s=preflight_config_sha256s,
+        command=[python, "-u", str(validator), "--require-complete"],
+        label="post-SRS-complete-validation",
+    )
+
+
+def _validate_config_srs_bindings(configs: dict[str, dict[str, str]], srs_manifest: dict[str, object]) -> None:
+    entries = srs_manifest.get("entries")
+    if not isinstance(entries, dict) or set(entries) != set(DATASETS):
+        abort("authenticated SRS manifest does not contain exactly five dataset bindings")
+    for dataset in DATASETS:
+        entry = entries[dataset]
+        values = configs[dataset]
+        if not isinstance(entry, dict) or (
+            values.get("srs_id"),
+            values.get("srs_path"),
+            values.get("trusted_srs_sha256"),
+        ) != (entry.get("srs_id"), entry.get("path"), entry.get("sha256")):
+            abort(f"{dataset} secure config SRS identity does not match authenticated native SRS manifest")
 
 
 def _terminate_process_group(process: subprocess.Popen[object]) -> None:
@@ -2853,7 +2899,9 @@ def _authenticate_or_prepare_resources(
 
 def _authenticate_or_provision_srs(python: str, *, allow_provision: bool) -> dict[str, object]:
     try:
-        return validate_native_srs_manifest()
+        srs_manifest = validate_native_srs_manifest()
+        _validate_config_srs_bindings(_preflight_dataset_configs(), srs_manifest)
+        return srs_manifest
     except ContractError as exc:
         print(f"[ezkl-formal] official SRS preflight needs repair: {exc}", flush=True)
         if not allow_provision:
@@ -2861,7 +2909,9 @@ def _authenticate_or_provision_srs(python: str, *, allow_provision: bool) -> dic
     provisioner = ROOT / "scripts" / "provision_srs.py"
     require_file(provisioner, "official native SRS provisioner")
     run_prerequisite([python, "-u", str(provisioner)], "provision and authenticate official native get-srs material", timeout_seconds=21600)
-    return validate_native_srs_manifest()
+    srs_manifest = validate_native_srs_manifest()
+    _validate_config_srs_bindings(_preflight_dataset_configs(), srs_manifest)
+    return srs_manifest
 
 
 def _formal_dataset_command_plan(binary: Path, srs: Path, output_root: Path, admissions: dict[str, dict[str, object]]) -> list[dict[str, object]]:
@@ -3017,6 +3067,20 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     srs_manifest_size = entries[DATASETS[0]]["size"]
     srs_copy_size_bytes = _authenticated_srs_copy_size_bytes(srs, expected_size_bytes=srs_manifest_size)
     print(f"[ezkl-formal] reuse authenticated official SRS: {local_cli(srs, 'SRS')}", flush=True)
+
+    # SRS provisioning may atomically replace secure configs and the canonical
+    # resource manifest. Seal only the identities authenticated after that
+    # transition; resume uses the same validator and remains read-only.
+    post_srs_config_sha256s = tuple(
+        (dataset, sha256(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg")) for dataset in DATASETS
+    )
+    authenticated_resource_file_identities, preflight_config_sha256s = _authenticate_current_resources(
+        python,
+        session_id=session_id,
+        preflight_config_sha256s=post_srs_config_sha256s,
+    )
+    config_values = _preflight_dataset_configs()
+    _validate_config_srs_bindings(config_values, srs_manifest)
 
     _set_stage(session_file, "gpu_runtime_identity")
     gpu_identity: dict[str, object] | None = None

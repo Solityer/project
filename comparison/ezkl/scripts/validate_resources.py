@@ -61,6 +61,7 @@ REQUIRED_FILE_KEYS = {
 }
 DERIVED_IDENTITY_KEYS = frozenset(("static_table_id", "static_table_digest", "degree_bound_id", "degree_bound_digest"))
 DERIVED_FEATURE_KEYS = frozenset(("feature_format", "feature_dtype", "feature_shape", "feature_order", "feature_length", "feature_sha256"))
+SRS_CONFIG_BINDING_KEYS = frozenset(("srs_id", "srs_path", "trusted_srs_sha256"))
 _PREPARATION_AUTH_TOKEN = object()
 
 
@@ -904,15 +905,22 @@ def _verify_preparation_snapshot(snapshot: AuthenticatedPreparationSnapshot, *, 
 def preparation_resources_are_current(snapshot: AuthenticatedPreparationSnapshot) -> bool:
     _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
     try:
+        from formal_common import resource_file_identities
+
+        identities_before = resource_file_identities()
         require_complete_resource_set(snapshot.root, snapshot.manifest)
         validate_manifest(snapshot.root, snapshot.manifest, False)
         validate_generated_resource_links(snapshot.root)
+        identities_after = resource_file_identities()
+        if identities_before != identities_after:
+            fail("manifest-listed resource files changed during complete current-resource authentication")
     except SystemExit as exc:
         if exc.code not in (None, 2):
             raise
         _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
         return False
     _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
+    _emit_formal_resource_auth_marker(snapshot.root, identities_after)
     return True
 
 
@@ -972,6 +980,190 @@ def _compare_fresh_manifest_to_authenticated_inputs(
             fail(f"generated resource has an unexpected producer: {path_text}")
 
 
+def _srs_bound_config_bytes(old_payload: bytes, path: Path, expected: dict[str, str]) -> bytes:
+    if set(expected) != SRS_CONFIG_BINDING_KEYS:
+        fail(f"authenticated SRS config binding has an invalid schema for {path}")
+    output: list[str] = []
+    seen: set[str] = set()
+    for raw in old_payload.decode().splitlines():
+        key = raw.split("#", 1)[0].strip().split("=", 1)[0].strip() if "=" in raw else ""
+        if key in SRS_CONFIG_BINDING_KEYS:
+            output.append(f"{key} = {expected[key]}")
+            seen.add(key)
+        else:
+            output.append(raw)
+    if seen != SRS_CONFIG_BINDING_KEYS:
+        fail(f"{path} must contain srs_id, srs_path and trusted_srs_sha256")
+    return ("\n".join(output) + "\n").encode()
+
+
+def _check_authenticated_srs_binding(
+    root: Path,
+    srs_manifest: dict[str, Any],
+    *,
+    source_url: str,
+    logrows: int,
+    expected_sha256: str,
+    actual_sha256: str,
+    srs_path: str,
+    srs_size: int,
+    srs_file_identity: tuple[int, int, int, int, int],
+) -> dict[str, dict[str, str]]:
+    from formal_common import native_srs_contract
+    native_url, native_logrows, native_hashes = native_srs_contract()
+    if (source_url, logrows, expected_sha256) != (f"{native_url}{native_logrows}.srs", native_logrows, native_hashes[native_logrows]):
+        fail("authenticated SRS derivation does not match the pinned native get-srs source/hash contract")
+    if actual_sha256 != expected_sha256 or len(actual_sha256) != 64 or any(char not in "0123456789abcdef" for char in actual_sha256):
+        fail("authenticated SRS derivation digest is not the pinned native trusted SRS hash")
+    expected_id = f"official_ezkl_native_shared_kzg{logrows}_srs"
+    expected_path = f"resources/native_srs/kzg{logrows}.srs"
+    if srs_path != expected_path or Path(srs_path).is_absolute() or ".." in Path(srs_path).parts:
+        fail("authenticated SRS derivation path is not the pinned native shared cache")
+    unresolved_srs = root / srs_path
+    if unresolved_srs.is_symlink():
+        fail("authenticated native SRS path is symlinked")
+    local_srs = safe_relative(root, srs_path)
+    if local_srs.is_symlink() or not local_srs.is_file() or srs_size < 4096:
+        fail("authenticated native SRS is missing, symlinked or too small")
+    info = local_srs.stat()
+    current_identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    if current_identity != srs_file_identity or info.st_size != srs_size:
+        fail("authenticated native SRS file identity changed during resource derivation")
+    expected_top = {
+        "schema_version": 2,
+        "baseline": "ezkl",
+        "srs_type": "halo2-kzg-shplonk",
+        "shared": True,
+        "max_logrows": logrows,
+        "source": "official_ezkl_ceremony",
+        "provisioner": "native_get_srs",
+        "source_url": source_url,
+        "hash_source": "src/srs_sha.rs",
+        "native_hash_verified": True,
+    }
+    if not isinstance(srs_manifest, dict) or set(srs_manifest) != set(expected_top) | {"entries"}:
+        fail("authenticated native SRS manifest schema is invalid")
+    if any(srs_manifest.get(key) != value for key, value in expected_top.items()):
+        fail("authenticated native SRS manifest does not match the pinned source contract")
+    manifest_path = root / "resources/native_srs/srs_manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        fail("authenticated native SRS manifest is missing or symlinked")
+    try:
+        on_disk_manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot re-read authenticated native SRS manifest: {exc}")
+    if on_disk_manifest != srs_manifest:
+        fail("native SRS manifest changed during resource derivation")
+    entries = srs_manifest.get("entries")
+    if not isinstance(entries, dict) or set(entries) != set(CHECKPOINT_DATASETS.values()):
+        fail("authenticated native SRS manifest does not contain exactly five formal datasets")
+    result: dict[str, dict[str, str]] = {}
+    for dataset in CHECKPOINT_DATASETS.values():
+        entry = entries[dataset]
+        expected_entry = {
+            "dataset": dataset,
+            "srs_id": expected_id,
+            "srs_type": "trusted_srs",
+            "path": srs_path,
+            "sha256": actual_sha256,
+            "size": srs_size,
+            "logrows": logrows,
+            "source": "official_ezkl_ceremony",
+            "provisioner": "native_get_srs",
+            "source_url": source_url,
+            "hash_source": "src/srs_sha.rs",
+            "native_hash_verified": True,
+            "trusted": True,
+            "reduced": False,
+            "generated": False,
+        }
+        if not isinstance(entry, dict) or entry != expected_entry:
+            fail(f"native SRS manifest entry does not match authenticated source/file identity: {dataset}")
+        result[dataset] = {"srs_id": expected_id, "srs_path": srs_path, "trusted_srs_sha256": actual_sha256}
+    return result
+
+
+def refresh_manifest_after_authenticated_srs_derivation(
+    snapshot: AuthenticatedPreparationSnapshot,
+    srs_manifest: dict[str, Any],
+    *,
+    source_url: str,
+    logrows: int,
+    expected_sha256: str,
+    actual_sha256: str,
+    srs_path: str,
+    srs_size: int,
+    srs_file_identity: tuple[int, int, int, int, int],
+) -> None:
+    """Refresh only the five exact SRS config bindings from an authenticated native SRS file."""
+    if not isinstance(snapshot, AuthenticatedPreparationSnapshot) or snapshot._token is not _PREPARATION_AUTH_TOKEN:
+        fail("SRS resource refresh requires the current authenticated preparation snapshot")
+    if snapshot.root != snapshot.manifest_path.parents[1] or snapshot.manifest_path.read_bytes() != snapshot.manifest_bytes:
+        fail("authenticated resource manifest changed before SRS derivation refresh")
+    if _file_identity_snapshot(snapshot.root, snapshot.input_paths) != snapshot.input_identities:
+        fail("an authenticated canonical input changed during SRS derivation")
+    expected_configs = _check_authenticated_srs_binding(
+        snapshot.root,
+        srs_manifest,
+        source_url=source_url,
+        logrows=logrows,
+        expected_sha256=expected_sha256,
+        actual_sha256=actual_sha256,
+        srs_path=srs_path,
+        srs_size=srs_size,
+        srs_file_identity=srs_file_identity,
+    )
+    config_paths = {snapshot.root / "resources/canonical/configs" / f"{dataset}_secure.cfg": values for dataset, values in expected_configs.items()}
+    for path, old_payload in snapshot.identity_files.items():
+        if path in config_paths:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != _srs_bound_config_bytes(old_payload, path, config_paths[path]):
+                fail(f"SRS derivation changed an unauthorized config field: {path.relative_to(snapshot.root).as_posix()}")
+        elif path.is_symlink() or not path.is_file() or path.read_bytes() != old_payload:
+            fail(f"non-SRS derivation identity changed during SRS provisioning: {path.relative_to(snapshot.root).as_posix()}")
+    resource_paths: list[Path] = []
+    for local in regular_files(snapshot.root):
+        source, _, _ = source_for(local.relative_to(snapshot.root), snapshot.root)
+        resource_paths.extend((local, source))
+    identities_before_build = _file_identity_snapshot(snapshot.root, resource_paths)
+    manifest, parsed_table_digests = build_manifest(snapshot.root, snapshot.source_snapshot)
+    if identities_before_build != _file_identity_snapshot(snapshot.root, resource_paths):
+        fail("canonical resource files changed while the SRS-bound manifest hashes were computed")
+    old_entries = {entry["path"]: entry for entry in snapshot.manifest["files"]}
+    fresh_entries = {entry["path"]: entry for entry in manifest["files"]}
+    if set(old_entries) != set(fresh_entries):
+        fail("canonical resource paths changed during SRS binding")
+    for path_text, old in old_entries.items():
+        fresh = fresh_entries[path_text]
+        if path_text.startswith("resources/canonical/configs/") and path_text.endswith("_secure.cfg"):
+            if any(old[key] != fresh[key] for key in ("source_path", "dataset", "role")):
+                fail(f"secure config provenance changed during native SRS binding: {path_text}")
+            if old["source_path"] != str(safe_relative(snapshot.root, path_text).resolve()) or fresh["source_path"] != old["source_path"]:
+                fail(f"secure config source is not its same authenticated local file: {path_text}")
+            if fresh["source_sha256"] != fresh["sha256"]:
+                fail(f"secure config source hash is not its local file hash: {path_text}")
+        elif old != fresh:
+            fail(f"non-SRS canonical resource identity changed during native SRS binding: {path_text}")
+    require_complete_resource_set(snapshot.root, manifest)
+    validate_manifest(snapshot.root, manifest, False, parsed_table_digests=parsed_table_digests)
+    validate_generated_resource_links(snapshot.root)
+    identities_after_validation = _file_identity_snapshot(snapshot.root, resource_paths)
+    if identities_before_build != identities_after_validation:
+        fail("canonical resource files changed during complete SRS-bound resource authentication")
+    _check_authenticated_srs_binding(
+        snapshot.root,
+        srs_manifest,
+        source_url=source_url,
+        logrows=logrows,
+        expected_sha256=expected_sha256,
+        actual_sha256=actual_sha256,
+        srs_path=srs_path,
+        srs_size=srs_size,
+        srs_file_identity=srs_file_identity,
+    )
+    atomic_manifest_write(snapshot.manifest_path, manifest)
+    _emit_formal_resource_auth_marker(snapshot.root, identities_after_validation)
+
+
 def refresh_manifest_after_authenticated_derivation(snapshot: AuthenticatedPreparationSnapshot) -> None:
     """Refresh and strictly validate resources changed only by the authenticated generator."""
     _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
@@ -1000,6 +1192,31 @@ def refresh_manifest_after_authenticated_derivation(snapshot: AuthenticatedPrepa
         fail("manifest-listed resources changed during complete post-derivation authentication")
     _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
     atomic_manifest_write(snapshot.manifest_path, manifest)
+    _emit_formal_resource_auth_marker(snapshot.root, identities_after_validation)
+
+
+def _emit_formal_resource_auth_marker(root: Path, identities: tuple[Any, ...]) -> None:
+    session_id = os.environ.get("EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID")
+    if not session_id:
+        return
+    from formal_common import DATASETS, FORMAL_SESSION_ID, resource_file_identities, resource_manifest_hash, sha256, source_tree_hash
+    if not FORMAL_SESSION_ID.fullmatch(session_id):
+        fail("formal resource-authentication handoff has an invalid session identity")
+    current_identities = resource_file_identities()
+    if current_identities != identities:
+        fail("manifest-listed resource files changed before the formal authentication handoff")
+    config_sha256s = [[dataset, sha256(root / "resources/canonical/configs" / f"{dataset}_secure.cfg")] for dataset in DATASETS]
+    marker = {
+        "schema_version": 1,
+        "authenticated": "complete_resource_manifest",
+        "session_id": session_id,
+        "source_tree_sha256": source_tree_hash(),
+        "config_sha256s": config_sha256s,
+        "resource_manifest_sha256": resource_manifest_hash(),
+        "resource_file_identities_before": identities,
+        "resource_file_identities_after": current_identities,
+    }
+    print("EZKL_FORMAL_RESOURCE_AUTH_V1=" + json.dumps(marker, sort_keys=True, separators=(",", ":")), flush=True)
 
 
 def require_complete_resource_set(root: Path, manifest: dict[str, Any]) -> None:
@@ -1129,25 +1346,7 @@ def main() -> int:
         authenticated_file_identities_after = resource_file_identities()
         if authenticated_file_identities_before != authenticated_file_identities_after:
             fail("manifest-listed resource files changed during complete authentication")
-        session_id = os.environ.get("EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID")
-        if session_id:
-            if not FORMAL_SESSION_ID.fullmatch(session_id):
-                fail("formal resource-authentication handoff has an invalid session identity")
-            config_sha256s = [
-                [dataset, sha256(root / "resources/canonical/configs" / f"{dataset}_secure.cfg")]
-                for dataset in DATASETS
-            ]
-            marker = {
-                "schema_version": 1,
-                "authenticated": "complete_resource_manifest",
-                "session_id": session_id,
-                "source_tree_sha256": source_tree_hash(),
-                "config_sha256s": config_sha256s,
-                "resource_manifest_sha256": resource_manifest_hash(),
-                "resource_file_identities_before": authenticated_file_identities_before,
-                "resource_file_identities_after": authenticated_file_identities_after,
-            }
-            print("EZKL_FORMAL_RESOURCE_AUTH_V1=" + json.dumps(marker, sort_keys=True, separators=(",", ":")), flush=True)
+        _emit_formal_resource_auth_marker(root, authenticated_file_identities_after)
     return 0
 
 

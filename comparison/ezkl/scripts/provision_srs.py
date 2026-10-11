@@ -15,7 +15,7 @@ import http.client
 import json
 import os
 import re
-import subprocess
+import signal
 import sys
 import tempfile
 import time
@@ -51,12 +51,31 @@ def fail(message: str) -> NoReturn:
     raise SystemExit(f"SRS provisioning failed: {message}")
 
 
-def digest(path: Path) -> str:
+def _exit_on_sigterm(signum: int, _frame: object) -> NoReturn:
+    raise SystemExit(128 + signum)
+
+
+def digest_with_identity(path: Path) -> tuple[str, tuple[int, int, int, int, int]]:
     value = hashlib.sha256()
-    with path.open("rb") as stream:
+    resolved = path.resolve(strict=True)
+    with resolved.open("rb") as stream:
+        before = os.fstat(stream.fileno())
+        named_before = resolved.stat()
+        before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        if before_identity != (named_before.st_dev, named_before.st_ino, named_before.st_size, named_before.st_mtime_ns, named_before.st_ctime_ns):
+            fail(f"SRS file changed before SHA-256 authentication: {path}")
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             value.update(block)
-    return value.hexdigest()
+        after = os.fstat(stream.fileno())
+        named_after = resolved.stat()
+        after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        if after_identity != before_identity or after_identity != (named_after.st_dev, named_after.st_ino, named_after.st_size, named_after.st_mtime_ns, named_after.st_ctime_ns) or path.resolve(strict=True) != resolved:
+            fail(f"SRS file changed during SHA-256 authentication: {path}")
+    return value.hexdigest(), before_identity
+
+
+def digest(path: Path) -> str:
+    return digest_with_identity(path)[0]
 
 
 def source_contract() -> tuple[str, int, str]:
@@ -211,19 +230,28 @@ def download_once(url: str, partial: Path) -> bool:
     return True
 
 
-def install_verified_srs(partial: Path, destination: Path, expected: str, actual: str | None = None) -> tuple[int, str]:
+def install_verified_srs(partial: Path, destination: Path, expected: str, actual: str | None = None, source_identity: tuple[int, int, int, int, int] | None = None) -> tuple[int, str, tuple[int, int, int, int, int]]:
     formal_srs_path(partial, "downloaded official SRS")
-    actual = digest(partial) if actual is None else actual
+    if actual is None:
+        actual, source_identity = digest_with_identity(partial)
+    elif source_identity is None:
+        fail("pre-authenticated SRS digest has no file identity")
     if actual != expected:
         fail(f"downloaded official SRS digest mismatch: expected {expected}, got {actual}")
     size = partial.stat().st_size
+    if source_identity != (partial.stat().st_dev, partial.stat().st_ino, partial.stat().st_size, partial.stat().st_mtime_ns, partial.stat().st_ctime_ns):
+        fail("downloaded official SRS changed after SHA-256 authentication")
     os.replace(partial, destination)
     sync_directory(destination.parent)
     formal_srs_path(destination, "native official SRS")
-    return size, actual
+    info = destination.stat()
+    identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    if (identity[0], identity[1], identity[2], identity[3]) != (source_identity[0], source_identity[1], source_identity[2], source_identity[3]):
+        fail("native official SRS identity changed during atomic installation")
+    return size, actual, identity
 
 
-def download_official_srs(url: str, partial: Path, destination: Path, expected: str) -> tuple[int, str]:
+def download_official_srs(url: str, partial: Path, destination: Path, expected: str) -> tuple[int, str, tuple[int, int, int, int, int]]:
     for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
         try:
             download_once(url, partial)
@@ -237,7 +265,7 @@ def download_official_srs(url: str, partial: Path, destination: Path, expected: 
     raise AssertionError("unreachable")
 
 
-def install_shared_srs(source_url: str, logrows: int, expected: str) -> tuple[Path, int, str]:
+def install_shared_srs(source_url: str, logrows: int, expected: str) -> tuple[Path, int, str, tuple[int, int, int, int, int]]:
     SRS_ROOT.mkdir(parents=True, exist_ok=True)
     destination = SRS_ROOT / f"kzg{logrows}.srs"
     if destination.is_symlink() or (destination.exists() and not destination.is_file()):
@@ -245,21 +273,21 @@ def install_shared_srs(source_url: str, logrows: int, expected: str) -> tuple[Pa
 
     if destination.exists():
         if destination.stat().st_size >= MIN_FORMAL_SRS_BYTES:
-            actual = digest(destination)
+            actual, identity = digest_with_identity(destination)
             if actual == expected:
                 formal_srs_path(destination, "native official SRS")
-                return destination, destination.stat().st_size, actual
+                return destination, destination.stat().st_size, actual, identity
 
     partial = SRS_ROOT / f".kzg{logrows}.srs.partial"
     if partial.is_symlink() or (partial.exists() and not partial.is_file()):
         fail(f"SRS partial path is not a regular file: {partial}")
     if partial.exists() and partial.stat().st_size >= MIN_FORMAL_SRS_BYTES:
-        actual = digest(partial)
+        actual, identity = digest_with_identity(partial)
         if actual == expected:
-            size, actual = install_verified_srs(partial, destination, expected, actual)
-            return destination, size, actual
-    size, actual = download_official_srs(f"{source_url}{logrows}.srs", partial, destination, expected)
-    return destination, size, actual
+            size, actual, identity = install_verified_srs(partial, destination, expected, actual, identity)
+            return destination, size, actual, identity
+    size, actual, identity = download_official_srs(f"{source_url}{logrows}.srs", partial, destination, expected)
+    return destination, size, actual, identity
 
 
 def atomic_write(path: Path, value: dict[str, Any]) -> None:
@@ -273,6 +301,23 @@ def atomic_write(path: Path, value: dict[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -320,55 +365,50 @@ def updated_config(path: Path, *, srs_id: str, srs_path: str, sha256_value: str)
 def update_configs(*, srs_id: str, srs_path: str, sha256_value: str) -> None:
     paths = [config_path(dataset) for dataset in DATASETS]
     payloads = [updated_config(path, srs_id=srs_id, srs_path=srs_path, sha256_value=sha256_value) for path in paths]
-    temporary: list[Path] = []
+    for path, payload in zip(paths, payloads):
+        encoded = payload.encode()
+        if path.read_bytes() != encoded:
+            atomic_write_bytes(path, encoded)
+
+
+def rollback_srs_derivation(snapshot: Any, old_srs_manifest: bytes | None) -> None:
+    """Restore authenticated resource/config/SRS manifest bytes after a caught failure."""
+    for dataset in DATASETS:
+        path = config_path(dataset)
+        atomic_write_bytes(path, snapshot.identity_files[path])
+    atomic_write_bytes(snapshot.manifest_path, snapshot.manifest_bytes)
+    if old_srs_manifest is None:
+        try:
+            MANIFEST.unlink()
+            sync_directory(MANIFEST.parent)
+        except FileNotFoundError:
+            pass
+    else:
+        atomic_write_bytes(MANIFEST, old_srs_manifest)
+
+
+def _native_srs_manifest_before_transaction() -> bytes | None:
+    if MANIFEST.is_symlink():
+        fail(f"native SRS manifest is symlinked: {MANIFEST}")
+    if not MANIFEST.exists():
+        return None
+    if not MANIFEST.is_file():
+        fail(f"native SRS manifest is not a regular file: {MANIFEST}")
     try:
-        for path, payload in zip(paths, payloads):
-            candidate = path.with_name(f".{path.name}.native-srs.tmp")
-            if candidate.exists() or candidate.is_symlink():
-                fail(f"temporary config path already exists: {candidate}")
-            candidate.write_text(payload)
-            temporary.append(candidate)
-        for path, candidate in zip(paths, temporary):
-            os.replace(candidate, path)
-    finally:
-        for candidate in temporary:
-            if candidate.exists():
-                candidate.unlink()
+        return MANIFEST.read_bytes()
+    except OSError as exc:
+        fail(f"cannot snapshot native SRS manifest before derivation: {exc}")
 
 
-def refresh_resource_identity() -> None:
-    """Re-authenticate config edits and keep the already-built CPU receipt exact."""
-
-    validator = ROOT / "scripts" / "validate_resources.py"
-    completed = subprocess.run(
-        [sys.executable, str(validator), "--write-manifest", "--require-complete"],
-        cwd=ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    if completed.returncode != 0:
-        fail(f"resource manifest refresh failed after SRS binding: {completed.stdout.strip()}")
-    from formal_common import CONTRACT, load_cli_contract, source_tree_hash
-    source_hash = source_tree_hash()
-    for backend in ("cpu", "gpu"):
-        receipt_path = ROOT / "artifacts" / "build" / backend / "build_receipt.json"
-        if receipt_path.is_symlink() or not receipt_path.is_file():
-            continue
-        receipt = json.loads(receipt_path.read_text())
-        if not isinstance(receipt, dict):
-            fail(f"{backend} build receipt must be a JSON object")
-        binary_rel = receipt.get("binary_path", "")
-        binary = ROOT / binary_rel
-        if not binary_rel or Path(binary_rel).is_absolute() or ".." in Path(binary_rel).parts or binary.is_symlink() or not binary.is_file():
-            continue
-        if receipt.get("backend") != backend or receipt.get("source_tree_sha256") != source_hash or receipt.get("binary_sha256") != digest(binary):
-            continue
-        if not CONTRACT.is_file() or receipt.get("adapter_contract_sha256") != digest(CONTRACT) or receipt.get("adapter_contract_id") != load_cli_contract()["contract_id"]:
-            continue
-        receipt["resource_manifest_sha256"] = digest(ROOT / "resources" / "resource_manifest.json")
-        atomic_write(receipt_path, receipt)
+def _assert_prestate_unchanged(snapshot: Any, old_srs_manifest: bytes | None) -> None:
+    if snapshot.manifest_path.is_symlink() or snapshot.manifest_path.read_bytes() != snapshot.manifest_bytes:
+        fail("resource manifest changed while authenticating/provisioning the native SRS")
+    for dataset in DATASETS:
+        path = config_path(dataset)
+        if path.read_bytes() != snapshot.identity_files[path]:
+            fail(f"secure config changed while authenticating/provisioning the native SRS: {path}")
+    if _native_srs_manifest_before_transaction() != old_srs_manifest:
+        fail("native SRS manifest changed while authenticating/provisioning the SRS")
 
 
 def main(args: argparse.Namespace) -> int:
@@ -376,8 +416,12 @@ def main(args: argparse.Namespace) -> int:
         fail("manual SRS source/hash and dummy gen-srs inputs are forbidden")
     if args.binary is not None:
         local_binary(args.binary)
+    from validate_resources import authenticate_preparation_inputs, refresh_manifest_after_authenticated_srs_derivation
+
+    snapshot = authenticate_preparation_inputs(ROOT)
+    old_srs_manifest = _native_srs_manifest_before_transaction()
     source_url, logrows, expected = source_contract()
-    destination, size, actual = install_shared_srs(source_url, logrows, expected)
+    destination, size, actual, file_identity = install_shared_srs(source_url, logrows, expected)
     relative = destination.relative_to(ROOT).as_posix()
     srs_id = f"official_ezkl_native_shared_kzg{logrows}_srs"
     source_object = {
@@ -419,9 +463,34 @@ def main(args: argparse.Namespace) -> int:
         values = parse_config(config_path(dataset))
         if values.get("srs_type") != "trusted_srs":
             fail(f"{dataset} config is not a trusted_srs config")
-    atomic_write(MANIFEST, manifest)
-    update_configs(srs_id=srs_id, srs_path=relative, sha256_value=actual)
-    refresh_resource_identity()
+    previous_sigterm = signal.signal(signal.SIGTERM, _exit_on_sigterm)
+    try:
+        try:
+            _assert_prestate_unchanged(snapshot, old_srs_manifest)
+            atomic_write(MANIFEST, manifest)
+            update_configs(srs_id=srs_id, srs_path=relative, sha256_value=actual)
+            refresh_manifest_after_authenticated_srs_derivation(
+                snapshot,
+                manifest,
+                source_url=source_object["source_url"],
+                logrows=logrows,
+                expected_sha256=expected,
+                actual_sha256=actual,
+                srs_path=relative,
+                srs_size=size,
+                srs_file_identity=file_identity,
+            )
+        except BaseException as failure:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            try:
+                rollback_srs_derivation(snapshot, old_srs_manifest)
+            except BaseException as rollback_failure:
+                raise RuntimeError(
+                    f"SRS derivation failed ({failure}); authenticated prestate rollback also failed ({rollback_failure})"
+                ) from rollback_failure
+            raise
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
     print(f"native official SRS ready: {relative}")
     print(f"native get-srs source: {source_object['source_url']}")
     print(f"logrows={logrows} sha256={actual} size_bytes={size}")
@@ -438,5 +507,5 @@ def parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     try:
         raise SystemExit(main(parser().parse_args()))
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         fail(str(exc))
