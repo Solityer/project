@@ -311,6 +311,88 @@ private:
     RangeReader reader_;
 };
 
+constexpr std::uint64_t kZkSumcheckFoldedStateBudgetBytes =
+    std::uint64_t{8U} << 30U;
+
+inline bool zksc_segmented_streaming_peak_bytes(
+    std::uint64_t tensor_count, std::uint64_t segment_size,
+    std::uint64_t& peak_bytes) noexcept {
+    peak_bytes = 0U;
+    if (tensor_count == 0U || segment_size == 0U)
+        return false;
+    const auto multiply = [](std::uint64_t left, std::uint64_t right,
+                             std::uint64_t& product) noexcept {
+        if (left != 0U && right > std::numeric_limits<std::uint64_t>::max() / left)
+            return false;
+        product = left * right;
+        return true;
+    };
+    const auto add = [](std::uint64_t left, std::uint64_t right,
+                        std::uint64_t& sum) noexcept {
+        if (right > std::numeric_limits<std::uint64_t>::max() - left)
+            return false;
+        sum = left + right;
+        return true;
+    };
+    std::uint64_t segment_values = 0U, scratch_values = 0U;
+    std::uint64_t payload_bytes = 0U;
+    std::uint64_t vector_headers = 0U, terminal_values = 0U;
+    std::uint64_t metadata_bytes = 0U;
+    if (!multiply(tensor_count, segment_size, segment_values) ||
+        !multiply(segment_values, 4U, scratch_values) ||
+        !multiply(scratch_values, sizeof(FrWire), payload_bytes) ||
+        !multiply(tensor_count, 2U * sizeof(std::vector<FrWire>), vector_headers) ||
+        !multiply(tensor_count, sizeof(FrWire), terminal_values) ||
+        !add(vector_headers, terminal_values, metadata_bytes) ||
+        !add(payload_bytes, metadata_bytes, peak_bytes)) {
+        peak_bytes = 0U;
+        return false;
+    }
+    return true;
+}
+
+inline bool zksc_folded_state_peak_bytes(
+    std::uint64_t tensor_count, std::uint64_t logical_domain,
+    std::uint64_t segment_size, std::uint64_t& peak_bytes) noexcept {
+    peak_bytes = 0U;
+    if (tensor_count == 0U || logical_domain < 2U) return false;
+    std::uint64_t streaming_bytes = 0U, cached_values = 0U, cached_bytes = 0U;
+    if (!zksc_segmented_streaming_peak_bytes(
+            tensor_count, segment_size, streaming_bytes) ||
+        tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           (logical_domain / 2U))
+        return false;
+    cached_values = tensor_count * (logical_domain / 2U);
+    if (cached_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire))
+        return false;
+    cached_bytes = cached_values * sizeof(FrWire);
+    if (streaming_bytes > std::numeric_limits<std::uint64_t>::max() - cached_bytes)
+        return false;
+    peak_bytes = cached_bytes + streaming_bytes;
+    return true;
+}
+
+inline bool zksc_selected_sumcheck_peak_bytes(
+    std::uint64_t tensor_count, std::uint64_t logical_domain,
+    std::uint64_t segment_size, std::uint64_t& peak_bytes) noexcept {
+    if (!zksc_folded_state_peak_bytes(
+            tensor_count, logical_domain, segment_size, peak_bytes))
+        return false;
+    if (peak_bytes <= kZkSumcheckFoldedStateBudgetBytes) return true;
+    return zksc_segmented_streaming_peak_bytes(
+        tensor_count, segment_size, peak_bytes);
+}
+
+inline bool zksc_folded_state_within_budget(
+    const std::vector<SegmentedTensorProvider>& providers) noexcept {
+    if (providers.empty()) return false;
+    std::uint64_t peak_bytes = 0U;
+    return zksc_folded_state_peak_bytes(
+               providers.size(), providers.front().logical_domain(),
+               providers.front().segment_size(), peak_bytes) &&
+           peak_bytes <= kZkSumcheckFoldedStateBudgetBytes;
+}
+
 /*
  * Range-backed helpers for the authenticated sorted-lookup primitive.  None
  * of these adapters materializes a logical tensor: one call reads at most one
@@ -6769,7 +6851,8 @@ inline bool fill_constraint_openings(
         if (!prove_zk_sumcheck_segmented(
                 weighted, weighted_providers, weighted.degree, domain, terminal_generators,
                 ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
-                operation_context, transcript, sumcheck_result, error, 0U, false,
+                operation_context, transcript, sumcheck_result, error, 0U,
+                zksc_folded_state_within_budget(weighted_providers),
                 "constraint_sumcheck", descriptor.id.c_str())) return false;
         proof.zk_sumcheck = std::move(sumcheck_result.proof);
         std::vector<FrWire> terminal_point;
@@ -8709,7 +8792,8 @@ inline bool prove_padding_record(
                 weighted, weighted_providers, weighted.degree, descriptor.domain_size, generators,
                 ipa_blinding_generator,
                 ipa_u_generator, FrWire{}, statement, operation_context,
-                transcript, sumcheck, error)) return false;
+                transcript, sumcheck, error, 0U,
+                zksc_folded_state_within_budget(weighted_providers))) return false;
         std::vector<FrWire> point;
         for (const auto& challenge : sumcheck.challenges)
             point.push_back(zkdl::fr_wire(challenge));
@@ -8973,9 +9057,11 @@ struct RelationProofProgress {
     }
 };
 
-inline bool prove(const ProverContext& context, Proof& proof, std::string* error = nullptr) {
+inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* error, ProverContext* consume_owner) {
     try {
-        RelationProofProgress progress(context.operations.size(), context.tensors.size(),
+        if (consume_owner != nullptr && static_cast<const ProverContext*>(consume_owner) != &context) throw std::invalid_argument("consuming prover context owner mismatch");
+        const std::size_t operation_count = context.operations.size();
+        RelationProofProgress progress(operation_count, context.tensors.size(),
                                        context.sorted_lookup_descriptors.size());
         const auto emit_progress = [&](const char* phase, const char* status,
                                        std::chrono::steady_clock::time_point phase_start,
@@ -9181,11 +9267,13 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         auto last_operation_progress = operation_phase_start;
         progress.set_phase("operation_proofs");
         emit_progress("operation_proofs", "START", operation_phase_start,
-                      "total=" + std::to_string(context.operations.size()));
+                      "total=" + std::to_string(operation_count));
+        proof.operations.reserve(operation_count);
         for (std::size_t operation_index = 0U;
-             operation_index < context.operations.size(); ++operation_index) {
+             operation_index < operation_count; ++operation_index) {
             const auto& operation = context.operations[operation_index];
-            progress.set_operation(operation.id);
+            const std::string operation_id = operation.id;
+            progress.set_operation(operation_id);
             const bool has_route = operation.kind == RelationKind::SparseRoute ||
                                    !operation.selector_source_ref.empty();
             const std::uint64_t source_domain = has_route
@@ -9196,7 +9284,7 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
                 : 0U;
             emit_progress("operation", "START", operation_phase_start,
                           "index=" + std::to_string(operation_index + 1U) +
-                          " total=" + std::to_string(context.operations.size()) +
+                          " total=" + std::to_string(operation_count) +
                           " kind=" + std::to_string(static_cast<unsigned int>(operation.kind)) +
                           " id=" + operation.id +
                           " route=" + std::to_string(has_route) +
@@ -9207,7 +9295,6 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
                           " constraints=" + std::to_string(operation.constraints.size()));
             absorb_descriptor(transcript, operation);
             OperationProof operation_proof;
-            operation_proof.descriptor = operation;
             if (operation.primitives.size() > 8U) {
                 throw std::invalid_argument("relation operation carries too many native primitives");
             }
@@ -9303,20 +9390,21 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
                         constraint, error, &segment_blinding_scalars)) return false;
                 operation_proof.constraints.push_back(std::move(constraint));
             }
+            if (consume_owner != nullptr) operation_proof.descriptor = std::move(consume_owner->operations[operation_index]); else operation_proof.descriptor = operation;
             proof.operations.push_back(std::move(operation_proof));
             progress.set_phase("operation_proofs");
             const auto operation_now = std::chrono::steady_clock::now();
             if (operation_now - last_operation_progress >= std::chrono::seconds(15) ||
-                operation_index + 1U == context.operations.size()) {
+                operation_index + 1U == operation_count) {
                 emit_progress("operation_proofs", "PROGRESS", operation_phase_start,
                               "completed=" + std::to_string(operation_index + 1U) +
-                              " total=" + std::to_string(context.operations.size()) +
-                              " current_id=" + operation.id);
+                              " total=" + std::to_string(operation_count) +
+                              " current_id=" + operation_id);
                 last_operation_progress = operation_now;
             }
         }
         emit_progress("operation_proofs", "PASS", operation_phase_start,
-                      "completed=" + std::to_string(context.operations.size()));
+                      "completed=" + std::to_string(operation_count));
         const auto lookup_phase_start = std::chrono::steady_clock::now();
         progress.set_phase("sorted_lookup_proofs");
         emit_progress("sorted_lookup_proofs", "START", lookup_phase_start,
@@ -9401,6 +9489,14 @@ inline bool prove(const ProverContext& context, Proof& proof, std::string* error
         if (error) *error = exception.what();
         return false;
     }
+}
+
+inline bool prove(const ProverContext& context, Proof& proof, std::string* error = nullptr) {
+    return prove_impl(context, proof, error, nullptr);
+}
+
+inline bool prove_consuming(ProverContext& context, Proof& proof, std::string* error = nullptr) {
+    return prove_impl(context, proof, error, &context);
 }
 
 inline bool verify(
@@ -10105,7 +10201,8 @@ inline bool prove_authenticated_sorted_lookup(
                     weighted, weighted_providers, weighted.degree,
                     relation_providers.front().logical_domain(), generators,
                     blinding_generator, u_generator, initial_claim, statement, context,
-                    transcript, sumcheck, error, descriptor.segment_size, false,
+                    transcript, sumcheck, error, descriptor.segment_size,
+                    zksc_folded_state_within_budget(weighted_providers),
                     "sorted_lookup_sumcheck", descriptor.operation_id.c_str())) {
                 return false;
             }

@@ -3504,6 +3504,20 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         while (domain > 1U) { domain >>= 1U; ++bits; }
         return true;
     };
+    std::uint64_t ordinary_segmented_sumcheck_peak = 0U;
+    const auto record_segmented_sumcheck_peak = [&](std::uint64_t tensor_count,
+                                                     std::uint64_t domain,
+                                                     std::uint64_t segment_size) -> bool {
+        std::uint64_t peak = 0U;
+        if (!relation::zksc_selected_sumcheck_peak_bytes(
+                tensor_count, domain, segment_size, peak)) {
+            if (error) *error = "native segmented Sumcheck selected live shape overflows";
+            return false;
+        }
+        ordinary_segmented_sumcheck_peak =
+            std::max(ordinary_segmented_sumcheck_peak, peak);
+        return true;
+    };
     const auto hyrax_wire_bytes_for_segment = [&](std::uint64_t domain,
                                       std::uint64_t segment_size,
                                       std::uint64_t &bytes,
@@ -3943,6 +3957,16 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 if (error) *error = "native batch relation tensors do not share a supported domain: " + operation.id;
                 return false;
             }
+            std::uint64_t batched_tensor_count = 0U;
+            if (!checked_add_u64(operation.tensor_refs.size(), 2U,
+                                 batched_tensor_count) ||
+                !record_segmented_sumcheck_peak(
+                    batched_tensor_count, relation_domain,
+                    std::min<std::uint64_t>(relation_domain, kSegmentSize))) {
+                if (error && error->empty())
+                    *error = "native batched Sumcheck tensor count overflows: " + operation.id;
+                return false;
+            }
             relation::ConstraintDescriptor batched;
             batched.id = operation.id + "/batch/" + operation.batch_family;
             batched.degree = 1U;
@@ -3971,6 +3995,17 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             if (!operation.constraints.empty() && !operation_domain()) {
                 if (error) *error = "native relation tensors do not share a supported proof domain: " + operation.id;
                 return false;
+            }
+            if (!operation.constraints.empty()) {
+                std::uint64_t tensor_count = 0U;
+                if (!checked_add_u64(operation.tensor_refs.size(), 2U, tensor_count) ||
+                    !record_segmented_sumcheck_peak(
+                        tensor_count, relation_domain,
+                        std::min<std::uint64_t>(relation_domain, kSegmentSize))) {
+                    if (error && error->empty())
+                        *error = "native constraint Sumcheck tensor count overflows: " + operation.id;
+                    return false;
+                }
             }
             for (const auto &constraint : operation.constraints) {
                 std::uint64_t constraint_bytes = 0U;
@@ -4095,7 +4130,11 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         for (std::uint32_t kind = 1U; kind <= 5U; ++kind) {
             std::vector<std::string> tags;
             std::uint64_t products = 0U, domain = 0U, body = 0U, framed = 0U;
+            std::uint64_t weighted_tensor_count = 0U;
             if (!tags_for_kind(kind, tags, products, domain) ||
+                !checked_add_u64(tags.size(), 2U, weighted_tensor_count) ||
+                !record_segmented_sumcheck_peak(
+                    weighted_tensor_count, domain, query.segment_size) ||
                 !sorted_relation_wire_bytes(kind, query.operation_id, tags, domain, query.segment_size,
                                             products, body) ||
                 !checked_add_wire(8U, body, framed, "sorted-lookup relation proof frame") ||
@@ -4167,6 +4206,9 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 family.logical_shape, family.padded_shape,
                 family.visibility == "public")) continue;
         const std::uint64_t domain = domains.at(family.id);
+        if (!record_segmented_sumcheck_peak(
+                4U, domain, std::min<std::uint64_t>(domain, kSegmentSize)))
+            return false;
         const auto descriptor = relation::qpad_constraint_descriptor(family.id);
         std::uint64_t relation_bytes = 0U, record_bytes = 64U + family.id.size();
         if (!constraint_wire_bytes(descriptor, domain, 2U,
@@ -4241,54 +4283,126 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                           "proof transcript digest")) return false;
     metrics->proof_wire_bytes_upper_bound = proof_bytes;
 
-    // At proof time the input witness still owns the encoded descriptors,
-    // ProverContext owns decoded descriptors, and Proof owns one copied
-    // descriptor vector.  The wire bytes bound dynamic payload; add actual
-    // C++ descriptor/container headers for the two live decoded copies.
-    std::uint64_t descriptor_object_bytes = 0U;
+    // The formal native request contains no caller-supplied operation vector.
+    // The canonical context owns one nested backing set until each completed
+    // descriptor moves into its reserved Proof::operations slot.  Measure the
+    // actual recursive capacities, retain both top-level header arrays, and
+    // reserve 2x nested capacity for allocator/growth headroom rather than
+    // inventing simultaneous copies of the serialized map payload.
+    std::uint64_t descriptor_backing_capacity_bytes = 0U;
+    const auto add_descriptor_capacity = [&](std::uint64_t count,
+                                              std::uint64_t element_size,
+                                              const char *label) -> bool {
+        std::uint64_t bytes = 0U;
+        return checked_mul_wire(count, element_size, bytes, label) &&
+               checked_add_wire(descriptor_backing_capacity_bytes, bytes,
+                                descriptor_backing_capacity_bytes, label);
+    };
+    const auto add_descriptor_string = [&](const std::string &value) -> bool {
+        std::uint64_t allocated = 0U;
+        return checked_add_wire(value.capacity(), 1U, allocated,
+                                "descriptor string capacity") &&
+               add_descriptor_capacity(allocated, sizeof(char),
+                                       "descriptor string backing capacity");
+    };
+    const auto add_descriptor_string_vector = [&](const std::vector<std::string> &values,
+                                                   const char *label) -> bool {
+        if (!add_descriptor_capacity(values.capacity(), sizeof(std::string), label))
+            return false;
+        for (const auto &value : values)
+            if (!add_descriptor_string(value)) return false;
+        return true;
+    };
     for (const auto &operation : operations) {
-        std::uint64_t object_bytes = sizeof(relation::OperationDescriptor);
-        const std::uint64_t string_count = operation.source_refs.size() +
-            operation.tensor_refs.size() + operation.selector_refs.size() +
-            operation.fac_bindings.size() * 2U + operation.primitives.size() * 3U +
-            operation.constraints.size();
-        std::uint64_t string_objects = 0U, nested_objects = 0U;
-        if (!checked_mul_wire(string_count, sizeof(std::string) - 8U,
-                              string_objects, "operation descriptor string objects") ||
-            !checked_mul_wire(operation.constraints.size(),
-                              sizeof(relation::ConstraintDescriptor),
-                              nested_objects, "operation constraint objects") ||
-            !checked_add_wire(object_bytes, string_objects, object_bytes,
-                              "operation descriptor objects") ||
-            !checked_add_wire(object_bytes, nested_objects, object_bytes,
-                              "operation descriptor objects")) return false;
+        const std::string *const operation_strings[] = {
+            &operation.id, &operation.mapping, &operation.padding,
+            &operation.terminal_claim, &operation.terminal_point,
+            &operation.selector_source_ref, &operation.selector_output_ref,
+            &operation.batch_family, &operation.public_table_ref};
+        for (const auto *value : operation_strings)
+            if (!add_descriptor_string(*value)) return false;
+        if (!add_descriptor_string_vector(operation.source_refs,
+                                          "operation source-reference capacity") ||
+            !add_descriptor_string_vector(operation.tensor_refs,
+                                          "operation tensor-reference capacity") ||
+            !add_descriptor_string_vector(operation.selector_refs,
+                                          "operation selector-reference capacity") ||
+            !add_descriptor_capacity(operation.constants.capacity(), sizeof(FrWire),
+                                     "operation constant capacity") ||
+            !add_descriptor_capacity(operation.constraints.capacity(),
+                                     sizeof(relation::ConstraintDescriptor),
+                                     "operation constraint capacity") ||
+            !add_descriptor_capacity(operation.primitives.capacity(),
+                                     sizeof(relation::PrimitiveDescriptor),
+                                     "operation primitive capacity") ||
+            !add_descriptor_capacity(operation.selector_src.capacity(), sizeof(std::uint32_t),
+                                     "operation selector source capacity") ||
+            !add_descriptor_capacity(operation.selector_dst.capacity(), sizeof(std::uint32_t),
+                                     "operation selector destination capacity") ||
+            !add_descriptor_capacity(operation.selector_active.capacity(), sizeof(std::uint8_t),
+                                     "operation selector active capacity") ||
+            !add_descriptor_capacity(operation.selector_feature_map.capacity(), sizeof(std::uint32_t),
+                                     "operation selector feature-map capacity") ||
+            !add_descriptor_capacity(operation.fac_bindings.capacity(),
+                                     sizeof(relation::FacBindingDescriptor),
+                                     "operation FAC binding capacity") ||
+            !add_descriptor_capacity(operation.public_table_selector.capacity(), sizeof(FrWire),
+                                     "operation public-table selector capacity")) return false;
         for (const auto &constraint : operation.constraints) {
-            std::uint64_t monomial_objects = 0U, refs = 0U;
-            if (!checked_mul_wire(constraint.terms.size(), sizeof(relation::Monomial),
-                                  monomial_objects, "constraint monomial objects")) return false;
+            if (!add_descriptor_string(constraint.id) ||
+                !add_descriptor_capacity(constraint.terms.capacity(),
+                                         sizeof(relation::Monomial),
+                                         "constraint monomial capacity") ||
+                !add_descriptor_capacity(constraint.logical_shape.capacity(),
+                                         sizeof(std::uint64_t),
+                                         "constraint logical-shape capacity") ||
+                !add_descriptor_capacity(constraint.padded_shape.capacity(),
+                                         sizeof(std::uint64_t),
+                                         "constraint padded-shape capacity")) return false;
             for (const auto &term : constraint.terms)
-                if (!checked_add_wire(refs, term.refs.size() * sizeof(std::uint32_t),
-                                      refs, "constraint ref vectors")) return false;
-            if (!checked_add_wire(object_bytes, monomial_objects, object_bytes,
-                                  "operation descriptor nested objects") ||
-                !checked_add_wire(object_bytes, refs, object_bytes,
-                                  "operation descriptor nested refs")) return false;
+                if (!add_descriptor_capacity(term.refs.capacity(), sizeof(std::uint32_t),
+                                             "constraint reference capacity")) return false;
         }
-        if (!checked_add_wire(descriptor_object_bytes, object_bytes,
-                              descriptor_object_bytes,
-                              "operation descriptor resident headers")) return false;
+        for (const auto &primitive : operation.primitives)
+            if (!add_descriptor_string_vector(primitive.tensor_refs,
+                                              "primitive tensor-reference capacity"))
+                return false;
+        for (const auto &binding : operation.fac_bindings) {
+            if (!add_descriptor_string(binding.view_ref) ||
+                !add_descriptor_string(binding.canonical_ref) ||
+                !add_descriptor_capacity(binding.source_outer_index.capacity(),
+                                         sizeof(std::uint32_t),
+                                         "FAC source-outer capacity") ||
+                !add_descriptor_capacity(binding.source_feature_index.capacity(),
+                                         sizeof(std::uint32_t),
+                                         "FAC source-feature capacity") ||
+                !add_descriptor_capacity(binding.selector_active.capacity(),
+                                         sizeof(std::uint8_t),
+                                         "FAC selector-active capacity")) return false;
+        }
     }
-    std::uint64_t encoded_descriptor_copies = 0U;
-    if (!checked_mul_wire(metrics->operation_descriptor_bytes, 3U,
-                          encoded_descriptor_copies,
-                          "caller/context/proof operation descriptor payloads") ||
-        !checked_mul_wire(descriptor_object_bytes, 2U,
+    std::uint64_t context_header_bytes = 0U, proof_header_bytes = 0U;
+    std::uint64_t descriptor_backing_reserve = 0U;
+    if (!checked_mul_wire(operations.capacity(), sizeof(relation::OperationDescriptor),
+                          context_header_bytes, "context operation header capacity") ||
+        !checked_mul_wire(operations.size(), sizeof(relation::OperationProof),
+                          proof_header_bytes, "proof operation header capacity") ||
+        !checked_add_wire(proof_header_bytes, sizeof(relation::OperationProof),
+                          proof_header_bytes, "active proof operation header") ||
+        !checked_mul_wire(descriptor_backing_capacity_bytes, 2U,
+                          descriptor_backing_reserve,
+                          "descriptor backing allocator reserve") ||
+        !checked_add_wire(context_header_bytes, proof_header_bytes,
                           metrics->operation_descriptor_resident_bytes_upper_bound,
-                          "context/proof operation descriptor objects") ||
+                          "descriptor context/proof headers") ||
         !checked_add_wire(metrics->operation_descriptor_resident_bytes_upper_bound,
-                          encoded_descriptor_copies,
+                          descriptor_backing_reserve,
                           metrics->operation_descriptor_resident_bytes_upper_bound,
-                          "encoded operation descriptor payloads")) return false;
+                          "descriptor backing and allocator reserve") ||
+        !checked_add_wire(metrics->operation_descriptor_resident_bytes_upper_bound,
+                          metrics->operation_descriptor_max_bytes,
+                          metrics->operation_descriptor_resident_bytes_upper_bound,
+                          "per-operation descriptor absorb temporary")) return false;
 
     // Typed source payload for the one GatTrace held by produce().  These
     // formulas follow the owning vectors in HiddenHeadTrace,
@@ -4583,6 +4697,9 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
              "route opening proof metadata")) return false;
     metrics->route_sumcheck_live_peak_bytes_upper_bound =
         std::max(selector_peak, std::max(sumcheck_peak, opening_peak));
+    metrics->segmented_sumcheck_live_peak_bytes_upper_bound = std::max(
+        metrics->route_sumcheck_live_peak_bytes_upper_bound,
+        ordinary_segmented_sumcheck_peak);
     return true;
 }
 
@@ -4620,7 +4737,7 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
     const double provider_io_before_prove = provider_file_io_decode_seconds;
     const auto prove_start = std::chrono::steady_clock::now();
     relation::Proof proof;
-    if (!relation::prove(context, proof, error))
+    if (!relation::prove_consuming(context, proof, error))
         return reject(result, error, error ? *error : "native relation prover rejected witness", request.config, request.statement, request.backend);
     const double relation_prove_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - prove_start).count();

@@ -507,6 +507,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             "native_trace_object_metadata_bytes",
             "native_trace_forward_live_peak_bytes_upper_bound",
             "native_route_sumcheck_live_peak_bytes_upper_bound",
+            "native_segmented_sumcheck_live_peak_bytes_upper_bound",
             "native_maximum_route_source_domain",
             "native_maximum_route_edge_domain",
             "native_maximum_route_selector_factor_elements",
@@ -565,7 +566,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
                          int(admission["native_trace_u8_payload_bytes"]) +
                          int(admission["native_trace_object_metadata_bytes"]))
         forward_peak = int(admission["native_trace_forward_live_peak_bytes_upper_bound"])
-        route_scratch = int(admission["native_route_sumcheck_live_peak_bytes_upper_bound"])
+        segmented_sumcheck_scratch = int(admission["native_segmented_sumcheck_live_peak_bytes_upper_bound"])
         descriptor_resident = int(admission["native_operation_descriptor_resident_bytes_upper_bound"])
         sorting_workspace = max_merge_rows * 256 + 8 * mib
         # CPU G1 MSM uses BLST Pippenger in fixed 16,384-point chunks.  The
@@ -578,17 +579,17 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         # A retained typed Proof and serialization buffer coexist.  For
         # non-descriptor proof payloads, the source-wire payload is multiplied
         # by the native/wire point ratio (Jacobian G1 is at most 3x its
-        # 48-byte canonical encoding) plus the serialized byte vector.  The
-        # operation descriptor payload is already accounted for separately by
-        # the native three-copy descriptor bound; retain its one serialized
-        # proof copy here and do not charge it again as three Jacobian copies.
+        # 48-byte canonical encoding) plus the serialized byte vector.  Native
+        # descriptor backing capacity, context/proof headers, allocator reserve,
+        # and the per-operation absorb temporary are accounted separately;
+        # retain exactly one serialized descriptor copy here.
         proof_object_and_wire = (proof_bytes - operation_descriptor_bytes) * 4 + operation_descriptor_bytes
         srs_memory = srs_bytes * 4
         model_and_graph = graph_memory + model_elements * 8
         native_phase_peak_bytes = {
             "forward": model_and_graph + forward_peak,
             "sorted_lookup": model_and_graph + trace_payload + sorting_workspace + descriptor_resident,
-            "prove": (model_and_graph + descriptor_resident + route_scratch +
+            "prove": (model_and_graph + descriptor_resident + segmented_sumcheck_scratch +
                       sorting_workspace + proof_object_and_wire + srs_memory +
                       cpu_g1_msm_workspace + 256 * mib),
             "serialize": (model_and_graph + descriptor_resident +

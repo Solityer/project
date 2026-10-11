@@ -24,6 +24,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -849,38 +850,59 @@ BigNum field_inverse(i64 value, BN_CTX *context) {
     return result;
 }
 
-void fill_field_attention(HiddenHeadTrace &head, const Graph &graph, u64 edge_begin, u64 edge_end, const std::vector<i64> &denominator_by_node) {
+struct FieldInverseCache {
+    explicit FieldInverseCache(std::size_t nodes) : by_node(nodes) {}
+    std::vector<std::optional<BigNum>> by_node;
+};
+
+FieldInverseCache fill_field_attention(HiddenHeadTrace &head, const Graph &graph, u64 edge_begin, u64 edge_end, const std::vector<i64> &denominator_by_node) {
+    FieldInverseCache inverses(graph.nodes);
     BN_CTX *context = BN_CTX_new();
     if (!context) fail("BN_CTX_new failed");
     head.inverse_field.resize(graph.edges);
     head.alpha_field.resize(graph.edges);
-    for (u64 edge = edge_begin; edge < edge_end; ++edge) {
-        const u64 node = graph.dst[edge];
-        BigNum inverse = field_inverse(denominator_by_node[node], context);
-        BigNum exponent = field_from_i64(head.exp_weight[edge], context);
-        BigNum alpha;
-        if (!BN_mod_mul(alpha.get(), exponent.get(), inverse.get(), scalar_modulus(), context)) fail("field alpha multiplication failed");
-        head.inverse_field[edge] = field_encode(inverse.get());
-        head.alpha_field[edge] = field_encode(alpha.get());
+    try {
+        for (u64 edge = edge_begin; edge < edge_end; ++edge) {
+            const u64 node = graph.dst[edge];
+            if (!inverses.by_node[node]) inverses.by_node[node].emplace(field_inverse(denominator_by_node[node], context));
+            const BigNum &inverse = *inverses.by_node[node];
+            BigNum exponent = field_from_i64(head.exp_weight[edge], context);
+            BigNum alpha;
+            if (!BN_mod_mul(alpha.get(), exponent.get(), inverse.get(), scalar_modulus(), context)) fail("field alpha multiplication failed");
+            head.inverse_field[edge] = field_encode(inverse.get());
+            head.alpha_field[edge] = field_encode(alpha.get());
+        }
+    } catch (...) {
+        BN_CTX_free(context);
+        throw;
     }
     BN_CTX_free(context);
+    return inverses;
 }
 
-void fill_field_attention(OutputHeadTrace &head, const Graph &graph, u64 edge_begin, u64 edge_end, const std::vector<i64> &denominator_by_node) {
+FieldInverseCache fill_field_attention(OutputHeadTrace &head, const Graph &graph, u64 edge_begin, u64 edge_end, const std::vector<i64> &denominator_by_node) {
+    FieldInverseCache inverses(graph.nodes);
     BN_CTX *context = BN_CTX_new();
     if (!context) fail("BN_CTX_new failed");
     head.inverse_field.resize(graph.edges);
     head.alpha_field.resize(graph.edges);
-    for (u64 edge = edge_begin; edge < edge_end; ++edge) {
-        const u64 node = graph.dst[edge];
-        BigNum inverse = field_inverse(denominator_by_node[node], context);
-        BigNum exponent = field_from_i64(head.exp_weight[edge], context);
-        BigNum alpha;
-        if (!BN_mod_mul(alpha.get(), exponent.get(), inverse.get(), scalar_modulus(), context)) fail("field alpha multiplication failed");
-        head.inverse_field[edge] = field_encode(inverse.get());
-        head.alpha_field[edge] = field_encode(alpha.get());
+    try {
+        for (u64 edge = edge_begin; edge < edge_end; ++edge) {
+            const u64 node = graph.dst[edge];
+            if (!inverses.by_node[node]) inverses.by_node[node].emplace(field_inverse(denominator_by_node[node], context));
+            const BigNum &inverse = *inverses.by_node[node];
+            BigNum exponent = field_from_i64(head.exp_weight[edge], context);
+            BigNum alpha;
+            if (!BN_mod_mul(alpha.get(), exponent.get(), inverse.get(), scalar_modulus(), context)) fail("field alpha multiplication failed");
+            head.inverse_field[edge] = field_encode(inverse.get());
+            head.alpha_field[edge] = field_encode(alpha.get());
+        }
+    } catch (...) {
+        BN_CTX_free(context);
+        throw;
     }
     BN_CTX_free(context);
+    return inverses;
 }
 
 SignedRoundDivWitness make_round_div_witness(const Matrix &numerator, const std::vector<i64> &denominator, u64 numerator_scale, u64 denominator_scale,
@@ -999,7 +1021,7 @@ void aggregate_head(const Config &config, const Graph &graph, const StaticTables
     }
     for (u64 edge = 0; edge < graph.edges; ++edge) output->denominator[edge] = denominator_by_node[graph.dst[edge]];
     if (output->denominator.empty()) fail(name + " has no edges");
-    fill_field_attention(*output, graph, 0, graph.edges, denominator_by_node);
+    const FieldInverseCache inverse_cache = fill_field_attention(*output, graph, 0, graph.edges, denominator_by_node);
 
     for (u64 edge = 0; edge < graph.edges; ++edge) {
         const u64 node = graph.dst[edge];
@@ -1018,16 +1040,20 @@ void aggregate_head(const Config &config, const Graph &graph, const StaticTables
     BN_CTX *field_context = BN_CTX_new();
     if (!field_context) fail("BN_CTX_new failed for aggregate field");
     for (u64 node = 0; node < graph.nodes; ++node) {
+        if (node + 1 >= graph.node_edge_ptr.size()) {
+            BN_CTX_free(field_context);
+            fail("edge pointer does not cover destination node");
+        }
+        if (!inverse_cache.by_node[node]) {
+            BN_CTX_free(field_context);
+            fail("zero denominator in attention relation");
+        }
+        const BigNum &inverse = *inverse_cache.by_node[node];
         for (u64 dim = 0; dim < projected.cols; ++dim) {
             BigNum value;
             BN_zero(value.get());
             BigNum integer_value;
             BN_zero(integer_value.get());
-            if (node + 1 >= graph.node_edge_ptr.size()) {
-                BN_CTX_free(field_context);
-                fail("edge pointer does not cover destination node");
-            }
-            BigNum inverse = field_inverse(denominator_by_node[node], field_context);
             for (u64 edge = graph.node_edge_ptr[node]; edge < graph.node_edge_ptr[node + 1]; ++edge) {
                 if (graph.dst[edge] != node) {
                     BN_CTX_free(field_context);
@@ -1109,7 +1135,7 @@ void aggregate_output_head(const Config &config, const Graph &graph, const Stati
                                                             name + ".denominator");
     }
     for (u64 edge = 0; edge < graph.edges; ++edge) output->denominator[edge] = denominator_by_node[graph.dst[edge]];
-    fill_field_attention(*output, graph, 0, graph.edges, denominator_by_node);
+    const FieldInverseCache inverse_cache = fill_field_attention(*output, graph, 0, graph.edges, denominator_by_node);
     for (u64 edge = 0; edge < graph.edges; ++edge) {
         const u64 node = graph.dst[edge];
         for (u64 dim = 0; dim < projected.cols; ++dim) {
@@ -1129,7 +1155,11 @@ void aggregate_output_head(const Config &config, const Graph &graph, const Stati
             BN_CTX_free(field_context);
             fail("edge pointer does not cover output destination node");
         }
-        BigNum inverse = field_inverse(denominator_by_node[node], field_context);
+        if (!inverse_cache.by_node[node]) {
+            BN_CTX_free(field_context);
+            fail("zero denominator in attention relation");
+        }
+        const BigNum &inverse = *inverse_cache.by_node[node];
         for (u64 dim = 0; dim < projected.cols; ++dim) {
             BigNum value;
             BN_zero(value.get());
@@ -5132,6 +5162,7 @@ int admit(const Config &config) {
               << ",\"native_maximum_route_edge_domain\":" << plan_metrics.maximum_route_edge_domain
               << ",\"native_maximum_route_selector_factor_elements\":" << plan_metrics.maximum_route_selector_factor_elements
               << ",\"native_route_sumcheck_live_peak_bytes_upper_bound\":" << plan_metrics.route_sumcheck_live_peak_bytes_upper_bound
+              << ",\"native_segmented_sumcheck_live_peak_bytes_upper_bound\":" << plan_metrics.segmented_sumcheck_live_peak_bytes_upper_bound
               << ",\"sorted_lookup_query_count\":" << relation.sorted_lookup.queries.size()
               << ",\"maximum_sorted_lookup_merge_logical_rows\":" << maximum_sorted_lookup_merge_logical_rows
               << ",\"sorted_lookup_outer_commitment_count\":" << sorted_lookup_outer_commitment_count

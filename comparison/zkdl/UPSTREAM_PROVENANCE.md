@@ -51,20 +51,24 @@ sha256sum bls12-381.cuh fr-tensor.cuh g1-tensor.cuh commitment.cuh proof.cuh \
 ## Modification boundary
 
 GAT-specific code belongs in `gat_adapter/`.  The baseline-local build adds
-only the adapter translation units and include/link rules.  Configurations,
-copied assets, schemas, scripts, provenance, and test-only fixtures remain
-under `comparison/zkdl/`.
+the adapter translation units and include/link rules, plus the local
+`zkrelation-proof.cuh` relation-engine adaptation.  Its guarded folded-state
+cache and native consuming-prover path change temporary resource ownership;
+they preserve the existing relation, transcript, and serialized proof format.
+Configurations, copied assets, schemas, scripts, provenance, and test-only
+fixtures remain under `comparison/zkdl/`.
 
 The local `commitment.cuh`, `fr-tensor.cuh`, `g1-tensor.cuh`, and `proof.cuh`
 files differ from the pinned upstream snapshot and are not treated as
-authenticated upstream provenance.  The local `zkmatmul.cuh` and
-`zkprod.cuh` files are baseline adaptation additions, not upstream files.
+authenticated upstream provenance.  The local `zkmatmul.cuh`, `zkprod.cuh`,
+and `zkrelation-proof.cuh` files are baseline adaptation additions, not
+upstream files.
 Formal use must review these changes against the pinned upstream source
 before declaring the baseline ready.
 
 ## Formal build and resource identity
 
-The formal entry is `ZKDL_ALLOW_FULL_DATASET_RUN=1 bash scripts/run_five.sh cpu`. It uses the native CPU commitment, full-relation prover and independent verifier. It force-builds the baseline-local targets before preparing resources, records current source and binary hashes, and binds the build manifest through the run asset manifest to the proof statement. The collector rejects changed sources, binaries or authenticated resources.
+The formal entry is `bash scripts/run_five.sh` with no arguments; `bash scripts/run_five_detached.sh` is the no-argument detached wrapper for the same runner. It uses the native CPU commitment, full-relation prover and independent verifier. It force-builds the baseline-local targets before preparing resources, records current source and binary hashes, and binds the build manifest through the run asset manifest to the proof statement. The collector rejects changed sources, binaries or authenticated resources.
 
 The native SRS helper preserves independent nonzero OS-CSPRNG scalar multiplication on BLS12-381 and the GATZKG1C frame format. This is an honest local trusted setup with destruction of secret scalar and entropy buffers, not transparent setup. Public frames and their complete manifests are authenticated before use. The pinned baseline-local blst dependency supplies equivalent generic CPU group arithmetic and strict subgroup/canonical point decoding; it does not replace the zkDL proof protocol. Its upstream identity, license and imported source hashes are recorded in `third_party/BLST_PROVENANCE.txt` and the vendored dependency: blst v0.3.16, commit `e7f90de551e8df682f3cc99067d204d8b90d27ad`, archive SHA-256 `e04805b7d6ef9e1d89b7f511a5b86136c57b455d97924d7324da2305a864673f`.
 
