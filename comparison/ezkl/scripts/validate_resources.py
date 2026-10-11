@@ -59,6 +59,28 @@ REQUIRED_FILE_KEYS = {
     "dataset",
     "role",
 }
+DERIVED_IDENTITY_KEYS = frozenset(("static_table_id", "static_table_digest", "degree_bound_id", "degree_bound_digest"))
+DERIVED_FEATURE_KEYS = frozenset(("feature_format", "feature_dtype", "feature_shape", "feature_order", "feature_length", "feature_sha256"))
+_PREPARATION_AUTH_TOKEN = object()
+
+
+class AuthenticatedPreparationSnapshot:
+    """Pre-generation identities authenticated by this process for one refresh."""
+
+    __slots__ = ("root", "manifest_path", "manifest_bytes", "manifest", "source_snapshot", "input_paths", "input_identities", "identity_files", "_token")
+
+    def __init__(self, token: object, root: Path, manifest_path: Path, manifest_bytes: bytes, manifest: dict[str, Any], source_snapshot: dict[str, str], input_paths: list[Path], input_identities: tuple[Any, ...], identity_files: dict[Path, bytes]) -> None:
+        if token is not _PREPARATION_AUTH_TOKEN:
+            raise TypeError("authenticated preparation snapshots can only be issued by input authentication")
+        self.root = root.resolve()
+        self.manifest_path = manifest_path.resolve()
+        self.manifest_bytes = manifest_bytes
+        self.manifest = manifest
+        self.source_snapshot = source_snapshot
+        self.input_paths = input_paths
+        self.input_identities = input_identities
+        self.identity_files = identity_files
+        self._token = token
 
 
 def digest(path: Path) -> str:
@@ -268,18 +290,7 @@ def _npy_contract(path: Path, content_sha256: str | None = None) -> dict[str, An
 
 
 def _parse_cfg(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for number, raw in enumerate(path.read_text().splitlines(), 1):
-        line = raw.split("#", 1)[0].strip()
-        if not line:
-            continue
-        if "=" not in line:
-            fail(f"malformed config line {path}:{number}")
-        key, value = (item.strip() for item in line.split("=", 1))
-        if not key or key in values:
-            fail(f"duplicate/empty config key {path}:{number}")
-        values[key] = value
-    return values
+    return _parse_cfg_bytes(path.read_bytes(), path)
 
 
 def validate_npy_contract(root: Path, feature_path: Path, content_sha256: str | None = None) -> None:
@@ -654,7 +665,10 @@ def validate_manifest(
             file_digest = digest(local)
         if file_digest != entry["sha256"]:
             fail(f"local SHA-256 mismatch for {path_text}")
-        source_digest = file_digest if source.resolve() == local.resolve() else digest(source)
+        if source.resolve() == local.resolve():
+            source_digest = file_digest
+        else:
+            source_digest = digest(source)
         if source_digest != entry["source_sha256"]:
             fail(f"source SHA-256 mismatch for {path_text}: {source}")
         if path_text.endswith("/features.npy"):
@@ -671,6 +685,321 @@ def validate_manifest(
             validate_checkpoint_archive(root, local, checkpoint_manifest)
         # ``verify_source`` remains accepted for compatibility. Baseline-local
         # source files are always hashed above; no external source is read.
+
+
+def _preparation_identity_paths(root: Path) -> list[Path]:
+    paths = [root / "resources/canonical/configs" / f"{dataset}_secure.cfg" for dataset in CHECKPOINT_DATASETS.values()]
+    paths.extend(root / "resources/canonical/checkpoints" / bundle / "manifest.json" for bundle in CHECKPOINT_DATASETS)
+    paths.extend(root / "resources/canonical/cache" / dataset / "meta.cfg" for dataset in ("ppi", "ogbn_arxiv"))
+    return paths
+
+
+def _preparation_input_paths(root: Path, manifest: dict[str, Any]) -> list[Path]:
+    identity_paths = {path.resolve() for path in _preparation_identity_paths(root)}
+    paths: list[Path] = []
+    for entry in manifest.get("files", []):
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not isinstance(entry.get("source_path"), str):
+            fail("resource manifest has a malformed entry before authenticated preparation")
+        relative = entry["path"]
+        if relative.startswith("resources/canonical/tables/") or relative.startswith("resources/canonical/ledgers/"):
+            continue
+        local = safe_relative(root, relative)
+        source = Path(entry["source_path"])
+        if not source.is_absolute():
+            source = root / source
+        if local.resolve() not in identity_paths:
+            paths.append(local)
+        if source.resolve() not in identity_paths:
+            paths.append(source)
+    paths.append(root / "scripts/generate_gat_resources.py")
+    return paths
+
+
+def _file_identity_snapshot(root: Path, paths: list[Path]) -> tuple[Any, ...]:
+    by_relative: dict[str, Path] = {}
+    for candidate in paths:
+        if candidate.is_symlink():
+            fail(f"authenticated resource path is a symlink: {candidate}")
+        try:
+            resolved = candidate.resolve(strict=True)
+            relative = resolved.relative_to(root.resolve()).as_posix()
+        except (OSError, ValueError) as exc:
+            fail(f"authenticated resource path is missing or escapes baseline: {candidate} ({exc})")
+        if not resolved.is_file():
+            fail(f"authenticated resource path is not a regular file: {candidate}")
+        by_relative[relative] = resolved
+    snapshots = []
+    for relative, path in sorted(by_relative.items()):
+        info = path.stat()
+        snapshots.append((relative, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)))
+    return tuple(snapshots)
+
+
+def authenticate_preparation_inputs(root: Path) -> AuthenticatedPreparationSnapshot:
+    """Authenticate the old manifest before a generator may change derived fields."""
+    root = root.resolve()
+    manifest_path = root / MANIFEST_REL
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        fail(f"canonical resource manifest is missing or symlinked before preparation: {manifest_path}")
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read canonical resource manifest before preparation: {exc}")
+    if not isinstance(manifest, dict):
+        fail("canonical resource manifest must be an object before preparation")
+    identity_paths = _preparation_identity_paths(root)
+    try:
+        for path in identity_paths:
+            if path.is_symlink() or not path.is_file():
+                fail(f"derivation identity file is missing or symlinked before preparation: {path}")
+        identity_files = {path: path.read_bytes() for path in identity_paths}
+    except OSError as exc:
+        fail(f"cannot snapshot derivation identity files before preparation: {exc}")
+    input_paths = _preparation_input_paths(root, manifest)
+    input_identities = _file_identity_snapshot(root, input_paths)
+    print("[resource-validation] authenticate original canonical inputs before derivation", flush=True)
+    validate_manifest(root, manifest, False, inputs_only=True)
+    if manifest_path.read_bytes() != manifest_bytes:
+        fail("resource manifest changed during authenticated preparation preflight")
+    if _file_identity_snapshot(root, input_paths) != input_identities:
+        fail("canonical input files changed during authenticated preparation preflight")
+    for path, payload in identity_files.items():
+        if path.read_bytes() != payload:
+            fail(f"derivation identity file changed during authenticated preparation preflight: {path}")
+    return AuthenticatedPreparationSnapshot(
+        _PREPARATION_AUTH_TOKEN,
+        root,
+        manifest_path,
+        manifest_bytes,
+        manifest,
+        preserved_source_snapshot(root, manifest),
+        input_paths,
+        input_identities,
+        identity_files,
+    )
+
+
+def _parse_cfg_bytes(payload: bytes, path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for number, raw in enumerate(payload.decode().splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" not in line:
+            fail(f"malformed config line {path}:{number}")
+        key, value = (item.strip() for item in line.split("=", 1))
+        if not key or key in values:
+            fail(f"duplicate/empty config key {path}:{number}")
+        values[key] = value
+    return values
+
+
+def _check_derived_identity_changes(snapshot: AuthenticatedPreparationSnapshot) -> None:
+    root = snapshot.root
+    for path, old_payload in snapshot.identity_files.items():
+        try:
+            if path.is_symlink() or not path.is_file():
+                fail(f"derivation identity file is not a regular file after generation: {path}")
+            new_payload = path.read_bytes()
+        except OSError as exc:
+            fail(f"derivation identity file is missing after generation: {path} ({exc})")
+        relative = path.relative_to(root).as_posix()
+        if relative.startswith("resources/canonical/configs/"):
+            old_values = _parse_cfg_bytes(old_payload, path)
+            new_values = _parse_cfg_bytes(new_payload, path)
+            if {key: value for key, value in old_values.items() if key not in DERIVED_IDENTITY_KEYS} != {key: value for key, value in new_values.items() if key not in DERIVED_IDENTITY_KEYS}:
+                fail(f"resource generator changed a non-derived config value: {relative}")
+        elif relative.startswith("resources/canonical/checkpoints/"):
+            try:
+                old_values = json.loads(old_payload)
+                new_values = json.loads(new_payload)
+            except json.JSONDecodeError as exc:
+                fail(f"invalid checkpoint manifest after generation: {relative} ({exc})")
+            if not isinstance(old_values, dict) or not isinstance(new_values, dict):
+                fail(f"checkpoint manifest is not an object after generation: {relative}")
+            if {key: value for key, value in old_values.items() if key not in DERIVED_IDENTITY_KEYS} != {key: value for key, value in new_values.items() if key not in DERIVED_IDENTITY_KEYS}:
+                fail(f"resource generator changed a non-derived checkpoint field: {relative}")
+        elif relative in {"resources/canonical/cache/ppi/meta.cfg", "resources/canonical/cache/ogbn_arxiv/meta.cfg"}:
+            old_values = _parse_cfg_bytes(old_payload, path)
+            new_values = _parse_cfg_bytes(new_payload, path)
+            if {key: value for key, value in old_values.items() if key not in DERIVED_FEATURE_KEYS} != {key: value for key, value in new_values.items() if key not in DERIVED_FEATURE_KEYS}:
+                fail(f"resource generator changed a non-derived feature metadata value: {relative}")
+        else:
+            fail(f"unrecognized derivation identity file: {relative}")
+
+
+def _read_table_registry(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("rb") as stream:
+            if _read_exact(stream, len(TABLE_MAGIC), "table archive magic", path) != TABLE_MAGIC:
+                fail(f"invalid table archive magic: {path}")
+            version = struct.unpack("<I", _read_exact(stream, 4, "table archive version", path))[0]
+            count = struct.unpack("<I", _read_exact(stream, 4, "table archive count", path))[0]
+            if version != TABLE_FORMAT_VERSION or count != 4:
+                fail(f"unsupported table archive version/count in {path}")
+            registry = _read_metadata(stream, "registry metadata", path)
+    except OSError as exc:
+        fail(f"cannot read table registry {path}: {exc}")
+    if registry.get("format") != "ezkl-gat-static-tables-bin" or registry.get("version") != TABLE_FORMAT_VERSION:
+        fail(f"table registry identity mismatch: {path}")
+    return registry
+
+
+def validate_generated_resource_links(root: Path) -> None:
+    """Bind every dataset's configs and checkpoint to the actual table/ledger IDs."""
+    try:
+        from generate_gat_resources import ledger_digest
+    except ImportError as exc:
+        fail(f"cannot load canonical ledger digest implementation: {exc}")
+    for bundle, dataset in CHECKPOINT_DATASETS.items():
+        config_path = root / "resources/canonical/configs" / f"{dataset}_secure.cfg"
+        checkpoint_path = root / "resources/canonical/checkpoints" / bundle / "manifest.json"
+        table_path = root / "resources/canonical/tables" / dataset / "gat_static_tables.bin"
+        ledger_path = root / "resources/canonical/ledgers" / dataset / "gat_integer_ledger.json"
+        config = _parse_cfg(config_path)
+        try:
+            checkpoint = json.loads(checkpoint_path.read_text())
+            ledger = json.loads(ledger_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            fail(f"cannot read {dataset} checkpoint/ledger identities: {exc}")
+        if not isinstance(checkpoint, dict) or not isinstance(ledger, dict):
+            fail(f"{dataset} checkpoint manifest and integer ledger must be JSON objects")
+        registry = _read_table_registry(table_path)
+        expected_table_id = f"tables:gat:{dataset}:v1"
+        expected_ledger_id = f"ledger:gat:{dataset}:v1"
+        if registry.get("static_tables_id") != expected_table_id or registry.get("static_tables_digest") != checkpoint.get("static_table_digest"):
+            fail(f"{dataset} table header identity does not match the canonical dataset/checkpoint")
+        if registry.get("static_tables_id") != checkpoint.get("static_table_id"):
+            fail(f"{dataset} table header ID does not match checkpoint manifest")
+        if registry.get("static_tables_digest") != config.get("static_table_digest") or registry.get("static_tables_id") != config.get("static_table_id"):
+            fail(f"{dataset} table header identity does not match secure config")
+        if ledger.get("ledger_id") != expected_ledger_id or ledger.get("ledger_digest") != checkpoint.get("degree_bound_digest"):
+            fail(f"{dataset} integer ledger identity does not match the canonical dataset/checkpoint")
+        if ledger.get("ledger_id") != checkpoint.get("degree_bound_id"):
+            fail(f"{dataset} integer ledger ID does not match checkpoint manifest")
+        if ledger.get("ledger_id") != config.get("degree_bound_id") or ledger.get("ledger_digest") != config.get("degree_bound_digest"):
+            fail(f"{dataset} integer ledger identity does not match secure config")
+        try:
+            calculated_digest = ledger_digest(ledger)
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            fail(f"invalid {dataset} integer ledger canonical fields: {exc}")
+        if ledger.get("ledger_digest") != calculated_digest:
+            fail(f"{dataset} integer ledger digest does not match canonical bounds")
+
+
+def _verify_preparation_snapshot(snapshot: AuthenticatedPreparationSnapshot, *, manifest_unchanged: bool) -> None:
+    if not isinstance(snapshot, AuthenticatedPreparationSnapshot) or snapshot._token is not _PREPARATION_AUTH_TOKEN:
+        fail("resource refresh requires the current authenticated preparation snapshot")
+    if snapshot.root != snapshot.manifest_path.parents[1]:
+        fail("authenticated preparation snapshot belongs to a different baseline")
+    if manifest_unchanged and snapshot.manifest_path.read_bytes() != snapshot.manifest_bytes:
+        fail("resource manifest changed during authenticated derivation")
+    if _file_identity_snapshot(snapshot.root, snapshot.input_paths) != snapshot.input_identities:
+        fail("an authenticated canonical input changed during derivation")
+    if manifest_unchanged:
+        _check_derived_identity_changes(snapshot)
+
+
+def preparation_resources_are_current(snapshot: AuthenticatedPreparationSnapshot) -> bool:
+    _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
+    try:
+        require_complete_resource_set(snapshot.root, snapshot.manifest)
+        validate_manifest(snapshot.root, snapshot.manifest, False)
+        validate_generated_resource_links(snapshot.root)
+    except SystemExit as exc:
+        if exc.code not in (None, 2):
+            raise
+        _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
+        return False
+    _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
+    return True
+
+
+def _compare_fresh_manifest_to_authenticated_inputs(
+    snapshot: AuthenticatedPreparationSnapshot,
+    fresh_manifest: dict[str, Any],
+) -> None:
+    """Permit new hashes only for regenerated outputs and allowlisted local identities."""
+    old_entries = {entry["path"]: entry for entry in snapshot.manifest["files"]}
+    fresh_entries = {entry["path"]: entry for entry in fresh_manifest["files"]}
+    mutable_identity_paths = {
+        path.relative_to(snapshot.root).as_posix() for path in _preparation_identity_paths(snapshot.root)
+    }
+    generated_paths = set(REQUIRED_GENERATED_PATHS)
+    if not mutable_identity_paths.issubset(set(old_entries) & set(fresh_entries)):
+        fail("a managed derived identity file disappeared from the authenticated manifest")
+    if (set(old_entries) - generated_paths) - set(fresh_entries):
+        missing = sorted((set(old_entries) - generated_paths) - set(fresh_entries))
+        fail(f"authenticated immutable resources disappeared during derivation: {missing}")
+    if (set(fresh_entries) - generated_paths) - set(old_entries):
+        added = sorted((set(fresh_entries) - generated_paths) - set(old_entries))
+        fail(f"unmanifested immutable resources appeared during derivation: {added}")
+
+    fields = ("size", "sha256", "source_path", "source_sha256", "dataset", "role")
+    for path_text in sorted(set(old_entries) & set(fresh_entries)):
+        old = old_entries[path_text]
+        fresh = fresh_entries[path_text]
+        if path_text in generated_paths:
+            # Generated tables/ledgers may be rebuilt. Their source is the current
+            # local generator, whose provenance is refreshed with the output.
+            for key in ("source_path", "dataset", "role"):
+                if old[key] != fresh[key]:
+                    fail(f"generated resource provenance changed during derivation: {path_text} ({key})")
+            continue
+        if path_text in mutable_identity_paths:
+            local = safe_relative(snapshot.root, path_text).resolve()
+            for entry in (old, fresh):
+                try:
+                    source = Path(entry["source_path"]).resolve(strict=True)
+                except OSError as exc:
+                    fail(f"derived identity source is missing for {path_text}: {exc}")
+                if source != local or entry["source_path"] != old["source_path"]:
+                    fail(f"derived identity is not bound to its same local managed file: {path_text}")
+                if entry["source_sha256"] != entry["sha256"]:
+                    fail(f"derived identity source hash is not its local file hash: {path_text}")
+            for key in ("dataset", "role"):
+                if old[key] != fresh[key]:
+                    fail(f"derived identity provenance changed during derivation: {path_text} ({key})")
+            continue
+        if any(old[key] != fresh[key] for key in fields):
+            fail(f"authenticated immutable resource identity changed during derivation: {path_text}")
+
+    # A newly generated table/ledger must still name the expected local producer.
+    generator = (snapshot.root / "scripts/generate_gat_resources.py").resolve()
+    for path_text in generated_paths & set(fresh_entries):
+        if Path(fresh_entries[path_text]["source_path"]).resolve() != generator:
+            fail(f"generated resource has an unexpected producer: {path_text}")
+
+
+def refresh_manifest_after_authenticated_derivation(snapshot: AuthenticatedPreparationSnapshot) -> None:
+    """Refresh and strictly validate resources changed only by the authenticated generator."""
+    _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
+    _check_derived_identity_changes(snapshot)
+    resource_paths: list[Path] = []
+    for local in regular_files(snapshot.root):
+        source, _, _ = source_for(local.relative_to(snapshot.root), snapshot.root)
+        resource_paths.extend((local, source))
+    identities_before_build = _file_identity_snapshot(snapshot.root, resource_paths)
+    manifest, parsed_table_digests = build_manifest(snapshot.root, snapshot.source_snapshot)
+    identities_after_build = _file_identity_snapshot(snapshot.root, resource_paths)
+    if identities_before_build != identities_after_build:
+        fail("resource files changed while the fresh manifest hashes were computed")
+    _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
+    _compare_fresh_manifest_to_authenticated_inputs(snapshot, manifest)
+    require_complete_resource_set(snapshot.root, manifest)
+    validate_manifest(
+        snapshot.root,
+        manifest,
+        False,
+        parsed_table_digests=parsed_table_digests,
+    )
+    validate_generated_resource_links(snapshot.root)
+    identities_after_validation = _file_identity_snapshot(snapshot.root, resource_paths)
+    if identities_after_build != identities_after_validation:
+        fail("manifest-listed resources changed during complete post-derivation authentication")
+    _verify_preparation_snapshot(snapshot, manifest_unchanged=True)
+    atomic_manifest_write(snapshot.manifest_path, manifest)
 
 
 def require_complete_resource_set(root: Path, manifest: dict[str, Any]) -> None:
@@ -786,6 +1115,8 @@ def main() -> int:
         inputs_only=args.validate_inputs_only,
         parsed_table_digests=parsed_table_digests,
     )
+    if args.require_complete:
+        validate_generated_resource_links(root)
     if args.require_native_srs:
         try:
             from formal_common import validate_native_srs_manifest

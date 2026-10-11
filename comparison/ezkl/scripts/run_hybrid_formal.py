@@ -71,6 +71,7 @@ from formal_common import (
     validate_gpu_environment,
     validate_resources,
     validate_formal_python_environment,
+    normalize_formal_execution_environment,
     select_formal_cuda_device,
     resource_file_identities,
 )
@@ -2840,20 +2841,14 @@ def _preflight_dataset_configs() -> dict[str, dict[str, str]]:
 def _authenticate_or_prepare_resources(
     python: str, *, allow_prepare: bool, session_id: str, preflight_config_sha256s: tuple[tuple[str, str], ...]
 ) -> tuple[tuple[tuple[str, tuple[int, int, int, int, int]], ...], tuple[tuple[str, str], ...]]:
-    try:
-        identities_before = resource_file_identities()
-        validate_resources()
-        identities_after = resource_file_identities()
-        if identities_before != identities_after:
-            abort("manifest-listed resource files changed during authentication; current session is invalid")
-        return identities_after, tuple(preflight_config_sha256s)
-    except ContractError as exc:
-        if "timed out after" in str(exc) or "changed during authentication" in str(exc):
-            raise
-        print(f"[ezkl-formal] complete resource validation needs repair: {exc}", flush=True)
-        if not allow_prepare:
-            raise
-    return _prepare_and_authenticate_resources(python, session_id=session_id, preflight_config_sha256s=tuple(preflight_config_sha256s))
+    if allow_prepare:
+        return _prepare_and_authenticate_resources(python, session_id=session_id, preflight_config_sha256s=tuple(preflight_config_sha256s))
+    identities_before = resource_file_identities()
+    validate_resources()
+    identities_after = resource_file_identities()
+    if identities_before != identities_after:
+        abort("manifest-listed resource files changed during authentication; current session is invalid")
+    return identities_after, tuple(preflight_config_sha256s)
 
 
 def _authenticate_or_provision_srs(python: str, *, allow_provision: bool) -> dict[str, object]:
@@ -3432,6 +3427,7 @@ def main(args: argparse.Namespace) -> int:
 def _main(args: argparse.Namespace) -> int:
     if not args._from_ezkl_entry:
         abort("start EZKL formal sessions with scripts/run_formal_matrix.py")
+    normalize_formal_execution_environment()
     if args.resume_session is not None:
         if args.preflight_only:
             abort("--resume-session cannot be combined with --preflight-only")

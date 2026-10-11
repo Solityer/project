@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -105,53 +106,73 @@ def _mutable_identity_files() -> list[Path]:
     return paths
 
 
-def _input_resource_paths() -> list[Path]:
-    manifest_path = ROOT / "resources" / "resource_manifest.json"
-    try:
-        manifest = json.loads(manifest_path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"cannot snapshot canonical inputs before preparation: {exc}") from exc
-    entries = manifest.get("files") if isinstance(manifest, dict) else None
-    if not isinstance(entries, list) or not entries:
-        raise RuntimeError("canonical resource manifest has no input entries to snapshot")
-    controlled_outputs = {path.resolve() for path in _mutable_identity_files()}
-    paths: list[Path] = []
-    for entry in entries:
-        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
-            raise RuntimeError("canonical resource manifest has a malformed input entry")
-        relative = entry["path"]
-        if relative.startswith("resources/canonical/tables/") or relative.startswith("resources/canonical/ledgers/"):
-            continue
-        local = Path(relative)
-        local_path = local if local.is_absolute() else ROOT / local
-        if local_path.resolve() in controlled_outputs:
-            continue
-        for key in ("path", "source_path"):
-            value = entry.get(key)
-            if not isinstance(value, str) or not value:
-                raise RuntimeError(f"canonical resource manifest input entry lacks {key}")
-            candidate = Path(value)
-            paths.append(candidate if candidate.is_absolute() else ROOT / candidate)
+def _transaction_paths() -> list[Path]:
+    paths = _mutable_identity_files()
+    for dataset in DATASETS:
+        paths.extend((
+            ROOT / "resources/canonical/tables" / dataset / "gat_static_tables.bin",
+            ROOT / "resources/canonical/tables" / dataset / "gat_static_tables.json",
+            ROOT / "resources/canonical/ledgers" / dataset / "gat_integer_ledger.json",
+        ))
+    paths.append(ROOT / "resources/resource_manifest.json")
     return paths
 
 
-def _snapshot_files(paths: list[Path]) -> dict[Path, bytes]:
-    return {path: path.read_bytes() for path in paths}
-
-
-def _restore_files(snapshot: dict[Path, bytes]) -> None:
-    for path, payload in snapshot.items():
-        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.restore.", dir=path.parent)
+def _backup_transaction(paths: list[Path], backup_root: Path) -> tuple[dict[Path, Path | None], dict[Path, bool]]:
+    """Copy generated outputs and identity docs to disk before a resource refresh."""
+    files: dict[Path, Path | None] = {}
+    directories: dict[Path, bool] = {}
+    for path in paths:
+        path = path.absolute()
         try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp_name, path)
+            path.relative_to(ROOT)
+        except ValueError as exc:
+            raise RuntimeError(f"resource transaction path escapes baseline: {path}") from exc
+        parent = path.parent
+        while parent != ROOT and parent.is_relative_to(ROOT):
+            if parent.is_symlink():
+                raise RuntimeError(f"resource transaction directory is a symlink: {parent}")
+            directories.setdefault(parent, parent.is_dir())
+            parent = parent.parent
+        if path.is_symlink():
+            raise RuntimeError(f"resource transaction file is a symlink: {path}")
+        if path.exists():
+            if not path.is_file():
+                raise RuntimeError(f"resource transaction target is not a regular file: {path}")
+            relative = path.relative_to(ROOT)
+            backup = backup_root / relative
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, backup)
+            files[path] = backup
+        else:
+            files[path] = None
+    return files, directories
+
+
+def _restore_transaction(files: dict[Path, Path | None], directories: dict[Path, bool]) -> None:
+    for path, backup in files.items():
+        if backup is None:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.restore.", dir=path.parent)
+        os.close(fd)
+        try:
+            shutil.copyfile(backup, temporary)
+            shutil.copystat(backup, temporary)
+            os.replace(temporary, path)
         finally:
             try:
-                os.unlink(temp_name)
+                os.unlink(temporary)
             except FileNotFoundError:
+                pass
+    for path, existed in sorted(directories.items(), key=lambda item: len(item[0].parts), reverse=True):
+        if not existed:
+            try:
+                path.rmdir()
+            except (FileNotFoundError, OSError):
                 pass
 
 
@@ -166,29 +187,33 @@ def main(args: argparse.Namespace) -> int:
         print("native official SRS is provisioned by python3 scripts/run_formal_matrix.py --execute-formal")
         return 2
 
-    from formal_common import resource_file_identities_for_paths
+    from validate_resources import (
+        authenticate_preparation_inputs,
+        preparation_resources_are_current,
+        refresh_manifest_after_authenticated_derivation,
+    )
 
-    authenticated_inputs = _input_resource_paths()
-    input_identities_before = resource_file_identities_for_paths(authenticated_inputs)
-    run([sys.executable, str(validator), "--validate-inputs-only"], "authenticate baseline canonical inputs")
-    if resource_file_identities_for_paths(authenticated_inputs) != input_identities_before:
-        raise RuntimeError("canonical input files changed during their authenticated preflight")
-    backups = _snapshot_files(_mutable_identity_files() + [ROOT / "resources/resource_manifest.json"])
-    try:
-        for dataset in DATASETS:
-            run([sys.executable, str(generator), "--root", str(ROOT), "--dataset", dataset], f"generate authenticated {dataset} exact tables/ledger")
+    # Authenticate the old manifest before deciding whether outputs are stale.
+    # A failed raw-input authentication is never converted into a regeneration.
+    snapshot = authenticate_preparation_inputs(ROOT)
+    if args.formal_auto and preparation_resources_are_current(snapshot):
+        print("EZKL_RESOURCE_PREPARE_READY: all five datasets have authenticated complete resources")
+        return 0
 
-        run([
-            sys.executable,
-            str(validator),
-            "--write-manifest",
-            "--require-complete",
-        ], "refresh and authenticate canonical resource manifest")
-        if resource_file_identities_for_paths(authenticated_inputs) != input_identities_before:
-            raise RuntimeError("canonical input files changed during official resource preparation/authentication")
-    except BaseException:
-        _restore_files(backups)
-        raise
+    with tempfile.TemporaryDirectory(prefix="ezkl-resource-rollback-") as temporary:
+        backups, directories = _backup_transaction(_transaction_paths(), Path(temporary))
+        try:
+            for dataset in DATASETS:
+                run([sys.executable, str(generator), "--root", str(ROOT), "--dataset", dataset], f"generate authenticated {dataset} exact tables/ledger")
+            refresh_manifest_after_authenticated_derivation(snapshot)
+        except BaseException as failure:
+            try:
+                _restore_transaction(backups, directories)
+            except BaseException as rollback_failure:
+                raise RuntimeError(
+                    f"resource preparation failed ({failure}); rollback also failed ({rollback_failure})"
+                ) from rollback_failure
+            raise
     print("authenticated five-dataset ezkl GAT tables/ledgers and resource manifest")
     print("native official SRS will be provisioned by python3 scripts/run_formal_matrix.py --execute-formal")
     return 0

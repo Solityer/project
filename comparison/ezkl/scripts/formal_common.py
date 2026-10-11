@@ -436,7 +436,49 @@ def select_formal_cuda_device(nvidia_smi: str) -> dict[str, Any]:
     return selected
 
 
+def _pinned_rust_toolchain() -> str:
+    toolchain_path = require_file(ROOT / "rust-toolchain", "pinned Rust toolchain")
+    try:
+        toolchain_document = tomllib.loads(toolchain_path.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        abort(f"pinned Rust toolchain file is invalid TOML: {exc}")
+    toolchain_settings = toolchain_document.get("toolchain")
+    rust_toolchain = toolchain_settings.get("channel") if isinstance(toolchain_settings, dict) else None
+    if rust_toolchain != "nightly-2025-12-01":
+        abort(f"formal Rust source pin is unsupported: {rust_toolchain!r}")
+    return rust_toolchain
+
+
+def normalize_formal_execution_environment() -> dict[str, str]:
+    """Replace ambient toolchain/backend selectors with this baseline's authenticated defaults."""
+    rust_toolchain = _pinned_rust_toolchain()
+    cargo_home = ROOT / ".cargo_local"
+    if cargo_home.is_symlink() or (cargo_home.exists() and not cargo_home.is_dir()) or cargo_home.resolve() != cargo_home:
+        abort(f"formal Cargo home must be a baseline-local directory: {cargo_home}")
+    cargo_configs = tuple(cargo_home / name for name in ("config", "config.toml"))
+    if any(path.exists() or path.is_symlink() for path in cargo_configs):
+        abort("canonical formal Cargo home contains an unreviewed config override")
+    normalized = []
+    expected = {"RUSTUP_TOOLCHAIN": rust_toolchain, "CARGO_HOME": str(cargo_home)}
+    for name, value in expected.items():
+        if os.environ.get(name) != value:
+            normalized.append(name)
+        os.environ[name] = value
+    cleared = (
+        "CUDA_ARCH", "ENABLE_ICICLE_GPU", "EZKL_GAT_BACKEND", "ICICLE_SMALL_K", "ICICLE_SMALL_K_FFT",
+        "ICICLE_BACKEND_INSTALL_DIR", "ICICLE_NATIVE_LIB_DIR", "ICICLE_NATIVE_MANIFEST_SHA256",
+        "EZKL_NATIVE_PREPARE_BUDGET_BYTES", "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES", "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS",
+    )
+    for name in cleared:
+        if os.environ.pop(name, None):
+            normalized.append(name)
+    if normalized:
+        print(f"[ezkl-formal] normalized inherited formal environment selectors: {', '.join(sorted(set(normalized)))}", flush=True)
+    return {"rust_toolchain": rust_toolchain, "cargo_home": str(cargo_home)}
+
+
 def validate_formal_python_environment() -> dict[str, Any]:
+    normalized_environment = normalize_formal_execution_environment()
     python_path = Path(sys.executable).resolve()
     if not python_path.is_file() or not os.access(python_path, os.X_OK):
         abort(f"formal entry interpreter is not an executable regular file: {python_path}")
@@ -447,33 +489,21 @@ def validate_formal_python_environment() -> dict[str, Any]:
     if np.__version__ != "1.26.4":
         abort(f"formal command requires NumPy 1.26.4; current={np.__version__}")
     unsupported = (
-        "PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_PREFIX", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "RUSTC",
-        "CARGO_BUILD_TARGET", "CARGO_TARGET_DIR", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_HOME",
+        "PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_PREFIX", "RUSTUP_HOME", "RUSTC",
+        "CARGO_BUILD_TARGET", "CARGO_TARGET_DIR", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS",
         "CUDACXX", "CUDAHOSTCXX", "CUDA_HOME", "CUDA_PATH", "CC", "CXX", "LD_LIBRARY_PATH", "LD_PRELOAD",
-        "PKG_CONFIG_PATH", "CUDA_ARCH", "CMAKE_PREFIX_PATH", "CMAKE_TOOLCHAIN_FILE", "CMAKE_C_COMPILER",
+        "PKG_CONFIG_PATH", "CMAKE_PREFIX_PATH", "CMAKE_TOOLCHAIN_FILE", "CMAKE_C_COMPILER",
         "CMAKE_CXX_COMPILER", "CMAKE_C_COMPILER_LAUNCHER", "CMAKE_CXX_COMPILER_LAUNCHER", "CMAKE_CUDA_COMPILER_LAUNCHER",
         "CMAKE_C_FLAGS", "CMAKE_CXX_FLAGS", "CMAKE_CUDA_FLAGS", "CMAKE_CUDA_COMPILER",
         "CMAKE_CUDA_ARCHITECTURES", "CMAKE_GENERATOR", "CMAKE_MAKE_PROGRAM",
-        "CMAKE_BUILD_PARALLEL_LEVEL", "ENABLE_ICICLE_GPU", "EZKL_GAT_BACKEND", "EZKL_GAT_REQUIRE_GPU_EVIDENCE",
-        "ICICLE_SMALL_K", "ICICLE_SMALL_K_FFT", "ICICLE_BACKEND_INSTALL_DIR", "ICICLE_NATIVE_LIB_DIR",
-        "ICICLE_NATIVE_MANIFEST_SHA256", "NVIDIA_VISIBLE_DEVICES",
+        "CMAKE_BUILD_PARALLEL_LEVEL", "EZKL_GAT_REQUIRE_GPU_EVIDENCE", "NVIDIA_VISIBLE_DEVICES",
         "EZKL_FORMAL_SELECTED_CUDA_DEVICE", "EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256", "EZKL_FORMAL_BUILD_RECEIPT_SHA256",
         "EZKL_WORKING_DIR", "EZKL_GAT_RUN_DIR",
-        "EZKL_NATIVE_PREPARE_BUDGET_BYTES", "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES",
-        "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS",
     )
     changed = [name for name in unsupported if os.environ.get(name)]
     if changed:
         abort(f"formal command has unsupported environment overrides that can change identity: {', '.join(changed)}")
-    toolchain_path = require_file(ROOT / "rust-toolchain", "pinned Rust toolchain")
-    try:
-        toolchain_document = tomllib.loads(toolchain_path.read_text())
-    except tomllib.TOMLDecodeError as exc:
-        abort(f"pinned Rust toolchain file is invalid TOML: {exc}")
-    toolchain_settings = toolchain_document.get("toolchain")
-    rust_toolchain = toolchain_settings.get("channel") if isinstance(toolchain_settings, dict) else None
-    if rust_toolchain != "nightly-2025-12-01":
-        abort(f"formal Rust source pin is unsupported: {rust_toolchain!r}")
+    rust_toolchain = normalized_environment["rust_toolchain"]
     rustup_path = _resolve_executable("rustup")
     cmake_path = _resolve_executable("cmake")
     nvcc_path = _resolve_executable("nvcc")
